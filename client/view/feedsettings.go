@@ -109,7 +109,15 @@ func feedSettings(p feedSettingsProps) ui.Node {
 		Class: "pal-scrim",
 		Raw:   map[string]any{"data-action": "feed-settings-close"},
 	},
+		// data-action on the DIALOG, not just the scrim.
+		//
+		// The delegated listener resolves a click to the nearest ancestor
+		// carrying data-action. Without one here, every click inside the panel
+		// walked up to the backdrop and hit its close action — so touching a
+		// text field shut the panel. A no-op on the dialog stops the walk before
+		// it gets there, which is the delegated equivalent of stopPropagation.
 		html.Div(html.Props{Class: "fs", Role: "dialog",
+			Raw:  map[string]any{"data-action": "modal-keep"},
 			Aria: map[string]string{"modal": "true", "label": "Feed settings"}},
 			html.Div(html.Props{Class: "fs-head"},
 				html.Span(html.Props{Class: "fs-mark"}, html.Text(title)),
@@ -129,16 +137,23 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 
 	// --- yours ---------------------------------------------------------------
 	mine := []ui.Node{
-		fsGroup("Yours", "Only you see these."),
-		fsRow("Name", "Overrides the publisher's title. Clear it to go back.",
-			html.Input(html.Props{
-				Class: "field fs-field", Type: "text",
-				Placeholder: s.GetResolvedTitle(),
-				Value:       p.draftTitle,
-				OnInput:     p.onTitleEdit,
-				Data:        map[string]string{"role": "feed-title"},
-				Aria:        map[string]string{"label": "Your name for this feed"},
-			})),
+		fsGroup(glyphYours, "Yours", "Only you see these."),
+		// The rename commits on Enter AND on the button. Enter alone is the
+		// faster path and the one a keyboard reader will use, but a text field
+		// whose only commit is a keystroke nobody mentioned is a field that looks
+		// broken — you type, you click away, and your change is gone.
+		fsRow("Name", "Overrides the publisher's title. Clear it to use theirs.",
+			html.Div(html.Props{Class: "fs-rename"},
+				html.Input(html.Props{
+					Class: "field fs-field", Type: "text",
+					Placeholder: s.GetResolvedTitle(),
+					Value:       p.draftTitle,
+					OnInput:     p.onTitleEdit,
+					Data:        map[string]string{"role": "feed-title"},
+					Aria:        map[string]string{"label": "Your name for this feed"},
+				}),
+				itemChip("fs-rename", "✎ Rename", false, id),
+			)),
 		fsRow("In the ranked feed", "Whether its items can appear on the homepage.",
 			fsToggle("fs-megafeed", id, s.GetInMegafeed(), "included", "hidden")),
 		fsRow("Mute", "Keep fetching it, keep it out of the way.",
@@ -168,14 +183,18 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 	source := []ui.Node{
 		// The warning is the heading, not a footnote under it. Someone changing
 		// a poll interval should read why before they change it, not after.
-		fsGroup("Shared", shared+" Changing these changes them for everyone."),
+		fsGroup(glyphShared, "Shared", shared+" Changing these changes them for everyone."),
 		fsRow("Feed URL", "",
 			html.Div(html.Props{Class: "fs-url"}, html.Text(s.GetFeedUrl()))),
 		ui.If(s.GetSiteUrl() != "", func() ui.Node {
 			return fsRow("Website", "",
 				html.A(html.Props{Class: "fs-url fs-link", Href: s.GetSiteUrl(),
 					Target: "_blank", Rel: "noopener noreferrer"},
-					html.Text(s.GetSiteUrl())))
+					html.Text(s.GetSiteUrl()),
+					// Right-hand side, because it leaves the app.
+					html.Span(html.Props{Class: "gl-trail",
+						Aria: map[string]string{"hidden": "true"}},
+						html.Text(glyphExternal))))
 		}),
 		fsRow("Fetch every", "How often the server polls it.",
 			fsChoices("fs-poll", id, int(s.GetFetchIntervalS()), pollLabels())),
@@ -183,7 +202,7 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 
 	// --- health --------------------------------------------------------------
 	health := []ui.Node{
-		fsGroup("Health", ""),
+		fsGroup(glyphHealth, "Health", ""),
 		fsFact("Last fetched", relOrNever(s.GetLastFetchAt())),
 		fsFact("Last succeeded", relOrNever(s.GetLastSuccessAt())),
 		fsFact("Next fetch", relOrNever(s.GetNextFetchAt())),
@@ -202,17 +221,17 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 
 	// --- actions -------------------------------------------------------------
 	actions := []ui.Node{
-		fsGroup("Actions", ""),
+		fsGroup(glyphAction, "Actions", ""),
 		html.Div(html.Props{Class: "fs-actions"},
-			itemChip("fs-refresh", "Fetch now", false, id),
-			itemChip("fs-markall", "Mark all read", false, id),
+			glyphItemChip("fs-refresh", glyphRefresh, "Fetch now", false, id),
+			glyphItemChip("fs-markall", glyphMarkRead, "Mark all read", false, id),
 			// Unsubscribe is separated and styled as destructive. It does not
 			// delete the source or the items — A22 — but it is the only control
 			// here that removes something from the reader's sidebar.
 			html.Button(html.Props{
 				Class: "chip fs-danger",
 				Raw:   map[string]any{"data-action": "fs-unsubscribe", "data-for-item": id},
-			}, html.Text("Unsubscribe")),
+			}, lead("\u2715"), html.Text("Unsubscribe")),
 		),
 		html.Div(html.Props{Class: "fs-note"},
 			html.Text("Unsubscribing removes it from your sidebar. The articles stay on the server.")),
@@ -226,9 +245,12 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 
 // --- small pieces -------------------------------------------------------------
 
-func fsGroup(title, note string) ui.Node {
+func fsGroup(glyph, title, note string) ui.Node {
 	return html.Div(html.Props{Class: "fs-group"},
-		html.Span(html.Props{Class: "fs-group-title"}, html.Text(strings.ToUpper(title))),
+		html.Div(html.Props{Class: "fs-group-head"},
+			lead(glyph),
+			html.Span(html.Props{Class: "fs-group-title"}, html.Text(strings.ToUpper(title))),
+		),
 		ui.If(note != "", func() ui.Node {
 			return html.Span(html.Props{Class: "fs-group-note"}, html.Text(note))
 		}),

@@ -79,6 +79,18 @@ service ReaderService {
   // or cache depths on any of them.
   rpc GetFeedSettings(GetFeedSettingsRequest) returns (GetFeedSettingsResponse);
   rpc UpdateFeedSettings(UpdateFeedSettingsRequest) returns (UpdateFeedSettingsResponse);
+
+  // RecordEngagements appends observations to the signals log (§18.1).
+  //
+  // Batched, because the alternative is an RPC per scroll sample. Partial
+  // success is a normal outcome rather than an error: one malformed event in a
+  // batch of two hundred must not discard the other 199, and the client cannot
+  // usefully repair it anyway.
+  //
+  // This is the one RPC whose failure the client is expected to swallow. A
+  // broken signals layer may cost a worse ranking; it may never cost a page
+  // that will not load.
+  rpc RecordEngagements(RecordEngagementsRequest) returns (RecordEngagementsResponse);
 }
 
 // Feed is one subscription as the sidebar needs it.
@@ -371,4 +383,55 @@ message UpdateFeedSettingsRequest {
   optional string muted_until = 4;
   optional int32 cache_depth = 5;
   optional int32 fetch_interval_s = 6;
+}
+
+// Engagement is one observation about a reader (§18.1).
+//
+// `kind` and `surface` are strings rather than enums on purpose. The taxonomy
+// lives in internal/signals and grows as the interest layer learns what it can
+// see; a proto enum would make every new signal a breaking-change review and a
+// client redeploy, and `buf breaking` would be entirely right to object. The
+// closed set is enforced at the service boundary instead, where an unknown kind
+// can be reported and counted rather than silently accepted.
+message Engagement {
+  // id is CLIENT-generated and is the dedupe key. The outbox retries batches it
+  // could not confirm, so the same event legitimately arrives more than once.
+  string id = 1;
+  // item_id is empty for signals about a term or a source rather than an
+  // article — a search query being the obvious one.
+  string item_id = 2;
+  // source_id is advisory. The server resolves it from the item when it can, so
+  // a client cannot attribute an observation to a feed it did not come from.
+  string source_id = 3;
+  string kind = 4;
+  // value is per-kind: milliseconds, a 0..1 fraction, or a count. See
+  // internal/signals.Spec.Value.
+  double value = 5;
+  string surface = 6;
+  // context is a small JSON object of kind-specific facts: {"pos":7,"of":12},
+  // {"q":"fts5"}, {"words":1400}. Bounded at 1 KiB.
+  string context = 7;
+  // session_id groups one sitting. Client-assigned, because the server sees one
+  // long-lived tunnel and cannot see a boundary.
+  string session_id = 8;
+  // at is client-observed unix MILLISECONDS, clamped server-side against the
+  // server clock. It is not a conflict-ordering timestamp (A25 forbids those on
+  // a client clock) — it is an observation only the client was present for, and
+  // dwell is unreconstructible from the arrival time of a batch that came in
+  // four minutes late over a reconnect.
+  int64 at = 9;
+}
+
+message RecordEngagementsRequest {
+  repeated Engagement events = 1;
+}
+
+message RecordEngagementsResponse {
+  // accepted counts rows actually written. It excludes replays, so a client
+  // seeing accepted < sent has not necessarily lost anything.
+  int32 accepted = 1;
+  // rejected counts events that failed validation. Non-zero means the client
+  // and the server disagree about the taxonomy, which is a bug worth surfacing
+  // in the logs rather than a condition to retry.
+  int32 rejected = 2;
 }

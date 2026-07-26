@@ -56,6 +56,7 @@ func Sheet() {
 	paletteCSS(r)
 	helpCSS(r)
 	feedSettingsCSS(r)
+	glyphs(r)
 	mobile(r)
 	skeletons(r)
 	responsive(r)
@@ -1153,6 +1154,48 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 	css.Global(".feed-gear", css.Media(css.MaxW(900),
 		r("opacity", "1"), r("pointer-events", "auto"))...)
 	css.Global(".feed-gap", css.Media(css.MaxW(900), r("width", "22px"))...)
+}
+
+// glyphs styles the two positions, and the difference between them is the whole
+// point of having a rule: a LEADING glyph names what something is, a TRAILING one
+// warns what will happen. Nothing decorative is allowed on the right, because
+// that is what keeps the external-link mark meaningful.
+func glyphs(r func(string, string) css.Rule) {
+	css.Global(".gl",
+		r("display", "inline-block"), r("flex", "none"),
+		// A fixed box so labels line up in a column of controls even though the
+		// glyphs themselves have wildly different widths.
+		r("width", "1.05em"), r("text-align", "center"),
+		r("margin-right", ".45em"),
+		// Dimmer and slightly smaller than the label it introduces: it is a
+		// classifier, not the content. A glyph at full weight competes with the
+		// word next to it and a row of them reads as a toolbar of icons.
+		r("font-size", ".92em"), r("opacity", ".72"),
+		r("line-height", "1"),
+	)
+	// It brightens with its label when the thing is selected, so the pair moves
+	// together rather than the glyph staying dim under a lit word.
+	css.Global("[aria-current='true'] > .gl, [aria-pressed='true'] > .gl",
+		r("opacity", "1"),
+	)
+	css.Global(".feed-row[aria-current='true'] > .gl", r("color", "var(--cc)"))
+
+	css.Global(".gl-trail",
+		r("display", "inline-block"), r("margin-left", ".4em"),
+		r("font-size", ".9em"), r("opacity", ".7"),
+	)
+
+	// The band's glyph sits at the head of the rule, not floating before it.
+	css.Global(".rail-band > .gl", r("margin-right", "0"), r("font-size", "11px"))
+	css.Global(".fs-group-head",
+		r("display", "flex"), r("align-items", "center"), r("gap", "2px"),
+	)
+	css.Global(".fs-group-head > .gl", r("font-size", "11px"))
+
+	css.Global(".fs-rename",
+		r("display", "flex"), r("gap", "6px"), r("align-items", "center"),
+		r("justify-content", "flex-end"), r("flex-wrap", "wrap"),
+	)
 }
 
 // skeletons are the loading placeholders.

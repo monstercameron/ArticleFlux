@@ -136,6 +136,73 @@ func thousands(n int) string {
 	return b.String()
 }
 
+// Glyphs.
+//
+// Two positions, two meanings, and the split is the rule:
+//
+//	LEFT   — what a thing IS. A leading glyph on a heading or a control names its
+//	         kind, and it is the same glyph everywhere that kind appears, so the
+//	         palette, the sidebar and the tab bar teach one vocabulary instead of
+//	         three.
+//	RIGHT  — what will HAPPEN. A trailing mark is reserved for consequences the
+//	         reader should know about before clicking: \u2197 leaves the app,
+//	         \u2192 goes somewhere else in it. Nothing decorative goes on the right,
+//	         because that is what makes \u2197 mean something.
+//
+// Text glyphs rather than icons: they inherit colour and weight, they scale with
+// the type, they need no sprite sheet, and A26 has no room for an icon build step.
+const (
+	glyphAll      = "\u25c8" // all feeds — everything, one object
+	glyphUnread   = "\u25cf" // unread — a thing waiting
+	glyphLater    = "\u23f1" // read later — time set aside
+	glyphLiked    = "\u25b2" // liked — the verdict's own mark
+	glyphDisliked = "\u25bc"
+	glyphNotes    = "\u270e" // notes — a pencil, your own writing
+	glyphFeeds    = "\u2263" // a list of sources
+	glyphTags     = "\u2317" // a label
+	glyphAdd      = "\uff0b"
+	glyphSearch   = "\u2315"
+	glyphRefresh  = "\u21bb"
+	glyphMarkRead = "\u2713"
+	glyphSettings = "\u2699"
+	glyphHelp     = "?"
+	glyphListen   = "\u25b6"
+	glyphPause    = "\u23f8"
+	glyphStop     = "\u25a0"
+	glyphHealth   = "\u2665"
+	glyphAction   = "\u26a1"
+	glyphYours    = "\u25cd"
+	glyphShared   = "\u25cc"
+	// Right-hand side only.
+	glyphExternal = "\u2197"
+)
+
+// lead renders a leading glyph. Hidden from assistive tech: the label beside it
+// already says what it is, and a screen reader announcing "black up-pointing
+// triangle Like" is worse than "Like".
+func lead(g string) ui.Node {
+	return html.Span(html.Props{Class: "gl",
+		Aria: map[string]string{"hidden": "true"}}, html.Text(g))
+}
+
+// glyphChip is `chip` with a leading glyph.
+func glyphChip(action, glyph, label string, pressed bool) ui.Node {
+	return html.Button(html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": action},
+		Aria:  map[string]string{"pressed": strconv.FormatBool(pressed)},
+	}, lead(glyph), html.Text(label))
+}
+
+// glyphItemChip is `itemChip` with a leading glyph, for the per-article controls.
+func glyphItemChip(action, glyph, label string, pressed bool, itemID string) ui.Node {
+	return html.Button(html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": action, "data-for-item": itemID},
+		Aria:  map[string]string{"pressed": strconv.FormatBool(pressed)},
+	}, lead(glyph), html.Text(label))
+}
+
 // --- rail --------------------------------------------------------------------
 
 type railProps struct {
@@ -227,17 +294,17 @@ func railPane(p railProps) ui.Node {
 			html.Span(html.Props{Class: "masthead-sub"},
 				html.Text(strconv.Itoa(len(p.feeds))+" · "+quiet)),
 		),
-		specialRow("All feeds", streamAll, p.total,
+		specialRow(glyphAll, "All feeds", streamAll, p.total,
 			p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
 				!p.sel.Unread && !p.sel.Notes && !p.sel.Later && p.sel.TagID == ""),
-		specialRow("Unread", streamUnread, p.total, p.sel.Unread),
-		specialRow("Read later", streamLater, -1, p.sel.Later),
-		specialRow("Liked", streamLiked, -1, p.sel.Rating > 0),
+		specialRow(glyphUnread, "Unread", streamUnread, p.total, p.sel.Unread),
+		specialRow(glyphLater, "Read later", streamLater, -1, p.sel.Later),
+		specialRow(glyphLiked, "Liked", streamLiked, -1, p.sel.Rating > 0),
 		// Liked is a stream; disliked is not. A list of things you decided were
 		// not worth your time is not somewhere anyone goes — the verdict's job is
 		// to feed ranking and to mark the row, and browsing it would only invite
 		// re-reading what you already rejected.
-		specialRow("Notes", streamNotes, -1, p.sel.Notes),
+		specialRow(glyphNotes, "Notes", streamNotes, -1, p.sel.Notes),
 		railFeedsHeader(p),
 	)
 
@@ -308,7 +375,7 @@ func railPane(p railProps) ui.Node {
 	}
 
 	if len(p.tags) > 0 {
-		rows = append(rows, railBand("Tags"))
+		rows = append(rows, railBand(glyphTags, "Tags"))
 		for _, t := range p.tags {
 			rows = append(rows, tagRow(t, p.sel.TagID == t.GetId()))
 		}
@@ -317,7 +384,7 @@ func railPane(p railProps) ui.Node {
 	// Adding a feed sits at the foot of the sidebar, beside the list of feeds it
 	// joins, rather than in a bar across the top of an application that has none.
 	rows = append(rows,
-		railBand("Add a feed"),
+		railBand(glyphAdd, "Add a feed"),
 		html.Div(html.Props{Class: "rail-add"},
 			html.Input(html.Props{
 				Class: "field", Type: "url", Placeholder: "https://example.com/feed.xml",
@@ -363,8 +430,9 @@ func tagRow(t *pb.Tag, active bool) ui.Node {
 }
 
 // railBand is the section divider without a control on it.
-func railBand(label string) ui.Node {
+func railBand(glyph, label string) ui.Node {
 	return html.Div(html.Props{Class: "rail-band"},
+		lead(glyph),
 		html.Span(html.Props{Class: "rail-band-label"}, html.Text(strings.ToUpper(label))),
 		html.I(html.Props{Class: "rail-band-rule"}),
 	)
@@ -383,6 +451,7 @@ func railFeedsHeader(p railProps) ui.Node {
 	// one 22px band that separates, names, and acts. In a column whose problem is
 	// that its structure costs more than its contents, that is the whole idea.
 	return html.Div(html.Props{Class: "rail-band"},
+		lead(glyphFeeds),
 		html.Span(html.Props{Class: "rail-band-label"}, html.Text(strings.ToUpper("Feeds"))),
 		html.I(html.Props{Class: "rail-band-rule"}),
 		html.Button(html.Props{
@@ -398,17 +467,21 @@ func railFeedsHeader(p railProps) ui.Node {
 
 // specialRow is a stream: All feeds, Unread, Read later, Liked, Notes.
 //
-// **No marker.** Five identical grey dots down the top of the rail encoded
-// nothing — the names are unambiguous and unique in the column, and the dots
-// existed only because the feed rows below have one. What marks the current
-// stream is the amber bar every selected row in this app already gets, which is
-// the same signal the item list uses. The label is inset by the marker column
-// instead, so the rail keeps one text axis from top to bottom.
+// Each stream carries its OWN glyph, which is the second half of a decision that
+// started by deleting five identical grey dots. Identical markers encoded
+// nothing and were pure noise; a distinct glyph per destination encodes exactly
+// what the dots were pretending to. The same glyph is used for that destination
+// everywhere it appears — the sidebar, the palette, the tab bar — so the app
+// teaches one vocabulary rather than three.
+//
+// What marks the CURRENT stream is still the amber bar every selected row gets,
+// the same signal the item list uses. The glyph says which; the bar says where.
 //
 // A zero count is not shown. "All feeds 0" is a number that says nothing and
 // draws the eye to the one place in the rail where nothing is happening.
-func specialRow(label, id string, count int, active bool) ui.Node {
+func specialRow(glyph, label, id string, count int, active bool) ui.Node {
 	children := []ui.Node{
+		lead(glyph),
 		html.Span(html.Props{Class: "feed-name"}, html.Text(label)),
 	}
 	if count > 0 {
@@ -830,9 +903,9 @@ func listHead(p listProps) ui.Node {
 				Data: map[string]string{"role": "search"},
 				Aria: map[string]string{"label": "Search articles"},
 			}),
-			chip("refresh", "Refresh", false),
-			chip("toggle-unread", unreadLabel, p.unreadOnly),
-			chip("mark-all", "Mark all read", false),
+			glyphChip("refresh", glyphRefresh, "Refresh", false),
+			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly),
+			glyphChip("mark-all", glyphMarkRead, "Mark all read", false),
 			// The one visible pointer to the keyboard layer. Without it, an app
 			// whose best interface is its keys is keyboard-first for exactly one
 			// person — the one who wrote it.
@@ -841,7 +914,7 @@ func listHead(p listProps) ui.Node {
 				Raw:   map[string]any{"data-action": "help-open"},
 				Title: "Keyboard shortcuts",
 				Aria:  map[string]string{"label": "Keyboard shortcuts"},
-			}, html.Text("?")),
+			}, lead(glyphHelp)),
 		),
 		ui.If(status != "", func() ui.Node {
 			return html.Div(html.Props{Class: "banner", Role: "status",
@@ -1172,18 +1245,28 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 			// Glyphs rather than words carry it, with the word alongside: ▲ and ▼
 			// read instantly and are legible at any size, and the label is what
 			// makes them unambiguous the first time.
-			itemChip("like", "▲ Like", full.GetRating() > 0, it.GetId()),
-			itemChip("dislike", "▼ Dislike", full.GetRating() < 0, it.GetId()),
+			glyphItemChip("like", glyphLiked, "Like", full.GetRating() > 0, it.GetId()),
+			glyphItemChip("dislike", glyphDisliked, "Dislike", full.GetRating() < 0, it.GetId()),
 			// Read later and mark-unread are the two ways out of a stream that
 			// marks things read as you scroll past them. Without the second one
 			// there is no way back at all, which makes scrolling quickly feel
 			// like a commitment.
-			itemChip("read-later", "⏱ Read later", full.GetStarred(), it.GetId()),
+			glyphItemChip("read-later", glyphLater, "Read later", full.GetStarred(), it.GetId()),
 			ui.If(full.GetRead(), func() ui.Node {
-				return itemChip("mark-unread", "Mark unread", false, it.GetId())
+				return glyphItemChip("mark-unread", "○", "Mark unread", false, it.GetId())
 			}),
 			ui.If(full.GetUrl() != "", func() ui.Node {
-				return itemChip("open-original", "Open original ↗", false, it.GetId())
+				// The only trailing mark in the app: this leaves for another site,
+				// which is worth knowing before the click rather than after it.
+				return html.Button(html.Props{
+					Class: "chip",
+					Raw: map[string]any{
+						"data-action": "open-original", "data-for-item": it.GetId(),
+					},
+				}, html.Text("Open original"),
+					html.Span(html.Props{Class: "gl-trail",
+						Aria: map[string]string{"hidden": "true"}},
+						html.Text(glyphExternal)))
 			}),
 		),
 		listenBar(it, p),
@@ -1191,12 +1274,12 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 		ui.If(!loading, func() ui.Node {
 			long := full.GetWordCount() > clampWords && !p.expanded[it.GetId()]
 			if !long {
-				return articleBody(body)
+				return articleBody(it.GetId(), body)
 			}
 			// The clamp is a wrapper, not a class on the body, so the reading
 			// column's own type and measure are untouched by it.
 			return html.Div(html.Props{Class: "article-clamp"},
-				articleBody(body),
+				articleBody(it.GetId(), body),
 				html.Div(html.Props{Class: "clamp-fade"}),
 				itemChip("expand",
 					"Read the rest · "+readingTime(full.GetWordCount()), false, it.GetId()),
@@ -1221,26 +1304,26 @@ func listenBar(it *pb.Item, p articleProps) ui.Node {
 	kids := []ui.Node{}
 	switch {
 	case !speaking:
-		kids = append(kids, itemChip("listen", "\u25b6 Listen", false, it.GetId()))
+		kids = append(kids, glyphItemChip("listen", glyphListen, "Listen", false, it.GetId()))
 	case p.speakState == "loading":
 		// Named, not a spinner: Smart+ synthesis of a long article genuinely
 		// takes seconds, and a control that merely looks inert gets pressed
 		// again — which restarts it.
 		kids = append(kids,
 			html.Span(html.Props{Class: "chip chip-static"}, html.Text("Preparing\u2026")),
-			itemChip("listen-stop", "\u25a0 Stop", false, it.GetId()))
+			glyphItemChip("listen-stop", glyphStop, "Stop", false, it.GetId()))
 	case p.speakState == "paused":
 		kids = append(kids,
-			itemChip("listen", "\u25b6 Resume", false, it.GetId()),
-			itemChip("listen-stop", "\u25a0 Stop", false, it.GetId()))
+			glyphItemChip("listen", glyphListen, "Resume", false, it.GetId()),
+			glyphItemChip("listen-stop", glyphStop, "Stop", false, it.GetId()))
 	case p.speakState == "error":
 		kids = append(kids,
 			html.Span(html.Props{Class: "chip chip-static"}, html.Text("Couldn't play that")),
-			itemChip("listen", "\u25b6 Retry", false, it.GetId()))
+			glyphItemChip("listen", glyphListen, "Retry", false, it.GetId()))
 	default:
 		kids = append(kids,
-			itemChip("listen-pause", "\u23f8 Pause", false, it.GetId()),
-			itemChip("listen-stop", "\u25a0 Stop", false, it.GetId()))
+			glyphItemChip("listen-pause", glyphPause, "Pause", false, it.GetId()),
+			glyphItemChip("listen-stop", glyphStop, "Stop", false, it.GetId()))
 	}
 
 	// The Smart+ switch sits beside the control it changes, because that is the
@@ -1365,12 +1448,63 @@ func skeletonArticle() ui.Node {
 // RawHTML sanitises and then rebuilds the markup through the same safe Tag/Text
 // constructors as hand-written nodes. There is no way to reopen the XSS hole
 // even by accident.
-func articleBody(raw string) ui.Node {
-	if strings.TrimSpace(sanitize.Sanitize(raw)) == "" {
+func articleBody(id, raw string) ui.Node {
+	nodes, empty := parsedBody(id, raw)
+	if empty {
 		return html.Div(html.Props{Class: "article-body"},
 			html.Text("This entry has no body. Open the original to read it."))
 	}
-	return html.Div(html.Props{Class: "article-body"}, html.RawHTML(raw)...)
+	return html.Div(html.Props{Class: "article-body"}, nodes...)
+}
+
+// bodyCache holds parsed article bodies, keyed by item id.
+//
+// **This is the single most expensive thing the reader does.** `html.RawHTML`
+// sanitises the markup AND parses it into a node tree, and the reading pane holds
+// a whole stream of articles — so a render was doing one full HTML parse per
+// article. Scrolling the item LIST re-renders the component that owns the stream,
+// which meant thirty-nine HTML parses on every scroll frame: measured at two
+// 66ms long tasks and fourteen dropped frames on one flick.
+//
+// The nodes are safe to keep. A `ui.Node` is a description — type, props,
+// children — and the mutable reconciliation state lives in the Fiber beside it,
+// not in the node. Reusing one across renders hands the reconciler exactly the
+// value a fresh parse would have produced.
+//
+// Keyed on id AND length: the body legitimately changes once, when GetItem
+// replaces the list stub with the full article, and length is a sufficient and
+// free signal for that.
+var bodyCache = map[string]cachedBody{}
+
+type cachedBody struct {
+	rawLen int
+	nodes  []ui.Node
+	empty  bool
+}
+
+// bodyCacheMax bounds the cache. A long reading session walks through hundreds
+// of articles and every one of them would otherwise be held forever, in a wasm
+// heap that cannot be paged out. Dropping the whole map on overflow rather than
+// evicting one entry is deliberate: a stream shows a couple of dozen articles, so
+// a clear costs at most that many re-parses, and it needs no bookkeeping to be
+// correct.
+const bodyCacheMax = 256
+
+func parsedBody(id, raw string) ([]ui.Node, bool) {
+	if c, ok := bodyCache[id]; ok && c.rawLen == len(raw) {
+		return c.nodes, c.empty
+	}
+	if len(bodyCache) >= bodyCacheMax {
+		bodyCache = map[string]cachedBody{}
+	}
+	c := cachedBody{rawLen: len(raw)}
+	if strings.TrimSpace(sanitize.Sanitize(raw)) == "" {
+		c.empty = true
+	} else {
+		c.nodes = html.RawHTML(raw)
+	}
+	bodyCache[id] = c
+	return c.nodes, c.empty
 }
 
 // helpSheet lists every key.
@@ -1437,6 +1571,7 @@ func helpSheet(open bool) ui.Node {
 		Raw:   map[string]any{"data-action": "help-close"},
 	},
 		html.Div(html.Props{Class: "help", Role: "dialog",
+			Raw:  map[string]any{"data-action": "modal-keep"},
 			Aria: map[string]string{"modal": "true", "label": "Keyboard shortcuts"}},
 			html.Div(html.Props{Class: "help-head"},
 				html.Span(html.Props{Class: "help-mark"}, html.Text("Keys")),

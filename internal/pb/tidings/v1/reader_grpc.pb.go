@@ -36,6 +36,7 @@ const (
 	ReaderService_ListNotes_FullMethodName          = "/tidings.v1.ReaderService/ListNotes"
 	ReaderService_GetFeedSettings_FullMethodName    = "/tidings.v1.ReaderService/GetFeedSettings"
 	ReaderService_UpdateFeedSettings_FullMethodName = "/tidings.v1.ReaderService/UpdateFeedSettings"
+	ReaderService_RecordEngagements_FullMethodName  = "/tidings.v1.ReaderService/RecordEngagements"
 )
 
 // ReaderServiceClient is the client API for ReaderService service.
@@ -102,6 +103,17 @@ type ReaderServiceClient interface {
 	// or cache depths on any of them.
 	GetFeedSettings(ctx context.Context, in *GetFeedSettingsRequest, opts ...grpc.CallOption) (*GetFeedSettingsResponse, error)
 	UpdateFeedSettings(ctx context.Context, in *UpdateFeedSettingsRequest, opts ...grpc.CallOption) (*UpdateFeedSettingsResponse, error)
+	// RecordEngagements appends observations to the signals log (§18.1).
+	//
+	// Batched, because the alternative is an RPC per scroll sample. Partial
+	// success is a normal outcome rather than an error: one malformed event in a
+	// batch of two hundred must not discard the other 199, and the client cannot
+	// usefully repair it anyway.
+	//
+	// This is the one RPC whose failure the client is expected to swallow. A
+	// broken signals layer may cost a worse ranking; it may never cost a page
+	// that will not load.
+	RecordEngagements(ctx context.Context, in *RecordEngagementsRequest, opts ...grpc.CallOption) (*RecordEngagementsResponse, error)
 }
 
 type readerServiceClient struct {
@@ -282,6 +294,16 @@ func (c *readerServiceClient) UpdateFeedSettings(ctx context.Context, in *Update
 	return out, nil
 }
 
+func (c *readerServiceClient) RecordEngagements(ctx context.Context, in *RecordEngagementsRequest, opts ...grpc.CallOption) (*RecordEngagementsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecordEngagementsResponse)
+	err := c.cc.Invoke(ctx, ReaderService_RecordEngagements_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ReaderServiceServer is the server API for ReaderService service.
 // All implementations must embed UnimplementedReaderServiceServer
 // for forward compatibility.
@@ -346,6 +368,17 @@ type ReaderServiceServer interface {
 	// or cache depths on any of them.
 	GetFeedSettings(context.Context, *GetFeedSettingsRequest) (*GetFeedSettingsResponse, error)
 	UpdateFeedSettings(context.Context, *UpdateFeedSettingsRequest) (*UpdateFeedSettingsResponse, error)
+	// RecordEngagements appends observations to the signals log (§18.1).
+	//
+	// Batched, because the alternative is an RPC per scroll sample. Partial
+	// success is a normal outcome rather than an error: one malformed event in a
+	// batch of two hundred must not discard the other 199, and the client cannot
+	// usefully repair it anyway.
+	//
+	// This is the one RPC whose failure the client is expected to swallow. A
+	// broken signals layer may cost a worse ranking; it may never cost a page
+	// that will not load.
+	RecordEngagements(context.Context, *RecordEngagementsRequest) (*RecordEngagementsResponse, error)
 	mustEmbedUnimplementedReaderServiceServer()
 }
 
@@ -406,6 +439,9 @@ func (UnimplementedReaderServiceServer) GetFeedSettings(context.Context, *GetFee
 }
 func (UnimplementedReaderServiceServer) UpdateFeedSettings(context.Context, *UpdateFeedSettingsRequest) (*UpdateFeedSettingsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateFeedSettings not implemented")
+}
+func (UnimplementedReaderServiceServer) RecordEngagements(context.Context, *RecordEngagementsRequest) (*RecordEngagementsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordEngagements not implemented")
 }
 func (UnimplementedReaderServiceServer) mustEmbedUnimplementedReaderServiceServer() {}
 func (UnimplementedReaderServiceServer) testEmbeddedByValue()                       {}
@@ -734,6 +770,24 @@ func _ReaderService_UpdateFeedSettings_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReaderService_RecordEngagements_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordEngagementsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).RecordEngagements(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_RecordEngagements_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).RecordEngagements(ctx, req.(*RecordEngagementsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ReaderService_ServiceDesc is the grpc.ServiceDesc for ReaderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -808,6 +862,10 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateFeedSettings",
 			Handler:    _ReaderService_UpdateFeedSettings_Handler,
+		},
+		{
+			MethodName: "RecordEngagements",
+			Handler:    _ReaderService_RecordEngagements_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

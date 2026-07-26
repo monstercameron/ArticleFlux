@@ -171,6 +171,8 @@ func Reader() ui.Node {
 	// appending through it always appends to the real list. Every write goes
 	// through setItems below, so the two can never disagree.
 	itemsRef := ui.UseRef([]*pb.Item(nil))
+	// hostsRef caches source id -> favicon host. See the render for why.
+	hostsRef := ui.UseRef(map[string]string{})
 	nextCursor := ui.UseState("")
 	// totalItems is how many items the current scope holds in all, per the
 	// server. It is what gives the virtual list its true length before the items
@@ -339,6 +341,7 @@ func Reader() ui.Node {
 					return
 				}
 				feeds.Set(res.GetFeeds())
+				hostsRef.Set(iconHostsOf(res.GetFeeds()))
 				totalUnread.Set(int(res.GetTotalUnread()))
 			})
 		}()
@@ -1579,6 +1582,9 @@ func Reader() ui.Node {
 					a.addTag(id)
 				case "expand":
 					a.expand(id)
+				case "modal-keep":
+					// A click inside an open dialog. It exists only to stop the
+					// delegated walk reaching the backdrop's close action.
 				case "palette-close":
 					a.closePalette()
 				case "help-close":
@@ -1589,6 +1595,13 @@ func Reader() ui.Node {
 					a.openFeedSettings(id)
 				case "feed-settings-close":
 					a.closeFeedSettings()
+				case "fs-rename":
+					// Read from the DOM rather than from state: this is the same
+					// field Enter commits, and both paths must send the same
+					// value. An empty string is meaningful — it clears the
+					// override — so it is sent rather than skipped.
+					v := platform.FieldValue("feed-title")
+					a.patchFeed(&pb.UpdateFeedSettingsRequest{SourceId: id, Title: &v})
 				case "fs-unsubscribe":
 					a.unsubscribe(id)
 				case "fs-refresh":
@@ -2216,9 +2229,10 @@ func Reader() ui.Node {
 		)
 	}
 
-	// One map per render, shared by both panes, so the two always agree about
-	// which icon belongs to which source.
-	hosts := iconHostsOf(feeds.Get())
+	// Built when the feed list changes, not per render: it is a 151-entry map
+	// that only moves when a subscription is added, removed or re-pointed, and
+	// rebuilding it on every scroll frame is pure waste.
+	hosts := hostsRef.Get()
 
 	return html.Div(html.Props{Class: "shell", Data: map[string]string{"view": string(pane.Get())}},
 		html.Div(html.Props{Class: "panes"},
@@ -2315,10 +2329,14 @@ func Reader() ui.Node {
 			saving:      fsSaving.Get(),
 		}),
 		palette(paletteProps{
-			open:    paletteOpen.Get(),
-			query:   paletteQuery.Get(),
-			active:  paletteActive.Get(),
-			entries: filterPalette(buildPalette(feeds.Get(), tags.Get()), paletteQuery.Get()),
+			open:   paletteOpen.Get(),
+			query:  paletteQuery.Get(),
+			active: paletteActive.Get(),
+			// Built only while it is open. This assembles 151 feeds plus the
+			// tags, streams and commands and then SORTS them — which was
+			// happening on every scroll frame for a dialog nobody had opened.
+			entries: paletteEntriesIf(paletteOpen.Get(), feeds.Get(), tags.Get(),
+				paletteQuery.Get()),
 			onInput: onPaletteInput,
 		}),
 	)
@@ -2508,6 +2526,18 @@ func iconHostsOf(feeds []*pb.Feed) map[string]string {
 	return m
 }
 
+// paletteEntriesIf builds the palette only when it is open.
+//
+// Assembling and sorting ~170 entries is cheap once and absurd sixty times a
+// second, which is what it was costing while the reader scrolled the item list
+// with the dialog closed.
+func paletteEntriesIf(open bool, feeds []*pb.Feed, tags []*pb.Tag, q string) []paletteEntry {
+	if !open {
+		return nil
+	}
+	return filterPalette(buildPalette(feeds, tags), q)
+}
+
 // fsName resolves a source id to its title for the scope the action switches to.
 func fsName(a *actions, id string) string {
 	if f := a.feedByID(id); f != nil {
@@ -2564,22 +2594,25 @@ func currentID(it *pb.Item) string {
 
 // streamAtStart reports whether the reading stream has reached the top of the
 // list — the point at which scrolling up has nothing more to bring in.
+//
+// An id comparison, not an indexOf. Both edge checks run on every render, and a
+// linear scan of a 3,621-item list twice per scroll frame is exactly the kind of
+// cost that does not show up until the list is real.
 func streamAtStart(list, stream []*pb.Item) bool {
-	if len(stream) == 0 {
+	if len(stream) == 0 || len(list) == 0 {
 		return false
 	}
-	return indexOf(list, stream[0]) <= 0
+	return stream[0].GetId() == list[0].GetId()
 }
 
 // streamAtEnd reports whether the stream has reached the end of the FEED, not
 // merely the end of what has been paged. A cursor that is still live means there
 // is more to come, so "that's everything" would be a lie.
 func streamAtEnd(list, stream []*pb.Item, cursor string) bool {
-	if len(stream) == 0 || cursor != "" {
+	if len(stream) == 0 || len(list) == 0 || cursor != "" {
 		return false
 	}
-	i := indexOf(list, stream[len(stream)-1])
-	return i >= 0 && i == len(list)-1
+	return stream[len(stream)-1].GetId() == list[len(list)-1].GetId()
 }
 
 func indexOf(list []*pb.Item, it *pb.Item) int {

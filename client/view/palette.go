@@ -234,7 +234,11 @@ func palette(p paletteProps) ui.Node {
 		// choosing a row does not also count as clicking outside.
 		Raw: map[string]any{"data-action": "palette-close"},
 	},
+		// See feedSettings: a click inside the dialog must not resolve to the
+		// backdrop's close action. Rows carry data-pal, which is a different
+		// attribute and a different listener, so this does not swallow them.
 		html.Div(html.Props{Class: "pal", Role: "dialog",
+			Raw:  map[string]any{"data-action": "modal-keep"},
 			Aria: map[string]string{"modal": "true", "label": "Command palette"}},
 			html.Div(html.Props{Class: "pal-field"},
 				html.Input(html.Props{

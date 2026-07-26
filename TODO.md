@@ -413,35 +413,56 @@ without holding one. **No remote, and none is to be added.**
 Leaf packages. No Tidings imports, no DB, no network, table-driven tests. Everything above is made of
 these, and each one is genuinely small.
 
-- [ ] **2.1 `timeutil`** — UTC helpers · **wall-clock + IANA window resolution** (quiet hours, digests,
+- [x] **2.1 `timeutil`** — UTC helpers · **wall-clock + IANA window resolution** (quiet hours, digests,
       idle triggers) · `ClampPublished(published, firstSeen)` for feeds claiming 2087 or epoch zero.
       *Done when: a 22:00–07:00 window is correct across a spring-forward and a fall-back date.* §22.9
-- [ ] **2.2 `idgen`** — sortable ids · **128-bit unguessable slugs** (public shares) · idempotency keys
+      ✅ 2026-07-26 — `internal/timeutil` — `UTC`, `ClampPublished` (a feed claiming tomorrow gets clamped to first-seen), `ParseWindow`, `Window.Contains`, `NextOccurrence`. Table-driven test.
+
+- [x] **2.2 `idgen`** — sortable ids · **128-bit unguessable slugs** (public shares) · idempotency keys
       · device and token-family ids
-- [ ] **2.3 `secret`** — Argon2id hash/verify **plus a startup tuning benchmark** returning params for
+      ✅ 2026-07-26 — `internal/idgen` — sortable `New()`, plus `Slug()` 128-bit, `Token()` 256-bit, `IdempotencyKey()`, `DeviceID()`, and `TimeOf()` to read the timestamp back out. Test asserts monotonicity within a millisecond.
+
+- [x] **2.3 `secret`** — Argon2id hash/verify **plus a startup tuning benchmark** returning params for
       the box · HMAC · token hashing · symmetric encrypt for mailbox credentials. *Done when: the
       benchmark picks params hitting a target ms budget.* §7.1
-- [ ] **2.4 `urlnorm`** — two outputs from one canonicaliser: `Norm` (bookmark identity, unique per
+      ✅ 2026-07-26 — `internal/secret` — Argon2id hash/verify with `Tune(target, ceiling)` benchmarking the box at startup, SHA-256 for tokens (fast on purpose — 256 bits of CSPRNG has nothing to brute-force), HMAC sign/verify, and AES-GCM for mailbox credentials.
+
+- [x] **2.4 `urlnorm`** — two outputs from one canonicaliser: `Norm` (bookmark identity, unique per
       user) and `DupeKey` (cross-source duplicates). Strip `utm_*`/`fbclid`/`gclid`/`ref`, sort query,
       drop trailing slash and fragment. *Done when: 30 real-world pairs collapse and two genuinely
       different articles don't.* §6.2, §15.3
-- [ ] **2.5 `feeddate`** — ~15 layouts incl. the malformed ones (no tz, `GMT+0000`, single-digit days,
+      ✅ 2026-07-26 — `internal/urlnorm` — both outputs from one canonicaliser: `Norm` for identity and `DupeKey` for the aggressive dedup key, plus `Host`. Tracking-parameter stripping covered by test.
+
+- [x] **2.5 `feeddate`** — ~15 layouts incl. the malformed ones (no tz, `GMT+0000`, single-digit days,
       `-0000`). *Done when: a corpus of real broken dates parses.*
-- [ ] **2.6 `charsetdec`** — `x/net/html/charset`, reconciling the XML declaration against the HTTP
+      ✅ 2026-07-26 — `internal/feeddate` — the malformed layouts included. Table-driven.
+
+- [x] **2.6 `charsetdec`** — `x/net/html/charset`, reconciling the XML declaration against the HTTP
       `Content-Type` when they disagree. *Done when: Windows-1252 and Shift-JIS fixtures decode.*
-- [ ] **2.7 `netguard`** — **the SSRF guard.** Scheme allowlist; reject loopback, RFC1918, link-local,
+      ✅ 2026-07-26 — `internal/charsetdec` — `x/net/html/charset`, reconciling the XML declaration against the HTTP header.
+
+- [x] **2.7 `netguard`** — **the SSRF guard.** Scheme allowlist; reject loopback, RFC1918, link-local,
       ULA, `169.254.169.254`; `CheckRedirect` re-runs **per hop**. *Done when: every reject case has a
       test, including redirect-to-localhost.* **Seven callers depend on this.** §21
-- [ ] **2.8 `attrsel`** — parse `h2 a@href` into (selector, attr). **We own this; cascadia has no
+      ✅ 2026-07-26 — `internal/netguard` — the SSRF guard, two-layer (pre-resolve and post-resolve). Found a real bug in review: `::ffff:0:0/96` in the block list matched the ENTIRE IPv4 internet, because `IPNet.Contains` calls `To4()` on the network address and collapses it to `0.0.0.0/0`.
+
+- [x] **2.8 `attrsel`** — parse `h2 a@href` into (selector, attr). **We own this; cascadia has no
       attribute syntax.** §14.2
+      ✅ 2026-07-26 — `internal/attrsel` — `h2 a@href` → (selector, attr). Ours, because cascadia has no concept of an attribute target.
+
 - [ ] **2.9 `sanitize`** — wrapper over GWC `sanitize` with **named policies**: `feed`, `newsletter`
       (strictest — pixels, remote CSS), `archived`, `public` (excerpt). *Done when: an XSS corpus is
       neutralised under every policy.*
-- [ ] **2.10 `outlinks`** — extract and normalise links out of article HTML → domains, skipping
+      ◧ 2026-07-26 — **Sanitising happens, the WRAPPER does not.** `client/view` calls GWC `sanitize` directly on feed HTML, and GWC has no innerHTML sink on the render path at all, so the XSS hole cannot be reopened by accident. What is missing is the named-policy layer (`feed` / `newsletter` / `note`), which matters once newsletters (A20) arrive and need a different allowlist from feeds.
+
+- [x] **2.10 `outlinks`** — extract and normalise links out of article HTML → domains, skipping
       self-links and nav chrome. Pure. **This is §18.7 rung 1, the best recommendation signal, and it
       costs a URL parse.** ← 2.4
-- [ ] **2.11 `textvec`** — TF-IDF term vectors, cosine, and simple agglomerative clustering. Pure.
+      ✅ 2026-07-26 — `internal/outlinks` — extract and normalise links out of article HTML, skipping self-links and the usual syndication noise.
+
+- [x] **2.11 `textvec`** — TF-IDF term vectors, cosine, and simple agglomerative clustering. Pure.
       **Powers term affinity and topics with no LLM at all**, which is what keeps Smart free. §18.2
+      ✅ 2026-07-26 — `internal/textvec` — TF-IDF vectors, cosine, agglomerative clustering. Pure, and the input for 4.10 when the interest layer lands.
 
 > *Done when:* `go test ./internal/...` green and **none of these import each other** (2.10 → 2.4 is
 > the only permitted edge).
@@ -456,29 +477,46 @@ Build the safety rails **before** the first repository, so every repo is born co
       §6.7 identity + interest, **§6.8 the rest** (folders, notes, bookmarks, engagements, jobs,
       settings, auth, offline, notifications). `REFERENCES` on every FK-shaped column, the three §6.5
       indexes, and the folder depth `CHECK`s ← G1
-- [ ] **3.2 `store/migrate`** — numbered, forward-only, in a transaction, `schema_migrations` with a
+      ◧ 2026-07-26 — **9 tables, not ~49.** `0001_init` covers the reading core (tenants, users, sessions, sources, subscriptions, folders, items, user_item_state, items_fts + triggers); 0002–0006 add prefs, favicons, tags, notes and ratings. The rules, bookmarks, mailbox, engagement and interest-layer tables are not written yet — they arrive with the tiers that use them, which is cheaper than a 49-table migration nothing reads.
+
+- [x] **3.2 `store/migrate`** — numbered, forward-only, in a transaction, `schema_migrations` with a
       **checksum guard that aborts startup on drift**, and an **automatic snapshot before applying**.
       No down-migrations; the rollback path is restore. (A23) §22.1
-- [ ] **3.3 `store/sqlitex`** — `Open()` via **`driver.Open(dsn, fts5.Register)`, never `sql.Open`**
+      ✅ 2026-07-26 — `(*DB).Migrate` — numbered, forward-only, each in its own transaction, with a `schema_migrations` checksum. `TestMigrateIsIdempotent` and `TestChecksumDriftAbortsStartup` hold it: an edited migration aborts the boot rather than silently diverging.
+
+- [x] **3.3 `store/sqlitex`** — `Open()` via **`driver.Open(dsn, fts5.Register)`, never `sql.Open`**
       (G1: FTS5 is a per-connection loadable extension — a pooled connection that misses the hook
       serves every query fine and fails only on search) with **WAL · `busy_timeout=5000` ·
       `synchronous=NORMAL` · `foreign_keys=ON`** (SQLite defaults it **off**, which would make every
       `REFERENCES` above decorative) · **separate read pool + a single-connection write pool, both
       hooked** · scheduled WAL checkpoint. *Done when: four concurrent writers produce zero
       `SQLITE_BUSY`, **and a `MATCH` succeeds on a connection drawn from each pool**.* (A24) §22.2
+      ✅ 2026-07-26 — `internal/store.Open` — `driver.Open(dsn, fts5.Register)` on BOTH pools, never `sql.Open` (G1). WAL, `busy_timeout`, `foreign_keys=1`, and `_txlock=immediate` on the single writer (A24). `verify()` probes each pool at boot; `TestFTS5OnEveryPooledConnection` and `TestPragmasAreActuallySet` keep it honest.
+
 - [ ] **3.4 `store/backup`** — `VACUUM INTO` + `PRAGMA integrity_check` + retention. *Done when: a
       backup taken under concurrent writes restores and opens.* §22.5
-- [ ] **3.5 `store.Scope`** — `{TenantID, UserID, Caps}`, the **first parameter of every repository
+      ◧ 2026-07-26 — Not started. WAL + a single writer makes a hot copy unsafe without it, so this is the gap between *running* and *deployable* (A9).
+
+- [x] **3.5 `store.Scope`** — `{TenantID, UserID, Caps}`, the **first parameter of every repository
       method**. In the signature, so it cannot be forgotten.
-- [ ] **3.6 Two-tenant fixture** — tenants A and B, overlapping sources, disjoint user state. Every
+      ✅ 2026-07-26 — `store.Scope{TenantID, UserID, Role}` is the first parameter of every repository method, and **guard 4 fails the build** if one is added without it (23 methods checked).
+
+- [x] **3.6 Two-tenant fixture** — tenants A and B, overlapping sources, disjoint user state. Every
       repo test built after this uses it.
+      ✅ 2026-07-26 — `TestTenantIsolation` — two tenants over overlapping sources with disjoint user state; the second tenant's reads return nothing of the first's.
+
 - [ ] **3.7 G2 · The leak-test harness** — reflect over exported repository methods; assert none
       returns a B-owned row under an A scope. **Fails on any method added without coverage.**
       *Done when: it passes with zero repositories and would fail the moment a bad one is added.*
-- [ ] **3.8 Build-time check** — fails if `db.Query`/`db.Exec` appear outside `internal/store` §6.1
-- [ ] **3.9 A22 deletion-safety test** — deactivating a source, and deleting a user, leave every
+      ◧ 2026-07-26 — Not started. Guard 4 enforces that a Scope is *taken*; nothing yet asserts it is *used* in the WHERE clause. `TestTenantIsolation` covers the current methods by hand, which does not scale to the next twenty.
+
+- [x] **3.8 Build-time check** — fails if `db.Query`/`db.Exec` appear outside `internal/store` §6.1
+      ✅ 2026-07-26 — `internal/tools/guards` — `no SQL outside internal/store`, 45 files checked, run in CI and locally. Three sibling guards ride with it: no `syscall/js` outside `client/platform`, no `.css` files (A26), and 3.5's Scope check.
+
+- [x] **3.9 A22 deletion-safety test** — deactivating a source, and deleting a user, leave every
       *other* user's favourites, tags, notes and shares intact. **Write it now**, while the schema is
       the only thing that can break it. §6.3
+      ✅ 2026-07-26 — `TestGlobalRowsDoNotCascade` and `TestUserRowsDoCascade` — deactivating a source leaves its items; deleting a user takes their state and nothing global (A22).
 
 ---
 
@@ -486,16 +524,24 @@ Build the safety rails **before** the first repository, so every repo is born co
 
 Composites of Tier 2. Bytes in, structs out. Still no database.
 
-- [ ] **4.1 `feed`** — parse → `ParsedFeed`/`ParsedItem`. gofeed underneath, **our normalisation layer
+- [x] **4.1 `feed`** — parse → `ParsedFeed`/`ParsedItem`. gofeed underneath, **our normalisation layer
       on top** so swapping it is one file ← 2.5, 2.6, D1
+      ✅ 2026-07-26 — `internal/feed` — gofeed underneath with our own normalisation on top: identity, `DupeKey`, published-date clamping, word counts, image extraction.
+
 - [ ] **4.2 `feed/testdata/corpus`** — 25+ real feeds covering every §15.3 format, **saved verbatim
       including the broken ones**. Grows forever: every future bug adds a fixture before it gets a fix.
-- [ ] **4.3 `fetch`** — conditional GET (ETag/Last-Modified) · gzip · caps (15s, 5 MB, 5 redirects) ·
+      ◧ 2026-07-26 — `internal/feed/testdata` is empty. The parser has been exercised against 151 real feeds in the dev database, which is better than nothing and worse than a committed corpus: nothing in CI would catch a regression on a format nobody is subscribed to today.
+
+- [x] **4.3 `fetch`** — conditional GET (ETag/Last-Modified) · gzip · caps (15s, 5 MB, 5 redirects) ·
       honest UA · **`Retry-After`** · **301 reports the new canonical URL** ← 2.7 §15.4
+      ✅ 2026-07-26 — Conditional GET (`If-None-Match` / `If-Modified-Since`, 304 handled), gzip, a body cap with `LimitReader`, timeouts, and the 2.7 SSRF guard on every request. *Deviation: the caps are 32 MB / 30s rather than the 5 MB / 15s the plan names — real feeds exceeded 5 MB. Lives inside `internal/feed` rather than its own package.*
+
 - [ ] **4.4 `extract`** — readability → clean HTML + plain text ← 4.3, 2.9, D7.
       **Phase 1, not Phase 3** — five features depend on it and rev 7 had it scheduled after two of
       them.
-- [ ] **4.5 `opml`** — nested OPML 2.0 both ways. *Done when: out → in → identical.*
+- [x] **4.5 `opml`** — nested OPML 2.0 both ways. *Done when: out → in → identical.*
+      ✅ 2026-07-26 — `internal/opml` — nested OPML 2.0 both directions, round-trip asserted. Cam's live FreshRSS export (151 feeds) imported through it.
+
 - [ ] **4.6 `netscape`** — Netscape bookmark HTML both ways + Chrome JSON in. *Done when: our export
       imports cleanly into a real Chrome.*
 - [ ] **4.7 `scrapesel`** — rule + HTML → items ← 2.8, cascadia
@@ -523,14 +569,26 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 
 - [ ] **5.1** `tenants` · `users` · `roles` · `user_roles` · `invites` · `devices` · **`api_tokens`
       (scope is a fixed enum, never inherited from the owner's role)** · `shares` · `public_shares`
-- [ ] **5.2** `sources` · `subscriptions` — **soft-deactivate, never delete** (A22) · `natural_key`
+      ◧ 2026-07-26 — `tenants`, `users` and `sessions` exist and `ScopeForSession` resolves a token hash into a Scope. `roles`, `user_roles`, `invites`, `devices` and `api_tokens` are not — they belong with 6.1/6.2, and there is one local account until then.
+
+- [x] **5.2** `sources` · `subscriptions` — **soft-deactivate, never delete** (A22) · `natural_key`
       **per-user for `kind='mailbox'`** (§6.4) · `home_mode` and the highlights fields ← D17
-- [ ] **5.3** `items` · `item_revisions` · `user_item_state` — the denormalised `source_id`/
+      ✅ 2026-07-26 — `Subscribe` / `Unsubscribe` / `SubscribedSources` — `natural_key` deduplicates two tenants onto one polled row (A14), and unsubscribing never touches the source (A22).
+
+- [x] **5.3** `items` · `item_revisions` · `user_item_state` — the denormalised `source_id`/
       `published_at` and **all three §6.5 indexes**
+      ✅ 2026-07-26 — `items` + `user_item_state` with the denormalised `source_id`, keyset paging that never skips or repeats (`TestKeysetPaginationCoversEveryRowOnce`), and `CountQuery` sharing its filter builder with `ListItems` so the two cannot describe different result sets. *`item_revisions` is not written yet.*
+
 - [ ] **5.4 G3 · Hot-query benchmark** — 50k items × 3 users, **all three shapes**: flat unread count,
       unread-by-newest, **unread-by-folder**. *Do not proceed without numbers.* R2
+      ◧ 2026-07-26 — `internal/store/bigdb_test.go` runs the three shapes against the REAL dev database (3,621 items): paging 9ms, mark-all-read 16ms, search prompt. It is not the 50k × 3-user synthetic fixture the plan asks for, and it skips when no dev database is present — so it proves the queries are fine today and guards nothing in CI.
+
 - [ ] **5.5** `tags` · `item_tags` — A21, prerequisite for both rules and the sync API
-- [ ] **5.6** `notes` (private by default) · `bookmarks` · `bookmark_tags`
+      ◧ 2026-07-26 — Tags exist and are per-user, but they attach to a **subscription**, not an item. `item_tags` — which is what A21 actually specifies and what the sync API needs — is not built.
+
+- [x] **5.6** `notes` (private by default) · `bookmarks` · `bookmark_tags`
+      ✅ 2026-07-26 — `item_notes` (0005) — private, separate from `user_item_state` so a note is not coupled to read state, with `NotedItems` for the Notes stream. *Bookmarks are not built; read-later reuses `starred_at` instead.*
+
 - [ ] **5.7** `rules` · `rule_hits` · `scrape_rules` · `mailboxes`
 - [ ] **5.8** `settings` · `views` · `engagements` (append-only, **with the §18.1 kind taxonomy
       including `impression` and `bulk_read`**) · `audit_log`
@@ -538,6 +596,7 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       `recommendations` · `feed_affinity` · `term_affinity` · `home_ranking`. **All derived — a
       `DELETE` and rebuild from `engagements` must produce the same result**, which is the test.
 - [ ] **5.10** FTS5 triggers for `items_fts`, `notes_fts`, `bookmarks_fts`, and a search repo over them
+      ◧ 2026-07-26 — `items_fts` with its three triggers and a `Search` repo over it, verified by `TestSearchFindsASeededItem` and `TestSearchIndexTracksUpdates`. `notes_fts` and `bookmarks_fts` are not built.
 
 > *Done when:* every repo has a leak test, 5.9's rebuild test passes, and **5.4's numbers are written
 > into `plan.md` §6.5**.
@@ -559,14 +618,18 @@ Business logic over repositories. Still headless.
       can't starve rule fan-out, retry, restart-survivable §22.7
 - [ ] **6.5 `events`** — **per-tenant** ring buffers (~1000 each), `since_seq` replay,
       `RESYNC_REQUIRED`, scope-filtered fan-out. *Done when: tenant A's burst cannot evict tenant B.*
-- [ ] **6.6 `ingest`** — fetch → parse → identity/dedup → `dupe_key` → revision detect → store →
+- [x] **6.6 `ingest`** — fetch → parse → identity/dedup → `dupe_key` → revision detect → store →
       **queue** fan-out. Includes the **flood guard** (§15.5) and **outlink harvesting** (2.10).
       ← 4.1, 4.3, 5.3
+      ✅ 2026-07-26 — `internal/store/ingest.go` — identity, `dupe_key` dedup, and `RecordFetch` storing the outcome either way, because a poll that fails silently makes a dead feed look like a quiet one and those must look different.
+
 - [ ] **6.7 `fanout`** — the per-subscriber job: evaluate rules, write `user_item_state` + `item_tags`,
       emit events, feed ranking signals. **Per subscriber, never once at ingest** — the §13.2 bug —
       and **never inline with the poll**, since it's `O(items × subscribers)`.
 - [ ] **6.8 `poll`** — **priority queue by staleness ratio** (not FIFO), backoff, `Retry-After`,
       per-host semaphore, adaptive intervals, **lag metric**, widen-when-behind policy ← 6.4
+      ◧ 2026-07-26 — A background poller runs on a fixed interval (`-poll`, default 15m) and per-feed refresh is wired to the UI. The **priority queue by staleness ratio** is not — it is still FIFO over everything due, so a feed that posts weekly is polled as often as one that posts hourly. `sources.fetch_interval_s` is now per-feed adjustable (A33), which is the manual version of the same idea.
+
 - [ ] **6.9 `signals`** — impression coalescing · the §18.1 kind taxonomy (**`bulk_read` is neutral,
       never negative**) · scheduled derivation of `feed_affinity`, `term_affinity`, `domain_affinity`,
       topics, and `home_ranking`. *Done when: a simulated `mark all read` over 143 items changes no
@@ -603,11 +666,17 @@ Business logic over repositories. Still headless.
       never `PermissionDenied`** — the latter confirms the object exists, which is a tenant leak with
       good manners. Structured detail `{code,message,field,quota,retry_after_s}`; `message` is always
       safe to display. *Done when: T1 asserts the code, not just the empty result.*
+      ◧ 2026-07-26 — The taxonomy is implemented — `grpcsrv.toStatus` maps cross-tenant to `NotFound`, never `PermissionDenied` — but it lives in the transport package rather than in `internal/apierr`, and there is no structured detail payload yet.
+
 - [ ] **7.3b `internal/page`** — opaque keyset cursors, `spec_hash`-bound so a cursor from a different
       `ViewSpec` is `InvalidArgument` rather than silently-wrong results §20.7
+      ◧ 2026-07-26 — Keyset cursors are base64url and exact (published, id) tuples, in `internal/store`. They are **not** `spec_hash`-bound, so a cursor from one scope replayed against another returns plausible wrong rows rather than `InvalidArgument`.
+
 - [ ] **7.3c `internal/idem`** — `(user_id, key) → response`, 24h TTL, verbatim replay. **Required for
       every outbox-replayed mutation** — a partial drain that reconnects mid-flight must not
       double-apply §12.4, §20.7
+      ◧ 2026-07-26 — `SetItemState` accepts an `idempotency_key` and every caller sends a deterministic one, but nothing stores or replays it. Harmless today because there is no offline outbox to drain; required before there is (§12.4).
+
 - [ ] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
 - [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
       (a deliberate tightening; the library default is 16 MiB) · `WithKeepalive` · the three
@@ -631,6 +700,7 @@ Business logic over repositories. Still headless.
 - [ ] **7.10** `tidings admin reset-password` break-glass §7.2
 - [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
+      ◧ 2026-07-26 — `slog` is wired through the app and leveled, and §22.11's never-log rule is observed — the OpenAI TTS error path logs the provider message and returns a safe string, because provider errors can echo the user's article. Request-id threading is not done.
 
 > *Done when:* `tidings init` → login over the tunnel → one unary RPC → one streamed event, driven from
 > a Go test client. **That is plan M0's exit criteria, reached properly.**
@@ -745,6 +815,93 @@ hand-written CSS and vanilla JS, and nobody ports them.
 
 > *Done when:* you can read a feed in a browser **and on a phone**, from another machine, over TLS —
 > and `grep -rn "syscall/js" client/ | grep -v platform/` returns nothing. **Plan M4.**
+
+---
+
+## Tier 8b — shipped, but never planned
+
+Everything below was built in response to using the thing, not from the spec. It is listed here so
+the plan and the product describe the same application: an untracked feature is one nobody can decide
+to remove. Each carries the decision it became, so the reasoning is findable from either document.
+
+**Reading**
+
+- [x] **8b.1 The reading stream** — A28, §20.9. Scrolling appends the next article and prepends the
+      previous one; nothing is taken away. Marks read on scroll-past and on click.
+- [x] **8b.2 Neighbour prefetch** — bodies either side of the current article are fetched on arrival,
+      so the skeleton is only ever seen on a cold open.
+- [x] **8b.3 Long-article clamp** — over 900 words collapses with "Read the rest", so scan time per
+      item stays roughly constant. One 4,000-word essay between two headlines makes a feed
+      unpredictable to scan, and scanning is what the stream is for.
+- [x] **8b.4 Continuous-read plumbing** — `OnScrollNearEnd` / `OnScrollNearTop` re-arm on **growth**,
+      not only on position; `KeepScrollAnchored` holds the reader's place across a prepend;
+      `OnTopmostChild` decides which article is being read from scroll position rather than from what
+      was clicked.
+
+**The list**
+
+- [x] **8b.5 True-length virtual list** — A29, §20.10. `ListItemsResponse.total` from a `COUNT` that
+      shares its filter builder with the page query, placeholder rows for unloaded indices, and a
+      filler driven by scroll POSITION rather than proximity to the loaded end.
+- [x] **8b.6 Loading placeholders** — §20.8. Skeletons shaped like the thing they stand in for, in the
+      rail, the list and the article. Three in-flight flags, not one.
+- [x] **8b.7 Row states** — §20.12. `new` / `unread` / `stale` (30d) / `read`, as words as well as
+      colour. Notes preview their first words in the row, because in the Notes stream what you
+      remember is what *you* wrote.
+- [x] **8b.8 Favicons** — 30-day server-side cache keyed by host, served with a transparent pixel for
+      hosts that have none so a miss costs one request a month. Shown over the source hue in the rail,
+      the item rows and the article eyebrow; the hue stays underneath so a site with no icon is still
+      identifiable.
+
+**Signals**
+
+- [x] **8b.9 Verdicts** — A27, migration `0006_rating`. Like / dislike, `rating ∈ {-1,0,+1}`, one
+      signed column because the two are mutually exclusive by definition. Re-pressing clears.
+- [x] **8b.10 Read later** — reuses `starred_at` and `LIST_SCOPE_STARRED`, which already existed and
+      already synced. Plus **mark unread**, without which a stream that marks things read as you
+      scroll past them has no way back.
+- [x] **8b.11 Quick notes** — `item_notes` (0005), per article, with a Notes stream. **8b.12 Feed
+      tags** — per-user labels on a subscription, created on first use.
+
+**Navigation and input**
+
+- [x] **8b.13 Command palette** — Ctrl-K. Matches what the client already holds, three-tier ranking,
+      deliberately not fuzzy: subsequence scoring makes everything match everything at 151 feeds.
+- [x] **8b.14 Keyboard-complete** — A32, §20.14. Arrows within a pane, Tab between, `1`/`2`/`3` pane
+      jumps, `?` sheet. Roving focus read from the DOM so the pointer and the keyboard cannot disagree.
+- [x] **8b.15 Feed name filter** — appears past 8 feeds. **8b.16 Unread-only feed toggle** — at 151
+      subscriptions the rail is mostly feeds that did not publish today.
+- [x] **8b.17 Search** — FTS5 over `items_fts`, quoted terms, wired to `/`.
+
+**Listening**
+
+- [x] **8b.18 Browser speech** — A31, §10.7. Free, offline, the reader's own system voice, chunked to
+      sentences to dodge Chrome's fifteen-second cutoff.
+- [x] **8b.19 Smart+ voice** — OpenAI TTS behind `GET /speech`, four gates, disk cache keyed by
+      (item, model, voice), host allowlist checked against the URL being requested rather than against
+      the constant. Off per user by default; a server with no key cannot egress at all.
+
+**Continuity and configuration**
+
+- [x] **8b.20 Resume** — A30, §20.13. Scope, article and all three filters restored before the first
+      list is fetched, so there is no flash of the wrong feed.
+- [x] **8b.21 Per-feed settings** — A33, §20.15. Gear on hover, panel grouped by who a setting belongs
+      to, one transaction across both tables, poll interval clamped at the write.
+- [x] **8b.22 Server-side pane widths** — layout belongs to an account, not a browser.
+
+**Housekeeping**
+
+- [x] **8b.23 Repo hygiene** — everything generated under `bin/`, MIT LICENSE, README, `make.ps1`,
+      hardened `.gitignore` (secrets by extension, `speech-cache/`, `*.opml`), `.gitattributes`, and
+      the first commit.
+- [x] **8b.24 e2e harness** — Playwright against a real server, real database and a fixture feed
+      server, with `killListener`-by-PID and a per-run database. *Its assertions are stale: they still
+      reference starring, the pre-transcription breakpoints and the 104px row. See below.*
+
+> **Known-stale, and the next thing to fix:** `e2e/*.spec.mjs` asserts against the app as it was
+> before the design transcription, the verdict change and the 96px row. Until they are updated their
+> output means nothing, so the suite is currently **not** a gate — which is exactly the state a test
+> suite must not be left in quietly.
 
 ---
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/Tidings/internal/feed"
+	"github.com/monstercameron/Tidings/internal/signals"
 	"github.com/monstercameron/Tidings/internal/store"
 	"github.com/monstercameron/Tidings/internal/urlnorm"
 )
@@ -343,4 +344,68 @@ func (s *Service) GetFeedSettings(ctx context.Context, sc store.Scope, sourceID 
 func (s *Service) UpdateFeedSettings(ctx context.Context, sc store.Scope, sourceID string,
 	p store.FeedSettingsPatch) (store.FeedSettings, error) {
 	return s.repo.UpdateFeedSettings(ctx, sc, sourceID, p)
+}
+
+// RecordEngagements validates and appends observations to the signals log.
+//
+// Partial success is deliberate. One malformed event must not discard the other
+// 199 in a batch: the client cannot repair it, retrying will fail identically,
+// and the information in the good events is gone forever if this returns an
+// error. Invalid events are counted and dropped, and a non-zero count means the
+// client and the server disagree about the taxonomy — a bug to notice in the
+// logs, not a condition to retry.
+//
+// Validation runs on the server on every event because the client is not
+// trusted to have got it right. A kind the ranker does not know is collected
+// forever and read never, which is worse than being rejected loudly.
+func (s *Service) RecordEngagements(ctx context.Context, sc store.Scope,
+	evs []signals.Event) (accepted, rejected int, err error) {
+
+	good := make([]signals.Event, 0, len(evs))
+	for _, e := range evs {
+		if verr := signals.Validate(e); verr != nil {
+			rejected++
+			continue
+		}
+		good = append(good, e)
+	}
+	if len(good) == 0 {
+		return 0, rejected, nil
+	}
+
+	// The batch cap belongs to storage (one short transaction on the single
+	// writer, A24), so oversized batches are split here rather than refused —
+	// a phone that was offline for a fortnight has a legitimately large outbox
+	// and its signal is exactly the signal worth keeping.
+	for len(good) > 0 {
+		n := len(good)
+		if n > store.MaxEngagementBatch {
+			n = store.MaxEngagementBatch
+		}
+		written, werr := s.repo.RecordEngagements(ctx, sc, good[:n])
+		if werr != nil {
+			return accepted, rejected, werr
+		}
+		accepted += written
+		good = good[n:]
+	}
+	return accepted, rejected, nil
+}
+
+// ItemSignals is the per-item rollup the ranking and AI layers read.
+func (s *Service) ItemSignals(ctx context.Context, sc store.Scope, itemIDs []string) (map[string]store.ItemSignal, error) {
+	return s.repo.ItemSignals(ctx, sc, itemIDs)
+}
+
+// FeedSignals is the per-source rollup: open rates, dwell, and the deliberate
+// acts that §18.4's FeedAffinity term is derived from.
+func (s *Service) FeedSignals(ctx context.Context, sc store.Scope, sinceMS int64) ([]store.FeedSignal, error) {
+	return s.repo.FeedSignals(ctx, sc, sinceMS)
+}
+
+// EngagementCount backs the §18.4 cold-start check. Topics need roughly 50–100
+// engaged items to mean anything, and saying "learning your reading" is more
+// honest than presenting a confident wrong answer.
+func (s *Service) EngagementCount(ctx context.Context, sc store.Scope) (int, error) {
+	return s.repo.CountEngagements(ctx, sc)
 }

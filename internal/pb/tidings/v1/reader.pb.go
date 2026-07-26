@@ -2440,6 +2440,240 @@ func (x *UpdateFeedSettingsRequest) GetFetchIntervalS() int32 {
 	return 0
 }
 
+// Engagement is one observation about a reader (§18.1).
+//
+// `kind` and `surface` are strings rather than enums on purpose. The taxonomy
+// lives in internal/signals and grows as the interest layer learns what it can
+// see; a proto enum would make every new signal a breaking-change review and a
+// client redeploy, and `buf breaking` would be entirely right to object. The
+// closed set is enforced at the service boundary instead, where an unknown kind
+// can be reported and counted rather than silently accepted.
+type Engagement struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is CLIENT-generated and is the dedupe key. The outbox retries batches it
+	// could not confirm, so the same event legitimately arrives more than once.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// item_id is empty for signals about a term or a source rather than an
+	// article — a search query being the obvious one.
+	ItemId string `protobuf:"bytes,2,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// source_id is advisory. The server resolves it from the item when it can, so
+	// a client cannot attribute an observation to a feed it did not come from.
+	SourceId string `protobuf:"bytes,3,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	Kind     string `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`
+	// value is per-kind: milliseconds, a 0..1 fraction, or a count. See
+	// internal/signals.Spec.Value.
+	Value   float64 `protobuf:"fixed64,5,opt,name=value,proto3" json:"value,omitempty"`
+	Surface string  `protobuf:"bytes,6,opt,name=surface,proto3" json:"surface,omitempty"`
+	// context is a small JSON object of kind-specific facts: {"pos":7,"of":12},
+	// {"q":"fts5"}, {"words":1400}. Bounded at 1 KiB.
+	Context string `protobuf:"bytes,7,opt,name=context,proto3" json:"context,omitempty"`
+	// session_id groups one sitting. Client-assigned, because the server sees one
+	// long-lived tunnel and cannot see a boundary.
+	SessionId string `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// at is client-observed unix MILLISECONDS, clamped server-side against the
+	// server clock. It is not a conflict-ordering timestamp (A25 forbids those on
+	// a client clock) — it is an observation only the client was present for, and
+	// dwell is unreconstructible from the arrival time of a batch that came in
+	// four minutes late over a reconnect.
+	At            int64 `protobuf:"varint,9,opt,name=at,proto3" json:"at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Engagement) Reset() {
+	*x = Engagement{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Engagement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Engagement) ProtoMessage() {}
+
+func (x *Engagement) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Engagement.ProtoReflect.Descriptor instead.
+func (*Engagement) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *Engagement) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Engagement) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *Engagement) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *Engagement) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Engagement) GetValue() float64 {
+	if x != nil {
+		return x.Value
+	}
+	return 0
+}
+
+func (x *Engagement) GetSurface() string {
+	if x != nil {
+		return x.Surface
+	}
+	return ""
+}
+
+func (x *Engagement) GetContext() string {
+	if x != nil {
+		return x.Context
+	}
+	return ""
+}
+
+func (x *Engagement) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *Engagement) GetAt() int64 {
+	if x != nil {
+		return x.At
+	}
+	return 0
+}
+
+type RecordEngagementsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Events        []*Engagement          `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordEngagementsRequest) Reset() {
+	*x = RecordEngagementsRequest{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordEngagementsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordEngagementsRequest) ProtoMessage() {}
+
+func (x *RecordEngagementsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordEngagementsRequest.ProtoReflect.Descriptor instead.
+func (*RecordEngagementsRequest) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *RecordEngagementsRequest) GetEvents() []*Engagement {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+type RecordEngagementsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// accepted counts rows actually written. It excludes replays, so a client
+	// seeing accepted < sent has not necessarily lost anything.
+	Accepted int32 `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// rejected counts events that failed validation. Non-zero means the client
+	// and the server disagree about the taxonomy, which is a bug worth surfacing
+	// in the logs rather than a condition to retry.
+	Rejected      int32 `protobuf:"varint,2,opt,name=rejected,proto3" json:"rejected,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordEngagementsResponse) Reset() {
+	*x = RecordEngagementsResponse{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordEngagementsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordEngagementsResponse) ProtoMessage() {}
+
+func (x *RecordEngagementsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordEngagementsResponse.ProtoReflect.Descriptor instead.
+func (*RecordEngagementsResponse) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *RecordEngagementsResponse) GetAccepted() int32 {
+	if x != nil {
+		return x.Accepted
+	}
+	return 0
+}
+
+func (x *RecordEngagementsResponse) GetRejected() int32 {
+	if x != nil {
+		return x.Rejected
+	}
+	return 0
+}
+
 var File_tidings_v1_reader_proto protoreflect.FileDescriptor
 
 const file_tidings_v1_reader_proto_rawDesc = "" +
@@ -2633,7 +2867,24 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\f_in_megafeedB\x0e\n" +
 	"\f_muted_untilB\x0e\n" +
 	"\f_cache_depthB\x13\n" +
-	"\x11_fetch_interval_s*\xb0\x01\n" +
+	"\x11_fetch_interval_s\"\xdf\x01\n" +
+	"\n" +
+	"Engagement\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\aitem_id\x18\x02 \x01(\tR\x06itemId\x12\x1b\n" +
+	"\tsource_id\x18\x03 \x01(\tR\bsourceId\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05value\x18\x05 \x01(\x01R\x05value\x12\x18\n" +
+	"\asurface\x18\x06 \x01(\tR\asurface\x12\x18\n" +
+	"\acontext\x18\a \x01(\tR\acontext\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\b \x01(\tR\tsessionId\x12\x0e\n" +
+	"\x02at\x18\t \x01(\x03R\x02at\"J\n" +
+	"\x18RecordEngagementsRequest\x12.\n" +
+	"\x06events\x18\x01 \x03(\v2\x16.tidings.v1.EngagementR\x06events\"S\n" +
+	"\x19RecordEngagementsResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\x05R\baccepted\x12\x1a\n" +
+	"\brejected\x18\x02 \x01(\x05R\brejected*\xb0\x01\n" +
 	"\tListScope\x12\x1a\n" +
 	"\x16LIST_SCOPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eLIST_SCOPE_ALL\x10\x01\x12\x13\n" +
@@ -2641,7 +2892,7 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\x12LIST_SCOPE_STARRED\x10\x03\x12\x17\n" +
 	"\x13LIST_SCOPE_MEGAFEED\x10\x04\x12\x14\n" +
 	"\x10LIST_SCOPE_LIKED\x10\x05\x12\x17\n" +
-	"\x13LIST_SCOPE_DISLIKED\x10\x062\x9a\n" +
+	"\x13LIST_SCOPE_DISLIKED\x10\x062\xfc\n" +
 	"\n" +
 	"\rReaderService\x12H\n" +
 	"\tListFeeds\x12\x1c.tidings.v1.ListFeedsRequest\x1a\x1d.tidings.v1.ListFeedsResponse\x12H\n" +
@@ -2661,7 +2912,8 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\aSetNote\x12\x1a.tidings.v1.SetNoteRequest\x1a\x1b.tidings.v1.SetNoteResponse\x12H\n" +
 	"\tListNotes\x12\x1c.tidings.v1.ListNotesRequest\x1a\x1d.tidings.v1.ListNotesResponse\x12Z\n" +
 	"\x0fGetFeedSettings\x12\".tidings.v1.GetFeedSettingsRequest\x1a#.tidings.v1.GetFeedSettingsResponse\x12c\n" +
-	"\x12UpdateFeedSettings\x12%.tidings.v1.UpdateFeedSettingsRequest\x1a&.tidings.v1.UpdateFeedSettingsResponseBDZBgithub.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1b\x06proto3"
+	"\x12UpdateFeedSettings\x12%.tidings.v1.UpdateFeedSettingsRequest\x1a&.tidings.v1.UpdateFeedSettingsResponse\x12`\n" +
+	"\x11RecordEngagements\x12$.tidings.v1.RecordEngagementsRequest\x1a%.tidings.v1.RecordEngagementsResponseBDZBgithub.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1b\x06proto3"
 
 var (
 	file_tidings_v1_reader_proto_rawDescOnce sync.Once
@@ -2676,7 +2928,7 @@ func file_tidings_v1_reader_proto_rawDescGZIP() []byte {
 }
 
 var file_tidings_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_tidings_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_tidings_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_tidings_v1_reader_proto_goTypes = []any{
 	(ListScope)(0),                     // 0: tidings.v1.ListScope
 	(*Feed)(nil),                       // 1: tidings.v1.Feed
@@ -2718,9 +2970,12 @@ var file_tidings_v1_reader_proto_goTypes = []any{
 	(*UpdateFeedSettingsResponse)(nil), // 37: tidings.v1.UpdateFeedSettingsResponse
 	(*FeedSettings)(nil),               // 38: tidings.v1.FeedSettings
 	(*UpdateFeedSettingsRequest)(nil),  // 39: tidings.v1.UpdateFeedSettingsRequest
-	nil,                                // 40: tidings.v1.GetPrefsResponse.PrefsEntry
-	nil,                                // 41: tidings.v1.SetPrefsRequest.PrefsEntry
-	nil,                                // 42: tidings.v1.ListTagsResponse.BySourceEntry
+	(*Engagement)(nil),                 // 40: tidings.v1.Engagement
+	(*RecordEngagementsRequest)(nil),   // 41: tidings.v1.RecordEngagementsRequest
+	(*RecordEngagementsResponse)(nil),  // 42: tidings.v1.RecordEngagementsResponse
+	nil,                                // 43: tidings.v1.GetPrefsResponse.PrefsEntry
+	nil,                                // 44: tidings.v1.SetPrefsRequest.PrefsEntry
+	nil,                                // 45: tidings.v1.ListTagsResponse.BySourceEntry
 }
 var file_tidings_v1_reader_proto_depIdxs = []int32{
 	1,  // 0: tidings.v1.ListFeedsResponse.feeds:type_name -> tidings.v1.Feed
@@ -2731,54 +2986,57 @@ var file_tidings_v1_reader_proto_depIdxs = []int32{
 	0,  // 5: tidings.v1.MarkAllReadRequest.scope:type_name -> tidings.v1.ListScope
 	1,  // 6: tidings.v1.SubscribeResponse.feed:type_name -> tidings.v1.Feed
 	2,  // 7: tidings.v1.SearchResponse.items:type_name -> tidings.v1.Item
-	40, // 8: tidings.v1.GetPrefsResponse.prefs:type_name -> tidings.v1.GetPrefsResponse.PrefsEntry
-	41, // 9: tidings.v1.SetPrefsRequest.prefs:type_name -> tidings.v1.SetPrefsRequest.PrefsEntry
+	43, // 8: tidings.v1.GetPrefsResponse.prefs:type_name -> tidings.v1.GetPrefsResponse.PrefsEntry
+	44, // 9: tidings.v1.SetPrefsRequest.prefs:type_name -> tidings.v1.SetPrefsRequest.PrefsEntry
 	25, // 10: tidings.v1.ListTagsResponse.tags:type_name -> tidings.v1.Tag
-	42, // 11: tidings.v1.ListTagsResponse.by_source:type_name -> tidings.v1.ListTagsResponse.BySourceEntry
+	45, // 11: tidings.v1.ListTagsResponse.by_source:type_name -> tidings.v1.ListTagsResponse.BySourceEntry
 	25, // 12: tidings.v1.SetFeedTagResponse.tag:type_name -> tidings.v1.Tag
 	2,  // 13: tidings.v1.ListNotesResponse.items:type_name -> tidings.v1.Item
 	38, // 14: tidings.v1.GetFeedSettingsResponse.settings:type_name -> tidings.v1.FeedSettings
 	38, // 15: tidings.v1.UpdateFeedSettingsResponse.settings:type_name -> tidings.v1.FeedSettings
-	28, // 16: tidings.v1.ListTagsResponse.BySourceEntry.value:type_name -> tidings.v1.TagIDs
-	3,  // 17: tidings.v1.ReaderService.ListFeeds:input_type -> tidings.v1.ListFeedsRequest
-	5,  // 18: tidings.v1.ReaderService.ListItems:input_type -> tidings.v1.ListItemsRequest
-	7,  // 19: tidings.v1.ReaderService.GetItem:input_type -> tidings.v1.GetItemRequest
-	9,  // 20: tidings.v1.ReaderService.SetItemState:input_type -> tidings.v1.SetItemStateRequest
-	11, // 21: tidings.v1.ReaderService.MarkAllRead:input_type -> tidings.v1.MarkAllReadRequest
-	13, // 22: tidings.v1.ReaderService.Subscribe:input_type -> tidings.v1.SubscribeRequest
-	15, // 23: tidings.v1.ReaderService.Unsubscribe:input_type -> tidings.v1.UnsubscribeRequest
-	17, // 24: tidings.v1.ReaderService.Refresh:input_type -> tidings.v1.RefreshRequest
-	19, // 25: tidings.v1.ReaderService.Search:input_type -> tidings.v1.SearchRequest
-	21, // 26: tidings.v1.ReaderService.GetPrefs:input_type -> tidings.v1.GetPrefsRequest
-	23, // 27: tidings.v1.ReaderService.SetPrefs:input_type -> tidings.v1.SetPrefsRequest
-	26, // 28: tidings.v1.ReaderService.ListTags:input_type -> tidings.v1.ListTagsRequest
-	29, // 29: tidings.v1.ReaderService.SetFeedTag:input_type -> tidings.v1.SetFeedTagRequest
-	31, // 30: tidings.v1.ReaderService.SetNote:input_type -> tidings.v1.SetNoteRequest
-	33, // 31: tidings.v1.ReaderService.ListNotes:input_type -> tidings.v1.ListNotesRequest
-	35, // 32: tidings.v1.ReaderService.GetFeedSettings:input_type -> tidings.v1.GetFeedSettingsRequest
-	39, // 33: tidings.v1.ReaderService.UpdateFeedSettings:input_type -> tidings.v1.UpdateFeedSettingsRequest
-	4,  // 34: tidings.v1.ReaderService.ListFeeds:output_type -> tidings.v1.ListFeedsResponse
-	6,  // 35: tidings.v1.ReaderService.ListItems:output_type -> tidings.v1.ListItemsResponse
-	8,  // 36: tidings.v1.ReaderService.GetItem:output_type -> tidings.v1.GetItemResponse
-	10, // 37: tidings.v1.ReaderService.SetItemState:output_type -> tidings.v1.SetItemStateResponse
-	12, // 38: tidings.v1.ReaderService.MarkAllRead:output_type -> tidings.v1.MarkAllReadResponse
-	14, // 39: tidings.v1.ReaderService.Subscribe:output_type -> tidings.v1.SubscribeResponse
-	16, // 40: tidings.v1.ReaderService.Unsubscribe:output_type -> tidings.v1.UnsubscribeResponse
-	18, // 41: tidings.v1.ReaderService.Refresh:output_type -> tidings.v1.RefreshResponse
-	20, // 42: tidings.v1.ReaderService.Search:output_type -> tidings.v1.SearchResponse
-	22, // 43: tidings.v1.ReaderService.GetPrefs:output_type -> tidings.v1.GetPrefsResponse
-	24, // 44: tidings.v1.ReaderService.SetPrefs:output_type -> tidings.v1.SetPrefsResponse
-	27, // 45: tidings.v1.ReaderService.ListTags:output_type -> tidings.v1.ListTagsResponse
-	30, // 46: tidings.v1.ReaderService.SetFeedTag:output_type -> tidings.v1.SetFeedTagResponse
-	32, // 47: tidings.v1.ReaderService.SetNote:output_type -> tidings.v1.SetNoteResponse
-	34, // 48: tidings.v1.ReaderService.ListNotes:output_type -> tidings.v1.ListNotesResponse
-	36, // 49: tidings.v1.ReaderService.GetFeedSettings:output_type -> tidings.v1.GetFeedSettingsResponse
-	37, // 50: tidings.v1.ReaderService.UpdateFeedSettings:output_type -> tidings.v1.UpdateFeedSettingsResponse
-	34, // [34:51] is the sub-list for method output_type
-	17, // [17:34] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	40, // 16: tidings.v1.RecordEngagementsRequest.events:type_name -> tidings.v1.Engagement
+	28, // 17: tidings.v1.ListTagsResponse.BySourceEntry.value:type_name -> tidings.v1.TagIDs
+	3,  // 18: tidings.v1.ReaderService.ListFeeds:input_type -> tidings.v1.ListFeedsRequest
+	5,  // 19: tidings.v1.ReaderService.ListItems:input_type -> tidings.v1.ListItemsRequest
+	7,  // 20: tidings.v1.ReaderService.GetItem:input_type -> tidings.v1.GetItemRequest
+	9,  // 21: tidings.v1.ReaderService.SetItemState:input_type -> tidings.v1.SetItemStateRequest
+	11, // 22: tidings.v1.ReaderService.MarkAllRead:input_type -> tidings.v1.MarkAllReadRequest
+	13, // 23: tidings.v1.ReaderService.Subscribe:input_type -> tidings.v1.SubscribeRequest
+	15, // 24: tidings.v1.ReaderService.Unsubscribe:input_type -> tidings.v1.UnsubscribeRequest
+	17, // 25: tidings.v1.ReaderService.Refresh:input_type -> tidings.v1.RefreshRequest
+	19, // 26: tidings.v1.ReaderService.Search:input_type -> tidings.v1.SearchRequest
+	21, // 27: tidings.v1.ReaderService.GetPrefs:input_type -> tidings.v1.GetPrefsRequest
+	23, // 28: tidings.v1.ReaderService.SetPrefs:input_type -> tidings.v1.SetPrefsRequest
+	26, // 29: tidings.v1.ReaderService.ListTags:input_type -> tidings.v1.ListTagsRequest
+	29, // 30: tidings.v1.ReaderService.SetFeedTag:input_type -> tidings.v1.SetFeedTagRequest
+	31, // 31: tidings.v1.ReaderService.SetNote:input_type -> tidings.v1.SetNoteRequest
+	33, // 32: tidings.v1.ReaderService.ListNotes:input_type -> tidings.v1.ListNotesRequest
+	35, // 33: tidings.v1.ReaderService.GetFeedSettings:input_type -> tidings.v1.GetFeedSettingsRequest
+	39, // 34: tidings.v1.ReaderService.UpdateFeedSettings:input_type -> tidings.v1.UpdateFeedSettingsRequest
+	41, // 35: tidings.v1.ReaderService.RecordEngagements:input_type -> tidings.v1.RecordEngagementsRequest
+	4,  // 36: tidings.v1.ReaderService.ListFeeds:output_type -> tidings.v1.ListFeedsResponse
+	6,  // 37: tidings.v1.ReaderService.ListItems:output_type -> tidings.v1.ListItemsResponse
+	8,  // 38: tidings.v1.ReaderService.GetItem:output_type -> tidings.v1.GetItemResponse
+	10, // 39: tidings.v1.ReaderService.SetItemState:output_type -> tidings.v1.SetItemStateResponse
+	12, // 40: tidings.v1.ReaderService.MarkAllRead:output_type -> tidings.v1.MarkAllReadResponse
+	14, // 41: tidings.v1.ReaderService.Subscribe:output_type -> tidings.v1.SubscribeResponse
+	16, // 42: tidings.v1.ReaderService.Unsubscribe:output_type -> tidings.v1.UnsubscribeResponse
+	18, // 43: tidings.v1.ReaderService.Refresh:output_type -> tidings.v1.RefreshResponse
+	20, // 44: tidings.v1.ReaderService.Search:output_type -> tidings.v1.SearchResponse
+	22, // 45: tidings.v1.ReaderService.GetPrefs:output_type -> tidings.v1.GetPrefsResponse
+	24, // 46: tidings.v1.ReaderService.SetPrefs:output_type -> tidings.v1.SetPrefsResponse
+	27, // 47: tidings.v1.ReaderService.ListTags:output_type -> tidings.v1.ListTagsResponse
+	30, // 48: tidings.v1.ReaderService.SetFeedTag:output_type -> tidings.v1.SetFeedTagResponse
+	32, // 49: tidings.v1.ReaderService.SetNote:output_type -> tidings.v1.SetNoteResponse
+	34, // 50: tidings.v1.ReaderService.ListNotes:output_type -> tidings.v1.ListNotesResponse
+	36, // 51: tidings.v1.ReaderService.GetFeedSettings:output_type -> tidings.v1.GetFeedSettingsResponse
+	37, // 52: tidings.v1.ReaderService.UpdateFeedSettings:output_type -> tidings.v1.UpdateFeedSettingsResponse
+	42, // 53: tidings.v1.ReaderService.RecordEngagements:output_type -> tidings.v1.RecordEngagementsResponse
+	36, // [36:54] is the sub-list for method output_type
+	18, // [18:36] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_tidings_v1_reader_proto_init() }
@@ -2794,7 +3052,7 @@ func file_tidings_v1_reader_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tidings_v1_reader_proto_rawDesc), len(file_tidings_v1_reader_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   42,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
