@@ -370,3 +370,69 @@ func (s *ReaderServer) ListNotes(ctx context.Context, req *pb.ListNotesRequest) 
 	}
 	return out, nil
 }
+
+func (s *ReaderServer) GetFeedSettings(ctx context.Context, req *pb.GetFeedSettingsRequest) (*pb.GetFeedSettingsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	f, err := s.svc.GetFeedSettings(ctx, sc, req.GetSourceId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.GetFeedSettingsResponse{Settings: toPBFeedSettings(f)}, nil
+}
+
+func (s *ReaderServer) UpdateFeedSettings(ctx context.Context, req *pb.UpdateFeedSettingsRequest) (*pb.UpdateFeedSettingsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	// Optional means unset means "leave it alone". Copying into locals rather
+	// than taking the address of req.Field keeps the patch independent of the
+	// request's lifetime.
+	var p store.FeedSettingsPatch
+	if req.Title != nil {
+		v := req.GetTitle()
+		p.Title = &v
+	}
+	if req.InMegafeed != nil {
+		v := req.GetInMegafeed()
+		p.InMegafeed = &v
+	}
+	if req.MutedUntil != nil {
+		v := req.GetMutedUntil()
+		p.MutedUntil = &v
+	}
+	if req.CacheDepth != nil {
+		v := int(req.GetCacheDepth())
+		p.CacheDepth = &v
+	}
+	if req.FetchIntervalS != nil {
+		v := int(req.GetFetchIntervalS())
+		p.FetchIntervalS = &v
+	}
+	f, err := s.svc.UpdateFeedSettings(ctx, sc, req.GetSourceId(), p)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.UpdateFeedSettingsResponse{Settings: toPBFeedSettings(f)}, nil
+}
+
+func toPBFeedSettings(f store.FeedSettings) *pb.FeedSettings {
+	return &pb.FeedSettings{
+		SourceId: f.SourceID,
+		Title:    f.Title, ResolvedTitle: f.ResolvedTitle,
+		InMegafeed: f.InMegafeed, MutedUntil: f.MutedUntil,
+		CacheDepth:     int32(f.CacheDepth),
+		FeedUrl:        f.FeedURL,
+		SiteUrl:        f.SiteURL,
+		Kind:           f.Kind,
+		FetchIntervalS: int32(f.FetchIntervalS),
+		NextFetchAt:    f.NextFetchAt,
+		LastFetchAt:    f.LastFetchAt, LastSuccessAt: f.LastSuccessAt,
+		LastError: f.LastError, ConsecutiveFailures: int32(f.Failures),
+		ItemCount: int32(f.ItemCount), UnreadCount: int32(f.UnreadCount),
+		SubscriberCount: int32(f.SubscriberCount),
+	}
+}

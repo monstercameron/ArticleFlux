@@ -191,6 +191,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 | **A30** | **Where you were is account state** | Scope, article, and every filter are server-side prefs, restored on connect before the first list is fetched (§20.13). A reader who reloads lands back where they were, on any machine. |
 | **A31** | **Listening is free by default and Smart+ by choice** | The browser's own `speechSynthesis` reads articles at no cost, offline, in the voice the reader already chose. OpenAI TTS is an **opt-in per user, on an instance that supplied a key**, behind a host allowlist (§10.7). |
 | **A32** | **Keyboard-complete, and it says so** | Arrows move *within* a pane, Tab *between* them, Ctrl-K is the palette, `?` is the sheet that lists all of it (§20.14). |
+| **A33** | **A setting is labelled by who it belongs to** | The per-feed panel separates `subscriptions` (yours) from `sources` (shared, polled once for the whole server) and says how many other people are on the other end before you change one (§20.15). |
 
 ---
 
@@ -2119,6 +2120,40 @@ tags, streams, commands — and answers on the keystroke. Ranking is three tiers
 at 151 feeds, and a list that never narrows is worse than no palette. Its commands
 call the same handlers the chips do, so it cannot drift into a second
 implementation of the same verb.
+
+### 20.15 Per-feed settings (A33)
+
+Reached from a gear on the sidebar row — hidden until hover **or keyboard focus**, and always visible
+below 900px where there is no hover to depend on. The gear is a *sibling* of the row, not a child: a
+`<button>` inside a `<button>` is invalid and browsers resolve it by hoisting one out, after which the
+click target is not the element that was drawn.
+
+The panel is grouped by ownership, and that grouping is A14 made visible:
+
+| Group | Table | Changing it affects |
+|---|---|---|
+| **Yours** — name override, in-the-ranked-feed, mute, offline depth, tags | `subscriptions` | you |
+| **Shared** — feed URL, site URL, poll interval | `sources` | **every subscriber on this server** |
+| **Health** — last fetch/success/next, item and unread counts, the publisher's error verbatim | `sources` | read-only |
+| **Actions** — fetch now, mark all read, unsubscribe | — | — |
+
+The shared group's warning is its *heading*, not a footnote beneath it: someone changing a poll
+interval should read why before they change it. It names the number of other subscribers, because
+that is what makes the warning land.
+
+Both tables are written in **one transaction**. They are not independent — a panel that renamed the
+subscription and then failed to set the interval would leave the reader looking at a form where half
+of what they submitted took effect, with no indication which half.
+
+`fetch_interval_s` is clamped at the write to **5 minutes – 1 week**, and `next_fetch_at` is
+recomputed from the *last* fetch rather than from now, so lengthening an interval cannot postpone a
+poll that is already overdue. The floor is politeness rather than performance: the column is global,
+so one user setting ten seconds makes this server hammer a publisher on everyone's behalf — the same
+reasoning as honouring conditional GET (§22).
+
+Every mutable field is `optional` on the wire, unset meaning "leave it alone" — the same tri-state
+rule `SetItemState` uses, so a client that knows about half these fields cannot blank the other half
+by omitting them.
 
 ### 20.11 Mobile: a persistent tab bar
 

@@ -291,3 +291,26 @@ func (c *Client) ListNotes(parent context.Context) ([]*pb.Item, error) {
 	}
 	return res.GetItems(), nil
 }
+
+// GetFeedSettings loads one feed's configuration panel.
+func (c *Client) GetFeedSettings(parent context.Context, sourceID string) (*pb.FeedSettings, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.GetFeedSettings(ctx, &pb.GetFeedSettingsRequest{SourceId: sourceID})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetSettings(), nil
+}
+
+// UpdateFeedSettings patches a feed. Nil fields are left alone, so a client that
+// only knows about some of them cannot blank the rest.
+func (c *Client) UpdateFeedSettings(parent context.Context, req *pb.UpdateFeedSettingsRequest) (*pb.FeedSettings, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.UpdateFeedSettings(ctx, req)
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetSettings(), nil
+}

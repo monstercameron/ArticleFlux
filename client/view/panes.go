@@ -442,19 +442,41 @@ func feedRow(f *pb.Feed, active bool) ui.Node {
 			html.Span(html.Props{Class: "feed-count"}, html.Text(strconv.Itoa(int(n)))))
 	}
 
+	// The gear.
+	//
+	// A sibling of the row rather than a child of it: nesting a button inside a
+	// button is invalid HTML, and browsers resolve it by hoisting one out — after
+	// which the click target is whichever one survived, not the one that was
+	// drawn. The row and the gear sit side by side inside a wrapper instead.
+	//
+	// Hidden until hover or keyboard focus. 151 gears down a sidebar is a column
+	// of hardware, and the one thing the rail is for — reading feed names — is
+	// what it would be competing with.
+	children = append(children, html.Span(html.Props{Class: "feed-gap"}))
+
 	props := hueVarFor(f.GetSourceId())
 	if props == nil {
 		props = map[string]any{}
 	}
 	props["data-source-id"] = f.GetSourceId()
 
-	return html.Button(html.Props{
-		Class: "feed-row",
-		Key:   f.GetSourceId(),
-		Raw:   props,
-		Data:  map[string]string{"dormant": strconv.FormatBool(dormant)},
-		Aria:  map[string]string{"current": strconv.FormatBool(active), "label": title},
-	}, children...)
+	return html.Div(html.Props{Class: "feed-slot", Key: f.GetSourceId()},
+		html.Button(html.Props{
+			Class: "feed-row",
+			Raw:   props,
+			Data:  map[string]string{"dormant": strconv.FormatBool(dormant)},
+			Aria:  map[string]string{"current": strconv.FormatBool(active), "label": title},
+		}, children...),
+		html.Button(html.Props{
+			Class: "feed-gear",
+			Raw: map[string]any{
+				"data-action":   "feed-settings",
+				"data-for-item": f.GetSourceId(),
+			},
+			Title: "Settings for " + f.GetTitle(),
+			Aria:  map[string]string{"label": "Settings for " + f.GetTitle()},
+		}, html.Text("\u2699")),
+	)
 }
 
 // hueFor is the view layer's name for design.HueFor, so the palette and the

@@ -359,6 +359,55 @@ inside one does too.
 
 ---
 
+## Per-feed settings, and the first commit (2026-07-26, end of day)
+
+**The gear** — a per-feed settings panel behind a gear that appears on hover. Cam: *"only show the
+glyphs on hover so it doesnt over power the design"* — 151 gears down a sidebar is a column of
+hardware competing with the one thing the rail is for.
+
+> Hidden by **opacity, not `display:none`**, and also shown on `:focus-visible`. A control that only
+> exists on hover cannot be reached from a keyboard, and this rail is meant to be fully navigable
+> without a pointer. Below 900px it is always visible: touch has no hover, and hiding a control
+> behind a gesture the device cannot make is the same as not shipping it.
+
+> The gear is a **sibling** of the row, not a child. A `<button>` inside a `<button>` is invalid, and
+> browsers resolve it by hoisting one out — after which the click target is whichever survived, not
+> the one that was drawn.
+
+**The panel is organised by who a setting belongs to**, which is A14 made visible rather than a
+layout preference:
+
+- **Yours** (`subscriptions`) — name override, in-the-ranked-feed, mute, offline depth, tags.
+- **Shared** (`sources`) — feed URL, site URL, poll interval, and *"N other people on this server read
+  this feed. Changing these changes them for everyone."* as the group heading, not a footnote under
+  it. Someone changing a poll interval should read why before they change it.
+- **Health** — last fetch, last success, next fetch, item and unread counts, and the publisher's own
+  error string verbatim. That string is the single most useful thing on the panel when a feed dies,
+  and paraphrasing it helps nobody.
+- **Actions** — fetch now, mark all read, and unsubscribe styled destructive but only on hover.
+
+No migration was needed: `subscriptions.title / in_megafeed / muted_until / cache_depth` and
+`sources.fetch_interval_s` were all in `0001_init.sql` already. Both tables are written in **one
+transaction** — a panel that renamed the subscription and then failed to set the interval would leave
+the reader looking at a form where half of what they submitted took effect, with no way to tell which
+half.
+
+`fetch_interval_s` is clamped **at the write** to 5 minutes–1 week, and `next_fetch_at` is recomputed
+from the *last* fetch rather than from now: lengthening the interval must not postpone a poll that is
+already overdue. The floor is politeness, not performance — the column is global, so one user setting
+ten seconds would have this server hammering a publisher on everyone's behalf.
+
+**First commit** — `70dd580`, 100 files, authored as Cam rather than as the agent (the machine-wide
+git identity was `Claude <claude@anthropic.com>`; set locally, not globally). `.gitignore` hardened
+before anything was staged: `speech-cache/` and `*.mp3` (synthesised audio is the same privacy class
+as the database, in a directory nobody thinks of as data), `*.opml` (a complete list of what someone
+reads), keys and certificates **by extension** rather than by name — nobody commits a file called
+"secret", they commit `server.key` at half past midnight — and `/e2e/_*.mjs` for the one-off probes.
+Every staged file was scanned for key-shaped strings first. `.env.example` documents `OPENAI_API_KEY`
+without holding one. **No remote, and none is to be added.**
+
+---
+
 ## Tier 2 — Pure atoms
 
 Leaf packages. No Tidings imports, no DB, no network, table-driven tests. Everything above is made of
@@ -541,9 +590,15 @@ Business logic over repositories. Still headless.
 
 ## Tier 7 — Transport and the binary
 
-- [ ] **7.1** `proto/tidings/v1/` — start with `Auth`, `Feed`, `Item`, `Event`. Grow per milestone.
-- [ ] **7.2** `buf generate` wired into `make gen`; commit `internal/pb`
-- [ ] **7.3** gRPC service impls — **thin**: authz → validate → call Tier 6 → map to pb. No logic here.
+- [x] **7.1** `proto/tidings/v1/` — start with `Auth`, `Feed`, `Item`, `Event`. Grow per milestone.
+      ✅ 2026-07-26 — `proto/tidings/v1/{reader,system}.proto` — ReaderService now carries feeds, items, state, search, prefs, tags, notes, and per-feed settings. Additive-only within v1, which `buf breaking` enforces in CI.
+
+- [x] **7.2** `buf generate` wired into `make gen`; commit `internal/pb`
+      ✅ 2026-07-26 — `./make.ps1 gen` runs `buf generate`; `internal/pb` is committed.
+
+- [x] **7.3** gRPC service impls — **thin**: authz → validate → call Tier 6 → map to pb. No logic here.
+      ✅ 2026-07-26 — `internal/transport/grpcsrv` — translation and the §20.7 taxonomy only. Every clamp and every tenant check lives in the repository, where a second caller cannot bypass it.
+
 - [ ] **7.3a `internal/apierr`** — the §20.7 taxonomy in one place. **Cross-tenant returns `NotFound`,
       never `PermissionDenied`** — the latter confirms the object exists, which is a tenant leak with
       good manners. Structured detail `{code,message,field,quota,retry_after_s}`; `message` is always
@@ -554,12 +609,18 @@ Business logic over repositories. Still headless.
       every outbox-replayed mutation** — a partial drain that reconnects mid-flight must not
       double-apply §12.4, §20.7
 - [ ] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
-- [ ] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
+- [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
       (a deliberate tightening; the library default is 16 MiB) · `WithKeepalive` · the three
       connection/upgrade caps · `WithAuthorize` ← 6.2
-- [ ] **7.5** `/healthz` + `/readyz` — **unauthenticated, status code only, deliberately
+      ✅ 2026-07-26 — `grpctunnel.Wrap` with `WithReadLimitBytes(4<<20)` (tightened from the library's 16 MiB default), keepalive, and the two connection caps. *Not yet: `WithAllowedOrigins`, which needs the real deployment origin, and `WithAuthorize`, which needs 6.2.*
+
+- [x] **7.5** `/healthz` + `/readyz` — **unauthenticated, status code only, deliberately
       information-free** §22.4
-- [ ] **7.6** Static serving + `web/` layout
+      ✅ 2026-07-26 — `/healthz` — unauthenticated, status code and one word. *`/readyz` still to come.*
+
+- [x] **7.6** Static serving + `web/` layout
+      ✅ 2026-07-26 — Static serving from the assembled `bin/web`, with precompressed `.gz` siblings preferred and the `application/wasm` content type `instantiateStreaming` requires.
+
 - [ ] **7.7** `cmd/tidings` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
       credentials, storage writable, LLM keys well-formed, IMAP reachable), graceful shutdown
 - [ ] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
@@ -625,6 +686,8 @@ hand-written CSS and vanilla JS, and nobody ports them.
       though only English ships. Retrofitting extraction across ~50 pages and ~90 settings is
       miserable and always gets deferred forever. Locale date/number formatting applies immediately.
       §22.16
+      ⏸ 2026-07-26 — **Deferred, deliberately — still open.** Every string is still inline English. Doing this properly means routing ~200 strings through GWC `i18n`, and the UI is still changing shape weekly — retrofitting once it settles is cheaper than re-extracting after every redesign. The debt is real and §22.16 already names it.
+
 - [x] **8.5 `client/design/tokens.go`** — the fanciful palette via `css.Root` + `css.Custom`, the type
       scale, spacing, `css.Preflight()`, and **`HueFor(sourceID)`** — a deterministic per-source hue.
       That hue is the design's one real idea, and it must be a pure function so the sidebar dot, the

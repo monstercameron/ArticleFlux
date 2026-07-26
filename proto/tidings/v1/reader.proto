@@ -70,6 +70,15 @@ service ReaderService {
   // ListNotes returns the items this user has annotated, most recently written
   // first — it is a list of your own writing, found by when you wrote it.
   rpc ListNotes(ListNotesRequest) returns (ListNotesResponse);
+
+  // GetFeedSettings returns everything the per-feed panel shows, and
+  // UpdateFeedSettings writes back only the fields that were sent.
+  //
+  // Two RPCs rather than folding this into ListFeeds: the sidebar asks for 151
+  // feeds many times a session and does not want health strings, poll intervals
+  // or cache depths on any of them.
+  rpc GetFeedSettings(GetFeedSettingsRequest) returns (GetFeedSettingsResponse);
+  rpc UpdateFeedSettings(UpdateFeedSettingsRequest) returns (UpdateFeedSettingsResponse);
 }
 
 // Feed is one subscription as the sidebar needs it.
@@ -301,4 +310,65 @@ message ListNotesRequest {
 
 message ListNotesResponse {
   repeated Item items = 1;
+}
+
+message GetFeedSettingsRequest { string source_id = 1; }
+
+// Both RPCs return the same noun. Wrapping it rather than defining the twenty
+// fields twice: buf's naming rule wants a per-RPC response message, and the
+// alternative — two near-identical messages that drift the first time one is
+// edited — is a worse answer than one wrapper each.
+message GetFeedSettingsResponse { FeedSettings settings = 1; }
+message UpdateFeedSettingsResponse { FeedSettings settings = 1; }
+
+// FeedSettings is one feed's configuration, split by WHO IT BELONGS TO.
+//
+// That split is A14 made visible rather than a presentation choice. `sources`
+// are global and polled once for the whole server, so changing how often one is
+// fetched changes it for every other subscriber; `subscriptions` are per-user
+// and changing one affects nobody else. A panel that mixed the two would let
+// someone quietly reconfigure a shared resource while believing they were
+// adjusting their own copy.
+message FeedSettings {
+  string source_id = 1;
+
+  // --- yours alone (subscriptions) ---
+  // title is the reader's own name for the feed. Empty means "use the
+  // publisher's", which is why it is sent separately from resolved_title.
+  string title = 2;
+  string resolved_title = 3;   // what the sidebar actually shows today
+  bool in_megafeed = 4;        // eligible for the ranked homepage
+  string muted_until = 5;      // RFC3339; empty means not muted
+  int32 cache_depth = 6;       // items kept for offline (A5); 0 = none
+
+  // --- shared with every other subscriber (sources) ---
+  string feed_url = 10;
+  string site_url = 11;
+  string kind = 12;            // feed | mailbox | scrape
+  int32 fetch_interval_s = 13;
+  string next_fetch_at = 14;
+
+  // --- health, read-only ---
+  string last_fetch_at = 20;
+  string last_success_at = 21;
+  string last_error = 22;
+  int32 consecutive_failures = 23;
+  int32 item_count = 24;       // how much of the database this feed is
+  int32 unread_count = 25;
+  // subscriber_count is why the shared settings are marked shared. Seeing "3
+  // other people on this server read this" is what makes the warning land.
+  int32 subscriber_count = 26;
+}
+
+// UpdateFeedSettingsRequest patches. Every mutable field is optional, and unset
+// means "leave it alone" — the same tri-state rule SetItemState uses, for the
+// same reason: a client that only knows about half these fields must not blank
+// the other half by omitting them.
+message UpdateFeedSettingsRequest {
+  string source_id = 1;
+  optional string title = 2;
+  optional bool in_megafeed = 3;
+  optional string muted_until = 4;
+  optional int32 cache_depth = 5;
+  optional int32 fetch_interval_s = 6;
 }

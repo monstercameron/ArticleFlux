@@ -55,6 +55,7 @@ func Sheet() {
 	listening(r)
 	paletteCSS(r)
 	helpCSS(r)
+	feedSettingsCSS(r)
 	mobile(r)
 	skeletons(r)
 	responsive(r)
@@ -994,6 +995,164 @@ func helpCSS(r func(string, string) css.Rule) {
 		r("box-shadow", "inset 0 0 0 1px var(--line), 0 1px 0 var(--line)"),
 	)
 	css.Global(".help", css.Media(css.MaxW(900), r("padding", "20px 18px 24px"))...)
+}
+
+// feedSettingsCSS is the gear and its panel.
+func feedSettingsCSS(r func(string, string) css.Rule) {
+	// The row and the gear are siblings in a slot, not nested — a button inside
+	// a button is invalid, and the browser resolves it by hoisting one out, after
+	// which the click target is not the one that was drawn.
+	css.Global(".feed-slot", r("position", "relative"), r("display", "block"))
+	css.Global(".feed-gear",
+		r("position", "absolute"), r("right", "4px"), r("top", "50%"),
+		r("transform", "translateY(-50%)"),
+		r("width", "22px"), r("height", "22px"),
+		r("display", "grid"), r("place-items", "center"),
+		r("border-radius", "7px"), r("font-size", "12px"),
+		r("color", "var(--mute)"), r("background", "var(--sur-2)"),
+		// Hidden by default, and by OPACITY rather than display:none so it stays
+		// in the accessibility tree and can be reached by Tab. 151 gears down a
+		// sidebar is a column of hardware competing with the one thing the rail
+		// is for.
+		r("opacity", "0"), r("pointer-events", "none"),
+		r("transition", "opacity .12s"),
+	)
+	// Hover anywhere in the slot, or focus on the gear itself: a control that
+	// only appears on hover is unreachable from a keyboard, and this rail is
+	// meant to be fully navigable without a pointer.
+	css.Global(".feed-slot:hover .feed-gear, .feed-gear:focus-visible",
+		r("opacity", "1"), r("pointer-events", "auto"),
+	)
+	css.Global(".feed-gear:hover", r("color", "var(--cream)"), r("background", "var(--line)"))
+	// The row leaves room for it only while it is showing, so nothing reflows on
+	// hover — the name simply has less space to ellipsise into.
+	css.Global(".feed-slot:hover .feed-gap", r("width", "22px"))
+	css.Global(".feed-gap", r("width", "0"), r("flex", "none"))
+
+	// --- the panel ---
+	css.Global(".fs",
+		r("width", "min(620px, 100%)"),
+		r("background", "var(--sur)"),
+		r("border", "1px solid var(--line)"),
+		r("border-radius", "18px"),
+		r("box-shadow", "0 24px 70px rgba(0,0,0,.55)"),
+		r("display", "flex"), r("flex-direction", "column"),
+		r("max-height", "78vh"), r("overflow", "hidden"),
+	)
+	css.Global(".fs-head",
+		r("display", "flex"), r("align-items", "baseline"), r("gap", "12px"),
+		r("padding", "20px 22px 16px"), r("border-bottom", "1px solid var(--hair)"),
+		r("flex", "0 0 auto"),
+	)
+	css.Global(".fs-mark",
+		r("font-family", "var(--dsp)"),
+		r("font-variation-settings", `"SOFT" 55, "WONK" 1, "opsz" 48`),
+		r("font-size", "20px"), r("font-weight", "600"),
+		r("letter-spacing", "-.02em"), r("flex", "1 1 auto"),
+		r("min-width", "0"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"), r("white-space", "nowrap"),
+	)
+	css.Global(".fs-saving", r("font-size", "12px"), r("color", "var(--cc)"), r("flex", "none"))
+	css.Global(".fs-close", r("flex", "none"))
+	css.Global(".fs-body",
+		r("padding", "6px 22px 24px"), r("overflow-y", "auto"),
+		r("flex", "1 1 auto"), r("min-height", "0"),
+		r("overscroll-behavior", "contain"),
+	)
+
+	// The group heading carries the warning, rather than a footnote under it:
+	// someone changing a shared setting should read why BEFORE they change it.
+	css.Global(".fs-group",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "3px"),
+		r("padding", "20px 0 10px"), r("border-bottom", "1px solid var(--hair)"),
+		r("margin-bottom", "4px"),
+	)
+	css.Global(".fs-group-title",
+		r("font-size", "10px"), r("letter-spacing", ".14em"), r("color", "var(--mute)"),
+	)
+	css.Global(".fs-group-note",
+		r("font-size", "12.5px"), r("color", "var(--soft)"),
+		r("font-family", "var(--rd)"), r("font-style", "italic"),
+	)
+
+	css.Global(".fs-row",
+		r("display", "flex"), r("align-items", "flex-start"), r("gap", "16px"),
+		r("padding", "11px 0"),
+	)
+	css.Global(".fs-label", r("flex", "1 1 auto"), r("min-width", "0"))
+	css.Global(".fs-label-name",
+		r("display", "block"), r("font-size", "13.5px"), r("color", "var(--cream)"),
+	)
+	css.Global(".fs-hint",
+		r("display", "block"), r("font-size", "12px"), r("color", "var(--mute)"),
+		r("margin-top", "2px"),
+	)
+	css.Global(".fs-control", r("flex", "0 0 auto"), r("max-width", "58%"))
+	css.Global(".fs-field", r("width", "15rem"), r("max-width", "100%"))
+	css.Global(".fs-choices",
+		r("display", "flex"), r("gap", "5px"), r("flex-wrap", "wrap"),
+		r("justify-content", "flex-end"),
+	)
+	css.Global(".fs-tags", r("display", "flex"), r("gap", "5px"), r("flex-wrap", "wrap"))
+
+	// A URL is data, not prose: monospace-ish, selectable, and allowed to wrap
+	// anywhere, because feed URLs are long and have no spaces to break on.
+	css.Global(".fs-url",
+		r("font-size", "12px"), r("color", "var(--soft)"),
+		r("overflow-wrap", "anywhere"), r("user-select", "all"),
+		r("text-align", "right"),
+	)
+	css.Global(".fs-link", r("color", "var(--cream)"), r("text-decoration", "underline"),
+		r("text-decoration-color", "var(--line)"))
+
+	css.Global(".fs-fact",
+		r("display", "flex"), r("justify-content", "space-between"),
+		r("gap", "12px"), r("padding", "6px 0"), r("font-size", "13px"),
+	)
+	css.Global(".fs-fact-name", r("color", "var(--mute)"))
+	css.Global(".fs-fact-value",
+		r("color", "var(--soft)"), r("font-variant-numeric", "tabular-nums"),
+	)
+	// The publisher's own error string, verbatim. It is the most useful thing on
+	// the panel when a feed has stopped working.
+	css.Global(".fs-lasterror",
+		r("margin-top", "8px"), r("padding", "9px 12px"),
+		r("border-radius", "10px"), r("background", "var(--sur-2)"),
+		r("border-left", "3px solid #FF8A6B"),
+		r("font-size", "12px"), r("color", "var(--soft)"),
+		r("overflow-wrap", "anywhere"),
+	)
+
+	css.Global(".fs-actions",
+		r("display", "flex"), r("gap", "8px"), r("flex-wrap", "wrap"),
+		r("padding", "6px 0 0"),
+	)
+	// Destructive, and it looks it — but only on hover, so a panel of settings
+	// does not open with a red button demanding attention.
+	css.Global(".fs-danger", r("color", "#FF8A6B"), r("border-color", "#FF8A6B"))
+	css.Global(".fs-danger:hover",
+		r("background", "#FF8A6B"), r("color", "var(--bg)"), r("border-color", "#FF8A6B"),
+	)
+	css.Global(".fs-note",
+		r("margin-top", "10px"), r("font-size", "12px"), r("color", "var(--mute)"),
+	)
+	css.Global(".fs-error",
+		r("padding", "18px 0"), r("color", "#FF8A6B"), r("font-size", "13px"),
+	)
+
+	// On a phone the rows stack: a 58%-wide control column next to a label is
+	// two cramped columns rather than one readable one.
+	css.Global(".fs-row", css.Media(css.MaxW(900),
+		r("flex-direction", "column"), r("gap", "8px"))...)
+	css.Global(".fs-control", css.Media(css.MaxW(900), r("max-width", "100%"))...)
+	css.Global(".fs-choices", css.Media(css.MaxW(900), r("justify-content", "flex-start"))...)
+	css.Global(".fs-url", css.Media(css.MaxW(900), r("text-align", "left"))...)
+	// Touch has no hover, so the gear is always visible below the tab-bar
+	// breakpoint. Hiding a control behind a gesture the device cannot make is
+	// the same as not shipping it.
+	css.Global(".feed-gear", css.Media(css.MaxW(900),
+		r("opacity", "1"), r("pointer-events", "auto"))...)
+	css.Global(".feed-gap", css.Media(css.MaxW(900), r("width", "22px"))...)
 }
 
 // skeletons are the loading placeholders.

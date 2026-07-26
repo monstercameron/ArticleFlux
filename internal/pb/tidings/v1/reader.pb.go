@@ -2021,6 +2021,425 @@ func (x *ListNotesResponse) GetItems() []*Item {
 	return nil
 }
 
+type GetFeedSettingsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SourceId      string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetFeedSettingsRequest) Reset() {
+	*x = GetFeedSettingsRequest{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetFeedSettingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetFeedSettingsRequest) ProtoMessage() {}
+
+func (x *GetFeedSettingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetFeedSettingsRequest.ProtoReflect.Descriptor instead.
+func (*GetFeedSettingsRequest) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *GetFeedSettingsRequest) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+// Both RPCs return the same noun. Wrapping it rather than defining the twenty
+// fields twice: buf's naming rule wants a per-RPC response message, and the
+// alternative — two near-identical messages that drift the first time one is
+// edited — is a worse answer than one wrapper each.
+type GetFeedSettingsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Settings      *FeedSettings          `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetFeedSettingsResponse) Reset() {
+	*x = GetFeedSettingsResponse{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetFeedSettingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetFeedSettingsResponse) ProtoMessage() {}
+
+func (x *GetFeedSettingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetFeedSettingsResponse.ProtoReflect.Descriptor instead.
+func (*GetFeedSettingsResponse) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetFeedSettingsResponse) GetSettings() *FeedSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+type UpdateFeedSettingsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Settings      *FeedSettings          `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateFeedSettingsResponse) Reset() {
+	*x = UpdateFeedSettingsResponse{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateFeedSettingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateFeedSettingsResponse) ProtoMessage() {}
+
+func (x *UpdateFeedSettingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateFeedSettingsResponse.ProtoReflect.Descriptor instead.
+func (*UpdateFeedSettingsResponse) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *UpdateFeedSettingsResponse) GetSettings() *FeedSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+// FeedSettings is one feed's configuration, split by WHO IT BELONGS TO.
+//
+// That split is A14 made visible rather than a presentation choice. `sources`
+// are global and polled once for the whole server, so changing how often one is
+// fetched changes it for every other subscriber; `subscriptions` are per-user
+// and changing one affects nobody else. A panel that mixed the two would let
+// someone quietly reconfigure a shared resource while believing they were
+// adjusting their own copy.
+type FeedSettings struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SourceId string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	// --- yours alone (subscriptions) ---
+	// title is the reader's own name for the feed. Empty means "use the
+	// publisher's", which is why it is sent separately from resolved_title.
+	Title         string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	ResolvedTitle string `protobuf:"bytes,3,opt,name=resolved_title,json=resolvedTitle,proto3" json:"resolved_title,omitempty"` // what the sidebar actually shows today
+	InMegafeed    bool   `protobuf:"varint,4,opt,name=in_megafeed,json=inMegafeed,proto3" json:"in_megafeed,omitempty"`         // eligible for the ranked homepage
+	MutedUntil    string `protobuf:"bytes,5,opt,name=muted_until,json=mutedUntil,proto3" json:"muted_until,omitempty"`          // RFC3339; empty means not muted
+	CacheDepth    int32  `protobuf:"varint,6,opt,name=cache_depth,json=cacheDepth,proto3" json:"cache_depth,omitempty"`         // items kept for offline (A5); 0 = none
+	// --- shared with every other subscriber (sources) ---
+	FeedUrl        string `protobuf:"bytes,10,opt,name=feed_url,json=feedUrl,proto3" json:"feed_url,omitempty"`
+	SiteUrl        string `protobuf:"bytes,11,opt,name=site_url,json=siteUrl,proto3" json:"site_url,omitempty"`
+	Kind           string `protobuf:"bytes,12,opt,name=kind,proto3" json:"kind,omitempty"` // feed | mailbox | scrape
+	FetchIntervalS int32  `protobuf:"varint,13,opt,name=fetch_interval_s,json=fetchIntervalS,proto3" json:"fetch_interval_s,omitempty"`
+	NextFetchAt    string `protobuf:"bytes,14,opt,name=next_fetch_at,json=nextFetchAt,proto3" json:"next_fetch_at,omitempty"`
+	// --- health, read-only ---
+	LastFetchAt         string `protobuf:"bytes,20,opt,name=last_fetch_at,json=lastFetchAt,proto3" json:"last_fetch_at,omitempty"`
+	LastSuccessAt       string `protobuf:"bytes,21,opt,name=last_success_at,json=lastSuccessAt,proto3" json:"last_success_at,omitempty"`
+	LastError           string `protobuf:"bytes,22,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	ConsecutiveFailures int32  `protobuf:"varint,23,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
+	ItemCount           int32  `protobuf:"varint,24,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"` // how much of the database this feed is
+	UnreadCount         int32  `protobuf:"varint,25,opt,name=unread_count,json=unreadCount,proto3" json:"unread_count,omitempty"`
+	// subscriber_count is why the shared settings are marked shared. Seeing "3
+	// other people on this server read this" is what makes the warning land.
+	SubscriberCount int32 `protobuf:"varint,26,opt,name=subscriber_count,json=subscriberCount,proto3" json:"subscriber_count,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *FeedSettings) Reset() {
+	*x = FeedSettings{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FeedSettings) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FeedSettings) ProtoMessage() {}
+
+func (x *FeedSettings) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FeedSettings.ProtoReflect.Descriptor instead.
+func (*FeedSettings) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *FeedSettings) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetResolvedTitle() string {
+	if x != nil {
+		return x.ResolvedTitle
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetInMegafeed() bool {
+	if x != nil {
+		return x.InMegafeed
+	}
+	return false
+}
+
+func (x *FeedSettings) GetMutedUntil() string {
+	if x != nil {
+		return x.MutedUntil
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetCacheDepth() int32 {
+	if x != nil {
+		return x.CacheDepth
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetFeedUrl() string {
+	if x != nil {
+		return x.FeedUrl
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetSiteUrl() string {
+	if x != nil {
+		return x.SiteUrl
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetFetchIntervalS() int32 {
+	if x != nil {
+		return x.FetchIntervalS
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetNextFetchAt() string {
+	if x != nil {
+		return x.NextFetchAt
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetLastFetchAt() string {
+	if x != nil {
+		return x.LastFetchAt
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetLastSuccessAt() string {
+	if x != nil {
+		return x.LastSuccessAt
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *FeedSettings) GetConsecutiveFailures() int32 {
+	if x != nil {
+		return x.ConsecutiveFailures
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetItemCount() int32 {
+	if x != nil {
+		return x.ItemCount
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetUnreadCount() int32 {
+	if x != nil {
+		return x.UnreadCount
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetSubscriberCount() int32 {
+	if x != nil {
+		return x.SubscriberCount
+	}
+	return 0
+}
+
+// UpdateFeedSettingsRequest patches. Every mutable field is optional, and unset
+// means "leave it alone" — the same tri-state rule SetItemState uses, for the
+// same reason: a client that only knows about half these fields must not blank
+// the other half by omitting them.
+type UpdateFeedSettingsRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SourceId       string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	Title          *string                `protobuf:"bytes,2,opt,name=title,proto3,oneof" json:"title,omitempty"`
+	InMegafeed     *bool                  `protobuf:"varint,3,opt,name=in_megafeed,json=inMegafeed,proto3,oneof" json:"in_megafeed,omitempty"`
+	MutedUntil     *string                `protobuf:"bytes,4,opt,name=muted_until,json=mutedUntil,proto3,oneof" json:"muted_until,omitempty"`
+	CacheDepth     *int32                 `protobuf:"varint,5,opt,name=cache_depth,json=cacheDepth,proto3,oneof" json:"cache_depth,omitempty"`
+	FetchIntervalS *int32                 `protobuf:"varint,6,opt,name=fetch_interval_s,json=fetchIntervalS,proto3,oneof" json:"fetch_interval_s,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *UpdateFeedSettingsRequest) Reset() {
+	*x = UpdateFeedSettingsRequest{}
+	mi := &file_tidings_v1_reader_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateFeedSettingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateFeedSettingsRequest) ProtoMessage() {}
+
+func (x *UpdateFeedSettingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tidings_v1_reader_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateFeedSettingsRequest.ProtoReflect.Descriptor instead.
+func (*UpdateFeedSettingsRequest) Descriptor() ([]byte, []int) {
+	return file_tidings_v1_reader_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *UpdateFeedSettingsRequest) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *UpdateFeedSettingsRequest) GetTitle() string {
+	if x != nil && x.Title != nil {
+		return *x.Title
+	}
+	return ""
+}
+
+func (x *UpdateFeedSettingsRequest) GetInMegafeed() bool {
+	if x != nil && x.InMegafeed != nil {
+		return *x.InMegafeed
+	}
+	return false
+}
+
+func (x *UpdateFeedSettingsRequest) GetMutedUntil() string {
+	if x != nil && x.MutedUntil != nil {
+		return *x.MutedUntil
+	}
+	return ""
+}
+
+func (x *UpdateFeedSettingsRequest) GetCacheDepth() int32 {
+	if x != nil && x.CacheDepth != nil {
+		return *x.CacheDepth
+	}
+	return 0
+}
+
+func (x *UpdateFeedSettingsRequest) GetFetchIntervalS() int32 {
+	if x != nil && x.FetchIntervalS != nil {
+		return *x.FetchIntervalS
+	}
+	return 0
+}
+
 var File_tidings_v1_reader_proto protoreflect.FileDescriptor
 
 const file_tidings_v1_reader_proto_rawDesc = "" +
@@ -2168,7 +2587,53 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\x10ListNotesRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\";\n" +
 	"\x11ListNotesResponse\x12&\n" +
-	"\x05items\x18\x01 \x03(\v2\x10.tidings.v1.ItemR\x05items*\xb0\x01\n" +
+	"\x05items\x18\x01 \x03(\v2\x10.tidings.v1.ItemR\x05items\"5\n" +
+	"\x16GetFeedSettingsRequest\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"O\n" +
+	"\x17GetFeedSettingsResponse\x124\n" +
+	"\bsettings\x18\x01 \x01(\v2\x18.tidings.v1.FeedSettingsR\bsettings\"R\n" +
+	"\x1aUpdateFeedSettingsResponse\x124\n" +
+	"\bsettings\x18\x01 \x01(\v2\x18.tidings.v1.FeedSettingsR\bsettings\"\xee\x04\n" +
+	"\fFeedSettings\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12%\n" +
+	"\x0eresolved_title\x18\x03 \x01(\tR\rresolvedTitle\x12\x1f\n" +
+	"\vin_megafeed\x18\x04 \x01(\bR\n" +
+	"inMegafeed\x12\x1f\n" +
+	"\vmuted_until\x18\x05 \x01(\tR\n" +
+	"mutedUntil\x12\x1f\n" +
+	"\vcache_depth\x18\x06 \x01(\x05R\n" +
+	"cacheDepth\x12\x19\n" +
+	"\bfeed_url\x18\n" +
+	" \x01(\tR\afeedUrl\x12\x19\n" +
+	"\bsite_url\x18\v \x01(\tR\asiteUrl\x12\x12\n" +
+	"\x04kind\x18\f \x01(\tR\x04kind\x12(\n" +
+	"\x10fetch_interval_s\x18\r \x01(\x05R\x0efetchIntervalS\x12\"\n" +
+	"\rnext_fetch_at\x18\x0e \x01(\tR\vnextFetchAt\x12\"\n" +
+	"\rlast_fetch_at\x18\x14 \x01(\tR\vlastFetchAt\x12&\n" +
+	"\x0flast_success_at\x18\x15 \x01(\tR\rlastSuccessAt\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x16 \x01(\tR\tlastError\x121\n" +
+	"\x14consecutive_failures\x18\x17 \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
+	"\n" +
+	"item_count\x18\x18 \x01(\x05R\titemCount\x12!\n" +
+	"\funread_count\x18\x19 \x01(\x05R\vunreadCount\x12)\n" +
+	"\x10subscriber_count\x18\x1a \x01(\x05R\x0fsubscriberCount\"\xc3\x02\n" +
+	"\x19UpdateFeedSettingsRequest\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x19\n" +
+	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12$\n" +
+	"\vin_megafeed\x18\x03 \x01(\bH\x01R\n" +
+	"inMegafeed\x88\x01\x01\x12$\n" +
+	"\vmuted_until\x18\x04 \x01(\tH\x02R\n" +
+	"mutedUntil\x88\x01\x01\x12$\n" +
+	"\vcache_depth\x18\x05 \x01(\x05H\x03R\n" +
+	"cacheDepth\x88\x01\x01\x12-\n" +
+	"\x10fetch_interval_s\x18\x06 \x01(\x05H\x04R\x0efetchIntervalS\x88\x01\x01B\b\n" +
+	"\x06_titleB\x0e\n" +
+	"\f_in_megafeedB\x0e\n" +
+	"\f_muted_untilB\x0e\n" +
+	"\f_cache_depthB\x13\n" +
+	"\x11_fetch_interval_s*\xb0\x01\n" +
 	"\tListScope\x12\x1a\n" +
 	"\x16LIST_SCOPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eLIST_SCOPE_ALL\x10\x01\x12\x13\n" +
@@ -2176,7 +2641,8 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\x12LIST_SCOPE_STARRED\x10\x03\x12\x17\n" +
 	"\x13LIST_SCOPE_MEGAFEED\x10\x04\x12\x14\n" +
 	"\x10LIST_SCOPE_LIKED\x10\x05\x12\x17\n" +
-	"\x13LIST_SCOPE_DISLIKED\x10\x062\xd9\b\n" +
+	"\x13LIST_SCOPE_DISLIKED\x10\x062\x9a\n" +
+	"\n" +
 	"\rReaderService\x12H\n" +
 	"\tListFeeds\x12\x1c.tidings.v1.ListFeedsRequest\x1a\x1d.tidings.v1.ListFeedsResponse\x12H\n" +
 	"\tListItems\x12\x1c.tidings.v1.ListItemsRequest\x1a\x1d.tidings.v1.ListItemsResponse\x12B\n" +
@@ -2193,7 +2659,9 @@ const file_tidings_v1_reader_proto_rawDesc = "" +
 	"\n" +
 	"SetFeedTag\x12\x1d.tidings.v1.SetFeedTagRequest\x1a\x1e.tidings.v1.SetFeedTagResponse\x12B\n" +
 	"\aSetNote\x12\x1a.tidings.v1.SetNoteRequest\x1a\x1b.tidings.v1.SetNoteResponse\x12H\n" +
-	"\tListNotes\x12\x1c.tidings.v1.ListNotesRequest\x1a\x1d.tidings.v1.ListNotesResponseBDZBgithub.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1b\x06proto3"
+	"\tListNotes\x12\x1c.tidings.v1.ListNotesRequest\x1a\x1d.tidings.v1.ListNotesResponse\x12Z\n" +
+	"\x0fGetFeedSettings\x12\".tidings.v1.GetFeedSettingsRequest\x1a#.tidings.v1.GetFeedSettingsResponse\x12c\n" +
+	"\x12UpdateFeedSettings\x12%.tidings.v1.UpdateFeedSettingsRequest\x1a&.tidings.v1.UpdateFeedSettingsResponseBDZBgithub.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1b\x06proto3"
 
 var (
 	file_tidings_v1_reader_proto_rawDescOnce sync.Once
@@ -2208,46 +2676,51 @@ func file_tidings_v1_reader_proto_rawDescGZIP() []byte {
 }
 
 var file_tidings_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_tidings_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_tidings_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_tidings_v1_reader_proto_goTypes = []any{
-	(ListScope)(0),               // 0: tidings.v1.ListScope
-	(*Feed)(nil),                 // 1: tidings.v1.Feed
-	(*Item)(nil),                 // 2: tidings.v1.Item
-	(*ListFeedsRequest)(nil),     // 3: tidings.v1.ListFeedsRequest
-	(*ListFeedsResponse)(nil),    // 4: tidings.v1.ListFeedsResponse
-	(*ListItemsRequest)(nil),     // 5: tidings.v1.ListItemsRequest
-	(*ListItemsResponse)(nil),    // 6: tidings.v1.ListItemsResponse
-	(*GetItemRequest)(nil),       // 7: tidings.v1.GetItemRequest
-	(*GetItemResponse)(nil),      // 8: tidings.v1.GetItemResponse
-	(*SetItemStateRequest)(nil),  // 9: tidings.v1.SetItemStateRequest
-	(*SetItemStateResponse)(nil), // 10: tidings.v1.SetItemStateResponse
-	(*MarkAllReadRequest)(nil),   // 11: tidings.v1.MarkAllReadRequest
-	(*MarkAllReadResponse)(nil),  // 12: tidings.v1.MarkAllReadResponse
-	(*SubscribeRequest)(nil),     // 13: tidings.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),    // 14: tidings.v1.SubscribeResponse
-	(*UnsubscribeRequest)(nil),   // 15: tidings.v1.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil),  // 16: tidings.v1.UnsubscribeResponse
-	(*RefreshRequest)(nil),       // 17: tidings.v1.RefreshRequest
-	(*RefreshResponse)(nil),      // 18: tidings.v1.RefreshResponse
-	(*SearchRequest)(nil),        // 19: tidings.v1.SearchRequest
-	(*SearchResponse)(nil),       // 20: tidings.v1.SearchResponse
-	(*GetPrefsRequest)(nil),      // 21: tidings.v1.GetPrefsRequest
-	(*GetPrefsResponse)(nil),     // 22: tidings.v1.GetPrefsResponse
-	(*SetPrefsRequest)(nil),      // 23: tidings.v1.SetPrefsRequest
-	(*SetPrefsResponse)(nil),     // 24: tidings.v1.SetPrefsResponse
-	(*Tag)(nil),                  // 25: tidings.v1.Tag
-	(*ListTagsRequest)(nil),      // 26: tidings.v1.ListTagsRequest
-	(*ListTagsResponse)(nil),     // 27: tidings.v1.ListTagsResponse
-	(*TagIDs)(nil),               // 28: tidings.v1.TagIDs
-	(*SetFeedTagRequest)(nil),    // 29: tidings.v1.SetFeedTagRequest
-	(*SetFeedTagResponse)(nil),   // 30: tidings.v1.SetFeedTagResponse
-	(*SetNoteRequest)(nil),       // 31: tidings.v1.SetNoteRequest
-	(*SetNoteResponse)(nil),      // 32: tidings.v1.SetNoteResponse
-	(*ListNotesRequest)(nil),     // 33: tidings.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),    // 34: tidings.v1.ListNotesResponse
-	nil,                          // 35: tidings.v1.GetPrefsResponse.PrefsEntry
-	nil,                          // 36: tidings.v1.SetPrefsRequest.PrefsEntry
-	nil,                          // 37: tidings.v1.ListTagsResponse.BySourceEntry
+	(ListScope)(0),                     // 0: tidings.v1.ListScope
+	(*Feed)(nil),                       // 1: tidings.v1.Feed
+	(*Item)(nil),                       // 2: tidings.v1.Item
+	(*ListFeedsRequest)(nil),           // 3: tidings.v1.ListFeedsRequest
+	(*ListFeedsResponse)(nil),          // 4: tidings.v1.ListFeedsResponse
+	(*ListItemsRequest)(nil),           // 5: tidings.v1.ListItemsRequest
+	(*ListItemsResponse)(nil),          // 6: tidings.v1.ListItemsResponse
+	(*GetItemRequest)(nil),             // 7: tidings.v1.GetItemRequest
+	(*GetItemResponse)(nil),            // 8: tidings.v1.GetItemResponse
+	(*SetItemStateRequest)(nil),        // 9: tidings.v1.SetItemStateRequest
+	(*SetItemStateResponse)(nil),       // 10: tidings.v1.SetItemStateResponse
+	(*MarkAllReadRequest)(nil),         // 11: tidings.v1.MarkAllReadRequest
+	(*MarkAllReadResponse)(nil),        // 12: tidings.v1.MarkAllReadResponse
+	(*SubscribeRequest)(nil),           // 13: tidings.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),          // 14: tidings.v1.SubscribeResponse
+	(*UnsubscribeRequest)(nil),         // 15: tidings.v1.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil),        // 16: tidings.v1.UnsubscribeResponse
+	(*RefreshRequest)(nil),             // 17: tidings.v1.RefreshRequest
+	(*RefreshResponse)(nil),            // 18: tidings.v1.RefreshResponse
+	(*SearchRequest)(nil),              // 19: tidings.v1.SearchRequest
+	(*SearchResponse)(nil),             // 20: tidings.v1.SearchResponse
+	(*GetPrefsRequest)(nil),            // 21: tidings.v1.GetPrefsRequest
+	(*GetPrefsResponse)(nil),           // 22: tidings.v1.GetPrefsResponse
+	(*SetPrefsRequest)(nil),            // 23: tidings.v1.SetPrefsRequest
+	(*SetPrefsResponse)(nil),           // 24: tidings.v1.SetPrefsResponse
+	(*Tag)(nil),                        // 25: tidings.v1.Tag
+	(*ListTagsRequest)(nil),            // 26: tidings.v1.ListTagsRequest
+	(*ListTagsResponse)(nil),           // 27: tidings.v1.ListTagsResponse
+	(*TagIDs)(nil),                     // 28: tidings.v1.TagIDs
+	(*SetFeedTagRequest)(nil),          // 29: tidings.v1.SetFeedTagRequest
+	(*SetFeedTagResponse)(nil),         // 30: tidings.v1.SetFeedTagResponse
+	(*SetNoteRequest)(nil),             // 31: tidings.v1.SetNoteRequest
+	(*SetNoteResponse)(nil),            // 32: tidings.v1.SetNoteResponse
+	(*ListNotesRequest)(nil),           // 33: tidings.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),          // 34: tidings.v1.ListNotesResponse
+	(*GetFeedSettingsRequest)(nil),     // 35: tidings.v1.GetFeedSettingsRequest
+	(*GetFeedSettingsResponse)(nil),    // 36: tidings.v1.GetFeedSettingsResponse
+	(*UpdateFeedSettingsResponse)(nil), // 37: tidings.v1.UpdateFeedSettingsResponse
+	(*FeedSettings)(nil),               // 38: tidings.v1.FeedSettings
+	(*UpdateFeedSettingsRequest)(nil),  // 39: tidings.v1.UpdateFeedSettingsRequest
+	nil,                                // 40: tidings.v1.GetPrefsResponse.PrefsEntry
+	nil,                                // 41: tidings.v1.SetPrefsRequest.PrefsEntry
+	nil,                                // 42: tidings.v1.ListTagsResponse.BySourceEntry
 }
 var file_tidings_v1_reader_proto_depIdxs = []int32{
 	1,  // 0: tidings.v1.ListFeedsResponse.feeds:type_name -> tidings.v1.Feed
@@ -2258,48 +2731,54 @@ var file_tidings_v1_reader_proto_depIdxs = []int32{
 	0,  // 5: tidings.v1.MarkAllReadRequest.scope:type_name -> tidings.v1.ListScope
 	1,  // 6: tidings.v1.SubscribeResponse.feed:type_name -> tidings.v1.Feed
 	2,  // 7: tidings.v1.SearchResponse.items:type_name -> tidings.v1.Item
-	35, // 8: tidings.v1.GetPrefsResponse.prefs:type_name -> tidings.v1.GetPrefsResponse.PrefsEntry
-	36, // 9: tidings.v1.SetPrefsRequest.prefs:type_name -> tidings.v1.SetPrefsRequest.PrefsEntry
+	40, // 8: tidings.v1.GetPrefsResponse.prefs:type_name -> tidings.v1.GetPrefsResponse.PrefsEntry
+	41, // 9: tidings.v1.SetPrefsRequest.prefs:type_name -> tidings.v1.SetPrefsRequest.PrefsEntry
 	25, // 10: tidings.v1.ListTagsResponse.tags:type_name -> tidings.v1.Tag
-	37, // 11: tidings.v1.ListTagsResponse.by_source:type_name -> tidings.v1.ListTagsResponse.BySourceEntry
+	42, // 11: tidings.v1.ListTagsResponse.by_source:type_name -> tidings.v1.ListTagsResponse.BySourceEntry
 	25, // 12: tidings.v1.SetFeedTagResponse.tag:type_name -> tidings.v1.Tag
 	2,  // 13: tidings.v1.ListNotesResponse.items:type_name -> tidings.v1.Item
-	28, // 14: tidings.v1.ListTagsResponse.BySourceEntry.value:type_name -> tidings.v1.TagIDs
-	3,  // 15: tidings.v1.ReaderService.ListFeeds:input_type -> tidings.v1.ListFeedsRequest
-	5,  // 16: tidings.v1.ReaderService.ListItems:input_type -> tidings.v1.ListItemsRequest
-	7,  // 17: tidings.v1.ReaderService.GetItem:input_type -> tidings.v1.GetItemRequest
-	9,  // 18: tidings.v1.ReaderService.SetItemState:input_type -> tidings.v1.SetItemStateRequest
-	11, // 19: tidings.v1.ReaderService.MarkAllRead:input_type -> tidings.v1.MarkAllReadRequest
-	13, // 20: tidings.v1.ReaderService.Subscribe:input_type -> tidings.v1.SubscribeRequest
-	15, // 21: tidings.v1.ReaderService.Unsubscribe:input_type -> tidings.v1.UnsubscribeRequest
-	17, // 22: tidings.v1.ReaderService.Refresh:input_type -> tidings.v1.RefreshRequest
-	19, // 23: tidings.v1.ReaderService.Search:input_type -> tidings.v1.SearchRequest
-	21, // 24: tidings.v1.ReaderService.GetPrefs:input_type -> tidings.v1.GetPrefsRequest
-	23, // 25: tidings.v1.ReaderService.SetPrefs:input_type -> tidings.v1.SetPrefsRequest
-	26, // 26: tidings.v1.ReaderService.ListTags:input_type -> tidings.v1.ListTagsRequest
-	29, // 27: tidings.v1.ReaderService.SetFeedTag:input_type -> tidings.v1.SetFeedTagRequest
-	31, // 28: tidings.v1.ReaderService.SetNote:input_type -> tidings.v1.SetNoteRequest
-	33, // 29: tidings.v1.ReaderService.ListNotes:input_type -> tidings.v1.ListNotesRequest
-	4,  // 30: tidings.v1.ReaderService.ListFeeds:output_type -> tidings.v1.ListFeedsResponse
-	6,  // 31: tidings.v1.ReaderService.ListItems:output_type -> tidings.v1.ListItemsResponse
-	8,  // 32: tidings.v1.ReaderService.GetItem:output_type -> tidings.v1.GetItemResponse
-	10, // 33: tidings.v1.ReaderService.SetItemState:output_type -> tidings.v1.SetItemStateResponse
-	12, // 34: tidings.v1.ReaderService.MarkAllRead:output_type -> tidings.v1.MarkAllReadResponse
-	14, // 35: tidings.v1.ReaderService.Subscribe:output_type -> tidings.v1.SubscribeResponse
-	16, // 36: tidings.v1.ReaderService.Unsubscribe:output_type -> tidings.v1.UnsubscribeResponse
-	18, // 37: tidings.v1.ReaderService.Refresh:output_type -> tidings.v1.RefreshResponse
-	20, // 38: tidings.v1.ReaderService.Search:output_type -> tidings.v1.SearchResponse
-	22, // 39: tidings.v1.ReaderService.GetPrefs:output_type -> tidings.v1.GetPrefsResponse
-	24, // 40: tidings.v1.ReaderService.SetPrefs:output_type -> tidings.v1.SetPrefsResponse
-	27, // 41: tidings.v1.ReaderService.ListTags:output_type -> tidings.v1.ListTagsResponse
-	30, // 42: tidings.v1.ReaderService.SetFeedTag:output_type -> tidings.v1.SetFeedTagResponse
-	32, // 43: tidings.v1.ReaderService.SetNote:output_type -> tidings.v1.SetNoteResponse
-	34, // 44: tidings.v1.ReaderService.ListNotes:output_type -> tidings.v1.ListNotesResponse
-	30, // [30:45] is the sub-list for method output_type
-	15, // [15:30] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	38, // 14: tidings.v1.GetFeedSettingsResponse.settings:type_name -> tidings.v1.FeedSettings
+	38, // 15: tidings.v1.UpdateFeedSettingsResponse.settings:type_name -> tidings.v1.FeedSettings
+	28, // 16: tidings.v1.ListTagsResponse.BySourceEntry.value:type_name -> tidings.v1.TagIDs
+	3,  // 17: tidings.v1.ReaderService.ListFeeds:input_type -> tidings.v1.ListFeedsRequest
+	5,  // 18: tidings.v1.ReaderService.ListItems:input_type -> tidings.v1.ListItemsRequest
+	7,  // 19: tidings.v1.ReaderService.GetItem:input_type -> tidings.v1.GetItemRequest
+	9,  // 20: tidings.v1.ReaderService.SetItemState:input_type -> tidings.v1.SetItemStateRequest
+	11, // 21: tidings.v1.ReaderService.MarkAllRead:input_type -> tidings.v1.MarkAllReadRequest
+	13, // 22: tidings.v1.ReaderService.Subscribe:input_type -> tidings.v1.SubscribeRequest
+	15, // 23: tidings.v1.ReaderService.Unsubscribe:input_type -> tidings.v1.UnsubscribeRequest
+	17, // 24: tidings.v1.ReaderService.Refresh:input_type -> tidings.v1.RefreshRequest
+	19, // 25: tidings.v1.ReaderService.Search:input_type -> tidings.v1.SearchRequest
+	21, // 26: tidings.v1.ReaderService.GetPrefs:input_type -> tidings.v1.GetPrefsRequest
+	23, // 27: tidings.v1.ReaderService.SetPrefs:input_type -> tidings.v1.SetPrefsRequest
+	26, // 28: tidings.v1.ReaderService.ListTags:input_type -> tidings.v1.ListTagsRequest
+	29, // 29: tidings.v1.ReaderService.SetFeedTag:input_type -> tidings.v1.SetFeedTagRequest
+	31, // 30: tidings.v1.ReaderService.SetNote:input_type -> tidings.v1.SetNoteRequest
+	33, // 31: tidings.v1.ReaderService.ListNotes:input_type -> tidings.v1.ListNotesRequest
+	35, // 32: tidings.v1.ReaderService.GetFeedSettings:input_type -> tidings.v1.GetFeedSettingsRequest
+	39, // 33: tidings.v1.ReaderService.UpdateFeedSettings:input_type -> tidings.v1.UpdateFeedSettingsRequest
+	4,  // 34: tidings.v1.ReaderService.ListFeeds:output_type -> tidings.v1.ListFeedsResponse
+	6,  // 35: tidings.v1.ReaderService.ListItems:output_type -> tidings.v1.ListItemsResponse
+	8,  // 36: tidings.v1.ReaderService.GetItem:output_type -> tidings.v1.GetItemResponse
+	10, // 37: tidings.v1.ReaderService.SetItemState:output_type -> tidings.v1.SetItemStateResponse
+	12, // 38: tidings.v1.ReaderService.MarkAllRead:output_type -> tidings.v1.MarkAllReadResponse
+	14, // 39: tidings.v1.ReaderService.Subscribe:output_type -> tidings.v1.SubscribeResponse
+	16, // 40: tidings.v1.ReaderService.Unsubscribe:output_type -> tidings.v1.UnsubscribeResponse
+	18, // 41: tidings.v1.ReaderService.Refresh:output_type -> tidings.v1.RefreshResponse
+	20, // 42: tidings.v1.ReaderService.Search:output_type -> tidings.v1.SearchResponse
+	22, // 43: tidings.v1.ReaderService.GetPrefs:output_type -> tidings.v1.GetPrefsResponse
+	24, // 44: tidings.v1.ReaderService.SetPrefs:output_type -> tidings.v1.SetPrefsResponse
+	27, // 45: tidings.v1.ReaderService.ListTags:output_type -> tidings.v1.ListTagsResponse
+	30, // 46: tidings.v1.ReaderService.SetFeedTag:output_type -> tidings.v1.SetFeedTagResponse
+	32, // 47: tidings.v1.ReaderService.SetNote:output_type -> tidings.v1.SetNoteResponse
+	34, // 48: tidings.v1.ReaderService.ListNotes:output_type -> tidings.v1.ListNotesResponse
+	36, // 49: tidings.v1.ReaderService.GetFeedSettings:output_type -> tidings.v1.GetFeedSettingsResponse
+	37, // 50: tidings.v1.ReaderService.UpdateFeedSettings:output_type -> tidings.v1.UpdateFeedSettingsResponse
+	34, // [34:51] is the sub-list for method output_type
+	17, // [17:34] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_tidings_v1_reader_proto_init() }
@@ -2308,13 +2787,14 @@ func file_tidings_v1_reader_proto_init() {
 		return
 	}
 	file_tidings_v1_reader_proto_msgTypes[8].OneofWrappers = []any{}
+	file_tidings_v1_reader_proto_msgTypes[38].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tidings_v1_reader_proto_rawDesc), len(file_tidings_v1_reader_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   37,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

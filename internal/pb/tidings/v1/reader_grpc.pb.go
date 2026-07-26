@@ -19,21 +19,23 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReaderService_ListFeeds_FullMethodName    = "/tidings.v1.ReaderService/ListFeeds"
-	ReaderService_ListItems_FullMethodName    = "/tidings.v1.ReaderService/ListItems"
-	ReaderService_GetItem_FullMethodName      = "/tidings.v1.ReaderService/GetItem"
-	ReaderService_SetItemState_FullMethodName = "/tidings.v1.ReaderService/SetItemState"
-	ReaderService_MarkAllRead_FullMethodName  = "/tidings.v1.ReaderService/MarkAllRead"
-	ReaderService_Subscribe_FullMethodName    = "/tidings.v1.ReaderService/Subscribe"
-	ReaderService_Unsubscribe_FullMethodName  = "/tidings.v1.ReaderService/Unsubscribe"
-	ReaderService_Refresh_FullMethodName      = "/tidings.v1.ReaderService/Refresh"
-	ReaderService_Search_FullMethodName       = "/tidings.v1.ReaderService/Search"
-	ReaderService_GetPrefs_FullMethodName     = "/tidings.v1.ReaderService/GetPrefs"
-	ReaderService_SetPrefs_FullMethodName     = "/tidings.v1.ReaderService/SetPrefs"
-	ReaderService_ListTags_FullMethodName     = "/tidings.v1.ReaderService/ListTags"
-	ReaderService_SetFeedTag_FullMethodName   = "/tidings.v1.ReaderService/SetFeedTag"
-	ReaderService_SetNote_FullMethodName      = "/tidings.v1.ReaderService/SetNote"
-	ReaderService_ListNotes_FullMethodName    = "/tidings.v1.ReaderService/ListNotes"
+	ReaderService_ListFeeds_FullMethodName          = "/tidings.v1.ReaderService/ListFeeds"
+	ReaderService_ListItems_FullMethodName          = "/tidings.v1.ReaderService/ListItems"
+	ReaderService_GetItem_FullMethodName            = "/tidings.v1.ReaderService/GetItem"
+	ReaderService_SetItemState_FullMethodName       = "/tidings.v1.ReaderService/SetItemState"
+	ReaderService_MarkAllRead_FullMethodName        = "/tidings.v1.ReaderService/MarkAllRead"
+	ReaderService_Subscribe_FullMethodName          = "/tidings.v1.ReaderService/Subscribe"
+	ReaderService_Unsubscribe_FullMethodName        = "/tidings.v1.ReaderService/Unsubscribe"
+	ReaderService_Refresh_FullMethodName            = "/tidings.v1.ReaderService/Refresh"
+	ReaderService_Search_FullMethodName             = "/tidings.v1.ReaderService/Search"
+	ReaderService_GetPrefs_FullMethodName           = "/tidings.v1.ReaderService/GetPrefs"
+	ReaderService_SetPrefs_FullMethodName           = "/tidings.v1.ReaderService/SetPrefs"
+	ReaderService_ListTags_FullMethodName           = "/tidings.v1.ReaderService/ListTags"
+	ReaderService_SetFeedTag_FullMethodName         = "/tidings.v1.ReaderService/SetFeedTag"
+	ReaderService_SetNote_FullMethodName            = "/tidings.v1.ReaderService/SetNote"
+	ReaderService_ListNotes_FullMethodName          = "/tidings.v1.ReaderService/ListNotes"
+	ReaderService_GetFeedSettings_FullMethodName    = "/tidings.v1.ReaderService/GetFeedSettings"
+	ReaderService_UpdateFeedSettings_FullMethodName = "/tidings.v1.ReaderService/UpdateFeedSettings"
 )
 
 // ReaderServiceClient is the client API for ReaderService service.
@@ -92,6 +94,14 @@ type ReaderServiceClient interface {
 	// ListNotes returns the items this user has annotated, most recently written
 	// first — it is a list of your own writing, found by when you wrote it.
 	ListNotes(ctx context.Context, in *ListNotesRequest, opts ...grpc.CallOption) (*ListNotesResponse, error)
+	// GetFeedSettings returns everything the per-feed panel shows, and
+	// UpdateFeedSettings writes back only the fields that were sent.
+	//
+	// Two RPCs rather than folding this into ListFeeds: the sidebar asks for 151
+	// feeds many times a session and does not want health strings, poll intervals
+	// or cache depths on any of them.
+	GetFeedSettings(ctx context.Context, in *GetFeedSettingsRequest, opts ...grpc.CallOption) (*GetFeedSettingsResponse, error)
+	UpdateFeedSettings(ctx context.Context, in *UpdateFeedSettingsRequest, opts ...grpc.CallOption) (*UpdateFeedSettingsResponse, error)
 }
 
 type readerServiceClient struct {
@@ -252,6 +262,26 @@ func (c *readerServiceClient) ListNotes(ctx context.Context, in *ListNotesReques
 	return out, nil
 }
 
+func (c *readerServiceClient) GetFeedSettings(ctx context.Context, in *GetFeedSettingsRequest, opts ...grpc.CallOption) (*GetFeedSettingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetFeedSettingsResponse)
+	err := c.cc.Invoke(ctx, ReaderService_GetFeedSettings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) UpdateFeedSettings(ctx context.Context, in *UpdateFeedSettingsRequest, opts ...grpc.CallOption) (*UpdateFeedSettingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateFeedSettingsResponse)
+	err := c.cc.Invoke(ctx, ReaderService_UpdateFeedSettings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ReaderServiceServer is the server API for ReaderService service.
 // All implementations must embed UnimplementedReaderServiceServer
 // for forward compatibility.
@@ -308,6 +338,14 @@ type ReaderServiceServer interface {
 	// ListNotes returns the items this user has annotated, most recently written
 	// first — it is a list of your own writing, found by when you wrote it.
 	ListNotes(context.Context, *ListNotesRequest) (*ListNotesResponse, error)
+	// GetFeedSettings returns everything the per-feed panel shows, and
+	// UpdateFeedSettings writes back only the fields that were sent.
+	//
+	// Two RPCs rather than folding this into ListFeeds: the sidebar asks for 151
+	// feeds many times a session and does not want health strings, poll intervals
+	// or cache depths on any of them.
+	GetFeedSettings(context.Context, *GetFeedSettingsRequest) (*GetFeedSettingsResponse, error)
+	UpdateFeedSettings(context.Context, *UpdateFeedSettingsRequest) (*UpdateFeedSettingsResponse, error)
 	mustEmbedUnimplementedReaderServiceServer()
 }
 
@@ -362,6 +400,12 @@ func (UnimplementedReaderServiceServer) SetNote(context.Context, *SetNoteRequest
 }
 func (UnimplementedReaderServiceServer) ListNotes(context.Context, *ListNotesRequest) (*ListNotesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListNotes not implemented")
+}
+func (UnimplementedReaderServiceServer) GetFeedSettings(context.Context, *GetFeedSettingsRequest) (*GetFeedSettingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFeedSettings not implemented")
+}
+func (UnimplementedReaderServiceServer) UpdateFeedSettings(context.Context, *UpdateFeedSettingsRequest) (*UpdateFeedSettingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateFeedSettings not implemented")
 }
 func (UnimplementedReaderServiceServer) mustEmbedUnimplementedReaderServiceServer() {}
 func (UnimplementedReaderServiceServer) testEmbeddedByValue()                       {}
@@ -654,6 +698,42 @@ func _ReaderService_ListNotes_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReaderService_GetFeedSettings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFeedSettingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).GetFeedSettings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_GetFeedSettings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).GetFeedSettings(ctx, req.(*GetFeedSettingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_UpdateFeedSettings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateFeedSettingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).UpdateFeedSettings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_UpdateFeedSettings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).UpdateFeedSettings(ctx, req.(*UpdateFeedSettingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ReaderService_ServiceDesc is the grpc.ServiceDesc for ReaderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -720,6 +800,14 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListNotes",
 			Handler:    _ReaderService_ListNotes_Handler,
+		},
+		{
+			MethodName: "GetFeedSettings",
+			Handler:    _ReaderService_GetFeedSettings_Handler,
+		},
+		{
+			MethodName: "UpdateFeedSettings",
+			Handler:    _ReaderService_UpdateFeedSettings_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

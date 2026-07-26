@@ -99,6 +99,12 @@ type actions struct {
 	listenStop  func()
 	smartVoice  func()
 
+	// The per-feed settings panel.
+	openFeedSettings  func(id string)
+	closeFeedSettings func()
+	patchFeed         func(req *pb.UpdateFeedSettingsRequest)
+	unsubscribe       func(id string)
+
 	toggleHelp func()
 	closeHelp  func()
 
@@ -132,8 +138,9 @@ type actions struct {
 	// reason fill does, and it is the more dangerous case: the callback appends
 	// to the item list, and appending to a stale copy silently discards
 	// everything that arrived while the request was in flight.
-	pageLanded func(res *pb.ListItemsResponse, err error)
-	bodyLanded func(full *pb.Item)
+	pageLanded         func(res *pb.ListItemsResponse, err error)
+	feedSettingsLanded func(res *pb.FeedSettings, err error)
+	bodyLanded         func(full *pb.Item)
 }
 
 // Reader is the whole application.
@@ -213,6 +220,15 @@ func Reader() ui.Node {
 	// The shortcut sheet. A keyboard-first app that never says what its keys are
 	// is keyboard-first for exactly one person.
 	helpOpen := ui.UseState(false)
+	// The per-feed settings panel. The settings are fetched on open rather than
+	// carried on every sidebar row — the rail asks for 151 feeds many times a
+	// session and wants none of this on any of them.
+	fsOpen := ui.UseState("")
+	fsLoading := ui.UseState(false)
+	fsData := ui.UseState[*pb.FeedSettings](nil)
+	fsErr := ui.UseState("")
+	fsTitle := ui.UseState("")
+	fsSaving := ui.UseState(false)
 	// expectFocus is the article an open is currently travelling to.
 	//
 	// Opening seeds the article BEFORE the target so scrolling up works
@@ -259,6 +275,7 @@ func Reader() ui.Node {
 		feedFilter.Set(v)
 		feedFilterSave.Get()(v)
 	})
+	onFeedTitleInput := ui.UseEvent(func(v string) { fsTitle.Set(v) })
 	onPaletteInput := ui.UseEvent(func(v string) {
 		paletteQuery.Set(v)
 		// Every keystroke re-ranks, so the highlight has to go back to the top —
@@ -1290,6 +1307,82 @@ func Reader() ui.Node {
 		savePrefs(map[string]string{"rail.filter": v})
 	})
 
+	// applyFeedSettings lands a settings response. Through the Ref like every
+	// other async result, so it reads the render that is actually on screen.
+	act.Get().openFeedSettings = func(id string) {
+		c := client.Get()
+		if c == nil || id == "" {
+			return
+		}
+		fsOpen.Set(id)
+		fsLoading.Set(true)
+		fsErr.Set("")
+		fsData.Set(nil)
+		fsTitle.Set("")
+		go func() {
+			res, err := c.GetFeedSettings(context.Background(), id)
+			ui.PostAsync(func() { act.Get().feedSettingsLanded(res, err) })
+		}()
+	}
+	act.Get().feedSettingsLanded = func(res *pb.FeedSettings, err error) {
+		fsLoading.Set(false)
+		fsSaving.Set(false)
+		if err != nil {
+			fsErr.Set("Couldn't load this feed's settings: " + err.Error())
+			return
+		}
+		fsData.Set(res)
+		fsTitle.Set(res.GetTitle())
+	}
+	act.Get().closeFeedSettings = func() {
+		fsOpen.Set("")
+		fsData.Set(nil)
+	}
+	act.Get().patchFeed = func(req *pb.UpdateFeedSettingsRequest) {
+		c := client.Get()
+		if c == nil || req.GetSourceId() == "" {
+			return
+		}
+		fsSaving.Set(true)
+		go func() {
+			res, err := c.UpdateFeedSettings(context.Background(), req)
+			ui.PostAsync(func() {
+				act.Get().feedSettingsLanded(res, err)
+				// The sidebar shows the name and the unread count, both of which
+				// this can change, so it is refetched rather than patched
+				// locally — one cheap request beats two representations that can
+				// disagree.
+				loadFeeds()
+			})
+		}()
+	}
+	act.Get().unsubscribe = func(id string) {
+		c := client.Get()
+		if c == nil || id == "" {
+			return
+		}
+		name := id
+		if f := act.Get().feedByID(id); f != nil {
+			name = f.GetTitle()
+		}
+		act.Get().closeFeedSettings()
+		go func() {
+			err := c.Unsubscribe(context.Background(), id)
+			ui.PostAsync(func() {
+				if err != nil {
+					notice.Set("Couldn't unsubscribe: " + err.Error())
+					return
+				}
+				notice.Set("Unsubscribed from " + name + ". Its articles are still on the server.")
+				loadFeeds()
+				// If they were reading it, that scope no longer exists.
+				if sel.Get().SourceID == id {
+					act.Get().pick(scope{Title: "All feeds"})
+				}
+			})
+		}()
+	}
+
 	act.Get().toggleHelp = func() { helpOpen.Set(!helpOpen.Get()) }
 	act.Get().closeHelp = func() { helpOpen.Set(false) }
 
@@ -1426,9 +1519,20 @@ func Reader() ui.Node {
 	// which article was named. Splitting it out keeps OnDelegatedClick reporting
 	// exactly one attribute, which is what makes it simple enough to trust.
 	forItem := ui.UseRef("")
+	// forValue is the segmented controls' payload. Same pattern as forItem: one
+	// more attribute listener rather than teaching OnDelegatedClick to report
+	// two attributes, which is what keeps that helper simple enough to trust.
+	forValue := ui.UseRef("")
 	ui.UseEffect(func() func() {
 		l := platform.OnDelegatedClick("#app", "data-for-item", func(id string) {
 			forItem.Set(id)
+		})
+		return l.Release
+	}, []any{})
+
+	ui.UseEffect(func() func() {
+		l := platform.OnDelegatedClick("#app", "data-value", func(v string) {
+			forValue.Set(v)
 		})
 		return l.Release
 	}, []any{})
@@ -1447,6 +1551,7 @@ func Reader() ui.Node {
 				// the reader has long since scrolled past.
 				id := forItem.Get()
 				forItem.Set("")
+				defer forValue.Set("")
 				switch action {
 				case "back-rail":
 					a.backRail()
@@ -1480,6 +1585,46 @@ func Reader() ui.Node {
 					a.closeHelp()
 				case "help-open":
 					a.toggleHelp()
+				case "feed-settings":
+					a.openFeedSettings(id)
+				case "feed-settings-close":
+					a.closeFeedSettings()
+				case "fs-unsubscribe":
+					a.unsubscribe(id)
+				case "fs-refresh":
+					// The same refresh the toolbar runs, scoped to this feed.
+					a.pick(scope{SourceID: id, Title: fsName(a, id)})
+					a.refresh()
+				case "fs-markall":
+					a.pick(scope{SourceID: id, Title: fsName(a, id)})
+					a.markAll()
+				case "fs-megafeed":
+					if s := fsData.Get(); s != nil {
+						v := !s.GetInMegafeed()
+						a.patchFeed(&pb.UpdateFeedSettingsRequest{
+							SourceId: id, InMegafeed: &v})
+					}
+				case "fs-poll":
+					if v, err := strconv.Atoi(forValue.Get()); err == nil {
+						n := int32(v)
+						a.patchFeed(&pb.UpdateFeedSettingsRequest{
+							SourceId: id, FetchIntervalS: &n})
+					}
+				case "fs-cache":
+					if v, err := strconv.Atoi(forValue.Get()); err == nil {
+						n := int32(v)
+						a.patchFeed(&pb.UpdateFeedSettingsRequest{
+							SourceId: id, CacheDepth: &n})
+					}
+				case "fs-mute":
+					if v, err := strconv.Atoi(forValue.Get()); err == nil {
+						until := ""
+						if v > 0 {
+							until = hoursFromNow(v)
+						}
+						a.patchFeed(&pb.UpdateFeedSettingsRequest{
+							SourceId: id, MutedUntil: &until})
+					}
 				case "listen":
 					a.listen(id)
 				case "listen-pause":
@@ -1943,6 +2088,17 @@ func Reader() ui.Node {
 					ui.PostAsync(func() { act.Get().search(q) })
 				case "add-feed":
 					ui.PostAsync(func() { act.Get().addFeed() })
+				case "feed-title":
+					// Enter commits the rename. An empty value is meaningful —
+					// it clears the override and goes back to the publisher's
+					// title — so it is sent rather than ignored.
+					v := platform.FieldValue("feed-title")
+					ui.PostAsync(func() {
+						if id := fsOpen.Get(); id != "" {
+							act.Get().patchFeed(&pb.UpdateFeedSettingsRequest{
+								SourceId: id, Title: &v})
+						}
+					})
 				case "tag":
 					ui.PostAsync(func() { act.Get().addTag("") })
 				}
@@ -2148,6 +2304,16 @@ func Reader() ui.Node {
 		),
 		tabBar(pane.Get(), sel.Get()),
 		helpSheet(helpOpen.Get()),
+		feedSettings(feedSettingsProps{
+			open:        fsOpen.Get() != "",
+			loading:     fsLoading.Get(),
+			s:           fsData.Get(),
+			err:         fsErr.Get(),
+			draftTitle:  fsTitle.Get(),
+			onTitleEdit: onFeedTitleInput,
+			tags:        tagsForSource(tags.Get(), tagFeeds.Get(), fsOpen.Get()),
+			saving:      fsSaving.Get(),
+		}),
 		palette(paletteProps{
 			open:    paletteOpen.Get(),
 			query:   paletteQuery.Get(),
@@ -2340,6 +2506,53 @@ func iconHostsOf(feeds []*pb.Feed) map[string]string {
 		}
 	}
 	return m
+}
+
+// fsName resolves a source id to its title for the scope the action switches to.
+func fsName(a *actions, id string) string {
+	if f := a.feedByID(id); f != nil {
+		return f.GetTitle()
+	}
+	return "Feed"
+}
+
+// hoursFromNow is the mute expiry, in the RFC3339 the column stores.
+func hoursFromNow(h int) string {
+	return time.Now().UTC().Add(time.Duration(h) * time.Hour).Format(time.RFC3339)
+}
+
+// hoursUntil is its inverse, for showing which mute choice is active.
+func hoursUntil(ts string) int {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		if t, err = time.Parse(time.RFC3339Nano, ts); err != nil {
+			return 0
+		}
+	}
+	return int(time.Until(t).Hours())
+}
+
+// tagsForSource lists the tags on one feed, from the map the sidebar already
+// holds. No round trip for something already in memory.
+func tagsForSource(tags []*pb.Tag, bySource map[string][]string, sourceID string) []string {
+	if sourceID == "" {
+		return nil
+	}
+	ids := bySource[sourceID]
+	if len(ids) == 0 {
+		return nil
+	}
+	byID := make(map[string]string, len(tags))
+	for _, t := range tags {
+		byID[t.GetId()] = t.GetName()
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if n := byID[id]; n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func currentID(it *pb.Item) string {

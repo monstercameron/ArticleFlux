@@ -1233,3 +1233,206 @@ func (r *ReaderRepo) NotedItems(ctx context.Context, s Scope, limit int) ([]Item
 	}
 	return items, notes, rows.Err()
 }
+
+// FeedSettings is one feed's configuration, joined across the two tables it
+// genuinely lives in.
+//
+// The split is A14, not presentation: `subscriptions` is mine and `sources` is
+// the server's. Keeping the fields in one struct while labelling which is which
+// is what lets the UI warn before someone changes a shared resource.
+type FeedSettings struct {
+	SourceID string
+
+	// Mine.
+	Title         string // the reader's override; empty means use the publisher's
+	ResolvedTitle string // what the sidebar shows today
+	InMegafeed    bool
+	MutedUntil    string
+	CacheDepth    int
+
+	// Shared with every other subscriber on this server.
+	FeedURL        string
+	SiteURL        string
+	Kind           string
+	FetchIntervalS int
+	NextFetchAt    string
+
+	// Health, read-only.
+	LastFetchAt     string
+	LastSuccessAt   string
+	LastError       string
+	Failures        int
+	ItemCount       int
+	UnreadCount     int
+	SubscriberCount int
+}
+
+// FeedSettingsPatch carries only what is being changed. Nil means "leave it
+// alone", the same tri-state rule StateChange uses — a client that knows about
+// half these fields must not blank the other half by omitting them.
+type FeedSettingsPatch struct {
+	Title          *string
+	InMegafeed     *bool
+	MutedUntil     *string
+	CacheDepth     *int
+	FetchIntervalS *int
+}
+
+// minFetchInterval is the floor on how often a source may be polled.
+//
+// Five minutes, and it is a politeness limit rather than a performance one: the
+// interval is a property of a GLOBAL row, so one user setting it to ten seconds
+// would have this server hammering a publisher on everyone's behalf. §22 already
+// says honouring conditional GET is the difference between being a good citizen
+// and being rate-limited; this is the other half of that.
+const minFetchInterval = 300
+
+// maxFetchInterval is a week. Past that a feed is not being polled, it is being
+// forgotten, and "unsubscribe" is the honest way to say so.
+const maxFetchInterval = 7 * 24 * 3600
+
+// GetFeedSettings returns one feed's settings, scoped to a subscriber.
+//
+// Cross-tenant and unsubscribed both return ErrNotFound (§20.7): a distinct
+// error would confirm the source exists.
+func (r *ReaderRepo) GetFeedSettings(ctx context.Context, s Scope, sourceID string) (FeedSettings, error) {
+	if !s.Valid() {
+		return FeedSettings{}, ErrNoScope
+	}
+	var f FeedSettings
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT src.id,
+		       COALESCE(sub.title,''),
+		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
+		       sub.in_megafeed, COALESCE(sub.muted_until,''), sub.cache_depth,
+		       src.feed_url, COALESCE(src.site_url,''), src.kind,
+		       src.fetch_interval_s, COALESCE(src.next_fetch_at,''),
+		       COALESCE(src.last_fetch_at,''), COALESCE(src.last_success_at,''),
+		       COALESCE(src.last_error,''), src.consecutive_failures,
+		       (SELECT count(*) FROM items i
+		         WHERE i.source_id = src.id AND i.deactivated_at IS NULL),
+		       (SELECT count(*) FROM items i
+		         LEFT JOIN user_item_state uis
+		                ON uis.item_id = i.id AND uis.user_id = ?
+		         WHERE i.source_id = src.id AND i.deactivated_at IS NULL
+		           AND uis.read_at IS NULL),
+		       (SELECT count(*) FROM subscriptions s2 WHERE s2.source_id = src.id)
+		  FROM subscriptions sub
+		  JOIN sources src ON src.id = sub.source_id
+		 WHERE sub.source_id = ? AND sub.user_id = ? AND sub.tenant_id = ?`,
+		s.UserID, sourceID, s.UserID, s.TenantID).
+		Scan(&f.SourceID, &f.Title, &f.ResolvedTitle,
+			&f.InMegafeed, &f.MutedUntil, &f.CacheDepth,
+			&f.FeedURL, &f.SiteURL, &f.Kind,
+			&f.FetchIntervalS, &f.NextFetchAt,
+			&f.LastFetchAt, &f.LastSuccessAt, &f.LastError, &f.Failures,
+			&f.ItemCount, &f.UnreadCount, &f.SubscriberCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FeedSettings{}, ErrNotFound
+	}
+	return f, err
+}
+
+// UpdateFeedSettings applies a patch and returns the result.
+//
+// Both tables are written inside ONE transaction. They are not independent: a
+// panel that renamed the subscription and then failed to set the poll interval
+// would leave the reader looking at a form where half of what they submitted
+// took effect, with no indication which half.
+func (r *ReaderRepo) UpdateFeedSettings(ctx context.Context, s Scope, sourceID string,
+	p FeedSettingsPatch) (FeedSettings, error) {
+	if !s.Valid() {
+		return FeedSettings{}, ErrNoScope
+	}
+
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		// Membership first. Without it, a user could retune the poll interval of
+		// a source they do not subscribe to — a global row they have no
+		// relationship with.
+		var ok int
+		err := tx.QueryRowContext(ctx, `
+			SELECT 1 FROM subscriptions
+			 WHERE source_id = ? AND user_id = ? AND tenant_id = ? LIMIT 1`,
+			sourceID, s.UserID, s.TenantID).Scan(&ok)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		var set []string
+		var args []any
+		if p.Title != nil {
+			set = append(set, "title = ?")
+			args = append(args, strings.TrimSpace(*p.Title))
+		}
+		if p.InMegafeed != nil {
+			set = append(set, "in_megafeed = ?")
+			args = append(args, boolInt(*p.InMegafeed))
+		}
+		if p.MutedUntil != nil {
+			// Empty string clears the mute rather than storing "", so
+			// "muted_until IS NULL" stays the single test for "not muted".
+			if strings.TrimSpace(*p.MutedUntil) == "" {
+				set = append(set, "muted_until = NULL")
+			} else {
+				set = append(set, "muted_until = ?")
+				args = append(args, *p.MutedUntil)
+			}
+		}
+		if p.CacheDepth != nil {
+			d := *p.CacheDepth
+			if d < 0 {
+				d = 0
+			}
+			set = append(set, "cache_depth = ?")
+			args = append(args, d)
+		}
+		if len(set) > 0 {
+			args = append(args, sourceID, s.UserID, s.TenantID)
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE subscriptions SET `+strings.Join(set, ", ")+
+					` WHERE source_id = ? AND user_id = ? AND tenant_id = ?`, args...); err != nil {
+				return err
+			}
+		}
+
+		if p.FetchIntervalS != nil {
+			// Clamped here, at the write, rather than trusted from the client.
+			// This column is global, so an unbounded value from one user is
+			// this server's behaviour towards a publisher on everyone's behalf.
+			v := *p.FetchIntervalS
+			if v < minFetchInterval {
+				v = minFetchInterval
+			}
+			if v > maxFetchInterval {
+				v = maxFetchInterval
+			}
+			// next_fetch_at is recomputed from the LAST fetch, not from now:
+			// lengthening the interval must not postpone a poll that is already
+			// overdue, and shortening it should bring the next one forward
+			// immediately rather than after one more old-interval wait.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE sources
+				   SET fetch_interval_s = ?,
+				       next_fetch_at = datetime(COALESCE(last_fetch_at, created_at),
+				                                '+' || ? || ' seconds')
+				 WHERE id = ?`, v, v, sourceID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return FeedSettings{}, err
+	}
+	return r.GetFeedSettings(ctx, s, sourceID)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

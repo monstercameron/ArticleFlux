@@ -332,3 +332,15 @@ func (s *Service) GetNote(ctx context.Context, sc store.Scope, itemID string) (s
 func (s *Service) NotedItems(ctx context.Context, sc store.Scope, limit int) ([]store.Item, []string, error) {
 	return s.repo.NotedItems(ctx, sc, limit)
 }
+
+// GetFeedSettings and UpdateFeedSettings are the per-feed panel. Thin, like the
+// rest of this layer: the clamping and the tenant check live in the repository,
+// where they cannot be bypassed by a second caller.
+func (s *Service) GetFeedSettings(ctx context.Context, sc store.Scope, sourceID string) (store.FeedSettings, error) {
+	return s.repo.GetFeedSettings(ctx, sc, sourceID)
+}
+
+func (s *Service) UpdateFeedSettings(ctx context.Context, sc store.Scope, sourceID string,
+	p store.FeedSettingsPatch) (store.FeedSettings, error) {
+	return s.repo.UpdateFeedSettings(ctx, sc, sourceID, p)
+}
