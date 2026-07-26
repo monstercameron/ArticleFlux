@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+// Package tidings.v1 is the single contract behind all three transports (§20.7):
+// the gRPC tunnel, the plain-HTTPS pack channel, and the Google Reader-compatible
+// REST sync API. Additive changes only within v1 — `buf breaking` in CI enforces
+// that rather than discipline, because the sync API and SW-cached wasm both
+// guarantee old clients in the wild (§22.10).
+package tidings.v1;
+
+option go_package = "github.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1";
+
+// SystemService is the unauthenticated surface: enough to answer "is this thing
+// running, and which build am I talking to" before any credential exists.
+//
+// It exists at Tier 1 rather than Tier 7 because version skew is a real failure
+// mode here (T12) — a wasm client cached by a Service Worker can outlive several
+// server deploys, and it needs a way to notice.
+service SystemService {
+  // GetVersion identifies the build. Safe to call unauthenticated; it must never
+  // grow a field that discloses tenant state.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+
+  // CheckHealth reports whether the server can serve reads. Used by the readiness
+  // probe and by the client's always-visible connection indicator — a reader that
+  // has silently stopped receiving looks identical to a quiet news day.
+  rpc CheckHealth(CheckHealthRequest) returns (CheckHealthResponse);
+}
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  // Semantic version of the server build.
+  string version = 1;
+  // Git commit the binary was built from, or "unknown" for a local build.
+  string commit = 2;
+  // Highest applied migration. The client compares this across reconnects to
+  // detect that it is talking to a different schema than it started on.
+  int64 schema_version = 3;
+}
+
+message CheckHealthRequest {}
+
+message CheckHealthResponse {
+  ServingStatus status = 1;
+  // Human-readable and always safe to display (§20.7): internal detail goes to
+  // the log with the request id, never to the client.
+  string detail = 2;
+}
+
+enum ServingStatus {
+  SERVING_STATUS_UNSPECIFIED = 0;
+  // Reads and writes both available.
+  SERVING_STATUS_SERVING = 1;
+  // Reads available, writes refused — storage read-only, or a migration running.
+  SERVING_STATUS_DEGRADED = 2;
+  // Not ready to serve. Distinct from unreachable, which the client sees as a
+  // transport error instead.
+  SERVING_STATUS_NOT_SERVING = 3;
+}

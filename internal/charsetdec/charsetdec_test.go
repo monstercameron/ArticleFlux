@@ -1,0 +1,227 @@
+package charsetdec
+
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// TODO 2.6's bar: Windows-1252 and Shift-JIS fixtures decode.
+func TestDecodeWindows1252(t *testing.T) {
+	// "Naïve — café" with the em dash and accents that make 1252 differ from
+	// Latin-1 and from UTF-8.
+	want := "Naïve — café “quoted”"
+	raw, _, err := transform.Bytes(charmap.Windows1252.NewEncoder(), []byte(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if utf8.Valid(raw) {
+		t.Fatal("fixture is not actually non-UTF-8; the test would prove nothing")
+	}
+
+	body := []byte(`<?xml version="1.0" encoding="Windows-1252"?><rss><title>` +
+		string(raw) + `</title></rss>`)
+
+	got, res, err := Decode(body, "application/rss+xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), want) {
+		t.Errorf("decoded %q, want it to contain %q", got, want)
+	}
+	if res.Source != "xml" {
+		t.Errorf("source = %s, want xml", res.Source)
+	}
+	if res.Replaced {
+		t.Error("a correctly declared Windows-1252 document should decode cleanly")
+	}
+}
+
+func TestDecodeShiftJIS(t *testing.T) {
+	want := "日本語のフィード"
+	raw, _, err := transform.Bytes(japanese.ShiftJIS.NewEncoder(), []byte(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := append([]byte(`<?xml version="1.0" encoding="Shift_JIS"?><rss><title>`), raw...)
+	body = append(body, []byte(`</title></rss>`)...)
+
+	got, res, err := Decode(body, "text/xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), want) {
+		t.Errorf("decoded %q, want it to contain %q", got, want)
+	}
+	if res.Source != "xml" {
+		t.Errorf("source = %s, want xml", res.Source)
+	}
+}
+
+// The precedence inversion this package exists for: a server default of
+// "charset=us-ascii" must not mangle a feed that declares its real encoding.
+func TestXMLDeclarationBeatsAWrongHTTPHeader(t *testing.T) {
+	want := "café"
+	raw, _, _ := transform.Bytes(charmap.Windows1252.NewEncoder(), []byte(want))
+	body := append([]byte(`<?xml version="1.0" encoding="windows-1252"?><t>`), raw...)
+	body = append(body, []byte(`</t>`)...)
+
+	got, res, err := Decode(body, "text/xml; charset=us-ascii")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), want) {
+		t.Errorf("decoded %q; the misconfigured header won and mangled the feed", got)
+	}
+	if res.Source != "xml" {
+		t.Errorf("source = %s, want the XML declaration to win", res.Source)
+	}
+}
+
+func TestHTTPHeaderUsedWhenNoDeclaration(t *testing.T) {
+	want := "café"
+	raw, _, _ := transform.Bytes(charmap.Windows1252.NewEncoder(), []byte(want))
+
+	got, res, err := Decode(raw, "text/html; charset=windows-1252")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("decoded %q, want %q", got, want)
+	}
+	if res.Source != "http" {
+		t.Errorf("source = %s, want http", res.Source)
+	}
+}
+
+func TestUnparseableContentTypeStillYieldsTheHint(t *testing.T) {
+	want := "café"
+	raw, _, _ := transform.Bytes(charmap.Windows1252.NewEncoder(), []byte(want))
+	// Servers emit malformed Content-Type headers routinely; the hint is still
+	// worth recovering by hand.
+	got, _, err := Decode(raw, `text/html; charset="windows-1252"; boundary=`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("decoded %q, want %q", got, want)
+	}
+}
+
+func TestBOMWins(t *testing.T) {
+	// UTF-8 BOM in front of a document that claims Windows-1252.
+	body := append([]byte{0xEF, 0xBB, 0xBF},
+		[]byte(`<?xml version="1.0" encoding="windows-1252"?><t>café</t>`)...)
+	got, res, err := Decode(body, "text/xml; charset=iso-8859-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Source != "bom" {
+		t.Errorf("source = %s, want bom", res.Source)
+	}
+	// Written as an escape: Go rejects a literal U+FEFF anywhere but the first
+	// byte of a source file.
+	if strings.HasPrefix(string(got), "\uFEFF") {
+		t.Error("the BOM should be consumed, not left in the document")
+	}
+	if !strings.Contains(string(got), "café") {
+		t.Errorf("decoded %q", got)
+	}
+}
+
+func TestUTF16BOM(t *testing.T) {
+	// "hi" in UTF-16LE with a BOM.
+	body := []byte{0xFF, 0xFE, 'h', 0x00, 'i', 0x00}
+	got, res, err := Decode(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hi" {
+		t.Errorf("decoded %q, want %q", got, "hi")
+	}
+	if res.Encoding != "utf-16le" {
+		t.Errorf("encoding = %s, want utf-16le", res.Encoding)
+	}
+}
+
+// A UTF-32LE BOM starts with the UTF-16LE BOM, so order of checking matters.
+func TestUTF32BOMIsNotMistakenForUTF16(t *testing.T) {
+	body := []byte{0xFF, 0xFE, 0x00, 0x00}
+	_, res, err := Decode(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Encoding == "utf-16le" {
+		t.Error("a UTF-32LE BOM was read as UTF-16LE — check the BOM ordering")
+	}
+}
+
+// Declared UTF-8 and isn't. Replacement loses only the broken bytes; guessing a
+// different encoding would corrupt the whole document.
+func TestBrokenUTF8IsRepairedNotReguessed(t *testing.T) {
+	body := []byte("<t>caf\xC3\x28 ok</t>") // invalid continuation byte
+	got, res, err := Decode(body, "text/xml; charset=utf-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(got) {
+		t.Error("output must always be valid UTF-8")
+	}
+	if !res.Replaced {
+		t.Error("Replaced should flag that the declaration was wrong")
+	}
+	if !strings.Contains(string(got), "ok") {
+		t.Errorf("the rest of the document should survive: %q", got)
+	}
+}
+
+func TestNoDeclarationAndValidUTF8IsBelieved(t *testing.T) {
+	body := []byte("<t>café — 日本語</t>")
+	got, res, err := Decode(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Error("valid UTF-8 with no declaration should pass through untouched")
+	}
+	if res.Source != "assumed-utf8" {
+		t.Errorf("source = %s, want assumed-utf8", res.Source)
+	}
+}
+
+func TestUnknownEncodingLabelFallsBackToSniffing(t *testing.T) {
+	body := []byte(`<?xml version="1.0" encoding="x-nonsense-9000"?><t>hello</t>`)
+	got, _, err := Decode(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(got) {
+		t.Error("output must always be valid UTF-8")
+	}
+	if !strings.Contains(string(got), "hello") {
+		t.Errorf("content lost: %q", got)
+	}
+}
+
+func TestEmptyAndGarbageDoNotPanic(t *testing.T) {
+	for _, body := range [][]byte{nil, {}, {0x00}, {0xFF}, []byte("<?xml encoding=")} {
+		if _, _, err := Decode(body, "text/xml"); err != nil {
+			t.Errorf("Decode(%v) errored: %v", body, err)
+		}
+	}
+}
+
+func TestDecodeReaderRespectsTheLimit(t *testing.T) {
+	body := strings.Repeat("a", 10_000)
+	got, _, err := DecodeReader(strings.NewReader(body), "text/plain", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 100 {
+		t.Errorf("read %d bytes, want the 100-byte limit", len(got))
+	}
+}

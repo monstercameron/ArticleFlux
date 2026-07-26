@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tidings — Utilitarian</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FFFFFF; --alt:#FAFAFA; --panel:#F2F2F2; --line:#D6D6D6; --hair:#E6E6E6;
+  --ink:#111111; --mid:#4A4A4A; --mute:#767676;
+  --sel:#0B57D0; --sel-bg:#E4EDFC; --red:#C5221F; --amber:#8A5300; --green:#0F7B3F;
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mo:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  --rd:Georgia,"Times New Roman",serif;
+  --row:34px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:13px;
+  line-height:1.4;-webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--sel);outline-offset:-2px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left;padding:0}
+kbd{font-family:var(--mo);font-size:10.5px;background:var(--panel);border:1px solid var(--line);
+  padding:0 4px;color:var(--mid)}
+
+.app{display:grid;grid-template-columns:216px 1fr 480px;grid-template-rows:26px 1fr 24px;height:100vh}
+
+/* ── menubar ── */
+.menu{grid-column:1/-1;background:var(--panel);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:0;padding:0 8px;font-size:12px}
+.menu button{padding:0 9px;height:100%;color:var(--mid)}
+.menu button:hover{background:var(--bg)}
+.menu .t{font-weight:600;color:var(--ink);padding-right:14px}
+.menu .sp{flex:1}
+.menu .stat{font-family:var(--mo);font-size:11px;color:var(--mute);padding-left:12px}
+.menu .ok{color:var(--green)}
+
+.tree,.grid,.doc{overflow-y:auto;min-height:0}
+.tree{background:var(--alt);border-right:1px solid var(--line)}
+.grid{border-right:1px solid var(--line)}
+
+/* ── tree ── */
+.tg{font-size:11px;font-weight:600;color:var(--mute);padding:9px 10px 5px;
+  border-bottom:1px solid var(--hair);letter-spacing:.02em}
+.tn{display:flex;align-items:center;gap:6px;width:100%;padding:3px 10px;height:24px}
+.tn:hover{background:var(--bg)}
+.tn[aria-current="true"]{background:var(--sel);color:#fff}
+.tn[aria-current="true"] .c,.tn[aria-current="true"] .k{color:#D6E2F8}
+.tn .d{width:9px;color:var(--mute);font-size:9px}
+.tn .n{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tn .c{font-family:var(--mo);font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}
+.tn .k{font-family:var(--mo);font-size:10px;color:var(--mute);width:18px}
+.tn.ind{padding-left:24px}
+.tn.dead .n{color:var(--mute);text-decoration:line-through;text-decoration-color:var(--line)}
+.tn .warn{color:var(--red);font-size:11px}
+
+/* ── grid ── */
+.gh{position:sticky;top:0;z-index:2;display:grid;
+  grid-template-columns:18px 1fr 152px 168px 52px 44px;
+  background:var(--panel);border-bottom:1px solid var(--line);font-size:11px;font-weight:600;color:var(--mid)}
+.gh span{padding:5px 8px;border-right:1px solid var(--line);white-space:nowrap;overflow:hidden}
+.gh span:last-child{border-right:0;text-align:right}
+.gh span.r{text-align:right}
+
+.gs{grid-column:1/-1;background:var(--alt);border-bottom:1px solid var(--hair);
+  padding:4px 8px;font-size:11px;font-weight:600;color:var(--mid);display:flex;justify-content:space-between}
+
+.gr{display:grid;grid-template-columns:18px 1fr 152px 168px 52px 44px;width:100%;height:var(--row);
+  border-bottom:1px solid var(--hair);align-items:center}
+.gr:hover{background:var(--alt)}
+.gr[aria-selected="true"]{background:var(--sel-bg);box-shadow:inset 2px 0 0 var(--sel)}
+.gr>span{padding:0 8px;border-right:1px solid var(--hair);height:100%;display:flex;
+  align-items:center;overflow:hidden;white-space:nowrap}
+.gr>span:last-child{border-right:0;justify-content:flex-end}
+.gr>span.r{justify-content:flex-end}
+.gr .u{color:var(--sel);font-size:11px;justify-content:center;padding:0}
+.gr .ti{font-weight:600;text-overflow:ellipsis;display:block;line-height:var(--row)}
+.gr.read .ti{font-weight:400;color:var(--mid)}
+.gr .so{color:var(--mid);text-overflow:ellipsis;display:block;line-height:var(--row)}
+.gr .wh{font-family:var(--mo);font-size:11px;color:var(--mute);text-overflow:ellipsis;display:block;line-height:var(--row)}
+.gr .wh b{color:var(--green);font-weight:600}
+.gr .wh i{font-style:normal;color:var(--amber)}
+.gr .nm{font-family:var(--mo);font-size:11px;color:var(--mid);font-variant-numeric:tabular-nums}
+
+/* ── doc ── */
+.dh{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--alt)}
+.dh h2{margin:0 0 6px;font-size:17px;font-weight:600;line-height:1.25}
+.dl{font-family:var(--mo);font-size:11px;color:var(--mute)}
+.dt{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--line);
+  font-family:var(--mo);font-size:11px}
+.dt div{padding:6px 10px;border-right:1px solid var(--hair)}
+.dt div:last-child{border-right:0}
+.dt dt{margin:0;color:var(--mute);font-size:10px}
+.dt dd{margin:2px 0 0;font-weight:600;font-variant-numeric:tabular-nums}
+.dt dd.g{color:var(--green)}
+.body{padding:18px;font-family:var(--rd);font-size:15px;line-height:1.62;max-width:68ch}
+.body p{margin:0 0 .95em}
+.body code{font-family:var(--mo);font-size:.82em;background:var(--panel);padding:1px 4px}
+
+.alert{margin:0 18px 18px;border:1px solid var(--line);border-left:3px solid var(--red)}
+.alert-h{background:var(--alt);border-bottom:1px solid var(--hair);padding:5px 10px;
+  font-size:11px;font-weight:600;color:var(--red)}
+.alert-b{padding:9px 10px;display:flex;align-items:center;gap:10px}
+.alert-b p{margin:0;flex:1;font-size:12.5px;color:var(--mid)}
+.alert-b b{color:var(--ink)}
+.b{font-size:12px;border:1px solid var(--line);padding:3px 10px;background:var(--panel)}
+.b:hover{background:var(--bg)}
+.b:active{background:var(--line)}
+
+/* ── keybar ── */
+.keys{grid-column:1/-1;background:var(--panel);border-top:1px solid var(--line);
+  display:flex;align-items:center;gap:0;font-size:11px;overflow:hidden}
+.keys button{display:flex;align-items:center;gap:5px;padding:0 10px;height:100%;
+  border-right:1px solid var(--line);color:var(--mid);white-space:nowrap}
+.keys button:hover{background:var(--bg)}
+.keys .kk{font-family:var(--mo);font-weight:600;color:var(--ink)}
+.keys .sp{flex:1;border-right:0}
+.keys .fin{font-family:var(--mo);color:var(--mute);padding:0 10px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:1280px){.app{grid-template-columns:200px 1fr}.doc{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="menu">
+    <span class="t">Tidings</span>
+    <button>File</button><button>View</button><button>Rules</button><button>Sources</button><button>Tools</button>
+    <span class="sp"></span>
+    <span class="stat"><span class="ok">●</span> live</span>
+    <span class="stat">lag 0s</span>
+    <span class="stat">next 4:12</span>
+    <span class="stat">queue 0</span>
+  </div>
+
+  <nav class="tree" aria-label="Feeds">
+    <div class="tg">Views</div>
+    <button class="tn" aria-current="true"><span class="d"></span><span class="n">Home</span><span class="k">gh</span><span class="c">28</span></button>
+    <button class="tn"><span class="d"></span><span class="n">Unread</span><span class="k">gu</span><span class="c">143</span></button>
+    <button class="tn"><span class="d"></span><span class="n">Starred</span><span class="k">gs</span><span class="c">61</span></button>
+    <button class="tn"><span class="d"></span><span class="n">Notes</span><span class="k">gt</span><span class="c">9</span></button>
+    <button class="tn"><span class="d"></span><span class="n">Muted</span><span class="k">gm</span><span class="c">37</span></button>
+
+    <div class="tg">Folders</div>
+    <button class="tn"><span class="d">▾</span><span class="n">Systems</span><span class="k"></span><span class="c">108</span></button>
+    <button class="tn ind"><span class="n">Dan Luu</span><span class="c">1</span></button>
+    <button class="tn ind"><span class="n">LWN.net</span><span class="c">12</span></button>
+    <button class="tn ind"><span class="n">The Go Blog</span><span class="c">2</span></button>
+    <button class="tn ind"><span class="n">Hacker News</span><span class="c">94</span></button>
+    <button class="tn"><span class="d">▾</span><span class="n">Silicon</span><span class="k"></span><span class="c">3</span></button>
+    <button class="tn ind"><span class="n">Chips and Cheese</span><span class="c">3</span></button>
+    <button class="tn ind dead"><span class="n">AnandTech</span><span class="warn">!</span><span class="c">0</span></button>
+    <button class="tn"><span class="d">▾</span><span class="n">Reading</span><span class="k"></span><span class="c">11</span></button>
+    <button class="tn ind"><span class="n">Simon Willison</span><span class="c">7</span></button>
+    <button class="tn ind"><span class="n">Julia Evans</span><span class="c">4</span></button>
+  </nav>
+
+  <main class="grid" aria-label="Home">
+    <div class="gh">
+      <span></span><span>Title</span><span>Source</span><span>Ranked because</span><span class="r">Read</span><span class="r">Age</span>
+    </div>
+
+    <div class="gs"><span>TOP · ranked 18</span><span>sorted by score</span></div>
+
+    <button class="gr" aria-selected="true">
+      <span class="u">●</span>
+      <span><span class="ti">Speculative decoding without a draft model</span></span>
+      <span><span class="so">Simon Willison</span></span>
+      <span><span class="wh">open rate <b>84%</b></span></span>
+      <span class="r"><span class="nm">6m</span></span>
+      <span class="r"><span class="nm">2h</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">The write lock is not your problem</span></span>
+      <span><span class="so">Dan Luu</span></span>
+      <span><span class="wh">terms <b>sqlite</b> <b>contention</b></span></span>
+      <span class="r"><span class="nm">14m</span></span>
+      <span class="r"><span class="nm">5h</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">Snapdragon X2 Elite memory bandwidth, measured</span></span>
+      <span><span class="so">Chips and Cheese</span></span>
+      <span><span class="wh">carried by <b>3</b> sources</span></span>
+      <span class="r"><span class="nm">21m</span></span>
+      <span class="r"><span class="nm">7h</span></span>
+    </button>
+
+    <button class="gr read">
+      <span class="u"></span>
+      <span><span class="ti">Go 1.27: what changed in the iterator proposal</span></span>
+      <span><span class="so">The Go Blog</span></span>
+      <span><span class="wh">noted <b>4</b> here</span></span>
+      <span class="r"><span class="nm">9m</span></span>
+      <span class="r"><span class="nm">11h</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">Vector search is just a join you refuse to write</span></span>
+      <span><span class="so">Simon Willison</span></span>
+      <span><span class="wh">open rate <b>84%</b></span></span>
+      <span class="r"><span class="nm">11m</span></span>
+      <span class="r"><span class="nm">14h</span></span>
+    </button>
+
+    <button class="gr read">
+      <span class="u"></span>
+      <span><span class="ti">What actually happens when you SIGKILL a process group</span></span>
+      <span><span class="so">Julia Evans</span></span>
+      <span><span class="wh">terms <b>signals</b></span></span>
+      <span class="r"><span class="nm">5m</span></span>
+      <span class="r"><span class="nm">1d</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">Reproducible builds for embedded Rust, three years on</span></span>
+      <span><span class="so">LWN.net</span></span>
+      <span><span class="wh">carried by <b>2</b> sources</span></span>
+      <span class="r"><span class="nm">16m</span></span>
+      <span class="r"><span class="nm">1d</span></span>
+    </button>
+
+    <div class="gs"><span>EXPLORE · ranked 5</span><span>outside usual reading</span></div>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">A field guide to Postgres lock modes</span></span>
+      <span><span class="so">LWN.net</span></span>
+      <span><span class="wh"><i>held back 4×</i></span></span>
+      <span class="r"><span class="nm">18m</span></span>
+      <span class="r"><span class="nm">1d</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">Notes on running a mail server in 2026</span></span>
+      <span><span class="so">Julia Evans</span></span>
+      <span><span class="wh"><i>low open, high dwell</i></span></span>
+      <span class="r"><span class="nm">7m</span></span>
+      <span class="r"><span class="nm">1d</span></span>
+    </button>
+
+    <button class="gr">
+      <span class="u">●</span>
+      <span><span class="ti">The case against ORMs, revisited</span></span>
+      <span><span class="so">Hacker News</span></span>
+      <span><span class="wh"><i>source open rate 3%</i></span></span>
+      <span class="r"><span class="nm">9m</span></span>
+      <span class="r"><span class="nm">2d</span></span>
+    </button>
+  </main>
+
+  <article class="doc">
+    <div class="dh">
+      <h2>Speculative decoding without a draft model</h2>
+      <div class="dl">Simon Willison · 2h ago · 1,420 words · reader mode</div>
+    </div>
+
+    <dl class="dt">
+      <div><dt>OPEN RATE</dt><dd class="g">84%</dd></div>
+      <div><dt>MED DWELL</dt><dd>4:10</dd></div>
+      <div><dt>HALF-LIFE</dt><dd>38h</dd></div>
+      <div><dt>CADENCE</dt><dd>2.4/wk</dd></div>
+    </dl>
+
+    <div class="body">
+      <p>Every speculative decoding writeup starts the same way: you need a small draft model to propose tokens and a large model to verify them. That framing is doing a lot of work, and most of it is unnecessary.</p>
+      <p>The draft model exists to produce a cheap guess. But a guess is just a distribution you already have lying around — in the prompt, in the n-gram statistics of the document you are generating, or in the model's own earlier layers. Each of those is free.</p>
+      <p>The cheapest version is embarrassing in its simplicity. Keep a rolling <code>n-gram</code> table of the text generated so far. When the next token has been seen following this prefix before, propose it. Verify it in the same batched forward pass you were going to run anyway.</p>
+      <p>On a 27B model quantized to four bits, running on an NPU with a narrow memory bus, this cut wall-clock generation by 31% on structured output and did essentially nothing on free-form prose.</p>
+    </div>
+
+    <div class="alert">
+      <div class="alert-h">DORMANT SOURCE</div>
+      <div class="alert-b">
+        <p><b>AnandTech</b> — 0 items in 94 days, last opened 7 months ago</p>
+        <button class="b">Unsubscribe</button><button class="b">Keep</button>
+      </div>
+    </div>
+  </article>
+
+  <div class="keys">
+    <button><span class="kk">j/k</span> move</button>
+    <button><span class="kk">o</span> open</button>
+    <button><span class="kk">m</span> read</button>
+    <button><span class="kk">s</span> star</button>
+    <button><span class="kk">t</span> tag</button>
+    <button><span class="kk">b</span> bookmark</button>
+    <button><span class="kk">A</span> mark all</button>
+    <button><span class="kk">/</span> search</button>
+    <button><span class="kk">^K</span> command</button>
+    <span class="sp"></span>
+    <span class="fin">28 shown · 143 unread · 12 sources</span>
+  </div>
+</div>
+</body>
+</html>

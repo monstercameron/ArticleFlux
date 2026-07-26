@@ -1,0 +1,137 @@
+# CI — TODO 1.8, plan.md §22.14.
+#
+# Written before there is much to check, on purpose. Under waterfall-then-
+# implement, the decisions are settled once and then implemented over weeks; the
+# thing that erodes them is not disagreement, it is a plausible-looking commit
+# nobody reviews against a decision made a month earlier. CI is where a decision
+# gets teeth, and it is nearly free to add now and painful to retrofit.
+#
+# NOTE: this file is inert until the project is a git repo with a remote, which is
+# deliberately not something to set up on someone's behalf. It runs the moment one
+# exists.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.3"
+
+jobs:
+  # Lint and the structural guards run once — they are platform-independent, and
+  # Linux runners are faster.
+  static:
+    name: vet · staticcheck · guards · buf
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # buf breaking needs history to compare against
+
+      # D0: GWC v5.0.0 was never tagged, so go.mod carries a replace directive to
+      # a sibling checkout. Until that tag is pushed, CI has to materialise the
+      # sibling itself — the alternative is a build that only works on one laptop.
+      - name: Check out GoWebComponents (D0 — no published v5 tag)
+        uses: actions/checkout@v4
+        with:
+          repository: monstercameron/GoWebComponents
+          path: ../GoWebComponents
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - run: go build ./...
+      - run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      # The four structural guards. Each one corresponds to a decision that is
+      # otherwise only written down: A26 twice, schema ownership, and T1.
+      - name: Structural guards
+        run: go run ./internal/tools/guards .
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      - run: buf lint
+      # Additive-only within v1 (§20.7). The sync API and SW-cached wasm both
+      # guarantee old clients in the wild, so a renumbered field is a v2, and this
+      # is what enforces that rather than discipline.
+      - name: buf breaking
+        run: buf breaking --against '.git#branch=main'
+        continue-on-error: ${{ github.ref == 'refs/heads/main' }}
+
+  # Tests run on Windows because that is the box this is developed and verified
+  # on, and it is where the e2e suite will have to run (there is no WSL or Docker
+  # in the loop).
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out GoWebComponents (D0)
+        uses: actions/checkout@v4
+        with:
+          repository: monstercameron/GoWebComponents
+          path: ../GoWebComponents
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      # Includes the G1 FTS5 gate, which is a permanent test rather than a
+      # throwaway spike: a dependency bump that drops FTS5 fails here instead of
+      # silently removing search.
+      - run: go test ./...
+
+  # G5 / R4. The wasm size decides whether A5 (offline packs in the browser) stays
+  # affordable, so it is a ratchet, not a report: §22.14 fails the build if the
+  # artifact grows more than 5% over the recorded baseline without someone bumping
+  # that baseline on purpose.
+  wasm-size:
+    name: app.wasm size ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out GoWebComponents (D0)
+        uses: actions/checkout@v4
+        with:
+          repository: monstercameron/GoWebComponents
+          path: ../GoWebComponents
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build and measure
+        run: |
+          if [ ! -d client/app ]; then
+            echo "client/app does not exist yet (Tier 8) — nothing to measure."
+            exit 0
+          fi
+          mkdir -p bin/web
+          GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
+          size=$(stat -c%s bin/web/app.wasm)
+          if [ ! -f wasm-baseline.txt ]; then
+            echo "No baseline recorded yet. app.wasm = $size bytes."
+            echo "G5 writes the first baseline; until then there is nothing to ratchet against."
+            exit 0
+          fi
+          baseline=$(cat wasm-baseline.txt)
+          ceiling=$(( baseline * 105 / 100 ))
+          echo "app.wasm = $size bytes · baseline $baseline · ceiling $ceiling (+5%)"
+          if [ "$size" -gt "$ceiling" ]; then
+            echo "::error::app.wasm grew $(( (size - baseline) * 100 / baseline ))% over baseline."
+            echo "Shrink it, or bump wasm-baseline.txt deliberately — R4 is a decision"
+            echo "about whether A5 stays affordable, not a number to nudge."
+            exit 1
+          fi

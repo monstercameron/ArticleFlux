@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tidings — Fanciful</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,400..700,0..100,0..1&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#221A2E; --sur:#2B2239; --sur-2:#342A44; --line:#3D3150; --hair:#312741;
+  --cream:#F8F1E7; --soft:#C9BDD6; --mute:#93869F;
+  /* one hue per source — you learn your feeds by colour */
+  --sw:#FF8A6B; --dl:#7DDCB0; --cc:#FFCE5C; --go:#89B9FF; --je:#FF9CC4; --hn:#C4A6FF; --lw:#A8D89A;
+  --dsp:"Fraunces",Georgia,serif;
+  --rd:"Literata",Georgia,serif;
+  --ui:"Outfit",ui-sans-serif,system-ui,sans-serif;
+  --row:96px;
+  --w-rail:258px; --w-list:412px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;color:var(--cream);font-family:var(--ui);font-size:14.5px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+  background:var(--bg);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E")}
+:focus-visible{outline:2px solid var(--cc);outline-offset:3px;border-radius:10px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left;padding:0}
+.wonk{font-family:var(--dsp);font-variation-settings:"SOFT" 40,"WONK" 1,"opsz" 60}
+
+.app{display:grid;grid-template-columns:var(--w-rail) 6px var(--w-list) 6px 1fr;height:100vh}
+.rail,.list,.read{overflow-y:auto;min-height:0}
+.rail{padding:20px 14px}
+body.dragging{cursor:col-resize;user-select:none}
+body.dragging *{cursor:col-resize!important}
+
+/* ── resize grips ───────────────────────────────── */
+.grip{position:relative;background:none;border:0;padding:0;cursor:col-resize;
+  touch-action:none;align-self:stretch}
+.grip::before{content:"";position:absolute;inset:0 auto 0 50%;width:1px;transform:translateX(-50%);
+  background:var(--hair);transition:background .14s,width .14s}
+.grip::after{content:"";position:absolute;top:50%;left:50%;width:3px;height:34px;border-radius:99px;
+  transform:translate(-50%,-50%) scaleY(.4);background:var(--cc);opacity:0;
+  transition:opacity .16s,transform .16s}
+.grip:hover::before,.grip.on::before{width:2px;background:color-mix(in srgb,var(--cc) 55%,var(--line))}
+.grip:hover::after,.grip.on::after{opacity:1;transform:translate(-50%,-50%) scaleY(1)}
+.grip:focus-visible{outline:none}
+.grip:focus-visible::before{width:2px;background:var(--cc)}
+.grip:focus-visible::after{opacity:1;transform:translate(-50%,-50%) scaleY(1);background:var(--cc)}
+@media (prefers-reduced-motion:reduce){.grip::before,.grip::after{transition:none}}
+
+/* ── rail ── */
+.brand{padding:4px 10px 22px}
+.brand h1{margin:0;font-family:var(--dsp);font-variation-settings:"SOFT" 60,"WONK" 1,"opsz" 72;
+  font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.brand p{margin:5px 0 0;font-size:12.5px;color:var(--mute)}
+
+.nav{display:flex;align-items:center;gap:11px;width:100%;padding:9px 11px;border-radius:12px;margin-bottom:2px}
+.nav:hover{background:var(--sur)}
+.nav[aria-current="true"]{background:var(--sur-2)}
+.nav .bl{width:9px;height:9px;border-radius:3px;flex:none;background:var(--mute)}
+.nav[aria-current="true"] .bl{background:var(--cc);border-radius:50%}
+.nav .lb{flex:1;font-size:14.5px;color:var(--soft);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav[aria-current="true"] .lb{color:var(--cream);font-weight:500}
+.nav .ct{font-size:12.5px;color:var(--mute);font-variant-numeric:tabular-nums;flex:none}
+
+.hd{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);padding:26px 11px 10px}
+.src{display:flex;align-items:center;gap:11px;width:100%;padding:8px 11px;border-radius:12px}
+.src:hover{background:var(--sur)}
+.src .dot{width:11px;height:11px;border-radius:50%;flex:none}
+.src .nm{flex:1;font-size:13.5px;color:var(--soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.src .ct{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;flex:none}
+.src.off .nm{color:var(--mute)}
+.src.off .dot{background:#4A3F58!important}
+
+/* ── list ── */
+.hello{padding:30px 24px 20px}
+.hello h2{margin:0;font-family:var(--dsp);font-variation-settings:"SOFT" 50,"WONK" 1,"opsz" 48;
+  font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1.2}
+.hello p{margin:7px 0 0;font-size:13.5px;color:var(--mute)}
+.chips{display:flex;gap:7px;margin-top:16px;flex-wrap:wrap}
+.chip{font-size:12.5px;padding:5px 13px;border-radius:99px;color:var(--soft);border:1px solid var(--line)}
+.chip[aria-pressed="true"]{background:var(--cream);color:var(--bg);border-color:var(--cream);font-weight:500}
+
+.it{display:block;width:100%;height:var(--row);padding:16px 24px;position:relative;
+  border-bottom:1px solid var(--hair)}
+.it::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0;
+  background:var(--c,transparent)}
+.it:hover{background:var(--sur)}
+.it[aria-selected="true"]{background:var(--sur-2)}
+.it h3{margin:0 0 6px;font-family:var(--dsp);font-variation-settings:"SOFT" 30,"WONK" 0,"opsz" 32;
+  font-size:17px;font-weight:600;line-height:1.26;letter-spacing:-.012em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.it.done h3{font-weight:400;color:var(--soft)}
+.mt{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--mute);
+  white-space:nowrap;overflow:hidden}
+.mt .sr{color:var(--c,var(--soft));font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.mt s{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.5;flex:none}
+.why{margin-top:8px;font-size:12.5px;color:var(--mute);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.why b{color:var(--soft);font-weight:500;
+  box-shadow:inset 0 -.42em 0 color-mix(in srgb,var(--c,#fff) 26%,transparent)}
+
+/* ── reader ── */
+.wash{padding:52px 60px 30px;position:relative;overflow:hidden}
+.wash::after{content:"";position:absolute;inset:-60% -20% auto -20%;height:200%;pointer-events:none;
+  background:radial-gradient(ellipse at 22% 0%,color-mix(in srgb,var(--c) 24%,transparent),transparent 62%)}
+.wash>*{position:relative;z-index:1}
+.eyebrow{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--soft)}
+.eyebrow .dot{width:11px;height:11px;border-radius:50%;background:var(--c)}
+.wash h2{font-family:var(--dsp);font-variation-settings:"SOFT" 55,"WONK" 1,"opsz" 96;
+  font-size:clamp(30px,3.4vw,44px);line-height:1.1;font-weight:600;letter-spacing:-.03em;
+  margin:20px 0 0;max-width:18ch}
+.facts{display:flex;flex-wrap:wrap;gap:9px;margin-top:24px}
+.fact{font-size:12.5px;color:var(--soft);border:1px solid var(--line);padding:5px 12px;border-radius:99px}
+.fact b{color:var(--cream);font-weight:500}
+.fact.hi{border-color:var(--c);color:var(--c)}
+.fact.hi b{color:var(--c)}
+
+.prose{padding:14px 60px 56px;max-width:66ch;font-family:var(--rd);font-size:18px;
+  line-height:1.76;color:#E4DCEC}
+.prose p{margin:0 0 1.1em}
+.prose p:first-of-type{font-size:20px;color:var(--cream)}
+.prose code{font-family:var(--ui);font-size:.86em;background:var(--sur-2);padding:2px 7px;border-radius:6px;color:var(--cc)}
+.prose em{color:var(--cream);font-style:italic}
+
+.tidy{margin:0 60px 56px;max-width:66ch;border:1px solid var(--line);border-radius:16px;
+  background:var(--sur);padding:20px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.tidy .ic{width:38px;height:38px;border-radius:12px;background:var(--sur-2);display:grid;
+  place-items:center;font-size:17px;flex:none}
+.tidy p{margin:0;flex:1;min-width:200px;font-size:14px;color:var(--soft)}
+.tidy b{color:var(--cream);font-weight:600}
+.btn{font-size:13px;font-weight:500;padding:8px 15px;border-radius:99px;border:1px solid var(--line);color:var(--soft)}
+.btn:hover{border-color:var(--soft);color:var(--cream)}
+.btn.p{background:var(--cream);color:var(--bg);border-color:var(--cream)}
+
+/* ── mobile top bar + drawer scrim (hidden until phone width) ── */
+.mtop{display:none;align-items:center;gap:12px;position:sticky;top:0;z-index:12;
+  padding:calc(env(safe-area-inset-top,0px) + 11px) 16px 11px;
+  border-bottom:1px solid var(--hair);background:rgba(34,26,46,.92);backdrop-filter:blur(14px)}
+.mtop .ttl{flex:1;font-family:var(--dsp);font-variation-settings:"SOFT" 55,"WONK" 1,"opsz" 40;
+  font-size:21px;font-weight:600;letter-spacing:-.02em}
+.mtop .live{width:8px;height:8px;border-radius:50%;background:var(--dl);flex:none}
+.ib{width:46px;height:46px;margin:-8px;display:grid;place-items:center;border-radius:14px;
+  font-size:18px;color:var(--soft);flex:none}
+.ib:active{background:var(--sur)}
+.scrim{display:none;position:fixed;inset:0;background:rgba(12,8,18,.62);z-index:25;
+  opacity:0;pointer-events:none;transition:opacity .24s}
+.scrim.open{opacity:1;pointer-events:auto}
+
+/* tablet: two panes, reading opens full-width */
+@media (max-width:1220px){
+  .app{grid-template-columns:var(--w-rail) 6px 1fr}
+  .grip.g2,.read{display:none}
+}
+
+/* phone: one column, the rail becomes a drawer */
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .grip{display:none}
+  .scrim{display:block}
+  .mtop{display:flex}
+  .rail{position:fixed;inset:0 auto 0 0;width:min(86vw,304px);z-index:30;
+    padding-top:calc(env(safe-area-inset-top,0px) + 18px);
+    background:var(--sur);border-right:1px solid var(--line);
+    transform:translateX(-100%);transition:transform .28s cubic-bezier(.32,.72,0,1)}
+  .rail.open{transform:none}
+  .hello{padding:20px 18px 2px}
+  .hello h2{font-size:23px}
+  .chips{padding-bottom:2px}
+  .it{padding:16px 18px}
+  .it h3{font-size:17.5px;-webkit-line-clamp:3}
+  .why{white-space:normal;line-height:1.45}
+  .wash{padding:28px 20px 22px}
+  .wash h2{font-size:clamp(27px,7.4vw,34px)}
+  .prose{padding:6px 20px 44px;font-size:17.5px}
+  .prose p:first-of-type{font-size:19px}
+  .tidy{margin:0 20px 44px;padding:18px}
+  .nav,.src{min-height:44px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}.rail,.scrim{transition:none}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <nav class="rail" aria-label="Feeds">
+    <div class="brand">
+      <h1>Tidings</h1>
+      <p>12 sources · all quiet</p>
+    </div>
+
+    <button class="nav" aria-current="true"><span class="bl"></span><span class="lb">Home</span><span class="ct">28</span></button>
+    <button class="nav"><span class="bl"></span><span class="lb">Unread</span><span class="ct">143</span></button>
+    <button class="nav"><span class="bl"></span><span class="lb">Starred</span><span class="ct">61</span></button>
+    <button class="nav"><span class="bl"></span><span class="lb">Notes</span><span class="ct">9</span></button>
+    <button class="nav"><span class="bl"></span><span class="lb">Bookmarks</span><span class="ct">412</span></button>
+
+    <div class="hd">Sources</div>
+    <button class="src"><span class="dot" style="background:var(--sw)"></span><span class="nm">Simon Willison</span><span class="ct">7</span></button>
+    <button class="src"><span class="dot" style="background:var(--dl)"></span><span class="nm">Dan Luu</span><span class="ct">1</span></button>
+    <button class="src"><span class="dot" style="background:var(--cc)"></span><span class="nm">Chips and Cheese</span><span class="ct">3</span></button>
+    <button class="src"><span class="dot" style="background:var(--go)"></span><span class="nm">The Go Blog</span><span class="ct">2</span></button>
+    <button class="src"><span class="dot" style="background:var(--je)"></span><span class="nm">Julia Evans</span><span class="ct">4</span></button>
+    <button class="src"><span class="dot" style="background:var(--lw)"></span><span class="nm">LWN.net</span><span class="ct">12</span></button>
+    <button class="src"><span class="dot" style="background:var(--hn)"></span><span class="nm">Hacker News</span><span class="ct">94</span></button>
+    <button class="src off"><span class="dot"></span><span class="nm">AnandTech</span><span class="ct">0</span></button>
+  </nav>
+
+  <div class="grip g1" id="g1" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Resize sidebar" aria-valuemin="200" aria-valuemax="400" aria-valuenow="258"
+       title="Drag to resize · arrow keys to nudge · double-click to reset"></div>
+
+  <main class="list" aria-label="Home">
+    <header class="mtop">
+      <span class="live" title="Connected"></span>
+      <span class="ttl">Tidings</span>
+      <button class="ib" aria-label="Search">⌕</button>
+      <button class="ib" id="menuBtn" aria-label="Sources" aria-expanded="false">☰</button>
+    </header>
+
+    <div class="hello">
+      <h2>Twenty-eight worth your evening.</h2>
+      <p>Ranked from what you actually read. Updated 2 minutes ago.</p>
+      <div class="chips">
+        <button class="chip" aria-pressed="true">Top</button>
+        <button class="chip">Explore</button>
+        <button class="chip">Clusters</button>
+      </div>
+    </div>
+
+    <button class="it" aria-selected="true" style="--c:var(--sw)">
+      <h3>Speculative decoding without a draft model</h3>
+      <div class="mt"><span class="sr">Simon Willison</span><s></s><span>2h</span><s></s><span>6 min</span></div>
+      <div class="why">You open <b>84%</b> of everything they write</div>
+    </button>
+
+    <button class="it" style="--c:var(--dl)">
+      <h3>The write lock is not your problem</h3>
+      <div class="mt"><span class="sr">Dan Luu</span><s></s><span>5h</span><s></s><span>14 min</span></div>
+      <div class="why">Close to <b>sqlite</b> and <b>contention</b>, which you keep coming back to</div>
+    </button>
+
+    <button class="it" style="--c:var(--cc)">
+      <h3>Snapdragon X2 Elite memory bandwidth, measured</h3>
+      <div class="mt"><span class="sr">Chips and Cheese</span><s></s><span>7h</span><s></s><span>21 min</span></div>
+      <div class="why"><b>Three</b> other feeds carried this today</div>
+    </button>
+
+    <button class="it done" style="--c:var(--go)">
+      <h3>Go 1.27: what changed in the iterator proposal</h3>
+      <div class="mt"><span class="sr">The Go Blog</span><s></s><span>11h</span><s></s><span>9 min</span></div>
+      <div class="why">You've written notes on <b>four</b> posts from here</div>
+    </button>
+
+    <button class="it" style="--c:var(--lw)">
+      <h3>A field guide to Postgres lock modes</h3>
+      <div class="mt"><span class="sr">LWN.net</span><s></s><span>1d</span><s></s><span>18 min</span></div>
+      <div class="why">Off your usual path — worth a look anyway</div>
+    </button>
+
+    <button class="it" style="--c:var(--je)">
+      <h3>Notes on running a mail server in 2026</h3>
+      <div class="mt"><span class="sr">Julia Evans</span><s></s><span>1d</span><s></s><span>7 min</span></div>
+      <div class="why">Rarely opened, <b>never</b> regretted</div>
+    </button>
+  </main>
+
+  <div class="grip g2" id="g2" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Resize list" aria-valuemin="320" aria-valuemax="640" aria-valuenow="412"
+       title="Drag to resize · arrow keys to nudge · double-click to reset"></div>
+
+  <article class="read" style="--c:var(--sw)">
+    <header class="wash">
+      <div class="eyebrow"><span class="dot"></span>Simon Willison · 2 hours ago</div>
+      <h2 class="wonk">Speculative decoding without a draft model</h2>
+      <div class="facts">
+        <span class="fact hi">You open <b>84%</b></span>
+        <span class="fact"><b>6</b> min</span>
+        <span class="fact"><b>1,420</b> words</span>
+        <span class="fact">Usually stay <b>4:10</b></span>
+        <span class="fact">Reader mode</span>
+      </div>
+    </header>
+
+    <div class="prose">
+      <p>Every speculative decoding writeup starts the same way: you need a small draft model to propose tokens and a large model to verify them. That framing is doing a lot of work, and most of it is unnecessary.</p>
+      <p>The draft model exists to produce a cheap guess. But a guess is just a distribution you already have lying around — in the prompt, in the n-gram statistics of the document you are generating, or in the model's own earlier layers. Each of those is free.</p>
+      <p>The cheapest version is embarrassing in its simplicity. Keep a rolling <code>n-gram</code> table of the text generated so far. When the next token has been seen following this prefix before, propose it. Verify it in the same batched forward pass you were going to run anyway.</p>
+      <p>On a 27B model quantized to four bits, running on an NPU with a narrow memory bus, this cut wall-clock generation by 31% on structured output and did <em>essentially nothing</em> on free-form prose. That gap is the whole story, and it is worth sitting with before reaching for a second model.</p>
+    </div>
+
+    <div class="tidy">
+      <span class="ic">🌙</span>
+      <p><b>AnandTech</b> has been quiet for 94 days. You last read them in January.</p>
+      <button class="btn p">Unsubscribe</button><button class="btn">Keep</button>
+    </div>
+  </article>
+</div>
+<div class="scrim" id="scrim"></div>
+
+<script>
+/* ── drawer (phone widths only) ─────────────────── */
+(function(){
+  var rail = document.querySelector('.rail'),
+      scrim = document.getElementById('scrim'),
+      btn = document.getElementById('menuBtn');
+  function set(open){
+    rail.classList.toggle('open', open);
+    scrim.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  btn.addEventListener('click', function(){ set(!rail.classList.contains('open')); });
+  scrim.addEventListener('click', function(){ set(false); });
+  rail.addEventListener('click', function(e){ if (e.target.closest('.nav,.src')) set(false); });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') set(false); });
+  window.addEventListener('resize', function(){ if (window.innerWidth > 900) set(false); });
+})();
+
+/* ── resizable panes (desktop only) ─────────────── */
+(function(){
+  var app = document.getElementById('app');
+  var KEY = 'tidings.panes.v1';
+  var DEF = { rail: 258, list: 412 };
+  var MIN = { rail: 200, list: 320 };
+  var MAX = { rail: 400, list: 640 };
+  var READ_MIN = 460;          // the reading pane never gets squeezed out
+  var GRIPS = 12;              // two 6px grips
+  var w = load();
+
+  function load(){
+    try {
+      var s = JSON.parse(localStorage.getItem(KEY));
+      if (s && typeof s.rail === 'number' && typeof s.list === 'number') return clamp(s);
+    } catch (e) {}
+    return { rail: DEF.rail, list: DEF.list };
+  }
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(w)); } catch (e) {} }
+
+  function clamp(v){
+    var out = {
+      rail: Math.min(Math.max(Math.round(v.rail), MIN.rail), MAX.rail),
+      list: Math.min(Math.max(Math.round(v.list), MIN.list), MAX.list)
+    };
+    // only defend the reading pane when it is actually on screen
+    if (window.innerWidth > 1220) {
+      var spare = window.innerWidth - out.rail - out.list - GRIPS - READ_MIN;
+      if (spare < 0) {
+        var takeFromList = Math.min(-spare, out.list - MIN.list);
+        out.list -= takeFromList;
+        var rest = -spare - takeFromList;
+        if (rest > 0) out.rail = Math.max(MIN.rail, out.rail - rest);
+      }
+    }
+    return out;
+  }
+
+  function apply(){
+    app.style.setProperty('--w-rail', w.rail + 'px');
+    app.style.setProperty('--w-list', w.list + 'px');
+    g1.setAttribute('aria-valuenow', w.rail);
+    g2.setAttribute('aria-valuenow', w.list);
+  }
+
+  function wire(el, which){
+    var dragging = false, startX = 0, startVal = 0;
+
+    el.addEventListener('pointerdown', function(e){
+      if (e.button !== 0) return;
+      dragging = true; startX = e.clientX; startVal = w[which];
+      el.setPointerCapture(e.pointerId);
+      el.classList.add('on');
+      document.body.classList.add('dragging');
+      e.preventDefault();
+    });
+
+    el.addEventListener('pointermove', function(e){
+      if (!dragging) return;
+      var next = {}; next.rail = w.rail; next.list = w.list;
+      next[which] = startVal + (e.clientX - startX);
+      w = clamp(next); apply();
+    });
+
+    function end(e){
+      if (!dragging) return;
+      dragging = false;
+      try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+      el.classList.remove('on');
+      document.body.classList.remove('dragging');
+      save();
+    }
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+
+    // double-click a grip to restore its default width
+    el.addEventListener('dblclick', function(){
+      var next = { rail: w.rail, list: w.list };
+      next[which] = DEF[which];
+      w = clamp(next); apply(); save();
+    });
+
+    // keyboard: arrows nudge, shift+arrows jump, Home resets
+    el.addEventListener('keydown', function(e){
+      var step = e.shiftKey ? 48 : 8, next = { rail: w.rail, list: w.list };
+      if (e.key === 'ArrowLeft')       next[which] -= step;
+      else if (e.key === 'ArrowRight') next[which] += step;
+      else if (e.key === 'Home')       next[which]  = DEF[which];
+      else return;
+      e.preventDefault();
+      w = clamp(next); apply(); save();
+    });
+  }
+
+  var g1 = document.getElementById('g1');
+  var g2 = document.getElementById('g2');
+  wire(g1, 'rail');
+  wire(g2, 'list');
+  apply();
+
+  var t;
+  window.addEventListener('resize', function(){
+    clearTimeout(t);
+    t = setTimeout(function(){ w = clamp(w); apply(); save(); }, 90);
+  });
+})();
+</script>
+</body>
+</html>

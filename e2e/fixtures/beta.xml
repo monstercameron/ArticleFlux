@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Beta Notes</title>
+  <link href="https://beta.example/"/>
+  <updated>2026-07-26T10:00:00Z</updated>
+  <entry>
+    <title>Sourdough hydration ratios, revisited</title>
+    <link href="https://beta.example/e/1"/>
+    <id>urn:uuid:beta-1</id>
+    <updated>2026-07-26T10:00:00Z</updated>
+    <summary>Why 78% behaves differently in a cold kitchen.</summary>
+    <content type="html">&lt;p&gt;Flour absorbs differently at 18°C.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>An entry with a deliberately enormous unbroken token to test wrapping</title>
+    <link href="https://beta.example/e/2"/>
+    <id>urn:uuid:beta-2</id>
+    <updated>2026-07-25T10:00:00Z</updated>
+    <summary>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</summary>
+  </entry>
+</feed>

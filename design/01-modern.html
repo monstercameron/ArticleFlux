@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tidings — Modern</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#FBFBFC; --sur:#FFFFFF; --sur-2:#F4F5F7; --line:#E7E8EC; --hair:#EFF0F3;
+  --ink:#0E0F13; --mid:#585B66; --mute:#8A8D99;
+  --acc:#1D4EF5; --acc-soft:#EDF1FE; --acc-line:#C9D6FD;
+  --warn:#B4530E; --warn-soft:#FDF3E9;
+  --ui:"Schibsted Grotesk",ui-sans-serif,system-ui,sans-serif;
+  --rd:"Newsreader",Georgia,serif;
+  --mo:"JetBrains Mono",ui-monospace,monospace;
+  --r:10px; --row:92px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:14px;
+  line-height:1.5;-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:6px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left;padding:0}
+
+.app{display:grid;grid-template-columns:262px 404px 1fr;height:100vh;gap:0}
+.rail,.list,.read{overflow-y:auto;min-height:0}
+.rail{padding:14px 12px;border-right:1px solid var(--line)}
+.list{border-right:1px solid var(--line);background:var(--bg)}
+.read{background:var(--sur)}
+
+/* ── rail ── */
+.brand{display:flex;align-items:center;gap:10px;padding:8px 10px 18px}
+.logo{width:26px;height:26px;border-radius:8px;background:var(--ink);color:var(--sur);
+  display:grid;place-items:center;font-size:14px;font-weight:700;letter-spacing:-.03em}
+.brand h1{margin:0;font-size:16px;font-weight:600;letter-spacing:-.02em}
+.brand .st{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--mute)}
+.brand .pulse{width:6px;height:6px;border-radius:50%;background:#12A150}
+
+.nav{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:8px;margin-bottom:1px}
+.nav:hover{background:var(--sur-2)}
+.nav[aria-current="true"]{background:var(--acc-soft);color:var(--acc)}
+.nav .ic{width:16px;text-align:center;font-size:13px;opacity:.75}
+.nav .lb{flex:1;font-size:14px;font-weight:500}
+.nav .ct{font-family:var(--mo);font-size:11.5px;color:var(--mute);font-variant-numeric:tabular-nums}
+.nav[aria-current="true"] .ct{color:var(--acc)}
+
+.hd{font-size:11.5px;font-weight:600;letter-spacing:.03em;color:var(--mute);padding:22px 10px 8px}
+.src{display:flex;align-items:center;gap:10px;width:100%;padding:7px 10px;border-radius:8px}
+.src:hover{background:var(--sur-2)}
+.mono{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;flex:none;
+  font-size:10.5px;font-weight:700;color:#fff;letter-spacing:-.02em}
+.src .nm{flex:1;font-size:13.5px;color:var(--mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.src .ct{font-family:var(--mo);font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}
+.src.off .nm{color:var(--mute)}
+.src.off .mono{background:#D7D9DE!important;color:#8A8D99}
+
+/* ── list ── */
+.top{position:sticky;top:0;z-index:3;background:rgba(251,251,252,.88);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);padding:16px 20px 13px}
+.top h2{margin:0 0 3px;font-size:19px;font-weight:600;letter-spacing:-.025em}
+.top p{margin:0;font-size:12.5px;color:var(--mute)}
+.seg{display:flex;gap:6px;margin-top:12px}
+.seg button{font-size:12.5px;font-weight:500;padding:5px 11px;border-radius:99px;color:var(--mid);background:var(--sur-2)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--sur)}
+
+.it{display:block;width:100%;height:var(--row);padding:15px 20px;border-bottom:1px solid var(--hair);position:relative}
+.it:hover{background:var(--sur-2)}
+.it[aria-selected="true"]{background:var(--sur);box-shadow:inset 3px 0 0 var(--acc)}
+.it h3{margin:0 0 6px;font-size:15.5px;font-weight:600;line-height:1.3;letter-spacing:-.015em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.it.done h3{font-weight:400;color:var(--mid)}
+.mt{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mute)}
+.mt .sr{color:var(--mid);font-weight:500}
+.mt s{width:3px;height:3px;background:currentColor;border-radius:50%;opacity:.45}
+.tag{display:inline-flex;align-items:center;gap:5px;margin-top:8px;font-size:11.5px;
+  padding:3px 8px;border-radius:99px;background:var(--acc-soft);color:var(--acc);font-weight:500}
+.tag.q{background:var(--sur-2);color:var(--mute)}
+.tag b{font-family:var(--mo);font-weight:500;font-size:11px}
+
+/* ── reader ── */
+.prog{position:sticky;top:0;z-index:4;height:2px;background:var(--hair)}
+.prog i{display:block;height:100%;width:34%;background:var(--acc)}
+.rh{padding:52px 60px 0;max-width:760px}
+.eyebrow{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--mid)}
+.eyebrow .mono{width:20px;height:20px;border-radius:6px;font-size:9.5px}
+.rh h2{font-family:var(--rd);font-size:40px;line-height:1.13;font-weight:500;letter-spacing:-.028em;
+  margin:20px 0 0;max-width:19ch}
+.facts{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0 0;padding-bottom:26px;border-bottom:1px solid var(--line)}
+.pill{font-size:11.5px;color:var(--mid);background:var(--sur-2);padding:5px 10px;border-radius:99px}
+.pill b{font-family:var(--mo);font-weight:500;color:var(--ink)}
+.pill.hi{background:var(--acc-soft);color:var(--acc)}
+.pill.hi b{color:var(--acc)}
+
+.prose{padding:32px 60px 60px;max-width:700px;font-family:var(--rd);font-size:19px;
+  line-height:1.68;color:#20222A}
+.prose p{margin:0 0 1.05em}
+.prose code{font-family:var(--mo);font-size:.78em;background:var(--sur-2);padding:2px 6px;border-radius:5px}
+
+.note{margin:0 60px 56px;max-width:700px;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--sur);overflow:hidden}
+.note-h{display:flex;align-items:center;gap:8px;padding:12px 16px;background:var(--warn-soft);
+  color:var(--warn);font-size:12px;font-weight:600}
+.note-b{padding:16px;display:flex;align-items:center;gap:14px}
+.note-b p{margin:0;flex:1;font-size:13.5px;color:var(--mid)}
+.note-b b{color:var(--ink);font-weight:600}
+.btn{font-size:13px;font-weight:500;padding:7px 14px;border-radius:8px;border:1px solid var(--line);background:var(--sur)}
+.btn:hover{background:var(--sur-2)}
+.btn.p{background:var(--ink);color:var(--sur);border-color:var(--ink)}
+.btn.p:hover{background:#25262E}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:1200px){.app{grid-template-columns:250px 1fr}.read{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <nav class="rail" aria-label="Feeds">
+    <div class="brand">
+      <span class="logo">T</span><h1>Tidings</h1>
+      <span class="st"><span class="pulse"></span>Live</span>
+    </div>
+
+    <button class="nav" aria-current="true"><span class="ic">◆</span><span class="lb">Home</span><span class="ct">28</span></button>
+    <button class="nav"><span class="ic">○</span><span class="lb">Unread</span><span class="ct">143</span></button>
+    <button class="nav"><span class="ic">★</span><span class="lb">Starred</span><span class="ct">61</span></button>
+    <button class="nav"><span class="ic">✎</span><span class="lb">Notes</span><span class="ct">9</span></button>
+    <button class="nav"><span class="ic">◇</span><span class="lb">Bookmarks</span><span class="ct">412</span></button>
+
+    <div class="hd">Sources</div>
+    <button class="src"><span class="mono" style="background:#1D4EF5">SW</span><span class="nm">Simon Willison</span><span class="ct">7</span></button>
+    <button class="src"><span class="mono" style="background:#0E7C5A">DL</span><span class="nm">Dan Luu</span><span class="ct">1</span></button>
+    <button class="src"><span class="mono" style="background:#B4530E">CC</span><span class="nm">Chips and Cheese</span><span class="ct">3</span></button>
+    <button class="src"><span class="mono" style="background:#5B3FBE">GO</span><span class="nm">The Go Blog</span><span class="ct">2</span></button>
+    <button class="src"><span class="mono" style="background:#A8262C">JE</span><span class="nm">Julia Evans</span><span class="ct">4</span></button>
+    <button class="src"><span class="mono" style="background:#3E4652">HN</span><span class="nm">Hacker News</span><span class="ct">94</span></button>
+    <button class="src off"><span class="mono">AT</span><span class="nm">AnandTech</span><span class="ct">0</span></button>
+  </nav>
+
+  <main class="list" aria-label="Home">
+    <div class="top">
+      <h2>Home</h2>
+      <p>28 ranked for you · updated 2 minutes ago</p>
+      <div class="seg">
+        <button aria-pressed="true">Top</button><button>Explore</button><button>Clusters</button>
+      </div>
+    </div>
+
+    <button class="it" aria-selected="true">
+      <h3>Speculative decoding without a draft model</h3>
+      <div class="mt"><span class="sr">Simon Willison</span><s></s><span>2h</span><s></s><span>6 min read</span></div>
+      <span class="tag">You open <b>84%</b> of this source</span>
+    </button>
+
+    <button class="it">
+      <h3>The write lock is not your problem</h3>
+      <div class="mt"><span class="sr">Dan Luu</span><s></s><span>5h</span><s></s><span>14 min read</span></div>
+      <span class="tag">Matches <b>sqlite</b>, <b>contention</b></span>
+    </button>
+
+    <button class="it">
+      <h3>Snapdragon X2 Elite memory bandwidth, measured</h3>
+      <div class="mt"><span class="sr">Chips and Cheese</span><s></s><span>7h</span><s></s><span>21 min read</span></div>
+      <span class="tag"><b>3</b> other sources carried this</span>
+    </button>
+
+    <button class="it done">
+      <h3>Go 1.27: what changed in the iterator proposal</h3>
+      <div class="mt"><span class="sr">The Go Blog</span><s></s><span>11h</span><s></s><span>9 min read</span></div>
+      <span class="tag">You noted <b>4</b> posts here</span>
+    </button>
+
+    <button class="it">
+      <h3>A field guide to Postgres lock modes</h3>
+      <div class="mt"><span class="sr">LWN.net</span><s></s><span>1d</span><s></s><span>18 min read</span></div>
+      <span class="tag q">Outside your usual reading</span>
+    </button>
+
+    <button class="it">
+      <h3>Notes on running a mail server in 2026</h3>
+      <div class="mt"><span class="sr">Julia Evans</span><s></s><span>1d</span><s></s><span>7 min read</span></div>
+      <span class="tag q">Rarely opened, high signal</span>
+    </button>
+  </main>
+
+  <article class="read">
+    <div class="prog"><i></i></div>
+    <header class="rh">
+      <div class="eyebrow"><span class="mono" style="background:#1D4EF5">SW</span>Simon Willison · 2 hours ago</div>
+      <h2>Speculative decoding without a draft model</h2>
+      <div class="facts">
+        <span class="pill hi">Opened <b>84%</b></span>
+        <span class="pill"><b>6</b> min read</span>
+        <span class="pill"><b>1,420</b> words</span>
+        <span class="pill">Median dwell <b>4:10</b></span>
+        <span class="pill">Reader mode</span>
+      </div>
+    </header>
+
+    <div class="prose">
+      <p>Every speculative decoding writeup starts the same way: you need a small draft model to propose tokens and a large model to verify them. That framing is doing a lot of work, and most of it is unnecessary.</p>
+      <p>The draft model exists to produce a cheap guess. But a guess is just a distribution you already have lying around — in the prompt, in the n-gram statistics of the document you are generating, or in the model's own earlier layers. Each of those is free.</p>
+      <p>The cheapest version is embarrassing in its simplicity. Keep a rolling <code>n-gram</code> table of the text generated so far. When the next token has been seen following this prefix before, propose it. Verify it in the same batched forward pass you were going to run anyway.</p>
+      <p>On a 27B model quantized to four bits, running on an NPU with a narrow memory bus, this cut wall-clock generation by 31% on structured output and did essentially nothing on free-form prose. That gap is the whole story, and it is worth sitting with before reaching for a second model.</p>
+    </div>
+
+    <div class="note">
+      <div class="note-h">Dormant source</div>
+      <div class="note-b">
+        <p><b>AnandTech</b> hasn't published in 94 days. You last opened it 7 months ago.</p>
+        <button class="btn p">Unsubscribe</button><button class="btn">Keep</button>
+      </div>
+    </div>
+  </article>
+</div>
+</body>
+</html>

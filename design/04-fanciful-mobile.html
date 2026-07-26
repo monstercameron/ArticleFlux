@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#221A2E">
+<title>Tidings — Mobile</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,400..700,0..100,0..1&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#221A2E; --sur:#2B2239; --sur-2:#342A44; --line:#3D3150; --hair:#312741;
+  --cream:#F8F1E7; --soft:#C9BDD6; --mute:#93869F;
+  --sw:#FF8A6B; --dl:#7DDCB0; --cc:#FFCE5C; --go:#89B9FF; --je:#FF9CC4; --hn:#C4A6FF; --lw:#A8D89A;
+  --dsp:"Fraunces",Georgia,serif;
+  --rd:"Literata",Georgia,serif;
+  --ui:"Outfit",ui-sans-serif,system-ui,sans-serif;
+  --tap:46px;
+  --sat:env(safe-area-inset-top,0px); --sab:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{margin:0;color:var(--cream);font-family:var(--ui);font-size:15px;line-height:1.55;
+  background:var(--bg);-webkit-font-smoothing:antialiased;overscroll-behavior:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;text-align:left;padding:0}
+:focus-visible{outline:2px solid var(--cc);outline-offset:2px;border-radius:10px}
+
+/* ── stage: bare on a phone, framed on a desktop ─────────── */
+.stage{min-height:100dvh}
+.device{position:relative;width:100%;height:100dvh;overflow:hidden;background:var(--bg);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E")}
+.statusbar,.caption{display:none}
+
+@media (min-width:900px){
+  body{background:#160F21}
+  .stage{display:grid;grid-template-columns:auto auto;gap:52px;align-items:center;justify-content:center;
+    min-height:100vh;padding:48px 32px}
+  .device{width:392px;height:842px;border-radius:48px;border:11px solid #0D0913;flex:none;
+    box-shadow:0 46px 100px rgba(0,0,0,.6),0 0 0 1px #3A2F4A,inset 0 0 0 1px #191122}
+  .statusbar{display:flex;align-items:center;justify-content:space-between;padding:14px 26px 4px;
+    font-size:13px;font-weight:500;letter-spacing:.01em;position:relative;z-index:6}
+  .statusbar .dots{display:flex;gap:4px;align-items:center}
+  .statusbar i{width:4px;height:4px;border-radius:50%;background:var(--cream);display:block}
+  .statusbar .bat{width:22px;height:11px;border:1px solid var(--soft);border-radius:3px;position:relative;padding:1px}
+  .statusbar .bat span{display:block;height:100%;width:72%;background:var(--cream);border-radius:1px}
+  .caption{display:block;max-width:310px}
+  .caption h1{font-family:var(--dsp);font-variation-settings:"SOFT" 55,"WONK" 1,"opsz" 72;
+    font-size:34px;font-weight:600;letter-spacing:-.025em;margin:0 0 14px;line-height:1.1}
+  .caption p{margin:0 0 14px;color:var(--soft);font-size:14.5px;line-height:1.65}
+  .caption ul{margin:0;padding:0;list-style:none}
+  .caption li{color:var(--mute);font-size:13.5px;padding:7px 0;border-top:1px solid var(--line)}
+  .caption li b{color:var(--cream);font-weight:500}
+  .caption .hint{margin-top:18px;font-size:12.5px;color:var(--cc)}
+}
+@media (max-width:1100px) and (min-width:900px){.caption{display:none}.stage{grid-template-columns:auto}}
+
+/* ── screens ─────────────────────────────────────── */
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);z-index:2}
+.screen.push{transform:translateX(100%);transition:transform .3s cubic-bezier(.32,.72,0,1);z-index:4}
+.screen.push.in{transform:none}
+@media (prefers-reduced-motion:reduce){.screen.push{transition:none}}
+
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+
+/* ── top bar ─────────────────────────────────────── */
+.bar{display:flex;align-items:center;gap:12px;padding:calc(var(--sat) + 10px) 16px 10px;
+  min-height:calc(var(--sat) + 54px);border-bottom:1px solid var(--hair);
+  background:rgba(34,26,46,.9);backdrop-filter:blur(14px);position:relative;z-index:5}
+.bar .ttl{flex:1;font-family:var(--dsp);font-variation-settings:"SOFT" 55,"WONK" 1,"opsz" 40;
+  font-size:21px;font-weight:600;letter-spacing:-.02em}
+.bar .live{width:8px;height:8px;border-radius:50%;background:var(--dl);flex:none}
+.ib{width:var(--tap);height:var(--tap);display:grid;place-items:center;border-radius:14px;
+  font-size:18px;color:var(--soft);flex:none;margin:-6px}
+.ib:active{background:var(--sur)}
+.bar .src-chip{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.bar .src-chip .dot{width:10px;height:10px;border-radius:50%;background:var(--c);flex:none}
+.bar .src-chip span{font-size:14.5px;color:var(--soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── greeting + chips ────────────────────────────── */
+.hello{padding:22px 18px 4px}
+.hello h2{margin:0;font-family:var(--dsp);font-variation-settings:"SOFT" 50,"WONK" 1,"opsz" 44;
+  font-size:25px;font-weight:500;letter-spacing:-.02em;line-height:1.18}
+.hello p{margin:7px 0 0;font-size:13.5px;color:var(--mute)}
+.chips{display:flex;gap:8px;padding:16px 18px 14px;overflow-x:auto;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{font-size:13.5px;padding:8px 16px;border-radius:99px;color:var(--soft);
+  border:1px solid var(--line);white-space:nowrap;flex:none}
+.chip[aria-pressed="true"]{background:var(--cream);color:var(--bg);border-color:var(--cream);font-weight:500}
+
+/* ── list rows ───────────────────────────────────── */
+.it{display:block;width:100%;padding:16px 18px 17px 18px;position:relative;
+  border-bottom:1px solid var(--hair)}
+.it::before{content:"";position:absolute;left:0;top:16px;bottom:16px;width:3px;
+  border-radius:0 3px 3px 0;background:var(--c,transparent)}
+.it:active{background:var(--sur)}
+.it h3{margin:0 0 7px;font-family:var(--dsp);font-variation-settings:"SOFT" 30,"WONK" 0,"opsz" 30;
+  font-size:17.5px;font-weight:600;line-height:1.28;letter-spacing:-.012em;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.it.done h3{font-weight:400;color:var(--soft)}
+.mt{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);
+  white-space:nowrap;overflow:hidden}
+.mt .sr{color:var(--c,var(--soft));font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.mt s{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.5;flex:none}
+.why{margin-top:8px;font-size:13px;color:var(--mute);line-height:1.45}
+.why b{color:var(--soft);font-weight:500;
+  box-shadow:inset 0 -.42em 0 color-mix(in srgb,var(--c,#fff) 26%,transparent)}
+.pad{height:26px}
+
+/* ── article ─────────────────────────────────────── */
+.wash{padding:26px 20px 22px;position:relative;overflow:hidden}
+.wash::after{content:"";position:absolute;inset:-70% -25% auto -25%;height:220%;pointer-events:none;
+  background:radial-gradient(ellipse at 26% 0%,color-mix(in srgb,var(--c) 26%,transparent),transparent 62%)}
+.wash>*{position:relative;z-index:1}
+.eyebrow{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--soft)}
+.eyebrow .dot{width:11px;height:11px;border-radius:50%;background:var(--c);flex:none}
+.wash h2{font-family:var(--dsp);font-variation-settings:"SOFT" 55,"WONK" 1,"opsz" 72;
+  font-size:31px;line-height:1.13;font-weight:600;letter-spacing:-.028em;margin:16px 0 0}
+.facts{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.fact{font-size:12.5px;color:var(--soft);border:1px solid var(--line);padding:5px 12px;border-radius:99px}
+.fact b{color:var(--cream);font-weight:500}
+.fact.hi{border-color:var(--c);color:var(--c)}
+.fact.hi b{color:var(--c)}
+.prose{padding:6px 20px 40px;font-family:var(--rd);font-size:18px;line-height:1.75;color:#E4DCEC}
+.prose p{margin:0 0 1.1em}
+.prose p:first-of-type{font-size:19.5px;color:var(--cream)}
+.prose code{font-family:var(--ui);font-size:.86em;background:var(--sur-2);padding:2px 7px;
+  border-radius:6px;color:var(--cc)}
+.prose em{color:var(--cream);font-style:italic}
+.tidy{margin:0 20px 40px;border:1px solid var(--line);border-radius:16px;background:var(--sur);
+  padding:18px;display:flex;flex-wrap:wrap;align-items:center;gap:14px}
+.tidy .ic{width:36px;height:36px;border-radius:12px;background:var(--sur-2);display:grid;
+  place-items:center;font-size:16px;flex:none}
+.tidy p{margin:0;flex:1;min-width:150px;font-size:14px;color:var(--soft)}
+.tidy b{color:var(--cream);font-weight:600}
+.btn{font-size:13.5px;font-weight:500;padding:10px 16px;border-radius:99px;
+  border:1px solid var(--line);color:var(--soft)}
+.btn.p{background:var(--cream);color:var(--bg);border-color:var(--cream)}
+
+/* ── action bar (article) ────────────────────────── */
+.acts{display:flex;align-items:center;justify-content:space-around;gap:4px;
+  padding:8px 10px calc(var(--sab) + 8px);border-top:1px solid var(--hair);
+  background:rgba(34,26,46,.94);backdrop-filter:blur(14px)}
+.acts button{flex:1;height:var(--tap);display:grid;place-items:center;border-radius:14px;
+  font-size:19px;color:var(--soft)}
+.acts button:active{background:var(--sur)}
+.acts button[aria-pressed="true"]{color:var(--cc)}
+
+/* ── bottom tabs (list) ──────────────────────────── */
+.tabs{display:flex;padding:6px 6px calc(var(--sab) + 6px);border-top:1px solid var(--hair);
+  background:rgba(34,26,46,.94);backdrop-filter:blur(14px)}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 2px;
+  border-radius:14px;color:var(--mute);font-size:10.5px;letter-spacing:.01em;min-height:var(--tap)}
+.tab .g{font-size:18px;line-height:1}
+.tab[aria-current="true"]{color:var(--cc)}
+.tab:active{background:var(--sur)}
+.tab .badge{position:absolute;transform:translate(14px,-4px);background:var(--sw);color:#2B1B15;
+  font-size:9.5px;font-weight:600;border-radius:99px;padding:1px 5px;line-height:1.4}
+
+/* ── sources sheet ───────────────────────────────── */
+.scrim{position:absolute;inset:0;background:rgba(12,8,18,.6);z-index:8;opacity:0;
+  pointer-events:none;transition:opacity .26s}
+.scrim.in{opacity:1;pointer-events:auto}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:9;background:var(--sur);
+  border-radius:22px 22px 0 0;border-top:1px solid var(--line);max-height:78%;
+  display:flex;flex-direction:column;transform:translateY(100%);
+  transition:transform .3s cubic-bezier(.32,.72,0,1);padding-bottom:var(--sab)}
+.sheet.in{transform:none}
+@media (prefers-reduced-motion:reduce){.sheet,.scrim{transition:none}}
+.grabber{width:38px;height:4px;border-radius:99px;background:var(--line);margin:10px auto 4px;flex:none}
+.sheet h3{margin:6px 20px 8px;font-family:var(--dsp);font-variation-settings:"SOFT" 45,"WONK" 1,"opsz" 40;
+  font-size:20px;font-weight:600;letter-spacing:-.02em}
+.sheet .list{overflow-y:auto;padding:4px 10px 14px}
+.srow{display:flex;align-items:center;gap:13px;width:100%;padding:12px 12px;border-radius:14px;min-height:var(--tap)}
+.srow:active{background:var(--sur-2)}
+.srow .dot{width:12px;height:12px;border-radius:50%;flex:none}
+.srow .nm{flex:1;font-size:15px;color:var(--soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .ct{font-size:13px;color:var(--mute);font-variant-numeric:tabular-nums}
+.srow.off .nm{color:var(--mute)}
+.srow.off .dot{background:#4A3F58!important}
+.srow .flag{font-size:11px;color:var(--sw);border:1px solid color-mix(in srgb,var(--sw) 40%,transparent);
+  padding:2px 8px;border-radius:99px}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="device">
+    <div class="statusbar">
+      <span>21:04</span>
+      <span class="dots"><i></i><i></i><i></i><span class="bat"><span></span></span></span>
+    </div>
+
+    <!-- ══ HOME / LIST ══════════════════════════════ -->
+    <section class="screen" id="home">
+      <header class="bar">
+        <span class="live" title="Connected"></span>
+        <span class="ttl">Tidings</span>
+        <button class="ib" aria-label="Search">⌕</button>
+        <button class="ib" aria-label="Sources" onclick="openSheet()">☰</button>
+      </header>
+
+      <div class="scroll">
+        <div class="hello">
+          <h2>Twenty-eight worth your evening.</h2>
+          <p>Ranked from what you actually read.</p>
+        </div>
+
+        <div class="chips" role="group" aria-label="Slots">
+          <button class="chip" aria-pressed="true">Top</button>
+          <button class="chip">Explore</button>
+          <button class="chip">Clusters</button>
+          <button class="chip">Unread only</button>
+        </div>
+
+        <button class="it" style="--c:var(--sw)" onclick="openArticle()">
+          <h3>Speculative decoding without a draft model</h3>
+          <div class="mt"><span class="sr">Simon Willison</span><s></s><span>2h</span><s></s><span>6 min</span></div>
+          <div class="why">You open <b>84%</b> of everything they write</div>
+        </button>
+
+        <button class="it" style="--c:var(--dl)">
+          <h3>The write lock is not your problem</h3>
+          <div class="mt"><span class="sr">Dan Luu</span><s></s><span>5h</span><s></s><span>14 min</span></div>
+          <div class="why">Close to <b>sqlite</b> and <b>contention</b>, which you keep coming back to</div>
+        </button>
+
+        <button class="it" style="--c:var(--cc)">
+          <h3>Snapdragon X2 Elite memory bandwidth, measured</h3>
+          <div class="mt"><span class="sr">Chips and Cheese</span><s></s><span>7h</span><s></s><span>21 min</span></div>
+          <div class="why"><b>Three</b> other feeds carried this today</div>
+        </button>
+
+        <button class="it done" style="--c:var(--go)">
+          <h3>Go 1.27: what changed in the iterator proposal</h3>
+          <div class="mt"><span class="sr">The Go Blog</span><s></s><span>11h</span><s></s><span>9 min</span></div>
+          <div class="why">You've written notes on <b>four</b> posts from here</div>
+        </button>
+
+        <button class="it" style="--c:var(--lw)">
+          <h3>A field guide to Postgres lock modes</h3>
+          <div class="mt"><span class="sr">LWN.net</span><s></s><span>1d</span><s></s><span>18 min</span></div>
+          <div class="why">Off your usual path — worth a look anyway</div>
+        </button>
+
+        <button class="it" style="--c:var(--je)">
+          <h3>Notes on running a mail server in 2026</h3>
+          <div class="mt"><span class="sr">Julia Evans</span><s></s><span>1d</span><s></s><span>7 min</span></div>
+          <div class="why">Rarely opened, <b>never</b> regretted</div>
+        </button>
+
+        <div class="pad"></div>
+      </div>
+
+      <nav class="tabs" aria-label="Sections">
+        <button class="tab" aria-current="true"><span class="g">◆</span>Home</button>
+        <button class="tab"><span class="g">○</span><span class="badge">143</span>Unread</button>
+        <button class="tab"><span class="g">★</span>Starred</button>
+        <button class="tab"><span class="g">◇</span>Saved</button>
+        <button class="tab"><span class="g">⋯</span>More</button>
+      </nav>
+    </section>
+
+    <!-- ══ ARTICLE ═════════════════════════════════ -->
+    <section class="screen push" id="article" style="--c:var(--sw)" aria-hidden="true">
+      <header class="bar">
+        <button class="ib" aria-label="Back" onclick="closeArticle()">‹</button>
+        <span class="src-chip"><span class="dot"></span><span>Simon Willison</span></span>
+        <button class="ib" aria-label="More">⋯</button>
+      </header>
+
+      <div class="scroll">
+        <div class="wash">
+          <div class="eyebrow"><span class="dot"></span>2 hours ago</div>
+          <h2>Speculative decoding without a draft model</h2>
+          <div class="facts">
+            <span class="fact hi">You open <b>84%</b></span>
+            <span class="fact"><b>6</b> min</span>
+            <span class="fact"><b>1,420</b> words</span>
+            <span class="fact">Reader mode</span>
+          </div>
+        </div>
+
+        <div class="prose">
+          <p>Every speculative decoding writeup starts the same way: you need a small draft model to propose tokens and a large model to verify them. That framing is doing a lot of work, and most of it is unnecessary.</p>
+          <p>The draft model exists to produce a cheap guess. But a guess is just a distribution you already have lying around — in the prompt, in the n-gram statistics of the document you are generating, or in the model's own earlier layers. Each of those is free.</p>
+          <p>The cheapest version is embarrassing in its simplicity. Keep a rolling <code>n-gram</code> table of the text generated so far. When the next token has been seen following this prefix before, propose it. Verify it in the same batched forward pass you were going to run anyway.</p>
+          <p>On a 27B model quantized to four bits, running on an NPU with a narrow memory bus, this cut wall-clock generation by 31% on structured output and did <em>essentially nothing</em> on free-form prose. That gap is the whole story.</p>
+        </div>
+
+        <div class="tidy">
+          <span class="ic">🌙</span>
+          <p><b>AnandTech</b> has been quiet for 94 days.</p>
+          <button class="btn p">Unsubscribe</button>
+          <button class="btn">Keep</button>
+        </div>
+      </div>
+
+      <nav class="acts" aria-label="Article actions">
+        <button aria-label="Star" onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed')==='true'?'false':'true')">★</button>
+        <button aria-label="Note">✎</button>
+        <button aria-label="Save">◇</button>
+        <button aria-label="Share">↗</button>
+        <button aria-label="Text size">Aa</button>
+      </nav>
+    </section>
+
+    <!-- ══ SOURCES SHEET ═══════════════════════════ -->
+    <div class="scrim" id="scrim" onclick="closeSheet()"></div>
+    <aside class="sheet" id="sheet" aria-label="Sources" aria-hidden="true">
+      <div class="grabber"></div>
+      <h3>Sources</h3>
+      <div class="list">
+        <button class="srow"><span class="dot" style="background:var(--sw)"></span><span class="nm">Simon Willison</span><span class="ct">7</span></button>
+        <button class="srow"><span class="dot" style="background:var(--dl)"></span><span class="nm">Dan Luu</span><span class="ct">1</span></button>
+        <button class="srow"><span class="dot" style="background:var(--cc)"></span><span class="nm">Chips and Cheese</span><span class="ct">3</span></button>
+        <button class="srow"><span class="dot" style="background:var(--go)"></span><span class="nm">The Go Blog</span><span class="ct">2</span></button>
+        <button class="srow"><span class="dot" style="background:var(--je)"></span><span class="nm">Julia Evans</span><span class="ct">4</span></button>
+        <button class="srow"><span class="dot" style="background:var(--lw)"></span><span class="nm">LWN.net</span><span class="ct">12</span></button>
+        <button class="srow"><span class="dot" style="background:var(--hn)"></span><span class="nm">Hacker News</span><span class="ct">94</span></button>
+        <button class="srow off"><span class="dot"></span><span class="nm">AnandTech</span><span class="flag">94d quiet</span><span class="ct">0</span></button>
+      </div>
+    </aside>
+  </div>
+
+  <div class="caption">
+    <h1>Tidings on a phone</h1>
+    <p>The three panes become three levels. The colour system does more work here than on desktop —
+      on a small screen it is the fastest way to know who wrote something.</p>
+    <ul>
+      <li><b>Tap a headline</b> to push the article in; the chevron or a back swipe returns.</li>
+      <li><b>The list is the home screen.</b> Sources live in a sheet, not a permanent rail.</li>
+      <li><b>Actions sit at the bottom</b>, in the thumb arc, not in a top toolbar.</li>
+      <li><b>Reading is the point</b> — Literata at 18px, generous leading, nothing competing with it.</li>
+      <li><b>Safe areas respected</b>, 46px touch targets, reduced-motion honoured.</li>
+    </ul>
+    <p class="hint">Open this file on your phone and it fills the screen — the frame only appears on desktop.</p>
+  </div>
+</div>
+
+<script>
+  var article = document.getElementById('article'),
+      sheet   = document.getElementById('sheet'),
+      scrim   = document.getElementById('scrim');
+
+  function openArticle(){
+    article.classList.add('in');
+    article.setAttribute('aria-hidden','false');
+    article.querySelector('.scroll').scrollTop = 0;
+  }
+  function closeArticle(){
+    article.classList.remove('in');
+    article.setAttribute('aria-hidden','true');
+  }
+  function openSheet(){
+    sheet.classList.add('in'); scrim.classList.add('in');
+    sheet.setAttribute('aria-hidden','false');
+  }
+  function closeSheet(){
+    sheet.classList.remove('in'); scrim.classList.remove('in');
+    sheet.setAttribute('aria-hidden','true');
+  }
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    if (sheet.classList.contains('in')) closeSheet();
+    else if (article.classList.contains('in')) closeArticle();
+  });
+
+  /* swipe right from the left edge closes the article, as it should on a phone */
+  (function(){
+    var x0 = null, y0 = null;
+    article.addEventListener('touchstart', function(e){
+      var t = e.touches[0];
+      if (t.clientX < 40) { x0 = t.clientX; y0 = t.clientY; }
+    }, {passive:true});
+    article.addEventListener('touchmove', function(e){
+      if (x0 === null) return;
+      var t = e.touches[0];
+      if (t.clientX - x0 > 64 && Math.abs(t.clientY - y0) < 46) { closeArticle(); x0 = null; }
+    }, {passive:true});
+    article.addEventListener('touchend', function(){ x0 = null; }, {passive:true});
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Mirrors CashFlux's generation shape (remote plugins, no local protoc needed —
+# verified: protoc is not installed on this box and does not need to be).
+#
+# Note what is NOT here: CashFlux hand-rolls a JSON codec over grpc.ServiceDesc
+# rather than generating protobuf. Tidings generates properly, because the
+# Google Reader-compatible REST surface (§15) and the tunnel must both be driven
+# from one contract or "marked read in Reeder" silently diverges from the web UI.
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.11
+    out: internal/pb
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go:v1.5.1
+    out: internal/pb
+    opt:
+      - paths=source_relative

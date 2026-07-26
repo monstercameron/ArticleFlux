@@ -1,0 +1,304 @@
+syntax = "proto3";
+
+package tidings.v1;
+
+option go_package = "github.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1";
+
+// ReaderService is the reading surface: the sidebar, the list, the article, and
+// the four state changes a reader can make.
+//
+// One service rather than several because all three transports (§20.7) route
+// through one service layer — the gRPC tunnel the web client uses, the plain
+// HTTPS offline-pack channel, and the Google Reader-compatible REST API that
+// Reeder and NetNewsWire speak. Splitting them would let "marked read in Reeder"
+// diverge from the web UI, which is the failure the single layer exists to
+// prevent.
+service ReaderService {
+  // ListFeeds returns the sidebar: every subscription with its unread count.
+  rpc ListFeeds(ListFeedsRequest) returns (ListFeedsResponse);
+
+  // ListItems returns one page of the item list.
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+
+  // GetItem returns one item with its full content.
+  rpc GetItem(GetItemRequest) returns (GetItemResponse);
+
+  // SetItemState marks read/unread and starred/unstarred. One RPC rather than
+  // four because they share a row, a rev, and an idempotency key — and because
+  // the offline outbox replays them together.
+  rpc SetItemState(SetItemStateRequest) returns (SetItemStateResponse);
+
+  // MarkAllRead marks a whole feed or the whole megafeed read.
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
+
+  // Subscribe adds a feed by URL. The source is global (A14), so this usually
+  // attaches an existing row rather than creating one.
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+
+  // Unsubscribe removes the subscription. It never deletes the source (A22).
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
+
+  // Refresh polls sources now instead of waiting for the scheduler.
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+
+  // Search runs a full-text query (FTS5, G1).
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // GetPrefs returns this user's UI preferences.
+  //
+  // Server-side rather than localStorage because layout is part of an account,
+  // not of a browser: a reader that forgets your pane widths when you open it on
+  // a different machine has not remembered anything useful.
+  rpc GetPrefs(GetPrefsRequest) returns (GetPrefsResponse);
+
+  // SetPrefs merges keys into this user's preferences. A merge, not a replace,
+  // so a stale client cannot erase settings it does not know about.
+  rpc SetPrefs(SetPrefsRequest) returns (SetPrefsResponse);
+
+  // ListTags returns this user's tags and which feeds carry them.
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse);
+
+  // SetFeedTag adds or removes a tag on a feed, creating the tag on first use.
+  // Nobody wants to manage a taxonomy; they want to label the thing in front of
+  // them, and the tag list is the consequence.
+  rpc SetFeedTag(SetFeedTagRequest) returns (SetFeedTagResponse);
+
+  // SetNote writes or clears the note on an item. An empty body deletes it, so
+  // "has a note" stays an existence check.
+  rpc SetNote(SetNoteRequest) returns (SetNoteResponse);
+
+  // ListNotes returns the items this user has annotated, most recently written
+  // first — it is a list of your own writing, found by when you wrote it.
+  rpc ListNotes(ListNotesRequest) returns (ListNotesResponse);
+}
+
+// Feed is one subscription as the sidebar needs it.
+message Feed {
+  string id = 1;          // subscription id
+  string source_id = 2;
+  string title = 3;
+  string feed_url = 4;
+  string site_url = 5;
+  int32 unread_count = 6;
+  string folder_id = 7;
+  // Health, so the dormant-feed nudge has something to read. A reader that
+  // cannot tell you a feed died is not finished.
+  string last_success_at = 8;
+  int32 consecutive_failures = 9;
+  string last_error = 10;
+}
+
+// Item is one entry. Content is omitted from list responses and present only in
+// GetItem — a 50-item page carrying full article bodies is megabytes over a
+// tunnel for text nobody has scrolled to yet.
+message Item {
+  string id = 1;
+  string source_id = 2;
+  string source_title = 3;
+  string title = 4;
+  string author = 5;
+  string summary = 6;
+  string url = 7;
+  string published_at = 8;   // RFC3339 UTC
+  bool read = 9;
+  bool starred = 10;
+  int32 word_count = 11;
+  string image_url = 12;
+  string content_html = 13;  // GetItem only
+  // The user's note, when there is one. Present on GetItem and on the notes
+  // list; omitted elsewhere so an ordinary page does not carry prose nobody
+  // asked for.
+  string note = 15;
+  // Why this item is in the ranked megafeed. Every ranked item carries its
+  // reason, because a reason is what makes feedback actionable.
+  string rank_reason = 14;
+  // The reader's verdict: +1 liked, 0 none, -1 disliked.
+  //
+  // A signed number rather than two booleans because the two are mutually
+  // exclusive by definition, and a pair of flags makes "liked AND disliked"
+  // representable — a state every consumer would then need a policy for.
+  int32 rating = 16;
+}
+
+message ListFeedsRequest {}
+
+message ListFeedsResponse {
+  repeated Feed feeds = 1;
+  int32 total_unread = 2;
+}
+
+// Scope selects what a list request is about.
+enum ListScope {
+  LIST_SCOPE_UNSPECIFIED = 0;
+  LIST_SCOPE_ALL = 1;       // everything subscribed
+  LIST_SCOPE_FEED = 2;      // one feed, via source_id
+  LIST_SCOPE_STARRED = 3;
+  LIST_SCOPE_MEGAFEED = 4;  // the ranked homepage
+  LIST_SCOPE_LIKED = 5;     // rating > 0
+  LIST_SCOPE_DISLIKED = 6;  // rating < 0
+}
+
+message ListItemsRequest {
+  ListScope scope = 1;
+  string source_id = 2;
+  // source_ids selects several feeds at once, which is what a tag is: a set of
+  // subscriptions. Kept separate from source_id rather than replacing it, so the
+  // common single-feed case stays one string on the wire.
+  repeated string source_ids = 6;
+  bool unread_only = 3;
+  // Opaque keyset cursor (§20.7). Never an offset: OFFSET degrades exactly when
+  // a list gets long enough for paging to matter.
+  string cursor = 4;
+  int32 limit = 5;  // default 50, max 200
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_cursor = 2;  // empty when the list is exhausted
+
+  // total is how many items this query matches in all, so a virtualised client
+  // can give its scrollbar the true shape of the result set before it has
+  // fetched the result set. Without it a lazy list can only be as tall as the
+  // pages already loaded — the scrollbar grows in jumps as you scroll and you
+  // cannot drag to a position that has not loaded yet.
+  //
+  // Sent only on the FIRST page (empty cursor) and zero thereafter: it does not
+  // change while paging, and a COUNT on every page is work nobody reads.
+  int32 total = 3;
+}
+
+message GetItemRequest { string id = 1; }
+message GetItemResponse { Item item = 1; }
+
+message SetItemStateRequest {
+  string item_id = 1;
+  // Tri-state: unset leaves the flag alone, so marking read does not clobber a
+  // star set on another device.
+  optional bool read = 2;
+  optional bool starred = 3;
+  // Tri-state like the others: unset leaves the stored verdict alone, so marking
+  // an item read on one device does not erase the fact that you disliked it on
+  // another. Values outside {-1,0,1} are clamped by the server.
+  optional int32 rating = 5;
+  // Required for anything replayed from the offline outbox (§20.7), so a partial
+  // drain that reconnects mid-flight cannot double-apply.
+  string idempotency_key = 4;
+}
+
+message SetItemStateResponse {
+  Item item = 1;
+  // Server-assigned and monotonic (A25). Ordering never uses a client clock: a
+  // phone offline for a week has drifted time.
+  int64 rev = 2;
+}
+
+message MarkAllReadRequest {
+  ListScope scope = 1;
+  string source_id = 2;
+  // Only items at or before this instant are affected, so an article that
+  // arrives mid-request is not silently marked read.
+  string before = 3;
+  string idempotency_key = 4;
+}
+
+message MarkAllReadResponse { int32 marked = 1; }
+
+message SubscribeRequest {
+  string url = 1;  // feed URL, or a site URL to run discovery against
+  string folder_id = 2;
+  string title = 3;
+}
+
+message SubscribeResponse {
+  Feed feed = 1;
+  // True when the source already existed and was simply attached. A14 means a
+  // popular feed is polled once no matter how many tenants subscribe.
+  bool source_existed = 2;
+}
+
+message UnsubscribeRequest { string source_id = 1; }
+message UnsubscribeResponse {}
+
+message RefreshRequest {
+  // Empty means every subscribed source.
+  repeated string source_ids = 1;
+}
+
+message RefreshResponse {
+  int32 sources_polled = 1;
+  int32 new_items = 2;
+  repeated string errors = 3;
+}
+
+message SearchRequest {
+  string query = 1;
+  string source_id = 2;
+  int32 limit = 3;
+}
+
+// SearchResponse is structurally the same as ListItemsResponse but distinct, so
+// search can grow the things only search needs — snippets, bm25 scores, facets —
+// without changing the shape every list response carries.
+message SearchResponse {
+  repeated Item items = 1;
+  // snippet() output per item, index-aligned with items. Kept parallel rather
+  // than inside Item so a list response never carries an empty snippet field.
+  repeated string snippets = 2;
+  int32 total = 3;
+}
+
+message GetPrefsRequest {}
+
+message GetPrefsResponse {
+  map<string, string> prefs = 1;
+}
+
+message SetPrefsRequest {
+  map<string, string> prefs = 1;
+}
+
+message SetPrefsResponse {}
+
+message Tag {
+  string id = 1;
+  string name = 2;
+  int32 feed_count = 3;
+}
+
+message ListTagsRequest {}
+
+message ListTagsResponse {
+  repeated Tag tags = 1;
+  // Tag ids per source id, so the sidebar renders without a query per feed.
+  map<string, TagIDs> by_source = 2;
+}
+
+// TagIDs exists because protobuf maps cannot have a repeated value directly.
+message TagIDs {
+  repeated string ids = 1;
+}
+
+message SetFeedTagRequest {
+  string source_id = 1;
+  string name = 2;
+  bool on = 3;
+}
+
+message SetFeedTagResponse {
+  Tag tag = 1;
+}
+
+message SetNoteRequest {
+  string item_id = 1;
+  string body = 2;
+}
+
+message SetNoteResponse {}
+
+message ListNotesRequest {
+  int32 limit = 1;
+}
+
+message ListNotesResponse {
+  repeated Item items = 1;
+}

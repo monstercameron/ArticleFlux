@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#221A2E">
+<title>Tidings</title>
+
+<!--
+  Progressive enhancement only. The font stacks in client/design fall back to
+  faces in the same family, so a machine with no network still renders the
+  intended shape rather than Times.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Literata:opsz,wght@7..72,300..600&family=Outfit:wght@300..600&display=swap">
+
+<!--
+  The pre-wasm state. This is inline because it must paint before anything is
+  loaded — the alternative is a white flash on a dark app, on every load.
+  Everything after this point is authored in Go through the css package (A26).
+-->
+<style>
+  html,body{margin:0;height:100%;background:#221A2E;color:#F8F1E7;
+    font-family:Outfit,"Segoe UI",system-ui,sans-serif}
+  #boot{display:grid;place-content:center;height:100dvh;gap:.6rem;text-align:center}
+  #boot h1{font-family:Fraunces,Georgia,serif;font-weight:500;font-size:1.6rem;margin:0;
+    font-variation-settings:"SOFT" 80,"WONK" 1}
+  #boot p{color:#9A8CA8;margin:0;font-size:.85rem}
+  #boot[hidden]{display:none}
+</style>
+</head>
+<body>
+
+<div id="boot">
+  <h1>Tidings</h1>
+  <p id="boot-msg">Loading…</p>
+</div>
+<div id="app"></div>
+
+<script src="/wasm_exec.js"></script>
+<script>
+// The entire permitted application JavaScript (A26). Its only jobs are to load
+// the wasm module and to say something useful if that fails — a blank dark page
+// is indistinguishable from a broken one.
+(async () => {
+  const msg = document.getElementById('boot-msg');
+  try {
+    const go = new Go();
+    // instantiateStreaming needs Content-Type: application/wasm, which the Go
+    // server sets explicitly; without it the browser refuses to stream-compile.
+    const result = await WebAssembly.instantiateStreaming(fetch('/app.wasm'), go.importObject);
+    go.run(result.instance);
+    document.getElementById('boot').hidden = true;
+  } catch (err) {
+    msg.textContent = 'Could not start: ' + err;
+  }
+})();
+</script>
+
+</body>
+</html>

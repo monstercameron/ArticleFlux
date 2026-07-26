@@ -1,0 +1,12 @@
+{
+  "name": "tidings-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "shots": "playwright test screenshots.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0"
+  }
+}

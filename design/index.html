@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tidings — three directions</title>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0E0F13;--mid:#585B66;--mute:#8A8D99;--line:#E7E8EC;--bg:#FBFBFC}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Schibsted Grotesk",system-ui,sans-serif;font-size:15px;line-height:1.6;letter-spacing:-.005em}
+.wrap{max-width:900px;margin:0 auto;padding:66px 28px 90px}
+h1{font-size:30px;margin:0 0 8px;font-weight:600;letter-spacing:-.025em}
+.lede{color:var(--mid);margin:0 0 44px;max-width:62ch}
+a.card{display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid var(--line);
+  border-radius:12px;padding:24px 26px;margin-bottom:14px;transition:border-color .12s,transform .12s}
+a.card:hover{border-color:var(--ink);transform:translateY(-1px)}
+a.card:focus-visible{outline:2px solid #1D4EF5;outline-offset:2px}
+.top{display:flex;align-items:baseline;gap:11px;margin-bottom:8px}
+.n{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--mute)}
+.top h2{margin:0;font-size:20px;font-weight:600;letter-spacing:-.02em}
+p.t{margin:0 0 15px;color:var(--mid);max-width:66ch}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sw{display:inline-flex;border-radius:5px;overflow:hidden;border:1px solid var(--line)}
+.sw i{width:18px;height:18px;display:block}
+.tag{font-family:"JetBrains Mono",monospace;font-size:10.5px;border:1px solid var(--line);
+  padding:3px 8px;border-radius:99px;color:var(--mid)}
+a.card.chosen{border-color:#221A2E;border-width:2px;padding:23px 25px}
+.pick{margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:10.5px;
+  background:#221A2E;color:#FFCE5C;padding:3px 9px;border-radius:99px;letter-spacing:.04em}
+.foot{margin-top:38px;padding-top:22px;border-top:1px solid var(--line);color:var(--mid);
+  font-size:13.5px;max-width:66ch}
+.foot b{color:var(--ink);font-weight:600}
+@media (prefers-reduced-motion:reduce){a.card{transition:none}a.card:hover{transform:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tidings — three directions</h1>
+  <p class="lede">Same screen in all three: the ranked home view, with sidebar, list, and reading pane.
+  Identical content and identical data, so the comparison is about design and nothing else.
+  Every version keeps the real constraints — fixed-height rows, visible connection state, an
+  explainability line on each ranked item, and the dormant-feed nudge.</p>
+
+  <a class="card" href="01-modern.html">
+    <div class="top"><span class="n">01</span><h2>Modern</h2></div>
+    <p class="t">A contemporary product. Generous spacing, soft radii, a serif reading face at a
+    confident size, and colour used only for state. Sources get monogram tiles, ranking reasons are
+    pills, and the article carries a reading-progress hairline. The safest to build and the easiest
+    to live with.</p>
+    <div class="row">
+      <span class="sw"><i style="background:#FBFBFC"></i><i style="background:#E7E8EC"></i><i style="background:#1D4EF5"></i><i style="background:#585B66"></i><i style="background:#0E0F13"></i></span>
+      <span class="tag">Schibsted Grotesk + Newsreader</span>
+      <span class="tag">light</span>
+      <span class="tag">92px rows</span>
+    </div>
+  </a>
+
+  <a class="card" href="02-utilitarian.html">
+    <div class="top"><span class="n">02</span><h2>Utilitarian</h2></div>
+    <p class="t">A tool, not a product. System type, 34px compact rows, ruled columns with headers,
+    a folder tree, a menubar, and a persistent key bar along the bottom. Roughly three times the
+    items per screen, every action labelled with its key, zero ornament. Built for triaging 143
+    unread in four minutes.</p>
+    <div class="row">
+      <span class="sw"><i style="background:#FFFFFF"></i><i style="background:#D6D6D6"></i><i style="background:#0B57D0"></i><i style="background:#C5221F"></i><i style="background:#111111"></i></span>
+      <span class="tag">system UI + IBM Plex Mono</span>
+      <span class="tag">light, dense</span>
+      <span class="tag">34px rows</span>
+    </div>
+  </a>
+
+  <a class="card chosen" href="03-fanciful.html">
+    <div class="top"><span class="n">03</span><h2>Fanciful</h2><span class="pick">Chosen</span></div>
+    <p class="t">Warm, expressive, and still honest. Plum ground, cream text, Fraunces set with its
+    soft and wonk axes turned up. Every source owns a colour that runs through its dot, its list edge,
+    its highlight, and a wash behind the article — so you learn your feeds by hue. Reasons are written
+    as sentences, not stats.</p>
+    <div class="row">
+      <span class="sw"><i style="background:#221A2E"></i><i style="background:#FF8A6B"></i><i style="background:#FFCE5C"></i><i style="background:#7DDCB0"></i><i style="background:#F8F1E7"></i></span>
+      <span class="tag">Fraunces + Literata + Outfit</span>
+      <span class="tag">dark, warm</span>
+      <span class="tag">96px rows</span>
+      <span class="tag">resizable panes</span>
+    </div>
+  </a>
+
+  <a class="card chosen" href="04-fanciful-mobile.html">
+    <div class="top"><span class="n">04</span><h2>Fanciful — mobile</h2><span class="pick">Chosen</span></div>
+    <p class="t">The same design on a phone. Three panes become three levels: the list is the home
+    screen, sources live in a bottom sheet, and the article pushes in over the top. Actions sit in the
+    thumb arc rather than a toolbar. Open it on a phone and it fills the screen; on desktop it renders
+    inside a device frame you can click through.</p>
+    <div class="row">
+      <span class="sw"><i style="background:#221A2E"></i><i style="background:#FF8A6B"></i><i style="background:#FFCE5C"></i><i style="background:#7DDCB0"></i><i style="background:#F8F1E7"></i></span>
+      <span class="tag">safe-area aware</span>
+      <span class="tag">46px targets</span>
+      <span class="tag">swipe back</span>
+    </div>
+  </a>
+
+  <p class="foot">01 and 02 are kept for reference only — <b>Fanciful is the direction</b>. The desktop
+  file now also degrades on its own: three panes above 1220px, two below it, and a single column with
+  a drawer below 900px.</p>
+</div>
+</body>
+</html>
