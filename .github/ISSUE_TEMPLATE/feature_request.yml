@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose something the reader should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: **`plan.md` may already answer this.** It is the spec of record and it is long
+        — §2 holds the settled decisions (`A#`) and §25 the open ones (`D#`) and the risks (`R#`).
+        A feature that contradicts a settled decision is a fine thing to propose; it is a much better
+        issue when it names the decision it contradicts.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What is the reading experience that is worse than it should be? Describe the situation, not
+        the solution — the solution is the next box, and separating them is what lets someone propose
+        a better one.
+      placeholder: |
+        A feed that has quietly stopped publishing looks exactly like a feed with nothing new, so …
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you considered and rejected
+      description: |
+        And why. This is the most useful box on the form — it is the part that does not survive in
+        anyone's head six months later.
+
+  - type: input
+    id: decisions
+    attributes:
+      label: Related decisions
+      description: "Ids from `plan.md`, if you know them — e.g. A19, D7, §16."
+      placeholder: "A19, §16"
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: What it touches
+      multiple: true
+      options:
+        - Client only — a view, a key binding, a layout
+        - The wire contract — a new or changed RPC
+        - The schema — a table, a column, an index
+        - Ingestion — fetching, parsing, or a new source type
+        - Ranking and the interest layer
+        - Tenant isolation or the model egress boundary
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        Anything touching **tenant isolation** or the **model egress boundary** is never decided
+        quietly — both fail silently, both are security properties, and both need their test extended
+        alongside any change. Expect those proposals to be discussed before they are built.

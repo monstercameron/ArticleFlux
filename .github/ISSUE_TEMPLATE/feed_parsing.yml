@@ -1,0 +1,58 @@
+name: A feed does not parse correctly
+description: A specific feed produces wrong titles, dates, bodies, or nothing at all
+labels: ["bug", "ingestion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feed parsing bugs are almost always specific to one publisher's idea of what the format
+        means. The URL is the single most useful thing in this report — with it, the bug becomes a
+        test fixture.
+
+  - type: input
+    id: url
+    attributes:
+      label: Feed URL
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What is wrong
+      multiple: true
+      options:
+        - Will not subscribe at all
+        - Titles are wrong or empty
+        - Dates are wrong, missing, or in the wrong timezone
+        - Body is empty, truncated, or full of markup
+        - Wrong character encoding — mojibake
+        - Author or link is wrong
+        - Items duplicate on every poll
+        - Feed is marked dormant but is publishing
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have been
+      description: For one concrete item — the title as published, next to what Tidings shows.
+    validations:
+      required: true
+
+  - type: textarea
+    id: raw
+    attributes:
+      label: The relevant part of the raw feed
+      description: The `<item>` or `<entry>` element that goes wrong, verbatim.
+      render: xml
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Feed health
+      description: |
+        The Health group in that feed's settings panel — last fetch, last success, next fetch, items
+        held, and the publisher's own error string verbatim.
+      render: text

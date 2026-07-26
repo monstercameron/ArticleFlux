@@ -1,0 +1,89 @@
+name: Bug report
+description: Something in the reader behaves differently from how it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things make a bug report actionable here: **what you were looking at**, and **whether it
+        survives a reload**. A reader is mostly state, and half of what looks like a rendering bug is
+        stale state that a reload would have answered in a second.
+
+        If this is a security issue, do not file it here — see
+        [SECURITY.md](https://github.com/monstercameron/Tidings/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        I pressed j to move down the list with an article open, and …
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: From a known starting point — which scope was selected, which filters were on.
+      placeholder: |
+        1. All feeds, unread-only on
+        2. Open the third item
+        3. Scroll to the bottom of the article
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reload
+    attributes:
+      label: Does it survive a reload?
+      options:
+        - "Yes — it comes back after a hard refresh"
+        - "No — a reload clears it"
+        - "Haven't tried"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      multiple: true
+      options:
+        - Desktop, three panes
+        - Narrow window (below 1220px)
+        - Single column / phone layout
+        - The server, not the client
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`./bin/tidings.exe version`, or the commit hash you built."
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: "Chrome 152, Windows 11"
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console and server output
+      description: |
+        Browser console, plus anything the server printed. The connection state in the toolbar is
+        worth including — a client that has silently lost its tunnel looks identical to a quiet
+        news day.
+      render: text
+
+  - type: textarea
+    id: feed
+    attributes:
+      label: Feed URL
+      description: If it involves one particular feed, the URL — parser bugs are almost always specific.
