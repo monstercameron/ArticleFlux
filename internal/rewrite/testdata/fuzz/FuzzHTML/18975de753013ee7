@@ -1,0 +1,2 @@
+go test fuzz v1
+string("<BAse href=A0:0<BodY><img srC=0>")

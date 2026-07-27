@@ -156,8 +156,23 @@ func effectiveBase(root *html.Node, fallback *url.URL) *url.URL {
 		if n.Type == html.ElementNode && n.Data == "base" {
 			if href, ok := attr(n, "href"); ok {
 				if u, err := fallback.Parse(strings.TrimSpace(href)); err == nil {
-					found, node = u, n
-					return
+					// one() only ever proxies http(s); a base that resolves to
+					// any other scheme (or to no scheme at all resolving into
+					// something non-http) can never produce a rewritable
+					// absolute URL. Adopting it anyway does not just leave
+					// that one attribute alone — it replaces `fallback`, the
+					// one base capable of resolving relative URLs at all, so
+					// every relative URL on the page (or after this point in
+					// scan order) silently stops resolving. Falling through
+					// to keep scanning (rather than stopping at the first
+					// <base> found) mirrors HTML's own rule that only the
+					// first <base href> counts, while still letting a later,
+					// well-formed one be found if this one is bogus.
+					switch strings.ToLower(u.Scheme) {
+					case "http", "https":
+						found, node = u, n
+						return
+					}
 				}
 			}
 		}
@@ -491,16 +506,35 @@ func CSS(text string, rw Rewriter, base *url.URL) string {
 			for j < n && ((q != 0 && text[j] != q) || (q == 0 && text[j] != ')')) {
 				j++
 			}
+			// j == n means the quote (if any) or, failing that, the ')'
+			// never appeared before the text ran out: this is not a
+			// complete url() token, just a prefix of one, and there is no
+			// ')' anywhere in the remaining input to anchor a rewrite to.
+			// Emitting the rest of the text unchanged and stopping —
+			// exactly like the unterminated-comment case above — is what
+			// keeps a second pass a no-op: manufacturing a ")" here would
+			// turn an incomplete token into a well-formed one that the next
+			// pass could then rewrite a second time (the bug this guards).
+			if j >= n {
+				b.WriteString(text[i:])
+				return b.String()
+			}
 			ref := strings.TrimSpace(text[start:j])
-			if q != 0 && j < n {
+			if q != 0 {
 				j++ // closing quote
 			}
 			for j < n && isSpace(text[j]) {
 				j++
 			}
-			if j < n && text[j] == ')' {
-				j++
+			// A quote that closed but is not followed by ')' before the text
+			// ends (e.g. `url("x" ` or `url("x" foo`) is just as incomplete
+			// as the unquoted case above, and gets the same treatment: leave
+			// it untouched rather than inventing the missing punctuation.
+			if j >= n || text[j] != ')' {
+				b.WriteString(text[i:])
+				return b.String()
 			}
+			j++ // the ')'
 			b.WriteString("url(")
 			b.WriteString(quoteCSS(replaceOr(ref, rw, base)))
 			b.WriteString(")")

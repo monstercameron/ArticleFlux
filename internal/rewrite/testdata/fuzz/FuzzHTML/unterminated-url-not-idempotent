@@ -1,0 +1,2 @@
+go test fuzz v1
+string("<stYle>A0Aaaaaaaaaaxurl(0\"00%0X0000")

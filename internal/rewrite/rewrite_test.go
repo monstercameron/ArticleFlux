@@ -208,6 +208,89 @@ func TestBaseHrefIsHonouredThenRemoved(t *testing.T) {
 	}
 }
 
+// REAL PRODUCT BUG, found by FuzzHTML (fuzz_test.go) and pinned here.
+//
+// A <base href="..."> whose value has a non-http(s) scheme — "weird:not-http",
+// or the fuzzer's minimized "A0:0" — is still accepted as the document's
+// effective base by effectiveBase (rewrite.go:148-176). The check at
+// rewrite.go:158 is only `err == nil` from url.Parse; it never confirms the
+// resolved URL is actually http(s) before adopting it and discarding
+// opt.Base, the one base that could ever produce a rewritable URL.
+//
+// The result: EVERY relative URL in the document silently fails to resolve
+// (one() correctly declines a non-http scheme, rewrite.go:325-329) and is
+// left in the output completely untouched — not resolved to an absolute URL,
+// not proxied — while the <base> element that caused this is still removed,
+// per the "always remove, even when not honoured usefully" contract. A
+// browser given this output resolves the leftover relative URL against
+// wherever the proxy itself serves the page from, which is exactly the
+// failure this package exists to prevent (see the package comment: "An
+// article whose <img src> points at the publisher is an article whose images
+// fail on a network that blocks the publisher" — this is that, plus a
+// misdirected request to the proxy's own origin instead).
+//
+// A second pass, seeing no more <base>, resolves the same relative URL
+// against opt.Base correctly — which is what exposed this as a non-idempotence
+// failure, but the underlying defect is present after the FIRST pass already.
+//
+// This test is intentionally left failing so it shows up red until fixed; the
+// fix belongs in effectiveBase, which should fall back to `fallback` when the
+// declared base does not resolve to an http(s) URL, not in this test.
+func TestBaseHrefWithNonHTTPSchemeDoesNotSuppressRewriting(t *testing.T) {
+	opt := Options{Base: mustBase(t, "https://pub.example/p/"), Asset: prox}
+	in := `<!doctype html><html><body><base href="weird:not-http"><img src="a.png"></body></html>`
+	got := run(t, in, opt)
+	want := url.QueryEscape("https://pub.example/p/a.png")
+	if !strings.Contains(got, want) {
+		t.Errorf("a bogus <base> scheme suppressed rewriting entirely:\n%s", got)
+	}
+}
+
+// REAL PRODUCT BUG, found by fuzzing and pinned here.
+//
+// Input: `<stYle>A0Aaaaaaaaaaxurl(0"00%0X0000` — an unterminated url(...)
+// inside a <style> block, with no closing paren anywhere in the document.
+//
+// Root cause: in CSS's url(...) branch (rewrite.go, the `hasFoldPrefix(...,
+// "url(")` case), once the scanner decides there is no quote character
+// (text[j] is not a double or single quote character), it scans for the
+// closing ')' with
+//
+//	for j < n && ((q != 0 && text[j] != q) || (q == 0 && text[j] != ')')) { j++ }
+//
+// If ')' never appears, this loop runs to the end of the string (j == n),
+// exactly like the already-handled unterminated-comment case. But unlike
+// that case, the url(...) branch does not check whether it actually found
+// a ')' before emitting one:
+//
+//	if j < n && text[j] == ')' { j++ }
+//	...
+//	b.WriteString("url(")
+//	b.WriteString(quoteCSS(replaceOr(ref, rw, base)))
+//	b.WriteString(")")
+//
+// The trailing `b.WriteString(")")` is unconditional, so an unterminated
+// url( gets a ')' manufactured for it out of nothing, and everything from
+// "url(" to the end of the string is swallowed as the URL body and
+// reassembled as a well-formed, quoted url("..."). That well-formed
+// construct did not exist in the input — it is a synthetic first-pass
+// artifact — so a second pass sees real, terminated CSS and can rewrite (or
+// further mangle) it again, breaking the package's idempotence contract.
+//
+// Fix: leave a url( with no closing paren in the document exactly as
+// written (do not manufacture punctuation the input never had), so a
+// second pass has nothing new to act on.
+func TestUnterminatedURLIsLeftAloneAndIdempotent(t *testing.T) {
+	opt := Options{Base: mustBase(t, "https://pub.example/p/"), Asset: prox}
+	in := `<stYle>A0Aaaaaaaaaaxurl(0"00%0X0000`
+
+	once := run(t, in, opt)
+	twice := run(t, once, opt)
+	if once != twice {
+		t.Errorf("not idempotent:\nin:     %s\nfirst:  %s\nsecond: %s", in, once, twice)
+	}
+}
+
 // A <base> inside feed content would retarget the reading pane, not just its
 // own item. Fragments therefore ignore it.
 func TestFragmentIgnoresBase(t *testing.T) {
@@ -288,6 +371,28 @@ func TestCSSUnterminatedCommentDoesNotHang(t *testing.T) {
 	got := CSS(`.a{} /* never closed`, prox, mustBase(t, "https://pub.example/"))
 	if !strings.Contains(got, "never closed") {
 		t.Errorf("lost the tail: %s", got)
+	}
+}
+
+// iframe@src, embed@src and object@data are nested DOCUMENTS, not assets —
+// see the urlAttrs comment for why they are a deliberate omission rather than
+// an oversight. A future edit that folds them into urlAttrs "for consistency"
+// would make an asset proxy fetch and hand back arbitrary HTML from an
+// endpoint whose allowlist is images, which is the exact failure mode the
+// comment warns about. This pins the omission as a behaviour.
+func TestNestedDocumentAttrsAreNeverRewrittenAsAssets(t *testing.T) {
+	opt := Options{Base: mustBase(t, "https://pub.example/p/"), Asset: prox}
+	in := `<iframe src="/embed"></iframe><embed src="/thing.swf">` +
+		`<object data="/thing.pdf"></object>`
+	got := run(t, in, opt)
+	if strings.Contains(got, "proxy.test") {
+		t.Errorf("a nested-document attribute was rewritten as an asset:\n%s", got)
+	}
+	if !strings.Contains(got, `src="/embed"`) {
+		t.Errorf("iframe src changed unexpectedly:\n%s", got)
+	}
+	if !strings.Contains(got, `data="/thing.pdf"`) {
+		t.Errorf("object data changed unexpectedly:\n%s", got)
 	}
 }
 

@@ -215,6 +215,18 @@ func retagDeclaration(body []byte) []byte {
 
 func apply(enc encoding.Encoding, body []byte) ([]byte, bool, error) {
 	if enc == nil {
+		// nil means "already UTF-8, only the mark was stripped" (see the BOM
+		// table), not "trust these bytes unconditionally". A BOM is a claim
+		// like any other declaration, and this package's contract — enforced
+		// by every other branch of decode() — is that a claim contradicted by
+		// the bytes gets repaired, not passed through. Without this check, a
+		// document that opens with a UTF-8 BOM but is mis-transcoded after it
+		// would reach downstream parsers carrying invalid UTF-8 with
+		// Replaced left false, silently violating Decode's documented
+		// "never fails on undecodable input" guarantee.
+		if !utf8.Valid(body) {
+			return bytes.ToValidUTF8(body, []byte("�")), true, nil
+		}
 		return body, false, nil
 	}
 	out, _, err := transform.Bytes(enc.NewDecoder(), body)
@@ -285,10 +297,22 @@ func fromContentType(ct string) string {
 	if err != nil {
 		// Servers emit unparseable Content-Type headers routinely. Fall back to
 		// finding the parameter by hand rather than discarding the hint.
-		if i := strings.Index(strings.ToLower(ct), "charset="); i >= 0 {
-			v := ct[i+len("charset="):]
+		//
+		// This must slice `lower`, not `ct`: strings.ToLower is not
+		// length-preserving. A byte that is not valid UTF-8 on its own (a lone
+		// 0xEF, say) decodes as U+FFFD and unicode.ToLower(U+FFFD) still
+		// re-encodes as the 3-byte UTF-8 sequence for U+FFFD, so the lowercased
+		// copy can come out longer than ct. An index found in that copy and
+		// then applied to the shorter, original ct can point past its end —
+		// which is exactly the "slice bounds out of range" panic a hostile
+		// Content-Type header produced here. Slicing `lower` throughout keeps
+		// the index and the string it indexes into always the same length, and
+		// costs nothing extra since the value is lowercased on return anyway.
+		lower := strings.ToLower(ct)
+		if i := strings.Index(lower, "charset="); i >= 0 {
+			v := lower[i+len("charset="):]
 			v = strings.TrimSpace(strings.Trim(strings.Split(v, ";")[0], `"' `))
-			return strings.ToLower(v)
+			return v
 		}
 		return ""
 	}

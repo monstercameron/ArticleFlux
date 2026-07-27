@@ -179,6 +179,41 @@ func TestBrokenUTF8IsRepairedNotReguessed(t *testing.T) {
 	}
 }
 
+// REAL PRODUCT BUG, found by FuzzDecode (fuzz_test.go) and pinned here.
+//
+// A UTF-8 byte-order mark followed by bytes that are NOT valid UTF-8 passes
+// through Decode unrepaired: the output is invalid UTF-8, Replaced is false,
+// and no error is returned. That breaks the package's own documented
+// contract ("It never fails on undecodable input: invalid sequences become
+// U+FFFD and Result.Replaced is set") and the corresponding invariant every
+// other branch of decode() upholds (see TestBrokenUTF8IsRepairedNotReguessed
+// for the equivalent case with a declared-utf-8 label instead of a BOM).
+//
+// Root cause: fromBOM (charsetdec.go) maps the UTF-8 BOM prefix to a nil
+// encoding.Encoding — "already UTF-8; only the mark is removed" — and apply()
+// (charsetdec.go:217-219) short-circuits on a nil encoding by returning the
+// body unchanged, WITHOUT the utf8.Valid check and bytes.ToValidUTF8 repair
+// that every other branch of apply() performs. A malformed feed that opens
+// with a UTF-8 BOM but is not actually UTF-8 after it — plausible for
+// anything hand-rolled or mis-transcoded — reaches gofeed/html.Parse carrying
+// invalid UTF-8.
+//
+// This test is intentionally left failing (t.Skip is not used) so it shows up
+// red until fixed; the fix belongs in apply(), not here.
+func TestBOMWithInvalidUTF8AfterItIsRepaired(t *testing.T) {
+	body := []byte{0xEF, 0xBB, 0xBF, 0x9E} // UTF-8 BOM, then a lone continuation byte
+	got, res, err := Decode(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(got) {
+		t.Errorf("Decode returned invalid UTF-8 after a UTF-8 BOM: %q", got)
+	}
+	if !res.Replaced {
+		t.Error("Replaced should be true: the bytes after the BOM were not valid UTF-8")
+	}
+}
+
 func TestNoDeclarationAndValidUTF8IsBelieved(t *testing.T) {
 	body := []byte("<t>café — 日本語</t>")
 	got, res, err := Decode(body, "")
@@ -308,6 +343,39 @@ func TestDeclarationIsRetaggedAfterDecoding(t *testing.T) {
 				t.Errorf("\n got %s\nwant %s", got, c.want)
 			}
 		})
+	}
+}
+
+// REAL PRODUCT BUG, found by fuzzing and pinned here.
+//
+// Decode("0", "\xefChArset=") panics: slice bounds out of range [11:9].
+//
+// Root cause: fromContentType's hand-rolled fallback (charsetdec.go, in
+// fromContentType) computes the index of "charset=" in
+// strings.ToLower(ct), then slices the ORIGINAL ct at
+// i+len("charset="). That is only safe if the lowercased copy has exactly
+// the same byte length as ct at every position up to the match — which
+// Unicode case-folding does not guarantee. Here ct's first byte, 0xEF, is
+// not valid UTF-8 on its own (the following bytes are not continuation
+// bytes), so strings.ToLower decodes it as U+FFFD (RuneError, size 1) and
+// unicode.ToLower(U+FFFD) still encodes as the 3-byte UTF-8 sequence EF BF
+// BD. The lowercased string is therefore 2 bytes LONGER than ct, so the
+// match index found in it lands past the end of the shorter, original ct
+// once the "charset=" offset is added, and the slice ct[i+8:] goes out of
+// bounds.
+//
+// This is a DoS: fromContentType is reachable from Decode's Content-Type
+// parameter, and Decode runs on every fetched feed/page/mail body with a
+// publisher-controlled header before anything authenticates the source.
+func TestFromContentTypeDoesNotPanicOnCaseFoldingLengthMismatch(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Decode panicked: %v", r)
+		}
+	}()
+	_, _, err := Decode([]byte("0"), "\xefChArset=")
+	if err != nil {
+		t.Fatalf("Decode returned an error: %v", err)
 	}
 }
 
