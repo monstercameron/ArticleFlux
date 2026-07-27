@@ -249,7 +249,11 @@ func report(t *testing.T, name string, d time.Duration) {
 // Built in one transaction per batch rather than one per row: 50,000
 // transactions against a single-writer database is a benchmark of the WAL, and
 // the thing being measured is the read path.
-func buildG3Fixture(t *testing.T) *DB {
+// testing.TB rather than *testing.T so bench_test.go can build the same 50,000
+// rows. The fixture is the expensive part and the expensive part is the point:
+// a benchmark that measures a different database from the one the gate measures
+// is a benchmark whose wins do not transfer.
+func buildG3Fixture(t testing.TB) *DB {
 	t.Helper()
 	ctx := context.Background()
 
@@ -385,7 +389,7 @@ func buildG3Fixture(t *testing.T) *DB {
 	return db
 }
 
-func g3FolderOf(t *testing.T, db *DB, sc Scope) string {
+func g3FolderOf(t testing.TB, db *DB, sc Scope) string {
 	t.Helper()
 	var id string
 	err := db.Read.QueryRowContext(context.Background(),
@@ -396,7 +400,7 @@ func g3FolderOf(t *testing.T, db *DB, sc Scope) string {
 	return id
 }
 
-func g3SourcesInFolder(t *testing.T, db *DB, sc Scope, folderID string) []string {
+func g3SourcesInFolder(t testing.TB, db *DB, sc Scope, folderID string) []string {
 	t.Helper()
 	rows, err := db.Read.QueryContext(context.Background(),
 		`SELECT source_id FROM subscriptions WHERE user_id = ? AND folder_id = ?`,
