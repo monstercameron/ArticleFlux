@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/monstercameron/ArticleFlux/client/design"
+	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
@@ -64,37 +66,86 @@ type paletteProps struct {
 // possible action is a menu with worse discoverability, and the ones here are
 // exactly those that are otherwise a click into a pane the reader may not be
 // looking at.
-var paletteCommands = []paletteEntry{
-	{Kind: paletteCommand, ID: "refresh", Label: "Refresh feeds", Hint: "r"},
-	{Kind: paletteCommand, ID: "mark-all", Label: "Mark all read", Hint: ""},
-	{Kind: paletteCommand, ID: "toggle-unread", Label: "Toggle unread only", Hint: "u"},
-	{Kind: paletteCommand, ID: "toggle-feed-filter", Label: "Toggle feeds with unread", Hint: ""},
-	{Kind: paletteCommand, ID: "listen", Label: "Listen to this article", Hint: ""},
-	{Kind: paletteCommand, ID: "read-later", Label: "Save this article for later", Hint: "t"},
-	{Kind: paletteCommand, ID: "mark-unread", Label: "Mark this article unread", Hint: "U"},
-	{Kind: paletteCommand, ID: "like", Label: "Like this article", Hint: "l"},
-	{Kind: paletteCommand, ID: "dislike", Label: "Dislike this article", Hint: "d"},
-	{Kind: paletteCommand, ID: "open-original", Label: "Open the original", Hint: "o"},
+//
+// Built per call rather than held in a package var: the labels come from the
+// catalog, and a var initialised at package-init would keep the boot locale
+// after a switch. The set is twelve entries and buildPalette runs once per
+// palette open, not per keystroke.
+//
+// The Hints are keyboard shortcuts — key names the browser reports, not copy —
+// so they stay literal here.
+func paletteCommands() []paletteEntry {
+	cmds := []struct{ id, hint string }{
+		{"refresh", "r"},
+		{"mark-all", ""},
+		{"toggle-unread", "u"},
+		{"toggle-feed-filter", ""},
+		{"listen", ""},
+		{"read-later", "t"},
+		{"mark-unread", "U"},
+		{"like", "l"},
+		{"dislike", "d"},
+		{"open-original", "o"},
+		{"toggle-motion", ""},
+		{"appearance", ""},
+	}
+	out := make([]paletteEntry, 0, len(cmds))
+	for _, c := range cmds {
+		out = append(out, paletteEntry{
+			Kind: paletteCommand, ID: c.id,
+			Label: i18n.T("palette.cmd." + c.id), Hint: c.hint,
+		})
+	}
+	return out
+}
+
+// themeCommands puts every theme in the palette under its own name.
+//
+// One entry per theme rather than a single "next theme" verb, because a palette
+// is a NAME LOOKUP — a reader who wants Daylight types "day" and presses Enter.
+// A verb that steps through five themes makes them press Enter until the right
+// one arrives, which is a worse version of the picker they already have on the
+// Appearance screen.
+//
+// Built once at init rather than on every keystroke: the set is a compile-time
+// constant, and paletteEntries already rebuilds enough per query.
+func themeCommands() []paletteEntry {
+	out := make([]paletteEntry, 0, len(design.Themes))
+	for _, t := range design.Themes {
+		out = append(out, paletteEntry{
+			Kind: paletteCommand,
+			// The runPalette dispatcher splits on the FIRST colon only, so the
+			// theme's name survives inside the command id.
+			ID:    "theme:" + t.Name,
+			Label: i18n.T("palette.cmd.theme", i18n.Args{"theme": themeLabel(t)}),
+			Hint:  themeBlurb(t),
+			Hue:   t.Accent,
+		})
+	}
+	return out
 }
 
 // paletteStreams are the fixed destinations, in the sidebar's own order so the
 // palette does not teach a second mental model of the same app.
-var paletteStreams = []paletteEntry{
-	{Kind: paletteStream, ID: streamAll, Label: "All feeds"},
-	{Kind: paletteStream, ID: streamUnread, Label: "Unread"},
-	{Kind: paletteStream, ID: streamLater, Label: "Read later"},
-	{Kind: paletteStream, ID: streamLiked, Label: "Liked"},
-	{Kind: paletteStream, ID: streamNotes, Label: "Notes"},
+func paletteStreams() []paletteEntry {
+	return []paletteEntry{
+		{Kind: paletteStream, ID: streamAll, Label: i18n.T("stream.all")},
+		{Kind: paletteStream, ID: streamUnread, Label: i18n.T("stream.unread")},
+		{Kind: paletteStream, ID: streamLater, Label: i18n.T("stream.later")},
+		{Kind: paletteStream, ID: streamLiked, Label: i18n.T("stream.liked")},
+		{Kind: paletteStream, ID: streamNotes, Label: i18n.T("stream.notes")},
+	}
 }
 
 // buildPalette assembles every destination and command, unfiltered.
 func buildPalette(feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
-	out := make([]paletteEntry, 0, len(feeds)+len(tags)+len(paletteStreams)+len(paletteCommands))
-	out = append(out, paletteStreams...)
+	streams, cmds, themes := paletteStreams(), paletteCommands(), themeCommands()
+	out := make([]paletteEntry, 0, len(feeds)+len(tags)+len(streams)+len(cmds)+len(themes))
+	out = append(out, streams...)
 	for _, f := range feeds {
 		hint := ""
 		if n := f.GetUnreadCount(); n > 0 {
-			hint = strconv.Itoa(int(n)) + " unread"
+			hint = i18n.N("palette.hintUnread", int(n))
 		}
 		out = append(out, paletteEntry{
 			Kind: paletteFeed, ID: f.GetSourceId(), Label: f.GetTitle(),
@@ -102,12 +153,20 @@ func buildPalette(feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
 		})
 	}
 	for _, t := range tags {
+		// Labelled the way the rail labels it, so a reader searching the palette
+		// types the name they can see. The tag's own name goes in the hint when
+		// the two differ — the palette is also how someone finds out what they
+		// filed something under.
+		hint := i18n.N("palette.hintFeeds", int(t.GetFeedCount()))
+		if l := t.GetLabel(); l != "" && l != t.GetName() {
+			hint = t.GetName() + " · " + hint
+		}
 		out = append(out, paletteEntry{
-			Kind: paletteTag, ID: t.GetId(), Label: t.GetName(),
-			Hint: strconv.Itoa(int(t.GetFeedCount())) + " feeds",
+			Kind: paletteTag, ID: t.GetId(), Label: tagDisplay(t), Hint: hint,
 		})
 	}
-	return append(out, paletteCommands...)
+	out = append(out, cmds...)
+	return append(out, themes...)
 }
 
 // filterPalette ranks entries against a query.
@@ -203,7 +262,8 @@ func palette(p paletteProps) ui.Node {
 	rows := make([]ui.Node, 0, len(p.entries)+1)
 	if len(p.entries) == 0 {
 		rows = append(rows, html.Div(html.Props{Class: "pal-empty"},
-			html.Text("Nothing matches “"+strings.TrimSpace(p.query)+"”.")))
+			html.Text(i18n.T("palette.empty",
+				i18n.Args{"query": strings.TrimSpace(p.query)}))))
 	}
 	for i, e := range p.entries {
 		mark := html.I(html.Props{Class: "pal-mark pal-mark-" + kindClass(e.Kind)})
@@ -239,20 +299,20 @@ func palette(p paletteProps) ui.Node {
 		// attribute and a different listener, so this does not swallow them.
 		html.Div(html.Props{Class: "pal", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": "Command palette"}},
+			Aria: map[string]string{"modal": "true", "label": i18n.T("palette.title")}},
 			html.Div(html.Props{Class: "pal-field"},
 				html.Input(html.Props{
 					Class: "pal-input", Type: "text",
-					Placeholder: "Go to a feed, or type a command…",
+					Placeholder: i18n.T("palette.placeholder"),
 					Value:       p.query,
 					OnInput:     p.onInput,
 					Data:        map[string]string{"role": "palette"},
-					Aria:        map[string]string{"label": "Search feeds and commands"},
+					Aria:        map[string]string{"label": i18n.T("palette.searchAria")},
 				}),
 			),
 			html.Div(html.Props{Class: "pal-list", Role: "listbox"}, rows...),
 			html.Div(html.Props{Class: "pal-foot"},
-				html.Text("↑↓ move · Enter open · Esc close")),
+				html.Text(i18n.T("palette.foot"))),
 		),
 	)
 }
@@ -273,12 +333,12 @@ func kindClass(k paletteKind) string {
 func kindLabel(k paletteKind) string {
 	switch k {
 	case paletteFeed:
-		return "Feed"
+		return i18n.T("palette.kindFeed")
 	case paletteTag:
-		return "Tag"
+		return i18n.T("palette.kindTag")
 	case paletteCommand:
-		return "Command"
+		return i18n.T("palette.kindCommand")
 	default:
-		return "Stream"
+		return i18n.T("palette.kindStream")
 	}
 }

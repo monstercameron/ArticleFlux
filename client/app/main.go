@@ -20,7 +20,10 @@ func main() {
 	// calling it twice would be harmless.
 	design.Sheet()
 
-	ui.Render(ui.CreateElement(view.Reader), "#app")
+	// Root, not Reader. Root decides whether this page shows the reader or the
+	// login screen, and mounts one or the other — so an unauthenticated page
+	// never constructs the reader's forty hooks or fires its first fetch.
+	ui.Render(ui.CreateElement(view.Root), "#app")
 
 	// wasm has no runtime to return to: main returning would tear the module
 	// down and every registered callback with it.
