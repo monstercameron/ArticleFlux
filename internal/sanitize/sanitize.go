@@ -287,14 +287,22 @@ func prepare(s string, p Policy) (string, error) {
 }
 
 func walk(n *html.Node, p Policy) {
-	// Collect first: harden may remove n's children, and mutating a sibling
-	// chain while iterating it skips nodes.
-	var kids []*html.Node
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		kids = append(kids, c)
-	}
-	for _, c := range kids {
+	// The hazard is real: harden removes tracking pixels, so walking a child can
+	// detach that child, and `c = c.NextSibling` on a detached node reads nil and
+	// abandons every sibling after it.
+	//
+	// This used to be handled by collecting the children into a slice first,
+	// which is correct and allocates once per element in the document — several
+	// hundred allocations for an article, to defend against a case that only
+	// arises for the handful of nodes harden actually touches.
+	//
+	// Reading the successor BEFORE descending is the same defence for nothing:
+	// RemoveChild clears the removed node's own links, and this no longer holds
+	// one. It cannot clear the pointer already in `next`.
+	for c := n.FirstChild; c != nil; {
+		next := c.NextSibling
 		walk(c, p)
+		c = next
 	}
 	if n.Type == html.ElementNode {
 		harden(n, p)
