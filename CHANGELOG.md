@@ -56,6 +56,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The LLM circuit breaker and the §18.8 egress boundary** (`internal/llm/breaker.go`,
+  `egress.go`, TODO 6.11). §22.8's breaker opens after five consecutive failures and **half-opens to
+  exactly one probe** — letting them all through would hand a still-broken provider the full load
+  every two minutes, which is a retry storm on a timer. The in-flight bound is on *concurrency*, not
+  rate, because the problem is not how many calls are made but how many are stuck; being busy is
+  counted separately from failing, or a traffic spike looks like an outage. §18.8's allowlist is
+  **types, not a filter**: a filter fails open, since it can only remove what it was told about, so
+  adding a field upstream sends it and the request still succeeds. The outbound shapes have fields
+  only for what is permitted, candidate ids are per-request *ordinals* rather than database ids (an
+  opaque id would let a provider correlate across requests and rebuild the history the allowlist
+  exists to prevent), and `AuditEgress` walks the marshalled JSON reporting anything off the list —
+  which is the test §18.8 asks for by name, "not a comment expressing intent".
+
 - **Item tags, note and bookmark search, saved views, and the audit log** (TODO 5.5, 5.8, 5.10).
   `item_tags` is A21's, and it is not `feed_tags`: "this article is about rust" and "everything from
   this feed is rust" are different statements, and a feed about systems programming carries the
