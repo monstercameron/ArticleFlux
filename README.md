@@ -89,8 +89,41 @@ same deal.
 ./scripts/make.ps1 lint     # go vet, buf lint, and the four structural guards
 ```
 
+`dev` serves the local account with **no login** — the client asks the server at boot and goes
+straight to the reader, no password prompt. It is refused on any bind but loopback, and refused
+alongside `-behind-proxy`. `cp .env.example .env` documents the same switch as `ARTICLEFLUX_DEV=1`,
+along with the dev credentials (`cam` / `articleflux`) for when you want to exercise the login
+screen itself.
+
+On Linux the same verbs exist as a `Makefile` — `make dev`, `make test`, `make lint`. The two are
+kept identical on purpose; two build systems is only a lie if they disagree.
+
 No Node for the app. No Docker. No WSL. Node appears exactly once, in the e2e suite, because
 Playwright drives a real browser.
+
+---
+
+## Putting it on a server
+
+**[`deploy/README.md`](deploy/README.md)** takes a bare Ubuntu droplet to a reader on TLS in about
+twenty minutes: systemd unit, nginx site with the WebSocket settings the tunnel needs, certbot,
+and a nightly verified backup. Ships with it:
+
+| | |
+|---|---|
+| [`deploy/articleflux.service`](deploy/articleflux.service) | Hardened systemd unit — loopback bind, unprivileged user, `ProtectSystem=strict` |
+| [`deploy/nginx.conf`](deploy/nginx.conf) | The `/grpc` block, whose four settings are the difference between a working tunnel and one that drops every sixty seconds |
+| [`deploy/articleflux-backup.{service,timer}`](deploy/) | `VACUUM INTO` + `PRAGMA integrity_check` nightly, because a `cp` of a WAL-mode database restores cleanly and is silently missing a transaction |
+
+A hosted instance requires a login. Create the first account once:
+
+```bash
+articleflux init -db /var/lib/articleflux/articleflux.db -user cam
+```
+
+The server refuses to start rather than serving a login screen nobody can get past — along with
+two other boot checks (missing web root, unwritable data directory) that otherwise surface hours
+later while `/healthz` reports green.
 
 ---
 

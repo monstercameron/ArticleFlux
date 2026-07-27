@@ -87,6 +87,14 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       choice here that is expensive to defer**: signed proxy URLs get minted, cached and stored, so
       splitting the origin afterwards is a migration of every artifact rather than a config change.
       *Blocks 7.12.*
+- [ ] **D21 · How does the ladder know which rung it is on?** §10.1-R orders the runtime path
+      **real page → (blocked) frame stream → (bandwidth) compressed rendered HTML → reader text**, and
+      both arrows are detections. "Blocked" is close to undetectable from the client: a blocked fetch,
+      a DNS failure, a captive portal and plain offline are one opaque error, and a refused iframe is
+      indistinguishable from a loading one. §25.0 proposes **manual in v1** — the switcher operates
+      the ladder — with automatic escalation waiting on a real probe. The bandwidth arrow is the
+      easier half and should be *measured* from the stream's own throughput, not predicted from
+      `navigator.connection`. *Blocks the automatic half of 8.22; blocks nothing else.*
 - [ ] **D19 · Does the renderer ship, and where does the browser run?** §25.0 proposes yes, on the
       reference box, one render at a time, flag-gated off. Edge is already installed and `chromedp`
       attaches to an existing Chromium, so this is not a new host — but it is a browser process on the
@@ -1154,11 +1162,54 @@ hand-written CSS and vanilla JS, and nobody ports them.
 
 - [ ] **8.4 `web/sw.js`** — the one unavoidable JS file. **App-shell caching only** (packs at M10),
       under ~60 lines, registered from 8.3. Anything cleverer belongs in the wasm app. §12.3
-- [ ] **8.4a `client/i18n`** — every UI string through GWC's `i18n` from the **first** component, even
+- [x] **8.4a `client/i18n`** — every UI string through GWC's `i18n` from the **first** component, even
       though only English ships. Retrofitting extraction across ~50 pages and ~90 settings is
       miserable and always gets deferred forever. Locale date/number formatting applies immediately.
       §22.16
-      ⏸ 2026-07-26 — **Deferred, deliberately — still open.** Every string is still inline English. Doing this properly means routing ~200 strings through GWC `i18n`, and the UI is still changing shape weekly — retrofitting once it settles is cheaper than re-extracting after every redesign. The debt is real and §22.16 already names it.
+      ⏸ 2026-07-26 — **Deferred, deliberately.** Every string was still inline English; the UI was
+      changing shape weekly and retrofitting once it settled looked cheaper than re-extracting after
+      every redesign.
+      ✅ 2026-07-26 — **Done, and the deferral was wrong** — the sweep took one pass, not the several
+      the note assumed. `client/i18n` + eleven `en_*.go` catalogs; **all 11 files in `client/view` are
+      at zero hardcoded copy**, enforced by a fifth structural guard (`internal/tools/guards/i18n.go`).
+      Four findings, all written back into §22.16:
+      - **`i18n.T` is a plain function, NOT GWC's `UseI18n()` hook.** GWC matches hooks positionally,
+        and translation happens inside `for` loops over 3,600 list rows and inside branches. A context
+        hook there binds to the wrong slot. The GWC `Bundle` still does the real work (locale
+        candidates, plural categories, `{arg}` interpolation); only the *access* is package-level.
+      - **Importing GWC's `i18n` costs 221 KB gzipped** (5.96 → 6.18 MB, +3.7% against G5's ratchet),
+        entirely from `x/text`: `language.Parse` inside `NormalizeLocale`, and `message.NewPrinter`
+        inside `FormatNumber`. GWC's plural rules are hand-rolled and cost nothing. Paid rather than
+        forked — see §22.16 for the GWC-side fix that would remove it for every GWC app.
+      - **`client/i18n` carries no build tag on purpose.** `client/view` is `js && wasm` and cannot be
+        linked into a native test; the catalog can, which is what makes `keycoverage_test.go`
+        possible — and, later, what let the server read the English catalog to translate it.
+      - **Locale switching is a full page reload.** GWC cannot invalidate every mounted component from
+        outside the tree, and a partial re-render leaves a page half in each language.
+
+- [x] **8.4b `internal/llm` + `internal/smart` + the Smart+ settings surface** — one OpenAI client for
+      every Smart+ feature, a persisted encrypted API key, and realtime UI translation. §10.5a, §22.16a
+      ✅ 2026-07-26 — Not in the original tier list; added because §22.16's catalog made it a day of work
+      rather than a milestone. What shipped:
+      - **`internal/llm`** — the ONLY way this app talks to a model, and it uses the **Responses API**
+        (`/v1/responses`) exclusively. Strict `json_schema` structured output; `store:false` so the
+        reader's text is not retained for thirty days by default; host allowlist checked against the
+        outgoing request; `ErrTruncated` **refuses partial answers** rather than returning a catalog
+        missing its tail.
+      - **`internal/store/settings.go`** — the `scope='system'` layer of §6.3's registry. AES-GCM at
+        rest under `secrets.key` beside the database (`ARTICLEFLUX_SECRET_KEY` overrides). Methods are
+        named `SystemValue`/`SetSystemSecret`/… rather than `Get`/`Set` **on purpose**: the guard's
+        `unscopedByDesign` list is keyed by bare method name, so exempting a `Get` here would exempt
+        `Get` on every future tenant-scoped repository.
+      - **`internal/smart`** — reads the English catalog straight out of `client/i18n` (no build tag,
+        so the server can import it), translates in batches of 60, caches per locale **keyed by a hash
+        of the English** so a build that edits a string re-translates and one that does not is free.
+      - **`SmartService`** (`proto/articleflux/v1/smart.proto`) — owner-only, checked per method. Never
+        returns the key; `key_hint` is the last four characters.
+      - **`client/view/smartsettings.go`** — key, model, spend, and the language picker on one tab,
+        because the picker spends the key.
+      - **`internal/tts` now reads the same key function**, so one credential drives every Smart+
+        feature instead of the voice reading the environment and translation reading the setting.
 
 - [x] **8.5 `client/design/tokens.go`** — the fanciful palette via `css.Root` + `css.Custom`, the type
       scale, spacing, `css.Preflight()`, and **`HueFor(sourceID)`** — a deterministic per-source hue.
@@ -1245,7 +1296,23 @@ hand-written CSS and vanilla JS, and nobody ports them.
       font. ← 7.13, 8.20
       *Done when: input round-trips, a lost connection tears the session down visibly rather than
       freezing on the last frame, and leaving the view stops the stream.*
-      **Flag-gated, off by default.**
+      **Instance-gated, and consent-gated at first use — not off by default.** §10.1-R makes this
+      **rung 2**, the automatic answer to a blocked origin, so "off unless someone goes looking"
+      would mean the ladder never engages. The operator switch stays; the per-reader gate moves to the
+      moment of use (R22 is a traffic signature, and a settings toggle nobody read is not consent).
+      A reader who has never been asked falls to rung 3 instead.
+
+- [ ] **8.22 The ladder controller** — §10.1-R. One place that decides which rung the article pane is
+      on and why, in this order: **real page → (blocked) frame stream → (bandwidth) compressed
+      rendered HTML → reader text**. Every step down is a *named constraint being hit*, never a
+      preference, and the reason is displayed — a reader who has silently been dropped two rungs
+      thinks the site is broken.
+      **Manual in v1 (D21).** The switcher is the controller; automatic escalation waits on a probe
+      that can actually tell "blocked" from "offline" from "still loading". Falling *down* the ladder
+      never needs permission; reaching rung 2 does.
+      ← 8.20, 8.21, D21 §10.1-R
+      *Done when: each rung can be entered and left without a reload, every automatic transition names
+      its constraint on screen, and the pane can never end up empty with no explanation.*
 
 > *Done when:* you can read a feed in a browser **and on a phone**, from another machine, over TLS —
 > and `grep -rn "syscall/js" client/ | grep -v platform/` returns nothing. **Plan M4.**
@@ -1433,7 +1500,7 @@ be **one commit**.
 
 ### The two that are bugs
 
-- [ ] **8c.1 Client keepalive — and the server option that must ship with it.** §20.19.3.
+- [x] **8c.1 Client keepalive — and the server option that must ship with it.** §20.19.3.
       `grpctunnel.WithTunnelKeepalive(30s, 10s)` on the dial, **and**
       `grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 20s, PermitWithoutStream:
       true})` on `grpc.NewServer` in `internal/app/app.go`. **Shipping the client half alone makes
@@ -1444,7 +1511,7 @@ be **one commit**.
       sits below the client interval on purpose: a throttled ping arrives late, never early.
       *Done when: a blackholed connection (accept, then stop forwarding) is declared `down` within 40 s,
       and a 30-minute idle connection reconnects **zero** times — T21(b) and T21(c).*
-- [ ] **8c.2 Classify the error before believing it.** §20.19.6. A `classify(err)` in `client/data`
+- [x] **8c.2 Classify the error before believing it.** §20.19.6. A `classify(err)` in `client/data`
       returning transport / application / terminal, and `track` acting on the class instead of on
       `err != nil`. `Unavailable`/`DeadlineExceeded` → `down` and keep retrying · `Unauthenticated` and
       version skew → **`blocked`, stop retrying** · `PermissionDenied`/`NotFound`/`InvalidArgument`/
@@ -1459,7 +1526,7 @@ be **one commit**.
 
 ### The three that are missing reflexes
 
-- [ ] **8c.3 Lifecycle kicks.** §20.19.5. `platform.OnNetworkChange` / `OnResume` in the `syscall/js`
+- [x] **8c.3 Lifecycle kicks.** §20.19.5. `platform.OnNetworkChange` / `OnResume` in the `syscall/js`
       quarantine, and `Client.Kick()` calling **`conn.ResetConnectBackoff()`** — `conn.Connect()` is a
       no-op in `TRANSIENT_FAILURE`, so today nothing can shorten a wait even when the OS has just said
       the network is back. Wired to `online`, `visibilitychange`→visible, and `pageshow` with
@@ -1467,7 +1534,7 @@ be **one commit**.
       paint the offline state and stop the countdown. **Background-tab throttling is accepted, not
       fought** — a hidden tab makes no promises and a tab becoming visible verifies before it renders.
       *Done when: closing and reopening the lid reconnects in about a second rather than up to twenty.*
-- [ ] **8c.4 Five states, a countdown, and a Retry now.** §20.19.2. `offline` and `blocked` join
+- [x] **8c.4 Five states, a countdown, and a Retry now.** §20.19.2. `offline` and `blocked` join
       `live`/`connecting`/`down`, because one red dot currently means "your Wi-Fi is off", "the box is
       unplugged" and "your session expired" — three different sentences the reader needs. Plus
       hysteresis in one direction only: `connecting` suppressed for the first second and `down` held
@@ -1477,7 +1544,7 @@ be **one commit**.
       the cap does not get tuned down into hammering a server that is still booting.
       *Done when: pulling the network shows "You're offline" and killing the server shows "Can't reach
       the server · retrying in Ns", and they are not the same screen.*
-- [ ] **8c.5 Recovery must not storm.** §20.19.7. Every `READY` transition currently fires four RPCs;
+- [x] **8c.5 Recovery must not storm.** §20.19.7. Every `READY` transition currently fires four RPCs;
       on a flapping tunnel that is a refetch storm at the moment the server can least serve one, and the
       storm is what keeps the recovered connection saturated. Coalesce on a 2 s trailing window, at most
       one refetch per 5 s, **skip entirely when the outage was under 2 s**, and **generation-guard every
@@ -1488,13 +1555,13 @@ be **one commit**.
 
 ### What the server owes the connection
 
-- [ ] **8c.6 Readiness-gate the upgrade.** `/readyz` exists and **nothing consults it**, so `/grpc`
+- [x] **8c.6 Readiness-gate the upgrade.** `/readyz` exists and **nothing consults it**, so `/grpc`
       accepts a WebSocket into an instance that cannot serve reads — producing a client that connects
       successfully, fails every call, classifies as `down`, and retries hard against a server that is
       already struggling. Refuse the upgrade with **503 + `Retry-After`**, which is a reconnecting
       client's honest instruction to wait. Small, local, and it makes 8c.2's classification correct
       during a boot rather than accidentally right.
-- [ ] **8c.7 Close cleanly on shutdown.** `srv.Shutdown` **does not wait for hijacked connections** and
+- [x] **8c.7 Close cleanly on shutdown.** `srv.Shutdown` **does not wait for hijacked connections** and
       a WebSocket upgrade is one, so a deploy currently severs live tunnels mid-call via
       `a.grpc.Stop()`. `GracefulStop` under the existing 5 s deadline, then `Stop`, and a `1001 going
       away` close frame. The payoff is specific: an in-flight `SetItemState` at redeploy time presently
@@ -1509,7 +1576,7 @@ be **one commit**.
 
 ### Durability — the half a retry loop does not cover
 
-- [ ] **8c.9 The mutation outbox (§12.4, A25).** Specified in rev 8, unbuilt, and now the sharpest gap
+- [x] **8c.9 The mutation outbox (§12.4, A25).** Specified in rev 8, unbuilt, and now the sharpest gap
       in this area. `SetItemState` and friends are direct RPCs with `WaitForReady(true)` and a 20 s
       deadline, so marking an article read during an outage **hangs for twenty seconds, rolls the
       optimistic UI back, and discards the write** — the one thing a reader assumes is safe. The
@@ -1517,7 +1584,7 @@ be **one commit**.
       worth something, plus `rev` compare-and-set on drain. **Bigger than everything above it and it
       should be scheduled as its own batch, not smuggled into this one.**
       *Done when: five articles marked read while disconnected are all read after a reconnect — T22.*
-- [ ] **8c.10 Persist the signals buffer.** `client/track` holds up to 500 events **in RAM**, and its
+- [x] **8c.10 Persist the signals buffer.** `client/track` holds up to 500 events **in RAM**, and its
       `pagehide` flush cannot succeed while disconnected — so closing the tab at the end of an offline
       session loses the entire session. A34 calls it an outbox and §12.4 puts outboxes in IndexedDB;
       the signals half belongs in the same store with the same cap and the same oldest-drop. Rides
@@ -1525,7 +1592,7 @@ be **one commit**.
 
 ### Proof, and making flakiness falsifiable
 
-- [ ] **8c.11 T21 · the connection suite.** Five parts, and (b) is the one that needs building rather
+- [x] **8c.11 T21 · the connection suite.** Five parts, and (b) is the one that needs building rather
       than writing: a **blackhole TCP relay** in `internal/testnet` that accepts and then silently stops
       forwarding, because that is the only honest way to reproduce a half-open socket — Playwright
       cannot make a browser do it. (c) the 30-minute idle soak is the `too_many_pings` regression test,
@@ -1534,7 +1601,7 @@ be **one commit**.
       the offline path — ← **8b.34**, since adding specs to a suite that is not currently a gate buys
       nothing. (a)–(d) are native and do not wait on it, which is the argument for that split: **the
       two findings this audit turned up are both provable without a browser.**
-- [ ] **8c.12 Count the reconnects.** §20.19.10. Server → §22.15 and Settings → Server: upgrades
+- [x] **8c.12 Count the reconnects.** §20.19.10. Server → §22.15 and Settings → Server: upgrades
       accepted/refused, closes by reason, idle reaps, ping-write failures, live tunnel count. Client →
       the §20.3 ring and Settings → Activity: reconnect count, cumulative downtime, time since the last
       successful RPC. **"It feels flaky" is unfalsifiable without these**, and this app has no dashboard
@@ -1545,6 +1612,68 @@ be **one commit**.
 > substitutes, and shipping a good retry loop makes the missing outbox **harder** to notice, not
 > easier — the system now recovers so smoothly from the failures it can see that nobody goes looking
 > for the ones it cannot.
+
+### ✅ Built 2026-07-26, night — and the three things the build changed
+
+Eleven of twelve. `go build ./...`, `GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./...`
+green; every touched package's tests pass.
+
+**New packages, and why each is a package rather than a few lines somewhere.**
+
+- **`internal/connpolicy`** — the four keepalive numbers and the invariant between them, imported by
+  BOTH ends. The finding was "these two must ship together", so the structural answer is one file that
+  names both and a test that fails when they diverge. Deliberately holds no gRPC types: `client/data`
+  imports it, and every byte it pulls in is a byte in `app.wasm` (R4).
+- **`client/data/conn.go`** — **untagged, while the rest of the package is `js && wasm`**. Classification,
+  the backoff estimate and the recovery gate are arithmetic over a status code and a clock, which is
+  where the interesting failures are. The rule this establishes: *anything in a wasm package that can
+  be decided without the DOM belongs in an untagged file, so it can be decided in a test instead.*
+  Both of the audit's findings turned out to be provable without a browser.
+- **`client/outbox`** — the queue, pure and native-tested: coalescing, ordering, the cap, the round trip.
+
+**Three things the build changed about the design.**
+
+1. **gRPC silently clamps client keepalive to a 10s floor.** Found by a test that set 200ms, waited
+   five seconds, and asserted a detection that could not arrive before ten. Nothing errors and nothing
+   logs — so the obvious response to "detection feels slow" (lower the interval) produces a number that
+   is not used and a documented budget that is wrong. Our 30s is comfortably above it; the floor is now
+   `connpolicy.GRPCClientFloor` with a test, because the trap is not the limit, it is that going under
+   it changes nothing and says nothing.
+2. **The outbox is localStorage, not IndexedDB — a deliberate departure from §12.4.** §12.4 chose
+   IndexedDB for *packs*: megabytes localStorage cannot hold. A mutation queue has two properties packs
+   do not: it must be readable **synchronously at boot**, before the first render can honestly draw
+   anything, and writable from **`pagehide`**, where an async IndexedDB transaction is not guaranteed
+   to commit before the tab is gone. Both are what localStorage does and IndexedDB does not.
+3. **`whenReady` and `Close` grew past their tickets, correctly.** One `a.ready()` behind both `/readyz`
+   and the tunnel gate, because two readiness checks drift and the drift is silent — the probe says
+   ready, the upgrade says no, and the operator is looking at a green dashboard.
+
+**Two findings the work turned up that were not in the audit.**
+
+- **Idempotency keys are decorative, and the client's were unsafe.** `idempotency_keys` is in the
+  schema and `idgen.IdempotencyKey()` exists; **nothing on the server reads or writes either**. Meanwhile
+  the client sent *stable per-item* keys (`"unread-<id>"`), which is a replay hazard the day that
+  changes: mark unread → read → unread, and the third call is answered from the first one's cached
+  response and silently applies nothing. Harmless while the table is unused and reachable the moment it
+  is not — and an outbox is what makes it reachable, because an outbox is what replays. Keys are now
+  unique per press (`intentKey`). **The server half is still owed** and belongs with §20.7.
+- **`loadMore` had the same race as `loadItems`.** A page in flight when the scope changes appended the
+  old feed's items to the new list. Latent on a LAN; the recovery refetch is what made it reachable.
+  Both are generation-guarded now.
+
+**Not done: 8c.8**, and not for lack of time. `Retry-After` on a refused upgrade lives in
+**GoGRPCBridge**, which this repo consumes at a published `v1.1.1` with no `replace` — so editing the
+local checkout would change nothing here until that project tags and releases. It is a two-line change
+in someone else's release cycle, and ArticleFlux's own caps (8 connections, 30 upgrades/min) are
+generous enough that reaching them means a bug on this side. Left filed rather than half-done.
+
+**Owed, and now specified rather than vague:**
+
+- Server-side idempotency enforcement (§20.7), which the outbox has made load-bearing.
+- Version skew's server half (§22.10). The client recognises `SkewSentinel` and classifies it terminal;
+  nothing sends it yet. That ordering is deliberate — the client that must act on a skew refusal is by
+  definition the old one, so recognition has to ship before the refusal does.
+- **T21(e)**, the Playwright half, still gated on **8b.34**. (a)–(d) are native and landed.
 
 ---
 
@@ -1579,7 +1708,7 @@ brief for that milestone: which plan sections define it, which pages (Appendix A
 | **M25** | Scraped feeds + AI rule drafting | §14.2 | `/settings/sources` | C6 `RulePreview` | 6 | — |
 | **M26** | Discovery rung 4 · WebSub · **screensaver** | §11, §15.6, **§19** | `/screensaver` | — | 6 | T20 |
 | **M27** | **Page proxy** — asset rewriting · `snapshot` policy · the proxy origin · signed URLs | §10.1b | article pane, `Page` mode | C3 `RenderModeSwitcher` **`PageView`** | — | T23 |
-| **M28** | **Headless renderer** (2r) + **frame stream** (tiers 3–4), flag-gated off | §10.1c–d | article pane, `Live` mode | C3 **`RemotePage`** | — | T23 |
+| **M28** | **Headless renderer** (2r, compressed) + **frame stream** (tiers 3–4) + **the ladder** | §10.1c–d, **§10.1-R** | article pane, `Live` mode | C3 **`RemotePage`**, ladder controller | — | T23 |
 
 **⚠ `/shared` and `/discover` are new routes** surfaced by Appendix D that predate no plan section —
 `/shared` is specified in Appendix D5, `/discover` in §18.7.
@@ -2033,6 +2162,7 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 | **D16** public feed republishing | M21 | before M21 |
 | **D17** quota accounting | 5.2 | before Tier 5 |
 | **D19** renderer: ships? where? | 6.14 | before M28 — *not before 4.13 / 6.15 / 7.12, which stand alone* |
+| **D21** how the ladder detects its rungs | the automatic half of 8.22 | before the ladder is automatic — the manual switcher works without it |
 | **D20** proxy origin | 7.12 | **before the first signed URL is minted** — splitting the origin later is a migration of every cached artifact |
 
 **D3, D4, D6 are resolved** and carried only for the record.
