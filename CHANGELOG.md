@@ -56,6 +56,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Scraped sources** (`internal/scrapesel`, TODO 4.7) — a scrape rule plus a page of HTML becomes
+  items in the same shape a feed produces, so ingest, dedup, health, rules, ranking and search all
+  work on a site with no feed without knowing it was scraped. Pure, so the rule editor can preview
+  against a saved page rather than making the author edit selectors against a live site and guess.
+  `Compile` holds every refusable error — including the most useful one, a link selector that reads
+  text instead of `@href`, which otherwise yields a feed of items whose URL is the anchor's label.
+  `Extract` never fails on content: a site can serve anything, and the caller needs `Matched` and
+  `Skipped` to tell a redesign that broke the selector apart from a site that stopped publishing,
+  which look identical from the item count alone. Selectors matching the container itself are handled
+  (cascadia only searches descendants), the summary reads inner HTML while everything else reads text
+  or an attribute, scraped content goes through `sanitize.Feed`, `javascript:` links never become
+  items, and identity keeps the URL fragment — a one-page site distinguishes its entries by anchor
+  and nothing else, the same trap the feed corpus found.
+
 - **Bookmark interchange** (`internal/netscape`, TODO 4.6) — the Netscape bookmark format both ways
   plus Chrome's JSON in. The format is thirty years old, has no specification, and is what every
   browser imports; its defining property is that `<DT>` and `<p>` are never closed and nesting comes
