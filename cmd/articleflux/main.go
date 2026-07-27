@@ -26,6 +26,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/app"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
+	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/opml"
 )
@@ -615,34 +616,20 @@ func splitList(s string) []string {
 	return out
 }
 
-// clientAddr reports who made a request, honouring X-Forwarded-For only when the
-// operator has said a proxy is in front.
+// clientAddr reports who made a request, for the log.
 //
-// The conditional is the whole point. X-Forwarded-For is a request header, which
-// means any client can send one, which means trusting it unconditionally lets
-// anybody write whatever address they like into the log — and, once TODO 7.3d
-// puts a per-IP limiter behind it, lets them evade that limiter by rotating a
-// header field. So it is trusted only behind `-behind-proxy`, and the systemd
-// unit's loopback bind is what makes that claim true: nothing but nginx can
-// reach the socket, so nothing but nginx can set the header.
+// It is a one-line call now, and that is the point of the change rather than a
+// side effect of it. There used to be a copy of this rule here and a different
+// copy behind the login limiter, and they disagreed in the deployment that
+// matters: the log named the client while the limiter counted the proxy. A log
+// that cannot be compared against the control it is meant to explain is worse
+// than no log, because it is read as corroboration.
 //
-// The LEFTMOST entry is taken. XFF is a chain, appended to by each hop, so the
-// first entry is the original client and the rest are proxies. Taking the last —
-// which reads as "the most recent, therefore most trustworthy" — gets you
-// nginx's own address on every line.
+// internal/clientaddr holds the single rule, including why the header is
+// believed only behind `-behind-proxy` and why the leftmost entry is the one
+// taken.
 func clientAddr(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i > 0 {
-				return strings.TrimSpace(xff[:i])
-			}
-			return strings.TrimSpace(xff)
-		}
-		if xr := r.Header.Get("X-Real-IP"); xr != "" {
-			return strings.TrimSpace(xr)
-		}
-	}
-	return r.RemoteAddr
+	return clientaddr.Of(r, trustProxy)
 }
 
 func logging(log *slog.Logger, trustProxy bool, next http.Handler) http.Handler {

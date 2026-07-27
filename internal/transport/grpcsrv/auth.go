@@ -16,6 +16,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	"github.com/monstercameron/ArticleFlux/internal/authn"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
+	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -447,25 +448,26 @@ func userAgent(ctx context.Context) string {
 	return ""
 }
 
-// clientKey identifies the source of a login attempt, as well as it can be.
+// clientKey identifies the source of a login attempt.
 //
-// The honest caveat: RPCs arrive multiplexed over one WebSocket, so the peer
-// address is the tunnel's — and behind nginx that is 127.0.0.1 for every user on
-// the instance. This key therefore collapses to a single bucket in exactly the
-// deployment it matters most in. It is kept because it does work for a direct
-// bind and costs nothing, but the per-username limiter is the one carrying the
-// weight, and a real per-IP limit needs the forwarded address threaded through
-// the tunnel handshake — TODO 7.3d.
+// The caveat this used to carry is discharged (TODO 7.3d). RPCs still arrive
+// multiplexed over one WebSocket, so the peer address is still the tunnel's —
+// but behind a proxy the operator has vouched for, the tunnel's socket now
+// reports the forwarded address as its own (internal/app.trueClientAddr), so
+// the peer here is the person rather than nginx. Nothing in this file had to
+// learn what a proxy is, which is the point of fixing it a layer down.
+//
+// The normalisation is not cosmetic. Stripping at the last colon — which is
+// what this did — turns a bare IPv6 peer into a truncated prefix, so every
+// client on that network collapses into one bucket; and a mapped address is a
+// second key for a host that already has one, which is a second budget for
+// anyone who notices. clientaddr.Key settles both.
 func clientKey(ctx context.Context) string {
 	p, ok := peer.FromContext(ctx)
 	if !ok || p.Addr == nil {
 		return "unknown"
 	}
-	host := p.Addr.String()
-	if i := strings.LastIndexByte(host, ':'); i > 0 {
-		host = host[:i]
-	}
-	return host
+	return clientaddr.Key(p.Addr.String())
 }
 
 // --- attempt limiting --------------------------------------------------------

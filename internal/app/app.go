@@ -142,10 +142,22 @@ type Config struct {
 	// process.
 	//
 	// It is the operator asserting a fact the server cannot observe, and it gates
-	// exactly one thing: whether X-Forwarded-Proto is believed when deciding to
-	// emit HSTS (see overTLS). Trusting that header unconditionally would let any
-	// client pin Strict-Transport-Security for a year against a hostname that was
-	// never served over TLS.
+	// which forwarded headers are believed. Both of them are dangerous to trust
+	// unconditionally, in different ways:
+	//
+	//   X-Forwarded-Proto  decides whether HSTS is emitted (see overTLS).
+	//                      Believed from anyone, it lets a client pin
+	//                      Strict-Transport-Security for a year against a
+	//                      hostname that was never served over TLS.
+	//   X-Forwarded-For    decides who every per-client control counts (see
+	//                      trueClientAddr, TODO 7.3d). Believed from anyone, it
+	//                      lets an attacker mint a fresh limiter bucket per
+	//                      attempt — which is worse than the shared bucket it
+	//                      replaces.
+	//
+	// What makes the assertion safe is the systemd unit's loopback bind: nothing
+	// but the proxy can reach the socket, so nothing but the proxy can set the
+	// headers.
 	BehindProxy bool
 
 	// AllowedOrigins is the exact set of page origins permitted to open the
@@ -948,7 +960,13 @@ func (a *App) buildHandler() {
 	// Metrics for every HTTP response, outermost so it sees the status the client
 	// actually got — including the ones written by middleware that never reaches
 	// a route.
-	a.handler = a.httpMetrics(mux)
+	//
+	// The client address is resolved OUTSIDE even that (TODO 7.3d), because
+	// everything else in the chain — the tunnel's abuse caps, the login limiter,
+	// the lockout ledger — asks who the client is, and behind a reverse proxy
+	// the transport address answers "nginx" for all of them. Inert unless
+	// -behind-proxy says a proxy is there to be believed.
+	a.handler = a.trueClientAddr(a.httpMetrics(mux))
 }
 
 // static serves the client with the headers a wasm app needs.
