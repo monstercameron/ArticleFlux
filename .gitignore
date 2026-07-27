@@ -24,6 +24,17 @@
 # most personal file in a feed reader after the database itself.
 *.opml
 
+# One exception, and it is deliberately spelled out in full rather than written
+# as a testdata glob. The import parser needs a full-size export to test against,
+# so that fixture is SYNTHESISED and checked in — every hazard of a real export,
+# nobody's reading list. Naming the single file keeps the rule above in force for
+# everything else: drop a real freshrss.real.opml next to it and it stays ignored.
+#
+# This is here because the rule above silently swallowed that fixture, and the
+# test called t.Skip rather than failing — so CI was green while the only
+# real-world parse in the suite never ran once.
+!internal/opml/testdata/freshrss.opml
+
 # The wasm baseline IS checked in — CI ratchets the bundle size against it. The
 # bundle itself is not.
 *.wasm

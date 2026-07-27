@@ -6,12 +6,23 @@ import (
 	"testing"
 )
 
-// The real thing: a 144-feed FreshRSS export. A parser tested only against
+// A 144-feed FreshRSS export at full size. A parser tested only against
 // hand-written fixtures passes until someone actually migrates.
+//
+// The fixture is synthesised rather than real — an OPML export is a complete
+// list of what one person reads, which is the second most personal file a feed
+// reader has. It is generated to carry every hazard the real export did: the
+// Subscriptions wrapper, two HTML+XPath scrapers among the rss entries, escaped
+// ampersands in titles and in query strings, &quot; and &gt; inside attributes,
+// bare &#10; and &#13; line breaks, and one description of absurd length.
+//
+// It is committed. A missing fixture is a broken checkout, not a reason to skip
+// — this test spent its first weeks silently skipping in CI because *.opml in
+// .gitignore swallowed the file it needs.
 func TestParseRealFreshRSSExport(t *testing.T) {
 	f, err := os.Open("testdata/freshrss.opml")
 	if err != nil {
-		t.Skip("no real export checked in")
+		t.Fatalf("the fixture is checked in and must be readable: %v", err)
 	}
 	defer f.Close()
 
@@ -41,13 +52,20 @@ func TestParseRealFreshRSSExport(t *testing.T) {
 		}
 	}
 
-	// Spot-check a couple of real entries, including one whose title contains an
-	// escaped ampersand.
-	var found43, foundAmp bool
+	// Two entries are HTML+XPath scrapers rather than rss. An importer that
+	// filters on type="rss" drops them silently, and the user finds out weeks
+	// later when two feeds have never once arrived. That is why the count above
+	// is 144 and not 142.
+	//
+	// Spot-check one known entry, chosen because its xmlUrl carries an escaped
+	// ampersand: the parse must hand back a literal & or every Blogger and
+	// Feedburner subscription in the export points at the wrong URL.
+	const anchor = "https://www.example.com/amber-digest/feeds/posts/default?redirect=false&v=2"
+	var foundAnchor, foundAmp bool
 	for _, feed := range doc.Feeds {
-		if feed.FeedURL == "https://www.43rumors.com/feed/" {
-			found43 = true
-			if feed.Title != "43 Rumors" {
+		if feed.FeedURL == anchor {
+			foundAnchor = true
+			if feed.Title != "Amber Digest" {
 				t.Errorf("title = %q", feed.Title)
 			}
 		}
@@ -55,8 +73,8 @@ func TestParseRealFreshRSSExport(t *testing.T) {
 			foundAmp = true
 		}
 	}
-	if !found43 {
-		t.Error("a known feed is missing from the parse")
+	if !foundAnchor {
+		t.Error("a known feed is missing from the parse, or its query string was mangled")
 	}
 	if !foundAmp {
 		t.Error("expected at least one title with an escaped ampersand")
@@ -149,7 +167,7 @@ func TestParseRejectsNonOPML(t *testing.T) {
 func TestRoundTrip(t *testing.T) {
 	f, err := os.Open("testdata/freshrss.opml")
 	if err != nil {
-		t.Skip("no real export checked in")
+		t.Fatalf("the fixture is checked in and must be readable: %v", err)
 	}
 	defer f.Close()
 	orig, err := Parse(f)
