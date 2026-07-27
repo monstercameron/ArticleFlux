@@ -818,7 +818,17 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhance
 	// the final one. Reversing the two would let a Smart+ label overwrite a rename on
 	// every derivation, which is the one thing §18.2 is explicit about not doing.
 	if plus != nil {
-		s.labelTopics(ctx, plus, res.Topics)
+		// Only clusters that do not already have a written or renamed label.
+		//
+		// Read BEFORE ReplaceTopics, because after it the preserved labels are already
+		// merged in and there is no way to tell "this was labelled last week" from "this was
+		// labelled a moment ago". Without the distinction every derivation re-labelled every
+		// topic — twelve sequential API calls, repeatedly, rewriting labels that had not
+		// changed, and a single derivation taking minutes while the queue waited behind it.
+		//
+		// Measured on a real instance: the labelling pass was still running long after the
+		// re-rank should have finished, which is how this was found.
+		s.labelTopics(ctx, plus, res.Topics, s.labelledAlready(ctx, sc))
 	}
 
 	if err := s.repo.ReplaceTopics(ctx, sc, res.Topics); err != nil {
@@ -859,6 +869,19 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhance
 // They keep their deterministic labels, which are adequate for a three-member cluster.
 const MaxLabelledTopics = 12
 
+// LabelBudget bounds the whole labelling pass, not each call within it.
+//
+// Forty-five seconds. The count cap alone does not bound the TIME: twelve sequential calls at
+// up to ninety seconds each is eighteen minutes holding jobs.Pool's single derive slot, and
+// everything queued behind it waits. That happened on a real instance and it is why this
+// exists.
+//
+// Short is safe because labels persist across derivations (labelledAlready), so a pass that
+// runs out of budget is not a pass that failed — the remaining topics keep their term-based
+// names and are labelled next time. The work completes across runs, which for a background
+// improvement to a heading is the right shape.
+const LabelBudget = 45 * time.Second
+
 // labelTopics replaces deterministic top-term labels with written ones, in place.
 //
 // Sequential rather than concurrent, deliberately. This runs in a background job nobody is
@@ -867,13 +890,36 @@ const MaxLabelledTopics = 12
 //
 // A failure on one topic leaves that topic's label alone and continues to the next. There
 // is no reason a single unlucky cluster should cost the other eleven their labels.
-func (s *Service) labelTopics(ctx context.Context, plus Enhancer, ts []topics.Topic) {
+func (s *Service) labelTopics(ctx context.Context, plus Enhancer, ts []topics.Topic, done map[string]bool) {
+	deadline := time.Now().Add(LabelBudget)
 	n := 0
 	for i := range ts {
 		if n >= MaxLabelledTopics {
 			return
 		}
+		// The whole pass is bounded, not just each call.
+		//
+		// Per-call timeouts do not bound a SEQUENCE: thirteen topics at up to ninety seconds
+		// each is twenty minutes, during which jobs.Pool's single derive slot is held and
+		// every later derivation waits. Measured on a real instance — the first labelling run
+		// was still going long after the ranking should have been on screen.
+		//
+		// Stopping early is safe precisely because labels persist (see labelledAlready): the
+		// topics that did not fit keep their term-based names and are labelled on the next
+		// derivation, so the pass completes across runs instead of in one long one.
+		if time.Now().After(deadline) {
+			if s.log != nil {
+				s.log.Info("smart+ labelling budget spent; the rest keep term-based names",
+					"labelled", n, "budget", LabelBudget)
+			}
+			return
+		}
 		if len(ts[i].TopTerms) == 0 {
+			continue
+		}
+		// Already written or renamed. ReplaceTopics will restore that label from storage,
+		// so asking again would pay for a string that is about to be thrown away.
+		if done[topicKey(ts[i].TopTerms)] {
 			continue
 		}
 		n++
@@ -886,7 +932,38 @@ func (s *Service) labelTopics(ctx context.Context, plus Enhancer, ts []topics.To
 			continue
 		}
 		ts[i].Label = label
+		// Marked as written so ReplaceTopics stores the provenance and preserves it on every
+		// later rebuild. Without this the label would be stored as "terms", look
+		// deterministic, and be re-purchased on the next derivation.
+		ts[i].LabelSource = "llm"
 	}
+	if n > 0 && s.log != nil {
+		s.log.Info("smart+ labelled topics", "written", n, "already_labelled", len(done))
+	}
+}
+
+// labelledAlready is the set of cluster fingerprints whose label is already written or
+// renamed, so the labelling pass can skip them.
+//
+// Keyed by the same topicKey fingerprint ReplaceTopics preserves labels by — the two have to
+// agree or the skip and the restore disagree, and the symptom is a label bought every run
+// and discarded every run.
+//
+// A read error yields an empty set, which costs a redundant labelling pass rather than
+// dropping labels. That is the right direction for a cache: paying twice is recoverable,
+// and a reader whose topics silently lost their names is not.
+func (s *Service) labelledAlready(ctx context.Context, sc store.Scope) map[string]bool {
+	stored, err := s.repo.Topics(ctx, sc)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(stored))
+	for _, row := range stored {
+		if row.LabelSource == "llm" || row.LabelSource == "user" {
+			out[topicKey(row.TopTerms)] = true
+		}
+	}
+	return out
 }
 
 // topicKey matches an in-memory cluster to its stored row.

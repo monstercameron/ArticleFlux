@@ -84,6 +84,15 @@ type Doc struct {
 type Topic struct {
 	// Label is the deterministic name from the top terms.
 	Label string
+	// LabelSource records who wrote Label: empty or "terms" for Build's own
+	// deterministic name, "llm" when Smart+ replaced it (§18.2).
+	//
+	// Build never sets anything but the default — this package makes no network calls and
+	// has no opinion about paid tiers. It is here because the label and its provenance have
+	// to travel together to storage: a written label costs an API call, so it is PRESERVED
+	// across rebuilds like a rename, and storage can only do that if it knows which kind it
+	// is looking at.
+	LabelSource string
 	// TopTerms is the heaviest terms in the centroid, most significant first.
 	TopTerms []string
 	// Centroid is the mean vector of the members.

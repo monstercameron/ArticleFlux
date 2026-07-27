@@ -284,7 +284,23 @@ func assemble(lx *Lexicon, accs map[int32]*labelAcc, st Strategy, norm float64) 
 		var positive, sourceBucket float64
 		matches := make([]Match, 0, len(acc.terms)+len(acc.excludes))
 
-		for ti, ta := range acc.terms {
+		// Summed in TERM-INDEX order, not map order.
+		//
+		// Floating-point addition is not associative, so accumulating over a Go
+		// map means the same evidence can produce sums differing in the last bit
+		// between two runs of the same binary. That is not a rounding curiosity
+		// here: `item_analysis.category_scores` is persisted, and §27.2c requires
+		// that clearing it and re-running reproduces the row EXACTLY. A last-bit
+		// difference makes that test flake, and a flaky reproducibility test is
+		// one that gets a tolerance added to it — at which point the property it
+		// was protecting is gone.
+		//
+		// Caught by the pipeline's reproduce test comparing with reflect.DeepEqual
+		// where this package's own determinism test had been comparing with a
+		// 1e-12 tolerance and could not see it. The tolerance is now gone from
+		// that test too.
+		for _, ti := range sortedKeys(acc.terms) {
+			ta := acc.terms[ti]
 			t := label.Terms[ti]
 			v := termWeight(t) * st.weight(ta.bestField)
 			if ta.sourceOnly {
@@ -307,7 +323,9 @@ func assemble(lx *Lexicon, accs map[int32]*labelAcc, st Strategy, norm float64) 
 		}
 		total := positive + sourceBucket
 
-		for ti, ta := range acc.excludes {
+		// Ordered for the same reason as the positive sum above.
+		for _, ti := range sortedKeys(acc.excludes) {
+			ta := acc.excludes[ti]
 			t := label.Exclude[ti]
 			v := termWeight(t) * st.weight(ta.bestField)
 			total -= v
@@ -409,6 +427,18 @@ func termWeight(t Term) float64 {
 		return 1
 	}
 	return t.Weight
+}
+
+// sortedKeys returns a map's term indexes in ascending order, so that a sum over
+// them is reproducible. See the note at the call site — this exists to make
+// floating-point addition order fixed, not for tidiness.
+func sortedKeys(m map[int32]*termAcc) []int32 {
+	out := make([]int32, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // truncWords cuts text to roughly n words without tokenising it.

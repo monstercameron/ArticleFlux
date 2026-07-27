@@ -95,6 +95,17 @@ var unscopedByDesign = map[string]string{
 	"EvictArchives":   "instance-wide disk reclamation",
 	"ArchiveStats":    "instance-wide archive footprint for §22.6's ladder",
 
+	// item_analysis (10.5, §27.7): global, one row per item, exactly like
+	// IngestItems and ItemsByID. It holds nothing per-user — a category score is
+	// a property of the article, not of a reader — so there is nothing for a
+	// Scope to protect and requiring one would only imply an isolation this
+	// table does not have.
+	"UpsertAnalysis":   "writes global analysis rows; per-user labeling is fanout's job, same split as IngestItems/deliver",
+	"AnalysisByIDs":    "reads global analysis rows; nothing per-user is returned, same as ItemsByID",
+	"StaleAnalysis":    "the backfill's queue over global items and their (possibly absent) global analysis rows",
+	"ClearAnalysis":    "the repair tool for a fully derived global table (§27.2c); no per-user slice exists to scope to",
+	"PendingSmartPlus": "the Smart+ retry queue over global analysis rows, keyed by llm_at alone",
+
 	// Scraped sources (4.7/6.8), added alongside this work. Reasons mirrored
 	// from internal/tools/guards so the two lists cannot say different things
 	// about the same method.

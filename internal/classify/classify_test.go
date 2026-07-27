@@ -2,7 +2,6 @@ package classify
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 )
@@ -169,8 +168,20 @@ func TestDeterministic(t *testing.T) {
 			t.Fatalf("run %d: %d scores, first had %d", i, len(got.Scores), len(first.Scores))
 		}
 		for j := range got.Scores {
+			// EXACT equality, no tolerance.
+			//
+			// This compared with a 1e-12 tolerance and that is how a real
+			// determinism bug got past it: the per-label sums iterated a Go map,
+			// and floating-point addition is not associative, so the same evidence
+			// produced sums differing in the last bit between runs. The pipeline's
+			// reproduce test caught it with reflect.DeepEqual.
+			//
+			// A tolerance is wrong here on principle, not only in hindsight. These
+			// scores are persisted, and §27.2c requires that clearing the analysis
+			// and re-running reproduces the row exactly — so "close enough" is not
+			// the property under test.
 			if got.Scores[j].Slug != first.Scores[j].Slug ||
-				math.Abs(got.Scores[j].Value-first.Scores[j].Value) > 1e-12 {
+				got.Scores[j].Value != first.Scores[j].Value {
 				t.Fatalf("run %d position %d: %v, first was %v",
 					i, j, got.Scores[j], first.Scores[j])
 			}

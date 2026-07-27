@@ -148,11 +148,44 @@ type Strategy struct {
 
 // DefaultStrategy is the shipped configuration.
 //
-// **The numeric floors here are placeholders until the corpus calibrates them**
-// (TODO 10.3). They are recorded as constants rather than guessed inline so that
-// the calibration has one place to land, and `TestScoreDistribution` prints the
-// distribution these produce over the corpus precisely so the first real values
-// come from data instead of from this comment.
+// # MinScore, calibrated 2026-07-27 against the 302-item corpus
+//
+// It shipped as a placeholder and it survived the calibration, which is worth
+// writing down with the table rather than leaving as a number that looks
+// unexamined. `TestCalibrationSweep` in internal/classify/lexicon produces this:
+//
+//	MinScore  accuracy  top-hit  false-assign  refused
+//	    1.00     0.691    0.789         0.391    0.125
+//	    1.50     0.668    0.738         0.326    0.172
+//	    2.00     0.641    0.691         0.261    0.211
+//	    2.50     0.621    0.664         0.261    0.254
+//	    3.00     0.578    0.613         0.130    0.305   ← shipped
+//	    3.50     0.527    0.551         0.130    0.363
+//
+// Two things in that table decided it.
+//
+// **2.25 and 2.50 are strictly dominated by 2.00** — identical false assignment,
+// worse accuracy. The curve is not smooth, so "pick the middle" would have landed
+// on a setting that is worse than one of its neighbours in every dimension.
+//
+// **The real choice is 2.00 against 3.00, and it is close to one-for-one.**
+// Moving to 2.00 buys about sixteen more correct chips across the corpus and
+// costs about fourteen more wrong ones. R23's premise is exactly that this trade
+// is a losing one: a wrong chip costs more trust than a right chip earns, because
+// the reader who sees "Apple picking season" under Hardware stops reading the
+// chips entirely. Refusing is also not a dead end — an unsorted item is precisely
+// what §27.4a escalates to the model, so the higher floor routes work rather than
+// discarding it.
+//
+// The cost is real and is recorded rather than glossed: at 3.00 the free tier
+// declines to place **30%** of the articles that have a correct answer. The fix
+// for that is not a lower global bar — it is per-label `MinScore` on the
+// categories whose vocabulary is genuinely diffuse (politics, science, transport
+// are the measured ones), which is what `Label.MinScore` exists for and what the
+// weak-recall ratchet in `precision_test.go` tracks.
+//
+// Margin does not gate anything, so it cannot appear in that table. Its effect is
+// on escalation volume: 1.35 flags **4.6%** of the corpus ambiguous.
 func DefaultStrategy() Strategy {
 	var fw [numFields]float64
 	// A word in a headline was chosen; a word in the body may be an aside. The

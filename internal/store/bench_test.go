@@ -231,4 +231,3 @@ func BenchmarkIngest(b *testing.B) {
 		}
 	}
 }
-

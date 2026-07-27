@@ -99,6 +99,23 @@ func security() classify.Label {
 			{Text: "security guard", Weight: 3.0},
 			{Text: "security deposit", Weight: 3.0},
 			{Text: "security clearance", Weight: 2.5},
+			// Gaming's release vocabulary, which the guard on `patch` above was
+			// not enough to hold off.
+			//
+			// The comment on that term says "patch notes must win that fight on
+			// weight alone", and weight alone only decides the PRIMARY. Measured:
+			// "Patch notes for the new season … fixed a speedrun exploit" scored
+			// gaming 11.8 and security 4.5, so gaming won and security still
+			// rendered a chip — and a faint wrong chip is the same failure as a
+			// loud one, just quieter (R23). `exploit` is what satisfied the guard,
+			// and it is ordinary gaming vocabulary.
+			//
+			// 2.0 rather than 3.0 deliberately: this must not veto a genuine
+			// security story that happens to cite a vendor's patch notes. At 2.0 a
+			// title match subtracts 6.0, which an article carrying a CVE, a
+			// zero day and a vulnerability clears comfortably and a games release
+			// post does not.
+			{Text: "patch notes", Weight: 2.0},
 			// Labor and human-rights sense of "exploit", not a software exploit.
 			{Text: "worker exploitation", Weight: 3.0},
 			{Text: "labor exploitation", Weight: 3.0},

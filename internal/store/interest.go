@@ -261,23 +261,38 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 		// fingerprint rather than by id.
 		type kept struct {
 			label      string
+			source     string
 			suppressed int
 		}
 		preserved := map[string]kept{}
+		// `llm` is preserved alongside `user`, and the reason is cost rather than intent.
+		//
+		// A Smart+ label is one API call per cluster. Re-labelling on every derivation — and
+		// derivations fire after every poll and shortly after any reading — means twelve
+		// sequential calls, repeatedly, to rewrite labels that had not changed. It also made
+		// a single derivation take minutes, which stalls the queue behind it.
+		//
+		// A cluster's fingerprint is its top three terms, which move slowly, so keeping the
+		// written label means the call happens ONCE per stable cluster and never again. The
+		// label follows the same rule a rename does, and for the same reason: it is
+		// expensive to produce and cheap to keep.
 		rows, err := tx.QueryContext(ctx,
-			`SELECT top_terms_json, label, suppressed FROM topics
-			  WHERE user_id = ? AND (label_source = 'user' OR suppressed = 1)`, s.UserID)
+			`SELECT top_terms_json, label, label_source, suppressed FROM topics
+			  WHERE user_id = ?
+			    AND (label_source IN ('user','llm') OR suppressed = 1)`, s.UserID)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
-			var termsJSON, label string
+			var termsJSON, label, source string
 			var suppressed int
-			if err := rows.Scan(&termsJSON, &label, &suppressed); err != nil {
+			if err := rows.Scan(&termsJSON, &label, &source, &suppressed); err != nil {
 				_ = rows.Close()
 				return err
 			}
-			preserved[fingerprint(termsJSON)] = kept{label: label, suppressed: suppressed}
+			preserved[fingerprint(termsJSON)] = kept{
+				label: label, source: source, suppressed: suppressed,
+			}
 		}
 		_ = rows.Close()
 
@@ -295,10 +310,20 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 			if err != nil {
 				return err
 			}
-			label, source, suppressed := t.Label, "terms", 0
+			label, source, suppressed := t.Label, t.LabelSource, 0
+			if source == "" {
+				source = "terms"
+			}
 			if k, ok := preserved[fingerprint(string(termsJSON))]; ok {
 				if k.label != "" {
-					label, source = k.label, "user"
+					// The stored SOURCE is carried through, not flattened to "user". A
+					// written label and a rename are both preserved and they are not the
+					// same thing: only a rename is the reader's own words, and the Trends
+					// screen has to be able to tell them apart to offer "reset to terms".
+					label, source = k.label, k.source
+					if source == "" {
+						source = "user"
+					}
 				}
 				suppressed = k.suppressed
 			}
@@ -983,6 +1008,39 @@ func (r *ReaderRepo) RankedItems(ctx context.Context, s Scope, after, limit int)
 // MaxRankedPage bounds one page of the ranked homepage, matching the item list's own
 // ceiling so the two surfaces cannot disagree about what "a page" is.
 const MaxRankedPage = 200
+
+// CountRanked returns how many items are on the ranked page — My Feed's count.
+//
+// # Why this duplicates RankedItems' WHERE clause instead of paging it
+//
+// The obvious implementation calls RankedItems and takes the length, and it is wrong in a way
+// that gets worse as the feature works: the page is capped at MaxRankedPage, so "200" would be
+// the answer for 200 items and for 2,000. Counting in SQL gives the real number.
+//
+// The cost is that the filters exist twice, so they can drift — and a count that disagrees
+// with the list is a badge that lies, which is worse than no badge. The filters are therefore
+// kept in the same file, adjacent, with this note on both: unread only, subscribed, both rows
+// live. TestRankedCountMatchesTheList asserts they agree rather than trusting that anyone
+// remembers.
+func (r *ReaderRepo) CountRanked(ctx context.Context, s Scope) (int, error) {
+	if !s.Valid() {
+		return 0, ErrNoScope
+	}
+	var n int
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT count(*)
+		  FROM home_ranking hr
+		  JOIN items i ON i.id = hr.item_id
+		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = hr.user_id
+		  JOIN sources src ON src.id = i.source_id
+		  JOIN user_item_state uis
+		    ON uis.item_id = hr.item_id AND uis.user_id = hr.user_id
+		 WHERE hr.user_id = ?
+		   AND i.deactivated_at IS NULL
+		   AND src.deactivated_at IS NULL
+		   AND uis.read_at IS NULL`, s.UserID).Scan(&n)
+	return n, err
+}
 
 // ScopesToDerive returns the users whose interest layer is worth recomputing:
 // those with at least one AFFINITY-BEARING engagement newer than `since`.

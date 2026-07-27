@@ -214,6 +214,71 @@ func TestSmartPlusFailureLeavesTheFreeRankingIntact(t *testing.T) {
 	}
 }
 
+// A topic is labelled ONCE, not on every derivation.
+//
+// This is a cost guarantee and it was a real defect. Labelling is one API call per cluster,
+// derivations fire after every poll and shortly after any reading, and the first version
+// re-labelled everything every time — twelve sequential calls, repeatedly, rewriting labels
+// that had not changed. On a real instance it also made one derivation take minutes while the
+// job queue waited behind it, which is how it was found.
+func TestSmartPlusLabelsEachTopicOnce(t *testing.T) {
+	f := setup(t)
+	f.engage(t)
+
+	plus := &fakePlus{label: "Storage internals"}
+	f.withSmartPlus(t, plus)
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	first := plus.labelCalls
+	if first == 0 {
+		t.Fatal("no topic was labelled, so this test proves nothing")
+	}
+	// The written label reached storage.
+	stored, err := f.repo.Topics(f.ctx, f.scope)
+	if err != nil {
+		t.Fatalf("Topics: %v", err)
+	}
+	var written int
+	for _, row := range stored {
+		if row.Label == "Storage internals" {
+			written++
+			if row.LabelSource != "llm" {
+				t.Errorf("a written label was stored with source %q, want %q — it will be "+
+					"re-purchased on the next derivation", row.LabelSource, "llm")
+			}
+		}
+	}
+	if written == 0 {
+		t.Fatal("the written label did not reach storage")
+	}
+
+	// Derive again over identical evidence. Not one further call.
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if plus.labelCalls != first {
+		t.Errorf("re-deriving bought %d more labels (%d then %d) — labels must be kept, "+
+			"not re-purchased", plus.labelCalls-first, first, plus.labelCalls)
+	}
+	// And the label survived, which is the other half: skipping the call is only correct if
+	// storage restores what the call produced.
+	stored, err = f.repo.Topics(f.ctx, f.scope)
+	if err != nil {
+		t.Fatalf("Topics: %v", err)
+	}
+	var kept int
+	for _, row := range stored {
+		if row.Label == "Storage internals" {
+			kept++
+		}
+	}
+	if kept != written {
+		t.Errorf("after re-deriving, %d topics carry the written label, want %d", kept, written)
+	}
+}
+
 // A successful re-rank promotes what the model chose, and marks only those rows.
 func TestSmartPlusPromotesItsPicks(t *testing.T) {
 	f := setup(t)
