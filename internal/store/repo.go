@@ -1206,7 +1206,36 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 			return err
 		}
 	}
-	return nil
+
+	// Put the state rows BACK, unread.
+	//
+	// Deleting them all used to be the whole of "reset": with an item's read
+	// state expressed as a row that may or may not exist, no row meant unread
+	// and deleting everything was exactly right.
+	//
+	// Since 5.4a it is exactly wrong. The unread count reads `user_item_state`
+	// and never touches `items`, so an account with no state rows has nothing to
+	// count — every item is invisible to the badge, and the reader is looking at
+	// articles the application says they do not have. That is the denormalised
+	// count's silent failure arriving through the one path that deletes rows
+	// wholesale.
+	//
+	// So the delete clears what the reader DID, and this restores the delivery
+	// that made those items theirs in the first place. Same statement as
+	// ReconcileUnread's second half, for the same reason.
+	_, err := r.db.Write.ExecContext(ctx, `
+		INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
+		                             published_at, rev, updated_at)
+		SELECT sub.tenant_id, sub.user_id, i.id, i.source_id, i.published_at, 0, ?
+		  FROM subscriptions sub
+		  JOIN items i ON i.source_id = sub.source_id
+		 WHERE sub.user_id = ? AND sub.tenant_id = ?
+		   AND i.deactivated_at IS NULL
+		   AND NOT EXISTS (
+		         SELECT 1 FROM user_item_state uis
+		          WHERE uis.user_id = sub.user_id AND uis.item_id = i.id)`,
+		time.Now().UTC().Format(time.RFC3339Nano), s.UserID, s.TenantID)
+	return err
 }
 
 // Prefs are a user's UI preferences, as a flat key/value map.

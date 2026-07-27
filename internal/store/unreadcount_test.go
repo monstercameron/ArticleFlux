@@ -384,3 +384,45 @@ func TestTheFastPathOnlyAnswersItsOwnShape(t *testing.T) {
 		})
 	}
 }
+
+// Reset must leave the reader with everything unread — not with nothing at all.
+//
+// Deleting every state row used to BE the reset: with read state expressed as a
+// row that may or may not exist, no row meant unread. Since 5.4a the unread
+// count reads `user_item_state` and never touches `items`, so an account with no
+// state rows has nothing to count: every item becomes invisible to the badge
+// while still appearing in the list, and the reader is looking at articles the
+// application says they do not have.
+func TestResettingLeavesEverythingUnreadRatherThanInvisible(t *testing.T) {
+	f := newCountFixture(t, 3, 10)
+	yes := true
+	for i := 0; i < 4; i++ {
+		if _, err := f.repo.SetItemState(f.ctx, f.sc, f.items[i], StateChange{Read: &yes}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, _ := f.repo.CountQuery(f.ctx, f.sc, ListQuery{UnreadOnly: true}); n != 26 {
+		t.Fatalf("fixture: %d unread after reading 4 of 30", n)
+	}
+
+	if err := f.repo.ResetUserState(f.ctx, f.sc); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := f.repo.CountQuery(f.ctx, f.sc, ListQuery{UnreadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 30 {
+		t.Errorf("%d unread after a reset, want all 30 — a reset means "+
+			"everything is unread again, not that nothing exists", n)
+	}
+	f.assertAgrees(t, "a reset")
+	f.assertSidebarSumsToBadge(t, "a reset")
+
+	// And the reconciler has nothing to repair, so the reset restored the
+	// invariant rather than leaving it for something else to notice.
+	if fixed, err := f.repo.ReconcileUnread(f.ctx); err != nil || fixed != 0 {
+		t.Errorf("reconcile repaired %d rows after a reset (%v)", fixed, err)
+	}
+}
