@@ -844,12 +844,20 @@ Composites of Tier 2. Bytes in, structs out. Still no database.
 
 One package each, `Scope` first, leak test per repo (3.7 enforces it).
 
-- [ ] **5.1** `tenants` · `users` · `roles` · `user_roles` · `invites` · `devices` · **`api_tokens`
+- [x] **5.1** `tenants` · `users` · `roles` · `user_roles` · `invites` · `devices` · **`api_tokens`
       (scope is a fixed enum, never inherited from the owner's role)** · `shares` · `public_shares`
       ◧ 2026-07-26 — `tenants`, `users` and `sessions` exist and `ScopeForSession` resolves a token hash into a Scope. `roles`, `user_roles`, `invites`, `devices` and `api_tokens` are not — they belong with 6.1/6.2, and there is one local account until then.
       ◧ 2026-07-26 (night) — the **session lifecycle** landed with 6.1's first half: `UserForLogin` (loud on a username that exists in two tenants, rather than a silent wrong-tenant login), `CreateSession` (session row + `last_login_at` in one transaction, so the account screen cannot lie about "was that me?"), `RevokeSession`, `RevokeAllSessions`, `PurgeExpiredSessions` (run by the poller, revoked rows kept a week), `Identity`, `CountUsers`, `SetPasswordHash`, `AddUser`, `FirstTenantID`. All ten are **unscoped by design** and registered as such in `internal/tools/guards` with a reason each — the guard's exemption list is now where "why does this method not take a Scope" is answered. Note what is *not* exempt: `Identity` takes a Scope, because "who am I" is a question about an authenticated caller.
       > `SetPasswordHash` deliberately does **not** revoke sessions. Two callers want opposite things: the break-glass reset is a password *change* and must revoke everything, while a login that re-hashes under stronger Argon2id parameters changed no password and must revoke nothing. Bundling the revoke made the first login after a parameter bump log the reader straight back out.
 
+      ✅ 2026-07-26 — `internal/store/identityrepo.go` completes it: `roles`, `user_roles`,
+      `invites`, `devices` and `api_tokens`. D12's shape, so there is an invites table and no
+      registration one. A code is returned **once** and only its hash stored — an invite is a bearer
+      credential for its whole life. Every failure reason returns **one** error, because
+      distinguishing expired from used from never-existed tells someone probing which codes once
+      existed. A token's scope is a **fixed enum, never inherited**: the effective set is the
+      intersection with the role, so minting one can never be an escalation. Refresh reuse revokes
+      the whole **family** — which holder is the thief is unknowable, so both are logged out.
 - [x] **5.2** `sources` · `subscriptions` — **soft-deactivate, never delete** (A22) · `natural_key`
       **per-user for `kind='mailbox'`** (§6.4) · `home_mode` and the highlights fields ← D17
       ✅ 2026-07-26 — `Subscribe` / `Unsubscribe` / `SubscribedSources` — `natural_key` deduplicates two tenants onto one polled row (A14), and unsubscribing never touches the source (A22).
@@ -960,8 +968,16 @@ Business logic over repositories. Still headless.
       ◧ 2026-07-26 (night) — **about a third of it, and it is the floor for the public internet rather than the ceiling** (plan §7.1a, A36). Built *ahead of its milestone* because `DevMode` was derived from a loopback bind, which made the standard reverse-proxy deployment an open reader. What exists: `AuthService.Login/Logout/WhoAmI`, the hash **always** running against a boot-computed Argon2id decoy on an unknown username, one uniform error for missing/wrong/deactivated, a fixed-window limiter at 10/minute on **both** the username and the client address, SHA-256-stored 30-day sessions with real revocation, opportunistic re-hash on login, and `device_id` grouping. What is owed, all of it still: **lockout** (the limiter is not one), refresh families and reuse detection, recovery codes, reset tokens, sudo mode, the breached-password check, and per-box Argon2id tuning.
       > **Two honest caveats, both recorded in the code.** RPCs arrive multiplexed over one WebSocket, so the peer address is the tunnel's — behind nginx that is `127.0.0.1` for everyone, and the per-IP key **collapses to one bucket in exactly the deployment where it matters most**. The per-username limiter carries the weight; a real per-IP limit needs the forwarded address threaded through the tunnel handshake (7.3d). And the limiter is in memory, so a restart clears it — persistent lockout state needs a table, which is this item's job and not the transport's.
       > **D12 now arrives as an outage rather than as a leak.** Usernames are unique *per tenant*, so login is unambiguous only while there is one tenant; two matches return `FailedPrecondition` and say so. A second tenant needs a tenant hint (subdomain or explicit field) before it can exist.
-- [ ] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
+- [x] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
+      ✅ 2026-07-26 — `internal/authz`. Static per-method map, **fails closed on unmapped**, which
+      is the property the package exists for: unmapped-means-allowed turns forgetting an entry into a
+      silent grant of a new RPC to everyone. `Unmapped()` compares the map against the service's real
+      method list so a **boot check** can refuse to start, rather than the first notice being a user
+      getting a 403 on a shipped feature. The map names **capabilities**, not roles — a handler
+      asking "is this an admin" hard-codes policy at every call site. An unknown role grants nothing;
+      matching is case-insensitive. *Owed: wiring it into the interceptor, which is where the sync
+      API joins the same model.*
 - [x] **6.3 `settingsreg`** — typed registry + **system → tenant → user** resolution, returning the
       value *and which layer supplied it* ← 5.8
       ✅ 2026-07-26 — `internal/settingsreg` + `internal/store/settingslayers.go`. **system → tenant
