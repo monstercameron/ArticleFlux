@@ -56,6 +56,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The interest layer derives** (`internal/store/interest.go` + `internal/derive`, TODO 5.9 & 6.9) —
+  the job that turns the raw engagement log into feed, term and domain affinity, topics, and the
+  materialised homepage. **D18's two stages run in order and the code says so**: recall first (passive
+  signals produce and order a candidate set), then precision (the deliberate acts — verdicts, notes,
+  tags, click-throughs — *scale* what recall thought rather than being more weighted terms). Folding
+  them into one sum is the failure D18 rejected, and it fails invisibly because the page still looks
+  full. Everything written is a cache: `ClearDerived` then re-run produces byte-identical output, and
+  a test asserts it — which is what makes `engagements` the only irreplaceable table here and "throw
+  it away" a safe repair. **R17 is asserted end to end**: a mark-all-read over twelve items moves not
+  one affinity score. A user's topic rename and suppression survive rederivation, matched by the
+  cluster's top three terms rather than by an id that is regenerated each pass — §18.2 promises
+  topics are editable, and a nightly job that renamed someone's interests would be untrustworthy in a
+  way accuracy cannot compensate for. Half-life is fitted per source from the engagement-vs-age
+  curve, and returns zero rather than guessing under ten samples.
+
 - **Rule fan-out** (`internal/fanout`, `internal/store/fanout.go`, migration 0014, TODO 6.7) — the
   per-subscriber job that puts `internal/rules` to work. §13.2's decision is the whole design and is
   easy to get backwards: rules are per-user and items are global (A14), so evaluation happens **once
