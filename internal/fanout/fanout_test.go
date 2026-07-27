@@ -339,10 +339,8 @@ func TestRedeliveryDoesNotInflateMatchCountOrDuplicateHits(t *testing.T) {
 
 	hitRows := func(ruleID string) int {
 		t.Helper()
-		var n int
-		if err := f.db.Read.QueryRowContext(f.ctx,
-			`SELECT count(*) FROM rule_hits WHERE rule_id = ? AND item_id = ? AND user_id = ?`,
-			ruleID, rustID, f.alice.UserID).Scan(&n); err != nil {
+		n, err := f.repo.CountRuleHits(f.ctx, f.alice, ruleID, rustID)
+		if err != nil {
 			t.Fatal(err)
 		}
 		return n

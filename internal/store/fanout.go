@@ -386,6 +386,28 @@ func firedRules(ctx context.Context, tx *sql.Tx, userID, itemID string, ruleIDs 
 	return fired, rows.Err()
 }
 
+// CountRuleHits reports how many times a rule has been recorded against one
+// item for one user.
+//
+// It exists for the at-least-once delivery tests, and it exists HERE rather
+// than as a query inside them because guard 1 is not a style rule: a test that
+// hand-writes `SELECT ... FROM rule_hits` is a second place that understands
+// the schema, and it is the place least likely to be updated when the schema
+// moves — a rename would leave the test failing on syntax rather than on
+// behaviour, and somebody would "fix" it by editing the query.
+//
+// Scoped, per guard 4. The count is per user by definition: rule_hits is an
+// audit trail of what ran for whom, and an unscoped total would answer a
+// question nobody is asking while quietly crossing tenants.
+func (r *ReaderRepo) CountRuleHits(ctx context.Context, s Scope, ruleID, itemID string) (int, error) {
+	var n int
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT count(*) FROM rule_hits
+		 WHERE rule_id = ? AND item_id = ? AND user_id = ?`,
+		ruleID, itemID, s.UserID).Scan(&n)
+	return n, err
+}
+
 // applyTag adds a rule-applied tag, creating the tag on first use.
 //
 // applied_by_rule_id is recorded so a misfiring rule's work can be undone in one

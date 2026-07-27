@@ -235,8 +235,22 @@ func TestHashOfChangesWhenContentChanges(t *testing.T) {
 
 func TestHashOfIsDeterministic(t *testing.T) {
 	m := map[string]string{"z": "1", "a": "2", "m": "3"}
-	if hashOf(m) != hashOf(m) {
-		t.Error("the same content hashed to two different values")
+
+	// Hashed repeatedly, not twice in one expression.
+	//
+	// Two calls side by side is what staticcheck flags (SA4000), and it is
+	// right to: the thing that would actually break determinism here is Go
+	// randomising map iteration order per range, and a single pair of calls
+	// agrees by luck often enough to pass while broken. Twenty does not — with
+	// three keys there are six orders, so a hash that depended on iteration
+	// order survives one comparison better than 16% of the time and this loop
+	// essentially never.
+	want := hashOf(m)
+	for i := range 20 {
+		if got := hashOf(m); got != want {
+			t.Fatalf("hash %d of identical content is %q, want %q — "+
+				"map iteration order is reaching the hash", i+1, got, want)
+		}
 	}
 }
 
