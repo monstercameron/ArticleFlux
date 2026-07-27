@@ -19,11 +19,13 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
 // ConnState is what the always-visible indicator shows.
@@ -65,10 +67,42 @@ func TunnelURL(origin string) string {
 	}
 }
 
+// How the tunnel comes back.
+//
+// This is a self-hosted reader: the server is a box in someone's house that gets
+// restarted, updated, suspended with the laptop lid, and moved between networks,
+// while the tab stays open for days. Giving up is never the right answer, so
+// there is no attempt limit anywhere here — the connection retries for as long
+// as the page is open, and the only thing that changes is how often.
+//
+// The shape: fast enough that a server restart is invisible (half a second, then
+// a second, then two), capped low enough that coming back from a lid-close or a
+// changed network is a few seconds' wait rather than a couple of minutes. gRPC's
+// own default caps at 120s, which is correct for a datacentre client with
+// thousands of peers and wrong for one browser tab and one server — a reader who
+// opens the laptop should not have to reload the page because the backoff
+// happens to be two minutes into a wait.
+//
+// Jitter stays on. There is usually one client, so a thundering herd is not the
+// risk; a phone and a laptop both waking to the same Wi-Fi and hammering the
+// same lock-step schedule is.
+const (
+	reconnectInitial  = 500 * time.Millisecond
+	reconnectMax      = 20 * time.Second
+	reconnectFactor   = 1.6
+	reconnectJitter   = 0.2
+	reconnectMinTries = 5 * time.Second
+)
+
 // Dial opens the tunnel.
 //
 // onState is called on every transition so the UI can render the connection
 // indicator without polling.
+//
+// The returned Client is usable immediately, before the socket is up: gRPC dials
+// lazily and the calls below wait for the connection rather than failing while
+// it is being established (see WaitForReady). Watch is what turns the underlying
+// transport's state into something the reader can see.
 func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Client, error) {
 	c := &Client{state: Connecting, onState: onState}
 	c.notify(Connecting)
@@ -77,16 +111,95 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 		// The transport is the WebSocket; TLS is the page's, not gRPC's. Asking
 		// gRPC for its own credentials here would double-wrap and fail.
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpctunnel.WithReconnectPolicy(grpctunnel.ReconnectConfig{
+			InitialDelay:      reconnectInitial,
+			MaxDelay:          reconnectMax,
+			Multiplier:        reconnectFactor,
+			Jitter:            reconnectJitter,
+			MinConnectTimeout: reconnectMinTries,
+		}),
+		// Wait for the tunnel instead of failing on it.
+		//
+		// gRPC is fail-fast by default: a call made while the connection is
+		// down returns Unavailable immediately rather than waiting for the
+		// reconnect that is already in progress. In a datacentre that is right
+		// — there is another backend to try. Here there is one server, the
+		// reconnect is seconds away, and failing fast means a reader who
+		// clicked a feed during a blip gets an error for something that fixed
+		// itself before they finished reading the message.
+		//
+		// This is bounded, not unbounded: callTimeout still applies, so a call
+		// against a server that is genuinely gone fails in twenty seconds with
+		// the indicator already showing why. The two long user-initiated calls
+		// opt back out — see Refresh and Subscribe.
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 	)
 	if err != nil {
+		// A dial error here is a configuration error — a target gRPC cannot
+		// parse, or an option this build rejects — not an unreachable server.
+		// Retrying it would loop on something no amount of waiting fixes.
 		c.notify(Down)
 		return nil, err
 	}
 	c.conn = conn
 	c.reader = pb.NewReaderServiceClient(conn)
 	c.system = pb.NewSystemServiceClient(conn)
-	c.notify(Live)
+	// Not Live: the socket is not up yet, and saying it is would make the
+	// indicator's one job — never let "silently disconnected" look like "quiet
+	// news day" — a lie in the other direction. Watch reports what is true.
+	conn.Connect()
 	return c, nil
+}
+
+// Watch drives the connection indicator from the transport, and reports when the
+// tunnel comes back.
+//
+// Without it the only evidence of the connection's state is whether the last RPC
+// worked, which means a reader who is not clicking anything is told "live" by a
+// page that has been disconnected for an hour — and, worse, a reconnect is
+// invisible until they click something, so a tab left open overnight shows
+// yesterday's articles until touched.
+//
+// onRecover fires on each transition INTO a working connection, and is where the
+// caller refetches: the reconnect is the moment the screen became stale.
+//
+// It returns when ctx is cancelled. Nothing here counts attempts or gives up;
+// gRPC re-dials on the backoff configured above for as long as this runs.
+func (c *Client) Watch(ctx context.Context, onRecover func()) {
+	if c.conn == nil {
+		return
+	}
+	for {
+		s := c.conn.GetState()
+		switch s {
+		case connectivity.Ready:
+			if c.state != Live {
+				c.notify(Live)
+				if onRecover != nil {
+					onRecover()
+				}
+			}
+		case connectivity.Idle:
+			// Idle is not broken — it is gRPC waiting to be asked. Nothing will
+			// re-dial until an RPC is made, so a tab sitting untouched after a
+			// drop would show "connecting" indefinitely and then serve the
+			// reader a stale screen. Ask.
+			c.conn.Connect()
+		case connectivity.Connecting:
+			if c.state != Connecting {
+				c.notify(Connecting)
+			}
+		case connectivity.TransientFailure, connectivity.Shutdown:
+			if c.state != Down {
+				c.notify(Down)
+			}
+		}
+		// Blocks until the state is no longer s, and returns false only when
+		// ctx ends — which is the page going away.
+		if !c.conn.WaitForStateChange(ctx, s) {
+			return
+		}
+	}
 }
 
 func (c *Client) notify(s ConnState) {
@@ -173,7 +286,7 @@ func (c *Client) SetItemState(parent context.Context, itemID string, read, starr
 }
 
 // MarkAllRead marks a feed or everything read.
-func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, error) {
+func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, string, error) {
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
 	scope := pb.ListScope_LIST_SCOPE_ALL
@@ -186,9 +299,9 @@ func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, er
 		// client would use the client's clock, which may be wrong.
 	})
 	if err := c.track(err); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return res.GetMarked(), nil
+	return res.GetMarked(), res.GetUndoToken(), nil
 }
 
 // Subscribe adds a feed.
@@ -197,7 +310,12 @@ func (c *Client) Subscribe(parent context.Context, url string) (*pb.SubscribeRes
 	// full budget rather than the shared one.
 	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
-	res, err := c.reader.Subscribe(ctx, &pb.SubscribeRequest{Url: url})
+	// Fail fast, against the connection-level default. This one waits on the
+	// public internet, so its budget is 45 seconds — and 45 seconds of nothing,
+	// because the tunnel is down and the call is patiently waiting for it, is
+	// indistinguishable from a feed that will not answer. Better to say
+	// "disconnected" at once and let the reader press it again.
+	res, err := c.reader.Subscribe(ctx, &pb.SubscribeRequest{Url: url}, grpc.WaitForReady(false))
 	return res, c.track(err)
 }
 
@@ -216,7 +334,9 @@ func (c *Client) Refresh(parent context.Context, sourceIDs []string) (*pb.Refres
 	// takes a while.
 	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
 	defer cancel()
-	res, err := c.reader.Refresh(ctx, &pb.RefreshRequest{SourceIds: sourceIDs})
+	// Fail fast for the same reason Subscribe does: two minutes of a "Refreshing"
+	// chip is a long time to spend not telling someone the server is unreachable.
+	res, err := c.reader.Refresh(ctx, &pb.RefreshRequest{SourceIds: sourceIDs}, grpc.WaitForReady(false))
 	return res, c.track(err)
 }
 
@@ -313,4 +433,80 @@ func (c *Client) UpdateFeedSettings(parent context.Context, req *pb.UpdateFeedSe
 		return nil, err
 	}
 	return res.GetSettings(), nil
+}
+
+// engagementTimeout bounds one signals batch.
+//
+// Much shorter than callTimeout, and deliberately so: this is the one call in
+// the client whose result nobody is waiting for. A slow batch should give up and
+// be retried on the next flush rather than occupy a slot for twenty seconds, and
+// nothing on screen changes either way.
+const engagementTimeout = 8 * time.Second
+
+// RecordEngagements ships a batch of observations (plan.md §18.1).
+//
+// Note what this does NOT do: it does not call c.track. Every other method here
+// reports a transport failure to the connection indicator, and that is right for
+// them — a failed ListItems means the reader is looking at stale data and
+// deserves to know. A failed signals batch means nothing to the person reading;
+// the outbox keeps it and retries. Flipping the indicator to "down" because
+// analytics could not be delivered would be the signals layer degrading the
+// reading experience, which is exactly the thing it is not allowed to do.
+func (c *Client) RecordEngagements(parent context.Context, evs []signals.Event) error {
+	if len(evs) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, engagementTimeout)
+	defer cancel()
+
+	req := &pb.RecordEngagementsRequest{Events: make([]*pb.Engagement, 0, len(evs))}
+	for _, e := range evs {
+		req.Events = append(req.Events, &pb.Engagement{
+			Id:        e.ID,
+			ItemId:    e.ItemID,
+			SourceId:  e.SourceID,
+			Kind:      string(e.Kind),
+			Value:     e.Value,
+			Surface:   string(e.Surface),
+			Context:   e.Context,
+			SessionId: e.SessionID,
+			At:        e.At,
+		})
+	}
+	_, err := c.reader.RecordEngagements(ctx, req)
+	return err
+}
+
+// GetServerStats and ListLogs back the settings screen's Server and Activity
+// sections. Both are authenticated: they disclose row counts, storage size, feed
+// URLs and error text.
+func (c *Client) GetServerStats(parent context.Context) (*pb.GetServerStatsResponse, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.system.GetServerStats(ctx, &pb.GetServerStatsRequest{})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (c *Client) ListLogs(parent context.Context, minLevel string, limit int32) ([]*pb.LogRecord, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.system.ListLogs(ctx, &pb.ListLogsRequest{MinLevel: minLevel, Limit: limit})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetRecords(), nil
+}
+
+// UndoMarkAllRead puts back exactly the rows one bulk mark touched.
+func (c *Client) UndoMarkAllRead(parent context.Context, token string) (int32, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.UndoMarkAllRead(ctx, &pb.UndoMarkAllReadRequest{UndoToken: token})
+	if err := c.track(err); err != nil {
+		return 0, err
+	}
+	return res.GetRestored(), nil
 }
