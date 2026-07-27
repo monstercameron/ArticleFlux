@@ -83,6 +83,74 @@ func (ListScope) EnumDescriptor() ([]byte, []int) {
 	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{0}
 }
 
+// SteerLevel is one position of the dial a reader turns on a topic or a named
+// thing.
+//
+// An enum rather than the multiplier itself, and the distinction is the point: a
+// client that sent 1.5 would be asserting how much "more" is worth, which is a
+// scoring decision and belongs beside the weights it competes with. The reader
+// says "more"; internal/rank decides what more costs.
+type SteerLevel int32
+
+const (
+	SteerLevel_STEER_LEVEL_UNSPECIFIED SteerLevel = 0
+	// STEER_LEVEL_MORE and _LESS are adjustments. Both leave the judgement
+	// standing: the reader agrees this describes them and disagrees about how
+	// loudly.
+	SteerLevel_STEER_LEVEL_MORE   SteerLevel = 1
+	SteerLevel_STEER_LEVEL_NORMAL SteerLevel = 2
+	SteerLevel_STEER_LEVEL_LESS   SteerLevel = 3
+	// STEER_LEVEL_NEVER is the correction, not an adjustment. It says the model
+	// read something into the reading history that is not there, and it is the one
+	// level that changes what is ELIGIBLE rather than what is scored.
+	SteerLevel_STEER_LEVEL_NEVER SteerLevel = 4
+)
+
+// Enum value maps for SteerLevel.
+var (
+	SteerLevel_name = map[int32]string{
+		0: "STEER_LEVEL_UNSPECIFIED",
+		1: "STEER_LEVEL_MORE",
+		2: "STEER_LEVEL_NORMAL",
+		3: "STEER_LEVEL_LESS",
+		4: "STEER_LEVEL_NEVER",
+	}
+	SteerLevel_value = map[string]int32{
+		"STEER_LEVEL_UNSPECIFIED": 0,
+		"STEER_LEVEL_MORE":        1,
+		"STEER_LEVEL_NORMAL":      2,
+		"STEER_LEVEL_LESS":        3,
+		"STEER_LEVEL_NEVER":       4,
+	}
+)
+
+func (x SteerLevel) Enum() *SteerLevel {
+	p := new(SteerLevel)
+	*p = x
+	return p
+}
+
+func (x SteerLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SteerLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_articleflux_v1_reader_proto_enumTypes[1].Descriptor()
+}
+
+func (SteerLevel) Type() protoreflect.EnumType {
+	return &file_articleflux_v1_reader_proto_enumTypes[1]
+}
+
+func (x SteerLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SteerLevel.Descriptor instead.
+func (SteerLevel) EnumDescriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{1}
+}
+
 // Feed is one subscription as the sidebar needs it.
 type Feed struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
@@ -4609,6 +4677,689 @@ func (x *RecordEngagementsResponse) GetRejected() int32 {
 	return 0
 }
 
+// InterestTopic is one cluster the reader's engagement produced.
+type InterestTopic struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is TODAY's row id — a display key and nothing more. `ReplaceTopics`
+	// deletes and reinserts every cluster with a fresh id on each derivation, and
+	// derivations run after every poll, so an id is stale within seconds of a
+	// screen loading. Steering addresses `key` for that reason.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// label is the name shown. Machine-made unless label_by_user.
+	Label string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	// label_by_user distinguishes a name the reader typed from one derived from
+	// top terms or written by Smart+. The screen offers "rename" on one and
+	// "reset to the terms" on the other, and it cannot tell without this.
+	LabelByUser bool `protobuf:"varint,3,opt,name=label_by_user,json=labelByUser,proto3" json:"label_by_user,omitempty"`
+	// terms are the top terms the cluster was named from — the EVIDENCE for the
+	// label, and the thing a reader actually judges a topic by. "Max · Pro · 90s"
+	// is a label nobody can evaluate; its terms are what reveal it as a phone
+	// cluster the vectoriser assembled out of headline furniture.
+	Terms       []string `protobuf:"bytes,4,rep,name=terms,proto3" json:"terms,omitempty"`
+	MemberCount int32    `protobuf:"varint,5,opt,name=member_count,json=memberCount,proto3" json:"member_count,omitempty"`
+	// trend is rising | steady | fading | dormant.
+	Trend string     `protobuf:"bytes,6,opt,name=trend,proto3" json:"trend,omitempty"`
+	Level SteerLevel `protobuf:"varint,7,opt,name=level,proto3,enum=articleflux.v1.SteerLevel" json:"level,omitempty"`
+	// key is the cluster's identity ACROSS derivations — its top terms,
+	// fingerprinted. This is what SteerInterest takes, and the reason it exists is
+	// a bug rather than a preference: a screen that steered by id worked once and
+	// answered `not found` for every press after the rebuild its own first press
+	// kicked off.
+	Key           string `protobuf:"bytes,8,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InterestTopic) Reset() {
+	*x = InterestTopic{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InterestTopic) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InterestTopic) ProtoMessage() {}
+
+func (x *InterestTopic) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InterestTopic.ProtoReflect.Descriptor instead.
+func (*InterestTopic) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *InterestTopic) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *InterestTopic) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *InterestTopic) GetLabelByUser() bool {
+	if x != nil {
+		return x.LabelByUser
+	}
+	return false
+}
+
+func (x *InterestTopic) GetTerms() []string {
+	if x != nil {
+		return x.Terms
+	}
+	return nil
+}
+
+func (x *InterestTopic) GetMemberCount() int32 {
+	if x != nil {
+		return x.MemberCount
+	}
+	return 0
+}
+
+func (x *InterestTopic) GetTrend() string {
+	if x != nil {
+		return x.Trend
+	}
+	return ""
+}
+
+func (x *InterestTopic) GetLevel() SteerLevel {
+	if x != nil {
+		return x.Level
+	}
+	return SteerLevel_STEER_LEVEL_UNSPECIFIED
+}
+
+func (x *InterestTopic) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+// InterestEntity is one brand, product or organisation the reader keeps reading
+// about (§18.2).
+type InterestEntity struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is the normalised key and what SteerInterest is addressed to.
+	Name  string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Label string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	// kind is phrase (free tier) or llm (Smart+). Shown, because the two have
+	// different failure modes and a reader correcting one should know which they
+	// are looking at: a phrase is a bigram that recurred, and a model's answer is
+	// a claim about meaning.
+	Kind string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	// weight is summed, recency-decayed engagement — the EVIDENCE, not the dial.
+	// Sent alongside mentions because the pair is what exposes a misread: 37 from
+	// two mentions is one article read hard, and it does not describe a reader.
+	Weight        float64    `protobuf:"fixed64,4,opt,name=weight,proto3" json:"weight,omitempty"`
+	Mentions      int32      `protobuf:"varint,5,opt,name=mentions,proto3" json:"mentions,omitempty"`
+	Level         SteerLevel `protobuf:"varint,6,opt,name=level,proto3,enum=articleflux.v1.SteerLevel" json:"level,omitempty"`
+	FirstSeenAt   string     `protobuf:"bytes,7,opt,name=first_seen_at,json=firstSeenAt,proto3" json:"first_seen_at,omitempty"`
+	LastSeenAt    string     `protobuf:"bytes,8,opt,name=last_seen_at,json=lastSeenAt,proto3" json:"last_seen_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InterestEntity) Reset() {
+	*x = InterestEntity{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InterestEntity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InterestEntity) ProtoMessage() {}
+
+func (x *InterestEntity) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InterestEntity.ProtoReflect.Descriptor instead.
+func (*InterestEntity) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *InterestEntity) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *InterestEntity) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *InterestEntity) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *InterestEntity) GetWeight() float64 {
+	if x != nil {
+		return x.Weight
+	}
+	return 0
+}
+
+func (x *InterestEntity) GetMentions() int32 {
+	if x != nil {
+		return x.Mentions
+	}
+	return 0
+}
+
+func (x *InterestEntity) GetLevel() SteerLevel {
+	if x != nil {
+		return x.Level
+	}
+	return SteerLevel_STEER_LEVEL_UNSPECIFIED
+}
+
+func (x *InterestEntity) GetFirstSeenAt() string {
+	if x != nil {
+		return x.FirstSeenAt
+	}
+	return ""
+}
+
+func (x *InterestEntity) GetLastSeenAt() string {
+	if x != nil {
+		return x.LastSeenAt
+	}
+	return ""
+}
+
+// InterestFeed is one subscription's standing on the ranked page.
+type InterestFeed struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SourceId string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	Title    string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// score is the derived feed affinity, 0..1.
+	Score        float64 `protobuf:"fixed64,3,opt,name=score,proto3" json:"score,omitempty"`
+	Opens        int32   `protobuf:"varint,4,opt,name=opens,proto3" json:"opens,omitempty"`
+	Impressions  int32   `protobuf:"varint,5,opt,name=impressions,proto3" json:"impressions,omitempty"`
+	VolumePerDay float64 `protobuf:"fixed64,6,opt,name=volume_per_day,json=volumePerDay,proto3" json:"volume_per_day,omitempty"`
+	// on_my_feed is false for a feed excluded by in_megafeed or muted_until. It is
+	// read-only here and changed in the feed's own settings, which is where the
+	// rest of that panel lives — this screen says which feeds are competing and
+	// points at the control rather than duplicating it.
+	OnMyFeed      bool `protobuf:"varint,7,opt,name=on_my_feed,json=onMyFeed,proto3" json:"on_my_feed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InterestFeed) Reset() {
+	*x = InterestFeed{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InterestFeed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InterestFeed) ProtoMessage() {}
+
+func (x *InterestFeed) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InterestFeed.ProtoReflect.Descriptor instead.
+func (*InterestFeed) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *InterestFeed) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *InterestFeed) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *InterestFeed) GetScore() float64 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *InterestFeed) GetOpens() int32 {
+	if x != nil {
+		return x.Opens
+	}
+	return 0
+}
+
+func (x *InterestFeed) GetImpressions() int32 {
+	if x != nil {
+		return x.Impressions
+	}
+	return 0
+}
+
+func (x *InterestFeed) GetVolumePerDay() float64 {
+	if x != nil {
+		return x.VolumePerDay
+	}
+	return 0
+}
+
+func (x *InterestFeed) GetOnMyFeed() bool {
+	if x != nil {
+		return x.OnMyFeed
+	}
+	return false
+}
+
+// InterestFactor is how many of the CURRENT ranked picks cited one scoring term.
+//
+// The diagnostic the reasons could not give on their own. A reader can see why
+// one row is where it is; this says what is deciding the page — "37 of your 99
+// picks are here because of things you follow" is the sentence that turns a
+// suspicion about Pro Max into something checkable.
+type InterestFactor struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// term is the machine key from internal/rank: topic, entity, feed, fresh,
+	// corroboration, manual, volume, duplicate, negative, skipped, external,
+	// deliberate, smartplus. The client owns the label.
+	Term          string `protobuf:"bytes,1,opt,name=term,proto3" json:"term,omitempty"`
+	Items         int32  `protobuf:"varint,2,opt,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InterestFactor) Reset() {
+	*x = InterestFactor{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InterestFactor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InterestFactor) ProtoMessage() {}
+
+func (x *InterestFactor) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InterestFactor.ProtoReflect.Descriptor instead.
+func (*InterestFactor) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *InterestFactor) GetTerm() string {
+	if x != nil {
+		return x.Term
+	}
+	return ""
+}
+
+func (x *InterestFactor) GetItems() int32 {
+	if x != nil {
+		return x.Items
+	}
+	return 0
+}
+
+type GetInterestProfileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInterestProfileRequest) Reset() {
+	*x = GetInterestProfileRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInterestProfileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInterestProfileRequest) ProtoMessage() {}
+
+func (x *GetInterestProfileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInterestProfileRequest.ProtoReflect.Descriptor instead.
+func (*GetInterestProfileRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{74}
+}
+
+type GetInterestProfileResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Topics []*InterestTopic       `protobuf:"bytes,1,rep,name=topics,proto3" json:"topics,omitempty"`
+	// entities INCLUDES the ones set to never. A thing the reader struck out has
+	// to stay visible or the correction cannot be undone — and an entity that
+	// vanishes when you remove it is indistinguishable from one the derivation
+	// dropped.
+	Entities []*InterestEntity `protobuf:"bytes,2,rep,name=entities,proto3" json:"entities,omitempty"`
+	// feeds is the strongest few by affinity, not every subscription. The sidebar
+	// already lists them all; this is about which ones are winning the page.
+	Feeds   []*InterestFeed   `protobuf:"bytes,3,rep,name=feeds,proto3" json:"feeds,omitempty"`
+	Factors []*InterestFactor `protobuf:"bytes,4,rep,name=factors,proto3" json:"factors,omitempty"`
+	// ranked_count is how many picks are on the page.
+	RankedCount int32 `protobuf:"varint,5,opt,name=ranked_count,json=rankedCount,proto3" json:"ranked_count,omitempty"`
+	// factor_base is how many of those the factors were counted over, and it is
+	// what a factor line is OUT OF. Equal to ranked_count except on a page past
+	// the server's per-page ceiling — and separate from it because counting a
+	// numerator over one set and printing a denominator from another produced
+	// "103 of 102" on a screen whose whole claim is that its numbers check out.
+	FactorBase int32 `protobuf:"varint,10,opt,name=factor_base,json=factorBase,proto3" json:"factor_base,omitempty"`
+	// cold_start is true while there is too little reading for topics to mean
+	// anything (§18.4: roughly 50–100 engaged items). The screen says so rather
+	// than showing an empty list that looks like a fault.
+	ColdStart bool `protobuf:"varint,6,opt,name=cold_start,json=coldStart,proto3" json:"cold_start,omitempty"`
+	// entity_count, topic_count and feed_count are the totals BEFORE the response
+	// was truncated, so a capped list can say what it is a slice of.
+	//
+	// feed_count is the one that had to exist: `feeds` above is the strongest
+	// twelve, and a screen that counted the rows it received would report "12
+	// feeds competing" on an instance with forty-four — a summary line stating the
+	// size of its own display cap, on a screen whose entire claim is that its
+	// numbers can be checked.
+	TopicCount    int32 `protobuf:"varint,7,opt,name=topic_count,json=topicCount,proto3" json:"topic_count,omitempty"`
+	EntityCount   int32 `protobuf:"varint,8,opt,name=entity_count,json=entityCount,proto3" json:"entity_count,omitempty"`
+	FeedCount     int32 `protobuf:"varint,9,opt,name=feed_count,json=feedCount,proto3" json:"feed_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInterestProfileResponse) Reset() {
+	*x = GetInterestProfileResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInterestProfileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInterestProfileResponse) ProtoMessage() {}
+
+func (x *GetInterestProfileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInterestProfileResponse.ProtoReflect.Descriptor instead.
+func (*GetInterestProfileResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{75}
+}
+
+func (x *GetInterestProfileResponse) GetTopics() []*InterestTopic {
+	if x != nil {
+		return x.Topics
+	}
+	return nil
+}
+
+func (x *GetInterestProfileResponse) GetEntities() []*InterestEntity {
+	if x != nil {
+		return x.Entities
+	}
+	return nil
+}
+
+func (x *GetInterestProfileResponse) GetFeeds() []*InterestFeed {
+	if x != nil {
+		return x.Feeds
+	}
+	return nil
+}
+
+func (x *GetInterestProfileResponse) GetFactors() []*InterestFactor {
+	if x != nil {
+		return x.Factors
+	}
+	return nil
+}
+
+func (x *GetInterestProfileResponse) GetRankedCount() int32 {
+	if x != nil {
+		return x.RankedCount
+	}
+	return 0
+}
+
+func (x *GetInterestProfileResponse) GetFactorBase() int32 {
+	if x != nil {
+		return x.FactorBase
+	}
+	return 0
+}
+
+func (x *GetInterestProfileResponse) GetColdStart() bool {
+	if x != nil {
+		return x.ColdStart
+	}
+	return false
+}
+
+func (x *GetInterestProfileResponse) GetTopicCount() int32 {
+	if x != nil {
+		return x.TopicCount
+	}
+	return 0
+}
+
+func (x *GetInterestProfileResponse) GetEntityCount() int32 {
+	if x != nil {
+		return x.EntityCount
+	}
+	return 0
+}
+
+func (x *GetInterestProfileResponse) GetFeedCount() int32 {
+	if x != nil {
+		return x.FeedCount
+	}
+	return 0
+}
+
+// SteerInterestRequest turns the dial on exactly one thing.
+//
+// One target per call rather than a batch. Each is a deliberate act with
+// somebody watching for the result, the write is a single UPDATE, and a batch
+// would need a partial-failure story for no gain a reader can perceive.
+type SteerInterestRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exactly one of topic_key or entity_name. Both set, or neither, is
+	// InvalidArgument — a request that means two things is not one the server
+	// should guess about.
+	//
+	// A TOPIC is addressed by its fingerprint and an ENTITY by its normalised
+	// name, and the asymmetry is the tables': an entity has a stable natural key
+	// and a cluster does not, so a cluster's identity has to be reconstructed from
+	// what it is made of.
+	TopicKey      string     `protobuf:"bytes,4,opt,name=topic_key,json=topicKey,proto3" json:"topic_key,omitempty"`
+	EntityName    string     `protobuf:"bytes,2,opt,name=entity_name,json=entityName,proto3" json:"entity_name,omitempty"`
+	Level         SteerLevel `protobuf:"varint,3,opt,name=level,proto3,enum=articleflux.v1.SteerLevel" json:"level,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SteerInterestRequest) Reset() {
+	*x = SteerInterestRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SteerInterestRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SteerInterestRequest) ProtoMessage() {}
+
+func (x *SteerInterestRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SteerInterestRequest.ProtoReflect.Descriptor instead.
+func (*SteerInterestRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *SteerInterestRequest) GetTopicKey() string {
+	if x != nil {
+		return x.TopicKey
+	}
+	return ""
+}
+
+func (x *SteerInterestRequest) GetEntityName() string {
+	if x != nil {
+		return x.EntityName
+	}
+	return ""
+}
+
+func (x *SteerInterestRequest) GetLevel() SteerLevel {
+	if x != nil {
+		return x.Level
+	}
+	return SteerLevel_STEER_LEVEL_UNSPECIFIED
+}
+
+type SteerInterestResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// rebuilding is true when the change kicked off a re-derivation, which is the
+	// normal case. It exists so the screen can say the page will change shortly
+	// instead of leaving the reader to wonder whether the button did anything.
+	Rebuilding    bool `protobuf:"varint,1,opt,name=rebuilding,proto3" json:"rebuilding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SteerInterestResponse) Reset() {
+	*x = SteerInterestResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SteerInterestResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SteerInterestResponse) ProtoMessage() {}
+
+func (x *SteerInterestResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SteerInterestResponse.ProtoReflect.Descriptor instead.
+func (*SteerInterestResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *SteerInterestResponse) GetRebuilding() bool {
+	if x != nil {
+		return x.Rebuilding
+	}
+	return false
+}
+
 var File_articleflux_v1_reader_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_reader_proto_rawDesc = "" +
@@ -4945,7 +5696,64 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x06events\x18\x01 \x03(\v2\x1a.articleflux.v1.EngagementR\x06events\"S\n" +
 	"\x19RecordEngagementsResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\x05R\baccepted\x12\x1a\n" +
-	"\brejected\x18\x02 \x01(\x05R\brejected*\xb0\x01\n" +
+	"\brejected\x18\x02 \x01(\x05R\brejected\"\xec\x01\n" +
+	"\rInterestTopic\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\"\n" +
+	"\rlabel_by_user\x18\x03 \x01(\bR\vlabelByUser\x12\x14\n" +
+	"\x05terms\x18\x04 \x03(\tR\x05terms\x12!\n" +
+	"\fmember_count\x18\x05 \x01(\x05R\vmemberCount\x12\x14\n" +
+	"\x05trend\x18\x06 \x01(\tR\x05trend\x120\n" +
+	"\x05level\x18\a \x01(\x0e2\x1a.articleflux.v1.SteerLevelR\x05level\x12\x10\n" +
+	"\x03key\x18\b \x01(\tR\x03key\"\xfa\x01\n" +
+	"\x0eInterestEntity\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x16\n" +
+	"\x06weight\x18\x04 \x01(\x01R\x06weight\x12\x1a\n" +
+	"\bmentions\x18\x05 \x01(\x05R\bmentions\x120\n" +
+	"\x05level\x18\x06 \x01(\x0e2\x1a.articleflux.v1.SteerLevelR\x05level\x12\"\n" +
+	"\rfirst_seen_at\x18\a \x01(\tR\vfirstSeenAt\x12 \n" +
+	"\flast_seen_at\x18\b \x01(\tR\n" +
+	"lastSeenAt\"\xd3\x01\n" +
+	"\fInterestFeed\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
+	"\x05score\x18\x03 \x01(\x01R\x05score\x12\x14\n" +
+	"\x05opens\x18\x04 \x01(\x05R\x05opens\x12 \n" +
+	"\vimpressions\x18\x05 \x01(\x05R\vimpressions\x12$\n" +
+	"\x0evolume_per_day\x18\x06 \x01(\x01R\fvolumePerDay\x12\x1c\n" +
+	"\n" +
+	"on_my_feed\x18\a \x01(\bR\bonMyFeed\":\n" +
+	"\x0eInterestFactor\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\tR\x04term\x12\x14\n" +
+	"\x05items\x18\x02 \x01(\x05R\x05items\"\x1b\n" +
+	"\x19GetInterestProfileRequest\"\xc3\x03\n" +
+	"\x1aGetInterestProfileResponse\x125\n" +
+	"\x06topics\x18\x01 \x03(\v2\x1d.articleflux.v1.InterestTopicR\x06topics\x12:\n" +
+	"\bentities\x18\x02 \x03(\v2\x1e.articleflux.v1.InterestEntityR\bentities\x122\n" +
+	"\x05feeds\x18\x03 \x03(\v2\x1c.articleflux.v1.InterestFeedR\x05feeds\x128\n" +
+	"\afactors\x18\x04 \x03(\v2\x1e.articleflux.v1.InterestFactorR\afactors\x12!\n" +
+	"\franked_count\x18\x05 \x01(\x05R\vrankedCount\x12\x1f\n" +
+	"\vfactor_base\x18\n" +
+	" \x01(\x05R\n" +
+	"factorBase\x12\x1d\n" +
+	"\n" +
+	"cold_start\x18\x06 \x01(\bR\tcoldStart\x12\x1f\n" +
+	"\vtopic_count\x18\a \x01(\x05R\n" +
+	"topicCount\x12!\n" +
+	"\fentity_count\x18\b \x01(\x05R\ventityCount\x12\x1d\n" +
+	"\n" +
+	"feed_count\x18\t \x01(\x05R\tfeedCount\"\x96\x01\n" +
+	"\x14SteerInterestRequest\x12\x1b\n" +
+	"\ttopic_key\x18\x04 \x01(\tR\btopicKey\x12\x1f\n" +
+	"\ventity_name\x18\x02 \x01(\tR\n" +
+	"entityName\x120\n" +
+	"\x05level\x18\x03 \x01(\x0e2\x1a.articleflux.v1.SteerLevelR\x05levelJ\x04\b\x01\x10\x02R\btopic_id\"7\n" +
+	"\x15SteerInterestResponse\x12\x1e\n" +
+	"\n" +
+	"rebuilding\x18\x01 \x01(\bR\n" +
+	"rebuilding*\xb0\x01\n" +
 	"\tListScope\x12\x1a\n" +
 	"\x16LIST_SCOPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eLIST_SCOPE_ALL\x10\x01\x12\x13\n" +
@@ -4953,7 +5761,14 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x12LIST_SCOPE_STARRED\x10\x03\x12\x17\n" +
 	"\x13LIST_SCOPE_MEGAFEED\x10\x04\x12\x14\n" +
 	"\x10LIST_SCOPE_LIKED\x10\x05\x12\x17\n" +
-	"\x13LIST_SCOPE_DISLIKED\x10\x062\x8d\x14\n" +
+	"\x13LIST_SCOPE_DISLIKED\x10\x06*\x84\x01\n" +
+	"\n" +
+	"SteerLevel\x12\x1b\n" +
+	"\x17STEER_LEVEL_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10STEER_LEVEL_MORE\x10\x01\x12\x16\n" +
+	"\x12STEER_LEVEL_NORMAL\x10\x02\x12\x14\n" +
+	"\x10STEER_LEVEL_LESS\x10\x03\x12\x15\n" +
+	"\x11STEER_LEVEL_NEVER\x10\x042\xd8\x15\n" +
 	"\rReaderService\x12P\n" +
 	"\tListFeeds\x12 .articleflux.v1.ListFeedsRequest\x1a!.articleflux.v1.ListFeedsResponse\x12P\n" +
 	"\tListItems\x12 .articleflux.v1.ListItemsRequest\x1a!.articleflux.v1.ListItemsResponse\x12J\n" +
@@ -4984,7 +5799,9 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\tListNotes\x12 .articleflux.v1.ListNotesRequest\x1a!.articleflux.v1.ListNotesResponse\x12b\n" +
 	"\x0fGetFeedSettings\x12&.articleflux.v1.GetFeedSettingsRequest\x1a'.articleflux.v1.GetFeedSettingsResponse\x12k\n" +
 	"\x12UpdateFeedSettings\x12).articleflux.v1.UpdateFeedSettingsRequest\x1a*.articleflux.v1.UpdateFeedSettingsResponse\x12h\n" +
-	"\x11RecordEngagements\x12(.articleflux.v1.RecordEngagementsRequest\x1a).articleflux.v1.RecordEngagementsResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
+	"\x11RecordEngagements\x12(.articleflux.v1.RecordEngagementsRequest\x1a).articleflux.v1.RecordEngagementsResponse\x12k\n" +
+	"\x12GetInterestProfile\x12).articleflux.v1.GetInterestProfileRequest\x1a*.articleflux.v1.GetInterestProfileResponse\x12\\\n" +
+	"\rSteerInterest\x12$.articleflux.v1.SteerInterestRequest\x1a%.articleflux.v1.SteerInterestResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
 
 var (
 	file_articleflux_v1_reader_proto_rawDescOnce sync.Once
@@ -4998,177 +5815,197 @@ func file_articleflux_v1_reader_proto_rawDescGZIP() []byte {
 	return file_articleflux_v1_reader_proto_rawDescData
 }
 
-var file_articleflux_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 73)
+var file_articleflux_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 81)
 var file_articleflux_v1_reader_proto_goTypes = []any{
 	(ListScope)(0),                     // 0: articleflux.v1.ListScope
-	(*Feed)(nil),                       // 1: articleflux.v1.Feed
-	(*Item)(nil),                       // 2: articleflux.v1.Item
-	(*ScrollLiveViewRequest)(nil),      // 3: articleflux.v1.ScrollLiveViewRequest
-	(*ScrollLiveViewResponse)(nil),     // 4: articleflux.v1.ScrollLiveViewResponse
-	(*ListFeedsRequest)(nil),           // 5: articleflux.v1.ListFeedsRequest
-	(*ListFeedsResponse)(nil),          // 6: articleflux.v1.ListFeedsResponse
-	(*ListItemsRequest)(nil),           // 7: articleflux.v1.ListItemsRequest
-	(*ListItemsResponse)(nil),          // 8: articleflux.v1.ListItemsResponse
-	(*GetItemRequest)(nil),             // 9: articleflux.v1.GetItemRequest
-	(*GetItemResponse)(nil),            // 10: articleflux.v1.GetItemResponse
-	(*ItemRevision)(nil),               // 11: articleflux.v1.ItemRevision
-	(*GetItemRevisionsRequest)(nil),    // 12: articleflux.v1.GetItemRevisionsRequest
-	(*GetItemRevisionsResponse)(nil),   // 13: articleflux.v1.GetItemRevisionsResponse
-	(*SetItemStateRequest)(nil),        // 14: articleflux.v1.SetItemStateRequest
-	(*SetItemStateResponse)(nil),       // 15: articleflux.v1.SetItemStateResponse
-	(*MarkAllReadRequest)(nil),         // 16: articleflux.v1.MarkAllReadRequest
-	(*UndoMarkAllReadRequest)(nil),     // 17: articleflux.v1.UndoMarkAllReadRequest
-	(*UndoMarkAllReadResponse)(nil),    // 18: articleflux.v1.UndoMarkAllReadResponse
-	(*MarkAllReadResponse)(nil),        // 19: articleflux.v1.MarkAllReadResponse
-	(*SubscribeRequest)(nil),           // 20: articleflux.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),          // 21: articleflux.v1.SubscribeResponse
-	(*UnsubscribeRequest)(nil),         // 22: articleflux.v1.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil),        // 23: articleflux.v1.UnsubscribeResponse
-	(*AnalyzeSiteRequest)(nil),         // 24: articleflux.v1.AnalyzeSiteRequest
-	(*FeedCandidate)(nil),              // 25: articleflux.v1.FeedCandidate
-	(*ScrapeRule)(nil),                 // 26: articleflux.v1.ScrapeRule
-	(*ScrapeSample)(nil),               // 27: articleflux.v1.ScrapeSample
-	(*ScrapeProposal)(nil),             // 28: articleflux.v1.ScrapeProposal
-	(*AnalyzeSiteResponse)(nil),        // 29: articleflux.v1.AnalyzeSiteResponse
-	(*SubscribeScrapeRequest)(nil),     // 30: articleflux.v1.SubscribeScrapeRequest
-	(*SubscribeScrapeResponse)(nil),    // 31: articleflux.v1.SubscribeScrapeResponse
-	(*RefreshRequest)(nil),             // 32: articleflux.v1.RefreshRequest
-	(*RefreshResponse)(nil),            // 33: articleflux.v1.RefreshResponse
-	(*SearchRequest)(nil),              // 34: articleflux.v1.SearchRequest
-	(*SearchResponse)(nil),             // 35: articleflux.v1.SearchResponse
-	(*GetPrefsRequest)(nil),            // 36: articleflux.v1.GetPrefsRequest
-	(*GetPrefsResponse)(nil),           // 37: articleflux.v1.GetPrefsResponse
-	(*SetPrefsRequest)(nil),            // 38: articleflux.v1.SetPrefsRequest
-	(*SetPrefsResponse)(nil),           // 39: articleflux.v1.SetPrefsResponse
-	(*Tag)(nil),                        // 40: articleflux.v1.Tag
-	(*ListTagsRequest)(nil),            // 41: articleflux.v1.ListTagsRequest
-	(*ListTagsResponse)(nil),           // 42: articleflux.v1.ListTagsResponse
-	(*TagIDs)(nil),                     // 43: articleflux.v1.TagIDs
-	(*SetFeedTagRequest)(nil),          // 44: articleflux.v1.SetFeedTagRequest
-	(*SetFeedTagResponse)(nil),         // 45: articleflux.v1.SetFeedTagResponse
-	(*UpdateTagRequest)(nil),           // 46: articleflux.v1.UpdateTagRequest
-	(*UpdateTagResponse)(nil),          // 47: articleflux.v1.UpdateTagResponse
-	(*Folder)(nil),                     // 48: articleflux.v1.Folder
-	(*ListFoldersRequest)(nil),         // 49: articleflux.v1.ListFoldersRequest
-	(*ListFoldersResponse)(nil),        // 50: articleflux.v1.ListFoldersResponse
-	(*CreateFolderRequest)(nil),        // 51: articleflux.v1.CreateFolderRequest
-	(*CreateFolderResponse)(nil),       // 52: articleflux.v1.CreateFolderResponse
-	(*RenameFolderRequest)(nil),        // 53: articleflux.v1.RenameFolderRequest
-	(*RenameFolderResponse)(nil),       // 54: articleflux.v1.RenameFolderResponse
-	(*DeleteFolderRequest)(nil),        // 55: articleflux.v1.DeleteFolderRequest
-	(*DeleteFolderResponse)(nil),       // 56: articleflux.v1.DeleteFolderResponse
-	(*SetFeedFolderRequest)(nil),       // 57: articleflux.v1.SetFeedFolderRequest
-	(*SetFeedFolderResponse)(nil),      // 58: articleflux.v1.SetFeedFolderResponse
-	(*SetNoteRequest)(nil),             // 59: articleflux.v1.SetNoteRequest
-	(*SetNoteResponse)(nil),            // 60: articleflux.v1.SetNoteResponse
-	(*ListNotesRequest)(nil),           // 61: articleflux.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),          // 62: articleflux.v1.ListNotesResponse
-	(*GetFeedSettingsRequest)(nil),     // 63: articleflux.v1.GetFeedSettingsRequest
-	(*GetFeedSettingsResponse)(nil),    // 64: articleflux.v1.GetFeedSettingsResponse
-	(*UpdateFeedSettingsResponse)(nil), // 65: articleflux.v1.UpdateFeedSettingsResponse
-	(*FeedSettings)(nil),               // 66: articleflux.v1.FeedSettings
-	(*UpdateFeedSettingsRequest)(nil),  // 67: articleflux.v1.UpdateFeedSettingsRequest
-	(*Engagement)(nil),                 // 68: articleflux.v1.Engagement
-	(*RecordEngagementsRequest)(nil),   // 69: articleflux.v1.RecordEngagementsRequest
-	(*RecordEngagementsResponse)(nil),  // 70: articleflux.v1.RecordEngagementsResponse
-	nil,                                // 71: articleflux.v1.GetPrefsResponse.PrefsEntry
-	nil,                                // 72: articleflux.v1.SetPrefsRequest.PrefsEntry
-	nil,                                // 73: articleflux.v1.ListTagsResponse.BySourceEntry
+	(SteerLevel)(0),                    // 1: articleflux.v1.SteerLevel
+	(*Feed)(nil),                       // 2: articleflux.v1.Feed
+	(*Item)(nil),                       // 3: articleflux.v1.Item
+	(*ScrollLiveViewRequest)(nil),      // 4: articleflux.v1.ScrollLiveViewRequest
+	(*ScrollLiveViewResponse)(nil),     // 5: articleflux.v1.ScrollLiveViewResponse
+	(*ListFeedsRequest)(nil),           // 6: articleflux.v1.ListFeedsRequest
+	(*ListFeedsResponse)(nil),          // 7: articleflux.v1.ListFeedsResponse
+	(*ListItemsRequest)(nil),           // 8: articleflux.v1.ListItemsRequest
+	(*ListItemsResponse)(nil),          // 9: articleflux.v1.ListItemsResponse
+	(*GetItemRequest)(nil),             // 10: articleflux.v1.GetItemRequest
+	(*GetItemResponse)(nil),            // 11: articleflux.v1.GetItemResponse
+	(*ItemRevision)(nil),               // 12: articleflux.v1.ItemRevision
+	(*GetItemRevisionsRequest)(nil),    // 13: articleflux.v1.GetItemRevisionsRequest
+	(*GetItemRevisionsResponse)(nil),   // 14: articleflux.v1.GetItemRevisionsResponse
+	(*SetItemStateRequest)(nil),        // 15: articleflux.v1.SetItemStateRequest
+	(*SetItemStateResponse)(nil),       // 16: articleflux.v1.SetItemStateResponse
+	(*MarkAllReadRequest)(nil),         // 17: articleflux.v1.MarkAllReadRequest
+	(*UndoMarkAllReadRequest)(nil),     // 18: articleflux.v1.UndoMarkAllReadRequest
+	(*UndoMarkAllReadResponse)(nil),    // 19: articleflux.v1.UndoMarkAllReadResponse
+	(*MarkAllReadResponse)(nil),        // 20: articleflux.v1.MarkAllReadResponse
+	(*SubscribeRequest)(nil),           // 21: articleflux.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),          // 22: articleflux.v1.SubscribeResponse
+	(*UnsubscribeRequest)(nil),         // 23: articleflux.v1.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil),        // 24: articleflux.v1.UnsubscribeResponse
+	(*AnalyzeSiteRequest)(nil),         // 25: articleflux.v1.AnalyzeSiteRequest
+	(*FeedCandidate)(nil),              // 26: articleflux.v1.FeedCandidate
+	(*ScrapeRule)(nil),                 // 27: articleflux.v1.ScrapeRule
+	(*ScrapeSample)(nil),               // 28: articleflux.v1.ScrapeSample
+	(*ScrapeProposal)(nil),             // 29: articleflux.v1.ScrapeProposal
+	(*AnalyzeSiteResponse)(nil),        // 30: articleflux.v1.AnalyzeSiteResponse
+	(*SubscribeScrapeRequest)(nil),     // 31: articleflux.v1.SubscribeScrapeRequest
+	(*SubscribeScrapeResponse)(nil),    // 32: articleflux.v1.SubscribeScrapeResponse
+	(*RefreshRequest)(nil),             // 33: articleflux.v1.RefreshRequest
+	(*RefreshResponse)(nil),            // 34: articleflux.v1.RefreshResponse
+	(*SearchRequest)(nil),              // 35: articleflux.v1.SearchRequest
+	(*SearchResponse)(nil),             // 36: articleflux.v1.SearchResponse
+	(*GetPrefsRequest)(nil),            // 37: articleflux.v1.GetPrefsRequest
+	(*GetPrefsResponse)(nil),           // 38: articleflux.v1.GetPrefsResponse
+	(*SetPrefsRequest)(nil),            // 39: articleflux.v1.SetPrefsRequest
+	(*SetPrefsResponse)(nil),           // 40: articleflux.v1.SetPrefsResponse
+	(*Tag)(nil),                        // 41: articleflux.v1.Tag
+	(*ListTagsRequest)(nil),            // 42: articleflux.v1.ListTagsRequest
+	(*ListTagsResponse)(nil),           // 43: articleflux.v1.ListTagsResponse
+	(*TagIDs)(nil),                     // 44: articleflux.v1.TagIDs
+	(*SetFeedTagRequest)(nil),          // 45: articleflux.v1.SetFeedTagRequest
+	(*SetFeedTagResponse)(nil),         // 46: articleflux.v1.SetFeedTagResponse
+	(*UpdateTagRequest)(nil),           // 47: articleflux.v1.UpdateTagRequest
+	(*UpdateTagResponse)(nil),          // 48: articleflux.v1.UpdateTagResponse
+	(*Folder)(nil),                     // 49: articleflux.v1.Folder
+	(*ListFoldersRequest)(nil),         // 50: articleflux.v1.ListFoldersRequest
+	(*ListFoldersResponse)(nil),        // 51: articleflux.v1.ListFoldersResponse
+	(*CreateFolderRequest)(nil),        // 52: articleflux.v1.CreateFolderRequest
+	(*CreateFolderResponse)(nil),       // 53: articleflux.v1.CreateFolderResponse
+	(*RenameFolderRequest)(nil),        // 54: articleflux.v1.RenameFolderRequest
+	(*RenameFolderResponse)(nil),       // 55: articleflux.v1.RenameFolderResponse
+	(*DeleteFolderRequest)(nil),        // 56: articleflux.v1.DeleteFolderRequest
+	(*DeleteFolderResponse)(nil),       // 57: articleflux.v1.DeleteFolderResponse
+	(*SetFeedFolderRequest)(nil),       // 58: articleflux.v1.SetFeedFolderRequest
+	(*SetFeedFolderResponse)(nil),      // 59: articleflux.v1.SetFeedFolderResponse
+	(*SetNoteRequest)(nil),             // 60: articleflux.v1.SetNoteRequest
+	(*SetNoteResponse)(nil),            // 61: articleflux.v1.SetNoteResponse
+	(*ListNotesRequest)(nil),           // 62: articleflux.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),          // 63: articleflux.v1.ListNotesResponse
+	(*GetFeedSettingsRequest)(nil),     // 64: articleflux.v1.GetFeedSettingsRequest
+	(*GetFeedSettingsResponse)(nil),    // 65: articleflux.v1.GetFeedSettingsResponse
+	(*UpdateFeedSettingsResponse)(nil), // 66: articleflux.v1.UpdateFeedSettingsResponse
+	(*FeedSettings)(nil),               // 67: articleflux.v1.FeedSettings
+	(*UpdateFeedSettingsRequest)(nil),  // 68: articleflux.v1.UpdateFeedSettingsRequest
+	(*Engagement)(nil),                 // 69: articleflux.v1.Engagement
+	(*RecordEngagementsRequest)(nil),   // 70: articleflux.v1.RecordEngagementsRequest
+	(*RecordEngagementsResponse)(nil),  // 71: articleflux.v1.RecordEngagementsResponse
+	(*InterestTopic)(nil),              // 72: articleflux.v1.InterestTopic
+	(*InterestEntity)(nil),             // 73: articleflux.v1.InterestEntity
+	(*InterestFeed)(nil),               // 74: articleflux.v1.InterestFeed
+	(*InterestFactor)(nil),             // 75: articleflux.v1.InterestFactor
+	(*GetInterestProfileRequest)(nil),  // 76: articleflux.v1.GetInterestProfileRequest
+	(*GetInterestProfileResponse)(nil), // 77: articleflux.v1.GetInterestProfileResponse
+	(*SteerInterestRequest)(nil),       // 78: articleflux.v1.SteerInterestRequest
+	(*SteerInterestResponse)(nil),      // 79: articleflux.v1.SteerInterestResponse
+	nil,                                // 80: articleflux.v1.GetPrefsResponse.PrefsEntry
+	nil,                                // 81: articleflux.v1.SetPrefsRequest.PrefsEntry
+	nil,                                // 82: articleflux.v1.ListTagsResponse.BySourceEntry
 }
 var file_articleflux_v1_reader_proto_depIdxs = []int32{
-	1,  // 0: articleflux.v1.ListFeedsResponse.feeds:type_name -> articleflux.v1.Feed
+	2,  // 0: articleflux.v1.ListFeedsResponse.feeds:type_name -> articleflux.v1.Feed
 	0,  // 1: articleflux.v1.ListItemsRequest.scope:type_name -> articleflux.v1.ListScope
-	2,  // 2: articleflux.v1.ListItemsResponse.items:type_name -> articleflux.v1.Item
-	2,  // 3: articleflux.v1.GetItemResponse.item:type_name -> articleflux.v1.Item
-	11, // 4: articleflux.v1.GetItemRevisionsResponse.revisions:type_name -> articleflux.v1.ItemRevision
-	2,  // 5: articleflux.v1.SetItemStateResponse.item:type_name -> articleflux.v1.Item
+	3,  // 2: articleflux.v1.ListItemsResponse.items:type_name -> articleflux.v1.Item
+	3,  // 3: articleflux.v1.GetItemResponse.item:type_name -> articleflux.v1.Item
+	12, // 4: articleflux.v1.GetItemRevisionsResponse.revisions:type_name -> articleflux.v1.ItemRevision
+	3,  // 5: articleflux.v1.SetItemStateResponse.item:type_name -> articleflux.v1.Item
 	0,  // 6: articleflux.v1.MarkAllReadRequest.scope:type_name -> articleflux.v1.ListScope
-	1,  // 7: articleflux.v1.SubscribeResponse.feed:type_name -> articleflux.v1.Feed
-	26, // 8: articleflux.v1.ScrapeProposal.rule:type_name -> articleflux.v1.ScrapeRule
-	27, // 9: articleflux.v1.ScrapeProposal.samples:type_name -> articleflux.v1.ScrapeSample
-	25, // 10: articleflux.v1.AnalyzeSiteResponse.feeds:type_name -> articleflux.v1.FeedCandidate
-	28, // 11: articleflux.v1.AnalyzeSiteResponse.scrape:type_name -> articleflux.v1.ScrapeProposal
-	26, // 12: articleflux.v1.SubscribeScrapeRequest.rule:type_name -> articleflux.v1.ScrapeRule
-	1,  // 13: articleflux.v1.SubscribeScrapeResponse.feed:type_name -> articleflux.v1.Feed
-	2,  // 14: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
-	71, // 15: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
-	72, // 16: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
-	40, // 17: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
-	73, // 18: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
-	40, // 19: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
-	40, // 20: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
-	48, // 21: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
-	48, // 22: articleflux.v1.CreateFolderResponse.folder:type_name -> articleflux.v1.Folder
-	48, // 23: articleflux.v1.RenameFolderResponse.folder:type_name -> articleflux.v1.Folder
-	2,  // 24: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
-	66, // 25: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	66, // 26: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	68, // 27: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
-	43, // 28: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
-	5,  // 29: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
-	7,  // 30: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
-	9,  // 31: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
-	12, // 32: articleflux.v1.ReaderService.GetItemRevisions:input_type -> articleflux.v1.GetItemRevisionsRequest
-	3,  // 33: articleflux.v1.ReaderService.ScrollLiveView:input_type -> articleflux.v1.ScrollLiveViewRequest
-	14, // 34: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
-	17, // 35: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
-	16, // 36: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
-	20, // 37: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
-	22, // 38: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
-	24, // 39: articleflux.v1.ReaderService.AnalyzeSite:input_type -> articleflux.v1.AnalyzeSiteRequest
-	30, // 40: articleflux.v1.ReaderService.SubscribeScrape:input_type -> articleflux.v1.SubscribeScrapeRequest
-	32, // 41: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
-	34, // 42: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
-	36, // 43: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
-	38, // 44: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
-	41, // 45: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
-	44, // 46: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
-	46, // 47: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
-	49, // 48: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
-	51, // 49: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
-	53, // 50: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
-	55, // 51: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
-	57, // 52: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
-	59, // 53: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
-	61, // 54: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
-	63, // 55: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
-	67, // 56: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
-	69, // 57: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
-	6,  // 58: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
-	8,  // 59: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
-	10, // 60: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
-	13, // 61: articleflux.v1.ReaderService.GetItemRevisions:output_type -> articleflux.v1.GetItemRevisionsResponse
-	4,  // 62: articleflux.v1.ReaderService.ScrollLiveView:output_type -> articleflux.v1.ScrollLiveViewResponse
-	15, // 63: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
-	18, // 64: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
-	19, // 65: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
-	21, // 66: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
-	23, // 67: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
-	29, // 68: articleflux.v1.ReaderService.AnalyzeSite:output_type -> articleflux.v1.AnalyzeSiteResponse
-	31, // 69: articleflux.v1.ReaderService.SubscribeScrape:output_type -> articleflux.v1.SubscribeScrapeResponse
-	33, // 70: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
-	35, // 71: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
-	37, // 72: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
-	39, // 73: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
-	42, // 74: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
-	45, // 75: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
-	47, // 76: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
-	50, // 77: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
-	52, // 78: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
-	54, // 79: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
-	56, // 80: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
-	58, // 81: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
-	60, // 82: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
-	62, // 83: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
-	64, // 84: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
-	65, // 85: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
-	70, // 86: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
-	58, // [58:87] is the sub-list for method output_type
-	29, // [29:58] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	2,  // 7: articleflux.v1.SubscribeResponse.feed:type_name -> articleflux.v1.Feed
+	27, // 8: articleflux.v1.ScrapeProposal.rule:type_name -> articleflux.v1.ScrapeRule
+	28, // 9: articleflux.v1.ScrapeProposal.samples:type_name -> articleflux.v1.ScrapeSample
+	26, // 10: articleflux.v1.AnalyzeSiteResponse.feeds:type_name -> articleflux.v1.FeedCandidate
+	29, // 11: articleflux.v1.AnalyzeSiteResponse.scrape:type_name -> articleflux.v1.ScrapeProposal
+	27, // 12: articleflux.v1.SubscribeScrapeRequest.rule:type_name -> articleflux.v1.ScrapeRule
+	2,  // 13: articleflux.v1.SubscribeScrapeResponse.feed:type_name -> articleflux.v1.Feed
+	3,  // 14: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
+	80, // 15: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
+	81, // 16: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
+	41, // 17: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
+	82, // 18: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
+	41, // 19: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
+	41, // 20: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
+	49, // 21: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
+	49, // 22: articleflux.v1.CreateFolderResponse.folder:type_name -> articleflux.v1.Folder
+	49, // 23: articleflux.v1.RenameFolderResponse.folder:type_name -> articleflux.v1.Folder
+	3,  // 24: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
+	67, // 25: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	67, // 26: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	69, // 27: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
+	1,  // 28: articleflux.v1.InterestTopic.level:type_name -> articleflux.v1.SteerLevel
+	1,  // 29: articleflux.v1.InterestEntity.level:type_name -> articleflux.v1.SteerLevel
+	72, // 30: articleflux.v1.GetInterestProfileResponse.topics:type_name -> articleflux.v1.InterestTopic
+	73, // 31: articleflux.v1.GetInterestProfileResponse.entities:type_name -> articleflux.v1.InterestEntity
+	74, // 32: articleflux.v1.GetInterestProfileResponse.feeds:type_name -> articleflux.v1.InterestFeed
+	75, // 33: articleflux.v1.GetInterestProfileResponse.factors:type_name -> articleflux.v1.InterestFactor
+	1,  // 34: articleflux.v1.SteerInterestRequest.level:type_name -> articleflux.v1.SteerLevel
+	44, // 35: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
+	6,  // 36: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
+	8,  // 37: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
+	10, // 38: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
+	13, // 39: articleflux.v1.ReaderService.GetItemRevisions:input_type -> articleflux.v1.GetItemRevisionsRequest
+	4,  // 40: articleflux.v1.ReaderService.ScrollLiveView:input_type -> articleflux.v1.ScrollLiveViewRequest
+	15, // 41: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
+	18, // 42: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
+	17, // 43: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
+	21, // 44: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
+	23, // 45: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
+	25, // 46: articleflux.v1.ReaderService.AnalyzeSite:input_type -> articleflux.v1.AnalyzeSiteRequest
+	31, // 47: articleflux.v1.ReaderService.SubscribeScrape:input_type -> articleflux.v1.SubscribeScrapeRequest
+	33, // 48: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
+	35, // 49: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
+	37, // 50: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
+	39, // 51: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
+	42, // 52: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
+	45, // 53: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
+	47, // 54: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
+	50, // 55: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
+	52, // 56: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
+	54, // 57: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
+	56, // 58: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
+	58, // 59: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
+	60, // 60: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
+	62, // 61: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
+	64, // 62: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
+	68, // 63: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
+	70, // 64: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
+	76, // 65: articleflux.v1.ReaderService.GetInterestProfile:input_type -> articleflux.v1.GetInterestProfileRequest
+	78, // 66: articleflux.v1.ReaderService.SteerInterest:input_type -> articleflux.v1.SteerInterestRequest
+	7,  // 67: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
+	9,  // 68: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
+	11, // 69: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
+	14, // 70: articleflux.v1.ReaderService.GetItemRevisions:output_type -> articleflux.v1.GetItemRevisionsResponse
+	5,  // 71: articleflux.v1.ReaderService.ScrollLiveView:output_type -> articleflux.v1.ScrollLiveViewResponse
+	16, // 72: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
+	19, // 73: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
+	20, // 74: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
+	22, // 75: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
+	24, // 76: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
+	30, // 77: articleflux.v1.ReaderService.AnalyzeSite:output_type -> articleflux.v1.AnalyzeSiteResponse
+	32, // 78: articleflux.v1.ReaderService.SubscribeScrape:output_type -> articleflux.v1.SubscribeScrapeResponse
+	34, // 79: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
+	36, // 80: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
+	38, // 81: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
+	40, // 82: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
+	43, // 83: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
+	46, // 84: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
+	48, // 85: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
+	51, // 86: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
+	53, // 87: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
+	55, // 88: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
+	57, // 89: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
+	59, // 90: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
+	61, // 91: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
+	63, // 92: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
+	65, // 93: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
+	66, // 94: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
+	71, // 95: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
+	77, // 96: articleflux.v1.ReaderService.GetInterestProfile:output_type -> articleflux.v1.GetInterestProfileResponse
+	79, // 97: articleflux.v1.ReaderService.SteerInterest:output_type -> articleflux.v1.SteerInterestResponse
+	67, // [67:98] is the sub-list for method output_type
+	36, // [36:67] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_reader_proto_init() }
@@ -5184,8 +6021,8 @@ func file_articleflux_v1_reader_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_reader_proto_rawDesc), len(file_articleflux_v1_reader_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   73,
+			NumEnums:      2,
+			NumMessages:   81,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

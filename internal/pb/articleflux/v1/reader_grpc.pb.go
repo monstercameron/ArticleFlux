@@ -48,6 +48,8 @@ const (
 	ReaderService_GetFeedSettings_FullMethodName    = "/articleflux.v1.ReaderService/GetFeedSettings"
 	ReaderService_UpdateFeedSettings_FullMethodName = "/articleflux.v1.ReaderService/UpdateFeedSettings"
 	ReaderService_RecordEngagements_FullMethodName  = "/articleflux.v1.ReaderService/RecordEngagements"
+	ReaderService_GetInterestProfile_FullMethodName = "/articleflux.v1.ReaderService/GetInterestProfile"
+	ReaderService_SteerInterest_FullMethodName      = "/articleflux.v1.ReaderService/SteerInterest"
 )
 
 // ReaderServiceClient is the client API for ReaderService service.
@@ -195,6 +197,23 @@ type ReaderServiceClient interface {
 	// broken signals layer may cost a worse ranking; it may never cost a page
 	// that will not load.
 	RecordEngagements(ctx context.Context, in *RecordEngagementsRequest, opts ...grpc.CallOption) (*RecordEngagementsResponse, error)
+	// GetInterestProfile returns what the interest layer believes about this
+	// reader, and SteerInterest is how they say it is wrong (§18.2, §18.9).
+	//
+	// These two are the other half of the ranked page. Every reason on a My Feed
+	// row names a judgement — "about Pro Max, which you follow", "close to your
+	// camera reading" — and until there was somewhere to see the whole set of
+	// those judgements and change them, the explanation was a statement rather
+	// than a control. On a real database the top followed thing was "Pro Max", a
+	// phrase the extractor lifted out of a handset headline; nothing about the
+	// ranked page was broken, and there was no way to say so.
+	//
+	// Read and write are separate RPCs rather than one patch-and-return, because
+	// the read is expensive (topics, entities, feeds and the factor mix behind the
+	// current ranking) and a reader adjusting four rows should not pay for it four
+	// times.
+	GetInterestProfile(ctx context.Context, in *GetInterestProfileRequest, opts ...grpc.CallOption) (*GetInterestProfileResponse, error)
+	SteerInterest(ctx context.Context, in *SteerInterestRequest, opts ...grpc.CallOption) (*SteerInterestResponse, error)
 }
 
 type readerServiceClient struct {
@@ -495,6 +514,26 @@ func (c *readerServiceClient) RecordEngagements(ctx context.Context, in *RecordE
 	return out, nil
 }
 
+func (c *readerServiceClient) GetInterestProfile(ctx context.Context, in *GetInterestProfileRequest, opts ...grpc.CallOption) (*GetInterestProfileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInterestProfileResponse)
+	err := c.cc.Invoke(ctx, ReaderService_GetInterestProfile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) SteerInterest(ctx context.Context, in *SteerInterestRequest, opts ...grpc.CallOption) (*SteerInterestResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SteerInterestResponse)
+	err := c.cc.Invoke(ctx, ReaderService_SteerInterest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ReaderServiceServer is the server API for ReaderService service.
 // All implementations must embed UnimplementedReaderServiceServer
 // for forward compatibility.
@@ -640,6 +679,23 @@ type ReaderServiceServer interface {
 	// broken signals layer may cost a worse ranking; it may never cost a page
 	// that will not load.
 	RecordEngagements(context.Context, *RecordEngagementsRequest) (*RecordEngagementsResponse, error)
+	// GetInterestProfile returns what the interest layer believes about this
+	// reader, and SteerInterest is how they say it is wrong (§18.2, §18.9).
+	//
+	// These two are the other half of the ranked page. Every reason on a My Feed
+	// row names a judgement — "about Pro Max, which you follow", "close to your
+	// camera reading" — and until there was somewhere to see the whole set of
+	// those judgements and change them, the explanation was a statement rather
+	// than a control. On a real database the top followed thing was "Pro Max", a
+	// phrase the extractor lifted out of a handset headline; nothing about the
+	// ranked page was broken, and there was no way to say so.
+	//
+	// Read and write are separate RPCs rather than one patch-and-return, because
+	// the read is expensive (topics, entities, feeds and the factor mix behind the
+	// current ranking) and a reader adjusting four rows should not pay for it four
+	// times.
+	GetInterestProfile(context.Context, *GetInterestProfileRequest) (*GetInterestProfileResponse, error)
+	SteerInterest(context.Context, *SteerInterestRequest) (*SteerInterestResponse, error)
 	mustEmbedUnimplementedReaderServiceServer()
 }
 
@@ -736,6 +792,12 @@ func (UnimplementedReaderServiceServer) UpdateFeedSettings(context.Context, *Upd
 }
 func (UnimplementedReaderServiceServer) RecordEngagements(context.Context, *RecordEngagementsRequest) (*RecordEngagementsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RecordEngagements not implemented")
+}
+func (UnimplementedReaderServiceServer) GetInterestProfile(context.Context, *GetInterestProfileRequest) (*GetInterestProfileResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetInterestProfile not implemented")
+}
+func (UnimplementedReaderServiceServer) SteerInterest(context.Context, *SteerInterestRequest) (*SteerInterestResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SteerInterest not implemented")
 }
 func (UnimplementedReaderServiceServer) mustEmbedUnimplementedReaderServiceServer() {}
 func (UnimplementedReaderServiceServer) testEmbeddedByValue()                       {}
@@ -1280,6 +1342,42 @@ func _ReaderService_RecordEngagements_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReaderService_GetInterestProfile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInterestProfileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).GetInterestProfile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_GetInterestProfile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).GetInterestProfile(ctx, req.(*GetInterestProfileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_SteerInterest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SteerInterestRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).SteerInterest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_SteerInterest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).SteerInterest(ctx, req.(*SteerInterestRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ReaderService_ServiceDesc is the grpc.ServiceDesc for ReaderService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1402,6 +1500,14 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RecordEngagements",
 			Handler:    _ReaderService_RecordEngagements_Handler,
+		},
+		{
+			MethodName: "GetInterestProfile",
+			Handler:    _ReaderService_GetInterestProfile_Handler,
+		},
+		{
+			MethodName: "SteerInterest",
+			Handler:    _ReaderService_SteerInterest_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

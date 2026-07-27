@@ -132,6 +132,16 @@ type Item struct {
 	// arrives weeks in, and until then a ranked page can offer nothing better than
 	// freshness — which reads, correctly, as the unread list reordered.
 	Entities []string
+	// EntityScale is the reader's dial on the things this headline names, as a
+	// multiplier on the entity term (0027). Zero means one — untouched.
+	//
+	// It is a scale rather than a filter because the two answers a reader gives
+	// are different: "never" removes the thing from the followed set entirely and
+	// never reaches this struct, while "less" means the match is real and should
+	// count for less. Modelling the second by dropping the entity would erase the
+	// REASON as well as the score, and the row would then appear with no
+	// explanation — which is the one thing §18.9 forbids.
+	EntityScale float64
 	// TargetDomain is where the article points, which for an aggregator item is
 	// almost never the aggregator (§18.6).
 	TargetDomain string
@@ -256,7 +266,11 @@ func Score(item Item, sig Signals, w Weights, now time.Time) Result {
 	// one naming a single brand, but not three times as relevant, and a linear sum would
 	// let a headline that lists products outrank an article about one of them.
 	if n := len(item.Entities); n > 0 {
-		add("entity", entityText(item.Entities), w.Entity*math.Log1p(float64(n)))
+		scale := item.EntityScale
+		if scale <= 0 {
+			scale = 1
+		}
+		add("entity", entityText(item.Entities), w.Entity*math.Log1p(float64(n))*scale)
 	}
 
 	if !highlights && sig.FeedAffinity > 0 {

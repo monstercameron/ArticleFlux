@@ -406,7 +406,7 @@ func TestAUserRenameSurvivesRederivation(t *testing.T) {
 	if err := f.repo.RenameTopic(f.ctx, f.scope, stored[0].ID, chosen); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.repo.SuppressTopic(f.ctx, f.scope, stored[0].ID, true); err != nil {
+	if err := f.repo.SteerTopic(f.ctx, f.scope, stored[0].ID, store.SteerNormal, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -545,7 +545,7 @@ func TestSuppressedTopicDemotesRankedItems(t *testing.T) {
 	}
 
 	for _, topic := range stored {
-		if err := f.repo.SuppressTopic(f.ctx, f.scope, topic.ID, true); err != nil {
+		if err := f.repo.SteerTopic(f.ctx, f.scope, topic.ID, store.SteerNormal, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -857,7 +857,7 @@ func snapshotTopics(t *testing.T, f *fixture) string {
 	}
 	// nil enhancer: this asserts the free tier's clustering, and a model relabelling the
 	// clusters would be testing something else.
-	topicSet, _, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, nil, engaged, vectors, now)
+	topicSet, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, nil, engaged, vectors, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,4 +1052,84 @@ func setupBig(t *testing.T, n int) *fixture {
 		f.bigItems = append(f.bigItems, it.ID)
 	}
 	return f
+}
+
+// The graded half of the dial (0027): "less" demotes without excluding, and
+// "more" promotes.
+//
+// Distinct from suppression, and worth its own test for the reason the level
+// exists at all. A reader who thinks the model has overweighted a subject has,
+// until now, had one button — never — and using it to say "a bit less" throws
+// away a topic they do read. So the property here is BOTH directions moving and
+// the item still being on the page afterwards: a "less" that quietly removed
+// things would be suppression wearing a gentler word.
+func TestTopicSteerMovesScoresWithoutExcluding(t *testing.T) {
+	f := setup(t)
+	f.engage(t)
+
+	scoresFor := func() map[string]float64 {
+		t.Helper()
+		if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := f.repo.HomeRanking(f.ctx, f.scope, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]float64{}
+		for _, r := range rows {
+			// Only the picks that MATCHED a topic can move: everything else is
+			// scored on terms this dial does not touch, and including them would
+			// make the comparison below pass on noise.
+			if r.TopicID != "" {
+				out[r.ItemID] = r.Score
+			}
+		}
+		return out
+	}
+
+	base := scoresFor()
+	if len(base) == 0 {
+		t.Skip("no pick matched a topic in this fixture; nothing for the dial to move")
+	}
+
+	steerAll := func(level float64) {
+		t.Helper()
+		stored, err := f.repo.Topics(f.ctx, f.scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, topic := range stored {
+			if err := f.repo.SteerTopic(f.ctx, f.scope, topic.ID, level, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	steerAll(store.SteerLess)
+	less := scoresFor()
+	steerAll(store.SteerMore)
+	more := scoresFor()
+
+	var lowered, raised, stillThere int
+	for id, was := range base {
+		if now, ok := less[id]; ok {
+			stillThere++
+			if now < was {
+				lowered++
+			}
+		}
+		if now, ok := more[id]; ok && now > was {
+			raised++
+		}
+	}
+	if lowered == 0 {
+		t.Error("turning every topic down moved no score")
+	}
+	if raised == 0 {
+		t.Error("turning every topic up moved no score")
+	}
+	if stillThere == 0 {
+		t.Error("turning topics down removed every pick; that is suppression, not less")
+	}
 }

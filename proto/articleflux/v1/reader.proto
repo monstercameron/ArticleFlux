@@ -170,6 +170,24 @@ service ReaderService {
   // broken signals layer may cost a worse ranking; it may never cost a page
   // that will not load.
   rpc RecordEngagements(RecordEngagementsRequest) returns (RecordEngagementsResponse);
+
+  // GetInterestProfile returns what the interest layer believes about this
+  // reader, and SteerInterest is how they say it is wrong (§18.2, §18.9).
+  //
+  // These two are the other half of the ranked page. Every reason on a My Feed
+  // row names a judgement — "about Pro Max, which you follow", "close to your
+  // camera reading" — and until there was somewhere to see the whole set of
+  // those judgements and change them, the explanation was a statement rather
+  // than a control. On a real database the top followed thing was "Pro Max", a
+  // phrase the extractor lifted out of a handset headline; nothing about the
+  // ranked page was broken, and there was no way to say so.
+  //
+  // Read and write are separate RPCs rather than one patch-and-return, because
+  // the read is expensive (topics, entities, feeds and the factor mix behind the
+  // current ranking) and a reader adjusting four rows should not pay for it four
+  // times.
+  rpc GetInterestProfile(GetInterestProfileRequest) returns (GetInterestProfileResponse);
+  rpc SteerInterest(SteerInterestRequest) returns (SteerInterestResponse);
 }
 
 // Feed is one subscription as the sidebar needs it.
@@ -924,4 +942,177 @@ message RecordEngagementsResponse {
   // and the server disagree about the taxonomy, which is a bug worth surfacing
   // in the logs rather than a condition to retry.
   int32 rejected = 2;
+}
+
+// --- the interest profile (§18.2, §18.9) -------------------------------------
+
+// SteerLevel is one position of the dial a reader turns on a topic or a named
+// thing.
+//
+// An enum rather than the multiplier itself, and the distinction is the point: a
+// client that sent 1.5 would be asserting how much "more" is worth, which is a
+// scoring decision and belongs beside the weights it competes with. The reader
+// says "more"; internal/rank decides what more costs.
+enum SteerLevel {
+  STEER_LEVEL_UNSPECIFIED = 0;
+  // STEER_LEVEL_MORE and _LESS are adjustments. Both leave the judgement
+  // standing: the reader agrees this describes them and disagrees about how
+  // loudly.
+  STEER_LEVEL_MORE = 1;
+  STEER_LEVEL_NORMAL = 2;
+  STEER_LEVEL_LESS = 3;
+  // STEER_LEVEL_NEVER is the correction, not an adjustment. It says the model
+  // read something into the reading history that is not there, and it is the one
+  // level that changes what is ELIGIBLE rather than what is scored.
+  STEER_LEVEL_NEVER = 4;
+}
+
+// InterestTopic is one cluster the reader's engagement produced.
+message InterestTopic {
+  // id is TODAY's row id — a display key and nothing more. `ReplaceTopics`
+  // deletes and reinserts every cluster with a fresh id on each derivation, and
+  // derivations run after every poll, so an id is stale within seconds of a
+  // screen loading. Steering addresses `key` for that reason.
+  string id = 1;
+  // label is the name shown. Machine-made unless label_by_user.
+  string label = 2;
+  // label_by_user distinguishes a name the reader typed from one derived from
+  // top terms or written by Smart+. The screen offers "rename" on one and
+  // "reset to the terms" on the other, and it cannot tell without this.
+  bool label_by_user = 3;
+  // terms are the top terms the cluster was named from — the EVIDENCE for the
+  // label, and the thing a reader actually judges a topic by. "Max · Pro · 90s"
+  // is a label nobody can evaluate; its terms are what reveal it as a phone
+  // cluster the vectoriser assembled out of headline furniture.
+  repeated string terms = 4;
+  int32 member_count = 5;
+  // trend is rising | steady | fading | dormant.
+  string trend = 6;
+  SteerLevel level = 7;
+  // key is the cluster's identity ACROSS derivations — its top terms,
+  // fingerprinted. This is what SteerInterest takes, and the reason it exists is
+  // a bug rather than a preference: a screen that steered by id worked once and
+  // answered `not found` for every press after the rebuild its own first press
+  // kicked off.
+  string key = 8;
+}
+
+// InterestEntity is one brand, product or organisation the reader keeps reading
+// about (§18.2).
+message InterestEntity {
+  // name is the normalised key and what SteerInterest is addressed to.
+  string name = 1;
+  string label = 2;
+  // kind is phrase (free tier) or llm (Smart+). Shown, because the two have
+  // different failure modes and a reader correcting one should know which they
+  // are looking at: a phrase is a bigram that recurred, and a model's answer is
+  // a claim about meaning.
+  string kind = 3;
+  // weight is summed, recency-decayed engagement — the EVIDENCE, not the dial.
+  // Sent alongside mentions because the pair is what exposes a misread: 37 from
+  // two mentions is one article read hard, and it does not describe a reader.
+  double weight = 4;
+  int32 mentions = 5;
+  SteerLevel level = 6;
+  string first_seen_at = 7;
+  string last_seen_at = 8;
+}
+
+// InterestFeed is one subscription's standing on the ranked page.
+message InterestFeed {
+  string source_id = 1;
+  string title = 2;
+  // score is the derived feed affinity, 0..1.
+  double score = 3;
+  int32 opens = 4;
+  int32 impressions = 5;
+  double volume_per_day = 6;
+  // on_my_feed is false for a feed excluded by in_megafeed or muted_until. It is
+  // read-only here and changed in the feed's own settings, which is where the
+  // rest of that panel lives — this screen says which feeds are competing and
+  // points at the control rather than duplicating it.
+  bool on_my_feed = 7;
+}
+
+// InterestFactor is how many of the CURRENT ranked picks cited one scoring term.
+//
+// The diagnostic the reasons could not give on their own. A reader can see why
+// one row is where it is; this says what is deciding the page — "37 of your 99
+// picks are here because of things you follow" is the sentence that turns a
+// suspicion about Pro Max into something checkable.
+message InterestFactor {
+  // term is the machine key from internal/rank: topic, entity, feed, fresh,
+  // corroboration, manual, volume, duplicate, negative, skipped, external,
+  // deliberate, smartplus. The client owns the label.
+  string term = 1;
+  int32 items = 2;
+}
+
+message GetInterestProfileRequest {}
+
+message GetInterestProfileResponse {
+  repeated InterestTopic topics = 1;
+  // entities INCLUDES the ones set to never. A thing the reader struck out has
+  // to stay visible or the correction cannot be undone — and an entity that
+  // vanishes when you remove it is indistinguishable from one the derivation
+  // dropped.
+  repeated InterestEntity entities = 2;
+  // feeds is the strongest few by affinity, not every subscription. The sidebar
+  // already lists them all; this is about which ones are winning the page.
+  repeated InterestFeed feeds = 3;
+  repeated InterestFactor factors = 4;
+  // ranked_count is how many picks are on the page.
+  int32 ranked_count = 5;
+  // factor_base is how many of those the factors were counted over, and it is
+  // what a factor line is OUT OF. Equal to ranked_count except on a page past
+  // the server's per-page ceiling — and separate from it because counting a
+  // numerator over one set and printing a denominator from another produced
+  // "103 of 102" on a screen whose whole claim is that its numbers check out.
+  int32 factor_base = 10;
+  // cold_start is true while there is too little reading for topics to mean
+  // anything (§18.4: roughly 50–100 engaged items). The screen says so rather
+  // than showing an empty list that looks like a fault.
+  bool cold_start = 6;
+  // entity_count, topic_count and feed_count are the totals BEFORE the response
+  // was truncated, so a capped list can say what it is a slice of.
+  //
+  // feed_count is the one that had to exist: `feeds` above is the strongest
+  // twelve, and a screen that counted the rows it received would report "12
+  // feeds competing" on an instance with forty-four — a summary line stating the
+  // size of its own display cap, on a screen whose entire claim is that its
+  // numbers can be checked.
+  int32 topic_count = 7;
+  int32 entity_count = 8;
+  int32 feed_count = 9;
+}
+
+// SteerInterestRequest turns the dial on exactly one thing.
+//
+// One target per call rather than a batch. Each is a deliberate act with
+// somebody watching for the result, the write is a single UPDATE, and a batch
+// would need a partial-failure story for no gain a reader can perceive.
+message SteerInterestRequest {
+  // Exactly one of topic_key or entity_name. Both set, or neither, is
+  // InvalidArgument — a request that means two things is not one the server
+  // should guess about.
+  //
+  // A TOPIC is addressed by its fingerprint and an ENTITY by its normalised
+  // name, and the asymmetry is the tables': an entity has a stable natural key
+  // and a cluster does not, so a cluster's identity has to be reconstructed from
+  // what it is made of.
+  string topic_key = 4;
+  string entity_name = 2;
+  SteerLevel level = 3;
+
+  // Field 1 was `topic_id`, removed before release. Steering by row id is
+  // unusable: every derivation regenerates them.
+  reserved 1;
+  reserved "topic_id";
+}
+
+message SteerInterestResponse {
+  // rebuilding is true when the change kicked off a re-derivation, which is the
+  // normal case. It exists so the screen can say the page will change shortly
+  // instead of leaving the reader to wonder whether the button did anything.
+  bool rebuilding = 1;
 }

@@ -3,6 +3,7 @@ package rank
 import (
 	"math"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -393,5 +394,79 @@ func TestScoringIsPure(t *testing.T) {
 	b := Score(item, sig, DefaultWeights(), now)
 	if a.Score != b.Score || len(a.Reasons) != len(b.Reasons) {
 		t.Error("two scorings of identical input disagree")
+	}
+}
+
+// The reader's dial scales the entity term and nothing else (0027).
+//
+// The narrow claim matters: a steer is an instruction about ONE judgement, and a
+// version of it that moved the whole score would silently re-weight freshness
+// and volume too — so a reader turning down a phrase would find the page had
+// reordered for reasons they did not ask about and cannot see.
+func TestEntityScaleMovesOnlyTheEntityTerm(t *testing.T) {
+	item := Item{
+		PublishedAt: hoursAgo(4), TopicScore: 0.5, Corroboration: 2,
+		Entities: []string{"Pro Max"},
+	}
+	sig := Signals{FeedAffinity: 0.6, VolumePerDay: 12, Mode: ModeFull}
+
+	at := func(scale float64) Result {
+		it := item
+		it.EntityScale = scale
+		return Score(it, sig, DefaultWeights(), now)
+	}
+	entityDelta := func(r Result) float64 {
+		for _, why := range r.Reasons {
+			if why.Term == "entity" {
+				return why.Delta
+			}
+		}
+		t.Fatal("no entity reason on an item that names a followed thing")
+		return 0
+	}
+
+	// Zero is "untouched", not "silence it". Every Item built before this field
+	// existed reads back as zero, and treating that literally would have removed
+	// the term from every row in the application.
+	base := at(0)
+	if got, want := entityDelta(base), entityDelta(at(1)); got != want {
+		t.Errorf("an unset scale gave %v, want the same %v as 1", got, want)
+	}
+
+	less, more := at(0.5), at(1.5)
+	if entityDelta(less) >= entityDelta(base) {
+		t.Error("less did not lower the entity term")
+	}
+	if entityDelta(more) <= entityDelta(base) {
+		t.Error("more did not raise it")
+	}
+
+	// Everything else is untouched, term by term. The whole-score comparison
+	// would pass while two terms moved in opposite directions.
+	for _, r := range []Result{less, more} {
+		for _, why := range r.Reasons {
+			if why.Term == "entity" {
+				continue
+			}
+			var was float64
+			for _, b := range base.Reasons {
+				if b.Term == why.Term {
+					was = b.Delta
+				}
+			}
+			if why.Delta != was {
+				t.Errorf("term %q moved from %v to %v; only entity may move",
+					why.Term, was, why.Delta)
+			}
+		}
+	}
+
+	// And the reason still says the thing by name. A steer that scored quietly
+	// would leave a row whose placement nobody can argue with, which is the one
+	// outcome §18.9 forbids.
+	for _, why := range less.Reasons {
+		if why.Term == "entity" && !strings.Contains(why.Text, "Pro Max") {
+			t.Errorf("entity reason lost the name: %q", why.Text)
+		}
 	}
 }

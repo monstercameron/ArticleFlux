@@ -406,7 +406,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	}
 	res.Entities = entities
 
-	topicSet, topicIDs, suppressed, cold, err := s.deriveTopics(ctx, sc, plus, engaged, vectors, now)
+	topicSet, topicStates, cold, err := s.deriveTopics(ctx, sc, plus, engaged, vectors, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: topics: %w", err)
 	}
@@ -417,7 +417,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	//
 	// Only now, and only reading what stage 1 wrote plus the deliberate acts.
 
-	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, topicIDs, suppressed, corpus, now)
+	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, topicStates, corpus, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: home ranking: %w", err)
 	}
@@ -810,15 +810,29 @@ func (s *Service) deriveDomainAffinity(ctx context.Context, sc store.Scope, enga
 	return len(out), nil
 }
 
+// topicState is what STORAGE knows about a cluster that the clustering does not:
+// its id, and the two corrections the reader has made to it.
+//
+// One struct rather than three parallel slices threaded through two signatures.
+// The slices are positional against res.Topics, and a fourth of them was the
+// point at which "index 7 of this one lines up with index 7 of that one" stopped
+// being checkable by reading.
+type topicState struct {
+	id         string
+	suppressed bool
+	// steer is the reader's dial, already clamped by the store. Never zero.
+	steer float64
+}
+
 // deriveTopics clusters what the reader engaged with.
 //
-// It returns a suppression flag per cluster, read back from storage rather than
-// recomputed: "not an interest" is a decision the reader made, it survives
-// derivation by design (see ReplaceTopics), and the only place it exists is the
-// database. Reading it back after the write is what lets THIS pass honour it
-// rather than the next one.
+// It returns the reader's corrections per cluster, read back from storage rather
+// than recomputed: "not an interest" and the steer dial are decisions the reader
+// made, they survive derivation by design (see ReplaceTopics), and the only place
+// they exist is the database. Reading them back after the write is what lets THIS
+// pass honour them rather than the next one.
 func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhancer, engaged []engagedItem,
-	vectors map[string]textvec.Vector, now time.Time) ([]topics.Topic, []string, []bool, bool, error) {
+	vectors map[string]textvec.Vector, now time.Time) ([]topics.Topic, []topicState, bool, error) {
 
 	docs := make([]topics.Doc, 0, len(engaged))
 	for _, e := range engaged {
@@ -857,34 +871,38 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhance
 	}
 
 	if err := s.repo.ReplaceTopics(ctx, sc, res.Topics); err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, false, err
 	}
 
 	stored, err := s.repo.Topics(ctx, sc)
 	if err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, false, err
 	}
-	suppressedBy := map[string]bool{}
-	// Stored ids, keyed the same way suppressions are, so a ranked row can record WHICH
-	// topic it matched.
+	// Keyed by top terms, which is how the reader's corrections survive a rebuild —
+	// and the stored id, so a ranked row can record WHICH topic it matched.
 	//
-	// It has to come from the readback because ids are generated inside ReplaceTopics —
-	// the in-memory topics.Topic has no id at all. Without this the ranking's topic_id was
-	// never written, `rank_topic` was empty on every row, and the client's cold-start band
-	// showed permanently: fourteen topics existed and the page still said it was learning.
-	idBy := map[string]string{}
+	// The id has to come from the readback because ids are generated inside
+	// ReplaceTopics — the in-memory topics.Topic has no id at all. Without this the
+	// ranking's topic_id was never written, `rank_topic` was empty on every row, and the
+	// client's cold-start band showed permanently: fourteen topics existed and the page
+	// still said it was learning.
+	stateBy := map[string]topicState{}
 	for _, row := range stored {
-		suppressedBy[topicKey(row.TopTerms)] = row.Suppressed
-		idBy[topicKey(row.TopTerms)] = row.ID
+		stateBy[topicKey(row.TopTerms)] = topicState{
+			id: row.ID, suppressed: row.Suppressed, steer: row.Steer,
+		}
 	}
-	flags := make([]bool, len(res.Topics))
-	ids := make([]string, len(res.Topics))
+	states := make([]topicState, len(res.Topics))
 	for i, t := range res.Topics {
-		key := topicKey(t.TopTerms)
-		flags[i] = suppressedBy[key]
-		ids[i] = idBy[key]
+		st, ok := stateBy[topicKey(t.TopTerms)]
+		if !ok {
+			// A cluster with no stored row is not a cluster with a dial set to
+			// zero. Anything unmatched gets the default rather than silence.
+			st.steer = store.SteerNormal
+		}
+		states[i] = st
 	}
-	return res.Topics, ids, flags, res.ColdStart, nil
+	return res.Topics, states, res.ColdStart, nil
 }
 
 // MaxLabelledTopics bounds how many topics get a Smart+ label per derivation.
@@ -993,19 +1011,15 @@ func (s *Service) labelledAlready(ctx context.Context, sc store.Scope) map[strin
 
 // topicKey matches an in-memory cluster to its stored row.
 //
-// The first three terms, the same fingerprint ReplaceTopics preserves renames
-// by. Using all of them would make the key change whenever the eighth-heaviest
-// term shifted, which happens constantly.
-func topicKey(terms []string) string {
-	if len(terms) > 3 {
-		terms = terms[:3]
-	}
-	return strings.ToLower(strings.Join(terms, "\x1f"))
-}
+// The same fingerprint ReplaceTopics preserves renames by, and the same one the
+// settings screen steers through — one definition, in the package that owns the
+// table, because three implementations of "which cluster is this" that agree by
+// coincidence is a correction landing on the wrong topic.
+func topicKey(terms []string) string { return store.TopicKey(terms) }
 
 // deriveHomeRanking is the precision stage.
 func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus Enhancer,
-	feeds []store.FeedAffinity, topicSet []topics.Topic, topicIDs []string, suppressed []bool,
+	feeds []store.FeedAffinity, topicSet []topics.Topic, topicStates []topicState,
 	corpus *textvec.Corpus, now time.Time) (int, error) {
 
 	// The candidate set is what recall produced: unread items from subscribed
@@ -1109,15 +1123,29 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			topicIdx, topicScore = -1, 0
 		}
 
+		// The reader's dial, applied AFTER the match test rather than before it
+		// (0027). "More of this" is an instruction about how much a match should
+		// count, not about what counts as a match: folding it in first would let a
+		// boosted topic claim items that share three words with it, and the reason
+		// line would then assert a match the reader can see is not there.
+		//
+		// Clamped back to 1, which keeps every term in rank.Score on the same 0..1
+		// scale its weights were calibrated against.
+		if topicIdx >= 0 && topicIdx < len(topicStates) {
+			topicScore = math.Min(1, topicScore*clampSteer(topicStates[topicIdx].steer))
+		}
+
 		published, _ := time.Parse(time.RFC3339Nano, it.PublishedAt)
 		st := stories[it.ID]
+		named, entityScale := namedIn(it.Title, followed)
 		rankItem := rank.Item{
 			ID:              it.ID,
 			SourceID:        it.SourceID,
 			PublishedAt:     published,
 			TopicScore:      topicScore,
 			TopicLabel:      topicLabelAt(topicSet, topicIdx),
-			Entities:        namedIn(it.Title, followed),
+			Entities:        named,
+			EntityScale:     entityScale,
 			TargetDomain:    host,
 			ManualWeight:    1,
 			Corroboration:   st.otherSources,
@@ -1134,7 +1162,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		// A suppressed topic is a strong negative across its whole cluster
 		// (§18.2), and it is precision-stage evidence: marking something "not an
 		// interest" is a deliberate act.
-		if topicIdx >= 0 && topicIdx < len(suppressed) && suppressed[topicIdx] {
+		if topicIdx >= 0 && topicIdx < len(topicStates) && topicStates[topicIdx].suppressed {
 			sig.NegativeAffinity = 1
 		}
 
@@ -1165,8 +1193,8 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		}
 		r = applyDeliberate(r, itemSignals[it.ID])
 		topicID := ""
-		if topicIdx >= 0 && topicIdx < len(topicIDs) {
-			topicID = topicIDs[topicIdx]
+		if topicIdx >= 0 && topicIdx < len(topicStates) {
+			topicID = topicStates[topicIdx].id
 		}
 		out = append(out, scoredItem{item: it, res: r, topicID: topicID})
 	}
@@ -1336,18 +1364,45 @@ func topicLabelAt(ts []topics.Topic, idx int) string {
 //
 // Labels are returned, not keys, because the caller puts them in a sentence a reader will
 // read: "about Android Auto, which you follow" — not "android auto".
-func namedIn(title string, followed []store.Entity) []string {
+//
+// The second return is the reader's dial over the matched names, as one multiplier for the
+// entity term (0027). The STRONGEST instruction wins rather than the average: an article
+// naming a thing the reader asked for more of is one they asked for more of, whatever else
+// the headline also mentions — and averaging would let a boost be cancelled by an unrelated
+// name that happened to be in the same title.
+func namedIn(title string, followed []store.Entity) ([]string, float64) {
 	if title == "" || len(followed) == 0 {
-		return nil
+		return nil, store.SteerNormal
 	}
 	lower := strings.ToLower(title)
 	var out []string
+	scale := 0.0
 	for _, e := range followed {
 		if strings.Contains(lower, e.Name) {
 			out = append(out, e.Label)
+			scale = math.Max(scale, clampSteer(e.Steer))
 		}
 	}
-	return out
+	if scale == 0 {
+		scale = store.SteerNormal
+	}
+	return out, scale
+}
+
+// clampSteer keeps a dial the store has not vetted inside the range rank was
+// calibrated for. Zero means "untouched", not "silence it" — see store.clampSteer,
+// which this deliberately mirrors rather than exports, since the two packages
+// disagree about nothing and a shared helper would put a UI concern in the scorer.
+func clampSteer(v float64) float64 {
+	switch {
+	case v <= 0:
+		return store.SteerNormal
+	case v < store.SteerMin:
+		return store.SteerMin
+	case v > store.SteerMax:
+		return store.SteerMax
+	}
+	return v
 }
 
 // SmartPlusHead is how many of the top candidates Smart+ is asked about.

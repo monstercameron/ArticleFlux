@@ -263,6 +263,10 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 			label      string
 			source     string
 			suppressed int
+			// steer is the reader's dial (0027). Preserved for exactly the reason
+			// suppressed is: it is an instruction, not a measurement, and one that
+			// expired at the next poll would be the same as not having the control.
+			steer float64
 		}
 		preserved := map[string]kept{}
 		// `llm` is preserved alongside `user`, and the reason is cost rather than intent.
@@ -277,21 +281,22 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 		// label follows the same rule a rename does, and for the same reason: it is
 		// expensive to produce and cheap to keep.
 		rows, err := tx.QueryContext(ctx,
-			`SELECT top_terms_json, label, label_source, suppressed FROM topics
+			`SELECT top_terms_json, label, label_source, suppressed, steer FROM topics
 			  WHERE user_id = ?
-			    AND (label_source IN ('user','llm') OR suppressed = 1)`, s.UserID)
+			    AND (label_source IN ('user','llm') OR suppressed = 1 OR steer <> 1.0)`, s.UserID)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var termsJSON, label, source string
 			var suppressed int
-			if err := rows.Scan(&termsJSON, &label, &source, &suppressed); err != nil {
+			var steer float64
+			if err := rows.Scan(&termsJSON, &label, &source, &suppressed, &steer); err != nil {
 				_ = rows.Close()
 				return err
 			}
 			preserved[fingerprint(termsJSON)] = kept{
-				label: label, source: source, suppressed: suppressed,
+				label: label, source: source, suppressed: suppressed, steer: steer,
 			}
 		}
 		// rows.Err() is not a formality here, and the failure it catches is
@@ -327,6 +332,7 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 				return err
 			}
 			label, source, suppressed := t.Label, t.LabelSource, 0
+			steer := SteerNormal
 			if source == "" {
 				source = "terms"
 			}
@@ -342,16 +348,19 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 					}
 				}
 				suppressed = k.suppressed
+				// Zero means a row written before 0027 — the default, not a dial
+				// somebody set to nothing. clampSteer says so in one place.
+				steer = clampSteer(k.steer)
 			}
 
 			id := idgen.New()
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO topics (id, user_id, label, label_source, centroid, dims,
-				                    top_terms_json, member_count, trend, suppressed,
+				                    top_terms_json, member_count, trend, suppressed, steer,
 				                    last_engaged_at, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				id, s.UserID, label, source, nil, len(t.Centroid), string(termsJSON),
-				len(t.Members), string(t.Trend), suppressed,
+				len(t.Members), string(t.Trend), suppressed, steer,
 				nullify(stampOrEmpty(t.LastEngagedAt)), now); err != nil {
 				return err
 			}
@@ -372,19 +381,54 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 
 // fingerprint identifies a cluster by its terms rather than its id, so a rename
 // survives a derivation that regenerates ids.
-//
-// The first three terms only. Using all of them would make the fingerprint
-// change whenever the eighth-heaviest term shifted, which happens constantly and
-// would silently drop the user's rename — the failure this exists to prevent.
 func fingerprint(termsJSON string) string {
 	var terms []string
 	if err := json.Unmarshal([]byte(termsJSON), &terms); err != nil {
 		return termsJSON
 	}
+	return TopicKey(terms)
+}
+
+// TopicKey is a cluster's identity ACROSS derivations.
+//
+// # A topic id is not a handle anything may hold
+//
+// `ReplaceTopics` deletes every row and reinserts with fresh ids, and derivations
+// run after every poll and shortly after any reading. So a topic id is valid for
+// as long as nothing has rebuilt — which is seconds, not long enough to hold a
+// settings screen open. A screen that steers by id works once and then answers
+// `not found` for every press after it, which is exactly how this was found.
+//
+// The first three terms only. Using all of them would make the key change
+// whenever the eighth-heaviest term shifted, which happens constantly and would
+// silently drop the reader's correction — the failure this exists to prevent.
+//
+// Exported because three packages need the same answer: this one preserves
+// corrections by it, the deriver lines up stored rows against fresh clusters by
+// it, and the reader service resolves a screen's stale reference by it.
+func TopicKey(terms []string) string {
 	if len(terms) > 3 {
 		terms = terms[:3]
 	}
 	return strings.ToLower(strings.Join(terms, "\x1f"))
+}
+
+// TopicByKey finds a cluster by its fingerprint, whatever id it wears today.
+//
+// ErrNotFound when the reader's engagement no longer produces that cluster at
+// all — which is a real answer rather than a stale-handle failure, and the one
+// case where "not found" is honest.
+func (r *ReaderRepo) TopicByKey(ctx context.Context, s Scope, key string) (TopicRow, error) {
+	rows, err := r.Topics(ctx, s)
+	if err != nil {
+		return TopicRow{}, err
+	}
+	for _, t := range rows {
+		if TopicKey(t.TopTerms) == key {
+			return t, nil
+		}
+	}
+	return TopicRow{}, ErrNotFound
 }
 
 func stampOrEmpty(t time.Time) string {
@@ -392,6 +436,43 @@ func stampOrEmpty(t time.Time) string {
 		return ""
 	}
 	return stamp(t)
+}
+
+// The steer dial's four positions (0027).
+//
+// Named rather than written as bare floats at the six places that read or write
+// them, because the whole set is a contract with the UI: a fifth value invented
+// at one call site is a preference no screen can render and no reader can undo.
+const (
+	// SteerMore is "more of this" — the topic or thing counts half again.
+	SteerMore = 1.5
+	// SteerNormal is the default: the derivation decides.
+	SteerNormal = 1.0
+	// SteerLess is "less of this", short of never.
+	SteerLess = 0.5
+	// SteerMin and SteerMax are the CHECK constraint, restated in Go so a bad
+	// value is refused before it reaches SQLite and becomes a failed transaction
+	// inside a background job.
+	SteerMin = 0.25
+	SteerMax = 2.0
+)
+
+// clampSteer turns a stored or supplied number into a legal dial position.
+//
+// Zero is the interesting case and it is why this exists: a row written before
+// 0027 reads back as 0.0, which is not "silence this" — it is "nobody has
+// touched the dial". Treating it literally would mute every topic on the instance
+// the moment the migration ran.
+func clampSteer(v float64) float64 {
+	switch {
+	case v <= 0:
+		return SteerNormal
+	case v < SteerMin:
+		return SteerMin
+	case v > SteerMax:
+		return SteerMax
+	}
+	return v
 }
 
 // TopicRow is a stored topic, as the UI reads it.
@@ -403,6 +484,9 @@ type TopicRow struct {
 	MemberCount int
 	Trend       string
 	Suppressed  bool
+	// Steer is the reader's dial: SteerMore, SteerNormal or SteerLess. Never
+	// zero — see clampSteer.
+	Steer float64
 }
 
 // Topics reads a user's topics, largest first.
@@ -411,7 +495,7 @@ func (r *ReaderRepo) Topics(ctx context.Context, s Scope) ([]TopicRow, error) {
 		return nil, ErrNoScope
 	}
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT id, label, label_source, top_terms_json, member_count, trend, suppressed
+		SELECT id, label, label_source, top_terms_json, member_count, trend, suppressed, steer
 		  FROM topics WHERE user_id = ?
 		 ORDER BY member_count DESC, label ASC`, s.UserID)
 	if err != nil {
@@ -425,10 +509,11 @@ func (r *ReaderRepo) Topics(ctx context.Context, s Scope) ([]TopicRow, error) {
 		var termsJSON string
 		var suppressed int
 		if err := rows.Scan(&t.ID, &t.Label, &t.LabelSource, &termsJSON,
-			&t.MemberCount, &t.Trend, &suppressed); err != nil {
+			&t.MemberCount, &t.Trend, &suppressed, &t.Steer); err != nil {
 			return nil, err
 		}
 		t.Suppressed = suppressed == 1
+		t.Steer = clampSteer(t.Steer)
 		_ = json.Unmarshal([]byte(termsJSON), &t.TopTerms)
 		out = append(out, t)
 	}
@@ -459,16 +544,25 @@ func (r *ReaderRepo) RenameTopic(ctx context.Context, s Scope, topicID, label st
 	})
 }
 
-// SuppressTopic marks a cluster as "not an interest", a strong negative across
-// its whole membership (§18.2).
-func (r *ReaderRepo) SuppressTopic(ctx context.Context, s Scope, topicID string, on bool) error {
+// SteerTopic records what the reader thinks of a cluster: how much it should
+// count, and whether it counts at all (§18.2, 0027).
+//
+// Both in one statement rather than a dial method beside a suppress method. The
+// four positions the UI offers are (steer, suppressed) PAIRS — "never" is
+// suppressed, and coming back from it also has to restore a weight — so two
+// calls would leave a window in which a topic is un-suppressed at whatever
+// multiplier it carried before, which is a state nobody asked for and the screen
+// cannot show.
+func (r *ReaderRepo) SteerTopic(ctx context.Context, s Scope, topicID string, steer float64, suppressed bool) error {
 	if !s.Valid() {
 		return ErrNoScope
 	}
+	steer = clampSteer(steer)
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE topics SET suppressed = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-			boolInt(on), stamp(time.Now().UTC()), topicID, s.UserID)
+			`UPDATE topics SET suppressed = ?, steer = ?, updated_at = ?
+			  WHERE id = ? AND user_id = ?`,
+			boolInt(suppressed), steer, stamp(time.Now().UTC()), topicID, s.UserID)
 		if err != nil {
 			return err
 		}
@@ -730,8 +824,13 @@ type Entity struct {
 	Mentions int
 	// Suppressed is the reader's instruction, and survives a rebuild.
 	Suppressed bool
-	FirstSeen  string
-	LastSeen   string
+	// Steer is the reader's dial (0027), and survives a rebuild for the same
+	// reason. Distinct from Weight, which is what the derivation measured: this
+	// screen has to be able to say "you follow this because you read it 37
+	// times" and "you asked for less of it" as two separate facts.
+	Steer     float64
+	FirstSeen string
+	LastSeen  string
 }
 
 // Tier values for a ranked row, matching home_ranking's CHECK constraint.
@@ -778,6 +877,9 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		suppressed := map[string]bool{}
+		// The dial (0027), carried across by name for the same reason `suppressed` is:
+		// it is the reader's instruction and nothing here can recompute it.
+		steer := map[string]float64{}
 		// first_seen_at is preserved too, and for a reason worth stating: it is the only
 		// column here that is not recomputable. The engagement log says when an item was
 		// read, not when a NAME was first noticed, so throwing it away on every rebuild
@@ -785,7 +887,7 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 		// "you have followed this since March".
 		firstSeen := map[string]string{}
 		rows, err := tx.QueryContext(ctx,
-			`SELECT name, suppressed, first_seen_at FROM entity_affinity WHERE user_id = ?`,
+			`SELECT name, suppressed, steer, first_seen_at FROM entity_affinity WHERE user_id = ?`,
 			s.UserID)
 		if err != nil {
 			return err
@@ -793,13 +895,15 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 		for rows.Next() {
 			var name, first string
 			var sup int
-			if err := rows.Scan(&name, &sup, &first); err != nil {
+			var st float64
+			if err := rows.Scan(&name, &sup, &st, &first); err != nil {
 				_ = rows.Close()
 				return err
 			}
 			if sup != 0 {
 				suppressed[name] = true
 			}
+			steer[name] = clampSteer(st)
 			firstSeen[name] = first
 		}
 		if err := rows.Err(); err != nil {
@@ -820,13 +924,17 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 			if f, ok := firstSeen[e.Name]; ok && f != "" {
 				first = f
 			}
+			st := SteerNormal
+			if v, ok := steer[e.Name]; ok {
+				st = clampSteer(v)
+			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO entity_affinity
-				  (user_id, name, label, kind, weight, mentions, suppressed,
+				  (user_id, name, label, kind, weight, mentions, suppressed, steer,
 				   first_seen_at, last_seen_at, computed_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 				s.UserID, e.Name, e.Label, e.Kind, e.Weight, e.Mentions,
-				boolInt(suppressed[e.Name]), first, now, now); err != nil {
+				boolInt(suppressed[e.Name]), st, first, now, now); err != nil {
 				return err
 			}
 		}
@@ -837,18 +945,35 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 // EntityAffinity returns the reader's strongest entities, best first.
 //
 // Suppressed rows are excluded: the caller asking "what does this reader follow" must not
-// be handed back the things they said they do not. SuppressEntity is how they come back.
+// be handed back the things they said they do not. SteerEntity is how they come back.
 func (r *ReaderRepo) EntityAffinity(ctx context.Context, s Scope, limit int) ([]Entity, error) {
+	return r.entities(ctx, s, limit, false)
+}
+
+// AllEntities returns the same list INCLUDING the suppressed rows.
+//
+// The one caller is the screen where a reader corrects the model, and it needs
+// them for a reason the ranking never does: a thing you told the reader you had
+// stopped counting has to stay visible, or "never" is indistinguishable from
+// "disappeared" and there is no control anywhere that brings it back.
+func (r *ReaderRepo) AllEntities(ctx context.Context, s Scope, limit int) ([]Entity, error) {
+	return r.entities(ctx, s, limit, true)
+}
+
+func (r *ReaderRepo) entities(ctx context.Context, s Scope, limit int, withSuppressed bool) ([]Entity, error) {
 	if !s.Valid() {
 		return nil, ErrNoScope
 	}
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	where := ` WHERE user_id = ? AND suppressed = 0`
+	if withSuppressed {
+		where = ` WHERE user_id = ?`
+	}
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT name, label, kind, weight, mentions, suppressed, first_seen_at, last_seen_at
-		  FROM entity_affinity
-		 WHERE user_id = ? AND suppressed = 0
+		SELECT name, label, kind, weight, mentions, suppressed, steer, first_seen_at, last_seen_at
+		  FROM entity_affinity`+where+`
 		 ORDER BY weight DESC, name
 		 LIMIT ?`, s.UserID, limit)
 	if err != nil {
@@ -861,27 +986,29 @@ func (r *ReaderRepo) EntityAffinity(ctx context.Context, s Scope, limit int) ([]
 		var e Entity
 		var sup int
 		if err := rows.Scan(&e.Name, &e.Label, &e.Kind, &e.Weight, &e.Mentions,
-			&sup, &e.FirstSeen, &e.LastSeen); err != nil {
+			&sup, &e.Steer, &e.FirstSeen, &e.LastSeen); err != nil {
 			return nil, err
 		}
 		e.Suppressed = sup != 0
+		e.Steer = clampSteer(e.Steer)
 		out = append(out, e)
 	}
 	return out, rows.Err()
 }
 
-// SuppressEntity records that the reader does not follow something.
+// SteerEntity records what the reader thinks of a named thing: how much it
+// should count, and whether it counts at all.
 //
 // An UPDATE rather than a DELETE, so the next derivation does not simply put it back —
 // which is what makes it an instruction rather than a gesture. §18.2: a model you can
-// correct is one you will trust.
-func (r *ReaderRepo) SuppressEntity(ctx context.Context, s Scope, name string, on bool) error {
+// correct is one you will trust. Both fields in one statement, for SteerTopic's reason.
+func (r *ReaderRepo) SteerEntity(ctx context.Context, s Scope, name string, steer float64, suppressed bool) error {
 	if !s.Valid() {
 		return ErrNoScope
 	}
 	res, err := r.db.Write.ExecContext(ctx,
-		`UPDATE entity_affinity SET suppressed = ? WHERE user_id = ? AND name = ?`,
-		boolInt(on), s.UserID, name)
+		`UPDATE entity_affinity SET suppressed = ?, steer = ? WHERE user_id = ? AND name = ?`,
+		boolInt(suppressed), clampSteer(steer), s.UserID, name)
 	if err != nil {
 		return err
 	}

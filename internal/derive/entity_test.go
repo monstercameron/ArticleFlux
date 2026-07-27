@@ -125,8 +125,8 @@ func TestSuppressedEntitiesStaySuppressedAcrossADerivation(t *testing.T) {
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatalf("RunReporting: %v", err)
 	}
-	if err := f.repo.SuppressEntity(f.ctx, f.scope, "android auto", true); err != nil {
-		t.Fatalf("SuppressEntity: %v", err)
+	if err := f.repo.SteerEntity(f.ctx, f.scope, "android auto", store.SteerNormal, true); err != nil {
+		t.Fatalf("SteerEntity: %v", err)
 	}
 
 	// Re-derive over the same evidence, which would otherwise put it straight back.

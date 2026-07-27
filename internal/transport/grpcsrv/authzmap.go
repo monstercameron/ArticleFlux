@@ -99,6 +99,10 @@ func DefaultPolicy() *authz.Map {
 		// article itself does not (TODO F34).
 		"ListFeeds", "ListItems", "GetItem", "GetItemRevisions", "ScrollLiveView", "Search",
 		"GetPrefs", "ListTags", "ListFolders", "ListNotes", "GetFeedSettings",
+		// GetInterestProfile is the ranked page explaining itself, and it says
+		// nothing the ranked page does not already say on every row. A reader who
+		// may read the feed may read why it looks like that.
+		"GetInterestProfile",
 	} {
 		m.Require(reader+method, authz.CapReadItems)
 	}
@@ -110,6 +114,11 @@ func DefaultPolicy() *authz.Map {
 	// write them could steer somebody else's ranked homepage by reading it.
 	for _, method := range []string{
 		"SetItemState", "MarkAllRead", "UndoMarkAllRead", "RecordEngagements",
+		// SteerInterest sits beside RecordEngagements for exactly its reason,
+		// and more sharply: engagements steer the ranking indirectly and this
+		// one writes the correction itself. A caller who may not write state may
+		// not decide what somebody else's front page is about.
+		"SteerInterest",
 	} {
 		m.Require(reader+method, authz.CapWriteState)
 	}
@@ -168,6 +177,15 @@ func DefaultPolicy() *authz.Map {
 	// CapReadDiagnostics belongs to superadmin alone.
 	m.Require(system+"ListLogs", authz.CapReadDiagnostics)
 	m.Require(system+"GetServerStats", authz.CapReadDiagnostics)
+
+	// The broadcast's music beds (§19). Authenticated, and nothing more: the
+	// tracks are the same four files for every reader and disclose nothing about
+	// anybody, so a capability here would be ceremony. Not Public, because the
+	// whole reason they come down the tunnel rather than from a static path is
+	// that this server has one authenticated door — making them the exception
+	// would give the arrangement away for nothing.
+	m.Require(system+"ListAudioTracks", authz.CapReadItems)
+	m.Require(system+"GetAudioTrack", authz.CapReadItems)
 
 	// --- events (streaming) ---------------------------------------------------
 	//
