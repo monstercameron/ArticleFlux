@@ -127,7 +127,7 @@ type Enhancer interface {
 	//
 	// Indexes rather than ids: what crosses the boundary is an ordinal (see
 	// llm.Candidate), so the caller's slice position is the only shared vocabulary.
-	RerankCandidates(ctx context.Context, cands []Candidate, prof ProfileHint, want int) ([]int, error)
+	RerankCandidates(ctx context.Context, cands []Candidate, prof ProfileHint, want int) ([]Pick, error)
 
 	// ExtractEntities names the brands, products and organisations in a set of
 	// headlines. Titles only — no bodies, no URLs, no dates.
@@ -156,6 +156,31 @@ type ProfileHint struct {
 type TopicHint struct {
 	Label string
 	Terms []string
+}
+
+// Pick is one item Smart+ promoted, and its reason for promoting it.
+//
+// # Why the reason travels with the index
+//
+// The first version returned bare indexes, and it shipped a row wearing a SMART+ badge whose
+// only explanation was a FREE-tier reason — "about NVIDIA, which you follow". That answers
+// "why is this on my feed" and not "why did the paid tier move it", which is the one question
+// the badge raises. A reader looking at that badge is being asked to believe the model earned
+// its money, with no evidence attached.
+//
+// So the model is asked to say what it saw. This is the one reason in the whole interest layer
+// that is not derived from arithmetic, and that is precisely why it has to be the model's own
+// words: it is describing its own judgement, and nothing else on this machine knows what that
+// judgement was.
+type Pick struct {
+	// Index is a position in the candidate slice the enhancer was given.
+	Index int
+	// Why is a short phrase in the model's words, or empty.
+	//
+	// OPTIONAL, and the caller must work without it. A reply that returns usable indexes and
+	// no reasons still promotes — losing the explanation is worth far less than losing the
+	// re-rank, and a provider that drops a field must not cost both.
+	Why string
 }
 
 // NamedEntity is one extracted brand, product or organisation.
@@ -1437,12 +1462,14 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 	// row — and both are exactly what a plausible-looking reply does when it drifts.
 	seen := make(map[int]bool, len(picks))
 	order := make([]int, 0, len(picks))
-	for _, i := range picks {
-		if i < 0 || i >= head || seen[i] {
+	why := make(map[int]string, len(picks))
+	for _, p := range picks {
+		if p.Index < 0 || p.Index >= head || seen[p.Index] {
 			continue
 		}
-		seen[i] = true
-		order = append(order, i)
+		seen[p.Index] = true
+		order = append(order, p.Index)
+		why[p.Index] = p.Why
 	}
 	if len(order) == 0 {
 		return nil
@@ -1451,8 +1478,25 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 	promoted := make([]scoredItem, 0, head)
 	tier := make(map[string]bool, len(order))
 	for _, i := range order {
-		promoted = append(promoted, out[i])
-		tier[out[i].item.ID] = true
+		sc := out[i]
+		// The model's own account of why it moved this, recorded as a reason on the row.
+		//
+		// Appended AFTER rank.Score sorted its reasons, so it lands last in the slice, and
+		// the client hoists it to the front on a promoted row (see contentReasonTerms).
+		// Delta is deliberately ZERO: Smart+ permutes the order and never touches a score,
+		// so a non-zero delta here would claim a contribution to a number it did not move
+		// — and `score` is what the debug tools and the tuning panel read.
+		//
+		// Skipped when the model gave no reason. A row with a badge and no explanation is
+		// worse than one with a badge and its free-tier reason, but far better than one
+		// carrying an empty clause.
+		if w := why[i]; w != "" {
+			sc.res.Reasons = append(sc.res.Reasons, rank.Reason{
+				Term: "smartplus", Text: w, Delta: 0,
+			})
+		}
+		promoted = append(promoted, sc)
+		tier[sc.item.ID] = true
 	}
 	// Everything the model did not pick keeps its free-tier order, behind the picks. Not
 	// dropped: the reader subscribed to these feeds and an item the model had no opinion

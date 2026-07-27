@@ -29,33 +29,57 @@ const minLangWords = 12
 
 // englishRatio is the share of tokens that must be English function words.
 //
-// Six percent. Ordinary English prose runs 25-40% function words; a Romance or
-// Germanic language shares a handful of short forms with English by coincidence
-// and lands in the low single digits. The gap is wide, so the exact cut matters
-// little — what matters is that a bar exists and that it is low enough not to
-// reject terse, jargon-heavy English, which is most of this corpus.
-const englishRatio = 0.06
+// Twelve percent. Ordinary English prose runs 30-40%; a headline runs far lower
+// because headlines drop articles and auxiliaries on purpose, and that is the
+// population this has to accept.
+//
+// **Raised from 6% after the e2e test caught a false negative on ordinary
+// English.** "Ransomware crew exploits a zero day in a VPN appliance. The
+// vulnerability allowed remote code execution before a patch shipped." matched
+// exactly one word in the original list — `the` — for a ratio of 4.8%, so it was
+// marked not-English and the category analyzer skipped it silently. The article
+// then had no category and nothing anywhere said why.
+//
+// The threshold was not the real defect; the LIST was (see below). Both moved,
+// and the ratio went UP rather than down because a bigger list makes real English
+// score much higher while a foreign text gains almost nothing.
+const englishRatio = 0.12
 
-// functionWords is a deliberately small, high-frequency English closed class.
+// functionWords is a high-frequency English closed class.
 //
 // Hand-written here rather than borrowed from `textvec.stopwords`, and the
 // difference is the point: that list is tuned to REMOVE noise from a topic
 // vocabulary and includes feed furniture like "read" and "more". This one is
-// evidence that a text IS English, so it holds only closed-class words no other
-// major language uses in the same forms.
+// evidence that a text IS English.
+//
+// **The original list omitted every word under four letters**, which is most of
+// the English closed class — `a`, `an`, `in`, `is`, `it`, `of`, `on`, `to`, `at`,
+// `by`, `as`, `be`. That was an accident inherited from thinking in terms of
+// `textvec`'s MinTermLen, which does not apply here because `textvec.Scan` does
+// no filtering. Their absence is what made a perfectly ordinary headline read as
+// foreign, and adding them roughly quadruples the score of real English text
+// while leaving German or Spanish where it was.
 var functionWords = map[string]bool{
-	"the": true, "and": true, "that": true, "have": true, "for": true,
-	"not": true, "with": true, "you": true, "this": true, "but": true,
-	"his": true, "from": true, "they": true, "she": true, "will": true,
-	"one": true, "all": true, "would": true, "there": true, "their": true,
-	"what": true, "out": true, "about": true, "who": true, "get": true,
-	"which": true, "when": true, "make": true, "can": true, "like": true,
-	"time": true, "just": true, "him": true, "know": true, "take": true,
-	"into": true, "your": true, "some": true, "could": true, "them": true,
-	"than": true, "then": true, "now": true, "only": true, "its": true,
-	"over": true, "also": true, "back": true, "after": true, "how": true,
-	"our": true, "well": true, "way": true, "even": true, "want": true,
-	"because": true, "these": true, "give": true, "most": true, "should": true,
+	// The short closed class, which carries most of the signal.
+	"a": true, "an": true, "as": true, "at": true, "be": true, "by": true,
+	"do": true, "he": true, "if": true, "in": true, "is": true, "it": true,
+	"of": true, "on": true, "or": true, "so": true, "to": true, "up": true,
+	"we": true, "was": true, "are": true, "for": true, "has": true, "had": true,
+	"his": true, "her": true, "its": true, "but": true, "not": true, "you": true,
+	"all": true, "can": true, "may": true, "new": true, "now": true, "one": true,
+	"out": true, "own": true, "the": true, "too": true, "who": true, "why": true,
+	// The rest.
+	"and": true, "that": true, "have": true, "with": true, "this": true,
+	"from": true, "they": true, "she": true, "will": true, "would": true,
+	"there": true, "their": true, "what": true, "about": true, "get": true,
+	"which": true, "when": true, "make": true, "like": true, "just": true,
+	"him": true, "know": true, "take": true, "into": true, "your": true,
+	"some": true, "could": true, "them": true, "than": true, "then": true,
+	"only": true, "over": true, "also": true, "after": true, "how": true,
+	"our": true, "well": true, "even": true, "want": true, "because": true,
+	"these": true, "most": true, "should": true, "been": true, "were": true,
+	"more": true, "said": true, "says": true, "while": true, "before": true,
+	"between": true, "under": true, "against": true, "through": true,
 }
 
 // langAnalyzer decides whether an item is English.
@@ -81,13 +105,15 @@ func (langAnalyzer) Version() int { return 1 }
 func (langAnalyzer) Analyze(_ context.Context, b *Batch) error {
 	for i := range b.Items {
 		it := b.Items[i]
-		// Title and summary rather than the body: they are always present, they
-		// are prose, and the body may be a code listing or a table, which has no
-		// function words in any language.
-		text := it.Title + ". " + it.Summary
-		if len(text) < 24 {
-			text += ". " + firstWords(it.Body, 60)
-		}
+		// Title, summary, AND a slice of the body — always, not only when the
+		// first two are short.
+		//
+		// Headlines are the worst possible input for this: they drop articles and
+		// auxiliaries by convention, so the very words that identify the language
+		// are the ones a headline omits. Adding sixty words of prose roughly
+		// doubles the evidence at no meaningful cost, and it is what stops a terse
+		// English headline from being read as foreign.
+		text := it.Title + ". " + it.Summary + ". " + firstWords(it.Body, 60)
 
 		toks := textvec.Scan(text)
 		if len(toks) < minLangWords {

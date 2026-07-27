@@ -76,6 +76,8 @@ func finance() classify.Label {
 			{Text: "savings account", Weight: 0.8},
 			{Text: "personal finance", Weight: 0.7},
 			{Text: "bond", Weight: 0.7},
+			{Text: "shares surge", Weight: 1.3},
+			{Text: "market debut", Weight: 1.2},
 		},
 		Exclude: []classify.Term{
 			{Text: "personal bond", Weight: 1.0},

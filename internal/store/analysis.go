@@ -47,6 +47,23 @@ type ItemAnalysis struct {
 	// LLMAt is zero when the free tier answered, which is the common case.
 	LLMAt    time.Time
 	LLMModel string
+
+	// The Smart+ verdict on the DEFAULT taxonomy (0024, §27.4b).
+	//
+	// Separate from CategoryScores because they are different kinds of fact and
+	// only one is recomputable: the scores are a pure function of the text and
+	// the lexicon, so any reader's assignment can be re-derived from them at
+	// labelling time, while the model's answer cost a request and will not be
+	// identical if asked again. Without these, the per-user labelling pass has no
+	// way to know a model was ever consulted and the spend buys nothing.
+	//
+	// All three are empty when the item was never escalated, when the model
+	// declined, or when it answered with a slug the taxonomy does not contain.
+	ModelPrimary   string
+	ModelSecondary []string
+	// ModelTags are PROPOSED tag slugs, not tags to apply — §27.3e is explicit
+	// that the classifier never creates a tag.
+	ModelTags []string
 }
 
 // AnalysisEntity is one brand, product or organisation the analyzer found.
@@ -84,8 +101,9 @@ func (r *ReaderRepo) UpsertAnalysis(ctx context.Context, rows []ItemAnalysis) er
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO item_analysis
 			    (item_id, analyzer_version, lexicon_hash, lang, genre, category_scores,
-			     keyphrases, entities, abstract, vector, analyzed_at, llm_at, llm_model)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+			     keyphrases, entities, abstract, vector, analyzed_at, llm_at, llm_model,
+			     model_primary, model_secondary, model_tags)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(item_id) DO UPDATE SET
 			    analyzer_version = excluded.analyzer_version,
 			    lexicon_hash     = excluded.lexicon_hash,
@@ -98,7 +116,10 @@ func (r *ReaderRepo) UpsertAnalysis(ctx context.Context, rows []ItemAnalysis) er
 			    vector           = excluded.vector,
 			    analyzed_at      = excluded.analyzed_at,
 			    llm_at           = excluded.llm_at,
-			    llm_model        = excluded.llm_model`)
+			    llm_model        = excluded.llm_model,
+			    model_primary    = excluded.model_primary,
+			    model_secondary  = excluded.model_secondary,
+			    model_tags       = excluded.model_tags`)
 		if err != nil {
 			return err
 		}
@@ -127,11 +148,21 @@ func (r *ReaderRepo) UpsertAnalysis(ctx context.Context, rows []ItemAnalysis) er
 				llmAt = stamp(row.LLMAt)
 			}
 
+			modelSecondary, err := nullifyJSON(row.ModelSecondary, len(row.ModelSecondary) == 0)
+			if err != nil {
+				return fmt.Errorf("store: UpsertAnalysis: item %s: model_secondary: %w", row.ItemID, err)
+			}
+			modelTags, err := nullifyJSON(row.ModelTags, len(row.ModelTags) == 0)
+			if err != nil {
+				return fmt.Errorf("store: UpsertAnalysis: item %s: model_tags: %w", row.ItemID, err)
+			}
+
 			if _, err := stmt.ExecContext(ctx,
 				row.ItemID, row.AnalyzerVersion, row.LexiconHash,
 				nullify(row.Lang), nullify(row.Genre), scores,
 				keyphrases, entities, nullify(row.Abstract), vector,
 				stamp(row.AnalyzedAt), llmAt, nullify(row.LLMModel),
+				nullify(row.ModelPrimary), modelSecondary, modelTags,
 			); err != nil {
 				return fmt.Errorf("store: UpsertAnalysis: item %s: %w", row.ItemID, err)
 			}
@@ -235,7 +266,8 @@ func (r *ReaderRepo) AnalysisByIDs(ctx context.Context, itemIDs []string) (map[s
 
 	rows, err := r.db.Read.QueryContext(ctx, `
 		SELECT item_id, analyzer_version, lexicon_hash, lang, genre, category_scores,
-		       keyphrases, entities, abstract, vector, analyzed_at, llm_at, llm_model
+		       keyphrases, entities, abstract, vector, analyzed_at, llm_at, llm_model,
+		       model_primary, model_secondary, model_tags
 		  FROM item_analysis
 		 WHERE item_id IN (`+placeholders(len(itemIDs))+`)`, args...)
 	if err != nil {
@@ -260,13 +292,27 @@ func scanAnalysis(rows *sql.Rows) (ItemAnalysis, error) {
 		row                             ItemAnalysis
 		lang, genre, abstract, llmModel sql.NullString
 		keyphrases, entities, llmAt     sql.NullString
+		modelPrimary                    sql.NullString
+		modelSecondary, modelTags       sql.NullString
 		vector                          []byte
 		scores, analyzedAt              string
 	)
 	if err := rows.Scan(&row.ItemID, &row.AnalyzerVersion, &row.LexiconHash,
 		&lang, &genre, &scores, &keyphrases, &entities, &abstract, &vector,
-		&analyzedAt, &llmAt, &llmModel); err != nil {
+		&analyzedAt, &llmAt, &llmModel,
+		&modelPrimary, &modelSecondary, &modelTags); err != nil {
 		return ItemAnalysis{}, err
+	}
+	row.ModelPrimary = modelPrimary.String
+	if modelSecondary.Valid {
+		if err := json.Unmarshal([]byte(modelSecondary.String), &row.ModelSecondary); err != nil {
+			return ItemAnalysis{}, err
+		}
+	}
+	if modelTags.Valid {
+		if err := json.Unmarshal([]byte(modelTags.String), &row.ModelTags); err != nil {
+			return ItemAnalysis{}, err
+		}
 	}
 
 	row.Lang = lang.String

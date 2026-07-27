@@ -118,6 +118,32 @@ type Analysis struct {
 	// Vector is the item's TERM-FREQUENCY vector — not TF-IDF. See the note on
 	// vectorAnalyzer for why, and for what it means for internal/derive.
 	Vector textvec.Vector
+
+	// --- filled only by the shared model read (§27.4b), zero otherwise -------
+
+	// Abstract is a one-line description. The only field here with no free-tier
+	// equivalent, which is why its contributor has the lowest priority: it is the
+	// one that is allowed to be absent.
+	Abstract string
+
+	// ModelTags are tag slugs the model proposed. Kept separate from anything the
+	// deterministic pass produced because they are a SUGGESTION — the classifier
+	// never creates a tag (§27.3e), so the per-user pass matches these against a
+	// vocabulary the reader can already see and discards the rest.
+	ModelTags []string
+
+	// Confidence is the model's own number. Stored, shown to nobody, and used for
+	// nothing except breaking a tie between two labels it returned itself —
+	// §11.2's rule that a number a model assigns to its own answer is not
+	// evidence.
+	Confidence float64
+
+	// ModelUnsure records that the model looked at this article and declined.
+	//
+	// Distinct from "the model never saw it", which is the same absence of an
+	// answer with the opposite meaning: one is settled and the other is pending.
+	// Without this the retry sweep would pay for the same article on every pass.
+	ModelUnsure bool
 }
 
 // Batch is a poll's worth of items and their in-progress analyses.

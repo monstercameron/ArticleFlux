@@ -57,6 +57,11 @@ func science() classify.Label {
 			{Text: "control group", Weight: 1.4},
 			{Text: "research paper", Weight: 1.4},
 			{Text: "cern", Weight: 1.6},
+			// Documented in space.go's own comment as science's primary
+			// weight for the term — it was never actually added here.
+			{Text: "black hole", Weight: 1.8},
+			{Text: "gravitational lensing", Weight: 1.8},
+			{Text: "cosmology", Weight: 1.3},
 			{Text: "study finds", Weight: 1.6},
 			{Text: "sample size", Weight: 1.2},
 			{Text: "physicist", Weight: 1.2},

@@ -80,6 +80,18 @@ func health() classify.Label {
 			{Text: "nurse", Weight: 0.8},
 			{Text: "wellness", Weight: 0.7},
 			{Text: "supplement", Weight: 0.6},
+			// Named diseases the shipped list never carried: the category had
+			// broad chronic-condition vocabulary (cancer, diabetes) but no
+			// outbreak/infectious-disease names, which is a large share of
+			// real health coverage in a general feed.
+			{Text: "measles", Weight: 1.5},
+			{Text: "ebola", Weight: 1.6},
+			{Text: "malaria", Weight: 1.4},
+			{Text: "tuberculosis", Weight: 1.4},
+			{Text: "hepatitis", Weight: 1.4},
+			{Text: "monkeypox", Weight: 1.5},
+			{Text: "norovirus", Weight: 1.3},
+			{Text: "superbug", Weight: 1.3},
 			{Text: "stroke", Weight: 1.3, Requires: []string{
 				"patient", "brain", "hospital", "symptom", "artery", "blood clot", "cardiac",
 			}},

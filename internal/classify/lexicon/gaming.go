@@ -83,6 +83,8 @@ func gaming() classify.Label {
 			{Text: "mod", Weight: 0.9, Requires: []string{
 				"game", "steam workshop", "modding", "patch", "nexus mods", "community",
 			}},
+			{Text: "games", Weight: 0.6},
+			{Text: "gaming", Weight: 0.6},
 		},
 		Exclude: []classify.Term{
 			{Text: "pressure valve", Weight: 2.0},

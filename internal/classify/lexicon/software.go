@@ -118,6 +118,47 @@ func software() classify.Label {
 				"golang", "goroutine", "compiler", "kubernetes", "docker",
 				"git", "package", "module", "api", "gopher",
 			}},
+
+			// `windows` unguarded would fire on "a window of opportunity" and
+			// literal house windows, the same shape of collision as
+			// java/rust/python above — guarded on the companions that only
+			// show up when the OS is actually the subject.
+			{Text: "windows", Weight: 1.0, Requires: []string{
+				"microsoft", "windows 11", "windows 10", "pc", "laptop",
+				"insider preview", "start menu", "windows update",
+			}},
+			{Text: "operating system", Weight: 1.0},
+			{Text: "app store", Weight: 0.9},
+			{Text: "mobile app", Weight: 0.8},
+			{Text: "windows update", Weight: 1.0},
+			{Text: "software", Weight: 0.6},
+			{Text: "ubuntu", Weight: 1.3},
+			{Text: "proxmox", Weight: 1.4},
+			{Text: "gimp", Weight: 1.3},
+			{Text: "google chrome", Weight: 1.2},
+			{Text: "self-hosted", Weight: 0.9},
+			{Text: "vulkan", Weight: 1.3},
+			{Text: "postgresql", Weight: 1.8},
+			{Text: "vmware", Weight: 1.3},
+			{Text: "dns", Weight: 0.8},
+			{Text: "firefox", Weight: 1.3},
+			{Text: "mozilla", Weight: 1.1},
+			{Text: "free software foundation", Weight: 1.6},
+			{Text: "fsf", Weight: 1.2},
+
+			// Programming-language and dev-topic names the shipped list never
+			// carried, beyond the five it already guards (go/rust/python/
+			// java/swift). This feed carries a steady stream of Hacker-News
+			// style posts about exactly these.
+			{Text: "haskell", Weight: 1.4},
+			{Text: "functional programming", Weight: 1.6},
+			{Text: "unix", Weight: 1.1},
+			{Text: "clojure", Weight: 1.4},
+			{Text: "scala", Weight: 1.2},
+			{Text: "perl", Weight: 1.3},
+			{Text: "zig", Weight: 1.4},
+			{Text: "parquet", Weight: 1.3},
+			{Text: "grapheneos", Weight: 1.4},
 		},
 		Exclude: []classify.Term{
 			// Rust Belt manufacturing and Midwest politics, not the language.

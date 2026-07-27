@@ -74,6 +74,10 @@ func sport() classify.Label {
 			{Text: "scoreboard", Weight: 0.7},
 			{Text: "coach", Weight: 0.5},
 			{Text: "arena", Weight: 0.5},
+			{Text: "tour de france", Weight: 2.0},
+			{Text: "nba", Weight: 0.9},
+			{Text: "nfl", Weight: 0.9},
+			{Text: "mlb", Weight: 0.8},
 		},
 		MinScore: 0,
 		Prompt: "Assign for competitive sport: fixtures, results, transfers, athletes. Not for a " +

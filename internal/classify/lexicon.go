@@ -163,6 +163,23 @@ type compiledRegex struct {
 // Labels returns the compiled label set, in the order it was compiled.
 func (lx *Lexicon) Labels() []Label { return lx.labels }
 
+// Knows reports whether an n-gram is anything this lexicon looks for — a term or
+// a guard, positive or negative.
+//
+// It exists for the vocabulary miner (cmd/classifyprobe -mine), whose whole job
+// is to find the words that appear in articles the classifier could not place and
+// that nothing in the lexicon is watching for. Without this, "which of these
+// terms are new" has to be reimplemented against the authored strings, and it
+// would get the normalisation subtly wrong — the miner would keep proposing terms
+// that are already present in a different surface form.
+func (lx *Lexicon) Knows(ngram string) bool {
+	if lx == nil {
+		return false
+	}
+	_, ok := lx.wanted[normalise(ngram)]
+	return ok
+}
+
 // Len reports how many labels are in the set.
 func (lx *Lexicon) Len() int {
 	if lx == nil {

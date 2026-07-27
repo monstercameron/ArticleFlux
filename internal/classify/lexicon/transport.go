@@ -74,6 +74,16 @@ func transport() classify.Label {
 			{Text: "ev", Weight: 0.8},
 			{Text: "commute", Weight: 0.6},
 			{Text: "taxi", Weight: 0.5},
+
+			// Chinese EV makers: this feed carries a dedicated slice of
+			// China-EV coverage, and none of these brand names have any
+			// competing common-word reading, so they need no guard.
+			{Text: "xpeng", Weight: 1.4},
+			{Text: "byd", Weight: 1.4},
+			{Text: "li auto", Weight: 1.4},
+			{Text: "leapmotor", Weight: 1.4},
+			{Text: "nio", Weight: 1.3},
+			{Text: "avatr", Weight: 1.3},
 		},
 		MinScore: 0,
 		Prompt: "Assign for how people and goods move: vehicles, transit systems, aviation, " +

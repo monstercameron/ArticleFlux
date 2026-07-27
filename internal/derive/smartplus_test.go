@@ -19,7 +19,13 @@ import (
 // to produce on demand.
 type fakePlus struct {
 	// rerank returns these indexes. A nil slice with no error means "no usable ids".
+	// rerank stays a plain index list even though the interface returns []Pick, because
+	// almost every test here cares about ORDER and not about reasons. RerankCandidates
+	// converts, attaching `why` to each — so a test that wants a reason sets one field.
 	rerank []int
+	// why is the promotion reason attached to every pick. Empty means the model returned
+	// none, which is the path that has to keep promoting anyway.
+	why string
 	// rerankErr, entityErr and labelErr simulate a model that is down, unconfigured or
 	// rate-limited — all of which must leave the free-tier answer intact.
 	rerankErr error
@@ -34,13 +40,17 @@ type fakePlus struct {
 	sawTitles  []string
 }
 
-func (f *fakePlus) RerankCandidates(_ context.Context, cands []Candidate, prof ProfileHint, _ int) ([]int, error) {
+func (f *fakePlus) RerankCandidates(_ context.Context, cands []Candidate, prof ProfileHint, _ int) ([]Pick, error) {
 	f.rerankCalls++
 	f.sawProfile = prof
 	if f.rerankErr != nil {
 		return nil, f.rerankErr
 	}
-	return f.rerank, nil
+	picks := make([]Pick, 0, len(f.rerank))
+	for _, i := range f.rerank {
+		picks = append(picks, Pick{Index: i, Why: f.why})
+	}
+	return picks, nil
 }
 
 func (f *fakePlus) ExtractEntities(_ context.Context, titles []string) ([]NamedEntity, error) {

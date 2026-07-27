@@ -75,6 +75,10 @@ func business() classify.Label {
 			{Text: "stock price", Weight: 0.7},
 			{Text: "brand", Weight: 0.5},
 			{Text: "retailer", Weight: 0.7},
+			{Text: "tariff", Weight: 1.1},
+			{Text: "tariffs", Weight: 1.1},
+			{Text: "data center", Weight: 1.0},
+			{Text: "business", Weight: 0.6},
 			{Text: "meta", Weight: 1.2, Requires: []string{
 				"facebook", "instagram", "whatsapp", "zuckerberg", "oculus",
 				"threads", "quest", "reality labs", "meta platforms",
