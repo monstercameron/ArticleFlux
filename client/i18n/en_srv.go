@@ -82,6 +82,21 @@ func init() {
 		"unsupportedLanguage":   "“{locale}” is not one of the offered languages",
 		"alreadySourceLanguage": "the interface is already in English",
 
+		// --- sudo mode (§7.3)
+		//
+		// A password confirmation in front of the few actions that change who can
+		// get in. Each of these is a refusal the reader can act on, which is the
+		// bar for having its own string: "sign in first" and "that password is
+		// wrong" lead to different next moves, and one word for both would send
+		// somebody to the wrong one.
+		"sudoRequired":    "this needs your password again",
+		"noSession":       "sign in first",
+		"badPassword":     "that password is not right",
+		"tooManyAttempts": "too many attempts; wait a minute and try again",
+		// Said when a NEW password is refused rather than when an old one is
+		// wrong, so it names the requirement instead of the failure.
+		"weakPassword": "choose a longer password, or one that is not in the known-password list",
+
 		// --- an instance built without the optional wiring
 		"noObservability": "observability not wired",
 		"noLogBuffer":     "log buffer not wired",
