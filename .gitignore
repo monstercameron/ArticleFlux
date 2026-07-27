@@ -20,6 +20,12 @@
 # the database.
 /favicon-cache/
 
+# Proxied article images (§10.1a). Same privacy class as speech-cache: every
+# file in here is an image from something the reader opened, keyed by URL hash,
+# so the directory listing alone is a reading history. It is also unbounded and
+# regenerable, which is the other half of why it is not source.
+/asset-cache/
+
 # OPML exports. Not a secret, but a complete list of what someone reads is the
 # most personal file in a feed reader after the database itself.
 *.opml
