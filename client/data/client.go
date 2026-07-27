@@ -15,7 +15,9 @@ package data
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -24,30 +26,68 @@ import (
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
+	"github.com/monstercameron/ArticleFlux/client/outbox"
+	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
-// ConnState is what the always-visible indicator shows.
-//
-// It exists because a reader that has silently stopped receiving looks exactly
-// like a quiet news day, and those two must never be confusable.
-type ConnState string
+// phase is what the TRANSPORT is doing, which is only one of the four inputs to
+// what the reader is told (§20.19). Kept separate from ConnState because the
+// other three inputs — the browser's network status, a terminal refusal, and the
+// grace period below — can all outrank it, and a single field would have to be
+// overwritten by whichever of them spoke last.
+type phase int
 
 const (
-	Connecting ConnState = "connecting"
-	Live       ConnState = "live"
-	Down       ConnState = "down"
+	phaseConnecting phase = iota
+	phaseReady
+	phaseFailed
 )
+
+// connectingGrace is how long a redial is allowed to be invisible.
+//
+// A server restart reconnects in about half a second. Painting "connecting" for
+// it converts an event nobody needed to see into a flicker on every deploy, so
+// the indicator lags the transport ON THE WAY DOWN only. There is no grace in
+// the other direction: Live and Blocked paint at once, because delaying good
+// news, or a remedy someone has to act on, is only ever confusing.
+const connectingGrace = time.Second
 
 // Client wraps the tunnel connection.
 type Client struct {
 	conn   *grpc.ClientConn
 	reader pb.ReaderServiceClient
 	system pb.SystemServiceClient
+	auth   pb.AuthServiceClient
+	smart  pb.SmartServiceClient
 
-	state   ConnState
-	onState func(ConnState)
+	// pending holds writes made while the connection was not working, so an
+	// outage delays them instead of discarding them (§20.19.8). Its own lock —
+	// it is touched by click handlers and by the drain, and neither has anything
+	// to say about the connection state mu guards.
+	pending *outbox.Queue
+
+	// mu guards everything below it. The connection is written from three
+	// places that do not coordinate — the Watch goroutine, every RPC's
+	// completion, and the browser's own online/offline callbacks — and in wasm
+	// that is a single-threaded scheduler where the lock is nearly free. Nearly
+	// free and correct beats reasoning about which callbacks can interleave.
+	mu       sync.Mutex
+	raw      phase
+	offline  bool
+	blocked  Reason
+	shown    ConnState
+	gen      uint64
+	attempts int
+	failedAt time.Time
+	// Session health, for the Settings screen (§20.19.10). Cheap enough to keep
+	// always: three fields, updated on a transition that happens seconds apart
+	// at worst.
+	reconnects int
+	downtime   time.Duration
+	downAt     time.Time
+	onState    func(ConnState)
 }
 
 // TunnelURL derives the WebSocket endpoint from the page origin.
@@ -67,32 +107,34 @@ func TunnelURL(origin string) string {
 	}
 }
 
-// How the tunnel comes back.
+// How the client finds out the connection is dead (§20.19.3).
 //
-// This is a self-hosted reader: the server is a box in someone's house that gets
-// restarted, updated, suspended with the laptop lid, and moved between networks,
-// while the tab stays open for days. Giving up is never the right answer, so
-// there is no attempt limit anywhere here — the connection retries for as long
-// as the page is open, and the only thing that changes is how often.
+// There are two keepalives in this system and they answer different questions.
+// The server's WebSocket ping (30s/90s, internal/app) answers "can the server
+// reclaim this slot?", and the browser replies to it in its own stack — no
+// JavaScript, no wasm, no application timer — so the SERVER always finds out.
+// These constants are the other one, and they exist because the client
+// otherwise never does.
 //
-// The shape: fast enough that a server restart is invisible (half a second, then
-// a second, then two), capped low enough that coming back from a lid-close or a
-// changed network is a few seconds' wait rather than a couple of minutes. gRPC's
-// own default caps at 120s, which is correct for a datacentre client with
-// thousands of peers and wrong for one browser tab and one server — a reader who
-// opens the laptop should not have to reload the page because the backoff
-// happens to be two minutes into a wait.
+// The failure they catch is a half-open socket: a CGNAT reclaim, a VPN drop, a
+// laptop's Wi-Fi vanishing without an RST. No FIN, no close event, so the
+// browser's WebSocket stays open and gRPC stays READY, and the indicator reports
+// a live connection over a socket that has been dead for an hour. That is
+// precisely the "silently disconnected looks like a quiet news day" failure the
+// indicator exists to prevent, and it was the one case it could not see.
 //
-// Jitter stays on. There is usually one client, so a thundering herd is not the
-// risk; a phone and a laptop both waking to the same Wi-Fi and hammering the
-// same lock-step schedule is.
-const (
-	reconnectInitial  = 500 * time.Millisecond
-	reconnectMax      = 20 * time.Second
-	reconnectFactor   = 1.6
-	reconnectJitter   = 0.2
-	reconnectMinTries = 5 * time.Second
-)
+//	30s + 10s ⇒ the truth within 40 seconds, worst case.
+//
+// **These may not ship without the server's KeepaliveEnforcementPolicy**, which
+// is why the numbers are not written here: both ends read them from
+// `internal/connpolicy`, which holds the invariant between them and a test that
+// fails when someone breaks it. grpctunnel sets PermitWithoutStream, which is
+// the whole point — an idle tunnel is exactly when a dead one goes unnoticed —
+// but gRPC servers default to MinTime 5m and PermitWithoutStream false, and a
+// client pinging an idle connection against those defaults collects two ping
+// strikes and is sent GOAWAY ENHANCE_YOUR_CALM. It reconnects, pings, and is
+// kicked again. Enabling this half alone converts a silent bug into a visible
+// flap every sixty seconds.
 
 // Dial opens the tunnel.
 //
@@ -104,8 +146,10 @@ const (
 // it is being established (see WaitForReady). Watch is what turns the underlying
 // transport's state into something the reader can see.
 func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Client, error) {
-	c := &Client{state: Connecting, onState: onState}
-	c.notify(Connecting)
+	c := &Client{shown: Connecting, raw: phaseConnecting, onState: onState}
+	if onState != nil {
+		onState(Connecting)
+	}
 
 	conn, err := grpctunnel.DialContext(ctx, tunnelURL,
 		// The transport is the WebSocket; TLS is the page's, not gRPC's. Asking
@@ -133,17 +177,30 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 		// the indicator already showing why. The two long user-initiated calls
 		// opt back out — see Refresh and Subscribe.
 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
+		// The credential rides on every call from here, and a rejected one is
+		// noticed in one place. See client/data/auth.go.
+		grpc.WithUnaryInterceptor(authInterceptor),
+		// The only thing that can notice a socket the browser still believes in.
+		// Pairs with the server's KeepaliveEnforcementPolicy — see the constants.
+		grpctunnel.WithTunnelKeepalive(connpolicy.ClientInterval, connpolicy.ClientTimeout),
 	)
 	if err != nil {
 		// A dial error here is a configuration error — a target gRPC cannot
 		// parse, or an option this build rejects — not an unreachable server.
 		// Retrying it would loop on something no amount of waiting fixes.
-		c.notify(Down)
+		c.setPhase(phaseFailed)
 		return nil, err
 	}
 	c.conn = conn
 	c.reader = pb.NewReaderServiceClient(conn)
 	c.system = pb.NewSystemServiceClient(conn)
+	c.auth = pb.NewAuthServiceClient(conn)
+	c.smart = pb.NewSmartServiceClient(conn)
+	// Writes that outlived the last tab. Restored BEFORE the connection is
+	// asked for, so a reader who closed the laptop mid-outage and opened it the
+	// next morning has their marks replayed by the first recovery rather than
+	// discovering they were never saved.
+	c.loadOutbox()
 	// Not Live: the socket is not up yet, and saying it is would make the
 	// indicator's one job — never let "silently disconnected" look like "quiet
 	// news day" — a lie in the other direction. Watch reports what is true.
@@ -173,11 +230,9 @@ func (c *Client) Watch(ctx context.Context, onRecover func()) {
 		s := c.conn.GetState()
 		switch s {
 		case connectivity.Ready:
-			if c.state != Live {
-				c.notify(Live)
-				if onRecover != nil {
-					onRecover()
-				}
+			recovered := c.setPhase(phaseReady)
+			if recovered && onRecover != nil {
+				onRecover()
 			}
 		case connectivity.Idle:
 			// Idle is not broken — it is gRPC waiting to be asked. Nothing will
@@ -186,13 +241,9 @@ func (c *Client) Watch(ctx context.Context, onRecover func()) {
 			// reader a stale screen. Ask.
 			c.conn.Connect()
 		case connectivity.Connecting:
-			if c.state != Connecting {
-				c.notify(Connecting)
-			}
+			c.setPhase(phaseConnecting)
 		case connectivity.TransientFailure, connectivity.Shutdown:
-			if c.state != Down {
-				c.notify(Down)
-			}
+			c.setPhase(phaseFailed)
 		}
 		// Blocks until the state is no longer s, and returns false only when
 		// ctx ends — which is the page going away.
@@ -202,15 +253,245 @@ func (c *Client) Watch(ctx context.Context, onRecover func()) {
 	}
 }
 
-func (c *Client) notify(s ConnState) {
-	c.state = s
-	if c.onState != nil {
-		c.onState(s)
+// setPhase records what the transport is doing and repaints if that changed
+// what the reader should be told. It reports whether this was a RECOVERY — a
+// transition into a working connection from one that was not — which is the
+// moment everything on screen became stale.
+func (c *Client) setPhase(p phase) (recovered bool) {
+	c.mu.Lock()
+	if c.raw == p {
+		c.mu.Unlock()
+		return false
+	}
+	was := c.raw
+	c.raw = p
+	c.gen++
+	gen := c.gen
+
+	switch p {
+	case phaseFailed:
+		// Each arrival here is one failed connection attempt, which is what the
+		// countdown counts. Stamped rather than timed: the estimate has to be
+		// computed at render time, and a render can happen at any point in the
+		// wait.
+		c.attempts++
+		c.failedAt = time.Now()
+	case phaseReady:
+		c.attempts = 0
+		// A working call is proof the refusal has lifted — a fresh login over
+		// the same connection is exactly this.
+		c.blocked = ReasonNone
+		// Count the recovery and bank the outage (§20.19.10). "It feels flaky"
+		// is unfalsifiable without these, and a self-hosted app has no
+		// dashboard behind it: one reconnect an hour is a network, forty is a
+		// bug, and nothing could previously tell them apart.
+		if was != phaseConnecting || !c.downAt.IsZero() {
+			c.reconnects++
+		}
+		if !c.downAt.IsZero() {
+			c.downtime += time.Since(c.downAt)
+			c.downAt = time.Time{}
+		}
+	}
+	if p != phaseReady && was == phaseReady {
+		c.downAt = time.Now()
+	}
+
+	// The grace period, and the one place the indicator is allowed to lag the
+	// transport. Only on the way out of a working connection: everything else
+	// paints at once.
+	delay := time.Duration(0)
+	if p == phaseConnecting && c.shown == Live {
+		delay = connectingGrace
+	}
+	c.mu.Unlock()
+
+	if delay == 0 {
+		c.publish()
+	} else {
+		// If the redial lands inside the grace period the generation has moved
+		// on and this fires into nothing, which is the flicker not happening.
+		time.AfterFunc(delay, func() {
+			c.mu.Lock()
+			stale := c.gen != gen
+			c.mu.Unlock()
+			if !stale {
+				c.publish()
+			}
+		})
+	}
+	return p == phaseReady && was != phaseReady
+}
+
+// publish resolves the four inputs into one state and tells the UI, if it has
+// changed. The callback is invoked OUTSIDE the lock: it hops to the render
+// thread through ui.PostAsync, and holding a mutex across that is how a UI
+// framework and a transport deadlock each other.
+func (c *Client) publish() {
+	c.mu.Lock()
+	s := c.resolveLocked()
+	if s == c.shown {
+		c.mu.Unlock()
+		return
+	}
+	c.shown = s
+	fn := c.onState
+	c.mu.Unlock()
+	if fn != nil {
+		fn(s)
 	}
 }
 
+// resolveLocked is the precedence order, and the order is the argument.
+//
+// Blocked outranks everything: a reader whose session has expired does not need
+// to know the socket is healthy, they need the sign-in button, and a redial that
+// succeeds must not overwrite that with "connected" over an app that cannot load
+// a single article. Offline outranks the transport for the same reason in
+// reverse — "can't reach the server" sends someone to check a server that is
+// fine.
+func (c *Client) resolveLocked() ConnState {
+	switch {
+	case c.blocked != ReasonNone:
+		return Blocked
+	case c.offline:
+		return Offline
+	}
+	switch c.raw {
+	case phaseReady:
+		return Live
+	case phaseFailed:
+		return Down
+	default:
+		return Connecting
+	}
+}
+
+// block records a refusal no amount of retrying will lift (§20.19.6).
+func (c *Client) block(r Reason) {
+	c.mu.Lock()
+	if c.blocked == r {
+		c.mu.Unlock()
+		return
+	}
+	c.blocked = r
+	c.mu.Unlock()
+	c.publish()
+}
+
+// Unblock clears a terminal refusal.
+//
+// Called when the reader has done the thing the refusal asked for — signing in
+// again, on the same Client, is the case that matters. Without it a successful
+// login would render behind an indicator still reporting the session that
+// expired before it.
+func (c *Client) Unblock() { c.block(ReasonNone) }
+
+// SetOffline reports what the browser thinks of the network (§20.19.5).
+//
+// Separate from the transport rather than derived from it, because the two
+// disagree in both directions and the disagreement is the useful part: the
+// socket can be dead while the network is fine (the server is down) and the
+// network can be gone while gRPC has not noticed yet (which is most of the first
+// second of every disconnection).
+func (c *Client) SetOffline(off bool) {
+	c.mu.Lock()
+	if c.offline == off {
+		c.mu.Unlock()
+		return
+	}
+	c.offline = off
+	c.mu.Unlock()
+	c.publish()
+}
+
+// Kick abandons the current backoff and re-dials now.
+//
+// The reason this exists rather than calling Connect: `Connect` is a NO-OP while
+// a subchannel sits in TRANSIENT_FAILURE — the backoff timer owns the redial and
+// nothing can shorten it. So a client that has just been told by the operating
+// system that the network came back has, without this, no way to act on knowing
+// it, and waits out a timer that may have grown to twenty seconds for a
+// connection that would succeed immediately.
+//
+// Called on `online`, on a tab becoming visible, on a bfcache restore, and by
+// the reader pressing Retry.
+func (c *Client) Kick() {
+	if c.conn == nil {
+		return
+	}
+	c.conn.ResetConnectBackoff()
+	c.conn.Connect()
+}
+
 // State is the current connection state.
-func (c *Client) State() ConnState { return c.state }
+func (c *Client) State() ConnState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shown
+}
+
+// Health reports how the connection has behaved this session.
+//
+// Reconnects and cumulative downtime, in that order: the count is what
+// distinguishes a network from a bug, and the duration is what distinguishes a
+// bug that matters. An outage in progress is included, so the numbers do not
+// sit still while the reader is looking at the screen that explains them.
+func (c *Client) Health() (reconnects int, downtime time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d := c.downtime
+	if !c.downAt.IsZero() {
+		d += time.Since(c.downAt)
+	}
+	return c.reconnects, d
+}
+
+// BlockedReason names what a Blocked state needs from the reader, so the view
+// can offer "Sign in" or "Reload" rather than a redder version of "down".
+func (c *Client) BlockedReason() Reason {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blocked
+}
+
+// RetryIn estimates how long until gRPC's next connection attempt.
+//
+// An estimate, and it must be presented as one: gRPC picks its own jitter and
+// does not publish the number. It is accurate enough to answer the only
+// question a reader has while looking at it — wait, or press the button — and
+// the button is why being a second out costs nothing. Reports false when there
+// is nothing to wait for.
+func (c *Client) RetryIn(now time.Time) (time.Duration, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.raw != phaseFailed || c.attempts == 0 || c.offline || c.blocked != ReasonNone {
+		return 0, false
+	}
+	return max(backoffAt(c.attempts)-now.Sub(c.failedAt), 0), true
+}
+
+// OnState installs (or replaces) the connection-state callback after Dial.
+//
+// It exists because the connection is now opened before there is a UI to report
+// to: Root dials to validate a stored credential and Login dials to sign in,
+// both with a nil callback, and only then is the reader mounted with its
+// indicator. Without this the indicator would sit on "connecting" forever over a
+// perfectly live tunnel — which is precisely the "silently disconnected looks
+// like a quiet news day" failure the indicator exists to prevent, inverted.
+//
+// The current state is delivered immediately rather than waiting for the next
+// transition. By the time the reader mounts the socket is usually already up,
+// and a callback that only fires on change would never fire at all.
+func (c *Client) OnState(fn func(ConnState)) {
+	c.mu.Lock()
+	c.onState = fn
+	s := c.shown
+	c.mu.Unlock()
+	if fn != nil {
+		fn(s)
+	}
+}
 
 // Close shuts the tunnel down.
 func (c *Client) Close() error {
@@ -231,17 +512,30 @@ func (c *Client) ctx(parent context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(parent, callTimeout)
 }
 
-// track marks the connection down on a transport failure so the indicator tells
-// the truth, and live again on any success.
+// track lets a completed RPC correct the indicator — but only when the error it
+// carries is actually about the connection (§20.19.6).
+//
+// This used to be `if err != nil { down }`, one test standing in for §20.7's
+// whole taxonomy. Of the codes the server can return, exactly one is about the
+// transport; the rest are the server ANSWERING, which is positive evidence the
+// connection works. A `NotFound` painting the indicator red is the small half of
+// that bug. The large half is that a refusal no amount of waiting can lift was
+// indistinguishable from an outage, and so was waited on forever.
 func (c *Client) track(err error) error {
-	if err != nil {
-		c.notify(Down)
-		return err
+	switch v := Classify(err); v.Class {
+	case ClassOK:
+		// A completed call is the only positive proof of a live transport
+		// there is — better evidence than the connectivity state, which lags.
+		c.setPhase(phaseReady)
+	case ClassTransport:
+		c.setPhase(phaseFailed)
+	case ClassTerminal:
+		c.block(v.Reason)
+	case ClassApplication, ClassNone:
+		// The server answered, or we cancelled. Neither says anything about
+		// the connection, and saying something anyway is the bug.
 	}
-	if c.state != Live {
-		c.notify(Live)
-	}
-	return nil
+	return err
 }
 
 // ListFeeds returns the sidebar.
@@ -272,7 +566,23 @@ func (c *Client) GetItem(parent context.Context, id string) (*pb.Item, error) {
 }
 
 // SetItemState marks read/starred. Nil leaves a flag alone.
+// It never discards the write. When the connection is not working the change is
+// queued and ErrQueued is returned, which callers must NOT treat as a failure —
+// see ErrQueued.
+//
+// The known-down case short-circuits before the RPC, and that is the difference
+// a reader actually feels. `WaitForReady(true)` means a call made on a dead
+// connection waits out the full twenty-second deadline before failing, so
+// pressing `m` during an outage used to freeze the row for twenty seconds and
+// then undo itself. Now it queues in microseconds and stays marked.
 func (c *Client) SetItemState(parent context.Context, itemID string, read, starred *bool, rating *int32, key string) (*pb.Item, error) {
+	op := outbox.Op{
+		Key: key, Kind: outbox.KindItemState, ItemID: itemID,
+		Read: read, Star: starred, Rating: rating, At: nowMS(),
+	}
+	if s := c.State(); s != Live {
+		return nil, c.queue(op)
+	}
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
 	res, err := c.reader.SetItemState(ctx, &pb.SetItemStateRequest{
@@ -280,6 +590,11 @@ func (c *Client) SetItemState(parent context.Context, itemID string, read, starr
 		IdempotencyKey: key,
 	})
 	if err := c.track(err); err != nil {
+		// The connection died under the call — the race the check above cannot
+		// close, and the one that loses a write silently if nothing catches it.
+		if Classify(err).Class == ClassTransport {
+			return nil, c.queue(op)
+		}
 		return nil, err
 	}
 	return res.GetItem(), nil
@@ -473,11 +788,29 @@ func (c *Client) UpdateTag(parent context.Context, req *pb.UpdateTagRequest) (*p
 }
 
 // SetNote writes or clears an item's note.
+//
+// Queued like the reading flags when the connection is down, and it is the one
+// that matters most: a flag can be set again in a keystroke, and prose cannot be
+// retyped. The note field's own sync glyph is what tells the reader it is
+// waiting rather than saved.
 func (c *Client) SetNote(parent context.Context, itemID, body string) error {
+	op := outbox.Op{
+		Key:  "note-" + itemID + "-" + strconv.FormatInt(nowMS(), 36),
+		Kind: outbox.KindNote, ItemID: itemID, Note: &body, At: nowMS(),
+	}
+	if s := c.State(); s != Live {
+		return c.queue(op)
+	}
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
 	_, err := c.reader.SetNote(ctx, &pb.SetNoteRequest{ItemId: itemID, Body: body})
-	return c.track(err)
+	if err := c.track(err); err != nil {
+		if Classify(err).Class == ClassTransport {
+			return c.queue(op)
+		}
+		return err
+	}
+	return nil
 }
 
 // ListNotes returns everything this user has annotated.
