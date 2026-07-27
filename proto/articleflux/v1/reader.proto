@@ -274,6 +274,39 @@ message Item {
   // that free Smart did most of the work, rather than implying a key is what makes
   // the page good.
   string rank_tier = 22;
+  // The topic this pick matched, when it matched one. Empty otherwise.
+  //
+  // It is on the wire as the cold-start signal, which is the thing it is hardest to
+  // get any other way. Topics need roughly 50–100 engaged items to mean anything
+  // (§18.4), so a new reader's ranking is freshness and feed affinity with no topic
+  // term at all — and the client has to be able to SAY that rather than present a
+  // confident wrong answer. An empty value on every row is how it knows.
+  //
+  // An id rather than the label: the client already needs a topic list for Trends,
+  // and shipping the label per item would send the same string on fifty rows and
+  // still go stale the moment the reader renames it.
+  string rank_topic = 23;
+  // The scoring FACTORS behind rank_reasons, positionally parallel to it: topic, feed,
+  // domain, fresh, corroboration, manual, volume, duplicate, negative, skipped,
+  // external, deliberate.
+  //
+  // These are the machine keys and rank_reasons is the prose, and the client needs both
+  // for reasons that have nothing to do with each other.
+  //
+  // The prose is generated in Go, on the server, in English. Rendering it directly is
+  // the only place in the UI that bypasses the message catalogue entirely — and it
+  // evades the hardcoded-copy lint precisely because the literal is not in the client,
+  // it arrives over the wire. The term is what a localised label is keyed on.
+  //
+  // The prose is also written as a clause in a longer sentence, so it truncates to
+  // "from a feed you rea…" in a list row and tells the reader nothing. A key lets the
+  // client pick a label that fits the space it actually has, and keep the sentence for
+  // the hover.
+  //
+  // Parallel arrays rather than a repeated message: this rides on Item, which is the
+  // hottest message on the wire, and a submessage per reason costs a length prefix and
+  // a field tag per entry on a list of fifty rows for no gain a client can use.
+  repeated string rank_reason_terms = 24;
 }
 
 // ScrollLiveViewRequest scrolls a running §10.1d live view.

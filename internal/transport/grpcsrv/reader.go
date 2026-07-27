@@ -540,16 +540,25 @@ func (s *ReaderServer) listRanked(ctx context.Context, sc store.Scope,
 	for i, it := range items {
 		m := toPBItem(it, false)
 		r := ranked[i]
-		m.RankReasons = r.Reasons
 		m.RankSlot = r.Slot
 		m.RankTier = r.Tier
+		m.RankTopic = r.TopicID
+		// Parallel arrays, filled in one pass so they cannot fall out of step. The
+		// client indexes one by the other's position, so a term without its prose would
+		// silently label the wrong factor.
+		m.RankReasons = make([]string, 0, len(r.Reasons))
+		m.RankReasonTerms = make([]string, 0, len(r.Reasons))
+		for _, why := range r.Reasons {
+			m.RankReasons = append(m.RankReasons, why.Text)
+			m.RankReasonTerms = append(m.RankReasonTerms, why.Term)
+		}
 		// The single-line field predates the list and is what the ordinary item row
 		// already renders (see client/view/panes.go). Populating it with the STRONGEST
 		// reason rather than a join of all of them: the reasons are sorted by absolute
 		// contribution, so the first is the one that actually decided the placement,
 		// and a concatenation of four clauses is not a sentence anyone reads.
 		if len(r.Reasons) > 0 {
-			m.RankReason = r.Reasons[0]
+			m.RankReason = r.Reasons[0].Text
 		}
 		out.Items = append(out.Items, m)
 	}

@@ -82,11 +82,117 @@ type Payload struct {
 type Service struct {
 	repo *store.ReaderRepo
 	log  *slog.Logger
+	// plus is the Smart+ tier. Nil on every instance without an API key, which is the
+	// normal case and the one the free tier is built to be good enough for.
+	plus Enhancer
+}
+
+// Enhancer is the Smart+ half of the interest layer (§10.5, §18.8).
+//
+// # Why an interface here rather than an import
+//
+// This package must not depend on internal/llm or internal/smart. Two reasons, and the
+// second is the one that matters.
+//
+// The interest layer has to work with no API key at all — free Smart is the product, and
+// a paid tier is an addition to it, not the thing that makes it function. An import would
+// make that a runtime nil-check in a dozen places instead of a structural fact.
+//
+// And the egress boundary (§18.8) is enforced by TYPES in internal/llm: the payload shapes
+// have fields only for what may leave the machine, so building the request is the
+// enforcement. If this package assembled those payloads it would become a second place
+// that has to be audited, and the whole argument for that design is that there should be
+// one. The adapter in internal/smart builds them; this package hands over plain data and
+// never sees the wire.
+//
+// Every method may return an error, and every caller treats an error as "no Smart+ this
+// time" and continues with the free-tier answer. A model that is down, rate-limited or
+// unconfigured must degrade the ranking, never fail the derivation.
+type Enhancer interface {
+	// RerankCandidates reorders the strongest candidates and returns the indexes it
+	// wants, best first. It may return fewer than it was given, and any index it omits
+	// keeps its free-tier position behind the ones it chose.
+	//
+	// Indexes rather than ids: what crosses the boundary is an ordinal (see
+	// llm.Candidate), so the caller's slice position is the only shared vocabulary.
+	RerankCandidates(ctx context.Context, cands []Candidate, prof ProfileHint, want int) ([]int, error)
+
+	// ExtractEntities names the brands, products and organisations in a set of
+	// headlines. Titles only — no bodies, no URLs, no dates.
+	ExtractEntities(ctx context.Context, titles []string) ([]NamedEntity, error)
+
+	// LabelTopic writes a human label for a cluster from its top terms. The
+	// deterministic label is passed as the fallback the model is improving on.
+	LabelTopic(ctx context.Context, terms []string, fallback string) (string, error)
+}
+
+// Candidate is one item offered for Smart+ re-ranking. Title and summary only, matching
+// what §18.8 permits to leave.
+type Candidate struct {
+	Title   string
+	Summary string
+}
+
+// ProfileHint is the derived description of the reader that Smart+ is allowed to see:
+// topic labels with their terms, and source titles. Never a URL, never a log.
+type ProfileHint struct {
+	Topics  []TopicHint
+	Sources []string
+}
+
+// TopicHint is one interest as the provider sees it.
+type TopicHint struct {
+	Label string
+	Terms []string
+}
+
+// NamedEntity is one extracted brand, product or organisation.
+type NamedEntity struct {
+	// Name is the normalised, lowercased matching key.
+	Name string
+	// Label is the display form, as the model wrote it.
+	Label string
+}
+
+// scoredItem is one candidate with its free-tier score.
+//
+// Package level rather than local to deriveHomeRanking, because applySmartPlus reorders
+// exactly this slice. Passing it as a parameter is what keeps the Smart+ pass unable to
+// change any score — it can permute the slice and nothing else.
+type scoredItem struct {
+	item store.Item
+	res  rank.Result
+}
+
+// entityAcc accumulates the evidence for one named thing across engaged items.
+type entityAcc struct {
+	label    string
+	weight   float64
+	mentions int
+	// sources is not a threshold — requiring two of them cost twelve real entities out of
+	// fourteen on real data (see the note above EntityMinMentions). It is kept because it
+	// is the natural evidence for a future "covered by three of your feeds" line, and
+	// because dropping it would make that measurement have to be rediscovered.
+	sources map[string]bool
+	last    time.Time
+	// llm marks an entity the model found. Recorded so removing the API key visibly
+	// narrows the list rather than silently changing what the rows mean.
+	llm bool
 }
 
 // New builds the service.
 func New(repo *store.ReaderRepo, log *slog.Logger) *Service {
 	return &Service{repo: repo, log: log}
+}
+
+// WithSmartPlus adds the paid tier.
+//
+// Separate from New so the free path is the DEFAULT rather than a nil case someone
+// remembered to handle: every test, every instance without a key, and every code path that
+// does not opt in gets a Service that cannot make a network call at all.
+func (s *Service) WithSmartPlus(e Enhancer) *Service {
+	s.plus = e
+	return s
 }
 
 // Enqueue schedules a derivation for one user.
@@ -129,8 +235,13 @@ type Result struct {
 	Feeds   int
 	Terms   int
 	Domains int
-	Topics  int
-	Ranked  int
+	// Entities is how many brands, products and organisations survived
+	// EntityMinMentions. Logged separately from Terms because it answers a different
+	// question — "can this instance name what you follow" — and a vocabulary of two
+	// thousand terms with zero entities is a specific, diagnosable state.
+	Entities int
+	Topics   int
+	Ranked   int
 	// ColdStart is true when there was too little engagement for topics to mean
 	// anything. §18.4 wants the UI to say so rather than present a confident
 	// wrong answer.
@@ -176,6 +287,15 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	}
 	res.Domains = domains
 
+	// Recall, not precision: entities describe what the reader follows, which is a
+	// candidate-generation fact. It reads `engaged` and nothing that stage 2 writes, so
+	// its position here is a real ordering constraint rather than a convenience.
+	entities, err := s.deriveEntities(ctx, sc, engaged)
+	if err != nil {
+		return res, fmt.Errorf("derive: entities: %w", err)
+	}
+	res.Entities = entities
+
 	topicSet, suppressed, cold, err := s.deriveTopics(ctx, sc, engaged, vectors, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: topics: %w", err)
@@ -196,6 +316,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	if s.log != nil {
 		s.log.Info("derived the interest layer",
 			"user", sc.UserID, "feeds", res.Feeds, "terms", res.Terms,
+			"entities", res.Entities,
 			"domains", res.Domains, "topics", res.Topics, "ranked", res.Ranked,
 			"cold_start", res.ColdStart)
 	}
@@ -285,9 +406,16 @@ func feedScore(sig store.FeedSignal) float64 {
 
 // engagedItem is one item the reader actually engaged with.
 type engagedItem struct {
-	ItemID    string
-	SourceID  string
-	Text      string
+	ItemID   string
+	SourceID string
+	Text     string
+	// Title on its own, for entity extraction.
+	//
+	// Kept separately rather than recovered from Text because a headline is a
+	// qualitatively different kind of evidence: a publisher writes it to name the thing
+	// the article is about, so a capitalised phrase there is almost always a real name.
+	// Body text is where a feed's own furniture lives. See deriveEntities.
+	Title     string
 	URL       string
 	EngagedAt time.Time
 	// Weight is how much this engagement counts, from the signal priors.
@@ -396,6 +524,7 @@ func (s *Service) engagedItems(ctx context.Context, sc store.Scope, sinceMS int6
 		out = append(out, engagedItem{
 			ItemID:    it.ID,
 			SourceID:  it.SourceID,
+			Title:     it.Title,
 			Text:      itemText(it.Title, it.ContentHTML, it.Summary),
 			URL:       it.URL,
 			EngagedAt: when[it.ID],
@@ -591,6 +720,22 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, engaged []en
 	}
 
 	res := topics.Build(docs, topics.Options{Now: now, Window: Window})
+
+	// Smart+ writes the labels a join of top terms cannot.
+	//
+	// §18.2 wants the reason line to read "matches your NPU inference reading" rather
+	// than "Nbsp · Font · 6f6f6f" — which is a real label this application produced
+	// before the vectoriser stopped eating HTML. The deterministic label is passed as the
+	// fallback the model is improving on, and is kept whenever the model declines, errors,
+	// or returns something too long to fit a chip.
+	//
+	// Before ReplaceTopics, so the label the reader's own rename is compared against is
+	// the final one. Reversing the two would let a Smart+ label overwrite a rename on
+	// every derivation, which is the one thing §18.2 is explicit about not doing.
+	if s.plus != nil {
+		s.labelTopics(ctx, res.Topics)
+	}
+
 	if err := s.repo.ReplaceTopics(ctx, sc, res.Topics); err != nil {
 		return nil, nil, false, err
 	}
@@ -608,6 +753,43 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, engaged []en
 		flags[i] = suppressedBy[topicKey(t.TopTerms)]
 	}
 	return res.Topics, flags, res.ColdStart, nil
+}
+
+// MaxLabelledTopics bounds how many topics get a Smart+ label per derivation.
+//
+// Twelve. One call per topic, so this is the cost ceiling for the labelling pass — and
+// past a dozen topics the tail is small clusters the reader will not recognise anyway.
+// They keep their deterministic labels, which are adequate for a three-member cluster.
+const MaxLabelledTopics = 12
+
+// labelTopics replaces deterministic top-term labels with written ones, in place.
+//
+// Sequential rather than concurrent, deliberately. This runs in a background job nobody is
+// waiting on, and twelve parallel requests to one provider is how an instance earns a rate
+// limit that then breaks the re-rank — the call that actually changes what the reader sees.
+//
+// A failure on one topic leaves that topic's label alone and continues to the next. There
+// is no reason a single unlucky cluster should cost the other eleven their labels.
+func (s *Service) labelTopics(ctx context.Context, ts []topics.Topic) {
+	n := 0
+	for i := range ts {
+		if n >= MaxLabelledTopics {
+			return
+		}
+		if len(ts[i].TopTerms) == 0 {
+			continue
+		}
+		n++
+		label, err := s.plus.LabelTopic(ctx, ts[i].TopTerms, ts[i].Label)
+		if err != nil {
+			if s.log != nil {
+				s.log.Info("smart+ topic label declined; keeping the term-based one",
+					"fallback", ts[i].Label, "err", err)
+			}
+			continue
+		}
+		ts[i].Label = label
+	}
 }
 
 // topicKey matches an in-memory cluster to its stored row.
@@ -676,11 +858,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 		return 0, err
 	}
 
-	type scored struct {
-		item store.Item
-		res  rank.Result
-	}
-	out := make([]scored, 0, len(candidates))
+	out := make([]scoredItem, 0, len(candidates))
 
 	// One pass over the candidates buys both of the story-level signals: how many
 	// OTHER sources carried this, and whether it is a near-duplicate of something
@@ -729,7 +907,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 			continue
 		}
 		r = applyDeliberate(r, itemSignals[it.ID])
-		out = append(out, scored{item: it, res: r})
+		out = append(out, scoredItem{item: it, res: r})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -742,11 +920,35 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 		out = out[:MaxRanked]
 	}
 
+	// Smart+ re-orders the head of the list, and only the head.
+	//
+	// Free Smart still does all of recall and all of the scoring; the model is shown the
+	// candidates that already won and asked which of those to lead with. That division
+	// is deliberate and is the one §18.8 permits: the payload is titles, summaries and a
+	// derived profile, so a model can judge "which of these is the better read" and
+	// cannot be handed the reading history it would need to do candidate generation.
+	//
+	// It is also the division that keeps the free tier honest. If the model chose the
+	// candidate set, an instance without a key would be running a different and worse
+	// product rather than the same product without a garnish.
+	plusTier := map[string]bool{}
+	if s.plus != nil {
+		plusTier = s.applySmartPlus(ctx, out, topicSet, feeds)
+	}
+
 	rows := make([]store.RankedItem, 0, len(out))
 	for i, sc := range out {
-		reasons := make([]string, 0, len(sc.res.Reasons))
+		// Both halves of each reason: the term is what the client renders a short,
+		// translatable label from, and the prose is the hover and the fallback. Storing
+		// only the prose made the explanations untranslatable and unreadable at list
+		// width — see store.RankReason.
+		reasons := make([]store.RankReason, 0, len(sc.res.Reasons))
 		for _, r := range sc.res.Reasons {
-			reasons = append(reasons, r.Text)
+			reasons = append(reasons, store.RankReason{Term: r.Term, Text: r.Text})
+		}
+		tier := store.TierSmart
+		if plusTier[sc.item.ID] {
+			tier = store.TierSmartPlus
 		}
 		rows = append(rows, store.RankedItem{
 			ItemID:  sc.item.ID,
@@ -754,13 +956,177 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 			Rank:    i + 1,
 			Slot:    slotFor(i, len(out)),
 			Reasons: reasons,
-			Tier:    "smart",
+			Tier:    tier,
 		})
 	}
 	if err := s.repo.ReplaceHomeRanking(ctx, sc, rows); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
+}
+
+// SmartPlusHead is how many of the top candidates Smart+ is asked about.
+//
+// Forty. It is a cost and an attention bound at once. The model is being asked "which of
+// these should lead", and a reader works through the first screen or two of a ranked page
+// — re-ordering position 150 is tokens spent on a row nobody reaches. Forty titles and
+// summaries is also a request that fits comfortably in one call, so a derivation makes at
+// most one model call for ranking however much the reader has read.
+const SmartPlusHead = 40
+
+// SmartPlusWant is how many picks the model is asked to return.
+//
+// Twelve, out of forty. Asking it to order all forty would spend reasoning on the tail it
+// was not chosen for, and a full ordering is also harder to sanity-check: a short list of
+// leads can be verified by reading it, while a permutation of forty cannot.
+const SmartPlusWant = 12
+
+// applySmartPlus lets the model reorder the head of the ranked list.
+//
+// Returns the set of item ids the model actually promoted, which becomes the `smart_plus`
+// tier marking. Items it left alone stay `smart` — see store.TierSmartPlus: the tier is a
+// claim about what decided the placement, and an agreement is not an influence.
+//
+// # Failure is always "keep the free-tier answer"
+//
+// Every error path here returns without touching `out`. A missing key, a timeout, a
+// rate limit, a malformed reply, an index the model invented: all of them mean the reader
+// gets free Smart's ordering, which is a complete and useful product. Nothing about
+// Smart+ is allowed to produce an empty or broken homepage, and the way to guarantee that
+// is for the failure branch to do nothing rather than to do something careful.
+//
+// # Why it reorders in place rather than rescoring
+//
+// The model returns a preference order, not scores. Inventing numbers to slot its picks
+// into the existing score space would make the stored score a mixture of two
+// incomparable scales — and `score` is what the debug tools, the tuning panel and any
+// future explanation read. So the scores stay exactly as free Smart computed them and only
+// the ORDER changes; the reasons stay attached to their items, which is what keeps every
+// row's explanation true after the move.
+func (s *Service) applySmartPlus(ctx context.Context, out []scoredItem,
+	topicSet []topics.Topic, feeds []store.FeedAffinity) map[string]bool {
+
+	head := len(out)
+	if head > SmartPlusHead {
+		head = SmartPlusHead
+	}
+	if head < 2 {
+		// Nothing to reorder. Worth returning early rather than making the call: a
+		// one-item page has no ordering, and paying for an opinion about it is pure waste.
+		return nil
+	}
+
+	cands := make([]Candidate, 0, head)
+	for _, sc := range out[:head] {
+		cands = append(cands, Candidate{
+			Title: sc.item.Title,
+			// Plain text, not markup. The summary is HTML in practice and sending tags
+			// would spend tokens on furniture and hand a provider markup it has no use
+			// for. sanitize.Text is the same call the vectoriser makes for the same
+			// reason.
+			Summary: firstRunes(sanitize.Text(sc.item.Summary), 300),
+		})
+	}
+
+	prof := ProfileHint{}
+	for _, t := range topicSet {
+		prof.Topics = append(prof.Topics, TopicHint{Label: t.Label, Terms: t.TopTerms})
+	}
+	// Source TITLES by affinity, never their URLs — a feed URL is a stable identifier that
+	// would let a provider recognise this instance across requests (§18.8).
+	// internal/llm.RankPayload.Trim caps the count; this only has to order them.
+	//
+	// Titles come from the candidates rather than from a new query: the items already
+	// carry the resolved title, and the alternative is another round trip to name feeds
+	// that are by definition already represented on the page.
+	titleOf := map[string]string{}
+	for _, sc := range out {
+		if t := sc.item.SourceTitle; t != "" {
+			titleOf[sc.item.SourceID] = t
+		}
+	}
+	sorted := make([]store.FeedAffinity, len(feeds))
+	copy(sorted, feeds)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Score != sorted[j].Score {
+			return sorted[i].Score > sorted[j].Score
+		}
+		// A tie-break, so the profile is byte-identical on a re-derivation over unchanged
+		// input. Without it map order leaks into an outbound request body.
+		return sorted[i].SourceID < sorted[j].SourceID
+	})
+	for _, f := range sorted {
+		if t := titleOf[f.SourceID]; t != "" {
+			prof.Sources = append(prof.Sources, t)
+		}
+	}
+
+	picks, err := s.plus.RerankCandidates(ctx, cands, prof, SmartPlusWant)
+	if err != nil {
+		if s.log != nil {
+			// Info, not Warn. A Smart+ call that did not happen is not a fault in this
+			// instance — no key, no network and a provider outage are all ordinary — and
+			// logging it as a warning trains the operator to ignore warnings.
+			s.log.Info("smart+ rerank declined; keeping the free ranking", "err", err)
+		}
+		return nil
+	}
+
+	// Validate every index before moving anything. A model returning 47 for a list of 40,
+	// or the same index twice, must not be able to panic a background job or duplicate a
+	// row — and both are exactly what a plausible-looking reply does when it drifts.
+	seen := make(map[int]bool, len(picks))
+	order := make([]int, 0, len(picks))
+	for _, i := range picks {
+		if i < 0 || i >= head || seen[i] {
+			continue
+		}
+		seen[i] = true
+		order = append(order, i)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+
+	promoted := make([]scoredItem, 0, head)
+	tier := make(map[string]bool, len(order))
+	for _, i := range order {
+		promoted = append(promoted, out[i])
+		tier[out[i].item.ID] = true
+	}
+	// Everything the model did not pick keeps its free-tier order, behind the picks. Not
+	// dropped: the reader subscribed to these feeds and an item the model had no opinion
+	// about is still an item they may want.
+	for i := range out[:head] {
+		if !seen[i] {
+			promoted = append(promoted, out[i])
+		}
+	}
+	copy(out[:head], promoted)
+
+	// A pick that was already going to be first was not influenced by the model, so it is
+	// not a Smart+ pick. This is what stops a configured key from relabelling the whole
+	// page as paid-for when it changed nothing.
+	for i, sc := range out[:head] {
+		if i < len(order) && order[i] == i {
+			delete(tier, sc.item.ID)
+		}
+	}
+	if s.log != nil {
+		s.log.Info("smart+ reranked the head of the feed",
+			"considered", head, "promoted", len(order), "changed", len(tier))
+	}
+	return tier
+}
+
+// firstRunes truncates on a rune boundary, so a multi-byte character is never cut in
+// half — a broken rune in an outbound JSON body is a request the provider rejects whole.
+func firstRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // SameStoryThreshold is the cosine similarity at which two items are treated as
@@ -937,6 +1303,243 @@ func corroborate(candidates []store.Item, corpus *textvec.Corpus) map[string]sto
 		out[items[i].id] = story{otherSources: others, duplicateOf: sim[i]}
 	}
 	return out
+}
+
+// MaxEntities bounds the stored entity list.
+//
+// A hundred and fifty. The screen that shows these is a list a person reads, and past
+// a hundred-odd rows it stops being a description of someone and becomes a dump. The
+// tail is also where the heuristic's false positives live — a one-off "released pixel"
+// never accumulates weight — so cutting it is the same cut that removes the noise.
+const MaxEntities = 150
+
+// EntityMinMentions is how many engaged items must mention a phrase before it counts as
+// something the reader follows.
+//
+// Two. One mention is an article that happened to name a thing; two is the beginning of a
+// pattern. It is what separates a brand from a sentence-initial accident: "Android Auto"
+// recurs across everything a reader of phone news opens, while "released pixel" and "four
+// nerds" appear once and never again. textvec.Phrases accepts a known false positive on
+// the grounds that aggregation would filter it; this is the aggregation doing that.
+const EntityMinMentions = 2
+
+// Entities come from HEADLINES, not from article bodies.
+//
+// # The failure this fixes, and the fix that was worse
+//
+// Extracting from the full text produced, on a real database: `Android 16`, `Apple
+// Watch`, `Hugging Face`, `Micro Four Thirds`, `Mercedes C126`, `Seattle Times` — and
+// alongside them `Continue Reading`, `News Section` and `Reading Category`. Those three
+// are a FEED TEMPLATE. One publisher puts "Continue Reading" in every item's body, so
+// from the extractor's side it is a capitalised phrase recurring across many engaged
+// articles, which is precisely the shape of a brand.
+//
+// The first attempt was a structural rule: require the phrase in items from two
+// different SOURCES, since template chrome comes from one source by definition. It
+// worked and it cost far too much — measured on the same data, entities went from
+// fourteen to TWO. At any realistic reading volume most real brands are covered by one
+// of a reader's feeds, so the rule removed nearly everything true along with everything
+// false.
+//
+// Titles are the sharper cut, and for a reason rather than by luck: a headline is
+// written to name the thing the article is about, so a capitalised phrase in one is
+// almost always a real name. Feed furniture lives in bodies and footers — no publisher
+// puts "Continue Reading" in a headline. Same three false positives removed, and the
+// real entities kept.
+//
+// A blocklist was the third option and the worst. It would have handled these three and
+// not the fourth nobody has seen yet, and after `source` and `image` nearly deleted
+// "open source" and image models from the vocabulary, hand-written word lists have
+// earned their suspicion here.
+
+// deriveEntities turns recurring capitalised phrases into named things.
+//
+// # What this answers that nothing else did
+//
+// The interest layer could say what SUBJECTS a reader follows and could not name one
+// THING. Term affinity is a bag of words and topics are clusters of them, so "cameras"
+// was expressible and "the Lumix line" was not — on a real database `lumix`, `powershot`
+// and `vivo` sat in the vocabulary as isolated unigrams with nothing to connect them to
+// the products they name.
+//
+// # Weight is engagement, not frequency
+//
+// The obvious implementation counts mentions. It is wrong in the way that matters: a
+// phrase named in forty articles the reader never opened is not an interest, and a count
+// says it is. Each mention contributes the ENGAGED ITEM's own weight, which already
+// carries the reader's dwell, completion and verdicts, and which is already
+// recency-decayed. So a brand mentioned twice in pieces that were read to the end
+// outranks one mentioned nine times in headlines that were scrolled past.
+//
+// # Label casing has to be stored
+//
+// The vectoriser lowercases, so the original casing is gone by the time a phrase exists.
+// It is not recoverable by rule — a deterministic title-case turns "iphone" into "Iphone"
+// and "tcl" into "Tcl" — so the label is recovered from the item text that produced the
+// phrase, and only stored casing is trustworthy afterwards.
+func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []engagedItem) (int, error) {
+	byName := map[string]*entityAcc{}
+
+	for _, e := range engaged {
+		// Deduplicated per item: an article that names a product in its headline and
+		// four more times in the body is one item's worth of evidence, not five. Without
+		// this a single verbose article would outweigh a genuine pattern across several.
+		seen := map[string]bool{}
+		// Title only. See the note above EntityMinMentions: bodies carry feed furniture
+		// and headlines carry names.
+		for _, phrase := range textvec.Phrases(e.Title) {
+			if seen[phrase] {
+				continue
+			}
+			seen[phrase] = true
+			a := byName[phrase]
+			if a == nil {
+				a = &entityAcc{label: properCase(e.Title, phrase), sources: map[string]bool{}}
+				byName[phrase] = a
+			}
+			a.weight += e.Weight
+			a.mentions++
+			a.sources[e.SourceID] = true
+			if e.EngagedAt.After(a.last) {
+				a.last = e.EngagedAt
+			}
+		}
+	}
+
+	// Smart+ names what the heuristic cannot see: lowercase names (npm, curl, ffmpeg)
+	// produce no capitalised phrase at all, and a three-word name arrives as two
+	// overlapping pairs. Its answers are merged rather than replacing the heuristic's, so
+	// removing the API key narrows the list instead of emptying it.
+	if s.plus != nil {
+		s.mergeLLMEntities(ctx, engaged, byName)
+	}
+
+	out := make([]store.Entity, 0, len(byName))
+	for name, a := range byName {
+		if a.mentions < EntityMinMentions {
+			continue
+		}
+		kind := store.EntityPhrase
+		if a.llm {
+			kind = store.EntityLLM
+		}
+		out = append(out, store.Entity{
+			Name: name, Label: a.label, Kind: kind,
+			Weight: a.weight, Mentions: a.mentions,
+			LastSeen: a.last.Format(time.RFC3339Nano),
+		})
+	}
+	// Sorted by weight then name: the name breaks ties so a re-derivation over unchanged
+	// input produces byte-identical rows, which the rebuild test depends on. Map iteration
+	// order alone would make it fail intermittently, which is the worst way for it to fail.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Weight != out[j].Weight {
+			return out[i].Weight > out[j].Weight
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > MaxEntities {
+		out = out[:MaxEntities]
+	}
+	return len(out), s.repo.ReplaceEntityAffinity(ctx, sc, out)
+}
+
+// mergeLLMEntities folds Smart+'s extracted names into the heuristic's accumulator.
+//
+// Merged, not substituted. A key that is configured today may be removed tomorrow, and if
+// the model's answers had REPLACED the free-tier ones the entity list would empty out on
+// the next derivation — the reader would experience removing a key as the feature breaking
+// rather than as it getting narrower.
+//
+// # The mention count still comes from the headlines, not from the model
+//
+// The model is asked WHICH names exist, never how much the reader cares. Weight and
+// mentions are recounted here by scanning the titles for each name it returned, so the
+// evidence for "you follow this" remains the reader's own engagement. A model that
+// enthusiastically listed forty brands cannot promote any of them past
+// EntityMinMentions on its own, which is what keeps the extraction from becoming an
+// opinion about the reader.
+//
+// Failure is silent and total: on any error the heuristic's entities stand unchanged.
+func (s *Service) mergeLLMEntities(ctx context.Context, engaged []engagedItem, byName map[string]*entityAcc) {
+	titles := make([]string, 0, len(engaged))
+	for _, e := range engaged {
+		if t := strings.TrimSpace(e.Title); t != "" {
+			titles = append(titles, t)
+		}
+	}
+	if len(titles) == 0 {
+		return
+	}
+
+	found, err := s.plus.ExtractEntities(ctx, titles)
+	if err != nil {
+		if s.log != nil {
+			// Info, not Warn: no key, no network and a provider outage are all ordinary,
+			// and warning about them trains an operator to ignore warnings.
+			s.log.Info("smart+ entity extraction declined; keeping the heuristic's list", "err", err)
+		}
+		return
+	}
+
+	for _, ent := range found {
+		if ent.Name == "" {
+			continue
+		}
+		a := byName[ent.Name]
+		if a == nil {
+			a = &entityAcc{label: ent.Label, sources: map[string]bool{}}
+			byName[ent.Name] = a
+			// Counted from the reader's own engagement, not from the model's confidence.
+			for _, e := range engaged {
+				if !containsFold(e.Title, ent.Name) {
+					continue
+				}
+				a.weight += e.Weight
+				a.mentions++
+				a.sources[e.SourceID] = true
+				if e.EngagedAt.After(a.last) {
+					a.last = e.EngagedAt
+				}
+			}
+		} else if ent.Label != "" {
+			// The heuristic already found it. Keep its evidence and take the model's
+			// label, which is the half it is genuinely better at: "Micro Four Thirds"
+			// rather than the two overlapping pairs a bigram pass produces.
+			a.label = ent.Label
+		}
+		a.llm = true
+	}
+}
+
+// containsFold reports whether a title mentions a name, ignoring case.
+//
+// Case-insensitive because the name is normalised to lowercase and the headline is not.
+// Substring rather than token matching, deliberately: a model returns "Micro Four Thirds"
+// and the headline may write "micro four-thirds", and a token match would miss it while a
+// substring match on the normalised form still lands often enough to be worth having.
+func containsFold(title, name string) bool {
+	return strings.Contains(strings.ToLower(title), name)
+}
+
+// properCase recovers a phrase's original capitalisation from the text it came from.
+//
+// textvec lowercases, so by the time a phrase exists its casing is gone, and it cannot be
+// reconstructed by rule: title-casing gives "Iphone" and "Tcl", which are wrong in a way
+// a reader notices immediately on a screen that claims to list the things they follow.
+//
+// So the source text is searched for the phrase case-insensitively and the original span
+// returned. Falls back to the lowercased form, which is honest — better a lowercase label
+// than a confidently wrong capitalisation.
+func properCase(text, phrase string) string {
+	lower := strings.ToLower(text)
+	if i := strings.Index(lower, phrase); i >= 0 {
+		return text[i : i+len(phrase)]
+	}
+	// The phrase came from tokenised text, so the words are present but the separator
+	// may not be a single space — "state-of-the-art" tokenises across punctuation. Not
+	// worth reconstructing; the lowercase form is a fair label.
+	return phrase
 }
 
 // SkipMinImpressions is how many times an item must have been on screen before

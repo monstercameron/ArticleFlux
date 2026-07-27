@@ -21,6 +21,11 @@ type fixture struct {
 	scope store.Scope
 	feeds map[string]string // title -> source id
 	items map[string]string // guid  -> item id
+
+	// bigSource and bigItems are set by setupBig, for tests that care about
+	// scale rather than about setup()'s two-feed clustering fixture.
+	bigSource string
+	bigItems  []string
 }
 
 func setup(t *testing.T) *fixture {
@@ -540,4 +545,169 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// TestBulkReadAtRealisticScaleAndShape is R17 against the shape the client
+// actually sends and the scale the plan names.
+//
+// TestBulkReadChangesNoAffinityScore above proves the property with twelve
+// items, one bulk_read row PER ITEM, and checks only feed affinity. Neither
+// matches production. client/view/reader.go emits exactly ONE bulk_read event
+// per mark-all-read — ItemID empty, SourceID the feed, Value the count — the
+// comment directly above the call reads "One row with a count, never one per
+// item." An item-scoped bulk_read takes a different branch inside
+// engagedItems: `if e.ItemID == "" { continue }` fires before the Affinity
+// check ever runs for a real bulk_read row, so a test that only sends
+// item-scoped rows never exercises the branch production traffic actually
+// takes — it proves the Affinity flag works without proving the empty-ItemID
+// path is neutral. And "twelve" undersells the plan's own number: TODO.md's
+// R17 line names 143 specifically, which is also the shape of the
+// dev-database incident (3,549 items in one minute) this test guards against.
+//
+// This also snapshots every derived view RunReporting produces — feeds AND
+// terms, domains and ranking — where the existing end-to-end test checks only
+// feeds. Terms/domains/ranking come from engagedItems (the Go-filtered path);
+// feeds come from FeedSignals (the SQL-filtered path). R17 is a claim about
+// both ("internal/signals excludes it from affinity and FeedSignals excludes
+// it in SQL", derive.go's package doc), so a test reading back only one of
+// them is only half a proof.
+func TestBulkReadAtRealisticScaleAndShape(t *testing.T) {
+	f := setupBig(t, 143)
+
+	// A handful of items get real engagement, so every derived view has
+	// something in it that a regression could actually disturb.
+	engaged := f.bigItems[:20]
+	f.record(t, signals.Impression, engaged, now.Add(-48*time.Hour))
+	f.record(t, signals.Opened, engaged, now.Add(-47*time.Hour))
+	f.record(t, signals.Completed, engaged[:10], now.Add(-46*time.Hour))
+	f.record(t, signals.Liked, engaged[:5], now.Add(-45*time.Hour))
+	f.record(t, signals.Bounced, engaged[10:12], now.Add(-44*time.Hour))
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	beforeFeeds := snapshotFeeds(t, f)
+	beforeTerms := snapshotTerms(t, f)
+	beforeDomains := snapshotDomains(t, f)
+	beforeRanking := snapshotRanking(t, f)
+	if beforeFeeds == "" || beforeTerms == "" || beforeRanking == "" {
+		t.Fatal("the baseline engagement produced no derived state; the rest of this test proves nothing")
+	}
+
+	// Exactly what client/view/reader.go sends: one row, no item id, the
+	// source being cleared, and the count as Value — not 143 individual rows.
+	if _, err := f.repo.RecordEngagements(f.ctx, f.scope, []signals.Event{{
+		ID:       idgen.New(),
+		ItemID:   "",
+		SourceID: f.bigSource,
+		Kind:     signals.BulkRead,
+		Value:    143,
+		Surface:  signals.SurfaceList,
+		Context:  `{"n":143}`,
+		At:       now.Add(-time.Hour).UnixMilli(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshotFeeds(t, f); got != beforeFeeds {
+		t.Errorf("a 143-item mark-all-read moved feed affinity:\n before %s\n after  %s", beforeFeeds, got)
+	}
+	if got := snapshotTerms(t, f); got != beforeTerms {
+		t.Errorf("a 143-item mark-all-read moved term affinity:\n before %s\n after  %s", beforeTerms, got)
+	}
+	if got := snapshotDomains(t, f); got != beforeDomains {
+		t.Errorf("a 143-item mark-all-read moved domain affinity:\n before %s\n after  %s", beforeDomains, got)
+	}
+	if got := snapshotRanking(t, f); got != beforeRanking {
+		t.Errorf("a 143-item mark-all-read moved home ranking:\n before %s\n after  %s", beforeRanking, got)
+	}
+}
+
+// setupBig seeds one feed with n items, for tests that care about scale
+// rather than about setup()'s two-feed clustering fixture. Text alternates
+// between two vocabularies so a term/topic model has something to find, and
+// every fifth item gets a distinct external URL so domain affinity has
+// candidates.
+func setupBig(t *testing.T, n int) *fixture {
+	t.Helper()
+	ctx := context.Background()
+
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "derive-big.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewReaderRepo(db)
+
+	stamp := now.Format(time.RFC3339Nano)
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "T", UserID: "u1", Username: "reader",
+		Hash: "x", Role: "member", Now: stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &fixture{
+		repo:  repo,
+		svc:   New(repo, nil),
+		ctx:   ctx,
+		scope: store.Scope{TenantID: "t1", UserID: "u1", Role: "member"},
+		feeds: map[string]string{},
+		items: map[string]string{},
+	}
+
+	feed, _, err := repo.Subscribe(ctx, f.scope, store.NewSubscription{
+		NaturalKey: "feed:big",
+		FeedURL:    "https://big.example/rss",
+		SiteURL:    "https://big.example/",
+		Title:      "Big",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.bigSource = feed.SourceID
+	f.feeds["Big"] = feed.SourceID
+
+	vocab := []string{
+		"sqlite btree page cache write ahead log checkpoint durability",
+		"formula one aerodynamics downforce cornering tyre degradation",
+	}
+	var ingest []store.IngestItem
+	for i := 0; i < n; i++ {
+		text := fmt.Sprintf("%s item %d", vocab[i%2], i)
+		it := store.IngestItem{
+			GUID:        fmt.Sprintf("big-%d", i),
+			URL:         fmt.Sprintf("https://big.example/%d", i),
+			Title:       text,
+			Summary:     text,
+			ContentHTML: "<p>" + text + "</p>",
+			PublishedAt: now.Add(-time.Duration(i+1) * time.Hour),
+			WordCount:   400,
+		}
+		if i%5 == 0 {
+			it.URL = fmt.Sprintf("https://target-%d.example/%d", i, i)
+		}
+		ingest = append(ingest, it)
+	}
+	if _, err := repo.IngestItems(ctx, feed.SourceID, ingest); err != nil {
+		t.Fatal(err)
+	}
+
+	items, _, err := repo.ListItems(ctx, f.scope, store.ListQuery{Limit: n + 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != n {
+		t.Fatalf("seeded %d items, want %d", len(items), n)
+	}
+	for _, it := range items {
+		f.bigItems = append(f.bigItems, it.ID)
+	}
+	return f
 }

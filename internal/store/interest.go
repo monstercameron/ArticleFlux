@@ -445,8 +445,39 @@ type RankedItem struct {
 	Rank    int
 	Slot    string
 	TopicID string
-	Reasons []string
+	Reasons []RankReason
 	Tier    string
+}
+
+// RankReason is one scoring term's explanation, as a machine key plus prose.
+//
+// # Why both, and why this used to be a []string
+//
+// The first version stored only the prose, and that made the reasons unusable in two
+// ways at once.
+//
+// The first is i18n. rank builds these sentences in Go, in English, on the server —
+// "from a feed you read closely". Displaying them in the client walks straight past the
+// catalogue, so the ranking's explanations were the one part of the UI that could never
+// be translated. The screen-lint guard did not catch it because the literal is not in
+// client/view; it is a string arriving over the wire, which is exactly the shape that
+// evades a lint.
+//
+// The second is width. The prose is written as a CLAUSE in a longer sentence, so on a
+// list row it truncates to "from a feed you rea…" — the reader learns nothing. A key
+// lets the client choose its own short label for the space it actually has ("your
+// feed") and keep the full sentence for the hover.
+//
+// So Term is the contract and Text is the fallback: a client that does not recognise a
+// term still has something honest to show, which matters because the term list grows
+// whenever the scorer gains a factor.
+type RankReason struct {
+	// Term is the scoring factor, from a closed set defined by internal/rank: topic,
+	// feed, domain, fresh, corroboration, manual, volume, duplicate, negative,
+	// skipped, external, deliberate.
+	Term string `json:"t"`
+	// Text is rank's own prose for it, kept for hover and as the fallback.
+	Text string `json:"x"`
 }
 
 // ReplaceHomeRanking rewrites a user's homepage.
@@ -536,6 +567,17 @@ func (r *ReaderRepo) ClearDerived(ctx context.Context, s Scope) error {
 		for _, table := range []string{
 			"home_ranking", "item_topics", "topics",
 			"feed_affinity", "term_affinity", "domain_affinity",
+			// entity_affinity belongs here for the same reason as the rest, and this
+			// is the line that keeps the rebuild property honest: a derived table
+			// missing from this list is one TestDerivedStateRebuildsIdentically
+			// silently stops checking, because it is never cleared and so trivially
+			// "rebuilds" to whatever it already held.
+			//
+			// It does take the reader's suppressions with it, which is the right
+			// trade for a repair tool — ReplaceEntityAffinity preserves them on a
+			// normal derivation, and ClearDerived is the deliberate "throw it all
+			// away" path.
+			"entity_affinity",
 		} {
 			if _, err := tx.ExecContext(ctx,
 				`DELETE FROM `+table+` WHERE user_id = ?`, s.UserID); err != nil {
@@ -631,6 +673,181 @@ func (r *ReaderRepo) HalfLifeFor(ctx context.Context, s Scope, sourceID string) 
 		return 0, nil
 	}
 	return ages[len(ages)/2], nil
+}
+
+// Entity is one brand, product or organisation the reader keeps reading about.
+type Entity struct {
+	// Name is the normalised, lowercased form — the matching key.
+	Name string
+	// Label is the form to show: "Android Auto", not "android auto".
+	Label string
+	// Kind is 'phrase' (free tier, from textvec.Phrases) or 'llm' (Smart+).
+	Kind string
+	// Weight is summed, recency-decayed engagement across the items that mentioned
+	// it. Not a mention count — see the migration.
+	Weight   float64
+	Mentions int
+	// Suppressed is the reader's instruction, and survives a rebuild.
+	Suppressed bool
+	FirstSeen  string
+	LastSeen   string
+}
+
+// Tier values for a ranked row, matching home_ranking's CHECK constraint.
+//
+// Named rather than written as literals at the four places that produce or read them,
+// because the constraint means a typo is a runtime INSERT failure inside a background
+// job — the loudest possible place to discover a spelling mistake and the quietest to
+// notice it.
+const (
+	// TierSmart is the free tier: everything derived on this machine, no model.
+	TierSmart = "smart"
+	// TierSmartPlus marks a row the paid tier actually influenced.
+	//
+	// Set only when the model's opinion CHANGED something. A key that is configured but
+	// whose re-rank agreed with free Smart leaves the row marked `smart`, because the
+	// tier is a claim about what produced the placement and "it would have been here
+	// anyway" is not a Smart+ pick.
+	TierSmartPlus = "smart_plus"
+)
+
+// EntityKind values. Deliberately not a CHECK constraint (see 0019).
+const (
+	// EntityPhrase is a capitalised bigram from textvec.Phrases. No model, no network.
+	EntityPhrase = "phrase"
+	// EntityLLM came from a Smart+ extraction pass.
+	EntityLLM = "llm"
+)
+
+// ReplaceEntityAffinity rewrites a user's entities, preserving their corrections.
+//
+// Replaced wholesale like every other derived table, with one exception that is not an
+// inconsistency: `suppressed` is the READER's instruction, not a derivation, so it is
+// carried across by name. Recomputing it would mean "not something I follow" lasted until
+// the next poll, which is the same as not having the control.
+//
+// Keyed by name rather than by a surrogate id, because unlike a topic cluster an entity
+// HAS a stable natural key — the normalised phrase itself. Topics need the top-terms
+// fingerprint precisely because they have no such thing.
+func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []Entity) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	now := stamp(time.Now().UTC())
+
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+		suppressed := map[string]bool{}
+		// first_seen_at is preserved too, and for a reason worth stating: it is the only
+		// column here that is not recomputable. The engagement log says when an item was
+		// read, not when a NAME was first noticed, so throwing it away on every rebuild
+		// would make every entity look new every fifteen minutes and break any future
+		// "you have followed this since March".
+		firstSeen := map[string]string{}
+		rows, err := tx.QueryContext(ctx,
+			`SELECT name, suppressed, first_seen_at FROM entity_affinity WHERE user_id = ?`,
+			s.UserID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var name, first string
+			var sup int
+			if err := rows.Scan(&name, &sup, &first); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if sup != 0 {
+				suppressed[name] = true
+			}
+			firstSeen[name] = first
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM entity_affinity WHERE user_id = ?`, s.UserID); err != nil {
+			return err
+		}
+		for _, e := range es {
+			if e.Name == "" {
+				continue
+			}
+			first := now
+			if f, ok := firstSeen[e.Name]; ok && f != "" {
+				first = f
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO entity_affinity
+				  (user_id, name, label, kind, weight, mentions, suppressed,
+				   first_seen_at, last_seen_at, computed_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?)`,
+				s.UserID, e.Name, e.Label, e.Kind, e.Weight, e.Mentions,
+				boolInt(suppressed[e.Name]), first, now, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// EntityAffinity returns the reader's strongest entities, best first.
+//
+// Suppressed rows are excluded: the caller asking "what does this reader follow" must not
+// be handed back the things they said they do not. SuppressEntity is how they come back.
+func (r *ReaderRepo) EntityAffinity(ctx context.Context, s Scope, limit int) ([]Entity, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT name, label, kind, weight, mentions, suppressed, first_seen_at, last_seen_at
+		  FROM entity_affinity
+		 WHERE user_id = ? AND suppressed = 0
+		 ORDER BY weight DESC, name
+		 LIMIT ?`, s.UserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Entity
+	for rows.Next() {
+		var e Entity
+		var sup int
+		if err := rows.Scan(&e.Name, &e.Label, &e.Kind, &e.Weight, &e.Mentions,
+			&sup, &e.FirstSeen, &e.LastSeen); err != nil {
+			return nil, err
+		}
+		e.Suppressed = sup != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SuppressEntity records that the reader does not follow something.
+//
+// An UPDATE rather than a DELETE, so the next derivation does not simply put it back —
+// which is what makes it an instruction rather than a gesture. §18.2: a model you can
+// correct is one you will trust.
+func (r *ReaderRepo) SuppressEntity(ctx context.Context, s Scope, name string, on bool) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	res, err := r.db.Write.ExecContext(ctx,
+		`UPDATE entity_affinity SET suppressed = ? WHERE user_id = ? AND name = ?`,
+		boolInt(on), s.UserID, name)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // MegafeedSources returns the sources eligible for the ranked homepage.

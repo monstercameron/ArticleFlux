@@ -291,9 +291,42 @@ type Item struct {
 	// to know which picks it actually influenced. It is also the honest way to show
 	// that free Smart did most of the work, rather than implying a key is what makes
 	// the page good.
-	RankTier      string `protobuf:"bytes,22,opt,name=rank_tier,json=rankTier,proto3" json:"rank_tier,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RankTier string `protobuf:"bytes,22,opt,name=rank_tier,json=rankTier,proto3" json:"rank_tier,omitempty"`
+	// The topic this pick matched, when it matched one. Empty otherwise.
+	//
+	// It is on the wire as the cold-start signal, which is the thing it is hardest to
+	// get any other way. Topics need roughly 50–100 engaged items to mean anything
+	// (§18.4), so a new reader's ranking is freshness and feed affinity with no topic
+	// term at all — and the client has to be able to SAY that rather than present a
+	// confident wrong answer. An empty value on every row is how it knows.
+	//
+	// An id rather than the label: the client already needs a topic list for Trends,
+	// and shipping the label per item would send the same string on fifty rows and
+	// still go stale the moment the reader renames it.
+	RankTopic string `protobuf:"bytes,23,opt,name=rank_topic,json=rankTopic,proto3" json:"rank_topic,omitempty"`
+	// The scoring FACTORS behind rank_reasons, positionally parallel to it: topic, feed,
+	// domain, fresh, corroboration, manual, volume, duplicate, negative, skipped,
+	// external, deliberate.
+	//
+	// These are the machine keys and rank_reasons is the prose, and the client needs both
+	// for reasons that have nothing to do with each other.
+	//
+	// The prose is generated in Go, on the server, in English. Rendering it directly is
+	// the only place in the UI that bypasses the message catalogue entirely — and it
+	// evades the hardcoded-copy lint precisely because the literal is not in the client,
+	// it arrives over the wire. The term is what a localised label is keyed on.
+	//
+	// The prose is also written as a clause in a longer sentence, so it truncates to
+	// "from a feed you rea…" in a list row and tells the reader nothing. A key lets the
+	// client pick a label that fits the space it actually has, and keep the sentence for
+	// the hover.
+	//
+	// Parallel arrays rather than a repeated message: this rides on Item, which is the
+	// hottest message on the wire, and a submessage per reason costs a length prefix and
+	// a field tag per entry on a list of fifty rows for no gain a client can use.
+	RankReasonTerms []string `protobuf:"bytes,24,rep,name=rank_reason_terms,json=rankReasonTerms,proto3" json:"rank_reason_terms,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Item) Reset() {
@@ -478,6 +511,20 @@ func (x *Item) GetRankTier() string {
 		return x.RankTier
 	}
 	return ""
+}
+
+func (x *Item) GetRankTopic() string {
+	if x != nil {
+		return x.RankTopic
+	}
+	return ""
+}
+
+func (x *Item) GetRankReasonTerms() []string {
+	if x != nil {
+		return x.RankReasonTerms
+	}
+	return nil
 }
 
 // ScrollLiveViewRequest scrolls a running §10.1d live view.
@@ -4296,7 +4343,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\xe5\x04\n" +
+	" \x01(\tR\tlastError\"\xb0\x05\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -4324,7 +4371,10 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"speech_url\x18\x13 \x01(\tR\tspeechUrl\x12!\n" +
 	"\frank_reasons\x18\x14 \x03(\tR\vrankReasons\x12\x1b\n" +
 	"\trank_slot\x18\x15 \x01(\tR\brankSlot\x12\x1b\n" +
-	"\trank_tier\x18\x16 \x01(\tR\brankTier\"h\n" +
+	"\trank_tier\x18\x16 \x01(\tR\brankTier\x12\x1d\n" +
+	"\n" +
+	"rank_topic\x18\x17 \x01(\tR\trankTopic\x12*\n" +
+	"\x11rank_reason_terms\x18\x18 \x03(\tR\x0frankReasonTerms\"h\n" +
 	"\x15ScrollLiveViewRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
