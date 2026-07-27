@@ -254,21 +254,34 @@ func TestAPageThatNeverGoesIdleStillRenders(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// Comfortably longer than the idle cap, so a pass here means the cap
-	// released the render rather than the deadline killing it.
+	// Comfortably longer than the idle cap, so the ONLY thing that can end this
+	// wait successfully is the cap. That is what makes the error check below the
+	// whole assertion.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	start := time.Now()
 	snap, err := r.Snapshot(ctx, srv.URL, Viewport{})
+
+	// Deliberately no wall-clock assertion (TODO P2).
+	//
+	// An earlier version also checked that this finished within the cap plus
+	// thirty seconds, and that check measured the MACHINE: it passed in 11–16s
+	// alone and failed at 52.5s during `go test ./...` while two other sessions
+	// were building on the same box. A gate that goes red under load is one
+	// people learn to re-run rather than read, and the next real failure gets
+	// waved through with it.
+	//
+	// Nothing is lost by dropping it. The page never goes idle, so if the cap
+	// did not fire this call could only end at the caller's deadline or the
+	// renderer's own budget — and both of those come back as an ERROR. A
+	// successful snapshot IS the proof that the cap released it, on a machine of
+	// any speed.
 	if err != nil {
-		t.Fatalf("snapshot: %v", err)
+		t.Fatalf("snapshot: %v — on a page that never goes idle, an error means the "+
+			"cap did not release the render and something else ended it", err)
 	}
 	if !strings.Contains(snap.HTML, "right here in the markup") {
 		t.Error("the article is missing from a page that simply never went quiet")
-	}
-	if elapsed := time.Since(start); elapsed > idleWait+30*time.Second {
-		t.Errorf("took %v — the cap is %v, so it waited on something else", elapsed, idleWait)
 	}
 }
 

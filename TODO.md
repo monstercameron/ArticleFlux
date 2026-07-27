@@ -4303,6 +4303,38 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       *Done when: `TestGuardTerms` passes on the Apple-picking / burning-Amazon / beach-in-Java /
       Rust-Belt corpus cases individually.* §27.3c–d
 
+      ✅ 2026-07-27 — 26 files, **1,644 terms, 60–79 per category**, all ten guard families covered.
+      `TestGuardTerms` runs **20 behavioural cases** — both readings of each ambiguous word, scored
+      as real sentences — and `taxonomy_test.go` adds nine structural bars (term floor, weight
+      distribution, ≥8 multi-word terms per category, a prompt under the cap that states an
+      exclusion, and no term claimed at 2.0+ by two categories).
+
+      **Structural and behavioural are separate tests on purpose.** `TestAmbiguousWordsAreGuarded`
+      checks a guard *exists*; that is a much weaker claim than it looks, because a guard list can
+      exist and be the wrong list, be attached to a term the item never matches, or be defeated by a
+      second unguarded term in the same category. Only scoring real sentences catches those, and it
+      caught one immediately:
+
+      > **"Patch notes for the new season … fixed a speedrun exploit" scored gaming 11.8 and
+      > security 4.5.** `security.go` had anticipated this collision and resolved it the wrong way —
+      > its comment says "patch notes must win that fight on weight alone", and weight alone only
+      > decides the PRIMARY. Gaming won and security still rendered a chip. `exploit` is what
+      > satisfied the guard on bare `patch`, and it is ordinary gaming vocabulary. Fixed with the
+      > exclude §27.3c prescribes, at 2.0 rather than 3.0 so it cannot veto a genuine security story
+      > that happens to cite a vendor's patch notes.
+      >
+      > **The assertion is "not assigned at all", not "not primary".** A secondary renders a chip
+      > too, and a faint wrong chip is the same failure as a loud one — just quieter, which is how it
+      > survives (R23).
+
+      Two of the twenty initial failures were the test being wrong rather than the lexicon: a travel
+      piece about the island of Java is correctly `travel` (the guard did its job — Software never
+      fired), and "a meta analysis of statin trials" is defensibly `science` rather than `health`.
+      Both cases keep their real assertion, which is the `wrong` half.
+
+      Also reconciled: plan.md §27.3d's table said slug `film-tv`; the code and the test say `filmtv`.
+      The doc was corrected, since the executable contract is the one that cannot drift silently.
+
 - [ ] **10.3 · The corpus, and the ratchet. ← do not skip, and do not do it last.** A few hundred real
       feed items, hand-labeled, committed at `internal/classify/testdata/corpus.jsonl`.
       `TestTaxonomyPrecision` (**T24**) asserts per-category precision and recall floors and the
@@ -4509,7 +4541,7 @@ surface that needs it.
       Three tests against the real server, through the real tunnel: the N+1th stream is refused and
       counted, closing one frees its slot, and a client below the minimum cannot open one at all.
 
-- [ ] **P2 · `TestAPageThatNeverGoesIdleStillRenders` fails on a busy machine, not a broken one.**
+- [x] **P2 · `TestAPageThatNeverGoesIdleStillRenders` fails on a busy machine, not a broken one.**
       Measured 2026-07-27: it passes alone in 11–16s and failed at **52.5s against an 8s cap**
       during `go test ./...` while two other sessions were building on the same box. The cap is
       wall-clock, and wall-clock on a shared machine measures the machine.
@@ -4518,6 +4550,17 @@ surface that needs it.
       runner is not idle either.
       *Done when: the cap is expressed in work rather than wall-clock, or the test declares that it
       needs an idle machine and leaves the default run.* §22.14
+
+      ✅ 2026-07-27 — **the wall-clock assertion is gone, and nothing was lost with it.** The test's
+      subject is that a page which never reports network-idle is still released by the cap. Because
+      the page never goes idle, the only other things that can end that wait are the caller's deadline
+      and the renderer's own budget — and **both come back as an error**. So a successful snapshot IS
+      the proof the cap fired, on a machine of any speed, and the check that measured the box was
+      measuring something the error check already covered.
+      *One wall-clock bound was deliberately kept:* `TestSnapshotRefusesBlockedAddress` allows three
+      seconds to refuse an address the guard should never have dialled. That one is load-bearing — it
+      distinguishes "the guard ran" from "the browser launched and failed on its own" — and its margin
+      is about a thousandfold rather than 38s against 52s.
 
 - [ ] **P3 · `tts.Usage()` is written and nobody reads it.** `internal/tts` now bounds concurrency at
       `MaxInFlight` and meters paid requests, characters and cache hits — but nothing calls `Usage()`.
