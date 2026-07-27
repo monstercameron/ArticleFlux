@@ -73,17 +73,11 @@ func Sheet() {
 	css.Global("html[data-tone='light'] :is(.item-source, .article-link, .article-body a)",
 		css.Custom("ink", "color-mix(in oklab, var(--c, currentColor), var(--cream) 52%)"))
 
-	// The article's wash is the other thing that only works in one direction.
-	//
-	// It is a radial gradient in the source hue, clipped by the article's own
-	// box, and at 24% over a dark ground it reads as light falling in. Over
-	// cream it reads as a coloured PANEL — and because the article clips it, the
-	// panel has a hard bottom edge exactly where one article ends, which turns a
-	// continuous stream into a stack of cards. Half the mix removes the seam and
-	// keeps the light.
-	css.Global("html[data-tone='light'] .article::after",
-		r("background", "radial-gradient(ellipse at 22% 0%, "+
-			"color-mix(in srgb, var(--c) 11%, transparent), transparent 62%)"))
+	// The wash used to be overridden here for light themes. It is a THEME TOKEN
+	// now (--wash), because the problem was never light-versus-dark: it is that
+	// the mix has nothing to dilute it over any ground that has no colour of its
+	// own, which makes Ink and Contrast wrong in exactly the same way Daylight
+	// was. One knob per theme, calibrated against that theme's own ground.
 
 	base(r)
 	shell(r)
@@ -674,7 +668,7 @@ func reader(r func(string, string) css.Rule) {
 		r("content", `""`), r("position", "absolute"),
 		r("inset", "-60% -20% auto -20%"), r("height", "200%"),
 		r("pointer-events", "none"),
-		r("background", "radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--c) 24%, transparent), transparent 62%)"),
+		r("background", "radial-gradient(ellipse at 22% 0%, color-mix(in srgb, var(--c) var(--wash), transparent), transparent 62%)"),
 	)
 	css.Global(".article > *", r("position", "relative"), r("z-index", "1"))
 
@@ -1125,12 +1119,37 @@ func verdicts(r func(string, string) css.Rule) {
 		r("background", "#fff"),
 		r("color-scheme", "light"),
 	)
+	// The live view (§10.1d). An <img> fed by multipart/x-mixed-replace, so the
+	// browser swaps frames for us — which is why this needs geometry and
+	// nothing else.
+	css.Global(".page-frame-live",
+		r("display", "block"), r("width", "100%"), r("height", "auto"),
+		// The stream is rendered at a fixed viewport on the server, so the
+		// image has a fixed aspect. Letting it scale to the column keeps it
+		// legible on a narrow pane instead of cropping it.
+		r("max-height", "min(78vh, 900px)"), r("object-fit", "contain"),
+		r("background", "#0b0d12"),
+	)
 	css.Global(".page-frame-foot",
-		r("display", "flex"), r("justify-content", "flex-end"),
+		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
 		r("padding", "8px 10px"),
 		r("border-top", "1px solid var(--line)"),
 		r("background", "var(--bg)"),
 	)
+	css.Global(".page-frame-modes", r("display", "flex"), r("gap", "6px"))
+	// The caveat sits between the modes and the exit, and shrinks away first:
+	// on a narrow pane the controls matter more than the sentence explaining
+	// one of them.
+	css.Global(".page-frame-note",
+		r("color", "var(--soft)"), r("font-size", "11.5px"),
+		r("overflow", "hidden"), r("text-overflow", "ellipsis"),
+		r("white-space", "nowrap"), r("min-width", "0"),
+	)
+	css.Global(".page-frame-close", r("margin-left", "auto"), r("flex", "none"))
+	css.Global(".page-frame-foot", css.Media(css.MaxW(520),
+		r("flex-wrap", "wrap"))...)
+	css.Global(".page-frame-note", css.Media(css.MaxW(520),
+		r("display", "none"))...)
 }
 
 // listening styles the read-aloud widget and the source marks that now appear in

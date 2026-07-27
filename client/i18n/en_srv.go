@@ -28,6 +28,9 @@ func init() {
 		"internal":   "internal error",
 		"notFound":   "not found",
 		"saveFailed": "couldn't save that",
+		// The paging cursor no longer matches the list. Never an empty page:
+		// a client reading that as "the end" silently truncates (§20.7).
+		"staleCursor": "this page cursor is out of date; reloading the list",
 
 		// --- Smart+
 		"badApiKeyShape":       "that does not look like an OpenAI API key — they begin with sk-",

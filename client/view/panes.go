@@ -1076,6 +1076,16 @@ type listProps struct {
 	// undo is the token from the last bulk mark, if the offer to reverse it is
 	// still standing.
 	undo string
+	// rev increments every time a list load completes. Nothing reads it, and it
+	// must not be removed as unused.
+	//
+	// It exists because a load that finishes with an EMPTY result changes nothing
+	// else in these props: the rows were already cleared when the scope changed,
+	// the total is already 0, the cursor is already "". The one real change is
+	// `loading` going true -> false, and that alone did not repaint — so a feed
+	// with no items sat on its loading skeleton forever, for a request that had
+	// succeeded. This field is what guarantees the props differ.
+	rev int
 	// loading is a page-one fetch in flight — the initial load, or a feed change.
 	// It is distinct from loadingMore, which appends to a list that is already on
 	// screen and therefore needs no placeholder.
@@ -1115,11 +1125,11 @@ type listProps struct {
 	// unmistakable, and it is right to: a list that silently shows yesterday's
 	// articles during an outage is the failure the connection indicator exists
 	// to prevent, wearing a different hat.
-	staleNote string
-	unread       int
-	busy         string
-	notice       string
-	searchValue  string
+	staleNote   string
+	unread      int
+	busy        string
+	notice      string
+	searchValue string
 	// Handlers are created ONCE in Reader, at the top level, and passed down.
 	// They cannot be created here: listPane returns early in three places, and a
 	// hook behind an early return binds to the wrong slot.
@@ -1743,6 +1753,11 @@ type articleProps struct {
 	// disclosure in this stream: the control repeats once per article, so its
 	// resting state has to be the quiet one.
 	pageOpen map[string]bool
+	// pageLive is which of those open frames are showing the LIVE browser view
+	// (§10.1d) rather than the proxied HTML. Absent means the HTML, which is
+	// the cheaper of the two and the one that works without a browser on the
+	// server — so the quiet default is also the safe one.
+	pageLive map[string]bool
 	// noteOpen is which articles have their note panel opened out, keyed by item
 	// id. Closed is the default and the absent value, which is the point: in a
 	// continuous stream every article carries one of these, and a column of
@@ -1984,7 +1999,8 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 			}),
 		),
 		ui.If(p.pageOpen[it.GetId()] && full.GetProxyUrl() != "", func() ui.Node {
-			return pageFrame(tr, it.GetId(), full.GetProxyUrl())
+			return pageFrame(tr, it.GetId(), full.GetProxyUrl(), full.GetStreamUrl(),
+				p.pageLive[it.GetId()])
 		}),
 		listenBar(tr, it, p),
 		ui.If(loading, func() ui.Node { return skeletonArticle(tr) }),
@@ -2022,12 +2038,49 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 // Deliberately NOT `allow-scripts` and NOT `allow-same-origin`. Together those
 // two would let the framed document reach back into this application, and
 // nothing about showing a publisher's page requires either.
-func pageFrame(tr i18n.Runtime, id, src string) ui.Node {
-	return html.Div(html.Props{Class: "page-frame", Key: "pf-" + id},
-		html.Iframe(html.Props{
+// pageFrame renders the publisher's page in the reading column, in whichever of
+// the two modes is selected.
+//
+// **Page** is the proxied HTML (§10.1b): an iframe, real text you can select and
+// search, layout as far as the rewriting got. **Live** is a browser on the
+// server painting the page and sending the pixels (§10.1d): an `<img>` fed by
+// `multipart/x-mixed-replace`, which the browser decodes frame by frame with no
+// client code at all — no canvas, no compositor, no streaming protocol here.
+//
+// The trade between them is the whole reason there is a toggle rather than a
+// clever automatic choice. Page is cheap, selectable and often mis-styled; Live
+// is exact and costs a browser tab on the server for as long as you look at it,
+// and you cannot select a word of it. Neither dominates, so the reader picks.
+//
+// An iframe for one and an img for the other is not an inconsistency: they are
+// genuinely different kinds of thing, and the img is why Live needs no
+// JavaScript.
+func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Node {
+	// Live is only reachable when the server offered a stream URL. A toggle to
+	// a mode the instance cannot serve would be a button that produces an error
+	// page, which is worse than a button that is not there.
+	canLive := streamSrc != ""
+	if live && !canLive {
+		live = false
+	}
+
+	var view ui.Node
+	if live {
+		view = html.Img(html.Props{
+			Class: "page-frame-live",
+			Raw: map[string]any{
+				"src": streamSrc,
+				"alt": tr.T("article", "viewPageLiveAlt"),
+				// NOT lazy: a lazily-loaded stream does not start until it
+				// scrolls into view, and the reader has already asked for it.
+				"decoding": "sync",
+			},
+		})
+	} else {
+		view = html.Iframe(html.Props{
 			Class: "page-frame-doc",
 			Raw: map[string]any{
-				"src":     src,
+				"src":     pageSrc,
 				"sandbox": "allow-popups",
 				"loading": "lazy",
 				"title":   tr.T("article", "viewPageFrameTitle"),
@@ -2037,19 +2090,69 @@ func pageFrame(tr i18n.Runtime, id, src string) ui.Node {
 				// here.
 				"referrerpolicy": "no-referrer",
 			},
-		}),
+		})
+	}
+
+	return html.Div(html.Props{Class: "page-frame", Key: "pf-" + id,
+		Data: map[string]string{"mode": modeName(live)}},
+		view,
 		// The way out lives under the frame as well as in it. The strip inside
 		// the proxied page scrolls away with the page; this does not, and a
 		// reader who has scrolled a long page needs the exit where they are.
 		html.Div(html.Props{Class: "page-frame-foot"},
+			// Two chips rather than one that flips its label. A single toggle
+			// makes you read the label to find out which state you are in;
+			// two make the current one visibly pressed, and the choice is
+			// between named things rather than between "on" and "off".
+			ui.If(canLive, func() ui.Node {
+				return html.Div(html.Props{Class: "page-frame-modes",
+					Role: "group",
+					Aria: map[string]string{"label": tr.T("article", "viewPageModes")}},
+					html.Button(html.Props{
+						Class: "chip chip-mini",
+						Aria:  map[string]string{"pressed": boolAttr(!live)},
+						Raw: map[string]any{
+							"data-action": "page-mode-doc", "data-for-item": id,
+						},
+					}, html.Text(tr.T("article", "viewPageModeDoc"))),
+					html.Button(html.Props{
+						Class: "chip chip-mini",
+						Aria:  map[string]string{"pressed": boolAttr(live)},
+						Raw: map[string]any{
+							"data-action": "page-mode-live", "data-for-item": id,
+						},
+					}, html.Text(tr.T("article", "viewPageModeLive"))),
+				)
+			}),
+			// Said once, next to the control it explains, and only in the mode
+			// it applies to. A reader who picks Live and then cannot select a
+			// quote will otherwise conclude the feature is broken.
+			ui.If(live, func() ui.Node {
+				return html.Span(html.Props{Class: "page-frame-note"},
+					html.Text(tr.T("article", "viewPageLiveNote")))
+			}),
 			html.Button(html.Props{
-				Class: "chip chip-mini",
+				Class: "chip chip-mini page-frame-close",
 				Raw: map[string]any{
 					"data-action": "toggle-page", "data-for-item": id,
 				},
 			}, html.Text(tr.T("article", "viewPageClose"))),
 		),
 	)
+}
+
+func modeName(live bool) string {
+	if live {
+		return "live"
+	}
+	return "doc"
+}
+
+func boolAttr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // listenBar is the play/pause/stop widget.

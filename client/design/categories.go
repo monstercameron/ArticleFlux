@@ -223,20 +223,73 @@ func categoriesCSS(r func(string, string) css.Rule) {
 	css.Global(".af-cand-meta", r("font-size", "11.5px"), r("color", "var(--mute)"))
 	css.Global(".af-cand-go", r("flex", "none"), r("padding", "5px 12px"), r("font-size", "12px"))
 
-	// The consent and the spend, on one line and in that order.
+	// The retry, which is quiet: the analysis already ran when the reader pressed
+	// Add feed, and this is the second attempt rather than the offer.
 	css.Global(".af-smart",
 		r("display", "flex"), r("align-items", "center"), r("gap", "9px"),
 		r("flex-wrap", "wrap"), r("padding-top", "2px"),
 	)
-	// Pressed is the ON state and it wears the accent, because this is the one
-	// control in the dialog whose state costs money to be wrong about.
-	css.Global(".af-smart-toggle[aria-pressed='true']",
-		r("color", "var(--bg)"), r("background", "var(--cc)"), r("border-color", "var(--cc)"),
+	css.Global(".af-retry",
+		r("padding", "5px 13px"), r("font-size", "12px"),
+		r("border-color", "var(--line)"), r("color", "var(--soft)"),
 	)
-	// A disabled primary is drawn as unavailable rather than hidden: the reader
-	// needs to see what turning the toggle on will let them do.
-	css.Global(".af-go[aria-disabled='true']",
-		r("opacity", ".45"), r("pointer-events", "none"),
+	css.Global(".af-retry:hover", r("border-color", "var(--cc)"), r("color", "var(--cream)"))
+
+	// --- the Smart+ lamp ------------------------------------------------------
+	//
+	// It rides the FEED ADDRESS label's row, right-aligned, so the capability is
+	// visible the moment the dialog opens and sits beside the thing it is about.
+	//
+	// The dot is the connection indicator's dot at the same 8px, and that is the
+	// argument for the whole control: this app already teaches "a small filled
+	// dot means a capability is live right now", and a second vocabulary for the
+	// same fact would be a second thing to learn. Off is the same dot hollow.
+	css.Global(".af-eyebrow-row",
+		r("display", "flex"), r("align-items", "center"),
+		r("justify-content", "space-between"), r("gap", "12px"),
+	)
+	css.Global(".af-lamp",
+		r("display", "inline-flex"), r("align-items", "center"), r("gap", "7px"),
+		r("flex", "none"), r("padding", "3px 9px 3px 8px"),
+		r("border-radius", "99px"),
+		r("border", "1px solid transparent"),
+		// Explicit, not inherited. A bare <button> with no background falls
+		// through to Chromium's ButtonFace — a light grey pill with dark text —
+		// which made the OFF state the brightest thing on the row and the ON
+		// state look like the quiet one. Every other control here carries .btn or
+		// .chip, which is why nothing else hit this.
+		r("background", "transparent"),
+		r("color", "var(--mute)"),
+		r("transition", "color var(--t1), border-color var(--t1), background var(--t1)"),
+	)
+	css.Global(".af-lamp:hover", r("color", "var(--cream)"), r("border-color", "var(--line)"))
+	css.Global(".af-lamp-label",
+		r("font-size", "10.5px"), r("letter-spacing", ".08em"),
+		r("text-transform", "uppercase"), r("font-weight", "500"),
+	)
+	css.Global(".af-lamp-dot",
+		r("width", "8px"), r("height", "8px"), r("border-radius", "50%"),
+		r("flex", "none"),
+		// Hollow: a ring in the current text colour, so it dims and brightens
+		// with the label instead of being a second thing to style.
+		r("background", "none"),
+		r("box-shadow", "inset 0 0 0 1.5px currentColor"),
+		r("transition", "box-shadow var(--t1), background var(--t1)"),
+	)
+	// Armed: the DOT lights and the label comes up to cream. Nothing else.
+	//
+	// The first version painted the label, the border and the fill amber as well
+	// — four signals for one bit, stacked directly above the address field's own
+	// amber focus ring, so the default view of the dialog was two amber objects
+	// arguing. The connection indicator has always done this correctly: its dot
+	// carries the state and its words stay quiet. Same idea, same restraint.
+	css.Global(".af-lamp[aria-pressed='true']",
+		r("color", "var(--cream)"),
+		r("border-color", "var(--line)"),
+	)
+	css.Global(".af-lamp[aria-pressed='true'] .af-lamp-dot",
+		r("background", "var(--cc)"),
+		r("box-shadow", "0 0 0 3px color-mix(in srgb, var(--cc) 20%, transparent)"),
 	)
 
 	// The samples. This is the evidence, so it is the biggest thing in the

@@ -83,6 +83,18 @@ type Theme struct {
 	// Shadow is the modal lift. Pure black at 55% is right under a dark ground
 	// and reads as a smudge under a light one.
 	Shadow string // --shadow
+
+	// Wash is how much of a source's hue the article's radial gradient carries.
+	//
+	// It has to be per-theme, and finding that out is what looking at all five
+	// cost. 24% is right on plum, where the ground already has colour of its own
+	// to dilute the mix. Over a NEUTRAL ground there is nothing to dilute it
+	// with, so the same declaration that reads as light falling in on Fanciful
+	// reads as a green panel on Ink — and worst of all on Contrast, which is the
+	// maximum-legibility theme and was carrying the heaviest decoration of the
+	// five. A theme that cannot tune its own ornament is a theme that only works
+	// at the lightness it was designed against.
+	Wash string // --wash
 }
 
 // Vars is the ordered token list: the contract between first paint and runtime.
@@ -107,6 +119,7 @@ func (t Theme) Vars() [][2]string {
 		{"pos", t.Pos},
 		{"neg", t.Neg},
 		{"shadow", t.Shadow},
+		{"wash", t.Wash},
 	}
 }
 
@@ -142,6 +155,7 @@ var Fanciful = Theme{
 	Accent: Accent,
 	Pos:    "#7DDCB0", Neg: "#FF8A6B",
 	Shadow: "0 24px 70px rgba(0,0,0,.55)",
+	Wash:   "24%",
 }
 
 // Ink is the cold one: near-black, higher contrast, a blue accent.
@@ -159,6 +173,7 @@ var Ink = Theme{
 	Accent: "#89B9FF",
 	Pos:    "#6FDCA8", Neg: "#FF8E76",
 	Shadow: "0 24px 70px rgba(0,0,0,.6)",
+	Wash:   "13%",
 }
 
 // Ledger is old paper under a lamp: warm sepia, amber accent.
@@ -171,6 +186,7 @@ var Ledger = Theme{
 	Accent: "#E8A33D",
 	Pos:    "#93C97F", Neg: "#E8836A",
 	Shadow: "0 24px 70px rgba(0,0,0,.5)",
+	Wash:   "19%",
 }
 
 // Daylight is the light one, and it is a real inversion rather than a filter.
@@ -196,6 +212,7 @@ var Daylight = Theme{
 	// mark that is legible on the page and not on the row you are sitting on.
 	Pos: "#1B6B4A", Neg: "#A3381D",
 	Shadow: "0 20px 50px rgba(58,44,28,.18)",
+	Wash:   "11%",
 }
 
 // Contrast is the accessibility floor: black, white, and nothing in between that
@@ -210,6 +227,7 @@ var Contrast = Theme{
 	Accent: "#FFD54A",
 	Pos:    "#6EE7A8", Neg: "#FF9B84",
 	Shadow: "0 24px 70px rgba(0,0,0,.8)",
+	Wash:   "6%",
 }
 
 // Themes is the picker's order, and Fanciful is first because it is the default

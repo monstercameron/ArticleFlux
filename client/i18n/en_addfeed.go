@@ -46,12 +46,18 @@ func init() {
 			"built and follow it anyway.",
 		// The egress sentence. It says what is sent and where, in the place the
 		// decision is made rather than in a settings screen somewhere else.
-		"smartOffHint": "Turn Smart+ on to send this page's structure — its tags and " +
-			"classes, not its text — to OpenAI, which writes the rule for following it.",
+		// Points at the lamp, which is the only control that unblocks this. It
+		// names what is sent before anything is sent.
+		"smartOffHint": "Turn on Smart+ above and add the address again. It sends the " +
+			"page's structure — its tags and classes, not its text — to OpenAI, which " +
+			"works out the rule for following it.",
 		"smartToggleOn":  "Smart+ on",
 		"smartToggleOff": "Smart+ off",
-		"smartAnalyze":   "Find the articles",
-		"smartWorking":   "Reading the page…",
+		// The lamp's tooltip and its accessible name. It says what the capability
+		// DOES, because the label beside it only says whether it is armed.
+		"smartAria":    "Smart+ · when an address has no feed, read the page and work out how to follow it",
+		"smartAnalyze": "Try again",
+		"smartWorking": "Reading the page…",
 		"smartNoKey": "This server has no OpenAI key. Whoever runs it adds one in " +
 			"Settings → Smart+.",
 		"smartRefused": "This site's robots.txt asks us not to read this page, so we won't.",

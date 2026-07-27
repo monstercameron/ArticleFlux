@@ -144,8 +144,9 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 	}, html.Text(tr.T("addFeed", "newCategory"))))
 
 	body := []ui.Node{
-		afField(tr.T("addFeed", "urlLabel"),
+		afFieldWith(tr.T("addFeed", "urlLabel"),
 			tr.T("addFeed", "urlHint"),
+			smartLamp(tr, p.smartOn),
 			html.Input(html.Props{
 				Class: "field af-input", Type: "url",
 				Placeholder: tr.T("addFeed", "urlPlaceholder"),
@@ -307,38 +308,31 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 			html.Text(tr.T("addFeed", "smartFailed"))))
 	}
 
-	// The consent and the action, side by side and in that order. The sentence
-	// under them says what is sent and to whom — at the moment of the decision,
-	// which is the one place it can inform it.
-	toggle := tr.T("addFeed", "smartToggleOff")
-	if p.smartOn {
-		toggle = tr.T("addFeed", "smartToggleOn")
+	// Off: no button. The control that unblocks this is the lamp on the address
+	// row, and a disabled button here would be a second place to press, one of
+	// which does nothing. The sentence points at the one that does — and it is
+	// the sentence that says what leaving the machine means, at the moment the
+	// decision is made.
+	if !p.smartOn {
+		kids = append(kids, html.Div(html.Props{Class: "af-note"},
+			html.Text(tr.T("addFeed", "smartOffHint"))))
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
 	}
+
+	// On: the analysis has already run — pressing Add feed with the lamp lit is
+	// the whole gesture. This button is the RETRY, which is why it only appears
+	// once there is something to retry, and why it is quiet rather than primary.
 	analyze := tr.T("addFeed", "smartAnalyze")
 	if p.smartBusy {
 		analyze = tr.T("addFeed", "smartWorking")
 	}
-	kids = append(kids,
-		html.Div(html.Props{Class: "af-smart"},
-			html.Button(html.Props{
-				Class: "chip af-smart-toggle",
-				Raw:   map[string]any{"data-action": actAddSmart},
-				Aria:  map[string]string{"pressed": strconv.FormatBool(p.smartOn)},
-			}, html.Text(toggle)),
-			html.Button(html.Props{
-				Class: "btn af-go",
-				Raw:   map[string]any{"data-action": actAddAnalyze},
-				Aria: map[string]string{
-					"busy":     strconv.FormatBool(p.smartBusy),
-					"disabled": strconv.FormatBool(!p.smartOn),
-				},
-			}, html.Text(analyze)),
-		),
-		ui.If(!p.smartOn, func() ui.Node {
-			return html.Div(html.Props{Class: "af-hint"},
-				html.Text(tr.T("addFeed", "smartOffHint")))
-		}),
-	)
+	kids = append(kids, html.Div(html.Props{Class: "af-smart"},
+		html.Button(html.Props{
+			Class: "btn af-retry",
+			Raw:   map[string]any{"data-action": actAddAnalyze},
+			Aria:  map[string]string{"busy": strconv.FormatBool(p.smartBusy)},
+		}, html.Text(analyze)),
+	))
 	return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
 }
 
@@ -405,10 +399,53 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 // label → control → explanation, and a reader who already knows what to type
 // never has to read past the field to get to it.
 func afField(label, hint string, control ui.Node) ui.Node {
+	return afFieldWith(label, hint, nil, control)
+}
+
+// afFieldWith is afField with something on the far end of the label row.
+//
+// One caller: the address field, which carries the Smart+ lamp. It belongs on
+// THAT row and not in the dialog's header, because the capability is about the
+// address — what happens when the thing you typed turns out not to be a feed —
+// and a control in the header would be making a claim about the whole dialog.
+func afFieldWith(label, hint string, aside, control ui.Node) ui.Node {
 	return html.Div(html.Props{Class: "af-field"},
-		html.Span(html.Props{Class: "af-eyebrow"}, html.Text(strings.ToUpper(label))),
+		html.Div(html.Props{Class: "af-eyebrow-row"},
+			html.Span(html.Props{Class: "af-eyebrow"}, html.Text(strings.ToUpper(label))),
+			aside,
+		),
 		control,
 		html.Span(html.Props{Class: "af-hint"}, html.Text(hint)),
+	)
+}
+
+// smartLamp is the Smart+ state, on the address row, always visible.
+//
+// A LAMP rather than a switch, and the distinction is the design: it reports
+// first and toggles second. Off is a hollow ring in the muted grey; on fills it
+// with the app's amber and lifts the label to cream — the same "a lit dot means
+// this capability is live" idea the connection indicator already teaches, rather
+// than a second vocabulary for the same fact.
+//
+// It is deliberately not a chip. Chips in this app are choices among peers, and
+// this is not one of several options — it is a capability that is either armed
+// or not, and arming it changes what the button below does.
+func smartLamp(tr i18n.Runtime, on bool) ui.Node {
+	label := tr.T("addFeed", "smartToggleOff")
+	if on {
+		label = tr.T("addFeed", "smartToggleOn")
+	}
+	return html.Button(html.Props{
+		Class: "af-lamp",
+		Raw:   map[string]any{"data-action": actAddSmart},
+		Title: tr.T("addFeed", "smartAria"),
+		Aria: map[string]string{
+			"pressed": strconv.FormatBool(on),
+			"label":   tr.T("addFeed", "smartAria"),
+		},
+	},
+		html.I(html.Props{Class: "af-lamp-dot", Aria: map[string]string{"hidden": "true"}}),
+		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(label)),
 	)
 }
 

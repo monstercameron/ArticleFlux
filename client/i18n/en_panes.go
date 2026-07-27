@@ -116,6 +116,13 @@ func init() {
 		// own jitter and does not publish the number. It is here to answer one
 		// question — wait, or press it — and the press is why being a second
 		// out costs nothing.
+		// The cached-fallback badge (§12.3). Two facts, and both are load-bearing:
+		// that this is not live, and how old it is — a list from four minutes
+		// ago and one from yesterday are the same word and very different
+		// things to act on. Phrased as a statement rather than a warning: the
+		// app is working and one thing is missing, which is not an error.
+		"staleNote": "Showing what you last saw, {age} ago — you're offline.",
+
 		"connRetry":   "Retry",
 		"connRetryIn": "Retry · {secs}s",
 		"connSignIn":  "Sign in",
@@ -194,6 +201,18 @@ func init() {
 		"viewPage":      "View page",
 		"viewPageFull":  "Full width",
 		"viewPageClose": "Close page",
+		// The two modes, named by what you get rather than by how it is made.
+		// "Rendered" would describe our plumbing; "Live view" describes a page
+		// being painted for you right now, which is the thing the reader is
+		// choosing.
+		"viewPageModes":    "How to show this page",
+		"viewPageModeDoc":  "Page",
+		"viewPageModeLive": "Live view",
+		// Said in the mode it applies to, because a reader who picks Live and
+		// then cannot select a quote will conclude the feature is broken rather
+		// than that it is a picture.
+		"viewPageLiveNote": "A picture of the page — you can't select or search it.",
+		"viewPageLiveAlt":  "Live view of the page, rendered on your server",
 		// The frame's accessible name. It says where the content is from and
 		// how it got here, because a screen reader lands in it with no other
 		// way to tell it apart from the article above.

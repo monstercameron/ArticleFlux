@@ -156,6 +156,9 @@ type actions struct {
 	rate func(id string, want int)
 	// togglePage shows or hides the proxied publisher page for one article.
 	togglePage func(id string)
+	// setPageMode switches that frame between the proxied HTML and the live
+	// browser stream (§10.1b vs §10.1d).
+	setPageMode func(id string, live bool)
 	later      func(id string)
 	markUnread func(id string)
 	openExtern func(id string)
@@ -322,11 +325,6 @@ func shortDuration(tr i18n.Runtime, d time.Duration) string {
 	}
 }
 
-func traceLoading(l bool, n int) bool {
-	println("TRACE render listProps loading=", l, " items=", n)
-	return l
-}
-
 func Reader(p readerProps) ui.Node {
 	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
 	// top, unconditionally — GWC matches hooks positionally. It is threaded
@@ -436,6 +434,11 @@ func Reader(p readerProps) ui.Node {
 	// reading column. Not persisted: it holds a live iframe, and restoring one
 	// on load would fetch a page nobody asked for yet.
 	pageOpen := ui.UseState(map[string]bool{})
+	// Which of those are in live-browser mode rather than proxied HTML. Kept
+	// separate from pageOpen so closing and reopening a frame remembers the
+	// mode you were last in — switching modes is a preference, not a step in a
+	// flow you have to repeat.
+	pageLive := ui.UseState(map[string]bool{})
 	// Which articles have their note panel opened out. Closed is the default and
 	// the absent value: in a continuous stream this control repeats once per
 	// article, so its resting state has to be the quiet one.
@@ -537,6 +540,25 @@ func Reader(p readerProps) ui.Node {
 	// saved place walked backwards by one article on every boot, marking an
 	// article read each time it did.
 	expectFocus := ui.UseRef("")
+
+	// skipPast holds the articles a JUMP scrolled over, which the reader did not.
+	//
+	// expectFocus above guards the topmost-article handler; this guards the other
+	// one, and it needs its own because the two events are genuinely different.
+	// Opening an article the stream does not hold seeds the one above it and then
+	// scrolls the target to the top — and `OnScrolledPast` reports every child
+	// whose bottom edge ends up above the fold, which after that jump includes the
+	// seeded article. So clicking row n and then row n+2 marked n+1 read, and
+	// credited a `Completed` signal for it: an article that was never rendered on
+	// screen for a single frame was scored as finished.
+	//
+	// A time window would have been the easy fix and the wrong one — it makes the
+	// behaviour depend on how fast the browser settles a smooth scroll. This is
+	// the precise statement instead: these specific ids moved under the viewport
+	// because the app moved them, so they are not evidence of anything. An entry
+	// is removed the moment the article becomes topmost, because scrolling back up
+	// into it IS reading it and the suppression must not outlive its reason.
+	skipPast := ui.UseRef(map[string]bool{})
 
 	// Three separate in-flight flags, not one.
 	//
@@ -665,6 +687,24 @@ func Reader(p readerProps) ui.Node {
 	// setItems is the ONLY way the item list changes. Both containers, always,
 	// and a fresh slice header every time so the reconciler can see the change.
 	setItems := func(next []*pb.Item) {
+		// An empty result is stored as an empty NON-NIL slice, never as nil, and
+		// that distinction is the difference between the empty state appearing and
+		// the list hanging on its skeleton forever.
+		//
+		// The renderer skips a repaint when a state write does not change the
+		// value. On a feed with no items every write in the response handler is
+		// already a no-op — the rows were cleared on the scope change, the total is
+		// already 0, the cursor is already "" — so `items.Set(nil)` over an
+		// already-nil list changed nothing, nothing repainted, and the skeleton
+		// stayed up for a request that had succeeded. On a feed WITH items the bug
+		// was invisible, because the new rows are self-evidently a change.
+		//
+		// nil means "never loaded"; empty-non-nil means "loaded, and there is
+		// nothing". Those are different facts and the UI renders them differently,
+		// so they must not share a representation.
+		if next == nil {
+			next = []*pb.Item{}
+		}
 		// What is NEW, by id, against the list being replaced.
 		//
 		// This diff is what makes the spawn animation mean something. A scope
@@ -804,6 +844,29 @@ func Reader(p readerProps) ui.Node {
 	// itemsLoading is derived from it rather than assigned, so no ordering of
 	// responses can leave the list stuck on its skeleton. See loadItems.
 	inFlight := ui.UseRef(0)
+	// listRev forces the list to repaint when a load finishes.
+	//
+	// This is not defensive padding; it is load-bearing, and the failure without
+	// it is invisible in the code. When a feed with NO items finishes loading,
+	// every setter in the response handler writes a value the state already
+	// holds: the rows are already empty (clearList emptied them), the total is
+	// already 0, the cursor is already "". The single genuine change is
+	// `itemsLoading` going true -> false, and one boolean flip did not produce a
+	// render — so the loading skeleton stayed on screen permanently, for a load
+	// that had completed successfully.
+	//
+	// revRef is a Ref and listRev is State, deliberately. The Ref is the live
+	// counter (a State read inside an async callback returns the value as of the
+	// render that created the closure, so `listRev.Get()+1` would compute the
+	// same number twice and dedupe right back into no render); the State is what
+	// the render reads, and it receives a value that has genuinely never been
+	// seen before. Same reason `reconnected` is State rather than a Ref below.
+	revRef := ui.UseRef(0)
+	listRev := ui.UseState(0)
+	bumpList := func() {
+		revRef.Set(revRef.Get() + 1)
+		listRev.Set(revRef.Get())
+	}
 
 	// clearList empties everything derived from the current scope's item list.
 	//
@@ -822,10 +885,8 @@ func Reader(p readerProps) ui.Node {
 	}
 
 	loadItems := func(s scope, unread bool) {
-		println("TRACE loadItems enter src=", s.SourceID)
 		c := client.Get()
 		if c == nil {
-			println("TRACE loadItems ABORT client nil")
 			return
 		}
 		gen := loadGen.Get() + 1
@@ -835,7 +896,6 @@ func Reader(p readerProps) ui.Node {
 		// same frame as the click. Setting it inside the goroutine would leave one
 		// frame showing the previous feed's rows, which is the flicker.
 		inFlight.Set(inFlight.Get() + 1)
-		println("TRACE inFlight++ ->", inFlight.Get())
 		itemsLoading.Set(true)
 		// done is called on EVERY exit from the response handler, including the
 		// stale one, and that is the whole point.
@@ -853,10 +913,8 @@ func Reader(p readerProps) ui.Node {
 				n = 0
 			}
 			inFlight.Set(n)
-			println("TRACE done() inFlight ->", n)
 			if n == 0 {
 				itemsLoading.Set(false)
-				println("TRACE itemsLoading set false; reads back as", itemsLoading.Get())
 			}
 		}
 		go func() {
@@ -875,6 +933,7 @@ func Reader(p readerProps) ui.Node {
 				list, err = c.ListNotes(context.Background())
 				ui.PostAsync(func() {
 					done()
+					bumpList()
 					if stale() {
 						return
 					}
@@ -922,7 +981,6 @@ func Reader(p readerProps) ui.Node {
 				case s.FolderID != "":
 					req.SourceIds = folderSources(feeds.Get(), s.FolderID)
 				}
-				println("TRACE calling ListItems scope=", int(req.Scope), " src=", req.SourceId)
 				var res *pb.ListItemsResponse
 				// Cached fallback: on a TRANSPORT failure this returns the last
 				// answer to this exact question with err == nil, so the reader
@@ -930,15 +988,14 @@ func Reader(p readerProps) ui.Node {
 				// staleness rides back with it and is rendered — a fallback
 				// nobody can see is indistinguishable from a lie.
 				res, from, err = c.ListItemsCached(context.Background(), req)
-				println("TRACE ListItems returned err=", err != nil)
 				if res != nil {
 					list, next = res.GetItems(), res.GetNextCursor()
 					count = int(res.GetTotal())
 				}
 			}
 			ui.PostAsync(func() {
-				println("TRACE response landed stale=", stale(), " n=", len(list))
 				done()
+				bumpList()
 				// A newer load has already been asked for. This answer is to a
 				// question nobody is asking any more, and letting it land would
 				// replace the list the reader is looking at with the one they
@@ -1234,7 +1291,7 @@ func Reader(p readerProps) ui.Node {
 		// that belongs to the old content and then jumps, which reads as a flicker.
 		// Keeping the stream lets the pane simply travel to the article, which is
 		// what a reader means when they click a headline they can already see.
-		if indexOf(stream.Get(), it) >= 0 {
+		if at := indexOf(stream.Get(), it); at >= 0 {
 			current.Set(it)
 			if focus {
 				pane.Set(viewArticle)
@@ -1242,6 +1299,17 @@ func Reader(p readerProps) ui.Node {
 			platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 			savePrefs(map[string]string{"read.item": it.GetId()})
 			expectFocus.Set(it.GetId())
+			// Everything the travel passes over. A jump forward inside the stream
+			// scrolls the intervening articles clean past the fold, and a smooth
+			// scroll does it in a dozen frames — every one of which is a
+			// scrolled-past report for an article the reader is travelling over
+			// rather than reading. Ids already read cost nothing to include:
+			// markRead is a no-op on them, and this is removed again the moment
+			// one becomes topmost.
+			for _, s := range stream.Get()[:at] {
+				skipPast.Get()[s.GetId()] = true
+			}
+			delete(skipPast.Get(), it.GetId())
 			platform.ScrollChildToTop(".pane-article",
 				`[data-article-id="`+it.GetId()+`"]`, true)
 			if focus {
@@ -1270,6 +1338,19 @@ func Reader(p readerProps) ui.Node {
 		// flash that reads as a flicker.
 		platform.ScrollPaneToTop(".pane-article")
 		stream.Set(seed)
+		// The old stream is gone, so its suppressions are meaningless — rebuilt
+		// rather than merged, which is also what keeps this map bounded by the
+		// length of one stream instead of by how many articles have been opened.
+		// What goes in is the seeded predecessor: it exists so scrolling UP works
+		// immediately, and the scroll that puts the target at the top necessarily
+		// carries it past the fold.
+		fresh := map[string]bool{}
+		for _, s := range seed {
+			if s.GetId() != it.GetId() {
+				fresh[s.GetId()] = true
+			}
+		}
+		skipPast.Set(fresh)
 		current.Set(it)
 		if focus {
 			pane.Set(viewArticle)
@@ -1417,6 +1498,14 @@ func Reader(p readerProps) ui.Node {
 			res, err := c.Refresh(context.Background(), only)
 			ui.PostAsync(func() {
 				busy.Set("")
+				// Offline is not a failure of the refresh, it is a reason it
+				// could not be attempted — and the difference matters to the
+				// reader, because one of them is worth pressing again in a
+				// minute and the other is worth investigating.
+				if errors.Is(err, data.ErrOffline) {
+					notice.Set(tr.T("reader", "offlineRefresh"))
+					return
+				}
 				if err != nil {
 					notice.Set(tr.T("reader", "errRefresh", i18n.Args{"err": err.Error()}))
 					return
@@ -1452,9 +1541,14 @@ func Reader(p readerProps) ui.Node {
 	// The dialog stays open on failure, with the reason in it. Closing it would
 	// throw away the URL that was just pasted, which is the one thing here nobody
 	// wants to type twice.
-	subscribe := func() {
+	// subscribeURL adds one address. Parameterised rather than reading the field,
+	// because the ladder subscribes to an address the reader never typed — the
+	// feed a page pointed at — and routing that through the input's state would
+	// mean the click and the state it depends on landing in different frames.
+	// They did, and the symptom was "Use this" re-subscribing to the page.
+	subscribeURL := func(url string) {
 		c := client.Get()
-		url := strings.TrimSpace(addURL.Get())
+		url = strings.TrimSpace(url)
 		if c == nil || url == "" {
 			addErr.Set(tr.T("reader", "errNeedURL"))
 			return
@@ -1490,6 +1584,14 @@ func Reader(p readerProps) ui.Node {
 			res, err := c.Subscribe(context.Background(), url, title, folderID)
 			ui.PostAsync(func() {
 				addBusy.Set(false)
+				// Refused rather than queued, and for a stronger reason than
+				// Refresh: the server validates the feed before anything is
+				// stored, so an optimistic subscribe would put a row in the rail
+				// that might turn out not to be a feed at all.
+				if errors.Is(err, data.ErrOffline) {
+					addErr.Set(tr.T("reader", "offlineSubscribe"))
+					return
+				}
 				if err != nil {
 					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": err.Error()}))
 					// A category created a moment ago survives the failed
@@ -1523,6 +1625,8 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	subscribe := func() { subscribeURL(addURL.Get()) }
+
 	markAllRead := func() {
 		c := client.Get()
 		if c == nil {
@@ -1531,6 +1635,13 @@ func Reader(p readerProps) ui.Node {
 		go func() {
 			n, undo, err := c.MarkAllRead(context.Background(), sel.Get().SourceID)
 			ui.PostAsync(func() {
+				// The one mutation that is deliberately NOT queued: each call
+				// mints a fresh undo batch, so replaying it would leave two and
+				// an undo offer that reverses half its own work (§20.19.8).
+				if errors.Is(err, data.ErrOffline) {
+					notice.Set(tr.T("reader", "offlineMarkAll"))
+					return
+				}
 				if err != nil {
 					notice.Set(tr.T("reader", "errMarkAll"))
 					return
@@ -1742,6 +1853,15 @@ func Reader(p readerProps) ui.Node {
 				c.Kick()
 			})
 		})
+		// The read cache is written out ONCE, here, at the moment the tab is
+		// going away — never on the read path. A list response is tens of
+		// kilobytes and localStorage is synchronous, so persisting on every
+		// navigation would put a measurable stall on the most common interaction
+		// in the app to buy durability nobody asked for. Synchronous is correct
+		// *here* and only here: an async write from `pagehide` is not guaranteed
+		// to commit before the tab is gone, which is the same reason the signals
+		// buffer writes the way it does.
+		save := platform.OnPageHide(func() { c.SaveCache() })
 
 		go func() {
 			// Runs for the life of the page. It is what keeps the indicator
@@ -1775,6 +1895,10 @@ func Reader(p readerProps) ui.Node {
 		return func() {
 			net.Release()
 			wake.Release()
+			save.Release()
+			// Unmounting is the other way a tab's contents stop existing, and
+			// it is the one `pagehide` never sees.
+			c.SaveCache()
 			cancel()
 		}
 	}, []any{})
@@ -2082,6 +2206,13 @@ func Reader(p readerProps) ui.Node {
 		prev := list[i-1]
 		platform.KeepScrollAnchored(".pane-article")
 		stream.Set(append([]*pb.Item{prev}, st...))
+		// Inserted ABOVE where the reader is standing, which is the same shape as
+		// the seeded article in openAt and the same wrong conclusion waiting to be
+		// drawn: `KeepScrollAnchored` deliberately holds their place, so the
+		// article that just appeared is entirely above the fold and the
+		// scrolled-past handler would read that as "finished". They have not seen
+		// a word of it — they are travelling towards it, which is why it is here.
+		skipPast.Get()[prev.GetId()] = true
 		fetchBody(prev)
 		if i-2 >= 0 {
 			fetchBody(list[i-2])
@@ -2093,6 +2224,14 @@ func Reader(p readerProps) ui.Node {
 	// read — which is what makes "scroll through everything and it's all read"
 	// work without a single click.
 	act.Get().readArticle = func(id string) {
+		// An article the app scrolled past on its way somewhere else is not one
+		// the reader finished. This has to come before the tracker as well as
+		// before markRead: crediting `Completed` for an article that was never on
+		// screen is worse than the wrong read state, because a wrong read state is
+		// visible and a poisoned engagement is not (§18.1).
+		if skipPast.Get()[id] {
+			return
+		}
 		// Completion is recorded even when the mark-read setting is off. The
 		// setting is about what the app DOES to your unread count; it is not a
 		// request to stop noticing that you finished something.
@@ -2127,6 +2266,12 @@ func Reader(p readerProps) ui.Node {
 			}
 			if c := current.Get(); c == nil || c.GetId() != id {
 				current.Set(it)
+				// Arriving here is reading it, whatever a jump did earlier — so
+				// the suppression ends now rather than lasting the stream's life.
+				// Without this, an article jumped over stays permanently unable to
+				// be marked read by scrolling, which is a subtler version of the
+				// bug this fixes.
+				delete(skipPast.Get(), id)
 				platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 				// The dwell clock follows the STREAM, not the click. Entering
 				// banks whatever the previous article accumulated, so scrolling
@@ -2465,6 +2610,13 @@ func Reader(p readerProps) ui.Node {
 		if c == nil || url == "" {
 			return
 		}
+		// A typo is not a site. Climbing the ladder for "not-a-url" spends a
+		// round trip to be told what a two-line check already knows, and — worse
+		// — replaces "that is not a feed address" with a second, vaguer message
+		// about the same mistake.
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			return
+		}
 		if addLooking.Get() || addSmartBusy.Get() {
 			return
 		}
@@ -2486,17 +2638,38 @@ func Reader(p readerProps) ui.Node {
 				addSmartBusy.Set(false)
 				addSearched.Set(true)
 				if err != nil {
-					addErr.Set(tr.T("reader", "errAnalyzeSite", i18n.Args{"err": err.Error()}))
+					// The subscribe error, when there is one, is the better
+					// message: it is about the thing the reader did. This one
+					// only speaks when nothing else has.
+					if addErr.Get() == "" {
+						addErr.Set(tr.T("reader", "errAnalyzeSite", i18n.Args{"err": err.Error()}))
+					}
 					return
 				}
-				// The error from the failed subscribe has been answered by the
-				// search, so it goes: leaving "that is not a feed" above a list
-				// of feeds we found reads as a contradiction.
+				// A result ANSWERS the failed subscribe, so its error goes —
+				// whether the answer is "here are the feeds it points at" or
+				// "no feed here, and here is what else is possible". Leaving a
+				// red line saying "not a recognisable feed" above a block that
+				// says the same thing in plain words is the app talking twice.
+				//
+				// The error survives only when the ladder itself failed, which
+				// is the branch above: then it is the only thing that knows
+				// anything.
 				addErr.Set("")
 				addCands.Set(res.GetFeeds())
 				addSmartStatus.Set(res.GetSmartStatus())
 				if res.GetScrape() != nil {
 					addProposal.Set(res.GetScrape())
+				}
+				// One press, when the lamp is lit.
+				//
+				// The free rungs found nothing and this reader has already
+				// consented — standing consent is what the lamp on the address
+				// row IS — so making them press a second button to spend it
+				// would be asking the same question twice. With the lamp off,
+				// nothing happens here and the block explains what would.
+				if !smart && len(res.GetFeeds()) == 0 && smartSubscribe.Get() {
+					act.Get().analyzeSite(true)
 				}
 			})
 		}()
@@ -2516,10 +2689,12 @@ func Reader(p readerProps) ui.Node {
 		if strings.TrimSpace(url) == "" {
 			return
 		}
+		// The field is updated too, so a failure leaves the reader looking at the
+		// address that failed rather than the one they typed — but the subscribe
+		// takes the URL directly, because state set in this frame is not readable
+		// until the next one.
 		addURL.Set(url)
-		// Through the Ref, on the next tick: subscribe reads the URL from state,
-		// and the Set above has not been applied to this render yet.
-		ui.PostAsync(func() { act.Get().addFeed() })
+		subscribeURL(url)
 	}
 
 	// followPage accepts the proposal: the rule the reader just looked at is
@@ -3379,6 +3554,12 @@ func Reader(p readerProps) ui.Node {
 		}
 		pageOpen.Set(withEntry(cur, id, true))
 	}
+	act.Get().setPageMode = func(id string, live bool) {
+		if pageLive.Get()[id] == live {
+			return // already there; re-rendering would restart the stream
+		}
+		pageLive.Set(withEntry(pageLive.Get(), id, live))
+	}
 	// Opening the note panel focuses the field, because a disclosure that makes
 	// you click twice to start typing has spent the click it saved. Closing does
 	// not blur: the reader may have clicked the header to get the form out of the
@@ -3539,7 +3720,7 @@ func Reader(p readerProps) ui.Node {
 				case actAddNewCat:
 					a.toggleAddNewCat()
 				case actAddCandidate:
-					a.addCandidate(forValue.Get())
+					a.addCandidate(value)
 				case actAddSmart:
 					a.toggleSmartSubscribe()
 				case actAddAnalyze:
@@ -3577,6 +3758,10 @@ func Reader(p readerProps) ui.Node {
 					a.expand(id)
 				case "toggle-page":
 					a.togglePage(id)
+				case "page-mode-doc":
+					a.setPageMode(id, false)
+				case "page-mode-live":
+					a.setPageMode(id, true)
 				case "toggle-note":
 					a.toggleNote(id)
 				case "modal-keep":
@@ -4539,7 +4724,8 @@ func Reader(p readerProps) ui.Node {
 				connected:     client.Get() != nil,
 				hasMore:       nextCursor.Get() != "",
 				loadingMore:   loadingMore.Get(),
-				loading:       traceLoading(itemsLoading.Get(), len(items.Get())),
+				loading:       itemsLoading.Get(),
+				rev:           listRev.Get(),
 				undo:          undoToken.Get(),
 				total:         totalItems.Get(),
 				iconHosts:     hosts,
@@ -4622,6 +4808,7 @@ func Reader(p readerProps) ui.Node {
 				atEnd:        streamAtEnd(items.Get(), stream.Get(), nextCursor.Get()),
 				expanded:     expanded.Get(),
 				pageOpen:     pageOpen.Get(),
+				pageLive:     pageLive.Get(),
 				noteOpen:     noteOpen.Get(),
 			}),
 		),

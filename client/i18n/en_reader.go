@@ -24,6 +24,18 @@ func init() {
 		// told "Couldn't save that" once does not assume otherwise.
 		"outboxDrained": "Saved {count} changes made while you were offline.",
 
+		// --- refused while offline, and each says WHY it is different from the
+		// marks that are being kept. A reader who has just watched three
+		// articles stay marked will reasonably assume everything is queued;
+		// these three are not, and silence would read as a bug.
+		//
+		// None of them apologises or suggests retrying. The remedy is "wait",
+		// and saying so plainly is more respectful than an instruction the
+		// reader cannot follow.
+		"offlineRefresh":   "Can't fetch new articles while you're offline — the server does the fetching.",
+		"offlineMarkAll":   "Marking everything read needs the server, so it can be undone. It'll work when you're back.",
+		"offlineSubscribe": "Adding a feed needs the server to check it first. Try again when you're back online.",
+
 		"errLoadItems":   "Couldn't load items: {err}",
 		"errLoadMore":    "Couldn't load more: {err}",
 		"errMarkRead":    "Couldn't mark that read — it's still unread on the server.",
