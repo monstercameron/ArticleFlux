@@ -111,6 +111,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **The Service Worker** (`web/sw.js`, TODO 8.4, §12.3) — app-shell caching so the reader boots on a
+  plane, and nothing else. `index.html` is **network-first**: cache-first on the shell is how a
+  browser ends up running last month's app against this month's server forever, which is the failure
+  the version-skew refusal exists to compensate for. Its cache version is checked against the build
+  constant by a test, because forgetting to bump it serves old code indefinitely and nothing looks
+  wrong. It is registered *after* the wasm module starts, so a bad worker can never prevent the app
+  from booting — and the build now actually ships the file, which it did not.
+
 - **Three more boot-time refusals** (`app.Preflight`, TODO 7.7): a web root with an `index.html` but
   no `app.wasm` (the page loads and shows nothing), a stored Smart+ key that is not shaped like one
   or that no longer decrypts, and newsletter mailboxes on an instance with no encryption key — whose

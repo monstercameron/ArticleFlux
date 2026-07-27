@@ -130,6 +130,9 @@ wasm: deps
 	  echo '    client/app has no main yet (Tier 8) — skipping wasm'; exit 0; fi
 	@mkdir -p $(OUT)
 	cp web/index.html $(OUT)/index.html
+# index.html registers sw.js by relative path, so a build that does not ship it
+# 404s on every load and the offline shell silently never exists (8.4).
+	cp web/sw.js $(OUT)/sw.js
 	GOOS=js GOARCH=wasm go build $(WASMFLAGS) -o $(WASM) ./client/app
 	@# wasm_exec.js must come from the toolchain that produced the module. A stale
 	@# copy from an older Go fails at instantiate with an import mismatch that
@@ -161,6 +164,7 @@ wasm: deps
 demo: deps
 	@mkdir -p $(DEMO)
 	cp web/index.html $(DEMO)/index.html
+	cp web/sw.js $(DEMO)/sw.js
 	GOOS=js GOARCH=wasm go build -trimpath \
 	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \

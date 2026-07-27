@@ -1760,8 +1760,38 @@ hand-written CSS and vanilla JS, and nobody ports them.
       calls leak into the view layer and never come back out.
       ✅ 2026-07-26 — `client/platform` — delegated click/input, scroll metrics, near-end/near-top (re-arming on growth), topmost-child tracking, `KeepScrollAnchored`, `ScrollChildToTop`, pane-resize pointer capture, keydown. Native stub keeps every other client package compilable off-browser. *Not yet: SW registration, IndexedDB, BroadcastChannel, wakeLock, Web Push — those arrive with §12.*
 
-- [ ] **8.4 `web/sw.js`** — the one unavoidable JS file. **App-shell caching only** (packs at M10),
+- [x] **8.4 `web/sw.js`** — the one unavoidable JS file. **App-shell caching only** (packs at M10),
       under ~60 lines, registered from 8.3. Anything cleverer belongs in the wasm app. §12.3
+
+      ✅ 2026-07-27 — `web/sw.js`, ~60 lines of code, registered from `index.html`, 3 guards.
+
+      **`index.html` is network-FIRST, and that is the whole design.** Cache-first on the shell is
+      the recipe everyone reaches for, and it is exactly how a browser ends up running last month's
+      application against this month's server forever — the failure that made §22.10's skew refusal
+      necessary in the first place. This is the other half: when the network is there the newest page
+      wins, and the cache is a fallback rather than a source of truth. The wasm module stays
+      cache-first because it is megabytes and its URL does not change within a build; `VERSION` is
+      what retires it, since a changed `sw.js` makes the browser install a new worker whose
+      `activate` deletes every cache but the current one.
+
+      **That `VERSION` is checked by a Go test**, not by a comment asking people to remember —
+      forgetting to bump it serves the old module forever, and **nothing looks wrong**, because
+      everything keeps working with old code. Mutation-tested. Two more guards: the worker must not
+      intercept `/grpc` (a WebSocket it cannot serve anyway) or `/readyz` (a cached one reports a
+      healthy server that is not there), and `index.html` must register it **after** `go.run` — a
+      worker registered earlier sits in front of the fetch that is booting the page, so a bad one
+      could stop the app from ever starting, and a reader who cannot start the app cannot reach the
+      thing that would unregister it.
+
+      **The build did not ship it.** `Makefile` and `make.ps1` copied only `index.html`, so the
+      registration would have 404'd on every load and the offline shell would silently never have
+      existed. Both now copy it, verified by running the build.
+
+      `install` fetches each shell entry on its own rather than with `addAll`: one 404 — a static
+      host with only `app.wasm.gz`, a deploy mid-upload — would otherwise fail the whole install and
+      leave no worker at all, and a partially warm cache beats none. Only same-origin `GET`s with a
+      real 200 are stored: a cached POST is a replayed mutation, an opaque response has status 0 and
+      cannot be validated, and a cached 404 for `app.wasm` bricks the reader offline.
 - [x] **8.4a `client/i18n`** — every UI string through GWC's `i18n` from the **first** component, even
       though only English ships. Retrofitting extraction across ~50 pages and ~90 settings is
       miserable and always gets deferred forever. Locale date/number formatting applies immediately.
@@ -2214,6 +2244,39 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       mechanism instead of two — the problem was never light-versus-dark. **Every theme's contrast
       passed the whole time**: this is the class of defect a ratio cannot see, and it survived four
       rounds of measurement because nobody had opened the theme.
+- [x] **8b.49 The panes are a filmstrip below 1220px** — §20.22. Six `display: none` rules were a
+      hard cut on the most-used navigation in the application; on a phone that *is* the interaction.
+      One formula drives it — `(--pane - --strip) * 100%` — and the direction carries the meaning.
+      Measured: at 110ms the outgoing pane is at -327px and **still visible** while the incoming one is
+      at 63px, the scroll position survives a round trip (400 → 400, which `display: none` loses), and
+      nothing overflows the viewport at any point. Caught in the making: `transition` is a shorthand,
+      so `focusCSS`'s `transition: opacity` on the same two panes silently ate the strip's transform —
+      the incoming pane slid and the outgoing one vanished. One declaration owns pane motion now.
+- [x] **8b.50 All six dialogs leave as well as arrive** — §20.23. They answered `if !open { return
+      nil }`, which is why they could only animate one way. The scrim persists and carries `data-open`;
+      the entrance and exit differ (0.18s/0.3s in, 0.11s/0.18s out) because the transition a browser
+      runs is the one belonging to the state being moved *to*, so a hurry gets a quick dismissal for
+      free. `visibility: hidden` keeps a closed dialog out of the tab order — which is also what broke
+      **8b.51**.
+- [x] **8b.51 `FocusField` retries until the focus LANDS, not until the element exists.** `.focus()`
+      inside `visibility: hidden` is a silent no-op, so with the dialogs always mounted the old loop
+      found the palette's input on the first frame, focused nothing, and stopped. The palette opened
+      without a cursor in it — and Escape and the arrows do nothing there, because the palette owns
+      those keys only while its own field has focus. Found by the ratchet, not by looking.
+- [x] **8b.52 A motion ratchet, driven against the running application** (`e2e/motion.spec.mjs`, six
+      cases). The Go guards prove what a stylesheet can be wrong about alone; they all pass on a sheet
+      whose animations never fire because the markup stopped carrying the attribute the rule keys off.
+      Every one of these names something a reader would feel — the switch reaching the sheet in both
+      directions, the cursor travelling and living in content space, a row animating only when it is
+      NEW, a dialog leaving and being untabbable closed, both phone panes moving, and focus mode
+      passing THROUGH intermediate widths rather than snapping. None asserts a duration or a curve:
+      those belong to the sheet, and pinning them here would make every tuning pass a test edit.
+- [x] **8b.53 `--ink` has a floor now, measured in the browser** (`e2e/appearance.spec.mjs`). It is a
+      runtime `color-mix()` against a server-assigned hue, so Go can only see the expression — and the
+      light theme was shipping the amber source at **4.45:1** on the source name of every row. Nothing
+      caught it: the Go floor does not reach it, the screenshots look plausible, no ratio was wrong.
+      Mix taken to 62%; worst case across all five themes is 5.78:1, and a second case asserts the
+      seven are still distinguishable, since the floor alone is satisfiable by painting them all black.
 - [x] **8b.45 Focus mode** — §20.21. `w`, or the control pinned top-right of the article. The columns
       **close** rather than vanish: they are grid tracks, so it is four widths animating to zero, which
       interpolates as long as the track count holds — hence three rules, one per breakpoint, because
@@ -2238,7 +2301,11 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       `0px → 384px` over four presses of `j` — exactly four rows of 96 — with the 0.18s/0.11s
       transition live; `w` collapses the rail `258 → 96 at 120ms → 0` and sets `data-focus`; `Escape`
       brings it back; the button toggles and reports `aria-pressed` correctly. No page errors.
-- [ ] **8b.47 Look at the other two themes on a phone, and against `design/04-fanciful-mobile.html`.**
+- [x] **8b.47 Every theme, seen on a phone.** All five captured at 390px across the list, an article
+      and the rail. It found 8b.53 — which arithmetic had passed five times — and confirmed the
+      filmstrip, the tab bar and the pinned add-a-feed button. *Still owed:* a side-by-side against
+      `design/04-fanciful-mobile.html`, which remains the one spec never compared to the build.
+- [ ] **8b.54 Compare the phone build against `design/04-fanciful-mobile.html`, and against `design/04-fanciful-mobile.html`.**
       8b.39's readability floor is arithmetic and it passed every theme; 8b.48 is what *looking* found,
       and it found it in the two themes nobody had opened. The mobile mockup has never been compared
       against the built app at all. *Done when: all five themes have been seen at 390px beside the

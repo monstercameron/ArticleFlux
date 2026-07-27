@@ -275,6 +275,23 @@
     go.run(result.instance);
     boot.classList.add('out');
     setTimeout(() => { boot.hidden = true; }, 300);
+
+    // The Service Worker is registered AFTER the app is running, and never
+    // before (TODO 8.4, §12.3).
+    //
+    // Registering it earlier would put a cache in front of the very fetch that
+    // is booting the page, so a bad worker could stop the application from
+    // starting at all — and a reader who cannot start the application cannot
+    // reach the thing that would unregister it. Doing it last means the shell
+    // cache is warm for the NEXT visit and this one is unaffected by it.
+    //
+    // A failure here is swallowed on purpose: offline boot is a nicety and
+    // booting is not. It is absent entirely on `file://` and in browsers that
+    // do not offer it, which is why the capability is tested rather than
+    // assumed.
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
   } catch (err) {
     clearTimeout(chatter);
     boot.classList.add('failed');
