@@ -6,12 +6,14 @@
 # removes every step: the demo is a static page whose "server" is an in-memory
 # instance compiled into the same module (client/demodata).
 #
-# WHAT IS PUBLISHED, exactly four files:
+# WHAT IS PUBLISHED:
 #
 #   index.html      web/index.html unmodified — the same splash the server serves
 #   wasm_exec.js    from the toolchain that produced the module
 #   sw.js           web/sw.js with its cache key stamped to this build's version
 #   app.wasm.gz     the module, gzipped, and ONLY gzipped
+#   fonts.css/fonts the self-hosted typography linked by index.html
+#   manifest/icons  the install metadata and launcher artwork
 #
 # The last one is why the boot shim in web/index.html has a compressed path.
 # GitHub Pages cannot negotiate a content encoding for a wasm file, so publishing
@@ -146,9 +148,13 @@ jobs:
           echo "--- what was built ---"
           ls -l
 
-          for f in index.html wasm_exec.js app.wasm.gz sw.js; do
+          for f in index.html wasm_exec.js app.wasm.gz sw.js fonts.css manifest.webmanifest; do
             [ -s "$f" ] || { echo "::error::bin/demo/$f is missing or empty"; exit 1; }
           done
+          [ -d fonts ] && find fonts -type f -name '*.woff2' -print -quit | grep -q . || {
+            echo "::error::bin/demo/fonts has no webfont files"; exit 1; }
+          [ -d icons ] && find icons -type f -name '*.png' -print -quit | grep -q . || {
+            echo "::error::bin/demo/icons has no PNG icons"; exit 1; }
 
           # The Service Worker's cache identity. It is stamped with THIS build's
           # version rather than shipped verbatim (see the Makefile), because the

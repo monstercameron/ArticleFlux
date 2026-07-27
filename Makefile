@@ -195,10 +195,10 @@ wasm: deps
 	 echo "    app.wasm = $$(fmt $$raw) MB raw / $$(fmt $$gz) MB gzipped  (G5 ratchet — plan.md R4)"
 
 # The GitHub Pages demo (client/demo + client/demodata), built exactly the way
-# .github/workflows/pages.yml builds it — same flags, same three files, same
-# gzip-only module. The deployed demo is the only build of this application that
-# strangers see, so a local one that differed from it would be a rehearsal of a
-# different performance.
+# .github/workflows/pages.yml builds it — same flags, same static asset bundle,
+# same gzip-only module. The deployed demo is the only build of this application
+# that strangers see, so a local one that differed from it would be a rehearsal
+# of a different performance.
 #
 # The raw module is deleted after compressing, and that is the one place this
 # differs from `wasm`: a static host cannot negotiate an encoding, so the boot
@@ -233,6 +233,10 @@ demo: deps
 	@# root and one at /ArticleFlux/ — which is the whole reason they are relative.
 	@cp web/manifest.webmanifest $(DEMO)/manifest.webmanifest
 	@rm -rf $(DEMO)/icons && cp -r web/icons $(DEMO)/icons
+	@# Self-hosted fonts, for the same reason as the normal wasm target: the
+	@# stamped index still links fonts.css, and every URL in it is relative.
+	@cp web/fonts.css $(DEMO)/fonts.css
+	@rm -rf $(DEMO)/fonts && cp -r web/fonts $(DEMO)/fonts
 	GOOS=js GOARCH=wasm go build -trimpath \
 	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \

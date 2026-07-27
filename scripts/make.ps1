@@ -387,7 +387,7 @@ function Invoke-Wasm {
 # only build of this application that strangers see, and a local one that
 # differed from it — by shipping the uncompressed module, say — would be a
 # rehearsal of a different performance. So the output directory here holds the
-# same three files the workflow uploads, and nothing else.
+# same static asset bundle the workflow uploads, and nothing else.
 #
 # The version is a parameter for the same reason it is a linker flag in CI:
 # a build that identifies itself as something it is not is worse than one that
@@ -455,6 +455,13 @@ function Invoke-Demo {
     $demoIcons = Join-Path $DemoDir 'icons'
     if (Test-Path $demoIcons) { Remove-Item $demoIcons -Recurse -Force }
     Copy-Item (Join-Path $WebSrc 'icons') $demoIcons -Recurse -Force
+
+    # The stamped index still links the self-hosted stylesheet, whose font URLs
+    # are relative. The demo therefore needs the same font bundle as `wasm`.
+    Copy-Item (Join-Path $WebSrc 'fonts.css') (Join-Path $DemoDir 'fonts.css') -Force
+    $demoFonts = Join-Path $DemoDir 'fonts'
+    if (Test-Path $demoFonts) { Remove-Item $demoFonts -Recurse -Force }
+    Copy-Item (Join-Path $WebSrc 'fonts') $demoFonts -Recurse -Force
 
     $raw = Join-Path $DemoDir 'app.wasm'
     $env:GOOS = 'js'; $env:GOARCH = 'wasm'
