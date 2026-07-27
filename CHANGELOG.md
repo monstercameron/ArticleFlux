@@ -11,6 +11,26 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Undo for mark-all-read.** `MarkAllRead` returns a token identifying exactly the rows it flipped,
+  and `UndoMarkAllRead` puts them back. The token is the batch's `rev` — server-assigned and
+  monotonic per user — so there is no journal table and no server-side session state to expire; a
+  wall-clock stamp collides inside one ~15ms Windows timer tick and would resurrect items read
+  moments before the batch. The mark's upsert now skips rows that were already read rather than
+  keeping their timestamp, which is what makes the batch identifiable at all.
+- **The server describes itself** (`internal/obs`, `GetServerStats`, `ListLogs`): uptime, storage,
+  scoped row counts, heap and goroutines, polling state, per-RPC latency, and the last N log records
+  at or above a level. In memory, bounded by count rather than age, sampled percentiles from a fixed
+  reservoir — a ring buffer, not a table. Both RPCs are authenticated and every count is the
+  caller's, because a status screen reporting global counts on a multi-tenant instance discloses
+  other tenants' activity. Timing is one unary interceptor, not per-handler instrumentation.
+- **The client half of the signals layer** (`client/track`, `client/platform/signals_*.go`):
+  attentive-time accumulation, impression coalescing (~1s on screen before a row counts), batching
+  and shipping. Arithmetic behind a `Sender` interface so it is tested natively, off the browser;
+  the DOM-shaped half stays in the quarantined `client/platform`. Every failure path drops data and
+  continues — analytics may never make reading look broken (A34).
+- **The connection indicator tells the truth while idle.** `Client.Watch` subscribes to the
+  channel's own state rather than updating only when a call happens, so a tab that lost the tunnel
+  an hour ago stops showing a healthy dot, and refetches when it comes back.
 - **Repository documentation set** — README with screenshots, `CONTRIBUTING.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md`, issue and pull-request templates, and this changelog. No code changed.
 - **Per-feed settings**, behind a gear on each sidebar row — hidden until hover or keyboard focus,
@@ -29,6 +49,23 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Changed
 
+- **Tidings is now ArticleFlux** — module path, proto package (`tidings.v1` → `articleflux.v1`),
+  command, and the default database file. Renaming the wire package is a break, done now because
+  pre-1.0 there is no old client to break and after the sync API ships there will be, permanently.
+  The command is spelled `articleflux` everywhere a shell sees it; the product keeps its capitals in
+  prose.
+- **The big-database tests run against a copy.** They mutate — one of them marks every item read —
+  and they did it to the development database, which is how this repository destroyed its own
+  reading state twice on 2026-07-26 inside a `go test ./...` that reported PASS both times. `openDev`
+  now copies the database and its WAL into `t.TempDir()`.
+- **`ResetUserState` clears notes and feed tags too.** The e2e suite shares one database and resets
+  between tests; a note or tag left behind was visible to every test after it.
+- **`bulk_read` records one row carrying a count**, not one row per item. It scores 0.0 by design, so
+  143 rows describing a single act were 143 rows of noise in the busiest table in the layer.
+- **The task runner moved to `scripts/make.ps1`.** Not a rename: the script anchored all nine of its
+  paths on `$PSScriptRoot`, which was the repository root only because the file happened to sit in
+  it — from `scripts/` those same expressions would have built into a directory nobody serves from,
+  silently and successfully.
 - **Scrolling the item list no longer janks.** Flicking with a reading stream open measured p95
   49.9ms, fourteen dropped frames and two 66ms long tasks: `html.RawHTML` sanitises *and* parses
   markup into nodes, and scrolling the list re-rendered the component owning the stream, so a single
@@ -46,6 +83,12 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The OPML fixture was being ignored, so two tests never ran.** `*.opml` correctly excludes real
+  exports — an export is a complete list of what one person reads — but it also swallowed the
+  package's only full-size parse fixture, and both tests that opened it called `t.Skip` when it was
+  missing. A fresh clone ran neither and the package reported ok. The fixture is now synthesised to
+  carry every hazard the real export had (144 entries, scrapers among the RSS rows, escaped
+  ampersands, entities inside attribute values), checked in, and the skips are `t.Fatal`.
 - **Clicking inside a dialog no longer closes it.** The delegated listener resolves a click to the
   nearest ancestor carrying `data-action`; with none on the dialog, every click inside walked up to
   the backdrop and hit its close action, so touching a text field shut the panel. Affected the feed
