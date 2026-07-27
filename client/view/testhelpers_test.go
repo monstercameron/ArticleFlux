@@ -75,6 +75,32 @@ func elementTag(t *testing.T, html, marker string) string {
 	return html[open : i+closeOffset+1]
 }
 
+// buttonBlock returns the full markup of the <button ...>...</button> whose
+// opening tag contains marker — open tag through its OWN matching close tag,
+// rather than just the opening tag elementTag returns. That is what lets a
+// test assert on something rendered INSIDE one specific element (a badge
+// inside one feed's row, say) without also being satisfied by the same text
+// sitting somewhere else on the page.
+//
+// This assumes buttons never nest here, which panes.go's own feedRow comment
+// states as a deliberate constraint (a button inside a button is invalid
+// HTML and browsers resolve it by hoisting one out) — so the first
+// "</button>" after the opening tag is always the one that closes it.
+func buttonBlock(t *testing.T, html, marker string) string {
+	t.Helper()
+	i := strings.Index(html, marker)
+	if i < 0 {
+		t.Fatalf("marker %q not found in rendered output:\n%s", marker, html)
+	}
+	open := strings.LastIndex(html[:i], "<button")
+	const closeTag = "</button>"
+	closeOffset := strings.Index(html[i:], closeTag)
+	if open < 0 || closeOffset < 0 {
+		t.Fatalf("could not find the enclosing <button>...</button> for %q", marker)
+	}
+	return html[open : i+closeOffset+len(closeTag)]
+}
+
 // renderView mounts build under a real i18n.Provider and renders it to a
 // string through GWC's SSR path — the same path
 // client/i18n/provider_test.go uses to prove the Provider wiring, applied

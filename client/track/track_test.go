@@ -3,6 +3,7 @@ package track
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/signals"
@@ -129,6 +130,63 @@ func TestBacklogIsBounded(t *testing.T) {
 	if n := c.Buffered(); n > MaxBuffered {
 		t.Errorf("buffered %d, want at most %d — an unbounded buffer in a "+
 			"long-lived tab is a memory leak with a respectable name", n, MaxBuffered)
+	}
+}
+
+// TestCapDropsOldestAndSaysSo — the cap alone does not prove WHICH end it drops
+// from. The design is explicit that recent signal is worth more than old: a
+// reader who has been offline for an hour has more recent signal that is worth
+// more than the start of the session. Dropping the newest instead would keep
+// the least useful half of the backlog and silently discard the half the
+// design says matters more.
+func TestCapDropsOldestAndSaysSo(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+
+	// Pin `sending` for the duration of the loop below. Flush's first line is
+	// `if c.sending ... return`, so this makes every threshold-triggered
+	// background flush (BatchSize is 25, crossed long before MaxBuffered's 500)
+	// an inert no-op that never touches c.buf. Without it, Emit's own
+	// `go c.Flush()` races this loop and exercises Flush's own (separately
+	// correct) restore-and-retrim path instead of the one this test means to
+	// isolate: Emit's trim of the buffer it just grew.
+	c.mu.Lock()
+	c.sending = true
+	c.mu.Unlock()
+
+	const n = MaxBuffered + 50
+	for i := 0; i < n; i++ {
+		// An increasing index in Context is the marker: it survives Emit's own
+		// validation and lets the test tell exactly which events survived the
+		// trim without depending on anything else Emit stamps.
+		c.Emit(signals.Impression, "i1", "s1", 1, signals.SurfaceList,
+			`{"seq":`+strconv.Itoa(i)+`}`)
+	}
+	if got := c.Buffered(); got != MaxBuffered {
+		t.Fatalf("buffered %d, want exactly %d", got, MaxBuffered)
+	}
+
+	// Unpin, and flush against a capturing Sender so the survivors can be
+	// inspected directly.
+	c.mu.Lock()
+	c.sending = false
+	c.mu.Unlock()
+	c.Flush()
+	got := cap.all()
+	if len(got) != MaxBuffered {
+		t.Fatalf("sent %d events, want %d", len(got), MaxBuffered)
+	}
+
+	// The survivors must be the NEWEST n.Impression events: seq values
+	// (n-MaxBuffered) .. (n-1), in order.
+	wantFirst := n - MaxBuffered
+	for i, e := range got {
+		want := `{"seq":` + strconv.Itoa(wantFirst+i) + `}`
+		if e.Context != want {
+			t.Fatalf("survivor %d has context %q, want %q — the cap kept the "+
+				"OLDEST events instead of dropping them, which inverts the whole "+
+				"point of the cap", i, e.Context, want)
+		}
 	}
 }
 

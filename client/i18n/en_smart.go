@@ -40,6 +40,32 @@ func init() {
 		"modelDefault": "Default: {model}",
 		"modelSave":    "Save model",
 
+		// --- per-feature opt-ins
+		//
+		// Each paid feature is its own switch and each starts OFF. Storing a key is not
+		// consent to spend against it, which is the rule `tts.smartPlus` established and
+		// the one My Feed's ranking was missing when it first shipped: it ran on every
+		// derivation whenever a key existed.
+		//
+		// The copy states the COST and the FREQUENCY, not just the benefit. "Uses Smart+"
+		// tells a reader nothing they can decide on; how often it calls and what it sends
+		// does.
+		"featureGroup":  "What Smart+ is allowed to do",
+		"featureHint":   "Each one is off until you turn it on, and each one is a separate bill.",
+		"feedPlusLabel": "Rank My Feed",
+		"feedPlusHint": "Sends the top forty headlines and a summary of your interests each " +
+			"time your feed is rebuilt — after every fetch, and shortly after you read " +
+			"something. My Feed works without this; the model only reorders what it already chose.",
+		"feedPlusNoKey": "Add an API key above to enable this.",
+		// State, not action — the switch says what is true now (see smartToggle).
+		"toggleOn":  "On",
+		"toggleOff": "Off",
+		// Confirmation after the switch moves. Both directions get one: turning a paid
+		// feature OFF is the change a reader most wants acknowledged, and silence there
+		// reads as the press not registering.
+		"feedPlusOn":  "Smart+ will reorder My Feed from the next rebuild.",
+		"feedPlusOff": "Smart+ is off. My Feed is ranked on this machine only.",
+
 		// --- spend
 		"spendGroup": "Spent since this server started",
 		"spendReset": "Not a bill — a signal. It resets when the process restarts.",

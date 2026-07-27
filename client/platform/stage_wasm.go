@@ -1,0 +1,342 @@
+//go:build js && wasm
+
+package platform
+
+import (
+	"strconv"
+	"syscall/js"
+)
+
+// The browser capabilities a slideshow needs and nothing else does (§19).
+//
+// They are here rather than in platform_wasm.go because they are one feature's
+// worth of platform surface — fullscreen, a wake lock, audio progress and two
+// measurements — and grouping them keeps the general file general. Everything
+// below follows the package rule: a typed Go function over an untyped JS call,
+// making no decisions of its own.
+//
+// # Every one of these degrades rather than fails
+//
+// This is the theme of the file and it is deliberate. `requestFullscreen` is
+// refused unless the call is inside a user gesture; `navigator.wakeLock` does
+// not exist on several browsers still in use (plan.md §22.13); an element that
+// has not been laid out measures zero. A slideshow that stopped working because
+// one of those was missing would be a feature that runs on the developer's
+// machine — so each of these is a no-op or a zero when the browser will not play,
+// and the caller is written to be correct either way.
+
+// --- fullscreen ---------------------------------------------------------------
+
+// RequestFullscreen asks for the whole screen, on <html>.
+//
+// The ROOT element rather than the slideshow's own box, and the difference is
+// visible: fullscreening a child makes that element the entire screen, so a
+// fixed-position overlay inside it is sized against the element rather than the
+// viewport, and everything else in the document — the transport, the banner — is
+// simply gone rather than layered underneath. Fullscreening the document instead
+// means nothing about the layout changes; only the browser's own chrome leaves.
+//
+// The promise is caught because it REJECTS rather than throwing when the browser
+// declines — outside a user gesture, or when an embedding page has not allowed
+// it. Unhandled, that is an uncaught rejection in the console for something the
+// caller has already been written to survive.
+func RequestFullscreen() {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	el := doc.Get("documentElement")
+	if !el.Truthy() || !el.Get("requestFullscreen").Truthy() {
+		return
+	}
+	catchPromise(el.Call("requestFullscreen"))
+}
+
+// ExitFullscreen gives the browser its chrome back. Safe to call when there is
+// nothing to exit — which is the common case, because pressing Escape has
+// already done it by the time the view finds out.
+func ExitFullscreen() {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() || !doc.Get("fullscreenElement").Truthy() {
+		return
+	}
+	if !doc.Get("exitFullscreen").Truthy() {
+		return
+	}
+	catchPromise(doc.Call("exitFullscreen"))
+}
+
+// Fullscreen reports whether the document currently owns the screen.
+func Fullscreen() bool {
+	doc := js.Global().Get("document")
+	return doc.Truthy() && doc.Get("fullscreenElement").Truthy()
+}
+
+// OnFullscreenChange reports entering and leaving, whoever caused it.
+//
+// The browser owns Escape while a document is fullscreen — it will not reach a
+// keydown handler — so this event is the ONLY way the application learns that the
+// reader has left. Without it the slideshow would carry on running behind
+// restored browser chrome, advancing articles nobody is watching.
+func OnFullscreenChange(fn func(on bool)) Listener {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return Listener{}
+	}
+	f := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		fn(doc.Get("fullscreenElement").Truthy())
+		return nil
+	})
+	doc.Call("addEventListener", "fullscreenchange", f)
+	return Listener{target: doc, event: "fullscreenchange", fn: f}
+}
+
+// --- wake lock ----------------------------------------------------------------
+
+var (
+	// wakeWanted is what the application has ASKED for, which is not the same as
+	// what it currently holds: a lock is dropped by the browser whenever the tab
+	// is hidden, and re-acquired from here when it comes back. Without the
+	// separation, a reader who switched tabs during a slideshow and came back
+	// would find the screen sleeping under it with no way to notice.
+	wakeWanted bool
+	// wakeLock is the live sentinel, or undefined. Held so it can be released:
+	// a lock that is never released keeps the screen awake after the slideshow
+	// has stopped, which is the failure mode a laptop owner notices at 3am.
+	wakeLock js.Value
+	// wakeWatch is the visibilitychange listener, registered once and never
+	// released. One listener for the life of the page is the honest cost of a
+	// re-acquire that has to work every time; releasing and re-registering it
+	// around each slideshow would be more moving parts for no saving.
+	wakeWatch js.Func
+)
+
+// KeepAwake asks the screen not to sleep, and stops asking.
+//
+// Idempotent in both directions, because the callers are lifecycle effects and
+// a slideshow that pauses, resumes and re-renders would otherwise stack locks.
+//
+// Absent API is a silent no-op, per plan.md §22.13: the slideshow degrades to
+// "the screen may sleep" rather than refusing to start. Saying so on screen was
+// considered and rejected — it is a sentence about a browser capability shown to
+// someone who has just asked to watch the news, and there is nothing they can do
+// about it.
+func KeepAwake(on bool) {
+	wakeWanted = on
+	if !on {
+		releaseWake()
+		return
+	}
+	nav := js.Global().Get("navigator")
+	if !nav.Truthy() || !nav.Get("wakeLock").Truthy() {
+		return
+	}
+	if !wakeWatch.Truthy() {
+		wakeWatch = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+			doc := js.Global().Get("document")
+			if !wakeWanted || !doc.Truthy() {
+				return nil
+			}
+			if s := doc.Get("visibilityState"); s.Truthy() && s.String() == "visible" {
+				acquireWake()
+			}
+			return nil
+		})
+		js.Global().Get("document").Call("addEventListener", "visibilitychange", wakeWatch)
+	}
+	acquireWake()
+}
+
+// acquireWake requests a screen lock and keeps the sentinel.
+//
+// The `then` closure releases itself after one call. A js.Func is pinned memory
+// on the Go side, and this runs once per slideshow start plus once per tab
+// return — leaking one per acquisition is unbounded in exactly the sessions this
+// feature is for, which are the long ones.
+func acquireWake() {
+	if wakeLock.Truthy() {
+		return
+	}
+	nav := js.Global().Get("navigator")
+	if !nav.Truthy() || !nav.Get("wakeLock").Truthy() {
+		return
+	}
+	p := nav.Get("wakeLock").Call("request", "screen")
+	if !p.Truthy() || !p.Get("then").Truthy() {
+		return
+	}
+	var then js.Func
+	then = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer then.Release()
+		if len(args) > 0 && args[0].Truthy() {
+			// Checked again on arrival: the request is asynchronous, and a reader
+			// who started and stopped a slideshow inside that window would
+			// otherwise be handed a lock nobody is going to release.
+			if !wakeWanted {
+				args[0].Call("release")
+				return nil
+			}
+			wakeLock = args[0]
+		}
+		return nil
+	})
+	p.Call("then", then)
+	catchPromise(p)
+}
+
+// releaseWake drops the lock if there is one. The sentinel is cleared first, so
+// a release that throws — which it does when the browser already revoked the
+// lock on a hidden tab — cannot leave a dead handle behind that stops the next
+// acquisition.
+func releaseWake() {
+	if !wakeLock.Truthy() {
+		return
+	}
+	lock := wakeLock
+	wakeLock = js.Undefined()
+	if lock.Get("release").Truthy() {
+		catchPromise(lock.Call("release"))
+	}
+}
+
+// catchPromise swallows a rejection, if what it was given is a promise at all.
+//
+// Every fullscreen and wake-lock call in this file returns one, and every one of
+// them can be refused by the browser for reasons the application cannot fix and
+// has already been written to survive. An uncaught rejection is console noise
+// that looks like a bug.
+func catchPromise(p js.Value) {
+	if !p.Truthy() || !p.Get("catch").Truthy() {
+		return
+	}
+	var f js.Func
+	f = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		f.Release()
+		return nil
+	})
+	p.Call("catch", f)
+}
+
+// --- audio progress -----------------------------------------------------------
+
+// OnAudioProgress reports where the Smart+ voice has got to, in seconds.
+//
+// This is what makes the podcast mode's visuals honest rather than merely
+// plausible. The alternative — estimating a segment's length from its word count
+// and running a timer — drifts within one article and is wrong by a paragraph by
+// the third, because synthesis speed depends on the voice, the punctuation and
+// how many numbers are in the text. Reading the element's own clock means the
+// scroll is where the narrator is, by construction.
+//
+// `timeupdate` fires about four times a second, which is far too coarse to
+// animate from directly; the caller smooths it in CSS (see design/slideshow.go).
+// `durationchange` is included because duration is NaN until metadata lands, and
+// a listener that only heard timeupdate would spend the first second of every
+// segment dividing by a number it does not have.
+//
+// dur is 0 when the browser does not know it yet — reported rather than
+// suppressed, so the caller can decide what an unknown length means. It is never
+// NaN: NaN crossing into Go is a float64 that silently poisons every comparison
+// downstream, and the one place that would show up is a scroll offset computed
+// as NaN and applied as "no transform at all".
+func OnAudioProgress(fn func(pos, dur float64)) Listener {
+	el := audioElement()
+	if !el.Truthy() {
+		return Listener{}
+	}
+	report := func() {
+		fn(finite(el.Get("currentTime")), finite(el.Get("duration")))
+	}
+	f := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		report()
+		return nil
+	})
+	el.Call("addEventListener", "timeupdate", f)
+	el.Call("addEventListener", "durationchange", f)
+	return Listener{
+		target: el, event: "timeupdate", fn: f,
+		extra: func() { el.Call("removeEventListener", "durationchange", f) },
+	}
+}
+
+// finite turns a JS number into a Go float64, answering 0 for anything that is
+// not a real number — undefined, NaN and Infinity all reach here in normal use,
+// because that is what an <audio> element reports before it has parsed a header.
+func finite(v js.Value) float64 {
+	if v.Type() != js.TypeNumber {
+		return 0
+	}
+	f := v.Float()
+	// NaN is the only value not equal to itself, and Infinity is what duration
+	// reads as for a stream with no length. Neither is usable as a fraction.
+	if f != f || f > 1e9 || f < 0 {
+		return 0
+	}
+	return f
+}
+
+// --- measuring and painting one element ---------------------------------------
+
+// SetVar sets a CSS custom property on ONE element, found by selector.
+//
+// SetRootVar's per-element counterpart, and it exists for the same reason: the
+// slideshow's scroll offset and progress change several times a second, and
+// re-rendering the component tree at that rate to change a number would spend a
+// frame budget on a value no reconciler needs to see. Writing the property
+// repaints and nothing else.
+//
+// A missing element is a no-op, not an error. The caller writes these from
+// timers and audio events, which can outlive the element by a frame when a
+// slideshow closes — and a panic on the way out is a worse bug than a write that
+// went nowhere.
+func SetVar(selector, name, value string) {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	el := doc.Call("querySelector", selector)
+	if !el.Truthy() {
+		return
+	}
+	el.Get("style").Call("setProperty", name, value)
+}
+
+// ScrollOverflow is how much taller an element's content is than its box, in CSS
+// pixels, or 0 when it fits.
+//
+// This is the measurement that decides whether a slide scrolls at all. It has to
+// be taken from the DOM rather than estimated from the word count, because what
+// actually overflows depends on the reading size, the window, the images the
+// article brought with it and how the browser broke the lines — an estimate is
+// wrong in both directions, and both are visible: a slide that scrolls when it
+// did not need to, or one that holds still with a paragraph below the fold.
+//
+// Never negative. A box with room to spare reports a scrollHeight equal to its
+// clientHeight, but sub-pixel layout can put it a hair under, and a negative
+// "overflow" fed to a transform scrolls the article the wrong way.
+func ScrollOverflow(selector string) float64 {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return 0
+	}
+	el := doc.Call("querySelector", selector)
+	if !el.Truthy() {
+		return 0
+	}
+	over := finite(el.Get("scrollHeight")) - finite(el.Get("clientHeight"))
+	if over < 1 {
+		return 0
+	}
+	return over
+}
+
+// Px formats a pixel length for a CSS custom property.
+//
+// Here rather than at the call site because the call sites are in client/view,
+// which is where the temptation to write string concatenation with a unit on the
+// end lives — and a value that arrives as "12.000000px" or, worse, as "12"
+// silently makes the declaration invalid rather than wrong, which is much harder
+// to see.
+func Px(v float64) string {
+	return strconv.FormatFloat(v, 'f', 1, 64) + "px"
+}

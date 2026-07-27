@@ -226,6 +226,10 @@ type actions struct {
 	saveSmartKey   func()
 	clearSmartKey  func()
 	saveSmartModel func()
+	// toggleFeedPlus is the per-user opt-in for Smart+ ranking of My Feed. Its own
+	// action rather than a generic pref setter, because it is a spending decision and
+	// deserves to be findable by name.
+	toggleFeedPlus func()
 	// setLocale translates the interface and reloads. The empty locale is
 	// English, which needs neither.
 	setLocale   func(code string)
@@ -607,6 +611,13 @@ func Reader(p readerProps) ui.Node {
 	// speakAuto keeps going down the list when a track ends. Purely a client
 	// behaviour: the server has no idea one listen followed another.
 	speakAuto := ui.UseState(prefBool(saved, "tts.autoplay", false))
+	// feedPlus is the opt-in for Smart+ ranking of My Feed (derive.SmartPlusPrefKey).
+	//
+	// Default false, like every paid switch here, and read by the SERVER on every
+	// derivation — this state is the control's position, not the authority. A third
+	// opt-in rather than a mode of the voice ones for the reason given at
+	// derive.SmartPlusPrefKey: it is a separate egress and a separate bill.
+	feedPlus := ui.UseState(prefBool(saved, "feed.smartPlus", false))
 	// speakVisible is whether the playing article's own listen bar is on screen.
 	// True until told otherwise, so the floating transport never flashes up
 	// during the frame before the observer has reported.
@@ -2628,7 +2639,6 @@ func Reader(p readerProps) ui.Node {
 	act.Get().focusArticle = func(id string) {
 		// Still travelling to a deliberate target: anything else the scroll passes
 		// over on the way is not something the reader chose to read.
-		println("PROBE topmost:", id, "want:", expectFocus.Get())
 		if want := expectFocus.Get(); want != "" {
 			if id != want {
 				return
@@ -4030,6 +4040,26 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	// toggleFeedPlus is the opt-in for Smart+ ranking of My Feed.
+	//
+	// Persisted server-side, because the SERVER is what reads it: the deriver checks the
+	// preference on every run (derive.plusFor), so a value held only in the client would
+	// let the switch look off while calls kept being made. That direction is the one that
+	// costs money, which is why this saves before it does anything else.
+	//
+	// No confirmation dialog on the way on. The hint beside it already states what is sent
+	// and how often, and a modal that repeats the label is friction rather than consent.
+	act.Get().toggleFeedPlus = func() {
+		next := !feedPlus.Get()
+		feedPlus.Set(next)
+		savePrefs(map[string]string{"feed.smartPlus": strconv.FormatBool(next)})
+		if next {
+			smartNotice.Set(tr.T("smart", "feedPlusOn"))
+		} else {
+			smartNotice.Set(tr.T("smart", "feedPlusOff"))
+		}
+	}
+
 	// setLocale is the language switch.
 	//
 	// **No page reload.** tr.SetLocale forwards to the LocaleState Root built
@@ -4605,6 +4635,8 @@ func Reader(p readerProps) ui.Node {
 					a.clearSmartKey()
 				case actSmartModel:
 					a.saveSmartModel()
+				case actSmartFeedPlus:
+					a.toggleFeedPlus()
 				case actSmartLang:
 					// "" is a real value: it is English.
 					a.setLocale(value)
@@ -5652,6 +5684,7 @@ func Reader(p readerProps) ui.Node {
 						notice:      smartNotice.Get(),
 						err:         smartErr.Get(),
 						loading:     smartLoading.Get(),
+						feedPlus:    feedPlus.Get(),
 					},
 				})
 			}),

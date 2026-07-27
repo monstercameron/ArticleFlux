@@ -56,11 +56,6 @@ var dynamicPrefixes = map[string]string{
 	"feedSettings.cache.": "the cacheChoices values",
 	"feedSettings.mute.":  "the muteChoices values",
 	"list.empty":          "emptyState(titleKey, hintKey) call sites",
-	// The scoring terms from internal/rank, resolved in view.rankReasonLabel from a
-	// term that arrives on the wire in Item.rank_reason_terms. Like srv., no literal in
-	// client/view names any of them; internal/rank's add() calls are the other half of
-	// the contract, and en_reasons.go says so.
-	"reason.": "internal/rank scoring terms, via view.rankReasonLabel",
 }
 
 func TestEveryReferencedKeyExists(t *testing.T) {

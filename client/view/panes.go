@@ -1225,6 +1225,51 @@ type listProps struct {
 // where you are.
 const ItemRowHeight = 96.0
 
+// MyFeedRowHeight is the taller row My Feed uses, so a pick can state its rationale.
+//
+// # Why My Feed gets its own height rather than sharing the 96px one
+//
+// The reason is the product on this stream (§18.9), and at 96px there is nowhere to put it.
+// A two-line headline — which is most of them — consumes the row, so the first version put
+// the rationale on a third line that was clipped away entirely: thirty reasons in the DOM
+// and none of them on screen. Squeezing a 1–2 word chip into the metadata line instead made
+// it visible and made it useless: "fresh" is a label, not an explanation.
+//
+// 132px buys one line of prose at the row's own type size. The number has to match the
+// `--row` override in design.Sheet exactly, for the reason ItemRowHeight documents: this one
+// positions the rows and that one sizes them, and a few pixels of disagreement accumulates
+// down the list until rows overlap.
+//
+// It is safe to vary per SCOPE because VirtualList only requires the height to be constant
+// within one list, not across the application — and everything that reads it (the row, the
+// skeleton, and the travelling cursor) goes through `--row`, so one override moves all three.
+const MyFeedRowHeight = 132.0
+
+// paneScope names the stream on the list pane, so the stylesheet can size its rows.
+//
+// The `--row` override for My Feed keys off this. One attribute rather than a class,
+// because it is a statement of WHICH stream rather than a style, and the skeleton list and
+// the travelling cursor both live inside this element and both already read `--row` — so
+// one override moves the row, the placeholder and the highlight together.
+func paneScope(s scope) map[string]string {
+	if s.MyFeed {
+		return map[string]string{"scope": "myfeed"}
+	}
+	return nil
+}
+
+// rowHeight is the row height for the scope being shown.
+//
+// One function so the Go side and the stylesheet cannot disagree about which list is tall:
+// every caller that positions a row asks here, and the CSS keys off the same
+// data-scope attribute this decides from.
+func rowHeight(s scope) float64 {
+	if s.MyFeed {
+		return MyFeedRowHeight
+	}
+	return ItemRowHeight
+}
+
 func listPane(tr i18n.Runtime, p listProps) ui.Node {
 	// The header sits OUTSIDE the scroll container now. It used to be the first
 	// row inside it, which meant it scrolled away and, more importantly, that the
@@ -1236,16 +1281,16 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 	// is actually in flight the shape IS known, and that is where placeholders
 	// belong.
 	if !p.connected {
-		return html.Div(html.Props{Class: "pane pane-list"}, head,
+		return html.Div(html.Props{Class: "pane pane-list", Data: paneScope(p.sel)}, head,
 			html.Div(html.Props{Class: "empty"}, html.Text(tr.T("list", "connecting"))))
 	}
 	if p.loading && len(p.items) == 0 {
-		return html.Div(html.Props{Class: "pane pane-list"}, head, skeletonList(tr))
+		return html.Div(html.Props{Class: "pane pane-list", Data: paneScope(p.sel)}, head, skeletonList(tr))
 	}
 	if len(p.items) == 0 {
 		// No back button here any more: `head` carries it now, for every state
 		// of the list rather than only this one.
-		return html.Div(html.Props{Class: "pane pane-list"}, head, emptyList(tr, p))
+		return html.Div(html.Props{Class: "pane pane-list", Data: paneScope(p.sel)}, head, emptyList(tr, p))
 	}
 
 	// The cold-start band (§18.4): an honest "learning your reading" rather than a
@@ -1289,11 +1334,11 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 		}
 	}
 
-	return html.Div(html.Props{Class: "pane pane-list"},
+	return html.Div(html.Props{Class: "pane pane-list", Data: paneScope(p.sel)},
 		head,
 		html.VirtualList(html.VirtualListProps{
 			ItemCount:      count,
-			ItemHeight:     ItemRowHeight,
+			ItemHeight:     rowHeight(p.sel),
 			ViewportHeight: p.viewport,
 			ScrollTop:      p.scrollTop,
 			// Keyed by item id, so scrolling reuses fibers instead of rebuilding
@@ -1372,7 +1417,7 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 				Data: map[string]string{"cursor": strconv.FormatBool(cursor >= 0)},
 				// A custom property, so it has to ride the style ATTRIBUTE:
 				// GWC's style map cannot set them at all (see hueVarFor).
-				Raw: map[string]any{"style": "--cursor:" + cursorY(cursor)},
+				Raw: map[string]any{"style": "--cursor:" + cursorY(cursor, rowHeight(p.sel))},
 			},
 		}),
 	)
@@ -1393,11 +1438,11 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 // Parked at the top when there is no selection, where it waits behind opacity 0
 // — so the first selection of a session fades in on its way rather than sliding
 // the full height of the list from nowhere.
-func cursorY(index int) string {
+func cursorY(index int, h float64) string {
 	if index < 0 {
 		return "0px"
 	}
-	return strconv.FormatFloat(float64(index)*ItemRowHeight, 'f', 0, 64) + "px"
+	return strconv.FormatFloat(float64(index)*h, 'f', 0, 64) + "px"
 }
 
 func skeletonRow(i int) ui.Node {
@@ -1655,21 +1700,79 @@ func chip(action, label string, pressed bool) ui.Node {
 // The tier and slot go on the element rather than into the text. They are facts about
 // the whole pick rather than judgements the reader can act on, so they belong where
 // the stylesheet can mark them without spending any of the reason's width.
-func topRankReason(tr i18n.Runtime, it *pb.Item) ui.Node {
+// MaxBlurbReasons is how many clauses the rationale states.
+//
+// Two. The line is one row deep and the reasons arrive sorted by contribution, so two names
+// the factors that actually decided the placement. A third clause pushes the sentence past
+// the row and adds a term whose influence was, by construction, smaller than the two above
+// it — the rest stay reachable on hover.
+const MaxBlurbReasons = 2
+
+// rankBlurb is the rationale, as a sentence, on its own line.
+//
+// # Why prose and not the labels
+//
+// The short labels (`fresh`, `your feed`) exist for the reason chip that no longer exists,
+// and they were the wrong shape for this: a reader asking "why is this here" wants a claim
+// they can agree or disagree with, and one word is not one. The server's prose IS that claim
+// — "about Android Auto, which you follow", "several feeds you follow carried this" — so
+// this line uses it, joined, and keeps the localised labels for the leading glyph.
+//
+// # The i18n position, stated plainly
+//
+// This prose comes from internal/rank in English, so this line is not translated. That is a
+// real gap and it is recorded rather than hidden: the alternative shipped instead of it was
+// a translated 1–2 word label that told the reader nothing, and a useless translated string
+// is worse than a useful untranslated one. Closing it properly means the server sending
+// structured ARGUMENTS per term — the domain, the topic label, the source count — for the
+// catalogue to interpolate, which is a wire change worth doing deliberately.
+//
+// Returns nil for anything that is not a ranked pick, so ordinary lists are unaffected.
+func rankBlurb(tr i18n.Runtime, it *pb.Item) ui.Node {
 	reasons := it.GetRankReasons()
 	if len(reasons) == 0 {
 		return nil
 	}
-	return html.Span(html.Props{
-		Class: "chip chip-static item-reason",
+	shown := reasons
+	if len(shown) > MaxBlurbReasons {
+		shown = shown[:MaxBlurbReasons]
+	}
+	return html.Div(html.Props{
+		Class: "item-why",
 		Raw: map[string]any{
-			"data-rank-tier": it.GetRankTier(),
 			"data-rank-slot": it.GetRankSlot(),
-			// The full prose, all of it, on hover. The chip is a label; this is the
-			// explanation, and §18.9 wants the explanation reachable.
+			// Every clause, on hover. The line shows the two that mattered; §18.9 wants
+			// the whole explanation reachable, not merely summarised.
 			"title": strings.Join(reasons, " · "),
 		},
-	}, html.Text(rankReasonLabel(tr, it, 0)))
+		Aria: map[string]string{"label": tr.T("list", "whyAria")},
+	},
+		html.Span(html.Props{Class: "why-mark"}, html.Text(glyphMyFeed)),
+		html.Text(strings.Join(shown, " · ")),
+	)
+}
+
+// smartPlusMark labels a row the paid tier actually moved.
+//
+// # Why this is a visible badge and not a border colour
+//
+// The first version tinted the reason chip's border for `smart_plus` rows. Nobody could see
+// it, which was reported as Smart+ having no branding at all — and the complaint was right:
+// a distinction the reader cannot perceive is not one the product is making. If someone is
+// paying for a tier, the rows it influenced have to say so in words.
+//
+// Only on rows it CHANGED. store.TierSmartPlus is set when the model moved an item, not
+// when a key merely exists, so a configured instance whose re-rank agreed with free Smart
+// shows no marks — which is the honest report and also the one that keeps the badge
+// meaningful.
+func smartPlusMark(tr i18n.Runtime, it *pb.Item) ui.Node {
+	if it.GetRankTier() != "smart_plus" {
+		return nil
+	}
+	return html.Span(html.Props{
+		Class: "item-plus",
+		Title: tr.T("list", "smartPlusTitle"),
+	}, html.Text(tr.T("list", "smartPlusMark")))
 }
 
 // rankReasonLabel is the short, localised label for one reason.
@@ -1831,19 +1934,12 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 		meta = append(meta, html.Span(html.Props{Class: "age-tag age-stale"},
 			html.Text(tr.T("list", "ageStale"))))
 	}
-	// Reading time yields its place to the reason on a ranked row.
-	//
-	// Both cannot fit. The row is a fixed 96px and a two-line headline — which is most
-	// of them — leaves no third line at all, so the first version of this put the reason
-	// chips on a line that was clipped away entirely: thirty chips in the DOM, none of
-	// them visible on screen. That only showed up in a screenshot of the running app.
-	//
-	// So the reason goes in the meta line, and on My Feed it is worth more than "5 min
-	// read": the reader picked a stream that promises to explain itself, and an estimate
-	// they can infer from the headline is the cheapest thing on the row to give up.
-	if reason := topRankReason(tr, it); reason != nil {
-		meta = append(meta, html.I(html.Props{Class: "item-sep"}), reason)
-	} else if it.GetWordCount() >= 50 {
+	// The Smart+ mark rides in the meta line, where it is a fact about the pick rather
+	// than part of its explanation. See smartPlusMark.
+	if mark := smartPlusMark(tr, it); mark != nil {
+		meta = append(meta, mark)
+	}
+	if it.GetWordCount() >= 50 {
 		meta = append(meta,
 			html.I(html.Props{Class: "item-sep"}),
 			html.Span(html.Props{}, html.Text(readingTime(tr, it.GetWordCount()))))
@@ -1879,16 +1975,25 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 			html.Strong(html.Props{Class: "note-flag"}, html.Text(tr.T("list", "noteFlag"))),
 			html.Text(firstWords(it.GetNote(), 90)),
 		))
-	// No case for the ranked reasons here any more: they are in the meta line, where
-	// there is actually room for them (see topRankReason). A ranked row keeps its
-	// summary, which is the better outcome — the reason and the article's own gist are
-	// not competing for one slot now.
-	case it.GetRankReason() != "":
-		children = append(children,
-			html.Div(html.Props{Class: "item-summary"}, html.Text(it.GetRankReason())))
 	case it.GetSummary() != "":
 		children = append(children,
 			html.Div(html.Props{Class: "item-summary"}, html.Text(it.GetSummary())))
+	}
+
+	// The rationale, on its own line, in full prose.
+	//
+	// This is the fourth thing tried and the first that works. The single-line
+	// `rank_reason` was one run-on clause; a chip row on a third line was clipped away by
+	// the 96px row and never seen; a 1–2 word chip in the metadata line was visible and
+	// said nothing ("fresh"). A ranked row is taller (MyFeedRowHeight) precisely so this
+	// can be a sentence — §18.9 makes the explanation the product, and a product that does
+	// not fit on the screen is not shipped.
+	//
+	// After the summary rather than instead of it: they answer different questions. The
+	// summary is what the article says; this is why it is in front of you. A reader
+	// deciding whether to open something wants both, and the row now has room.
+	if blurb := rankBlurb(tr, it); blurb != nil {
+		children = append(children, blurb)
 	}
 
 	props := hueVarFor(it.GetSourceId())

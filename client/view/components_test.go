@@ -3,6 +3,7 @@
 package view
 
 import (
+	"html"
 	"strings"
 	"testing"
 
@@ -108,6 +109,42 @@ func TestRailPaneFilterWithNoMatches(t *testing.T) {
 	}
 }
 
+// TestFeedRowUnreadBadgeIsPerFeed closes an audited blind spot: disabling
+// feedRow's `if n := f.GetUnreadCount(); n > 0` branch entirely — so a feed
+// draws its icon but never its own count — left the whole suite green,
+// because TestRailPaneHappyPath's only unread assertion is the masthead's
+// aggregate ("2 feeds · 5 unread"), which is composed independently and
+// does not depend on any one row drawing a badge.
+//
+// This pins the badge to ONE feed's OWN row via buttonBlock keyed on
+// data-source-id, so a badge drawn on some other row (or the aggregate
+// living elsewhere in the markup) cannot satisfy it. It also pins the other
+// half of the same branch: a zero-unread feed must draw no badge at all,
+// because the design treats a zero count as deliberately undrawn — an
+// "All feeds 0" badge would draw the eye to the one place nothing is
+// happening.
+func TestFeedRowUnreadBadgeIsPerFeed(t *testing.T) {
+	p := railProps{
+		feeds: []*pb.Feed{
+			{SourceId: "s1", Title: "The Verge", UnreadCount: 3},
+			{SourceId: "s2", Title: "Ars Technica", UnreadCount: 0},
+		},
+		total: 3,
+	}
+	out := renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(p) })
+
+	unread := buttonBlock(t, out, `data-source-id="s1"`)
+	if !strings.Contains(unread, `class="feed-count"`) || !strings.Contains(unread, ">3<") {
+		t.Errorf("feed s1 (UnreadCount=3) should show its own %q badge inside its own row:\n%s", "3", unread)
+	}
+
+	zero := buttonBlock(t, out, `data-source-id="s2"`)
+	if strings.Contains(zero, `class="feed-count"`) {
+		t.Errorf("feed s2 (UnreadCount=0) should draw NO badge at all — a zero count is "+
+			"deliberately not drawn:\n%s", zero)
+	}
+}
+
 // --- listPane --------------------------------------------------------------
 
 func TestListPaneNotYetConnected(t *testing.T) {
@@ -208,6 +245,67 @@ func TestEmptyNoArticlesHintPointsAtARemovedControl(t *testing.T) {
 		"(client/i18n/en_panes.go, key list.emptyNoArticlesHint).", staleText)
 }
 
+// TestEmptyListScopeGetsItsOwnCopy closes an audited blind spot: swapping the
+// catalog KEYS so a Tag scope rendered the Category empty-state copy and a
+// Category scope rendered the Tag copy — transposing two of emptyList's
+// switch arms — left the whole suite green. The only existing assertion on
+// those scopes (above) checks that the GENERIC no-articles hint is absent;
+// swapped-but-still-scope-specific copy is not generic, so it slipped
+// through untouched.
+//
+// emptyState's own doc comment says the shape is the point: every empty
+// state is a heading plus a DIRECTION, and the direction is what a reader
+// actually needed the empty state for. So this pins both halves, per scope —
+// not just the three the auditor named (Notes/Tag/Category) but every scope
+// emptyList switches on, since the same gap covers all of them identically.
+//
+// Both halves are looked up from the catalog by the exact key emptyList is
+// documented (and, above, spot-checked) to use for that scope, rather than
+// inlined as copy — that is what actually distinguishes "the Tag arm fired"
+// from "some other arm fired and happened to produce different text", which
+// a hardcoded string pasted at write time would not.
+func TestEmptyListScopeGetsItsOwnCopy(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+
+	cases := []struct {
+		name              string
+		props             listProps
+		titleKey, hintKey string
+	}{
+		{"a search", listProps{sel: scope{Search: "golang"}}, "emptySearch", "emptySearchHint"},
+		{"My Feed", listProps{sel: scope{MyFeed: true}}, "emptyMyFeed", "emptyMyFeedHint"},
+		{"unread-only", listProps{unreadOnly: true}, "emptyUnread", "emptyUnreadHint"},
+		{"read later", listProps{sel: scope{Later: true}}, "emptyLater", "emptyLaterHint"},
+		{"liked", listProps{sel: scope{Rating: 1}}, "emptyLiked", "emptyLikedHint"},
+		{"disliked", listProps{sel: scope{Rating: -1}}, "emptyDisliked", "emptyDislikedHint"},
+		{"the Notes stream", listProps{sel: scope{Notes: true}}, "emptyNotes", "emptyNotesHint"},
+		{"a tag", listProps{sel: scope{TagID: "tag-1"}}, "emptyTag", "emptyTagHint"},
+		{"a category", listProps{sel: scope{FolderID: "cat-1"}}, "emptyCategory", "emptyCategoryHint"},
+		{"no scope at all", listProps{}, "emptyNoArticles", "emptyNoArticlesHint"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return emptyList(tr, c.props) })
+			// html.EscapeString matches what the SSR renderer does to
+			// html.Text content (see TestListPaneRendersItems above) — two of
+			// these hints carry an apostrophe that would otherwise never
+			// match the escaped &#39; the renderer actually emits.
+			wantTitle := html.EscapeString(ns.T(c.titleKey))
+			wantHint := html.EscapeString(ns.T(c.hintKey))
+			if !strings.Contains(out, wantTitle) {
+				t.Errorf("emptyList(%s) is missing its heading (list.%s = %q):\n%s",
+					c.name, c.titleKey, wantTitle, out)
+			}
+			if !strings.Contains(out, wantHint) {
+				t.Errorf("emptyList(%s) is missing its direction (list.%s = %q):\n%s",
+					c.name, c.hintKey, wantHint, out)
+			}
+		})
+	}
+}
+
 // --- articlePane -------------------------------------------------------------
 
 func TestArticlePaneEmptyStream(t *testing.T) {
@@ -278,12 +376,46 @@ func TestArticlePaneFocusPerchReflectsFocusState(t *testing.T) {
 
 // --- helpSheet ---------------------------------------------------------------
 
+// TestHelpSheetListsEveryGroup closes an audited blind spot: deleting the
+// entire List-pane shortcut group (the {tr.T(..., "groupList"), []binding{...
+// ↑ ↓ move-and-open, j k}} arm of helpSheet's groups slice) left this test
+// passing, because it only checked that five substrings — "Ctrl", "K", "Esc",
+// "Enter", "?" — appear ANYWHERE in the sheet. "Enter" and "Ctrl" both also
+// occur in the Article group's "Ctrl Enter" binding, so a whole missing group
+// left every one of those five substrings intact by coincidence.
+//
+// helpSheet is grouped by WHERE a key works rather than alphabetically (its
+// own doc comment: that is the question a reader actually has), so the
+// grouping is the feature under test, not decoration. This asserts all four
+// group TITLES are present, plus — per group — a binding whose catalog text
+// is unique to that one group, so a group emptied of its bindings but left
+// with its title (a mutation the title-only check alone would miss) is also
+// caught.
 func TestHelpSheetListsEveryGroup(t *testing.T) {
+	tr := mustRuntime(t)
+	help := tr.NS("help")
 	out := renderView(t, func(tr i18n.Runtime) ui.Node { return helpSheet(tr, true) })
-	for _, want := range []string{"Ctrl", "K", "Esc", "Enter", "?"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("helpSheet(open) missing key label %q:\n%s", want, out)
-		}
+
+	cases := []struct {
+		group          string // for the failure message only
+		title, binding string
+	}{
+		{"groupAnywhere", help.T("groupAnywhere"), help.T("palette")},
+		{"groupRail", help.T("groupRail"), help.T("moveFeeds")},
+		{"groupList", help.T("groupList"), help.T("nextPrev")},
+		{"groupArticle", help.T("groupArticle"), help.T("saveNote")},
+	}
+	for _, c := range cases {
+		t.Run(c.group, func(t *testing.T) {
+			if !strings.Contains(out, c.title) {
+				t.Errorf("helpSheet is missing the %s group entirely — its title %q "+
+					"does not appear anywhere in the sheet:\n%s", c.group, c.title, out)
+			}
+			if !strings.Contains(out, c.binding) {
+				t.Errorf("helpSheet is missing %q, a binding unique to the %s group:\n%s",
+					c.binding, c.group, out)
+			}
+		})
 	}
 }
 

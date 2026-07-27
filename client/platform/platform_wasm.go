@@ -1470,6 +1470,28 @@ var (
 	audioFuncs []js.Func
 )
 
+// audioElement is the one <audio> element, created on first use.
+//
+// Lazily rather than at package init because a module that has not been asked to
+// speak should not put a media element in the document — and because init runs
+// before there is reliably a document to put it in.
+//
+// It is a function rather than an inline block in PlayAudio because a second
+// caller needs the same element: OnAudioProgress attaches to it (see
+// stage_wasm.go), and an element created independently there would report the
+// progress of a track nobody is listening to.
+func audioElement() js.Value {
+	if !audioEl.Truthy() {
+		doc := js.Global().Get("document")
+		if !doc.Truthy() {
+			return js.Undefined()
+		}
+		audioEl = doc.Call("createElement", "audio")
+		audioEl.Set("preload", "auto")
+	}
+	return audioEl
+}
+
 // PlayAudio streams a URL, reporting state as it goes.
 //
 // States are the ones a control needs to distinguish, and "loading" is the one
@@ -1478,10 +1500,9 @@ var (
 func PlayAudio(src string, onState func(state string)) {
 	AudioStop()
 
-	doc := js.Global().Get("document")
-	if !audioEl.Truthy() {
-		audioEl = doc.Call("createElement", "audio")
-		audioEl.Set("preload", "auto")
+	if !audioElement().Truthy() {
+		onState("error")
+		return
 	}
 	on := func(event, state string) {
 		f := js.FuncOf(func(_ js.Value, _ []js.Value) any {

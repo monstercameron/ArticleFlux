@@ -152,8 +152,26 @@ func init() {
 		// is "undo that". This one is empty because the ranking has not run yet or has
 		// been worked through — nothing is wrong, and nothing needs undoing. Saying
 		// "nothing here" without that would read as a broken feature on a new account.
-		"emptyMyFeed":     "Nothing ranked yet",
-		"emptyMyFeedHint": "New items are ranked as they arrive. Read a few and this fills in.",
+		"emptyMyFeed": "Nothing ranked yet",
+		// Names what fills it, and does not blame the reader for an empty page. My Feed
+		// only shows items it can give a REASON for — a subject you read, a brand you
+		// follow, a story several of your feeds carried — so on a new account there is
+		// honestly nothing to show, and saying that is better than a confident wrong
+		// answer (§18.4).
+		"emptyMyFeedHint": "This fills in as you read. Only items with a reason appear here — " +
+			"a subject you follow, a brand you track, or a story several of your feeds carried.",
+
+		// The rationale line on a ranked row (§18.9).
+		//
+		// Its own accessible name because the visible line is the server's prose and a
+		// screen reader arriving at it mid-row has no way to know it is an explanation
+		// rather than more of the article.
+		"whyAria": "Why this is in My Feed",
+		// The Smart+ mark. Short, because it sits in a metadata line beside a source and an
+		// age — and a word rather than only a colour, because the first version was a
+		// border tint nobody could see.
+		"smartPlusMark":  "Smart+",
+		"smartPlusTitle": "Smart+ moved this pick",
 		// Notes, a tag, and a category are three more real reasons a list can be
 		// empty, and each got silently routed to the generic "no articles at all"
 		// default until now — advice to add a feed on a stream that is about

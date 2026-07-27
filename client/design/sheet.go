@@ -637,40 +637,60 @@ func list(r func(string, string) css.Rule) {
 		r("margin-right", "7px"), r("font-weight", "600"),
 	)
 
-	// The My Feed reason (§18.9), inline in the meta line.
+	// My Feed's rows are taller, because a pick states its rationale and there is nowhere
+	// to put a sentence in 96px.
 	//
-	// It shares the row with a source name, an age and sometimes a NEW badge, so it is
-	// sized to be legible and to yield: min-width 0 plus ellipsis means a long reason
-	// shortens rather than pushing the age off the row, and shrink lets the flex line
-	// give it up last. Smaller and quieter than an interactive chip on purpose — the
-	// article is the thing, the reason is why it is here, and a reason that competes
-	// with the headline has inverted the row.
-	css.Global(".item-reason",
-		r("padding", "0 7px"), r("font-size", "10.5px"),
-		r("color", "var(--mute)"), r("border-color", "var(--line)"),
-		r("white-space", "nowrap"),
-		// Does NOT shrink. The labels in en_reasons.go are written to fit — the longest
-		// is "already have this" — so there is nothing useful to gain by clipping one,
-		// and a great deal to lose: "fr…" is not an explanation. The source name beside
-		// it yields instead.
-		r("flex", "0 0 auto"),
+	// ONE variable, and that is the whole trick: `.item-row`, `.sk-row` and the travelling
+	// cursor (`.list-scroll::before`, in motion.go) all size themselves from `--row`, so
+	// overriding it here moves the row, its placeholder and the selection highlight
+	// together. Overriding three heights separately is how a cursor ends up half a row out
+	// of alignment on one stream.
+	//
+	// Must equal view.MyFeedRowHeight exactly. That constant positions the rows and this
+	// sizes them, and a few pixels of disagreement accumulates down the list until rows
+	// overlap and the scrollbar lies about where you are.
+	css.Global(".pane-list[data-scope='myfeed']", r("--row", "132px"))
+
+	// The rationale line (§18.9): why this item is on the page.
+	//
+	// A full line of prose rather than a chip. Three earlier attempts failed in ways worth
+	// recording, because each looked correct in code: a third line at 96px was clipped away
+	// entirely, a 1–2 word chip in the metadata line was visible and said nothing, and the
+	// single-line rank_reason was four clauses run together.
+	//
+	// Clipped rather than wrapped: the row height is fixed, so a second line of rationale
+	// would push the row past what VirtualList positions it by. The full text is on the
+	// element's title.
+	css.Global(".item-why",
+		r("display", "flex"), r("gap", "6px"), r("align-items", "baseline"),
+		r("margin-top", "6px"), r("font-size", "11.5px"),
+		r("color", "var(--mute)"), r("font-style", "italic"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
 	)
-	// A Smart+ pick is marked in the accent, because the reader paid for it and is
-	// entitled to see which picks it actually touched. A border colour rather than a
-	// badge: a badge costs width the reason needs, and this distinction is not worth
-	// shortening the explanation for.
-	css.Global(".item-reason[data-rank-tier='smart_plus']",
-		r("border-color", "color-mix(in srgb, var(--cc) 45%, var(--line))"),
-		r("color", "var(--soft)"),
+	// The same sparkle the rail uses for My Feed, so the line is recognisably that
+	// stream's voice rather than more of the article's metadata.
+	css.Global(".why-mark",
+		r("color", "var(--cc)"), r("flex", "0 0 auto"), r("font-style", "normal"),
 	)
-	// An Explore pick is deliberately NOT the highest-scoring thing available — it is
-	// there to stop the page converging on one topic (§18.4). Marking it keeps that
-	// honest: it looks different because it was chosen on a different basis.
-	css.Global(".item-reason[data-rank-slot='explore']", r("border-style", "dashed"))
-	// A cluster head stands for a story several feeds carried, so it reads as the one
-	// card for a group rather than one item among many.
-	css.Global(".item-reason[data-rank-slot='cluster_head']",
-		r("border-color", "color-mix(in srgb, var(--cream) 22%, var(--line))"),
+	// An Explore pick is deliberately NOT the highest-scoring thing available — it is there
+	// to stop the page converging on one topic (§18.4). Marking it keeps that honest: it
+	// looks different because it was chosen on a different basis.
+	css.Global(".item-why[data-rank-slot='explore'] .why-mark", r("opacity", ".55"))
+
+	// The Smart+ mark: a word, in the accent, on rows the paid tier actually moved.
+	//
+	// A badge and not a border tint. The first version tinted a chip border and the result
+	// was reported as Smart+ having no branding at all — correctly, because a distinction
+	// the reader cannot perceive is not one the product is making. Someone paying for a
+	// tier is entitled to see which rows it touched, in words.
+	css.Global(".item-plus",
+		r("flex", "0 0 auto"), r("font-size", "9.5px"), r("font-weight", "600"),
+		r("letter-spacing", ".06em"), r("text-transform", "uppercase"),
+		r("padding", "1px 6px"), r("border-radius", "4px"),
+		r("color", "var(--cc)"),
+		r("border", "1px solid color-mix(in srgb, var(--cc) 45%, transparent)"),
+		r("background", "color-mix(in srgb, var(--cc) 10%, transparent)"),
 	)
 
 	// The cold-start band. Quiet on purpose: it is an admission, not an announcement,

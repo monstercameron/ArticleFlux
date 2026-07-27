@@ -33,6 +33,10 @@ const (
 	// English, which is a choice like any other rather than an absence.
 	actSmartLang        = "smart-language"
 	actSmartRetranslate = "smart-retranslate"
+	// actSmartFeedPlus toggles the per-user opt-in for Smart+ ranking of My Feed. A
+	// PREFERENCE, not a server setting: the key is what the instance can do, this is what
+	// the reader agreed to pay for.
+	actSmartFeedPlus = "smart-feed-plus"
 )
 
 type smartProps struct {
@@ -58,6 +62,14 @@ type smartProps struct {
 	notice  string
 	err     string
 	loading bool
+
+	// feedPlus is the per-user opt-in for Smart+ ranking of My Feed
+	// (derive.SmartPlusPrefKey). Default off, like every other paid feature here.
+	//
+	// A preference rather than a server setting, and separate from the key, because
+	// the key is a capability the INSTANCE has and this is a decision the READER
+	// makes. Storing a key must not start spending money on its own.
+	feedPlus bool
 }
 
 func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
@@ -73,6 +85,10 @@ func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
 	}
 	out = append(out, smartKeySection(tr, p)...)
 	out = append(out, smartModelSection(tr, p)...)
+	// The per-feature opt-ins, directly under the key that makes them possible and
+	// directly above the spend counters they move. A reader deciding whether to turn one
+	// on wants the bill in the same glance.
+	out = append(out, smartFeatureSection(tr, p)...)
 	out = append(out, smartSpendSection(tr, p)...)
 	out = append(out, smartLanguageSection(tr, p)...)
 
@@ -160,6 +176,59 @@ func smartModelSection(tr i18n.Runtime, p smartProps) []ui.Node {
 				actionButton(actSmartModel, "chip", tr.T("smart", "modelSave")),
 			)),
 	}
+}
+
+// smartFeatureSection is the per-feature opt-ins.
+//
+// # Why each paid feature gets its own switch
+//
+// Storing an API key is not consent to use it. The precedent is `tts.smartPlus` and
+// `tts.digest`, which are two separate opt-ins for two parts of the same voice feature,
+// and the reason given there applies here unchanged: each one is a separate egress and a
+// separate bill, and someone who agreed to one has not agreed to the next.
+//
+// My Feed's ranking is the third. It sends forty headlines and a description of the
+// reader's interests on every derivation — which fires after every poll and after every
+// batch of engagements, so it is the most FREQUENT paid call in the application. The first
+// version had no switch at all and simply ran whenever a key existed; that is the bug this
+// section fixes.
+//
+// Disabled with no key, rather than hidden: a control that vanishes teaches nobody what
+// the key is for, and the hint says what it would do.
+func smartFeatureSection(tr i18n.Runtime, p smartProps) []ui.Node {
+	configured := p.cfg.GetConfigured()
+	hint := tr.T("smart", "feedPlusHint")
+	if !configured {
+		hint = tr.T("smart", "feedPlusNoKey")
+	}
+	return []ui.Node{
+		fsGroup(glyphAll, tr.T("smart", "featureGroup"), tr.T("smart", "featureHint")),
+		setRow(tr.T("smart", "feedPlusLabel"), hint,
+			smartToggle(actSmartFeedPlus, p.feedPlus, !configured,
+				tr.T("smart", "toggleOn"), tr.T("smart", "toggleOff"))),
+	}
+}
+
+// smartToggle is fsToggle with a disabled state.
+//
+// A disabled switch rather than an absent one, because "off" and "unavailable" are
+// different facts and a reader who cannot tell them apart concludes the feature is broken.
+// The label still reports the STATE rather than the action, which is fsToggle's rule and
+// the right one for something being glanced at.
+func smartToggle(action string, on, disabled bool, whenOn, whenOff string) ui.Node {
+	label := whenOff
+	if on {
+		label = whenOn
+	}
+	props := html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": action},
+		Aria:  map[string]string{"pressed": strconv.FormatBool(on)},
+	}
+	if disabled {
+		props.Disabled = true
+	}
+	return html.Button(props, html.Text(label))
 }
 
 func smartSpendSection(tr i18n.Runtime, p smartProps) []ui.Node {
