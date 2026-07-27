@@ -81,6 +81,6 @@ func climate() classify.Label {
 		MinScore: 0,
 		Prompt: "Assign for the climate and natural environment: warming, emissions, ecosystems, " +
 			"conservation. Not for a single weather event with no climate-trend angle (see World " +
-			"News), and not for corporate sustainability marketing with no environmental substance.",
+			"News), and not for sustainability marketing with no environmental substance.",
 	}
 }

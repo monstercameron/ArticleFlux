@@ -37,7 +37,7 @@ func security() classify.Label {
 			{Text: "penetration testing", Weight: 2.0},
 			{Text: "threat actor", Weight: 2.0},
 			{Text: "identity theft", Weight: 2.0},
-			{Text: "end-to-end encryption", Weight: 2.0},
+			{Text: "e2e encryption", Weight: 2.0},
 			{Text: "cyberattack", Weight: 2.0},
 			{Text: "data breach", Weight: 2.0},
 			{Text: "breach", Weight: 1.9},
