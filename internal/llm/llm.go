@@ -4,8 +4,14 @@
 // Responses API** (`POST /v1/responses`) — not chat completions, not the
 // assistants API, and not a second SDK bolted on for the next feature. One
 // endpoint means one egress boundary to audit, one place where the key is read,
-// one budget meter, and one breaker. Two would mean two of each, and the second
-// of each is the one nobody remembers to check.
+// and one place to put a budget meter and a breaker. Two would mean two of each,
+// and the second of each is the one nobody remembers to check.
+//
+// **The breaker and the in-flight bound are NOT built yet** (TODO 6.11). What is
+// here is a shared request timeout and a running token count. That gap is worth
+// stating rather than implying: a UI translation is ~10 batched calls, so a
+// provider outage during one costs ten failures and ten full timeouts instead of
+// one — which is exactly the case a breaker exists for.
 //
 // Responses rather than chat completions specifically because:
 //

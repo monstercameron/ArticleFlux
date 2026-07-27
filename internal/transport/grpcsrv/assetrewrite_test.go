@@ -106,6 +106,53 @@ func TestRelativeImageResolvesAgainstTheItemURL(t *testing.T) {
 	}
 }
 
+// The client renders the "View page" controls only when this field is
+// non-empty, so an empty one is a feature that silently does not exist. That is
+// exactly how it shipped invisible the first time.
+func TestGetItemCarriesTheProxyURL(t *testing.T) {
+	s, _, id := newItemServer(t, "https://pub.example/one.html", `<p>x</p>`)
+	s.WithPageProxy(func(abs string) string { return "/p?u=" + url.QueryEscape(abs) })
+
+	res, err := s.GetItem(context.Background(), &pb.GetItemRequest{Id: id})
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	got := res.GetItem().GetProxyUrl()
+	if got == "" {
+		t.Fatal("proxy_url is empty; the article's View page controls will not render")
+	}
+	if !strings.Contains(got, url.QueryEscape("https://pub.example/one.html")) {
+		t.Errorf("proxy_url does not point at the article: %q", got)
+	}
+}
+
+// With no page proxy wired the field must stay empty, so the controls are
+// absent rather than pointing at an endpoint that answers 501.
+func TestNoPageProxyMeansNoProxyURL(t *testing.T) {
+	s, _, id := newItemServer(t, "https://pub.example/one.html", `<p>x</p>`)
+	res, err := s.GetItem(context.Background(), &pb.GetItemRequest{Id: id})
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got := res.GetItem().GetProxyUrl(); got != "" {
+		t.Errorf("proxy_url = %q with no page proxy configured", got)
+	}
+}
+
+// An item with no URL has nothing to proxy.
+func TestItemWithNoURLGetsNoProxyURL(t *testing.T) {
+	s, _, id := newItemServer(t, "", `<p>x</p>`)
+	s.WithPageProxy(func(abs string) string { return "/p?u=" + abs })
+
+	res, err := s.GetItem(context.Background(), &pb.GetItemRequest{Id: id})
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got := res.GetItem().GetProxyUrl(); got != "" {
+		t.Errorf("proxy_url = %q for an item with no URL", got)
+	}
+}
+
 func TestAbsoluteImageIsProxied(t *testing.T) {
 	s, _, id := newItemServer(t,
 		"https://pub.example/one.html",

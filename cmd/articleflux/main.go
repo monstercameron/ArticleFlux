@@ -145,12 +145,22 @@ func serve(log *slog.Logger, args []string) error {
 	// so it gets a flag rather than being buried.
 	proxyImages := fs.Bool("proxy-images", envBoolDefault("ARTICLEFLUX_PROXY_IMAGES", true),
 		"re-serve article images through this server (see plan.md §10.1a)")
-	// Off by default, unlike -proxy-images, and the asymmetry is the point.
-	// Proxying an image re-serves a file the page already referenced; proxying
-	// a page fetches whole documents from arbitrary hosts and serves them under
-	// this instance's own name. That is a bigger commitment and an operator
-	// should opt into it rather than discover it.
-	proxyPages := fs.Bool("proxy-pages", envBool("ARTICLEFLUX_PROXY_PAGES"),
+	// On by default, matching -proxy-images. This started off and the argument
+	// for that was wrong, so it is worth writing down rather than quietly
+	// flipping: the claim was "proxying a page fetches whole documents from
+	// arbitrary hosts".
+	//
+	// It does not. A page capability is only ever minted for an item's OWN url
+	// (§10.1b's mint gate) — the exact URL "Open original" already sends the
+	// reader's browser to, one click away, on the same article. The marginal
+	// exposure over the button next to it is *who makes the request*, not what
+	// gets requested. That is a much smaller step than the comment claimed.
+	//
+	// What defaulting it off actually cost was discoverability: the control is
+	// absent rather than disabled when the proxy is off, so a reader who never
+	// passed the flag sees a feature that appears not to exist, with the only
+	// clue in a server flag they would have to already know about.
+	proxyPages := fs.Bool("proxy-pages", envBoolDefault("ARTICLEFLUX_PROXY_PAGES", true),
 		"serve publisher pages through this server (see plan.md §10.1b); requires -proxy-images")
 	proxyOrigin := fs.String("proxy-origin", envOr("ARTICLEFLUX_PROXY_ORIGIN", ""),
 		"absolute origin for proxied content, e.g. https://proxy.example.com; empty means same-origin")

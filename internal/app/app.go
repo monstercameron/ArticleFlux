@@ -30,6 +30,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
+	"github.com/monstercameron/ArticleFlux/internal/render"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
@@ -83,6 +84,23 @@ type Config struct {
 	// our own name. An operator may reasonably want the first and not the second.
 	ProxyPages bool
 
+	// ProxyStream turns on the §10.1d live view: a headless browser renders the
+	// page and its frames are streamed to the reader as MJPEG.
+	//
+	// Off by default, and unlike ProxyPages that default is not going to move.
+	// This is the one rung that runs a browser on the instance, and it is also
+	// the one whose SSRF story is weaker than everything else here — the browser
+	// dials for itself, so netguard's socket-level guard never sees it (see
+	// render.Stream). An operator opts into that; it is not inherited from
+	// "I wanted images to load".
+	ProxyStream bool
+
+	// BrowserPath overrides the browser binary for ProxyStream. Empty means the
+	// usual locations for the platform — Edge or Chrome on Windows, Chrome or
+	// Chromium on Linux — which is what lets the same config work on the
+	// development laptop and the Ubuntu box.
+	BrowserPath string
+
 	// ProxyOrigin is the absolute origin minted proxy URLs point at, e.g.
 	// "https://proxy.articleflux.example.com" (D20).
 	//
@@ -127,6 +145,11 @@ type App struct {
 	// on, and every /asset request answers 501 — which is the honest answer for
 	// a server that is working correctly and simply does not do this.
 	assets *assetproxy.Fetcher
+	// renderer is the §10.1d live view. Nil unless ProxyStream is on AND a
+	// browser was actually found — "configured but no browser installed" and
+	// "not configured" are the same answer to the client and a different line
+	// in the log.
+	renderer *render.Renderer
 	// pages is the §10.1b page proxy — tier 2. Nil for the same reason and with
 	// the same 501; it shares assetKey, since both capabilities are signed by
 	// the instance and the message prefix keeps them from being interchangeable.
@@ -264,7 +287,48 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 					UserAgent:    "ArticleFlux/" + cfg.Version + " (+page proxy)",
 				})
 			}
+			if cfg.ProxyStream {
+				rr := render.New(render.Options{
+					ExecPath:     cfg.BrowserPath,
+					AllowPrivate: cfg.AllowPrivateFeeds,
+				})
+				// Checked now rather than on the first request. "No browser
+				// installed" is a deploy-time fact, and discovering it when a
+				// reader presses Live is discovering it in the worst place.
+				if rr.Available() {
+					a.renderer = rr
+				} else {
+					cfg.Log.Warn("live view disabled: no chromium-family browser found",
+						"hint", "install Chrome or Chromium, or set -browser-path")
+				}
+			}
 		}
+	}
+
+	// Say what the reader will see, at the level that decides it.
+	//
+	// The failure this replaces was a real one and it cost an evening: with the
+	// page proxy off, the article's "View page" control is ABSENT rather than
+	// disabled — deliberately, because a disabled button advertises a feature
+	// the server refuses. The consequence is that a missing flag and a missing
+	// feature look identical from the reading pane, and the only clue lives in
+	// a flag you would have to already know about. One line at boot closes
+	// that gap for good.
+	switch {
+	case a.pages != nil:
+		cfg.Log.Info("proxy enabled", "images", true, "pages", true,
+			"liveView", a.renderer != nil)
+	case a.assets != nil:
+		cfg.Log.Info("proxy enabled", "images", true, "pages", false,
+			"note", "the article's View page control will not appear; pass -proxy-pages")
+	case cfg.ProxyPages:
+		// The one genuinely inconsistent pair, and it used to fail in silence:
+		// pages are served through the asset proxy, so asking for one without
+		// the other is asking for a page with no pictures and no stylesheet.
+		cfg.Log.Warn("-proxy-pages needs -proxy-images and was ignored",
+			"note", "pages are rewritten to fetch their subresources through the asset proxy")
+	default:
+		cfg.Log.Info("proxy disabled", "note", "articles will load images directly from publishers")
 	}
 
 	a.buildHandler()
@@ -333,6 +397,11 @@ func (a *App) Close() error {
 	case <-a.stopPo:
 	default:
 		close(a.stopPo)
+	}
+	// The browser is a child process, and one that outlives its parent is a
+	// headless Chrome nobody knows about holding 300 MB until the box reboots.
+	if a.renderer != nil {
+		a.renderer.Close()
 	}
 	if a.grpc != nil {
 		done := make(chan struct{})
@@ -500,6 +569,7 @@ func (a *App) buildHandler() {
 	// rather than only from the server log.
 	mux.HandleFunc("/asset", a.serveAsset)
 	mux.HandleFunc("/p", a.servePage)
+	mux.HandleFunc("/stream", a.serveStream)
 	// Liveness: the process is up and answering. Deliberately does not touch the
 	// database — a liveness probe that fails on a slow query gets the process
 	// killed and restarted into the same slow query.
