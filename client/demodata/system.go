@@ -94,13 +94,13 @@ func (s *systemService) GetServerStats(context.Context, *pb.GetServerStatsReques
 
 	now := in.clock()
 	res := &pb.GetServerStatsResponse{
-		Version:   Version,
-		Commit:    "demo",
-		UptimeS:   int64(now.Sub(in.started).Seconds()),
-		StartedAt: stamp(in.started),
-		DbPath:    "(in this tab)",
-		Feeds:     int32(len(in.feeds)),
-		Tags:      int32(len(in.tags)),
+		Version:    Version,
+		Commit:     "demo",
+		UptimeS:    int64(now.Sub(in.started).Seconds()),
+		StartedAt:  stamp(in.started),
+		DbPath:     "(in this tab)",
+		Feeds:      int32(len(in.feeds)),
+		Tags:       int32(len(in.tags)),
 		Goroutines: int32(runtime.NumGoroutine()),
 		// The poller is the browser's refresh button here, so the interval is
 		// the one thing about polling that is honestly zero.

@@ -22,6 +22,19 @@
 
 ---
 
+## Try it without installing anything
+
+There is a **[live demo](https://monstercameron.github.io/ArticleFlux/)** — the real reader, with an
+invented instance compiled into the same WebAssembly module. No account, no server, nothing stored:
+the "server" is the browser tab, and closing it is the undo button. Reading, marking, starring,
+notes, tags, categories, search, subscribing and mark-all-read-with-undo all work.
+
+It is the shipping client, not a mock-up of it — same components, same client, same generated gRPC
+stubs, with only the transport swapped underneath. [`docs/DEMO.md`](docs/DEMO.md) explains how, and
+what it deliberately cannot do (anything needing a server: Smart+, translation, the page proxy).
+
+---
+
 ## The pitch
 
 Google Reader died in 2013 and nothing replaced it. What replaced it was a choice between somebody
@@ -87,6 +100,7 @@ same deal.
 ./scripts/make.ps1 e2e      # Playwright, desktop + phone, against a real server
 ./scripts/make.ps1 test     # go test ./...
 ./scripts/make.ps1 lint     # go vet, buf lint, and the five structural guards
+./scripts/make.ps1 demo     # the static demo into bin/demo (see docs/DEMO.md)
 ```
 
 `dev` serves the local account with **no login** — the client asks the server at boot and goes

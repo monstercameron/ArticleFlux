@@ -743,6 +743,30 @@ func TestWhoAmIAlwaysAnswers(t *testing.T) {
 	}
 }
 
+// The reading pane clamps an article past 900 words and offers to expand it
+// (client/view/panes.go, clampWords). A demo whose longest piece is 400 words
+// never shows that, and a feature the showcase cannot reach is a feature the
+// showcase argues does not exist.
+func TestSomethingIsLongEnoughToClamp(t *testing.T) {
+	const clampWords = 900
+	_, r := newTest(t)
+	list, _ := r.ListItems(context.Background(), &pb.ListItemsRequest{
+		Scope: pb.ListScope_LIST_SCOPE_ALL, Limit: maxLimit,
+	})
+	var long, longest int32
+	for _, it := range list.GetItems() {
+		if it.GetWordCount() > clampWords {
+			long++
+		}
+		longest = max(longest, it.GetWordCount())
+	}
+	if long < 2 {
+		t.Errorf("%d articles are over %d words (longest %d) — the long-read clamp "+
+			"and the reading-time estimate both need something to work on",
+			long, clampWords, longest)
+	}
+}
+
 // Every fixture body is markup the reading pane will render, and a body that
 // forgot its tags renders as one long line.
 func TestFixtureBodiesAreMarkup(t *testing.T) {
