@@ -1528,9 +1528,48 @@ Business logic over repositories. Still headless.
       Proven end to end by `TestStreamServesMultipartFrames`: signed URL → handler → real browser →
       parsed multipart frames with JPEG headers on the wire.
 
-- [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
+- [x] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
       ◧ 2026-07-26 — `slog` is wired through the app and leveled, and §22.11's never-log rule is observed — the OpenAI TTS error path logs the provider message and returns a safe string, because provider errors can echo the user's article. Request-id threading is not done.
+
+      ✅ 2026-07-27 — `internal/reqid` + `migrations/0017_job_request_id.sql`, 10 tests. The package
+      is `reqid` rather than `log` because `slog` already is the logger; what was missing was the
+      one field that makes §20.7's bargain work. That bargain — the message a reader sees is always
+      safe, the useful detail goes to the log — only pays if the id reaches both ends: "it said
+      internal error" is useless, "it said internal error, reference 7f3a9c" is one grep.
+
+      **The queue is where this normally stops, and that is most of the work.** Fan-out, extraction,
+      archival and recommendation all happen later on a worker, so an id ending at the RPC boundary
+      explains the enqueue and nothing about the work. A job now records the request that queued it
+      (0017), and the worker restores it. **Two ids, not one**: the job gets a fresh one so its lines
+      group on their own, and the origin points back — "what did this job do" and "what was the user
+      doing when this got queued" are different questions and one field cannot answer both. Nullable
+      and staying nullable, because scheduler work has no originating request and inventing one
+      would make the log claim a user asked for something nobody asked for.
+
+      **`Pool.logf` was passing `context.Background()`**, which threw the id away before the handler
+      could see it. A logging helper that discards its context silently defeats every
+      context-carried field, present and future.
+
+      **The id is stamped by a handler, not by call sites.** There are hundreds of log calls and the
+      id would be missing from whichever ones somebody forgot — reliably the error paths that
+      matter. The handler is the reason to use `slog`'s context-aware API at all.
+
+      **It costs ~90 lines instead of ~10 for one reason: the field must stay at the top level.**
+      `Record.AddAttrs` adds *through* the group chain, so the naive version puts the id at
+      `job.request_id` for a logger built with `WithGroup("job")` and at `request_id` for one that
+      was not — and a field whose path depends on where the call happened cannot be filtered on,
+      which defeats the whole thing. So the `WithAttrs`/`WithGroup` chain is recorded and replayed
+      with the ids inserted ahead of the first group. There is a fast path for the no-group case,
+      which is every logger in this application today; the slow path exists so it is not quietly
+      wrong for the first person who reaches for a group. The ops slice is copied on derive, or two
+      loggers from one parent corrupt each other's groups — a bug that only appears once somebody
+      derives twice.
+
+      Ids are random, 64-bit, and hex: **not derived from the user, tenant or session**, because an
+      id you can correlate across users is a tracking identifier and one you can guess is a way to
+      ask the log about somebody else. Minted by the server, never taken from the client. Short
+      enough to read aloud, which is how it actually travels from a user to an operator.
 
 > *Done when:* `articleflux init` → login over the tunnel → one unary RPC → one streamed event, driven from
 > a Go test client. **That is plan M0's exit criteria, reached properly.**
@@ -2063,6 +2102,24 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       and it found it in the two themes nobody had opened. The mobile mockup has never been compared
       against the built app at all. *Done when: all five themes have been seen at 390px beside the
       mockup, and whatever that turns up is either fixed or written down.*
+- [x] **8b.49 A jump no longer reads what it jumped over** — §20.9. Cam: *"click n then click n+2 and
+      n, n+1 and n+2 are all marked read — isn't granular enough."* Both the seeded predecessor on an
+      open and the article a prepend inserts are placed above the fold **by the app**, and "scrolled
+      completely past" is one of the two ways an article gets marked — so the travel marked them, and
+      credited a `Completed` engagement for an article that was never on screen for a frame.
+      `skipPast` names those ids at the moment the app moves them; **becoming topmost takes an id back
+      out**, because scrolling up into something is reading it, and a suppression that outlived its
+      reason would be the same bug with the sign flipped. A time window around the programmatic scroll
+      was rejected: it makes correctness depend on how fast the browser settles a smooth scroll.
+      > Two things this cost, both worth keeping. The e2e fixtures were **all shorter than the
+      > viewport**, so the reading pane never scrolled and no test could have caught this — `alpha-2`
+      > is now deliberately taller than a screen. And the first version of the regression test
+      > **passed against the unfixed client**: it asserted before the seeded article's body had
+      > landed, and a skeleton is too short to be pushed clear of the fold. A regression test that has
+      > not been watched to fail has not been written.
+      > *Verification is incomplete: the second test (scrolling back up into a skipped article must
+      > mark it) has not had a clean run, because another session was rebuilding `bin/web/app.wasm`
+      > and running the same Playwright suite throughout. Run both before trusting them.*
 - [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
       and during this batch the wasm build was broken for a stretch while the native build and every Go
       test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on

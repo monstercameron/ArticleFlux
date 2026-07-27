@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -199,7 +200,7 @@ func (p *Pool) worker(ctx context.Context, name string) {
 			// A database error here is not the job's fault. Backing off rather
 			// than spinning keeps a locked database from becoming a busy loop
 			// that makes the lock worse.
-			p.logf(slog.LevelWarn, "claiming a job failed", "err", err)
+			p.logf(ctx, slog.LevelWarn, "claiming a job failed", "err", err)
 			p.sleep(ctx, p.opt.Idle)
 			continue
 		}
@@ -232,6 +233,16 @@ func (p *Pool) claim(ctx context.Context, worker string) (store.Job, error) {
 
 // run executes one job, converting a panic into a failure.
 func (p *Pool) run(ctx context.Context, job store.Job) {
+	// A FRESH id for the job, plus the origin of whatever queued it.
+	//
+	// Two ids rather than reusing the originating one: reusing it would make
+	// every job a user's action fanned out into indistinguishable from the RPC
+	// and from each other, so "show me this job" and "show me everything that
+	// request caused" would be the same query and neither would work. The job
+	// groups on its own id; the origin is how you walk back.
+	ctx = reqid.With(ctx, "")
+	ctx = reqid.WithOrigin(ctx, job.OriginRequestID)
+
 	handler, ok := p.handlers[job.Kind]
 	if !ok {
 		// An unregistered kind is a deployment mistake — a job enqueued by a
@@ -248,7 +259,7 @@ func (p *Pool) run(ctx context.Context, job store.Job) {
 				// One malformed feed must not stop every other subscriber's
 				// work. The stack goes to the log because the job's last_error
 				// is displayed and a stack trace is not a message for a person.
-				p.logf(slog.LevelError, "a job panicked",
+				p.logf(ctx, slog.LevelError, "a job panicked",
 					"kind", string(job.Kind), "job", job.ID, "panic", v,
 					"stack", string(debug.Stack()))
 				err = fmt.Errorf("panic: %v", v)
@@ -258,17 +269,17 @@ func (p *Pool) run(ctx context.Context, job store.Job) {
 	}()
 
 	if err != nil {
-		p.logf(slog.LevelWarn, "a job failed",
+		p.logf(ctx, slog.LevelWarn, "a job failed",
 			"kind", string(job.Kind), "job", job.ID, "attempt", job.Attempts, "err", err)
 		if ferr := p.repo.Fail(ctx, job.ID, err); ferr != nil {
-			p.logf(slog.LevelError, "recording a job failure failed", "err", ferr)
+			p.logf(ctx, slog.LevelError, "recording a job failure failed", "err", ferr)
 		}
 		return
 	}
 	if cerr := p.repo.Complete(ctx, job.ID); cerr != nil {
 		// The work happened and the bookkeeping did not. The reclaim sweep will
 		// requeue it, and the handler's at-least-once contract covers the rerun.
-		p.logf(slog.LevelError, "completing a job failed", "job", job.ID, "err", cerr)
+		p.logf(ctx, slog.LevelError, "completing a job failed", "job", job.ID, "err", cerr)
 	}
 }
 
@@ -293,13 +304,13 @@ func (p *Pool) reclaimer(ctx context.Context) {
 
 		n, err := p.repo.ReclaimStale(ctx, p.opt.StaleAfter)
 		if err != nil {
-			p.logf(slog.LevelWarn, "reclaiming stale jobs failed", "err", err)
+			p.logf(ctx, slog.LevelWarn, "reclaiming stale jobs failed", "err", err)
 			continue
 		}
 		if n > 0 {
 			// Worth a log line at info: this only happens after a crash or a
 			// hard kill, and a silent reclaim hides that one occurred.
-			p.logf(slog.LevelInfo, "reclaimed jobs from a worker that went away", "count", n)
+			p.logf(ctx, slog.LevelInfo, "reclaimed jobs from a worker that went away", "count", n)
 		}
 	}
 }
@@ -364,9 +375,16 @@ func (p *Pool) sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (p *Pool) logf(level slog.Level, msg string, args ...any) {
+// logf logs against the CALLER'S context, not a fresh one.
+//
+// It used to pass context.Background(), which threw away the request id before
+// the log handler could see it — so a job's log lines could never be correlated
+// with the RPC that queued them, which is exactly what §22.11 asks for. A
+// logging helper that discards its context silently defeats every
+// context-carried log field, present and future.
+func (p *Pool) logf(ctx context.Context, level slog.Level, msg string, args ...any) {
 	if p.opt.Log == nil {
 		return
 	}
-	p.opt.Log.Log(context.Background(), level, msg, args...)
+	p.opt.Log.Log(ctx, level, msg, args...)
 }

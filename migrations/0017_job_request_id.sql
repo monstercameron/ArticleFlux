@@ -1,0 +1,18 @@
+-- 0017_job_request_id — the request id survives the queue (TODO 7.11, §22.11).
+--
+-- §22.11's trade is that an error message is safe to display and the useful
+-- detail goes to the log with a request id. That only works if the id reaches
+-- both ends, and most of what this application does on a reader's behalf
+-- happens LATER, on a worker: fan-out, extraction, archival, recommendation.
+-- An id that stops at the RPC boundary explains the enqueue and nothing about
+-- the work, which is the half a user actually notices going wrong.
+--
+-- So a job records the request that queued it. The worker restores it and mints
+-- a fresh id for the job itself, because "what did this job do" and "what was
+-- the user doing when this got queued" are different questions and one column
+-- cannot answer both.
+--
+-- Nullable, and stays nullable: a job enqueued by the scheduler has no
+-- originating request, and inventing one would make the log claim a user asked
+-- for something nobody asked for.
+ALTER TABLE jobs ADD COLUMN origin_request_id TEXT;

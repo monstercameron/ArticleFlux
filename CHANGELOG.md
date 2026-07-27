@@ -78,6 +78,16 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Request ids threaded through handlers *and* jobs** (`internal/reqid`, TODO 7.11, §22.11). §20.7's
+  bargain is that the message a reader sees is always safe and the useful detail goes to the log —
+  which only pays if the id reaches both ends. The queue is where this normally stops, and the queue
+  is most of the work: fan-out, extraction and archival all happen later on a worker, so an id
+  ending at the RPC boundary explains the enqueue and nothing about the work. A job now records the
+  request that queued it and gets a fresh id of its own, because "what did this job do" and "what
+  was the user doing when this got queued" are different questions. Ids are random and meaningless
+  by design: one you can correlate across users is a tracking identifier, and one you can guess is a
+  way to ask the log about somebody else.
+
 - **`internal/apierr` — §20.7's error taxonomy in one place** (TODO 7.3a). It lived in `grpcsrv`,
   which is one of the three transports that share it; a taxonomy owned by one transport is one the
   other two re-derive, and you find out they derived it differently when a client sees a 404 from

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/reqid"
 )
 
 // The durable job queue's storage half (TODO 6.4, plan.md §22.7).
@@ -82,6 +83,14 @@ type Job struct {
 	RunAfter time.Time
 	LockedBy string
 	LockedAt time.Time
+	// OriginRequestID is the request that queued this job, if any (§22.11).
+	//
+	// The job's own log lines get their own fresh request id, so they group on
+	// their own; this points back at the RPC. Both, because "what did this job
+	// do" and "what was the user doing when this got queued" are different
+	// questions and one field cannot answer both. Empty for scheduler work,
+	// which no request asked for.
+	OriginRequestID string
 }
 
 // NewJob describes work to enqueue.
@@ -155,12 +164,16 @@ func (r *ReaderRepo) Enqueue(ctx context.Context, n NewJob) (string, error) {
 			}
 		}
 
+		// The originating request comes off the CONTEXT rather than from a
+		// field on NewJob. Every enqueue site would otherwise have to remember
+		// to pass it, and the ones that forgot would be invisible — a job with
+		// no origin looks exactly like scheduler work.
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO jobs (id, kind, tenant_id, payload_json, state, priority,
-			                   attempts, run_after, created_at)
-			 VALUES (?, ?, ?, ?, 'queued', ?, 0, ?, ?)`,
+			                   attempts, run_after, created_at, origin_request_id)
+			 VALUES (?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?)`,
 			id, string(n.Kind), nullify(n.TenantID), payload, n.Priority,
-			stamp(n.RunAfter), stamp(time.Now().UTC()))
+			stamp(n.RunAfter), stamp(time.Now().UTC()), nullify(reqid.From(ctx)))
 		return err
 	})
 	if err != nil {
@@ -224,12 +237,14 @@ func (r *ReaderRepo) Claim(ctx context.Context, opt ClaimOptions) (Job, error) {
 			}
 		}
 
-		q := `SELECT id, kind, ifnull(tenant_id,''), payload_json, priority, attempts
+		q := `SELECT id, kind, ifnull(tenant_id,''), payload_json, priority, attempts,
+		             ifnull(origin_request_id,'')
 		        FROM jobs WHERE ` + strings.Join(where, " AND ") + `
 		       ORDER BY priority DESC, run_after ASC, id ASC LIMIT 1`
 
 		err := tx.QueryRowContext(ctx, q, args...).Scan(
-			&job.ID, &job.Kind, &job.TenantID, &job.Payload, &job.Priority, &job.Attempts)
+			&job.ID, &job.Kind, &job.TenantID, &job.Payload, &job.Priority,
+			&job.Attempts, &job.OriginRequestID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNoJob
 		}

@@ -30,9 +30,10 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
-	"github.com/monstercameron/ArticleFlux/internal/render"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/render"
+	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
@@ -200,7 +201,12 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// it: terminal output is what someone watching the process sees, and losing
 	// it to gain a settings screen is a bad trade.
 	ring := obs.NewRing(cfg.Log.Handler(), obs.DefaultSize)
-	cfg.Log = slog.New(ring)
+	// And the request-id handler outside the ring, so an id reaches BOTH the
+	// terminal and the settings screen's log view. Inside the ring it would
+	// stamp only what the ring re-emitted, and the two views of the same event
+	// would carry different fields — which is worse than neither having it,
+	// because it makes the terminal look authoritative when it is not.
+	cfg.Log = slog.New(reqid.NewHandler(ring))
 
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log,
 		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{},
@@ -473,6 +479,16 @@ func (a *App) buildHandler() {
 		grpc.UnaryInterceptor(
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
+				// One id per call, minted here because this is the only place
+				// that sees all of them (§22.11). It is what connects the safe
+				// "internal error" a reader is shown to the actual cause in the
+				// log — a bug report saying "it said internal error" is
+				// useless, and one saying "reference 7f3a9c" is a single grep.
+				//
+				// Minted rather than taken from the client: an id a caller
+				// chooses is one they can collide, reuse across users, or use
+				// to ask the log about somebody else.
+				ctx = reqid.With(ctx, "")
 				start := time.Now()
 				res, err := handler(ctx, req)
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
@@ -512,7 +528,7 @@ func (a *App) buildHandler() {
 		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext).
 			WithAssetProxy(a.AssetURL).
 			WithPageProxy(a.PageURL).
-			WithLiveView(a.StreamURL))
+			WithLiveView(a.StreamURL, a.ScrollLive))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
 			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))
