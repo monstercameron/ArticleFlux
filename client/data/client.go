@@ -393,6 +393,22 @@ func (c *Client) SetFeedTag(parent context.Context, sourceID, name string, on bo
 	return c.track(err)
 }
 
+// UpdateTag changes a tag's rail label and glyph, leaving the tag itself alone.
+//
+// It takes the request rather than the two fields because both are OPTIONAL and
+// an empty string is a real value on either: the panel's "clear the name" and
+// its "do not touch the name" are different requests, and a (label, glyph)
+// signature cannot express the difference.
+func (c *Client) UpdateTag(parent context.Context, req *pb.UpdateTagRequest) (*pb.Tag, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.UpdateTag(ctx, req)
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetTag(), nil
+}
+
 // SetNote writes or clears an item's note.
 func (c *Client) SetNote(parent context.Context, itemID, body string) error {
 	ctx, cancel := c.ctx(parent)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/tagglyph"
 )
 
 // Scope is who is asking. Every repository method takes one, and CI enforces
@@ -41,6 +42,13 @@ var (
 	ErrNotFound = errors.New("store: not found")
 	// ErrNoScope means a query was attempted without an authenticated scope.
 	ErrNoScope = errors.New("store: unscoped query")
+	// ErrAmbiguousUser means a username matched in more than one tenant.
+	//
+	// Usernames are unique per tenant by design (users_tenant_username), so a
+	// bare username stops identifying an account the moment a second tenant
+	// exists. Login refuses rather than guessing — see UserForLogin, and D12,
+	// which has to decide where the tenant hint comes from.
+	ErrAmbiguousUser = errors.New("store: username matches more than one tenant")
 )
 
 // ReaderRepo is the reading surface's data access.
@@ -1096,28 +1104,57 @@ func (r *ReaderRepo) SourceHosts(ctx context.Context, limit int) ([]string, erro
 }
 
 // Tag is a user-defined label on feeds.
+//
+// Name and Label are two different jobs and are kept apart on purpose. Name is
+// the IDENTITY — what SetFeedTag takes, what the chip under an article says,
+// what a reader types to file the next feed — and nothing in the app renames
+// it. Label is the reader's own name for the tag's ROW IN THE RAIL, empty
+// meaning "use Name", the same override shape subscriptions.title has over
+// sources.title. See migrations/0008_tag_style.sql.
 type Tag struct {
 	ID    string
 	Name  string
 	Feeds int
+	Label string
+	Glyph string
 }
+
+// Display is what the sidebar draws. One rule, in one place, because the
+// alternative is every call site remembering to fall back and one of them
+// eventually not.
+func (t Tag) Display() string {
+	if t.Label != "" {
+		return t.Label
+	}
+	return t.Name
+}
+
+// MaxTagLabel matches the 1-48 bound on a tag name. A label is a name for the
+// same object shown in the same 200px column; a longer one would only ellipsise.
+const MaxTagLabel = 48
 
 // MaxTagsPerUser bounds the taxonomy. A tag list you cannot read is not a
 // taxonomy, and the cap is what stops a runaway client from making one.
 const MaxTagsPerUser = 200
 
 // ListTags returns a user's tags with how many feeds carry each.
+//
+// Ordered by what is DRAWN, not by what is stored: once a tag can be renamed for
+// the rail, sorting on t.name would file "Systems programming" under R because
+// its underlying tag is "rust". An alphabetical list sorted on a string the
+// reader cannot see is not alphabetical to them — it is shuffled.
 func (r *ReaderRepo) ListTags(ctx context.Context, s Scope) ([]Tag, error) {
 	if !s.Valid() {
 		return nil, ErrNoScope
 	}
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT t.id, t.name, count(ft.source_id)
+		SELECT t.id, t.name, t.label, t.glyph, count(ft.source_id)
 		  FROM tags t
 		  LEFT JOIN feed_tags ft ON ft.tag_id = t.id AND ft.user_id = t.user_id
 		 WHERE t.user_id = ? AND t.tenant_id = ?
 		 GROUP BY t.id
-		 ORDER BY lower(t.name)`, s.UserID, s.TenantID)
+		 ORDER BY lower(CASE WHEN t.label != '' THEN t.label ELSE t.name END)`,
+		s.UserID, s.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,12 +1162,98 @@ func (r *ReaderRepo) ListTags(ctx context.Context, s Scope) ([]Tag, error) {
 	var out []Tag
 	for rows.Next() {
 		var t Tag
-		if err := rows.Scan(&t.ID, &t.Name, &t.Feeds); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Label, &t.Glyph, &t.Feeds); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// TagPatch carries only what is being changed. Nil means "leave it alone"; a
+// pointer to "" means "clear it", which for a label restores the tag's own name
+// and for a glyph restores the section default.
+type TagPatch struct {
+	Label *string
+	Glyph *string
+}
+
+// UpdateTag changes how a tag presents in the rail.
+//
+// It cannot change t.name, and that is the whole shape of the feature rather
+// than a limitation of the query. The name is the handle every other tag
+// operation takes — SetFeedTag creates and removes by name, the chip under an
+// article carries it, and a tag is deleted when its last association goes — so
+// editing it here would be renaming the key while the rest of the app went on
+// using the old one.
+func (r *ReaderRepo) UpdateTag(ctx context.Context, s Scope, tagID string, p TagPatch) (Tag, error) {
+	if !s.Valid() {
+		return Tag{}, ErrNoScope
+	}
+	if tagID == "" {
+		return Tag{}, ErrNotFound
+	}
+
+	var set []string
+	var args []any
+	if p.Label != nil {
+		// Trimmed, so "   " clears the override rather than storing whitespace
+		// that renders as a nameless row.
+		v := strings.TrimSpace(*p.Label)
+		if len(v) > MaxTagLabel {
+			return Tag{}, fmt.Errorf("store: a tag label must be at most %d characters", MaxTagLabel)
+		}
+		set = append(set, "label = ?")
+		args = append(args, v)
+	}
+	if p.Glyph != nil {
+		// Validated against the shared catalogue rather than length-checked.
+		// This string is rendered into every one of this reader's sidebars, so
+		// "some short text" is not a sufficient bar for it.
+		v := *p.Glyph
+		if !tagglyph.Valid(v) {
+			return Tag{}, fmt.Errorf("store: %q is not one of the tag glyphs", v)
+		}
+		set = append(set, "glyph = ?")
+		args = append(args, v)
+	}
+
+	var out Tag
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		// Ownership first, and it doubles as the existence check. A tag id from
+		// another user returns ErrNotFound rather than a permission error, per
+		// §20.7 — a distinct error would confirm the tag exists.
+		var ok int
+		err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM tags WHERE id=? AND user_id=? AND tenant_id=?`,
+			tagID, s.UserID, s.TenantID).Scan(&ok)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if len(set) > 0 {
+			a := append(append([]any{}, args...), tagID, s.UserID, s.TenantID)
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE tags SET `+strings.Join(set, ", ")+
+					` WHERE id = ? AND user_id = ? AND tenant_id = ?`, a...); err != nil {
+				return err
+			}
+		}
+		// Read back inside the transaction, so the response is the row as
+		// written rather than as the caller hoped. The count comes from the
+		// association table for the same reason ListTags computes it there.
+		return tx.QueryRowContext(ctx, `
+			SELECT t.id, t.name, t.label, t.glyph,
+			       (SELECT count(*) FROM feed_tags ft WHERE ft.tag_id = t.id AND ft.user_id = t.user_id)
+			  FROM tags t WHERE t.id = ? AND t.user_id = ?`,
+			tagID, s.UserID).Scan(&out.ID, &out.Name, &out.Label, &out.Glyph, &out.Feeds)
+	})
+	if err != nil {
+		return Tag{}, err
+	}
+	return out, nil
 }
 
 // TagsForFeeds returns tag ids per source, so the sidebar can render them
@@ -1187,9 +1310,12 @@ func (r *ReaderRepo) SetFeedTag(ctx context.Context, s Scope, sourceID, name str
 			return err
 		}
 
+		// label and glyph come back too. Nothing here writes them, but this is a
+		// Tag and a Tag that reports an empty glyph for a tag that has one is a
+		// response that disagrees with ListTags about the same row.
 		err = tx.QueryRowContext(ctx,
-			`SELECT id, name FROM tags WHERE user_id=? AND lower(name)=lower(?)`,
-			s.UserID, name).Scan(&t.ID, &t.Name)
+			`SELECT id, name, label, glyph FROM tags WHERE user_id=? AND lower(name)=lower(?)`,
+			s.UserID, name).Scan(&t.ID, &t.Name, &t.Label, &t.Glyph)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if !on {

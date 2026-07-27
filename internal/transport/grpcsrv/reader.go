@@ -401,7 +401,7 @@ func (s *ReaderServer) ListTags(ctx context.Context, _ *pb.ListTagsRequest) (*pb
 	}
 	out := &pb.ListTagsResponse{BySource: map[string]*pb.TagIDs{}}
 	for _, t := range tags {
-		out.Tags = append(out.Tags, &pb.Tag{Id: t.ID, Name: t.Name, FeedCount: int32(t.Feeds)})
+		out.Tags = append(out.Tags, toPBTag(t))
 	}
 	for src, ids := range bySource {
 		out.BySource[src] = &pb.TagIDs{Ids: ids}
@@ -422,9 +422,46 @@ func (s *ReaderServer) SetFeedTag(ctx context.Context, req *pb.SetFeedTagRequest
 		// A too-long or empty name is the caller's to fix.
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &pb.SetFeedTagResponse{
-		Tag: &pb.Tag{Id: t.ID, Name: t.Name, FeedCount: int32(t.Feeds)},
-	}, nil
+	return &pb.SetFeedTagResponse{Tag: toPBTag(t)}, nil
+}
+
+// toPBTag is the one place a store.Tag becomes a wire Tag. It exists because
+// three call sites were each spelling out the same four fields, and the fourth —
+// UpdateTag — is the one that would have been written without the new ones.
+func toPBTag(t store.Tag) *pb.Tag {
+	return &pb.Tag{
+		Id: t.ID, Name: t.Name, FeedCount: int32(t.Feeds),
+		Label: t.Label, Glyph: t.Glyph,
+	}
+}
+
+func (s *ReaderServer) UpdateTag(ctx context.Context, req *pb.UpdateTagRequest) (*pb.UpdateTagResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	// Unset means "leave it alone"; a present empty string means "clear it".
+	// Copied into locals rather than aliasing req, so the patch outlives the
+	// request without holding it.
+	var p store.TagPatch
+	if req.Label != nil {
+		v := req.GetLabel()
+		p.Label = &v
+	}
+	if req.Glyph != nil {
+		v := req.GetGlyph()
+		p.Glyph = &v
+	}
+	t, err := s.svc.UpdateTag(ctx, sc, req.GetTagId(), p)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, toStatus(err)
+		}
+		// A label over the limit or a glyph outside the catalogue is the
+		// caller's to fix, not this server's to swallow.
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &pb.UpdateTagResponse{Tag: toPBTag(t)}, nil
 }
 
 func (s *ReaderServer) SetNote(ctx context.Context, req *pb.SetNoteRequest) (*pb.SetNoteResponse, error) {

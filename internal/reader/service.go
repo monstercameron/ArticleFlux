@@ -366,6 +366,12 @@ func (s *Service) SetFeedTag(ctx context.Context, sc store.Scope, sourceID, name
 	return s.repo.SetFeedTag(ctx, sc, sourceID, name, on)
 }
 
+// UpdateTag changes a tag's rail label and glyph. It cannot change the tag's
+// name — see store.UpdateTag.
+func (s *Service) UpdateTag(ctx context.Context, sc store.Scope, tagID string, p store.TagPatch) (store.Tag, error) {
+	return s.repo.UpdateTag(ctx, sc, tagID, p)
+}
+
 // SourcesForTag returns the feeds carrying a tag.
 func (s *Service) SourcesForTag(ctx context.Context, sc store.Scope, tagID string) ([]string, error) {
 	return s.repo.SourcesForTag(ctx, sc, tagID)
