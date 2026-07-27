@@ -498,3 +498,20 @@ func truncateErr(s string) string {
 	}
 	return s[:max]
 }
+
+// CountMailboxes reports how many mailboxes exist across the instance.
+//
+// For §7.7's boot check: mailboxes configured on an instance with no encryption
+// key have credentials that can never be read, which is a silent permanent
+// failure — the poller runs, fails to decrypt, records an error on a row nobody
+// is looking at, and newsletters simply stop.
+//
+// On MailboxRepo rather than ReaderRepo because it is about mailboxes, and
+// unscoped because the question is about the instance rather than about a
+// reader. It returns a count and nothing else, so there is no tenant data to
+// leak.
+func (r *MailboxRepo) CountMailboxes(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.Read.QueryRowContext(ctx, `SELECT count(*) FROM mailboxes`).Scan(&n)
+	return n, err
+}

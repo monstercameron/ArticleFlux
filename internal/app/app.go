@@ -813,6 +813,28 @@ func (a *App) Preflight(ctx context.Context) error {
 		}
 	}
 
+	// The wasm bundle, not just index.html.
+	//
+	// index.html alone passing is the same failure the check above names, one
+	// step further in: the server answers 200 for the page, the health check is
+	// green, and the reader gets a blank screen because the module the page
+	// loads is not there. `make wasm` producing nothing is a normal state of a
+	// tree mid-build.
+	if a.cfg.WebRoot != "" {
+		var found bool
+		for _, name := range []string{"app.wasm", "app.wasm.gz"} {
+			if _, err := os.Stat(filepath.Join(a.cfg.WebRoot, name)); err == nil {
+				found = true
+				break
+			}
+		}
+		if !found {
+			problems = append(problems, fmt.Errorf(
+				"web root %q has an index.html but no app.wasm — the page will load "+
+					"and then show nothing (run: make wasm)", a.cfg.WebRoot))
+		}
+	}
+
 	// Written and removed rather than stat'd. A directory can be listable and not
 	// writable, and SQLite needs to create the -wal and -shm siblings next to the
 	// database, not just open the database itself.
@@ -825,7 +847,69 @@ func (a *App) Preflight(ctx context.Context) error {
 		_ = os.Remove(probe)
 	}
 
+	problems = append(problems, a.preflightCredentials(ctx)...)
+
 	return errors.Join(problems...)
+}
+
+// preflightCredentials checks the stored secrets an operator configured.
+//
+// # No network, on purpose
+//
+// §7.7 asks for "LLM keys well-formed, IMAP reachable". The first is a shape
+// check and costs nothing. The second is a TCP connection and a login to
+// somebody else's mail server, and it is deliberately NOT done here: a provider
+// having a bad five minutes would stop the whole reader from starting, which
+// is a far worse outcome than newsletters being late. Reachability belongs on
+// the poller, which already records `last_error` per mailbox and backs off.
+//
+// What IS checked is the thing an operator can only discover by waiting: a
+// mailbox whose credential can never be decrypted.
+func (a *App) preflightCredentials(ctx context.Context) []error {
+	var problems []error
+
+	// A pasted Smart+ key that is not a key. The shape check exists at the RPC
+	// that sets it, so this catches a key that arrived some other way — a
+	// restored database, an environment variable, a hand-edited row — and it
+	// catches it at boot rather than at the first Smart+ click, which may be
+	// weeks later and will look like the feature is broken.
+	if a.settings != nil && a.settings.CanStoreSecrets() {
+		if key, err := a.settings.SystemSecret(ctx, store.KeyOpenAIAPIKey); err == nil {
+			if key != "" && !strings.HasPrefix(key, "sk-") {
+				problems = append(problems, errors.New(
+					"the stored Smart+ API key does not look like one (they begin with sk-); "+
+						"clear it in Settings › Smart+ or set OPENAI_API_KEY"))
+			}
+		} else if !errors.Is(err, store.ErrNoSetting) {
+			// It is STORED and will not decrypt, which means the encryption key
+			// changed or was regenerated. Reported rather than ignored: treating
+			// it as "not configured" invites someone to paste the key again,
+			// which works, and quietly destroys whatever else the old key
+			// protected.
+			problems = append(problems, fmt.Errorf(
+				"the stored Smart+ API key cannot be decrypted, so the encryption key "+
+					"has changed — restore secrets.key or clear the setting: %w", err))
+		}
+	}
+
+	// Mailboxes whose passwords are unreadable.
+	//
+	// A mailbox is useless without its credential, and this failure is
+	// completely silent otherwise: the poller runs, fails to decrypt, records an
+	// error on a row nobody is looking at, and newsletters simply stop.
+	// Counted through the repository rather than with a query here: guard 1
+	// exists so one place understands the schema, and a boot check is exactly
+	// the sort of code that quietly acquires its own SQL.
+	if mailboxes, err := store.NewMailboxRepo(a.db, nil).CountMailboxes(ctx); err == nil {
+		if mailboxes > 0 && !a.settings.CanStoreSecrets() {
+			problems = append(problems, fmt.Errorf(
+				"%d newsletter mailbox(es) are configured but this instance has no "+
+					"encryption key, so their passwords can never be read — restore "+
+					"secrets.key or set ARTICLEFLUX_SECRET_KEY", mailboxes))
+		}
+	}
+
+	return problems
 }
 
 // StartPoller runs the background fetch loop until Close.

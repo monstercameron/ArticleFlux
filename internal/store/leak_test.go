@@ -140,6 +140,7 @@ var unscopedByDesign = map[string]string{
 	// and is swept.
 	"DueMailboxes":      "the IMAP poller's queue, across every tenant, like DueSources",
 	"RecordMailboxPoll": "poll bookkeeping keyed by the mailbox id the worker just claimed; returns nothing",
+	"CountMailboxes":    "an instance-wide count for §7.7's boot check; returns a number and nothing else, so there is no tenant data to leak",
 	"CanStoreSecrets":   "reports whether an encryption key was configured; touches no rows at all",
 
 	// Authentication, the persistent half (6.1). Every one of these runs BEFORE

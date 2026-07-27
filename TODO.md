@@ -1533,9 +1533,38 @@ Business logic over repositories. Still headless.
 - [x] **7.6** Static serving + `web/` layout
       ✅ 2026-07-26 — Static serving from the assembled `bin/web`, with precompressed `.gz` siblings preferred and the `application/wasm` content type `instantiateStreaming` requires.
 
-- [ ] **7.7** `cmd/articleflux` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
+- [x] **7.7** `cmd/articleflux` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
       credentials, storage writable, LLM keys well-formed, IMAP reachable), graceful shutdown
       ◧ 2026-07-26 (night) — **`app.Preflight`** covers three of the five and the server refuses to listen without them: an account exists (unless `-dev`), `webRoot/index.html` exists, and the data directory is writable. It returns a **joined** error rather than the first, because someone setting up a droplet usually has several wrong at once and a one-at-a-time boot loop is a miserable way to find that out. The writability check **writes and removes a probe file** rather than stat-ing the directory — a directory can be listable and not writable, and SQLite must create the `-wal` and `-shm` siblings, not just open the database. `-dev` off a loopback bind is refused here too, which is the bind-vs-credentials check in its only form that currently applies. Graceful shutdown is wired (`signal.NotifyContext`). *Owed: TLS files, LLM key shape, IMAP reachability — none of which have a configuration to validate yet.*
+
+      ✅ 2026-07-27 — three more checks, 5 tests. Each is a failure that is otherwise **silent**:
+      the process starts, the health check is green, and something a person needs does not work.
+
+      **`app.wasm`, not just `index.html`.** The existing check catches a missing web root; this
+      catches the same failure one step further in, where the page loads and then shows nothing
+      because the module it fetches is absent. A tree mid-build is normally in exactly that state.
+      The `.gz` counts, since a deploy that ships only the compressed bundle is a normal one.
+
+      **The Smart+ key's shape**, when one is stored. The RPC that sets it already checks, so this
+      catches a key that arrived some other way — a restored database, an environment variable, a
+      hand-edited row — at boot rather than at the first Smart+ click, which may be weeks later and
+      looks like a broken feature. A key that is stored and **will not decrypt** is reported rather
+      than treated as absent: "not configured" invites someone to paste it again, which works, and
+      quietly destroys whatever else the old encryption key protected.
+
+      **Mailboxes with no encryption key.** Their credentials can never be read, and nothing says so:
+      the poller runs, fails to decrypt, records an error on a row nobody is looking at, and
+      newsletters stop. The message names *how many*, because "some mailboxes" is not actionable.
+
+      **IMAP reachability is deliberately NOT checked**, against the ticket's own wording. It is a
+      TCP connection and a login to somebody else's mail server; a provider having a bad five minutes
+      would stop the whole reader from starting, which is far worse than newsletters being late.
+      Reachability belongs on the poller, which already records `last_error` per mailbox and backs
+      off. **TLS files have nothing to validate** — nginx terminates TLS (`deploy/`), and this server
+      has no certificate configuration.
+
+      Guard 1 caught the boot check acquiring its own SQL, which is exactly the sort of code that
+      does; the count moved to `MailboxRepo.CountMailboxes`.
 
 - [x] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
       version, refusal below it. The SW-cached wasm makes this inevitable, not hypothetical. §22.10

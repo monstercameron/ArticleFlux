@@ -111,6 +111,13 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Three more boot-time refusals** (`app.Preflight`, TODO 7.7): a web root with an `index.html` but
+  no `app.wasm` (the page loads and shows nothing), a stored Smart+ key that is not shaped like one
+  or that no longer decrypts, and newsletter mailboxes on an instance with no encryption key — whose
+  passwords can never be read, which otherwise surfaces only as newsletters quietly stopping. IMAP
+  *reachability* is deliberately not checked: a provider having a bad five minutes must not stop the
+  reader from starting, and the poller already records and backs off per mailbox.
+
 - **Version-skew refusal** (`internal/skew`, TODO 7.8 / 8c.16, §22.10). The wasm bundle is cached by
   a Service Worker, so "old client, new server" is not an edge case — it is the default state of
   every tab left open across a deploy. The client has recognised the skew sentinel since before
