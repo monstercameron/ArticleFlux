@@ -6,9 +6,17 @@ package platform
 // a process with no browser has no AudioContext, and faking one would produce
 // tests that pass against a fiction.
 
-func Sting() {}
+func StingChime() {}
 
 func Bed(src string) {}
+
+func Sting(src string) {}
+
+func StingUnder() {}
+
+func StingSwell() {}
+
+func StingOut() {}
 
 // BlobURL and RevokeBlobURL have no native meaning: there is no document to
 // hold the bytes and nothing that could play them. Empty is the honest answer,
@@ -18,3 +26,5 @@ func BlobURL(mime string, data []byte) string { return "" }
 func RevokeBlobURL(url string) {}
 
 func BedDuck(under bool) {}
+
+func MusicPause(on bool) {}

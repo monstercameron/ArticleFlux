@@ -41,14 +41,29 @@ import (
 //
 // The titles are their author's, and are proper nouns rather than copy: they are
 // not translated, and they do not go through the i18n catalogue on either side.
-var audioBeds = []struct{ id, title, file string }{
-	{"signal-and-ideas", "Signal and Ideas", "signal-and-ideas.mp3"},
-	{"midnight-thought-loop", "Midnight Thought Loop", "midnight-thought-loop.mp3"},
-	{"late-night-patchcord", "Late Night Patchcord", "late-night-patchcord.mp3"},
+//
+// # Roles
+//
+// Two of these are OPENINGS and two are BEDS, and it is the recording that
+// decides which: the Signal pieces have a front to them and stop being background
+// the moment there is a voice over them, and the Patchcord takes were made to sit
+// under something. Getting that backwards is not a preference, it is a mix
+// nobody can listen to — which is why the roles are declared here beside the
+// files rather than left to a client to infer.
+var audioBeds = []struct{ id, title, file, role string }{
+	{"signal-and-ideas", "Signal and Ideas", "signal-and-ideas.mp3", audioSting},
+	{"midnight-thought-loop", "Midnight Thought Loop", "midnight-thought-loop.mp3", audioSting},
+	{"late-night-patchcord", "Late Night Patchcord", "late-night-patchcord.mp3", audioBed},
 	// A second take of the same piece, kept because it is a different recording
 	// rather than a duplicate — shorter, and it sits differently under speech.
-	{"late-night-patchcord-ii", "Late Night Patchcord II", "late-night-patchcord-ii.mp3"},
+	{"late-night-patchcord-ii", "Late Night Patchcord II", "late-night-patchcord-ii.mp3", audioBed},
 }
+
+// The two roles a track can have, as they go on the wire.
+const (
+	audioBed   = "bed"
+	audioSting = "sting"
+)
 
 // audioChunk is how much of a track goes in one message.
 //
@@ -87,7 +102,7 @@ func (s *SystemServer) ListAudioTracks(_ context.Context, _ *pb.ListAudioTracksR
 			continue
 		}
 		out.Tracks = append(out.Tracks, &pb.AudioTrack{
-			Id: b.id, Title: b.title, Bytes: fi.Size(),
+			Id: b.id, Title: b.title, Bytes: fi.Size(), Role: b.role,
 		})
 	}
 	return out, nil

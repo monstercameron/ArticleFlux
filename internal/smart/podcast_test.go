@@ -208,7 +208,9 @@ func TestInstructionsAllowJudgementButNotInvention(t *testing.T) {
 		// Judgement is the narrator's, never laundered through the publication.
 		"Never attribute your own judgement to the publication",
 		// Written for the ear.
-		"One idea per sentence",
+		// v3 phrases it "One idea in each" -- the rule, not the wording, is what
+		// this test is for.
+		"One idea in each",
 		"Round numbers",
 	} {
 		if !strings.Contains(got, want) {
@@ -419,5 +421,101 @@ func TestCacheKeyVariesByLineup(t *testing.T) {
 
 	if p.cachePath(base, "gpt-5-mini") == p.cachePath(other, "gpt-5-mini") {
 		t.Error("two different run-throughs share one opening")
+	}
+}
+
+// --- the opening on its own ------------------------------------------------------
+//
+// The greeting became a separate recording so the theme music has an end to be
+// timed against (see smart.Segment.OpenOnly). The failure mode that matters is
+// the model covering the story anyway — an "opening" that turns into the first
+// segment leaves the broadcast with no first segment and the music swelling over
+// the news.
+
+func TestIntroInputCarriesTheHeadlinesAndNoStory(t *testing.T) {
+	seg := Segment{
+		ItemID: "a", Source: "The Paper", Title: "The first story",
+		Body:     "The body of the first story, which must not appear.",
+		OpenOnly: true,
+		Open: &Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026", Stories: 9,
+			Lineup: []Headline{{Source: "The Paper", Title: "The first story"},
+				{Source: "Elsewhere", Title: "Another thing"}}},
+	}
+	in := podcastInput(seg, seg.Body)
+	for _, want := range []string{"morning", "Monday, 27 July 2026", "The first story", "Another thing"} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the opening lost %q:\n%s", want, in)
+		}
+	}
+	// The article's text is the thing this mode must not be given: a model shown
+	// a story and told not to discuss it discusses it.
+	if strings.Contains(in, "must not appear") {
+		t.Errorf("the opening was given the article body:\n%s", in)
+	}
+	// Nor the scaffolding of a segment.
+	for _, bad := range []string{"The story to cover now", "just finished covering"} {
+		if strings.Contains(in, bad) {
+			t.Errorf("the opening carried %q, which belongs to a segment:\n%s", bad, in)
+		}
+	}
+}
+
+func TestIntroInstructionsForbidCoveringAnything(t *testing.T) {
+	got := podcastIntroInstructions(VibeBrisk)
+	for _, want := range []string{
+		// The whole job.
+		"THE OPENING ONLY",
+		"Never cover a story",
+		// The run-through with energy in it, which is the reason this exists at
+		// all rather than reading four titles out.
+		"do not read a list",
+		"a beat of COLOUR",
+		// The same two prohibitions the segment prompt carries, because a
+		// fabricated host is fabricated wherever it appears.
+		"Never invent a programme name",
+		"Never invent a fact",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the opening instructions no longer say %q", want)
+		}
+	}
+	// It is a different prompt from the segment's, not a copy — if these ever
+	// converge, the "do not cover a story" rules are being applied to the
+	// segments too, which would be a broadcast that never says anything.
+	if got == podcastInstructionsFor(VibeBrisk) {
+		t.Error("the opening and the segment share one prompt")
+	}
+	// The manner still reaches it: an opening read in a different voice from the
+	// programme it opens is worse than no opening.
+	if !strings.Contains(got, vibes[VibeBrisk]) {
+		t.Error("the opening instructions dropped the manner")
+	}
+}
+
+// An opening and a first segment are two different scripts written from the same
+// inputs. Sharing a cache entry would serve one for the other: a broadcast that
+// either never gets to the news, or never introduces itself.
+func TestIntroAndSegmentDoNotShareACacheEntry(t *testing.T) {
+	p := keylessPodcast(t)
+	open := &Opening{PartOfDay: "evening", Date: "Monday, 27 July 2026",
+		Lineup: []Headline{{Source: "The Paper", Title: "One"}}}
+	seg := Segment{ItemID: "a", Vibe: VibeCalm, Open: open, Body: "text"}
+	intro := seg
+	intro.OpenOnly = true
+	if a, b := p.cachePath(seg, "m"), p.cachePath(intro, "m"); a == b {
+		t.Errorf("the opening and the first segment share %q", a)
+	}
+}
+
+// An opening with nothing to introduce is not an opening. It falls back like a
+// two-line link post does — the listener loses a greeting and still gets news.
+func TestIntroWithNoLineupFallsBack(t *testing.T) {
+	p := keylessPodcast(t)
+	_, err := p.Segment(context.Background(), Segment{
+		ItemID: "a", OpenOnly: true, Body: "plenty of text here",
+		Open: &Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026"},
+	})
+	if !errors.Is(err, ErrNothingToSummarise) {
+		t.Errorf("an opening with no headlines returned %v", err)
 	}
 }

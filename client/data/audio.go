@@ -1,3 +1,5 @@
+//go:build js && wasm
+
 package data
 
 import (
@@ -25,6 +27,10 @@ type AudioTrack struct {
 	ID    string
 	Title string
 	Bytes int64
+	// Role is "bed" (low music under the whole broadcast) or "sting" (the louder
+	// piece that opens it). Passed through unexamined: the server decides, and a
+	// value this client does not recognise is treated as a bed by the caller.
+	Role string
 }
 
 // maxTrackBytes is the most this client will assemble in memory.
@@ -61,7 +67,7 @@ func (c *Client) ListAudioTracks(ctx context.Context) ([]AudioTrack, error) {
 			continue
 		}
 		out = append(out, AudioTrack{
-			ID: t.GetId(), Title: t.GetTitle(), Bytes: t.GetBytes(),
+			ID: t.GetId(), Title: t.GetTitle(), Bytes: t.GetBytes(), Role: t.GetRole(),
 		})
 	}
 	return out, nil

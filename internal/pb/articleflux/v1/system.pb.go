@@ -896,7 +896,18 @@ type AudioTrack struct {
 	// How big it is. The client shows nothing with this today; it is here because
 	// "the reader is about to pull four megabytes through the tunnel" is a fact
 	// the UI will eventually want to state, and adding it later is a wire change.
-	Bytes         int64 `protobuf:"varint,3,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Bytes int64 `protobuf:"varint,3,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	// What the track is FOR: "bed" for the low music under the whole broadcast,
+	// "sting" for the louder piece that opens it.
+	//
+	// The server owns this rather than the client, for the same reason it owns the
+	// catalogue: which piece works under speech and which one works as an opening
+	// is a property of the recording, and a client deciding it by filename would
+	// be a client that guesses wrong the day somebody adds a fifth file.
+	//
+	// A role the client does not recognise is treated as a bed, which is the
+	// quieter of the two mistakes.
+	Role          string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -950,6 +961,13 @@ func (x *AudioTrack) GetBytes() int64 {
 		return x.Bytes
 	}
 	return 0
+}
+
+func (x *AudioTrack) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
 }
 
 type ListAudioTracksResponse struct {
@@ -1158,12 +1176,13 @@ const file_articleflux_v1_system_proto_rawDesc = "" +
 	"\x13CheckHealthResponse\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.articleflux.v1.ServingStatusR\x06status\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\"\x18\n" +
-	"\x16ListAudioTracksRequest\"H\n" +
+	"\x16ListAudioTracksRequest\"\\\n" +
 	"\n" +
 	"AudioTrack\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
-	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"M\n" +
+	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\"M\n" +
 	"\x17ListAudioTracksResponse\x122\n" +
 	"\x06tracks\x18\x01 \x03(\v2\x1a.articleflux.v1.AudioTrackR\x06tracks\"&\n" +
 	"\x14GetAudioTrackRequest\x12\x0e\n" +

@@ -87,7 +87,7 @@ func context() (ctx js.Value) {
 	return audioCtx
 }
 
-// Sting plays the broadcast's opening flourish.
+// StingChime plays the broadcast's synthesised opening flourish.
 //
 // Three notes rising a fifth then an octave — D, A, D — on triangle waves
 // through a gentle lowpass, over a low sine that swells and holds. Warm rather
@@ -98,7 +98,7 @@ func context() (ctx js.Value) {
 // from setTimeout drifts audibly at a hundred milliseconds; `start(when)` does
 // not drift at all, because the browser hands the whole shape to the audio
 // thread before the first note sounds.
-func Sting() {
+func StingChime() {
 	// Guarded like context() itself: every call below is an untyped JS call on
 	// an object the browser may have opinions about, and a jingle that panics
 	// the module would take the broadcast with it.
@@ -161,23 +161,6 @@ func Sting() {
 	low.Call("stop", now+2.7)
 }
 
-// The music bed's levels, and they ARE the design.
-//
-// Speech is the content; the bed is a room for it to happen in. bedLevel is
-// where a track sits when nobody is talking, and bedDucked is where it goes
-// while the narrator is — about eleven decibels down, which is roughly what a
-// broadcast desk does and comfortably more than enough for a voice to win
-// without the music disappearing and drawing attention to its own absence.
-//
-// bedFade is slow on purpose. Music that steps between two levels is music the
-// listener notices stepping; a second and a half reads as the room changing
-// rather than as a control moving.
-const (
-	bedLevel  = 0.17
-	bedDucked = 0.05
-	bedFade   = 1.5
-)
-
 // BlobURL wraps bytes the client already holds in a URL an element can play.
 //
 // It exists because the music beds come down the gRPC tunnel rather than from a
@@ -213,134 +196,4 @@ func RevokeBlobURL(url string) {
 	}
 	defer func() { _ = recover() }()
 	js.Global().Get("URL").Call("revokeObjectURL", url)
-}
-
-// Bed plays a looping music track under the broadcast, or stops the one playing.
-//
-// src is a URL; "" stops. Idempotent in both directions and idempotent in the
-// SAME track, because the callers are lifecycle effects — a slideshow that
-// pauses, resumes and re-renders would otherwise restart the music on every
-// commit, which is far more noticeable than anything it was doing.
-//
-// # Why an <audio> element inside the audio graph
-//
-// The obvious Web Audio answer is decodeAudioData into an AudioBufferSource,
-// which loops perfectly. It also decodes the whole file into memory: a four
-// megabyte MP3 is about forty megabytes of PCM, held for as long as the
-// broadcast runs, in a wasm tab that is already carrying a thirty megabyte
-// module. An <audio loop> streams instead — and routing it through
-// createMediaElementSource buys back the only thing the element cannot do on
-// its own, which is a smooth, sample-accurate gain ramp for the ducking.
-//
-// The cost is a seam at the loop point: MP3 carries encoder padding, so a
-// looped file has a few milliseconds of silence where it wraps. On an ambient
-// track under speech that is inaudible, and it is the right trade against
-// forty megabytes.
-func Bed(src string) {
-	defer func() { _ = recover() }()
-	if src == "" {
-		bedStop()
-		return
-	}
-	if bedSrc == src && bedEl.Truthy() {
-		return
-	}
-	// A different track replaces the one playing rather than layering on it.
-	if bedEl.Truthy() {
-		bedStop()
-	}
-	ctx := context()
-	if !ctx.Truthy() {
-		return
-	}
-	doc := js.Global().Get("document")
-	if !doc.Truthy() {
-		return
-	}
-
-	el := doc.Call("createElement", "audio")
-	el.Set("src", src)
-	el.Set("loop", true)
-	el.Set("preload", "auto")
-	// crossOrigin is not set and must not be: these are same-origin files, and
-	// an element with a crossOrigin attribute makes a CORS request that a plain
-	// static handler will not answer.
-	bedEl = el
-	bedSrc = src
-
-	source := ctx.Call("createMediaElementSource", el)
-	g := ctx.Call("createGain")
-	now := ctx.Get("currentTime").Float()
-	// From silence. A bed that arrives at level is a bed the listener notices,
-	// and the correct amount of attention for this is none.
-	g.Get("gain").Call("setValueAtTime", 0.0001, now)
-	g.Get("gain").Call("exponentialRampToValueAtTime", bedLevel, now+2.5)
-	source.Call("connect", g)
-	g.Call("connect", ctx.Get("destination"))
-	bedGain = g
-
-	// play() rejects under autoplay policy, which is not a failure worth
-	// reporting: the broadcast still runs, silently underneath.
-	catchPromise(el.Call("play"))
-}
-
-// BedDuck moves the music under the narrator and back.
-//
-// Called from the listening state rather than measured from the audio, because
-// "is the voice speaking" is something the application already knows and
-// deriving it from a level meter would be a worse answer arrived at expensively.
-func BedDuck(under bool) {
-	defer func() { _ = recover() }()
-	if !bedGain.Truthy() || !audioCtx.Truthy() {
-		return
-	}
-	want := bedLevel
-	if under {
-		want = bedDucked
-	}
-	now := audioCtx.Get("currentTime").Float()
-	g := bedGain.Get("gain")
-	// cancelScheduledValues first, then pin the CURRENT value: a ramp queued
-	// behind one that is still running is ignored, so ducking during the fade-in
-	// would do nothing at all — and that is exactly when it is most likely to
-	// happen, because the narrator starts a second or two after the bed does.
-	g.Call("cancelScheduledValues", now)
-	g.Call("setValueAtTime", g.Get("value").Float()+0.0001, now)
-	g.Call("exponentialRampToValueAtTime", want, now+bedFade)
-}
-
-// bedStop fades the music out and then stops the element.
-//
-// Faded rather than cut, over a second and a half: music that stops dead is
-// more noticeable than music that was playing, which would make leaving the
-// mode louder than being in it. The element is paused on a timer rather than
-// immediately, so the fade is audible rather than theoretical.
-func bedStop() {
-	el := bedEl
-	g := bedGain
-	bedEl, bedGain, bedSrc = js.Undefined(), js.Undefined(), ""
-	if !el.Truthy() {
-		return
-	}
-	if g.Truthy() && audioCtx.Truthy() {
-		now := audioCtx.Get("currentTime").Float()
-		gain := g.Get("gain")
-		gain.Call("cancelScheduledValues", now)
-		gain.Call("setValueAtTime", gain.Get("value").Float()+0.0001, now)
-		gain.Call("exponentialRampToValueAtTime", 0.0001, now+bedFade)
-	}
-	// Paused after the fade. A js.Func that frees itself, because this fires
-	// once and leaking one closure per stop is unbounded over a long session.
-	var done js.Func
-	done = js.FuncOf(func(_ js.Value, _ []js.Value) any {
-		defer done.Release()
-		if el.Truthy() {
-			el.Call("pause")
-			// Clearing src is what stops the download. Pausing alone leaves the
-			// rest of a four megabyte file streaming into a buffer nobody hears.
-			el.Set("src", "")
-		}
-		return nil
-	})
-	js.Global().Call("setTimeout", done, int((bedFade+0.1)*1000))
 }

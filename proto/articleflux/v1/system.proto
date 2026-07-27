@@ -188,6 +188,17 @@ message AudioTrack {
   // "the reader is about to pull four megabytes through the tunnel" is a fact
   // the UI will eventually want to state, and adding it later is a wire change.
   int64 bytes = 3;
+  // What the track is FOR: "bed" for the low music under the whole broadcast,
+  // "sting" for the louder piece that opens it.
+  //
+  // The server owns this rather than the client, for the same reason it owns the
+  // catalogue: which piece works under speech and which one works as an opening
+  // is a property of the recording, and a client deciding it by filename would
+  // be a client that guesses wrong the day somebody adds a fifth file.
+  //
+  // A role the client does not recognise is treated as a bed, which is the
+  // quieter of the two mistakes.
+  string role = 4;
 }
 
 message ListAudioTracksResponse {

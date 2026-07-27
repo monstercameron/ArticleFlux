@@ -547,7 +547,7 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 		{digestPrefKey: "true"},
 		{podcastPrefKey: "true", digestPrefKey: "true"},
 	} {
-		text, key := a.speechScript(context.Background(), prefs, it, prev, nil)
+		text, key := a.speechScript(context.Background(), prefs, it, prev, nil, false)
 		if !strings.Contains(text, "The body.") {
 			t.Errorf("prefs %v: the article was not read aloud: %q", prefs, text)
 		}

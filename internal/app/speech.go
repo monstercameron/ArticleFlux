@@ -91,7 +91,48 @@ const (
 	// server resolves it through the SAME SCOPE as everything else here — so
 	// this can only ever name stories the reader was already allowed to read.
 	openLineupParam = "q"
+	// introParam splits the opening off into its own recording.
+	//
+	// Three states, and the third is the one that matters:
+	//
+	//	"1"      this request IS the opening, and covers no story
+	//	"0"      the opening has already been recorded; do not attach one here
+	//	absent   the old behaviour — the opening rides on the first segment
+	//
+	// The split exists for the sound rather than the words. The broadcast opens
+	// over music which has to swell and clear before the first story, and that
+	// can only be timed against the END of a file — so the greeting has to be a
+	// file. The "0" state is what stops the listener being greeted twice.
+	introParam = "i"
+	introOnly  = "1"
+	introDone  = "0"
 )
+
+// wantsOpening decides whether this request gets a greeting attached.
+//
+// A pure function of the two things that decide it, because the rule reads as
+// two negatives in a row at the call site and the failure it prevents — the
+// listener being greeted twice in one broadcast — is silent in every test that
+// does not know to listen for it.
+//
+// A story with something before it is never the top of the show. A request that
+// says the greeting has already been recorded is never the top of the show
+// either, and that is the whole point of introDone: in a split broadcast the
+// first story genuinely has no predecessor, so nothing else about it would give
+// the server the hint.
+func wantsOpening(intro string, hasPrev bool) bool {
+	return !hasPrev && strings.TrimSpace(intro) != introDone
+}
+
+// isIntroRequest is true when the caller asked for the greeting ALONE.
+//
+// Broadcast mode gates it: without the writer there is no greeting to record,
+// and a flag that meant something in one mode and nothing in another would be a
+// request that quietly returns the article when the client thinks it asked for
+// an opening.
+func isIntroRequest(intro string, podcast bool) bool {
+	return podcast && strings.TrimSpace(intro) == introOnly
+}
 
 // openingFrom builds the top-of-broadcast greeting, or nil when this is not the
 // first segment.
@@ -249,6 +290,26 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
 	})
 }
 
+// podcastIntro writes the top of the broadcast on its own: the greeting, the
+// date, and the run-through of what is coming.
+//
+// It takes the first item only to be keyed against something stable — the
+// opening covers no story, and the item's own text is never sent.
+func (a *App) podcastIntro(ctx context.Context, it store.Item, vibe string,
+	open *smart.Opening) (string, error) {
+	if a.podcast == nil {
+		return "", smart.ErrNothingToSummarise
+	}
+	return a.podcast.Segment(ctx, smart.Segment{
+		ItemID:   it.ID,
+		Source:   it.SourceTitle,
+		Title:    it.Title,
+		Vibe:     vibe,
+		Open:     open,
+		OpenOnly: true,
+	})
+}
+
 // podcastKey names an audio recording by the PAIR of articles it covers, not by
 // the article.
 //
@@ -300,8 +361,26 @@ func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
 // more here: a listener whose narrator falls over should hear the article, which
 // is less pleasant than what they asked for and infinitely better than silence.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item, open *smart.Opening) (text, cacheKey string) {
+	it store.Item, prev store.Item, open *smart.Opening, intro bool) (text, cacheKey string) {
 	text, cacheKey = speechText(it), it.ID
+
+	// The opening, on its own, before any story. It is a separate recording
+	// rather than the first paragraph of the first segment for a reason that is
+	// entirely about sound: the broadcast opens over music, and the music can
+	// only swell and clear at a moment the client can SEE coming — which means
+	// the end of a file. See smart.Segment.OpenOnly.
+	//
+	// A failure here falls through to the ordinary path, which is the right
+	// answer: the reader loses the greeting and still gets the news.
+	if intro && open != nil {
+		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		if txt, err := a.podcastIntro(ctx, it, vibe, open); err == nil {
+			return txt, podcastKey(it.ID, "", vibe, open) + "#intro"
+		} else if !errors.Is(err, smart.ErrNothingToSummarise) {
+			a.cfg.Log.Warn("broadcast opening failed, starting on the story",
+				"item", it.ID, "err", err)
+		}
+	}
 
 	if prefs[podcastPrefKey] == "true" {
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
@@ -529,6 +608,11 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// costs one query.
 	var prev store.Item
 	var open *smart.Opening
+	// The opening asked for ON ITS OWN, as its own recording. Only meaningful in
+	// broadcast mode, and only ever at the top: a request carrying both an intro
+	// flag and a predecessor is a client that has lost track of where it is, and
+	// the flag loses.
+	intro := isIntroRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
 	if prefs[podcastPrefKey] == "true" {
 		if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != id {
 			// An unreadable or unknown predecessor is simply no predecessor. It
@@ -544,7 +628,12 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		// sends the opening parameters on every request still gets exactly one
 		// opening per broadcast, because from the second story onward there is a
 		// predecessor and the top of the show has already happened.
-		if prev.ID == "" {
+		//
+		// Except when the client says the opening has already been recorded on
+		// its own — see introParam. Without that, a split broadcast would greet
+		// the listener twice: once in the intro file and again at the top of the
+		// first story, which is the exact sound of software repeating itself.
+		if wantsOpening(r.URL.Query().Get(introParam), prev.ID != "") {
 			open = a.openingFrom(r.Context(), sc, r, time.Now())
 		}
 	}
@@ -554,7 +643,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// `cacheKey` carries the difference, because the audio cache is keyed by it:
 	// without that, turning a mode on would serve yesterday's rendering of a
 	// different script, which looks exactly like the toggle not working.
-	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open)
+	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open, intro && prev.ID == "")
 	if text == "" {
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return

@@ -428,3 +428,79 @@ func TestTurningBroadcastOffGoesBackToTheArticle(t *testing.T) {
 		t.Errorf("cache key = %q, want the plain item id", got)
 	}
 }
+
+// --- the split opening ----------------------------------------------------------
+//
+// The greeting became its own recording so the theme music has an end to be
+// timed against (§19). Two things have to hold, and the second is the one that
+// would be embarrassing: the flag must never break playback, and a broadcast
+// must never greet the listener twice.
+
+func TestTheOpeningIsDecidedByTheRequestNotByGuessing(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		intro   string
+		hasPrev bool
+		want    bool
+	}{
+		{"top of the show", "", false, true},
+		{"asking for the opening alone", introOnly, false, true},
+		{"the first story after a recorded opening", introDone, false, false},
+		{"mid-broadcast", "", true, false},
+		// A predecessor wins over anything the flag says: a story with something
+		// before it is not the top of the show whatever a client claims.
+		{"mid-broadcast with a stale flag", introOnly, true, false},
+		// Anything unrecognised is the old behaviour rather than a refusal. The
+		// worst case for a wrong answer here is a greeting, and the worst case
+		// for a strict one is silence.
+		{"nonsense", "banana", false, true},
+	} {
+		if got := wantsOpening(c.intro, c.hasPrev); got != c.want {
+			t.Errorf("%s: wantsOpening(%q, %v) = %v", c.name, c.intro, c.hasPrev, got)
+		}
+	}
+
+	if !isIntroRequest(introOnly, true) {
+		t.Error("a broadcast asking for the opening alone was not recognised")
+	}
+	// Without broadcast mode there is no writer, so there is no greeting to
+	// record — the flag has to mean nothing rather than something unwritable.
+	if isIntroRequest(introOnly, false) {
+		t.Error("read-to-me without a broadcast was treated as an opening request")
+	}
+	if isIntroRequest(introDone, true) {
+		t.Error("the already-recorded marker was read as a request for one")
+	}
+}
+
+// Neither half of the split may turn a working request into a failing one. This
+// server has no writer configured, so both fall back to reading the article —
+// which is exactly the path a reader hits when the model is down, and it has to
+// end in audio either way.
+func TestTheSplitOpeningNeverBreaksPlayback(t *testing.T) {
+	a, voice, _, ids := broadcastApp(t)
+
+	for _, c := range []struct{ name, extra string }{
+		{"the opening alone", "&" + introParam + "=1"},
+		{"the first story after it", "&" + introParam + "=0"},
+		{"a flag this server does not know", "&" + introParam + "=banana"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before := voice.count()
+			q := "item=" + ids[0] +
+				"&" + openNowParam + "=2026-07-27T08:30:00-04:00" +
+				"&" + openStoriesParam + "=4" +
+				"&" + openLineupParam + "=" + strings.Join(ids, ",") + c.extra
+			rec := speak(t, a, q)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			if rec.Body.Len() == 0 {
+				t.Error("200 with an empty body — the reader hears silence")
+			}
+			if voice.count() == before {
+				t.Error("nothing was synthesised")
+			}
+		})
+	}
+}

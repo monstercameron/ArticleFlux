@@ -217,6 +217,18 @@ type Segment struct {
 	Vibe string
 	// Open is the top-of-broadcast greeting, on the first segment only.
 	Open *Opening
+	// OpenOnly writes the greeting and the headline run-through AND NOTHING ELSE
+	// — no handover, no story.
+	//
+	// It exists for a reason that is entirely about sound rather than about text:
+	// the broadcast opens over music, and the music has to swell and clear before
+	// the first story starts. That transition can only be timed if the opening is
+	// its own recording with its own end — inside the first segment it is a
+	// moment the client cannot see coming.
+	//
+	// Body is still given (it is the story the run-through ends on) but is not
+	// covered. Requires Open.
+	OpenOnly bool
 }
 
 // Podcast writes broadcast segments.
@@ -270,6 +282,54 @@ func (p *Podcast) Configured(ctx context.Context) bool {
 //
 // The vibe is looked up rather than pasted, so an unknown preference cannot
 // write arbitrary text into a system prompt. See VibeFor.
+// podcastIntroWords is the budget for an opening on its own.
+//
+// Short, and shorter than it first looks: about twenty words of greeting and
+// three or four headline beats. An opening is the part a listener has heard
+// before — they are waiting for the news, not for the preamble — and the one
+// failure mode that makes people turn a broadcast off in the first minute is an
+// introduction that will not end.
+const podcastIntroWords = 90
+
+// podcastIntroInstructions writes the top of the broadcast and stops.
+//
+// Its own prompt rather than a flag inside the segment one, because almost every
+// rule in that prompt is about covering a story and none of them apply here. A
+// prompt that says "do all this, except not the parts about the article" is a
+// prompt a model half-follows.
+func podcastIntroInstructions(vibe string) string {
+	return `You are the narrating voice of a continuous news broadcast, writing THE OPENING ONLY.
+
+` + vibes[VibeFor(vibe)] + `
+
+You will be given the part of the day, the date, how many stories are queued, and the headlines you are about to run through. You will NOT cover any of them. Something else follows you.
+
+Write about ` + strconv.Itoa(podcastIntroWords) + ` words of continuous spoken prose:
+
+1. GREET the listener for the part of the day and say the date — for example "Good morning. It's Monday the twenty-seventh of July" or "Good evening — eleven stories tonight." Vary the wording; do not use the same construction every time. Two sentences at most.
+
+2. RUN THROUGH what is coming. This is the part most worth getting right, because a listener hears a plain list of titles as a string of nouns going past and retains none of it.
+
+   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size. And the thing everyone said was vapourware has actually shipped." Three or four like that, building, ending on the one the broadcast starts with.
+
+   You may lean on them lightly — a raised eyebrow at a claim, a note that something is overdue or surprising. That judgement is what makes a run-through worth hearing rather than worth skipping. Do not number them, do not name the publication for each one, and do not explain any of them: you are saying why they matter, not what happened.
+
+   Never read a title verbatim if it was written for the eye. A headline with a colon in it, a bracketed aside, a site name stuck on the end or a number in front of it is not a sentence anybody says out loud — say the thing it is about instead.
+
+3. END on a handoff into the first story — a few words, not a sentence of explanation. "That one first." "We start there." Then stop.
+
+NEVER:
+
+- Never cover a story. Not one sentence of one. You are the trailer, not the programme.
+- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.
+- Never invent a fact, a number or an attribution. Everything you say about a headline must be supportable from the headline itself.
+- Never sign off or thank the listener.
+
+Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+
+Output the spoken text and nothing else.`
+}
+
 func podcastInstructionsFor(vibe string) string {
 	return `You are the narrating voice of a continuous news broadcast, writing ONE segment of it.
 
@@ -320,6 +380,19 @@ NEVER:
 Output the spoken text and nothing else.`
 }
 
+// podcastInstructionsOf picks the prompt for what this segment IS.
+//
+// Two prompts rather than one with a flag in it, because almost every rule in
+// the segment prompt is about covering a story and none of them apply to an
+// opening. "Do all of this, except the parts about the article" is an
+// instruction a model half-follows, and the half it keeps is the story.
+func podcastInstructionsOf(seg Segment) string {
+	if seg.OpenOnly {
+		return podcastIntroInstructions(seg.Vibe)
+	}
+	return podcastInstructionsFor(seg.Vibe)
+}
+
 // Segment returns the spoken text for one slot, from cache when possible.
 //
 // Returns ErrNothingToSummarise for an item with no usable text, exactly like
@@ -327,7 +400,15 @@ Output the spoken text and nothing else.`
 // answer for a two-line link post and a poor one to spend a model call on.
 func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	body := strings.TrimSpace(seg.Body)
-	if body == "" {
+	// An opening has nothing to summarise by design — it covers no story — so the
+	// emptiness check that protects a two-line link post would reject every
+	// intro. What an intro needs instead is something to introduce.
+	if seg.OpenOnly {
+		if seg.Open == nil || len(seg.Open.Lineup) == 0 {
+			return "", ErrNothingToSummarise
+		}
+		body = ""
+	} else if body == "" {
 		return "", ErrNothingToSummarise
 	}
 	// Cache before key, like Digest.Speakable and for the same reason: this text
@@ -344,7 +425,7 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 		return "", llm.ErrNotConfigured
 	}
 
-	if len(body) > maxInputChars {
+	if len(body) > maxInputChars && !seg.OpenOnly {
 		// On a word boundary, so the model's last piece of evidence is not half
 		// a word.
 		if cut := strings.LastIndexByte(body[:maxInputChars], ' '); cut > maxInputChars/2 {
@@ -356,7 +437,7 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 
 	out, err := p.llm.Do(ctx, llm.Request{
 		Model:        model,
-		Instructions: podcastInstructionsFor(seg.Vibe),
+		Instructions: podcastInstructionsOf(seg),
 		Input:        podcastInput(seg, body),
 		// Bounded because the budget covers reasoning too, and a truncated
 		// segment ends mid-sentence — far more obvious spoken than read, and
@@ -426,8 +507,14 @@ func podcastInput(seg Segment, body string) string {
 		// explicitly not numbered in the output — the instructions say so, because
 		// a model given a numbered list will read "one, two, three" aloud.
 		if len(o.Lineup) > 0 {
-			in.WriteString("  HEADLINES to run through, in this order " +
-				"(the first is the story covered below):\n")
+			// The trailing clause differs by mode because it is a claim about
+			// what follows in this input, and in intro mode nothing does.
+			where := "the first is the story covered below"
+			if seg.OpenOnly {
+				where = "the first is the story the broadcast starts with"
+			}
+			in.WriteString("  HEADLINES to run through, in this order (" +
+				where + "):\n")
 			for i, h := range o.Lineup {
 				in.WriteString("    ")
 				in.WriteString(strconv.Itoa(i + 1))
@@ -441,6 +528,13 @@ func podcastInput(seg Segment, body string) string {
 			}
 		}
 		in.WriteByte('\n')
+	}
+	// An opening on its own stops here. Nothing below this line is anything but
+	// a story to cover or a story to hand over from, and both are exactly what
+	// this mode must not produce — a model shown an article and told not to
+	// discuss it will discuss it.
+	if seg.OpenOnly {
+		return in.String()
 	}
 	prevSource := strings.TrimSpace(seg.PrevSource)
 	prevTitle := strings.TrimSpace(seg.PrevTitle)
@@ -524,9 +618,18 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 			open += "|" + h.Source + "\x01" + h.Title
 		}
 	}
+	// The opening alone and the opening plus a story are two different scripts
+	// written from the same inputs, so the mode has to be in the key. Without it
+	// the intro would be served as the first segment or the other way round — a
+	// broadcast that either never gets to the news or never introduces itself,
+	// depending on which was asked for first.
+	mode := "seg"
+	if seg.OpenOnly {
+		mode = "intro"
+	}
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
 		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(seg.Vibe) +
-		"\x00" + open))
+		"\x00" + open + "\x00" + mode))
 	name := hex.EncodeToString(sum[:]) + ".txt"
 	// One level of fan-out, matching the digest and audio caches, so a long
 	// listener does not end up with one directory holding tens of thousands of
