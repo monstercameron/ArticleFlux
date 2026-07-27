@@ -33,6 +33,35 @@ The full reasoning behind any entry lives in the commit message; this file is th
   sources are global (A14), so subscribing to a feed someone else reads means subscribing to one
   that is already full, and without this a new subscriber's unread count started at zero and only
   counted what arrived afterwards.
+- **An empty feed showed the previous feed's articles** (TODO H10). `loadItems` set the loading flag
+  but never cleared the list, and the list pane only draws its skeleton when it is *both* loading and
+  empty — which a scope change never was. A feed with items hid this, because the response replaced
+  the rows; a feed with **zero** items never could, so the reader was looking at one feed's articles
+  filed under another feed's name. The list is now cleared on a scope change, in `selectScope` and
+  `runSearch` rather than in `loadItems`, because `loadItems` is also how the list refreshes in place
+  after "mark all read" and after a reconnect, where blanking the screen would turn a silent update
+  into a flash.
+- **A password manager could kill the wasm module** (TODO H9). Filling the login form dispatches a
+  synthetic `new Event('keydown')`, which has no `key`, no `altKey`, no `ctrlKey`. `Value.Bool()` on
+  the resulting `undefined` does not return false — it panics, and a panic in wasm tears down the
+  whole module and every listener with it, leaving the page a dead screenshot of itself. `OnKeyDown`
+  now discriminates on the event actually carrying a key, and boolean reads go through a guarded
+  helper; the same unguarded pattern in `PrefersReducedMotion` went with it. The login fields are now
+  inside a `<form>`, which Chrome had been asking for and which is what lets a manager pair and save
+  a credential at all.
+- **An infinite reload loop on the login screen** (TODO H8). The client interceptor treated any
+  `Unauthenticated` as a session ending and reloaded; asking `WhoAmI` at boot with no token gets
+  exactly that answer, correctly, so the page reloaded forever and the login screen never survived
+  long enough to submit. It presented as "Couldn't sign in. Check the server is running" — a message
+  about the transport, from a server answering perfectly. The whole `AuthService` is now excluded,
+  matched on the service prefix so a future method cannot reintroduce it by omission.
+
+- **The feed poller would have tried to HTTP-fetch newsletter sources.** A mailbox source's
+  `feed_url` is `mailbox:<id>:<sender>`, which is not a URL — so every poll forever would have been
+  "not a recognisable feed", the exact failure already guarded against for scraped sources. Mailbox
+  sources are filled by polling the *mailbox* (one IMAP connection yields many senders at once), so
+  they are excluded from the poller's queue and from the lag metric, which would otherwise report a
+  permanent backlog on any instance with one configured.
 
 ### Performance
 
@@ -48,6 +77,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
   denormalisation existed*.
 
 ### Added
+
+- **Newsletter mailbox storage** (`store.MailboxRepo`, TODO 5.7, A20): IMAP accounts with their
+  passwords encrypted at rest, per-sender sources keyed **per user** so two people subscribed to the
+  same newsletter never share a row, UID and backoff bookkeeping, and a deletion that withdraws the
+  credential while leaving the mail already delivered. It is a separate repository type because it
+  holds a decryption key, and `Mailbox` has no password field at all — reading a credential is a
+  distinct scoped call, so listing mailboxes cannot serialise one by accident today or after
+  somebody adds a field. Without a configured encryption key it refuses to store rather than
+  falling back to plaintext. The IMAP client itself is still to come (M22).
+- **The cross-tenant leak harness now sweeps every repository type.** It swept `ReaderRepo` for as
+  long as that was the only one, and would have kept reporting a clean sweep of it while a second
+  repository went entirely unexamined — the same silent coverage decay the harness exists to
+  prevent. A new guard scans the package for `*Repo` types and fails on any the sweep does not cover
+  or explicitly excuse.
 
 - **A login** (`AuthService`, TODO 6.1 in part): `Login`/`Logout`/`WhoAmI` over the tunnel, a
   `/login` screen in the app's own vocabulary, and a bearer token attached by **one client
@@ -94,35 +137,11 @@ The full reasoning behind any entry lives in the commit message; this file is th
   gated on the page origin parsed as a *host* — a substring test for "localhost" would fire on
   `https://localhost.attacker.example`.
 
-### Fixed
-
-- **An empty feed showed the previous feed's articles** (TODO H10). `loadItems` set the loading flag
-  but never cleared the list, and the list pane only draws its skeleton when it is *both* loading and
-  empty — which a scope change never was. A feed with items hid this, because the response replaced
-  the rows; a feed with **zero** items never could, so the reader was looking at one feed's articles
-  filed under another feed's name. The list is now cleared on a scope change, in `selectScope` and
-  `runSearch` rather than in `loadItems`, because `loadItems` is also how the list refreshes in place
-  after "mark all read" and after a reconnect, where blanking the screen would turn a silent update
-  into a flash.
-- **A password manager could kill the wasm module** (TODO H9). Filling the login form dispatches a
-  synthetic `new Event('keydown')`, which has no `key`, no `altKey`, no `ctrlKey`. `Value.Bool()` on
-  the resulting `undefined` does not return false — it panics, and a panic in wasm tears down the
-  whole module and every listener with it, leaving the page a dead screenshot of itself. `OnKeyDown`
-  now discriminates on the event actually carrying a key, and boolean reads go through a guarded
-  helper; the same unguarded pattern in `PrefersReducedMotion` went with it. The login fields are now
-  inside a `<form>`, which Chrome had been asking for and which is what lets a manager pair and save
-  a credential at all.
-- **An infinite reload loop on the login screen** (TODO H8). The client interceptor treated any
-  `Unauthenticated` as a session ending and reloaded; asking `WhoAmI` at boot with no token gets
-  exactly that answer, correctly, so the page reloaded forever and the login screen never survived
-  long enough to submit. It presented as "Couldn't sign in. Check the server is running" — a message
-  about the transport, from a server answering perfectly. The whole `AuthService` is now excluded,
-  matched on the service prefix so a future method cannot reintroduce it by omission.
-
 ### Known
 
-- **An async state write does not repaint when nothing else changed** (TODO H11). After the fix above,
-  a feed with no items shows a loading skeleton that never resolves, for a request that succeeded —
+- **An async state write does not repaint when nothing else changed** (TODO H11). With the empty-feed
+  fix above in place, a feed with no items no longer shows the wrong articles — instead it shows a
+  loading skeleton that never resolves, for a request that succeeded —
   the response lands, the flag is cleared, and no render follows. On a populated feed the new rows are
   self-evidently a change and the scroll-to-top fires a repaint; with an empty result the only change
   is one boolean. Isolated to GWC's async scheduling rather than to the reader, and worth treating as

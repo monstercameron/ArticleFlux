@@ -975,7 +975,42 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 - [x] **5.6** `notes` (private by default) · `bookmarks` · `bookmark_tags`
       ✅ 2026-07-26 — `item_notes` (0005) — private, separate from `user_item_state` so a note is not coupled to read state, with `NotedItems` for the Notes stream. *Bookmarks are not built; read-later reuses `starred_at` instead.*
 
-- [ ] **5.7** `rules` · `rule_hits` · `scrape_rules` · `mailboxes`
+- [x] **5.7** `rules` · `rule_hits` · `scrape_rules` · `mailboxes`
+      ✅ 2026-07-27 — `rules`/`rule_hits` (`rulescodec.go`, `fanout.go`) and `scrape_rules`
+      (`scrape.go`) were already built. This is **`mailboxes`**: `migrations/0016_mailbox_sources.sql`
+      + `internal/store/mailboxes.go`, 14 tests.
+
+      **Its own repo type, because it holds a decryption key.** `MailboxRepo` mirrors `SettingsRepo`
+      rather than hanging off `ReaderRepo`: a repository that can decrypt credentials should be
+      something you ask for, not something every `NewReaderRepo` caller receives. A mailbox password
+      is the one credential in this database belonging to a **third party** — it cannot be hashed,
+      because the poller has to use it, and a leak is somebody's email account rather than their
+      reading history. `Mailbox` has **no password field at all**, so listing mailboxes cannot
+      serialise one into an RPC response and cannot start doing so when a field is added later;
+      reading it is a separate scoped call. With no encryption key configured the repo **refuses**
+      rather than storing plaintext — an operator told this failed will fix it, one whose password
+      was written in the clear never finds out.
+
+      **Three things §6.3/§6.5 specified and nobody had built.** `sources.owner_user_id` ("NULL
+      unless kind='mailbox'") did not exist, so §17's account deletion had no way to find the mailbox
+      sources a user owned except by `LIKE` over `natural_key` — derivable-by-string-parsing is not
+      the same as a column. `mailboxes` had no scheduling columns, so nothing could say when to poll
+      one. And **the feed poller would have tried to HTTP-fetch mailbox sources**: their `feed_url`
+      is `mailbox:<id>:<sender>`, which is not a URL, so every poll forever would have been "not a
+      recognisable feed" — the exact failure `pollOne` already guards against for `kind='scrape'`,
+      with a comment saying it is how a feature like this silently never works. `DueSources` and
+      `PollerLag` now exclude them (the latter too, or one mailbox reports a permanent backlog).
+
+      **The leak harness now sweeps every repository type, not just `ReaderRepo`.** It swept one type
+      for as long as there was one, and would have gone on reporting a clean sweep of that one while
+      a whole new repo went unexamined — which is the decay this harness exists to prevent, one level
+      up. `TestEveryRepoTypeIsSwept` scans the package source for `*Repo` types and fails on any the
+      sweep does not cover or explicitly excuse. Mutation-tested: dropping `ListMailboxes`' tenant
+      filter fails with `LEAK: ListMailboxes returned tenant B data`.
+
+      *Out of scope, deliberately:* the IMAP client itself. There is no IMAP dependency in `go.mod`
+      and connecting is Tier 6 / **M22**; `mailparse` (4.8) already turns a message into an item, and
+      this ticket is the storage between them.
 - [x] **5.8** `settings` · `views` · `engagements` (append-only, **with the §18.1 kind taxonomy
       including `impression` and `bulk_read`**) · `audit_log`
       ◧ 2026-07-26 — **`engagements` is DONE**, ahead of its tier because every day of reading
@@ -1879,6 +1914,16 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       The progress fill is the seven source hues, in order, because the bar should be made of the thing
       it is loading. `client/design/bootpalette_test.go` pins the duplicated palette, the hue order,
       the reduced-motion query and the `af.boot` handshake.
+- [x] **8b.48 The wash is a theme token, because looking at all five found what arithmetic could not.**
+      The article's radial gradient carried a fixed 24% of the source hue. That is right on plum, where
+      the ground has colour of its own to dilute the mix — and over a NEUTRAL ground there is nothing
+      to dilute it with, so the same declaration reads as light falling in on Fanciful and as a green
+      panel on Ink. Worst on **Contrast**, whose entire claim is *maximum legibility, black ground,
+      white type, hard edges*, and which was carrying the heaviest decoration of the five. `--wash` is
+      now per-theme (24 · 19 · 13 · 11 · 6%), which also replaces the light-tone override with one
+      mechanism instead of two — the problem was never light-versus-dark. **Every theme's contrast
+      passed the whole time**: this is the class of defect a ratio cannot see, and it survived four
+      rounds of measurement because nobody had opened the theme.
 - [x] **8b.45 Focus mode** — §20.21. `w`, or the control pinned top-right of the article. The columns
       **close** rather than vanish: they are grid tracks, so it is four widths animating to zero, which
       interpolates as long as the track count holds — hence three rules, one per breakpoint, because
@@ -1898,15 +1943,16 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       `#A093AC` clears 4.5:1 on all three grounds and is the smallest change that does. *Done when:
       the mockup and `tokens.go` agree on a value that passes, and the exception is deleted from
       `sheet_test.go` rather than re-ratcheted.*
-- [ ] **8b.46 Drive focus mode and the list cursor in the running app.** Both are verified against the
-      **emitted stylesheet** in a harness — grid interpolation measured mid-collapse (the rail at 31px
-      of 258, so it interpolates rather than snapping), the cursor's content-space y proven to hold
-      while its screen y moved by exactly the scroll delta, all four icon states, every breakpoint's
-      track count, and reduced motion collapsing instantly. What that cannot cover is the Go wiring:
-      `listPane` emitting `--cursor`, the `ui.focus` round trip, `w` and `Escape`. They type-check and
-      have not run, because `client/view` was mid-refactor for the whole batch. *Done when: an e2e case
-      toggles focus with `w` and asserts the rail's width goes to zero and back, and moves the
-      selection with `j` asserting `--cursor` follows.*
+- [x] **8b.46 Focus mode and the list cursor, driven in the running app.** Both had only ever been
+      verified against the emitted stylesheet in a harness. Measured for real: the cursor steps
+      `0px → 384px` over four presses of `j` — exactly four rows of 96 — with the 0.18s/0.11s
+      transition live; `w` collapses the rail `258 → 96 at 120ms → 0` and sets `data-focus`; `Escape`
+      brings it back; the button toggles and reports `aria-pressed` correctly. No page errors.
+- [ ] **8b.47 Look at the other two themes on a phone, and against `design/04-fanciful-mobile.html`.**
+      8b.39's readability floor is arithmetic and it passed every theme; 8b.48 is what *looking* found,
+      and it found it in the two themes nobody had opened. The mobile mockup has never been compared
+      against the built app at all. *Done when: all five themes have been seen at 390px beside the
+      mockup, and whatever that turns up is either fixed or written down.*
 - [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
       and during this batch the wasm build was broken for a stretch while the native build and every Go
       test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on

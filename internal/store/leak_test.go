@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,6 +131,15 @@ var unscopedByDesign = map[string]string{
 	"ReclaimStale":  "maintenance over abandoned jobs",
 	"QueueDepth":    "instance-wide queue health",
 	"PurgeFinished": "maintenance over completed jobs",
+
+	// Mailboxes (5.7). The poller has a mailbox id from DueMailboxes and no
+	// session, exactly like DueSources/RecordFetch — but with a sharper edge,
+	// because these rows hold a third party's password. Note what is NOT here:
+	// MailboxSecret, which is the only method that decrypts one, takes a Scope
+	// and is swept.
+	"DueMailboxes":      "the IMAP poller's queue, across every tenant, like DueSources",
+	"RecordMailboxPoll": "poll bookkeeping keyed by the mailbox id the worker just claimed; returns nothing",
+	"CanStoreSecrets":   "reports whether an encryption key was configured; touches no rows at all",
 }
 
 // twoTenants builds the fixture: tenant A with its own rows, tenant B with rows
@@ -230,12 +240,38 @@ func twoTenants(t *testing.T, db *DB) (repo *ReaderRepo, a, b Scope, bIDs map[st
 
 func TestNoRepositoryMethodLeaksAcrossTenants(t *testing.T) {
 	db := openTest(t)
-	repo, a, _, bIDs := twoTenants(t, db)
+	repo, a, b, bIDs := twoTenants(t, db)
+
+	// EVERY scoped repository type, not just ReaderRepo.
+	//
+	// The harness swept one type for as long as there was one, and the day a
+	// second appeared it would have gone on reporting a clean sweep of the
+	// first. A guard whose coverage is a closed list has to be told when the
+	// list grows, and nothing tells it — so the list is here, checked against
+	// the package's actual repository types by TestEveryRepoTypeIsSwept below.
+	mail := NewMailboxRepo(db, testEncKey)
+	seedMailboxLeakFixture(t, mail, b, bIDs)
+
+	sweep(t, repo, a, bIDs)
+	sweep(t, mail, a, bIDs)
+}
+
+// sweep calls every scoped method on one repository under tenant A's scope with
+// tenant B's identifiers, and fails if tenant B's data comes back.
+func sweep(t *testing.T, repo any, a Scope, bIDs map[string]string) {
+	t.Helper()
 	ctx := context.Background()
 
 	rt := reflect.TypeOf(repo)
 	if rt.NumMethod() == 0 {
-		t.Fatal("no exported methods found — the harness is not looking at the repository")
+		t.Fatalf("%s has no exported methods — the harness is not looking at the repository", rt)
+	}
+	minMethods := 30
+	if rt != reflect.TypeOf((*ReaderRepo)(nil)) {
+		// ReaderRepo is the big one and its floor catches a harness that has
+		// stopped seeing methods. A smaller repo needs a floor too, or adding
+		// one with every method accidentally unscoped would pass silently.
+		minMethods = 3
 	}
 
 	var checked, skipped int
@@ -263,7 +299,7 @@ func TestNoRepositoryMethodLeaksAcrossTenants(t *testing.T) {
 			continue
 		}
 
-		t.Run(m.Name, func(t *testing.T) {
+		t.Run(rt.Elem().Name()+"."+m.Name, func(t *testing.T) {
 			args := make([]reflect.Value, ft.NumIn())
 			args[0] = reflect.ValueOf(repo)
 			for arg := 1; arg < ft.NumIn(); arg++ {
@@ -289,10 +325,10 @@ func TestNoRepositoryMethodLeaksAcrossTenants(t *testing.T) {
 		checked++
 	}
 
-	t.Logf("%d scoped methods exercised, %d unscoped by design", checked, skipped)
-	if checked < 30 {
-		t.Errorf("only %d scoped methods were exercised; the repository has far more, "+
-			"so the harness has stopped seeing them", checked)
+	t.Logf("%s: %d scoped methods exercised, %d unscoped by design", rt, checked, skipped)
+	if checked < minMethods {
+		t.Errorf("only %d scoped methods were exercised on %s; it has more, "+
+			"so the harness has stopped seeing them", checked, rt)
 	}
 }
 
@@ -470,4 +506,109 @@ func TestCrossTenantErrorsDoNotConfirmExistence(t *testing.T) {
 	if errReal != ErrNotFound {
 		t.Errorf("cross-tenant GetItem = %v, want ErrNotFound", errReal)
 	}
+}
+
+// testEncKey is a fixed 32-byte key. Fixed rather than random so a ciphertext
+// written by one test can be read by another, and so a failure is reproducible.
+var testEncKey = []byte("0123456789abcdef0123456789abcdef")
+
+// seedMailboxLeakFixture gives tenant B a mailbox and a mailbox-derived source,
+// every string in them carrying the marker.
+//
+// Newsletters are the most sensitive rows in the database: a mailbox leak is
+// somebody's email account, and a mailbox SOURCE leak is their private mail.
+// §6.4's per-user keying is the defence, and this is what tests that it holds.
+func seedMailboxLeakFixture(t *testing.T, mail *MailboxRepo, b Scope, bIDs map[string]string) {
+	t.Helper()
+	ctx := context.Background()
+
+	id, err := mail.PutMailbox(ctx, b, Mailbox{
+		Host:     leakMarker + ".imap.example",
+		Port:     993,
+		Username: leakMarker + "@example.com",
+		Folder:   leakMarker + "-Newsletters",
+	}, leakMarker+"-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bIDs["mailboxID"] = id
+
+	if _, err := mail.EnsureMailboxSource(ctx, b, id,
+		leakMarker+"@sender.example", leakMarker+"-newsletter"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEveryRepoTypeIsSwept is the guard on the guard.
+//
+// The leak harness sweeps a hand-written list of repository types, and a list
+// nothing checks is a list that goes stale — which is the exact failure mode
+// this whole file exists to prevent, one level up. So the list is compared
+// against the package's real repository types: anything named `*Repo` with a
+// constructor must be swept, or named here with a reason.
+//
+// Go has no reflection over a package's types at runtime, so this reads the
+// source. That is unusual and it is the only thing that actually works: the
+// alternative is a list that agrees with itself.
+func TestEveryRepoTypeIsSwept(t *testing.T) {
+	swept := map[string]bool{
+		"ReaderRepo":  true,
+		"MailboxRepo": true,
+	}
+	notSwept := map[string]string{
+		// SettingsRepo is instance-wide by design: system settings belong to no
+		// tenant. Its tenant- and user-layer reads live on ReaderRepo, which IS
+		// swept — see settingslayers.go.
+		"SettingsRepo": "system settings are instance-wide; the tenant/user layers are on ReaderRepo",
+	}
+
+	found, err := repoTypeNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) < 2 {
+		t.Fatalf("found %d repository types by scanning the package; the scan is broken", len(found))
+	}
+	for _, name := range found {
+		if swept[name] {
+			continue
+		}
+		if why, ok := notSwept[name]; ok {
+			t.Logf("not swept: %s — %s", name, why)
+			continue
+		}
+		t.Errorf("%s is a repository type and the leak harness does not sweep it. "+
+			"Add it to sweep() in TestNoRepositoryMethodLeaksAcrossTenants, or "+
+			"write down here why it needs no tenant isolation.", name)
+	}
+}
+
+// repoTypeNames finds `type XxxRepo struct` declarations in this package.
+func repoTypeNames() ([]string, error) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
+			strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(e.Name())
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "type ") || !strings.Contains(line, "struct") {
+				continue
+			}
+			name := strings.Fields(line)[1]
+			if strings.HasSuffix(name, "Repo") {
+				out = append(out, name)
+			}
+		}
+	}
+	return out, nil
 }

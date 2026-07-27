@@ -289,6 +289,17 @@ var unscopedByDesign = map[string]string{
 	"ReclaimStale":  "maintenance over every tenant's abandoned jobs",
 	"QueueDepth":    "instance-wide queue health for the status screen",
 	"PurgeFinished": "maintenance over completed jobs of every tenant",
+
+	// The denormalised unread count (5.4a). Instance-wide repair: it writes each
+	// state row only the values of the item that row already names, and returns
+	// a count rather than any row.
+	"ReconcileUnread": "an instance-wide repair of denormalised columns; it reads nothing back to a caller and writes each row only the values of the item that row already names",
+
+	// Mailboxes (5.7). The IMAP poller has a mailbox id from DueMailboxes and no
+	// session, exactly like DueSources/RecordFetch. Note what is NOT here:
+	// MailboxSecret, the only method that decrypts a credential, takes a Scope.
+	"DueMailboxes":      "the IMAP poller's queue, across every tenant, like DueSources",
+	"RecordMailboxPoll": "poll bookkeeping keyed by the mailbox id the worker just claimed; returns nothing",
 }
 
 // guardRepoScope checks that repository methods take a Scope.

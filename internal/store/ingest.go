@@ -248,6 +248,14 @@ func (r *ReaderRepo) DueSources(ctx context.Context, limit int) ([]SourceRow, er
 	// The ratio is seconds-late over the source's own interval. `max(...,60)`
 	// guards against a zero or absurdly small interval turning into a division by
 	// zero and pinning one feed at the top forever.
+	//
+	// `kind <> 'mailbox'` because a mailbox source's feed_url is
+	// `mailbox:<id>:<sender>`, which nothing can fetch — handing it to the feed
+	// parser is "not a recognisable feed" on every poll forever. They are filled
+	// by polling the MAILBOX, since one IMAP connection yields items for many
+	// senders at once, so `mailboxes` is the unit of scheduling and not this
+	// table. 0016 also NULLs their next_fetch_at; the predicate is here as well
+	// because a NULL next_fetch_at reads as "never fetched, poll me first".
 	rows, err := r.db.Read.QueryContext(ctx, `
 		SELECT id, feed_url, kind, COALESCE(etag,''), COALESCE(last_modified,''),
 		       CASE
@@ -257,6 +265,7 @@ func (r *ReaderRepo) DueSources(ctx context.Context, limit int) ([]SourceRow, er
 		       END AS staleness
 		  FROM sources
 		 WHERE deactivated_at IS NULL
+		   AND kind <> 'mailbox'
 		   AND (next_fetch_at IS NULL OR next_fetch_at <= ?)
 		 ORDER BY staleness DESC, id ASC
 		 LIMIT ?`, now, now, limit)
@@ -302,6 +311,7 @@ func (r *ReaderRepo) PollerLag(ctx context.Context) (PollLag, error) {
 		       END), 0)
 		  FROM sources
 		 WHERE deactivated_at IS NULL
+		   AND kind <> 'mailbox'
 		   AND (next_fetch_at IS NULL OR next_fetch_at <= ?)`,
 		now, now).Scan(&lag.Due, &lag.WorstStaleness)
 	if err != nil {
