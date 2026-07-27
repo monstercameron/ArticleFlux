@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -243,7 +244,7 @@ func listFilter(q ListQuery, withCursor bool) ([]string, []any, error) {
 		where = append(where, "uis.rating < 0")
 	}
 	if withCursor && q.Cursor != "" {
-		published, id, err := decodeCursor(q.Cursor)
+		published, id, err := decodeCursor(q.Cursor, specOf(q))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -340,7 +341,7 @@ func (r *ReaderRepo) ListItems(ctx context.Context, s Scope, q ListQuery) ([]Ite
 	if len(out) > q.Limit {
 		last := out[q.Limit-1]
 		out = out[:q.Limit]
-		next = encodeCursor(last.PublishedAt, last.ID)
+		next = encodeCursor(last.PublishedAt, last.ID, specOf(q))
 	}
 	return out, next, nil
 }
@@ -900,20 +901,82 @@ type SourceRow struct {
 // ids are Crockford base32 — so it is unambiguous as well as safe to type.
 const sep = "|"
 
-func encodeCursor(published, id string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(published + sep + id))
+func encodeCursor(published, id string, spec specHash) string {
+	return base64.RawURLEncoding.EncodeToString(
+		[]byte(string(spec) + sep + published + sep + id))
 }
 
-func decodeCursor(c string) (published, id string, err error) {
+func decodeCursor(c string, spec specHash) (published, id string, err error) {
 	raw, derr := base64.RawURLEncoding.DecodeString(c)
 	if derr != nil {
-		return "", "", fmt.Errorf("store: malformed cursor")
+		return "", "", ErrBadCursor
 	}
-	published, id, ok := strings.Cut(string(raw), sep)
-	if !ok {
-		return "", "", fmt.Errorf("store: malformed cursor")
+	parts := strings.SplitN(string(raw), sep, 3)
+	if len(parts) != 3 {
+		return "", "", ErrBadCursor
 	}
-	return published, id, nil
+	if parts[0] != string(spec) {
+		// Minted against a DIFFERENT query. Refusing is the whole point of
+		// binding it — see specOf.
+		return "", "", ErrCursorSpecMismatch
+	}
+	return parts[1], parts[2], nil
+}
+
+// ErrBadCursor means the cursor could not be decoded at all.
+var ErrBadCursor = errors.New("store: malformed cursor")
+
+// ErrCursorSpecMismatch means the cursor belongs to a different query.
+//
+// §20.7 maps this to InvalidArgument rather than to an empty page, because the
+// two mean very different things to a client: an empty page means "you have
+// reached the end", and this means "your cursor is for a different list". A
+// client that treats the second as the first stops paging and shows a truncated
+// list with no error anywhere.
+var ErrCursorSpecMismatch = errors.New("store: this cursor belongs to a different query")
+
+// specHash identifies the query a cursor belongs to (TODO 7.3b, §20.7).
+type specHash string
+
+// specOf derives the identity of a list query.
+//
+// # Why a cursor has to be bound to its query
+//
+// A keyset cursor is a POSITION — "resume after (published, id)" — and it
+// carries no record of what it was a position *in*. Replay a cursor from the
+// unread list against the starred list and every row is a plausible article at a
+// plausible date: nothing errors, nothing looks wrong, and the reader silently
+// gets a page that skips whatever the two lists disagree about.
+//
+// That is hard to see and easy to cause. The client keeps one cursor per view,
+// and a view that changes its filter without clearing the cursor produces
+// exactly this. Binding turns it into an InvalidArgument the client can react to.
+//
+// The Scope is deliberately NOT in the hash. Cross-tenant protection is the
+// WHERE clause's job; a cursor is not a capability, and treating it as one would
+// mean a tenant leak was prevented only by an opaque string the client controls.
+func specOf(q ListQuery) specHash {
+	var b strings.Builder
+	b.WriteString(q.SourceID)
+	b.WriteByte(0)
+	for _, id := range q.SourceIDs {
+		b.WriteString(id)
+		b.WriteByte(1)
+	}
+	b.WriteByte(0)
+	if q.UnreadOnly {
+		b.WriteString("u")
+	}
+	if q.StarredOnly {
+		b.WriteString("s")
+	}
+	b.WriteString(strconv.Itoa(q.RatedOnly))
+
+	// Nine bytes, twelve base64 characters. A cursor travels in a URL and in a
+	// proto field, and a full 32-byte hash would triple its length to guard
+	// against an accidental collision between two of one reader's saved views.
+	sum := sha256.Sum256([]byte(b.String()))
+	return specHash(base64.RawURLEncoding.EncodeToString(sum[:9]))
 }
 
 // CountItems returns how many items this user can see.

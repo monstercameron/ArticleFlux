@@ -76,6 +76,13 @@ func toStatus(err error) error {
 		return errKey(codes.NotFound, "srv.notFound", "not found", nil)
 	case errors.Is(err, store.ErrNoScope):
 		return errKey(codes.Unauthenticated, "srv.notAuthenticated", "not authenticated", nil)
+	case errors.Is(err, store.ErrCursorSpecMismatch), errors.Is(err, store.ErrBadCursor):
+		// §20.7 / TODO 7.3b: InvalidArgument, never an empty page. An empty page
+		// means "you have reached the end", and a client that reads a stale
+		// cursor as the end stops paging and shows a truncated list with no error
+		// anywhere. This tells it to restart from the top.
+		return errKey(codes.InvalidArgument, "srv.staleCursor",
+			"this page cursor is out of date; reloading the list", nil)
 	default:
 		// The message is internal and stays internal (§22.11): the client gets a
 		// safe string, the log gets the detail with a request id.

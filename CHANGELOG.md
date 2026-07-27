@@ -56,6 +56,16 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Page cursors are bound to their query** (TODO 7.3b, §20.7). A keyset cursor is a *position* —
+  "resume after (published, id)" — and carries no record of what it was a position *in*. Replay one
+  from the unread list against the starred list and every row is a plausible article at a plausible
+  date: nothing errors, nothing looks wrong, and the reader silently gets a page that skips whatever
+  the two lists disagree about. Cursors now carry a 12-character hash of the filters and a mismatch
+  is **`InvalidArgument`, never an empty page** — an empty page means "you have reached the end", and
+  a client that reads a stale cursor as the end stops paging and shows a truncated list with no error
+  anywhere. The scope is deliberately *not* in the hash: cross-tenant protection is the `WHERE`
+  clause's job, and a cursor is not a capability.
+
 - **The typed settings registry** (`internal/settingsreg` + `internal/store/settingslayers.go`,
   TODO 6.3) — **system → tenant → user** resolution that returns the value *and which layer supplied
   it*. That second half is not a nicety: "why is this off for me?" has two very different answers —
