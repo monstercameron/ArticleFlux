@@ -56,6 +56,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The ranking scorer** (`internal/rank`, TODO 4.11) — pure `(Signals, Item, Weights, now) ->
+  (score, []Reason)`. **The score is literally the sum of its reasons**, asserted by a test, because
+  §18.9 shows them verbatim and a reason list that has drifted from the arithmetic is a lie that
+  looks like transparency. `VolumePenalty` is logarithmic and clamped to 1: linear would make a
+  100-a-day feed ten times worse than a 10-a-day one and effectively mute feeds the reader chose,
+  while unbounded would mean the weights stop describing relative influence. Half-life is per source,
+  so a day-old item scores differently as news than as an essay. In **highlights mode** the feed term
+  is dropped entirely and its weight redistributes to topic, domain and corroboration — nobody likes
+  Hacker News, they like specific things on Hacker News — and the threshold is set as a **rate**
+  ("about 3 a week"), solved into a cutoff, because nobody can reason about "score > 0.62". Too small
+  a sample refuses to fit and shows everything rather than inventing a threshold, since a newly
+  subscribed firehose showing nothing reads as broken. Pinned by a golden fixture with its term
+  breakdown recorded, and by the test the ticket asks for: a weekly essayist still reaches the top
+  ten against 94 items a day, and the firehose is not muted out of it either.
+
 - **The rules engine matcher** (`internal/rules`, TODO 4.9) — pure: `(item, []Rule, now) -> []Action`,
   no database, no clock, no side effects. That is what lets §13.4's dry-run preview be *the same
   code* as the apply; a preview implemented separately eventually lies about what the rule will do,
