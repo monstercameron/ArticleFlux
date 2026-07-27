@@ -1037,8 +1037,17 @@ Business logic over repositories. Still headless.
       `affinityWeight` returns zero for any unrecognised kind, so a signal added later without a
       considered weight contributes nothing rather than something accidental. Half-life is fitted per
       source and returns zero rather than guessing under ten samples.
-- [ ] **6.10 `recommendjob`** — harvest outlinks and aggregator pass-throughs → candidates → health
+- [x] **6.10 `recommendjob`** — harvest outlinks and aggregator pass-throughs → candidates → health
       gate → score → `recommendations`. **Rungs 1–3, no LLM.** ← 4.12, 2.10 §18.7
+      ✅ 2026-07-26 — `internal/recommendjob` + `internal/store/outlinks.go`. Harvest → validate →
+      gate → score → store, rungs 1–3, no LLM. The harvest join is the load-bearing part: outlinks
+      are global and engagements are per user, so the intersection is "sites linked from things YOU
+      read" — the other way round would recommend one tenant's reading to another. **Validation
+      happens before scoring**, because the health gate's inputs *are* the validation and a candidate
+      scored without it is scored on evidence nobody checked. Dismissed and subscribed domains are
+      filtered **before** the fetch, since §18.7's guardrails are also a politeness budget.
+      `RecordOutlinks` replaces rather than appends, or the "linked here 11 times" evidence inflates
+      itself.
 - [x] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
       circuit breaker**; **egress allowlist enforced and tested** §18.8, §22.8
       ◐ 2026-07-26 — **Partially delivered by 8.4b, and deliberately left open.** `internal/llm`
