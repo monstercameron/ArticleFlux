@@ -111,6 +111,69 @@ test.describe('reading', () => {
     await expect(page.locator('.item-row')).toHaveCount(before - 1);
   });
 
+  test('jumping down the list does not read what it jumped over', async ({ page }) => {
+    await boot(page);
+    const rows = page.locator('.item-row');
+
+    // Row 3 is the long fixture article, which is what makes this reproducible:
+    // the pane can only scroll far enough to carry an article clean past the
+    // fold when there is something taller than the viewport below it.
+    //
+    // Both waits below are load-bearing, and an earlier version of this test
+    // passed against the unfixed client without them. The bug needs the seeded
+    // article to have its BODY — a skeleton is short enough that the jump cannot
+    // push it clear of the fold, so a test that clicks before the bodies land
+    // asserts against a stream too short to reproduce anything.
+    await rows.nth(0).click();
+    await expect(rows.nth(0)).toHaveAttribute('data-read', 'true');
+    await expect(page.locator('.article-body').first()).toBeVisible();
+
+    await rows.nth(3).click();
+    await expect(rows.nth(3)).toHaveAttribute('data-read', 'true');
+    // The jump itself, waited on directly: the pane has travelled off the top,
+    // which is the exact condition that used to mark the seeded article read.
+    await expect
+      .poll(async () => page.locator('.pane-article')
+        .evaluate((el) => el.scrollTop), { timeout: 20_000 })
+      .toBeGreaterThan(0);
+
+    // The two in between. Opening row 3 seeds the article above it into the
+    // stream and then scrolls the target to the top, which drags the seeded one
+    // past the bottom edge — and "scrolled past" is one of the two ways this app
+    // marks an article read. It must not count here: the app moved the article,
+    // the reader did not, and nothing was ever on screen to be read.
+    //
+    // Asserted after a reload as well as before it. Optimistic state is local
+    // and could simply not have been applied yet; a reload proves no SetItemState
+    // was sent, which is the thing that actually went wrong.
+    await expect(rows.nth(1)).toHaveAttribute('data-read', 'false');
+    await expect(rows.nth(2)).toHaveAttribute('data-read', 'false');
+
+    await page.reload();
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.item-row').nth(1)).toHaveAttribute('data-read', 'false');
+    await expect(page.locator('.item-row').nth(2)).toHaveAttribute('data-read', 'false');
+  });
+
+  test('scrolling through the stream still marks what it passes', async ({ page }) => {
+    await boot(page);
+    const rows = page.locator('.item-row');
+
+    // The other half of the same behaviour, and the reason the fix is a
+    // suppression list rather than switching scroll-past marking off: a reader
+    // who scrolls to the end of an article HAS read it, and the previous test
+    // passing by breaking this one would be a regression wearing a fix's hat.
+    await rows.nth(3).click();
+    await expect(rows.nth(3)).toHaveAttribute('data-read', 'true');
+
+    const pane = page.locator('.pane-article');
+    await pane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+
+    // Row 4 follows row 3 in the list, so scrolling to the bottom of the stream
+    // arrives in it.
+    await expect(rows.nth(4)).toHaveAttribute('data-read', 'true', { timeout: 30_000 });
+  });
+
   test('mark all read empties the unread view and zeroes the counts', async ({ page }) => {
     await boot(page);
     await page.locator('[data-action="mark-all"]').click();
@@ -209,6 +272,64 @@ test.describe('notes and tags', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.pane-rail .feed-name', { hasText: 'mornings' }))
       .toHaveCount(0);
+  });
+});
+
+test.describe('finding the feed', () => {
+  // The fixture server's port is pinned in global-setup.mjs.
+  const DECLARES = 'http://127.0.0.1:9011/declares.html';
+  const NOFEED = 'http://127.0.0.1:9011/nofeed.html';
+
+  test('a page that is not a feed offers the feed it points at', async ({ page }) => {
+    await boot(page);
+    const dialog = await openAddFeed(page);
+    await dialog.locator('[data-role="add-feed"]').fill(DECLARES);
+    await dialog.locator('[data-action="add-feed"]').click();
+
+    // The address is a page, so subscribing fails and the free rungs run
+    // without the reader having to ask for them.
+    const cand = dialog.locator('.af-cand');
+    await expect(cand).toHaveCount(1, { timeout: 45_000 });
+    // Fetched and parsed before being offered: the count is the evidence.
+    await expect(cand.locator('.af-cand-meta')).toContainText(/item/);
+    await expect(cand.locator('.af-cand-meta')).toContainText(/links to it/);
+
+    // Taking the offer subscribes to the feed the page declared, not the page.
+    await cand.locator('[data-action="add-feed-candidate"]').click();
+    await expect(dialog).toBeHidden({ timeout: 45_000 });
+    await expect(page.locator('.banner')).toContainText(/Alpha Journal/, { timeout: 45_000 });
+  });
+
+  test('a page with no feed offers Smart+, and says what it would send', async ({ page }) => {
+    await boot(page);
+    const dialog = await openAddFeed(page);
+    await dialog.locator('[data-role="add-feed"]').fill(NOFEED);
+    await dialog.locator('[data-action="add-feed"]').click();
+
+    const ladder = dialog.locator('.af-ladder');
+    await expect(ladder).toBeVisible({ timeout: 45_000 });
+    await expect(ladder).toContainText(/No feed here/);
+    // The lamp is on the address row and is visible from the moment the dialog
+    // opens — the capability has to be discoverable before it is needed.
+    const lamp = dialog.locator('[data-action="add-feed-smart"]');
+    await expect(lamp).toHaveAttribute('aria-pressed', 'false');
+    // Off means no button to press: the sentence points at the lamp, and says
+    // what turning it on would send. That sentence IS the consent, so its
+    // absence is a bug rather than a wording preference.
+    await expect(ladder).toContainText(/OpenAI/);
+    await expect(ladder.locator('[data-action="add-feed-analyze"]')).toHaveCount(0);
+
+    // Arming it and adding the address again runs the whole ladder in one press
+    // — the consent is standing, so asking for a second press would be asking
+    // the same question twice.
+    await lamp.click();
+    await expect(lamp).toHaveAttribute('aria-pressed', 'true', { timeout: 20_000 });
+    await dialog.locator('[data-action="add-feed"]').click();
+
+    // This instance has no OpenAI key, so it reports exactly that rather than
+    // failing obscurely — the remedy belongs to whoever runs the server, and the
+    // message says so.
+    await expect(ladder).toContainText(/no OpenAI key/, { timeout: 45_000 });
   });
 });
 

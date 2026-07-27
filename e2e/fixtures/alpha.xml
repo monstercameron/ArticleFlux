@@ -18,7 +18,20 @@
       <guid isPermaLink="false">alpha-2</guid>
       <pubDate>Sat, 25 Jul 2026 09:00:00 +0000</pubDate>
       <description>WAL and a single serialized writer.</description>
-      <content:encoded><![CDATA[<p>SQLite permits many readers and exactly one writer.</p>]]></content:encoded>
+      <!--
+        Deliberately longer than the viewport, and that is the whole point of it.
+
+        Every other fixture article fits on one screen, which means the reading
+        pane never actually scrolls — so any bug that only appears when the pane
+        travels (the stream marking articles read as it jumps over them) cannot
+        reproduce against a fixture at all. One long article is enough to make
+        the pane a scroller, and it is cheaper than a second fixture feed, which
+        would move every count assertion in the suite.
+
+        The prose is filler. It deliberately avoids the words the search test
+        looks for, so growing this body cannot change what FTS ranks first.
+      -->
+      <content:encoded><![CDATA[<p>SQLite permits many readers and exactly one writer.</p><p>Everything that follows is padding with a purpose: it makes this article taller than a browser window, which is the only way the reading pane becomes something a reader can travel through.</p><p>A journal is a sequence of frames appended to a file. The database itself is not modified while a transaction runs.</p><p>Readers see the database as it was when they began, plus whatever frames the journal has committed since.</p><p>A checkpoint folds those frames back into the main file. Until it runs, the file on disk is behind and that is not a problem.</p><p>Two connections, one for reading and one for writing, keep the two workloads from arguing with each other about a mutex.</p><p>The writer is serialized because there is exactly one of it, not because anything queues.</p><p>A busy timeout turns an immediate failure into a short wait, which is almost always what the caller wanted.</p><p>Synchronous NORMAL trades a fsync per commit for a fsync per checkpoint, and on a journal that is a safe trade.</p><p>Foreign keys are off by default, which makes every REFERENCES clause decorative until something turns them on.</p><p>None of this is visible from the application, and that is the measure of whether it was done correctly.</p><p>The failure mode worth rehearsing is the one where a copy is taken while frames are still outstanding.</p><p>Such a copy opens cleanly, passes a smoke test, and is missing whatever had not been folded back in yet.</p><p>That is why a copy is taken through the database rather than through the filesystem.</p><p>And that is the end of the padding.</p>]]></content:encoded>
     </item>
     <item>
       <title>A field guide to Postgres lock modes</title>

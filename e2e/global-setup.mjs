@@ -55,6 +55,23 @@ export default async function globalSetup() {
   const feeds = {
     '/alpha.xml': ['application/rss+xml', readFileSync(join(here, 'fixtures', 'alpha.xml'))],
     '/beta.xml': ['application/atom+xml', readFileSync(join(here, 'fixtures', 'beta.xml'))],
+    // Two HTML pages, for the subscribe ladder (§11). One declares its feed the
+    // way most sites do; the other publishes nothing at all, which is the case
+    // Smart+ exists for. Both are fixtures rather than real sites for the same
+    // reason the feeds are: a suite that depends on somebody's live homepage
+    // fails whenever they redesign it.
+    '/declares.html': ['text/html; charset=utf-8', Buffer.from(`<!doctype html>
+<html><head><title>Alpha, the blog</title>
+<link rel="alternate" type="application/rss+xml" href="/alpha.xml"></head>
+<body><h1>Alpha</h1><p>The feed is declared in the head.</p></body></html>`)],
+    '/nofeed.html': ['text/html; charset=utf-8', Buffer.from(`<!doctype html>
+<html><head><title>Quiet Notes</title></head><body>
+<main>
+  <article class="post"><h2><a href="/posts/one">First note</a></h2>
+    <time datetime="2026-07-20T09:00:00Z">20 July</time></article>
+  <article class="post"><h2><a href="/posts/two">Second note</a></h2>
+    <time datetime="2026-07-22T09:00:00Z">22 July</time></article>
+</main></body></html>`)],
   };
   feedServer = createServer((req, res) => {
     const hit = feeds[req.url.split('?')[0]];
