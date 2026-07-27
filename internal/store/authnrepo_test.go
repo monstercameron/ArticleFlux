@@ -409,3 +409,78 @@ func TestResetTokensArePurgeable(t *testing.T) {
 		t.Errorf("purging removed a live token: %v", err)
 	}
 }
+
+// The revocation has to SURVIVE the error that reports it.
+//
+// `Tx` rolls back on any error the callback returns, so returning
+// ErrRefreshReuse from inside the transaction rolled back the revocation that
+// had just been written: reuse detection detected the replay and then discarded
+// its own response. The family stayed live and a stolen token kept working —
+// silently, which is the whole failure mode this control exists to prevent.
+func TestReuseDetectionActuallyRevokesTheFamily(t *testing.T) {
+	f := newAuthnFixture(t)
+
+	const device, family = "dev-1", "fam-1"
+	if err := f.repo.RegisterDevice(f.ctx, f.sc, device, family, "token-a", "laptop", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// An honest rotation.
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-b"); err != nil {
+		t.Fatalf("an honest rotation failed: %v", err)
+	}
+
+	// The replay of the spent token.
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-c"); !errors.Is(err, ErrRefreshReuse) {
+		t.Fatalf("= %v, want ErrRefreshReuse", err)
+	}
+
+	// The revocation must be in the database, not rolled back with the error.
+	var revoked, reason string
+	if err := f.db.Read.QueryRowContext(f.ctx,
+		`SELECT COALESCE(revoked_at,''), COALESCE(revoked_reason,'') FROM devices WHERE id = ?`,
+		device).Scan(&revoked, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if revoked == "" {
+		t.Error("the device is still live after a detected replay — the revocation " +
+			"was rolled back by the error that announced it, so a stolen token keeps working")
+	}
+	if reason != "reuse_detected" {
+		t.Errorf("revoked_reason = %q, want reuse_detected", reason)
+	}
+
+	// And the token that WAS valid is dead too: the whole family goes.
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-b", "token-d"); err == nil {
+		t.Error("the current token still works after the family was revoked")
+	}
+}
+
+// Every device in the family, not just the one that was replayed.
+func TestReuseRevokesEveryDeviceInTheFamily(t *testing.T) {
+	f := newAuthnFixture(t)
+	const family = "fam-shared"
+
+	for _, d := range []string{"dev-a", "dev-b", "dev-c"} {
+		if err := f.repo.RegisterDevice(f.ctx, f.sc, d, family, "tok-"+d, d, "1.0.0"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a3"); !errors.Is(err, ErrRefreshReuse) {
+		t.Fatalf("= %v, want ErrRefreshReuse", err)
+	}
+
+	var live int
+	if err := f.db.Read.QueryRowContext(f.ctx,
+		`SELECT count(*) FROM devices WHERE family_id = ? AND revoked_at IS NULL`,
+		family).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Errorf("%d devices in the family are still live; a thief with any of "+
+			"them keeps working", live)
+	}
+}

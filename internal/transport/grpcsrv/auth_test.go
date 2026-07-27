@@ -411,3 +411,122 @@ func TestEmptyCredentialsAreRejectedWithoutTouchingTheDatabase(t *testing.T) {
 		}
 	}
 }
+
+// §7.3's third control: a replayed refresh token revokes the whole family.
+//
+// The server cannot tell a replay from a stolen token used alongside the real
+// client, so it treats the ambiguity as theft. That is the correct trade only
+// because the alternative is a stolen refresh token working forever, silently.
+func TestAReplayedRefreshTokenRevokesTheFamily(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+
+	in, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.GetRefreshToken() == "" {
+		t.Fatal("login handed out no refresh token, so nothing can be rotated")
+	}
+
+	// The honest rotation.
+	first, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+	})
+	if err != nil {
+		t.Fatalf("an honest refresh was refused: %v", err)
+	}
+	if first.GetToken() == "" || first.GetRefreshToken() == "" {
+		t.Fatal("a successful refresh returned an empty token")
+	}
+	if first.GetRefreshToken() == in.GetRefreshToken() {
+		t.Error("the refresh token was not rotated; presenting it again would be " +
+			"indistinguishable from an ordinary retry")
+	}
+
+	// The replay: the ORIGINAL token, already spent.
+	if _, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+	}); err == nil {
+		t.Fatal("a spent refresh token was accepted")
+	}
+
+	// And the family is dead, so even the token that WAS valid no longer works.
+	if _, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: in.GetDeviceId(), RefreshToken: first.GetRefreshToken(),
+	}); err == nil {
+		t.Error("the family survived a detected replay — a thief keeps working")
+	}
+}
+
+// One answer for reuse, unknown device and revoked family alike: a caller
+// holding a token that does not work must not learn WHY.
+func TestRefreshFailuresAreIndistinguishable(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+
+	in, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, unknownDevice := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: "no-such-device", RefreshToken: in.GetRefreshToken(),
+	})
+	_, wrongToken := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: in.GetDeviceId(), RefreshToken: "not-the-right-token",
+	})
+	if unknownDevice == nil || wrongToken == nil {
+		t.Fatal("a bad refresh was accepted")
+	}
+	if codeOf(unknownDevice) != codeOf(wrongToken) {
+		t.Errorf("an unknown device answers %v and a wrong token answers %v — the "+
+			"difference tells an attacker which half of their guess was right",
+			codeOf(unknownDevice), codeOf(wrongToken))
+	}
+}
+
+// A refresh mints a session for the device's OWN user, read from the row rather
+// than taken from the request — a caller who could name the user would be
+// choosing whose session to mint.
+func TestARefreshedSessionBelongsToTheDevicesOwner(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+
+	in, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
+		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	who, err := s.WhoAmI(withToken(out.GetToken()), &pb.WhoAmIRequest{})
+	if err != nil {
+		t.Fatalf("the refreshed session does not authenticate: %v", err)
+	}
+	if who.GetUsername() != "cam" {
+		t.Errorf("the refreshed session belongs to %q, want cam", who.GetUsername())
+	}
+}
+
+// Empty inputs are refused before anything is looked up, so an empty token
+// cannot match an empty stored value.
+func TestRefreshRefusesEmptyInputs(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+	for name, req := range map[string]*pb.RefreshSessionRequest{
+		"nothing":    {},
+		"no device":  {RefreshToken: "something"},
+		"no token":   {DeviceId: "something"},
+		"both blank": {DeviceId: "", RefreshToken: ""},
+		"whitespace": {DeviceId: "   ", RefreshToken: "x"},
+	} {
+		if _, err := s.RefreshSession(ctx, req); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}

@@ -42,6 +42,44 @@ service AuthService {
   // It is separate from GetVersion on purpose: GetVersion must stay
   // information-free for the readiness probe, and this one deliberately is not.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+
+  // RefreshSession exchanges a refresh token for a new session, and rotates the
+  // refresh token itself (§7.3, TODO 6.1).
+  //
+  // Named RefreshSession rather than Refresh because `Refresh` is already the
+  // reader's "go and poll my feeds now" — two operations that share a verb and
+  // nothing else, in one package, is how somebody eventually calls the wrong
+  // one from a retry loop.
+  //
+  // The reason it exists is REUSE DETECTION, not convenience. A refresh token
+  // is single-use: presenting one that has already been exchanged means either
+  // a replay or a stolen token being used alongside the real client, and the
+  // server cannot tell those apart — so it revokes the whole device family and
+  // refuses. §7.3 counts that as one of the four controls standing in for the
+  // second factor this application does not have.
+  //
+  // Unauthenticated by design: the refresh token IS the credential, and a
+  // caller with an expired session has nothing else to present.
+  rpc RefreshSession(RefreshSessionRequest) returns (RefreshSessionResponse);
+}
+
+message RefreshSessionRequest {
+  // device_id names which device is refreshing. The refresh token alone would
+  // be enough to find the row, but naming the device means a token presented
+  // against the wrong device is a mismatch rather than a lookup that happens to
+  // succeed.
+  string device_id = 1;
+  string refresh_token = 2;
+}
+
+message RefreshSessionResponse {
+  // A fresh session token, exactly as Login returns.
+  string token = 1;
+  string expires_at = 2;
+  // And a fresh REFRESH token. The old one is dead the moment this returns:
+  // that is what makes presenting it again evidence of a replay rather than an
+  // ordinary retry.
+  string refresh_token = 3;
 }
 
 message LoginRequest {
@@ -67,6 +105,13 @@ message LoginResponse {
   // device_id echoes what the session was filed under — assigned here when the
   // request left it empty.
   string device_id = 5;
+  // refresh_token is the FIRST token of this device's family (§7.3).
+  //
+  // Handed out at login rather than fetched later, because a client that has to
+  // ask for one has a window in which it holds a session it cannot renew — and
+  // the whole point of the family is that renewal is the only way a session
+  // continues, so reuse is detectable.
+  string refresh_token = 6;
 }
 
 message LogoutRequest {}

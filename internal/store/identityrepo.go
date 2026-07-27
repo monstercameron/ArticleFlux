@@ -453,7 +453,18 @@ func (r *ReaderRepo) RegisterDevice(ctx context.Context, s Scope, deviceID, fami
 // session for whoever stole it.
 func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, replacement string) error {
 	now := stamp(time.Now().UTC())
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+
+	// `reuse` is carried OUT of the transaction rather than returned from it,
+	// and that is not a style choice — it is the bug this shape exists to avoid.
+	//
+	// `Tx` rolls back on any error the callback returns. Returning
+	// ErrRefreshReuse from inside it therefore rolled back the revocation that
+	// had just been written, so reuse detection detected the replay and then
+	// discarded its own response: the family stayed live and a stolen token
+	// kept working. The revocation has to COMMIT, and the error is reported
+	// after it does.
+	var reuse bool
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var familyID, storedHash string
 		var revoked sql.NullString
 		err := tx.QueryRowContext(ctx,
@@ -470,13 +481,15 @@ func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, rep
 		}
 
 		if storedHash != secret.HashToken(presented) {
-			// Reuse. Revoke the whole family and refuse.
+			// Reuse. Revoke the whole family, and return nil so the revocation
+			// commits — see the note above.
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE devices SET revoked_at = ?, revoked_reason = 'reuse_detected'
 				  WHERE family_id = ? AND revoked_at IS NULL`, now, familyID); err != nil {
 				return err
 			}
-			return ErrRefreshReuse
+			reuse = true
+			return nil
 		}
 
 		_, err = tx.ExecContext(ctx,
@@ -484,6 +497,13 @@ func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, rep
 			secret.HashToken(replacement), now, deviceID)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	if reuse {
+		return ErrRefreshReuse
+	}
+	return nil
 }
 
 // ErrRefreshReuse means a rotated refresh token was presented again.
@@ -507,4 +527,28 @@ func (r *ReaderRepo) RevokeDeviceFamily(ctx context.Context, s Scope, familyID, 
 		return nil
 	})
 	return int(n), err
+}
+
+// ScopeForDevice resolves who a device belongs to.
+//
+// Used after a successful refresh rotation: the presented token has already
+// proved the caller holds the device's current secret, and the session that
+// gets minted has to name the right user. Reading it from `devices` rather than
+// trusting anything in the request is the point — a caller who could name the
+// user would be choosing whose session to mint.
+//
+// Unscoped for the same reason ScopeForSession is: it PRODUCES a Scope, so
+// requiring one would be circular. A revoked device resolves to nothing.
+func (r *ReaderRepo) ScopeForDevice(ctx context.Context, deviceID string) (Scope, error) {
+	var sc Scope
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT d.user_id, d.tenant_id, u.role
+		  FROM devices d
+		  JOIN users u ON u.id = d.user_id
+		 WHERE d.id = ? AND d.revoked_at IS NULL AND u.deactivated_at IS NULL`,
+		deviceID).Scan(&sc.UserID, &sc.TenantID, &sc.Role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Scope{}, ErrNotFound
+	}
+	return sc, err
 }

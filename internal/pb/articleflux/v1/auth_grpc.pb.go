@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AuthService_Login_FullMethodName  = "/articleflux.v1.AuthService/Login"
-	AuthService_Logout_FullMethodName = "/articleflux.v1.AuthService/Logout"
-	AuthService_WhoAmI_FullMethodName = "/articleflux.v1.AuthService/WhoAmI"
+	AuthService_Login_FullMethodName          = "/articleflux.v1.AuthService/Login"
+	AuthService_Logout_FullMethodName         = "/articleflux.v1.AuthService/Logout"
+	AuthService_WhoAmI_FullMethodName         = "/articleflux.v1.AuthService/WhoAmI"
+	AuthService_RefreshSession_FullMethodName = "/articleflux.v1.AuthService/RefreshSession"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -64,6 +65,24 @@ type AuthServiceClient interface {
 	// It is separate from GetVersion on purpose: GetVersion must stay
 	// information-free for the readiness probe, and this one deliberately is not.
 	WhoAmI(ctx context.Context, in *WhoAmIRequest, opts ...grpc.CallOption) (*WhoAmIResponse, error)
+	// RefreshSession exchanges a refresh token for a new session, and rotates the
+	// refresh token itself (§7.3, TODO 6.1).
+	//
+	// Named RefreshSession rather than Refresh because `Refresh` is already the
+	// reader's "go and poll my feeds now" — two operations that share a verb and
+	// nothing else, in one package, is how somebody eventually calls the wrong
+	// one from a retry loop.
+	//
+	// The reason it exists is REUSE DETECTION, not convenience. A refresh token
+	// is single-use: presenting one that has already been exchanged means either
+	// a replay or a stolen token being used alongside the real client, and the
+	// server cannot tell those apart — so it revokes the whole device family and
+	// refuses. §7.3 counts that as one of the four controls standing in for the
+	// second factor this application does not have.
+	//
+	// Unauthenticated by design: the refresh token IS the credential, and a
+	// caller with an expired session has nothing else to present.
+	RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*RefreshSessionResponse, error)
 }
 
 type authServiceClient struct {
@@ -98,6 +117,16 @@ func (c *authServiceClient) WhoAmI(ctx context.Context, in *WhoAmIRequest, opts 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WhoAmIResponse)
 	err := c.cc.Invoke(ctx, AuthService_WhoAmI_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*RefreshSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshSessionResponse)
+	err := c.cc.Invoke(ctx, AuthService_RefreshSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +173,24 @@ type AuthServiceServer interface {
 	// It is separate from GetVersion on purpose: GetVersion must stay
 	// information-free for the readiness probe, and this one deliberately is not.
 	WhoAmI(context.Context, *WhoAmIRequest) (*WhoAmIResponse, error)
+	// RefreshSession exchanges a refresh token for a new session, and rotates the
+	// refresh token itself (§7.3, TODO 6.1).
+	//
+	// Named RefreshSession rather than Refresh because `Refresh` is already the
+	// reader's "go and poll my feeds now" — two operations that share a verb and
+	// nothing else, in one package, is how somebody eventually calls the wrong
+	// one from a retry loop.
+	//
+	// The reason it exists is REUSE DETECTION, not convenience. A refresh token
+	// is single-use: presenting one that has already been exchanged means either
+	// a replay or a stolen token being used alongside the real client, and the
+	// server cannot tell those apart — so it revokes the whole device family and
+	// refuses. §7.3 counts that as one of the four controls standing in for the
+	// second factor this application does not have.
+	//
+	// Unauthenticated by design: the refresh token IS the credential, and a
+	// caller with an expired session has nothing else to present.
+	RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -162,6 +209,9 @@ func (UnimplementedAuthServiceServer) Logout(context.Context, *LogoutRequest) (*
 }
 func (UnimplementedAuthServiceServer) WhoAmI(context.Context, *WhoAmIRequest) (*WhoAmIResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method WhoAmI not implemented")
+}
+func (UnimplementedAuthServiceServer) RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshSession not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -238,6 +288,24 @@ func _AuthService_WhoAmI_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_RefreshSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).RefreshSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_RefreshSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).RefreshSession(ctx, req.(*RefreshSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -256,6 +324,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WhoAmI",
 			Handler:    _AuthService_WhoAmI_Handler,
+		},
+		{
+			MethodName: "RefreshSession",
+			Handler:    _AuthService_RefreshSession_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

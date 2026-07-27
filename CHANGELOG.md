@@ -11,6 +11,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Security
 
+- **Refresh-token families with reuse detection** (`AuthService.RefreshSession`, TODO 6.1, §7.3).
+  A refresh token is single-use; presenting a spent one means either a replay or a stolen token
+  being used alongside the real client, and since the server cannot tell those apart it revokes the
+  whole device family. **The revocation was being rolled back by the error that reported it** —
+  `Tx` rolls back on any error, so reuse detection detected the replay and then undid its own
+  response, leaving the family live and a stolen token working silently. Found by the test written
+  for it, fixed at the store layer, and now asserted from both the repository and the RPC.
+
 - **The login lockout is enforced, not just designed** (TODO 6.1, §7.3). Failures are counted in the
   database since the account's last successful login, so a restart no longer hands an attacker a
   fresh budget, and the correct password is refused *during* a lockout — one that lets it through is

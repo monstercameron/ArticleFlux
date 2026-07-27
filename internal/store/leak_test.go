@@ -105,6 +105,7 @@ var unscopedByDesign = map[string]string{
 	"SeedSystemRoles":      "seeds the four built-in roles at boot, before any tenant exists",
 	"RedeemInvite":         "the code IS the authorisation, and it names the tenant the account joins",
 	"ScopeForAPIToken":     "produces a Scope from a token; requiring one would be circular",
+	"ScopeForDevice":       "produces a Scope from a device the caller has just proved they hold the refresh secret for; requiring one would be circular, exactly like ScopeForSession",
 	"RotateRefresh":        "the presented refresh token is the authorisation, and reuse revokes the family",
 	"RetireUnusableSource": "deactivates a global source nobody subscribes to (A14/A22)",
 

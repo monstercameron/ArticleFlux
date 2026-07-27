@@ -15,6 +15,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	"github.com/monstercameron/ArticleFlux/internal/authn"
+	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -210,14 +211,117 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		}
 	}
 
+	// The device family (§7.3, TODO 6.1). One family per LOGIN, not per device:
+	// logging in again on the same browser starts a new chain, so revoking the
+	// old one cannot log out the session that just replaced it.
+	//
+	// A failure here is NOT fatal. The session above is already valid, and
+	// refusing a correct login because the refresh bookkeeping did not land
+	// would turn a renewal problem into an authentication problem. The client
+	// gets no refresh token and re-authenticates when the session expires,
+	// which is the pre-6.1 behaviour rather than a broken one.
+	refresh := idgen.Token()
+	scope := store.Scope{TenantID: u.TenantID, UserID: u.UserID, Role: u.Role}
+	if err := s.repo.RegisterDevice(ctx, scope, device, idgen.New(), refresh,
+		"", clientStamp(ctx)); err != nil {
+		s.log.Warn("registering the device family", "err", err, "device", device)
+		refresh = ""
+	}
+
 	s.log.Info("login", "username", u.Username, "role", u.Role, "device", device)
 	return &pb.LoginResponse{
-		Token:     token,
-		ExpiresAt: expires.Format(time.RFC3339),
-		Username:  u.Username,
-		Role:      u.Role,
-		DeviceId:  device,
+		Token:        token,
+		ExpiresAt:    expires.Format(time.RFC3339),
+		Username:     u.Username,
+		Role:         u.Role,
+		DeviceId:     device,
+		RefreshToken: refresh,
 	}, nil
+}
+
+// RefreshSession exchanges a refresh token for a new session and rotates the
+// refresh token itself.
+//
+// # Why the rotation is the feature
+//
+// A refresh token is SINGLE USE. Presenting one that has already been exchanged
+// means either a replay or a stolen token being used alongside the real client,
+// and the server cannot tell those apart — so it treats the ambiguity as theft
+// and revokes the whole family. §7.3 counts that as one of the four controls
+// standing in for the second factor this application does not have.
+//
+// The cost is real and worth naming: a client that loses the response to a
+// successful refresh — a dropped connection at exactly the wrong moment — will
+// retry with a token the server has already rotated, and be logged out of every
+// device. That is the correct trade only because the alternative is a stolen
+// refresh token working forever, silently.
+func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionRequest) (*pb.RefreshSessionResponse, error) {
+	device := strings.TrimSpace(req.GetDeviceId())
+	presented := req.GetRefreshToken()
+	if device == "" || presented == "" {
+		return nil, errBadCredentials
+	}
+
+	replacement := idgen.Token()
+	if err := s.repo.RotateRefresh(ctx, device, presented, replacement); err != nil {
+		if errors.Is(err, store.ErrRefreshReuse) {
+			// Every device in the family is now revoked. Logged at Warn rather
+			// than Info because this is either an attack or a client bug, and
+			// both are things an operator wants to see.
+			s.log.Warn("refresh token reuse detected; the device family was revoked",
+				"device", device)
+		}
+		// One answer for reuse, unknown device, and revoked family alike: a
+		// caller holding a token that does not work learns nothing about WHY,
+		// which is what stops the error from being an oracle for guessing.
+		return nil, errBadCredentials
+	}
+
+	sc, err := s.repo.ScopeForDevice(ctx, device)
+	if err != nil {
+		s.log.Error("resolving the device after a successful rotation", "err", err)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+
+	now := time.Now().UTC()
+	token := idgen.Token()
+	expires := now.Add(SessionTTL)
+	if err := s.repo.CreateSession(ctx, store.NewSession{
+		SessionID: idgen.New(),
+		UserID:    sc.UserID,
+		TenantID:  sc.TenantID,
+		TokenHash: secret.HashToken(token),
+		DeviceID:  device,
+		UserAgent: userAgent(ctx),
+		Now:       now.Format(time.RFC3339Nano),
+		ExpiresAt: expires.Format(time.RFC3339Nano),
+	}); err != nil {
+		s.log.Error("creating a session on refresh", "err", err)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+
+	return &pb.RefreshSessionResponse{
+		Token:        token,
+		ExpiresAt:    expires.Format(time.RFC3339),
+		RefreshToken: replacement,
+	}, nil
+}
+
+// clientStamp reads the build the caller announced, for the devices row.
+//
+// Recorded rather than enforced here — skew's interceptor already refused
+// anything below the minimum before this handler ran. Its value is the account
+// screen being able to say "this device is on an old build", which is how
+// somebody finds the tab they left open in September.
+func clientStamp(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if v := md.Get(buildver.ClientStampHeader); len(v) > 0 {
+		return v[0]
+	}
+	return ""
 }
 
 // lockout consults the durable ledger. Returns ok=false to refuse.

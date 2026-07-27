@@ -1158,6 +1158,36 @@ Business logic over repositories. Still headless.
       this policy. They disagreed once already on length alone, and following the documentation
       produced an error and then a server that would not start. The policy is now more than length,
       so the same disagreement could arrive through a new door.
+
+      ◧ 2026-07-27 (later still) — **refresh families with reuse detection are wired**, so three of
+      §7.3's four controls are now enforced rather than designed. *Still owed: sudo mode's
+      enforcement at the handlers that need it, which needs the account-management RPCs those
+      handlers would live on.*
+
+      `AuthService.RefreshSession` (additive; named that because `Refresh` is already the reader's
+      "poll my feeds now", and two operations sharing a verb in one package is how somebody calls the
+      wrong one from a retry loop). Login hands out the first token of the family — at login rather
+      than on request, because a client that has to ask for one holds a window where it has a session
+      it cannot renew, and renewal being the only way a session continues is exactly what makes reuse
+      detectable.
+
+      **A real bug, and the tests are what found it.** `RotateRefresh` revoked the family inside the
+      transaction and then returned `ErrRefreshReuse` from the same callback — and `Tx` rolls back on
+      any error, so **reuse detection detected the replay and then rolled back its own response**.
+      The family stayed live and a stolen token kept working, silently, which is the entire failure
+      mode this control exists to prevent. The revocation now commits and the error is reported after
+      it does. Pinned at both layers: the store test reads `revoked_at` out of the database, and the
+      transport test asserts the *currently valid* token stops working too.
+
+      One error for reuse, unknown device and revoked family alike — a caller holding a token that
+      does not work must not learn which half of their guess was right. The refreshed session's user
+      is read from the `devices` row rather than the request, because a caller who could name the
+      user would be choosing whose session to mint.
+
+      A failed device registration at login is **not fatal**: the session is already valid, and
+      refusing a correct login because the refresh bookkeeping did not land turns a renewal problem
+      into an authentication one. The client simply gets no refresh token, which is the pre-6.1
+      behaviour rather than a broken one.
 - [x] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
       ✅ 2026-07-26 — `internal/authz`. Static per-method map, **fails closed on unmapped**, which
