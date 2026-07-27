@@ -670,6 +670,7 @@ CREATE TABLE topics (                             -- §18.2 — clusters, not on
   member_count INTEGER NOT NULL DEFAULT 0,
   trend TEXT NOT NULL DEFAULT 'steady',           -- rising | steady | fading | dormant
   suppressed INTEGER NOT NULL DEFAULT 0,          -- "not an interest" = negative on the cluster
+  steer REAL NOT NULL DEFAULT 1.0,                -- 0027 — the graded half: 1.5 more, 0.5 less
   last_engaged_at INTEGER, updated_at INTEGER NOT NULL);
 CREATE TABLE item_topics (user_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
   topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
@@ -2947,6 +2948,24 @@ mute this source on the homepage · switch this source to highlights. Plus a tun
 weight with a live preview of the reordering before saving, and — the honest one — **a "what did you
 hide from me?" view** listing what the ranker suppressed and why, because a filter you cannot audit is
 one you cannot trust.
+
+> **Half of this is built, 2026-07-27** — `ReaderService.GetInterestProfile` / `SteerInterest`,
+> Settings → My Feed, migration 0027. The FEEDBACK surfaces are shipped, as a four-position dial
+> (*More · Normal · Less · Never*) on every topic and every named thing, plus the diagnostic the
+> section did not ask for and turned out to need most: **a count per scoring factor across the
+> current picks**. Per-row feedback answers "why is this here"; only the histogram answers "what is
+> deciding my page", which is the question a misread actually raises. The case that forced it: an
+> entity called *Pro Max*, reading weight 37 out of two mentions, quietly supplying the content match
+> for a third of the page.
+>
+> Two graded positions were added to what this section specifies. `suppressed` alone is the right
+> control for a misread and the wrong one for everything else — most corrections are "less than you
+> think", and a reader holding only *never* uses it on a subject they do read.
+>
+> Still outstanding: the **tuning panel** over `rank.Weights` (the weights are already exported and
+> passed in for exactly this), and the **"what did you hide from me?"** view, which is about the items
+> the gate rejected rather than the judgements behind the ones it kept — a different list, from
+> `recommend.Rejection` and the highlights cutoff.
 
 ## 19. Slideshow mode
 
@@ -6706,8 +6725,9 @@ resolution to care more about UI; it is this section, and the order below.
 - **F2 · The event pump.** `WatchEvents` is on the wire, rate-limited, concurrency-capped, and the
   client implements the full pump with coalescing — and **nothing calls it**. Live updates do not
   arrive. This is a call site.
-- **F4a · Tuning and the suppressed view.** My Feed ships with its reasons; what it lacks is the
-  half of §18.9 that lets a reader *disagree* with a judgement rather than merely read it.
+- **F4a · Tuning and the suppressed view.** *Partly built 2026-07-27* — disagreeing with a judgement
+  is shipped (Settings → My Feed, §18.9). What remains is the weight-tuning panel and the list of what
+  the ranker rejected.
 
 The first four are wiring. Only the fifth is a product decision.
 
@@ -6804,7 +6824,7 @@ The F-list re-specifies nothing. Every item is an existing section that has no s
 | F1 · import UI | §15.7 |
 | F2 · event pump | §12.4, §20.3, §20.19 |
 | F3 · rules UI | §13, A19 |
-| F4a · tuning, suppressed view | §18.4, §18.9 |
+| F4a · tuning, suppressed view (steering ✅ 2026-07-27) | §18.4, §18.9 |
 | F5 · topics | §18.2, §18.3 |
 | F6 · recommendations | §18.7 |
 | F7 · preservation surfaces | §10.6 |

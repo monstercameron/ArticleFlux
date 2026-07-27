@@ -398,7 +398,67 @@ The full reasoning behind any entry lives in the commit message; this file is th
   an `ANY(user_id)` skip-scan of an older index and ran the query in 2.5s, *worse than before the
   denormalisation existed*.
 
+### Fixed
+
+- **Steering a topic worked once and then answered `not found`** (§18.2). `ReplaceTopics` deletes and
+  reinserts every cluster with a fresh id on each derivation — and a steer *schedules* one. So the My
+  Feed settings screen, which addressed topics by row id, could correct a topic exactly once; the
+  rebuild its own press kicked off retired the id it was still holding, and the next press failed. The
+  reader saw "Could not read the profile: not found" seconds after a correction that had actually
+  landed. Steering now addresses a topic by the same fingerprint `ReplaceTopics` already carries
+  corrections across by (`store.TopicKey`), resolved at write time — so the id used is the one that
+  exists now rather than the one the screen was rendered from. `SteerInterestRequest.topic_id` is
+  removed and reserved.
+- **A rejected press blanked the whole profile.** A failed WRITE was routed into the same state as a
+  failed LOAD, which replaces the screen — so one refused chip took the entire picture with it and
+  left a line of error text. Write failures are now a note over a screen that is still showing, and
+  the screen refetches itself so what it shows is true again.
+- **"103 of 102".** The factor histogram counted over `HomeRanking`'s raw rows while the denominator
+  came from `CountRanked`, which applies the list's filters — a numerator from one set over a
+  denominator from another, on a screen whose whole claim is that its numbers can be checked. Both
+  now come from the same query, and the response carries `factor_base` so a page past the per-page
+  ceiling still states a true fraction.
+- **"Feeds competing" reported the size of its own display cap** — 12 on an instance with 45.
+
 ### Added
+
+- **My Feed can be argued with** (`ReaderService.GetInterestProfile` · `SteerInterest`, §18.2, §18.9,
+  migration 0027). Every ranked row has always said why it was chosen; nothing said what the model
+  believes overall, and nothing could be corrected. The gap was not theoretical — on a real database
+  the strongest "thing you follow" was **Pro Max**, reading weight 37 out of *two* mentions, which is
+  one handset review read closely and is not a subject anybody follows. Nothing about the ranking was
+  broken. There was simply nowhere to say so.
+
+  A settings tab now shows the whole picture — the topics, the named things, the feeds competing, and
+  **the mix of judgements behind the current page** ("37 of 99 picks are here because of something you
+  follow") — and puts a four-position dial on each row: *More · Normal · Less · Never*. `suppressed`
+  was the only correction the interest layer had, and it is the right control for a misread and the
+  wrong one for everything else; most corrections are "this matters less to me than you think", and
+  the reader who only has *never* uses it on a subject they do read. `topics.steer` and
+  `entity_affinity.steer` are multipliers preserved across a rebuild exactly the way `suppressed` and
+  a topic rename are — a correction that expired at the next poll would be the same as not having the
+  control. The dial is a WORD on the wire and a multiplier in the database: what "more" is worth is a
+  scoring judgement, and it stays revisable without a client deploy.
+
+  Every row leads with the evidence and only then offers the control — "named in 2 headlines you
+  read", "reading weight 37.0", the terms a cluster was named from — because a reader cannot judge a
+  judgement whose basis they cannot see, and *weight 37 from 2 mentions* is only legible as a misread
+  when both numbers sit together. A struck-out row **stays on the page**, marked, which is why
+  `store.AllEntities` exists beside `EntityAffinity`: the ranker must not see what the reader struck
+  out, and the screen that struck it out must, or the correction is a trapdoor. `Never` is scoped
+  honestly in the copy — it stops the model using a judgement, and unsubscribes nothing.
+
+- **A Podcast settings tab** (§19, §10.7). Read-to-me's four requirements used to be a panel *inside
+  the slideshow*: press read-to-me on a slide, get a dialog listing four preference switches over the
+  top of the fullscreen thing you had just started watching. That is the one context where a settings
+  form is most in the way and least findable afterwards — and a reader who wanted the broadcast
+  without starting a slideshow had nowhere to go at all. The checklist now lives in Settings beside
+  the switches it is about, with each condition's live state, the one nobody here can fix (a key on
+  the server) stated as a fact rather than offered as a control, and a Start that opens the show. The
+  slideshow keeps its line about why it is silent; the line is now a way *in* rather than a place it
+  happens. The server-key row says "checking" until the config lands, because its absent state reads
+  "not on this server" and asserting that before asking told readers with a perfectly good key that
+  they had none.
 
 - **Categories reach the reader** (§27) — a surface that shows which labels an article was given and
   on what evidence, a filter, and a per-category preference. Automatic classification quietly

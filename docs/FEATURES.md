@@ -1856,6 +1856,64 @@ request and takes its slice of **one** answer. A reader can see the list of what
 why — a feature that sends your articles somewhere and cannot produce that list is a feature that has
 not finished.
 
+## 81. The Podcast tab ✅
+
+| | |
+|---|---|
+| **Status** | ✅ |
+| **Spec** | §19, §10.7 · `client/view/podcastsettings.go` |
+
+What read-to-me depends on — the Smart+ voice, the broadcast rewrite, keep-playing, and a key on the
+server — with each condition's live state and a switch for the three that are the reader's.
+
+It was a dialog inside the slideshow, which meant four preference controls appeared over a fullscreen
+mode somebody had entered to watch something, and vanished with it. A reader who wanted the broadcast
+without starting a slideshow had nowhere to go. The requirements now live in Settings; the slideshow's
+line about why it is silent leads here.
+
+The requirement nobody here can fix is stated rather than offered — a screen where the server's
+configuration looks like a switch is one that gets pressed, repeatedly, by somebody who cannot change
+what it names — and it says "checking" until the config lands, because claiming a key is absent
+before asking is the one wrong answer that names somebody else's deployment as the problem.
+
+## 80. Steering My Feed ✅
+
+| | |
+|---|---|
+| **Status** | ✅ |
+| **Spec** | §18.2, §18.9 · `ReaderService.GetInterestProfile` / `SteerInterest` · migration 0027 |
+
+The ranked page has always explained itself per row. This is the screen that shows the **model**, and
+the reason it had to exist is one line off a real database: the strongest "thing you follow" was
+**Pro Max** — reading weight 37, from *two* mentions. One handset review read closely. Nothing about
+the ranking was broken and there was nowhere to say so.
+
+Settings → My Feed shows the topics, the named things, the feeds competing, and **what decided the
+page**: a count per scoring factor across the current picks, so "37 of 99 picks are here because of
+something you follow" is checkable rather than suspected. Every row leads with the evidence — the
+mention count *beside* the weight, the terms a cluster was named from — because *weight 37 from 2
+mentions* is only legible as a misread when both numbers sit together.
+
+Each row carries a four-position dial: **More · Normal · Less · Never**. Until now the only
+correction was `suppressed`, which is right for a misread and wrong for everything else — most
+corrections are "this matters less to me than you think", and a reader with only *never* uses it on a
+subject they do read. The three graded positions are multipliers on that judgement's term; *never*
+is the one that changes eligibility rather than score.
+
+Three properties hold it up. **A correction survives the rebuild** — `steer` is preserved by
+fingerprint and by name, like a rename and like `suppressed`, because one that expired at the next
+poll would be the same as not having the control. **A struck-out row stays on screen**, marked: the
+ranker must not see it, the screen that struck it out must, or the correction is a trapdoor.
+And **never is scoped honestly** — it stops the model *using* a judgement, and unsubscribes nothing.
+
+The corrections address a topic by its top-terms fingerprint, not by its row id. Every derivation
+regenerates topic ids — including the one each steer schedules — so an id-addressed screen could
+correct a topic once and answered `not found` for every press afterwards.
+
+Renaming a topic is not here and is worth doing: `store.RenameTopic` has existed since §18.2 with no
+caller, and a cluster called "Max · Pro · 90s" is one a reader can currently only argue with by
+turning it down.
+
 ---
 
 # Part XII — The rules every screen obeys
@@ -1940,6 +1998,9 @@ Sixteen real defects, thirteen fixed. Listed because the *distribution* is the u
 - **No live updates.** The event ring buffers exist; nothing streams them to a browser, so a second tab does not learn about the first tab's marks until it refetches.
 - **Notes and bookmark-archive search** are indexed and unreachable.
 - **Recovery screens** — codes, admin-minted resets, sudo mode — exist at the server and have no UI.
+- **Renaming a topic.** `store.RenameTopic` has had no caller since §18.2. The My Feed settings tab
+  (§80) reaches every other correction; a rename needs a field per row, and that surface is a
+  delegated click path with no per-row state. It wants the tag panel's single-dialog shape.
 
 ## Test and process debt
 

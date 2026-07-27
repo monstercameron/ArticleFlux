@@ -6072,3 +6072,215 @@ byte-identical — and any new test added to this repo should be.
   which now refuses SVG on the bytes. This is not the same defect: that endpoint already carries the
   CSP-sandbox hardening that makes permissiveness safe there. Flagged for awareness only — filing it
   as a bug would be wrong.
+
+## The naming pass — Smart vs Smart+, and the IA it exposed (2026-07-27)
+
+A review of every user-facing title in the app. The source is `client/i18n/en_*.go`, which is the
+complete set: guard 5 holds `client/view` at zero hardcoded copy, so the catalog *is* the interface's
+vocabulary. Almost none of these are sentence-level problems — the copy is careful and most of the
+rationale comments hold up. What the review found is **structural**: one feature split across three
+tabs, twelve flat settings peers, and a handful of words that name two different things.
+
+### The rule this section is built on
+
+> **Smart** is what ArticleFlux works out **on this machine**. It is deterministic, free, and nothing
+> leaves. **Smart+** is what a **model** is asked. Text leaves the machine and it costs money on the
+> reader's own account.
+>
+> The `+` is therefore not a quality claim and not a tier badge — it is the **egress and billing
+> boundary**, and it is the only thing in the interface that marks it. Every capability that exists
+> at both levels is named with **one noun and two prefixes**, so the pair is visible: *Smart ranking*
+> → *Smart+ ranking*, not "ranking" → "Rank My Feed".
+
+Four capabilities are genuinely two-tier today, and the code already draws the line the names do not:
+
+| Capability | Smart — on this machine | Smart+ — a model is asked |
+|---|---|---|
+| **ranking** | `internal/rank` orders My Feed | the model reorders what `internal/rank` already chose |
+| **categories** | `internal/classify/lexicon`, 26 term-matched sections | asked only about what the lexicon could not confidently place |
+| **colours** | the room is tinted toward the top interest's own hue | a palette is written for what you read |
+| **follow** | discovery rungs 1–2 — the page declares it, or a common address answers | the model reads the page's structure and writes a rule |
+
+Smart+-only, with no local tier: **narration**, **summary**, **voice**, **language**, and theme
+composition (*Make me a theme*).
+
+**Two costs to plan around before any of this lands.** Renaming invalidates every cached translation
+— `smart.langHint` promises a locale is free "until the English changes" — so a drip of renames is a
+drip of re-translation bills, one per language, and these should land as **one batch**. And several
+e2e matchers are written against English literals (see the head comment in `en_login.go`); the
+catalog change and the spec change are the same commit or the suite goes red.
+
+### N1–N2 · The rule, and the one string that already contradicts it
+
+- [ ] **N1 · Write the Smart / Smart+ rule into the spec, before any rename.** It belongs in `plan.md`
+      as a decision and in `docs/FEATURES.md` as the thing its status column means — today that column
+      says "✅ Smart+" for some features and "✅" for others with no statement of what separates them.
+      Without this the renames below are taste, and taste is not reviewable.
+      *Done when: `plan.md` carries the rule as a numbered decision; `FEATURES.md` distinguishes the
+      two tiers in its status column for all four two-tier capabilities; and a test in `client/i18n`
+      asserts the set of tier-prefixed labels in the catalog matches a canonical list, so a fifth
+      capability cannot be added under a fresh coinage.*
+
+- [ ] **N2 · `srv.smartUnavailable` says "Smart features" for what is a Smart+ outage.** The string is
+      *"Smart features are paused while the provider recovers"* and it fires from the LLM circuit
+      breaker. Under N1's rule it is a false statement to the reader: the deterministic half — the
+      ranking, the lexicon, the hue tint, the first two discovery rungs — is unaffected by an OpenAI
+      outage and keeps working, and this message tells them everything derived has stopped.
+      *Done when: the string names Smart+; and a catalog test asserts that no user-facing value
+      contains "Smart" not followed by "+", except the tier explainer on the Smart+ tab itself. Break
+      the property and watch it go red before keeping it.*
+
+### N3–N6 · Naming the two tiers
+
+- [ ] **N3 · One noun, two prefixes, for all four two-tier capabilities.** Today each pair is named by
+      two unrelated phrasings, which is why nobody can see they are pairs: the paid ranking switch is
+      *"Rank My Feed"*, the paid palette is *"Let Smart+ choose the colours"*, and the free halves are
+      described in prose rather than named at all (*"the free classifier"*, *"worked out on this
+      machine"*). Rename to **Smart/Smart+ ranking · categories · colours · follow**. The in-context
+      control may keep a verb where the grammar needs one — *Summarise* on a transport bar is right —
+      provided the noun in the verb matches the register.
+      *Done when: the eight labels exist and agree; `classify.catGroupHint`, `appearance.attuneByHue`,
+      `appearance.attuneSmartLabel`, `smart.feedPlusLabel` and the add-feed ladder's rung labels all
+      use them; and the myFeed factor `factor.smartplus` reads as the same capability as the switch
+      that enables it.*
+
+- [ ] **N4 · Do not name the browser's voice "Smart voice".** It is the trap this rule sets, and the
+      pairing above makes it look obligatory. It is not: the free tier under *Smart+ voice* is the
+      operating system's own synthesiser, which ArticleFlux does not derive, does not choose and
+      cannot improve. Naming it Smart would claim credit for the OS and — worse — would turn the `+`
+      into a quality ladder ("better voice") at exactly the control where it has to keep meaning
+      *"this one sends your article to OpenAI"*. Keep *"Read articles aloud"* and *"your browser's own
+      synthesiser"*.
+      *Done when: recorded in `plan.md` beside N1's decision, so it is not re-derived as an
+      inconsistency by the next person doing a naming sweep.*
+
+- [ ] **N5 · The Smart+ tab is a register of one paid feature out of five.** The group heading is
+      *"What Smart+ is allowed to do"* and it holds a single switch — ranking. Smart+ voice is on
+      Listening, Smart+ follow is a lamp inside the add-a-feed dialog, Smart+ colours is on
+      Appearance, Smart+ categories is on Classification. Keeping each switch **in context is
+      correct** and should not change; the heading is what is wrong, because it promises an inventory.
+      Make the tab the register: every paid capability listed with its current state and a jump to the
+      control, so "what is this key going to be spent on" has one answer in one place.
+      *Done when: the Smart+ tab enumerates every capability that spends the key, the list is derived
+      from the same source the switches read rather than hand-maintained, and a test fails when a new
+      Smart+ capability is added without appearing on it.*
+
+- [ ] **N6 · One capability, four names: Podcast / Broadcast / Join the stories up / Read to me.** The
+      settings tab is *Podcast*, the toast says *"Broadcast mode on"*, the switch says *"Join the
+      stories up"*, and the slideshow calls it *"Read to me"*. Under N1 the capability is **Smart+
+      narration**; *Read to me* survives as the reader-facing outcome on the slideshow, because that
+      names what happens rather than how. *Podcast* and *Broadcast* both go — the first promises a
+      show, and neither appears on any control.
+      *Done when: two names remain, in `en_panes.go`, `en_settings.go`, `en_podcast.go`, `en_slides.go`
+      and `reader.podcastOn`; and `docs/FEATURES.md` §1866's requirement list uses the same two.*
+
+### N7 · The settings shell — twelve flat peers
+
+- [ ] **N7 · Group the settings strip: 12 tabs → 10, in three labelled groups.** Every tab in
+      `settings.go:61-92` carries a paragraph justifying its **position** in a linear list. That is the
+      tell — the order is carrying meaning the reader never sees, and it is carrying it across three
+      unrelated kinds of decision. Proposed:
+      **Your reader** — Reading · Appearance · My Feed · Listening · **Slideshow**;
+      **Your library** — **Subscriptions** (was Feeds) · **Categories** (was Classification);
+      **This server** — Smart+ · Account · **Server**.
+      Three moves make the count work: the **Podcast** tab becomes **Slideshow**, which is where the
+      feature actually lives and where its dependency checklist belongs; **Reading** loses its
+      Slideshow group to it, and **Listening** takes the narration controls; **Activity** and **Speed**
+      fold into **Server** as sections, being one-panel instrument readouts that have no business
+      sitting as peers of Appearance. *Feeds → Subscriptions* is forced separately by N8.
+      *Done when: the strip renders three headed groups; no group exceeds five; the slideshow's pace,
+      read-to-me switch and requirement checklist are on one tab; and the position-justifying comments
+      in `settings.go` are deleted, because the grouping now says what they said.*
+
+- [ ] **N7a · Interface language moves to Appearance.** It sits on the Smart+ tab today, and the
+      argument for that is real — the picker spends the key, and a free-looking preference three tabs
+      from the thing that pays for it is a surprise bill. But it loses to discoverability: nobody hunts
+      for their language under an AI tab. What actually prevents the surprise is the sentence *"a
+      language you have used before is free"*, not the proximity, and that sentence travels.
+      *Done when: the picker is under Appearance with `smart.langHint` and `langReloadNote` intact, and
+      the Smart+ tab lists **Smart+ language** in N5's register with a jump to it.*
+
+### N8–N11 · Words that name two things, and things with two words
+
+- [ ] **N8 · "Categories" names both the reader's feed folders and the 26 article subjects.** Two
+      unrelated objects, one word, both in the rail's line of sight. The codebase has already picked a
+      side — `p.folders`, `feedsByFolder`, `unfiledID` — and so has the copy: *"Nothing **filed** here
+      yet"*, *"**Unfiled**"*. Filing implies folders. Rename the rail band and the feed-settings field
+      to **Folders**, leave **Categories** to the article subjects, and rename the settings tab
+      *Classification* → *Categories* in the same commit (it is the only mechanism-word on a strip of
+      reader-facing nouns). Folders is also the more standard reader word — Google Reader and
+      NetNewsWire both use it.
+      *Done when: `rail.bandCategories`, `addFeed.categoryLabel`, `feedSettings.categoryLabel` and the
+      category-editor dialog say Folders; `settings.tab.classify` says Categories; and no user-facing
+      string uses "category" for both senses.*
+
+- [ ] **N8a · "Topics" is the third subject-noun, and the prose already calls it something else.** My
+      Feed's learned clusters are labelled *Topics*, next to *Categories* (fixed subjects) — while the
+      surrounding prose in the same feature says **interests**: *"once you have read enough for
+      interests to form"*, *"your top interest's colour"*, *"a room built for your interests"*. The
+      label is the odd one out, and *Interests* is also the more honest word for a guess about a person
+      that the screen exists to let them argue with.
+      *Done when: `myFeed.topicGroup`, `topicHint`, `topicEmpty`, `topicMembers` and
+      `factor.topic` say Interests, and `appearance.attune*` stops being the only place that already
+      did.*
+
+- [ ] **N9 · My Feed is called three things, one of which does not exist.** `feedSettings.megafeedHint`
+      says an item may *"appear on the **homepage**"* — there is no homepage anywhere in this app — and
+      `megafeedLabel` says *"In the **ranked feed**"*. Meanwhile `myFeed.feedPerFeed` sends the reader
+      to this exact control by yet another name. It is the flagship stream and it has one name.
+      *Done when: both strings say My Feed, and a catalog test asserts "homepage" appears nowhere.*
+
+- [ ] **N10 · "rail" leaked out of the codebase and into shipped copy.** `tagSettings.nameLabel` is
+      *"Name in the rail"* and `feedsEmpty` says a tag *"will disappear from the rail"*. Every other
+      hint that names the same column says **sidebar** — `feedSettings.categoryHint`,
+      `addFeed.categoryHint`, `list.emptyNoArticlesHint`. `rail` is the identifier, not the word.
+      *Done when: no user-facing value contains "rail", asserted by a test.*
+
+- [ ] **N11 · The "All feeds" stream names its source; every sibling names its contents.** It sits in
+      the STREAMS band directly above a band called FEEDS, and it is a list of **articles** — Unread,
+      Read later, Liked and Notes all say what is in them. `settings.articlesAll` already calls this
+      same concept *Everything*. Rename to **All articles**.
+      *Done when: `stream.all` reads All articles, and the palette's stream entry agrees.*
+
+- [ ] **N11a · Three smaller overloads, worth one commit together.** *"Full width"* is
+      `article.viewPageFull` **and** `article.focusOn` ("Read full width") in adjacent toolbars —
+      rename the proxy one to **Expand page**. *"View page"* opens modes labelled *Page* / *Live view*,
+      which makes the first a tautology inside its own control — the honest distinction is the one the
+      hint already draws (*"you can't select or search it"*), so **Text** / **Live view**. And
+      `tagSettings.glyphGroup` is *"Mark"*, in an app where Mark already means *set read state* four
+      times over — **Symbol**.
+      *Done when: the three renames land and `e2e/dialogs.spec.mjs` and `e2e/reader.spec.mjs` matchers
+      move with them.*
+
+### N12–N13 · Flow
+
+- [ ] **N12 · The palette breaks its own ranking rule, and cannot reach the three commonest
+      destinations.** `en_palette.go`'s head comment warns that the palette is a name lookup ranked by
+      prefix, so labels sharing a first word make it useless — and two commands then begin with the
+      same word: *"Toggle unread only"* and *"Toggle feeds with unread"*. Drop the shared verb. Bigger:
+      the palette has **no route to Settings, to Add a feed, or to the keyboard sheet**, which are the
+      three destinations a reader most often wants and the fast lane exists to serve. The placeholder
+      also under-sells the index — it offers feeds and commands while `kindTag` and `kindStream` are
+      already ranked in it.
+      *Done when: no two commands share a leading word; Settings, Add a feed and Keyboard shortcuts are
+      reachable from it; `cmd.toggle-motion` names both directions the way `cmd.theme` already does;
+      the placeholder names tags and streams; and `TestPaletteNeverOffersTheDislikedStream` still
+      passes (see Q4).*
+
+- [ ] **N13 · The phone tab bar mixes pane-switchers with a stream, and omits the flagship.** Read /
+      Feeds / **Notes** / Settings — three of the four switch panes and the third is a *stream* promoted
+      to top level, so the set is two kinds wearing one shape. The cost is concrete: **My Feed is not
+      reachable in one tap on a phone**, while Notes — which has a row in the rail's Streams band with
+      its siblings — is. Swap them.
+      *Done when: the tab bar is Read · Feeds · My Feed · Settings, `tabs.notes` is retired, and the
+      phone reaches the ranked stream in one tap.*
+
+### Deliberately not filed from this review
+
+| Not filed | Why |
+|---|---|
+| Renaming the **STREAMS** band | It is the fold handle, it groups six rows correctly, and every alternative (*Views*, *Reading*, *Places*) is either a mechanism word or collides with a settings tab. Churn without a reader-visible gain. |
+| Rewriting the **empty-state hints** | They are the strongest copy in the app — each names the situation and then what to do about it. N8/N10/N11 touch the words inside them; nothing else should. |
+| Regrouping the **article action row** | Seven controls spanning verdict / queue / where-to-read / audio is a real scan cost, but the fix is spacing and separators, not names. It belongs in a visual pass, not this one. |
+| **Read later** vs *saved for later* vs *Save this article for later* | A verb/noun flip across three surfaces, and genuinely minor. Fold it into whichever commit touches `en_panes.go` next rather than spending a translation invalidation on it alone. |
+| The **Account** tab existing to say a feature does not exist | Correct once N7 groups it under *This server*, where a placeholder reads as a placeholder. Deleting it would only have to be undone when §7.3a lands. |
