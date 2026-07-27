@@ -56,6 +56,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The live-update bus** (`internal/events`, TODO 6.5) — **per-tenant** ring buffers, which is the
+  entire design: one shared buffer means a tenant importing 400 feeds evicts everyone else's events
+  and their clients are told to resynchronise because of an import in an account they have nothing to
+  do with. The test is exactly that, and it passes. A replay whose sequence has aged out returns
+  `RESYNC_REQUIRED` rather than "what's left" — a client sent a partial replay believes it is up to
+  date while having missed something, and nothing afterwards corrects it. Delivery is best-effort:
+  events are a latency optimisation over polling and every screen can rebuild from a query, so a slow
+  client is dropped rather than allowed to stall a write. **A concurrency test found a process-level
+  crash**: sending outside the tenant lock races `Close`, and the send lands on a closed channel. The
+  sends are non-blocking, so holding the lock across them costs nothing — the reasoning that argued
+  for releasing it first was simply wrong.
+
 - **The interest layer derives** (`internal/store/interest.go` + `internal/derive`, TODO 5.9 & 6.9) —
   the job that turns the raw engagement log into feed, term and domain affinity, topics, and the
   materialised homepage. **D18's two stages run in order and the code says so**: recall first (passive
