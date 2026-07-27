@@ -8,7 +8,6 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
-	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
 )
 
@@ -55,7 +54,7 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 	if strings.TrimSpace(shape) == "" {
 		return nil, ErrNoRule
 	}
-	model, _ := a.settings.SystemValue(ctx, store.KeySmartModel)
+	model := a.model(ctx)
 
 	input := "Page URL: " + indexURL + "\nAPI URL: " + dataURL +
 		"\nLongest array of objects: " + hint + "\n\nResponse shape:\n" + shape

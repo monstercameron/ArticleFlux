@@ -94,6 +94,20 @@ func NewTranslator(client llmClient, settings *store.SettingsRepo) *Translator {
 	return &Translator{llm: client, settings: settings}
 }
 
+// model is the instance's Smart+ model, or the built-in default. Guarded for
+// the same reason as SiteAnalyzer.model: every other type in this package
+// checks the repo before dereferencing it, and these two did not.
+func (t *Translator) model(ctx context.Context) string {
+	if t.settings == nil {
+		return llm.DefaultModel
+	}
+	m, err := t.settings.SystemValue(ctx, store.KeySmartModel)
+	if err != nil || strings.TrimSpace(m) == "" {
+		return llm.DefaultModel
+	}
+	return strings.TrimSpace(m)
+}
+
 // cached is what is stored per locale, so a cache entry can be invalidated by
 // the thing that should invalidate it: the English changing.
 type cached struct {
@@ -147,7 +161,7 @@ func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]
 		return nil, llm.ErrNotConfigured
 	}
 
-	model, _ := t.settings.SystemValue(ctx, store.KeySmartModel)
+	model := t.model(ctx)
 
 	// Sorted, so batches are stable across runs and a re-translation of the
 	// same catalog produces the same grouping — which is what makes a cached

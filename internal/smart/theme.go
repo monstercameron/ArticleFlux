@@ -46,12 +46,17 @@ import (
 
 // Palettes is the theme generator.
 type Palettes struct {
-	llm      *llm.Client
+	// The seam from llmclient.go rather than a concrete *llm.Client, so the
+	// composition path is testable without a key and without a bill. It matters
+	// more here than for most features in this package: what a theming request
+	// SENDS is the whole of §20.16.3's privacy claim, and a claim nothing asserts
+	// is a comment.
+	llm      llmClient
 	settings *store.SettingsRepo
 }
 
 // NewPalettes wires the generator.
-func NewPalettes(c *llm.Client, s *store.SettingsRepo) *Palettes {
+func NewPalettes(c llmClient, s *store.SettingsRepo) *Palettes {
 	return &Palettes{llm: c, settings: s}
 }
 

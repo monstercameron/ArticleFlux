@@ -126,7 +126,10 @@ func TestSegmentSendsThePodcastInstructionsAndAssembledInput(t *testing.T) {
 		t.Fatalf("Segment: %v", err)
 	}
 	req := fake.callN(0)
-	if req.Instructions != podcastInstructions {
+	// The instructions are built per manner now, and an unset Vibe resolves to
+	// the default — so this asserts against the same call the code makes rather
+	// than against a constant that no longer exists.
+	if req.Instructions != podcastInstructionsFor(seg.Vibe) {
 		t.Error("the podcast instructions were not sent")
 	}
 	if req.Input != podcastInput(seg, "the body") {

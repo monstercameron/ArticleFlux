@@ -104,6 +104,23 @@ func (a *SiteAnalyzer) Configured(ctx context.Context) bool {
 	return a != nil && a.llm != nil && a.llm.Configured(ctx)
 }
 
+// model is the instance's Smart+ model, or the built-in default.
+//
+// The nil check is not decoration. Every sibling here (Digest, Podcast,
+// Interest, Classify, Theme) guards its settings repo the same way, and this
+// type used to be the exception: it dereferenced the repo straight, which is
+// safe only for as long as every caller passes a real one.
+func (a *SiteAnalyzer) model(ctx context.Context) string {
+	if a.settings == nil {
+		return llm.DefaultModel
+	}
+	m, err := a.settings.SystemValue(ctx, store.KeySmartModel)
+	if err != nil || strings.TrimSpace(m) == "" {
+		return llm.DefaultModel
+	}
+	return strings.TrimSpace(m)
+}
+
 // Proposal is a rule that has already been run against the page it was written
 // for, plus the evidence.
 type Proposal struct {
@@ -130,7 +147,7 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 	if strings.TrimSpace(outline) == "" {
 		return nil, ErrNoRule
 	}
-	model, _ := a.settings.SystemValue(ctx, store.KeySmartModel)
+	model := a.model(ctx)
 
 	input := "Index URL: " + indexURL + "\n\nPage outline:\n" + outline
 	var lastProblem string

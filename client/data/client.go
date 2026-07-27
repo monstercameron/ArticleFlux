@@ -696,6 +696,22 @@ func (c *Client) GetItem(parent context.Context, id string) (*pb.Item, error) {
 	return res.GetItem(), nil
 }
 
+// ItemRevisions fetches what an article used to say (TODO F34).
+//
+// Not prefetched with the article and not cached: it is a click on the "edited"
+// badge, which most articles never show, and each revision is a full body. A
+// reader who opens the history twice pays for it twice, which is cheaper than
+// every reader carrying it once.
+func (c *Client) ItemRevisions(parent context.Context, id string) ([]*pb.ItemRevision, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.GetItemRevisions(ctx, &pb.GetItemRevisionsRequest{ItemId: id})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetRevisions(), nil
+}
+
 // ScrollLiveView scrolls a §10.1d live view, reporting whether it is still
 // running.
 //
