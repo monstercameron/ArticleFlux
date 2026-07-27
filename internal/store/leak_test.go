@@ -140,6 +140,23 @@ var unscopedByDesign = map[string]string{
 	"DueMailboxes":      "the IMAP poller's queue, across every tenant, like DueSources",
 	"RecordMailboxPoll": "poll bookkeeping keyed by the mailbox id the worker just claimed; returns nothing",
 	"CanStoreSecrets":   "reports whether an encryption key was configured; touches no rows at all",
+
+	// Authentication, the persistent half (6.1). Every one of these runs BEFORE
+	// identity exists, or on behalf of someone who cannot log in — which is the
+	// same category as ScopeForSession and UserForLogin, and the reason those
+	// are exempt too. Note what is NOT here: ReplaceRecoveryCodes and
+	// RecoveryCodesRemaining are things a logged-in user does to their own
+	// account, and both take a Scope.
+	"RecordLoginAttempt": "the login ledger, written before identity is established and most valuable for accounts that do not exist",
+	"FailureCounts":      "reads that ledger to decide a lockout, keyed by the username and address being attempted",
+	"LastFailureAt":      "same ledger, same key",
+	"PurgeLoginAttempts": "housekeeping over the ledger by age alone, like PurgeExpiredSessions",
+	"ConsumeRecoveryCode": "a recovery code is presented by somebody who CANNOT log in; " +
+		"requiring a Scope would defeat its only purpose. The code is the credential, " +
+		"and it is bound to the user id passed alongside it.",
+	"CreateResetToken":  "minted for an account by an admin or the CLI; the authorisation is checked at the service, and the token names the user it resets",
+	"ConsumeResetToken": "the presented token is the authorisation, exactly like RotateRefresh",
+	"PurgeResetTokens":  "housekeeping over spent and expired tokens by age alone",
 }
 
 // twoTenants builds the fixture: tenant A with its own rows, tenant B with rows

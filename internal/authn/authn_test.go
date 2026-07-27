@@ -37,22 +37,39 @@ func TestTheLockoutCurve(t *testing.T) {
 	}
 }
 
-// The cost to an attacker, stated as the thing that actually matters: how many
-// guesses an hour survive the curve.
+// The cost to an attacker, which is the number this curve is actually chosen
+// for — the shape of the doubling matters less than what it buys.
+//
+// 14 in the first hour (3 free, then 8 costing 21 minutes between them, then
+// the capped rate), and 4 an hour forever after. Against a password with any
+// entropy at all that is not an attack; against "password1" nothing here helps,
+// which is what the breached-password check is for and why §7.3 lists it
+// separately.
 func TestTheCurveCostsAnAttackerFourGuessesAnHour(t *testing.T) {
 	l := DefaultLockout
+
 	var elapsed time.Duration
 	guesses := 0
 	for elapsed < time.Hour {
 		guesses++
 		elapsed += l.Delay(guesses)
 	}
-	if guesses > 12 {
-		t.Errorf("an attacker gets %d guesses in the first hour; the curve is too soft", guesses)
+	if guesses != 14 {
+		t.Errorf("an attacker gets %d guesses in the first hour, not the 14 this "+
+			"curve was chosen for — the curve changed and nobody said so", guesses)
 	}
-	// And the steady state, once capped: four an hour.
+	// The steady state is the one that matters over a night of guessing.
 	if perHour := int(time.Hour / l.Max); perHour != 4 {
 		t.Errorf("the capped rate is %d guesses an hour, want 4", perHour)
+	}
+	// A day of uninterrupted guessing, which is the realistic budget.
+	elapsed, guesses = 0, 0
+	for elapsed < 24*time.Hour {
+		guesses++
+		elapsed += l.Delay(guesses)
+	}
+	if guesses > 110 {
+		t.Errorf("%d guesses in a day; the cap is too generous", guesses)
 	}
 }
 

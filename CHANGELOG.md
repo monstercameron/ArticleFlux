@@ -78,6 +78,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Lockout, recovery codes, reset tokens and sudo policy** (`internal/authn` + `store` ledger, TODO
+  6.1 in part). The previous limiter lived in memory, so a restart cleared it — fine for a limiter,
+  whose job is to blunt a burst, and exactly wrong for a lockout, whose job is to survive one. The
+  count now derives from `login_attempts` and is measured **since the account's last successful
+  login** rather than over a window, so typing your password right actually clears it. The curve
+  doubles from 5s to a 15-minute ceiling: 14 guesses in the first hour, 4 an hour thereafter. The
+  cap is deliberate — an uncapped lockout is a denial of service against the account owner that any
+  stranger can trigger. Recovery codes and reset tokens are single-use, enforced by the UPDATE's own
+  WHERE clause rather than a read-then-write, because that race is a full account takeover; unknown,
+  spent and expired tokens all return one error, so a guess cannot be confirmed. Codes are Crockford
+  base32 with no I, L, O or U, since they get written on paper and typed back by someone already
+  locked out.
+
 - **Newsletter mailbox storage** (`store.MailboxRepo`, TODO 5.7, A20): IMAP accounts with their
   passwords encrypted at rest, per-sender sources keyed **per user** so two people subscribed to the
   same newsletter never share a row, UID and backoff bookkeeping, and a deletion that withdraws the

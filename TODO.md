@@ -1066,6 +1066,52 @@ Business logic over repositories. Still headless.
       ◧ 2026-07-26 (night) — **about a third of it, and it is the floor for the public internet rather than the ceiling** (plan §7.1a, A36). Built *ahead of its milestone* because `DevMode` was derived from a loopback bind, which made the standard reverse-proxy deployment an open reader. What exists: `AuthService.Login/Logout/WhoAmI`, the hash **always** running against a boot-computed Argon2id decoy on an unknown username, one uniform error for missing/wrong/deactivated, a fixed-window limiter at 10/minute on **both** the username and the client address, SHA-256-stored 30-day sessions with real revocation, opportunistic re-hash on login, and `device_id` grouping. What is owed, all of it still: **lockout** (the limiter is not one), refresh families and reuse detection, recovery codes, reset tokens, sudo mode, the breached-password check, and per-box Argon2id tuning.
       > **Two honest caveats, both recorded in the code.** RPCs arrive multiplexed over one WebSocket, so the peer address is the tunnel's — behind nginx that is `127.0.0.1` for everyone, and the per-IP key **collapses to one bucket in exactly the deployment where it matters most**. The per-username limiter carries the weight; a real per-IP limit needs the forwarded address threaded through the tunnel handshake (7.3d). And the limiter is in memory, so a restart clears it — persistent lockout state needs a table, which is this item's job and not the transport's.
       > **D12 now arrives as an outage rather than as a leak.** Usernames are unique *per tenant*, so login is unambiguous only while there is one tenant; two matches return `FailedPrecondition` and say so. A second tenant needs a tenant hint (subdomain or explicit field) before it can exist.
+
+      ◧ 2026-07-27 — **the lockout, recovery codes, reset tokens and sudo policy**, as
+      `internal/store/authnrepo.go` + `internal/authn`, 27 tests. *Still owed: wiring these into
+      `AuthService`, refresh-family wiring (the repo methods exist since 5.1), the breached-password
+      check, and per-box Argon2id tuning.*
+
+      **The lockout is a table, not a bigger limiter.** §7.1a shipped a fixed-window limiter in
+      memory and recorded honestly that a restart clears it. That is fine for a limiter, whose job is
+      to blunt a burst, and it is exactly the hole for a lockout, whose job is to survive one: an
+      attacker who can provoke a restart — or who simply waits for a deploy — gets an unlimited
+      budget against a counter that forgets. The count now derives from `login_attempts`, which 0009
+      wrote for this, and a test closes and reopens the database to prove it.
+
+      **Failures are counted since the last SUCCESS, not in a window.** A window means a correct
+      password does not clear the count, so someone who mistypes twice and then logs in is still
+      most of the way to a lockout for the rest of the window — and an account under slow attack
+      never leaves the elevated state even while its owner is using it normally. The *address* count
+      keeps its window, because an attacker who guesses one password correctly has not earned a
+      clean slate for the others, and the address check runs first because it is the only control
+      that sees an attacker rotating usernames.
+
+      **The curve doubles and then stops**, and the cap is the security decision rather than the
+      doubling: an uncapped lockout is a denial of service against the account OWNER that any
+      stranger can trigger by typing a wrong password, and unlike the attacker the owner cannot move
+      to another address. Three free, then 5s doubling to a 15-minute ceiling — **14 guesses in the
+      first hour and 4 an hour after**, asserted as numbers so a change to the curve cannot be silent.
+
+      **Single-use is enforced in the UPDATE's own WHERE**, for recovery codes and reset tokens
+      alike, not by a read followed by a write. Two requests presenting the same code concurrently is
+      precisely the attack on a check-then-act, and it is the one operation here where winning that
+      race is a full account takeover — so there is a test that fires eight goroutines at one code
+      and asserts exactly one wins. Regenerating codes *replaces* the set, because that action is
+      what someone takes when they think the old sheet is compromised and survivors would make it a
+      no-op that looked like it worked. Issuing a second reset token invalidates the first, for the
+      same reason. Unknown, spent and expired tokens return **one** error, because telling them apart
+      tells an attacker holding a guessed token whether it ever existed.
+
+      **Recovery codes use Crockford base32** — no I, L, O or U — because these get written on paper
+      and typed back months later by somebody already locked out and already annoyed, and there is
+      nobody to file a support request with on a self-hosted box. Normalisation accepts any case,
+      any grouping, and maps O/I/L back to the digits they were mistaken for.
+
+      **Sudo mode fails closed on an unknown action**, the same reasoning as authz's map. `SudoFresh`
+      refuses a zero timestamp *and* a future one: "no re-authentication recorded" must behave like
+      "too long ago" rather than depending on which way a subtraction reads, and a clock that went
+      backwards must not mint a permanent sudo session.
 - [x] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
       ✅ 2026-07-26 — `internal/authz`. Static per-method map, **fails closed on unmapped**, which
@@ -1293,6 +1339,22 @@ Business logic over repositories. Still headless.
       wedges is worse than one that refuses.*
       **Never a background sweep.** On demand, cached forever after. A preservation pass that shells
       out to a browser per item would cook the box and read as an attack from the publisher's side.
+      ◧ 2026-07-27 — **The STREAMING half shipped; the snapshot half did not.** `internal/render`
+      drives Chromium over CDP (`chromedp`), one session at a time, disposable incognito profile with
+      no access to the data directory, browser started lazily on first use so an instance nobody
+      streams from never pays 300 MB for the option. `FindBrowser` auto-detects Edge→Chrome→Chromium
+      on Windows and google-chrome→chromium→edge on Linux, so the same config works on the laptop and
+      the Ubuntu box; `-browser-path` overrides and does **not** fall back if the override is wrong.
+      *Owed for tier 2r:* `outerHTML` after network-idle, the scroll-to-bottom pass for lazy images,
+      the escalate-on-empty rule, and compression to a byte budget. The pool that all of that needs
+      now exists.
+      ⚠ **The one place this is weaker than everything else in the codebase**, recorded in
+      `render.Stream`: `CheckURL` runs before navigation and stops the obvious attempt, but the
+      browser dials for itself, so netguard's socket-level `Control` never sees it. A page that
+      redirects to a private address after we hand it over is reachable **by the browser**. The
+      mitigations are that nothing it fetches comes back as data (only as pixels) and that it holds
+      no credentials — and that is why this rung is opt-in at the instance level while 1a and 2 are
+      not.
 
 > *Done when:* an integration test polls a fixture feed end-to-end and **two users get correct,
 > independent state** — with no server and no UI in the picture.
@@ -1417,6 +1479,20 @@ Business logic over repositories. Still headless.
       entire performance argument — if it is emitting at a fixed rate, it is misconfigured), and a
       dropped connection leaves no orphaned browser behind.*
       **Flag-gated, off by default, per R22.**
+      ◧ 2026-07-27 — **Shipped as MJPEG over plain HTTP, not as a bidi RPC, and the swap was the
+      right call.** `multipart/x-mixed-replace` in an `<img>` is decoded by the browser natively,
+      frame by frame — no proto change, no wasm streaming code, no canvas compositor, no tile format
+      to design. `/stream` mints a third capability (prefix `"stream\n"`, so it cannot be spent on
+      `/asset` or `/p`, pinned by `TestCapabilitiesDoNotCrossRungs`).
+      **The connection IS the session.** No session table, no ids, no reaper: the browser tab lives
+      exactly as long as the HTTP response, so switching away or closing the tab cancels the request
+      context and the tab dies with it. Frames are dropped rather than queued when the reader's link
+      cannot keep up — these are whole images, so the next one supersedes the last and queueing would
+      only add latency to a stream already behind.
+      *Owed, and both are additive:* the input channel (this is view-only, so tier 4 is still not
+      built) and the 64×64 tile diff — every frame is currently a complete JPEG.
+      Proven end to end by `TestStreamServesMultipartFrames`: signed URL → handler → real browser →
+      parsed multipart frames with JPEG headers on the wire.
 
 - [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
