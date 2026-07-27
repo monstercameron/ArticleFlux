@@ -65,3 +65,33 @@ func (a *App) limitProxy() func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// shareLimit is /pub's own budget (§7.8b, TODO F29).
+//
+// Its own rather than the proxy's, and its own rather than a reader's, because
+// this is the one endpoint on the instance that anybody in the world may call
+// without a credential. `PublicSharePerIP` (30/min, burst 10) is sized for what
+// a feed reader actually does — poll one address every fifteen minutes — with
+// room for a person refreshing while they set it up.
+//
+// Not exempted in DevMode, unlike the proxy limiter. A share is public in
+// development too, and the limit is high enough that no honest use meets it, so
+// exempting it would mean the only place this code path runs unlimited is the
+// one where somebody is likely to point a script at it.
+func (a *App) shareLimit(next http.Handler) http.Handler {
+	limiter := ratelimit.New(ratelimit.Options{})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := clientaddr.Of(r, a.cfg.BehindProxy)
+		if key == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ok, wait := limiter.Allow(ratelimit.PublicSharePerIP, key)
+		if !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			http.Error(w, "too many requests; slow down", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

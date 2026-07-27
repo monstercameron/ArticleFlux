@@ -258,6 +258,11 @@ type App struct {
 	secretKey  []byte
 	llm        *llm.Client
 	translator *smart.Translator
+	// palettes writes themes: from a phrase the reader typed, and from what they
+	// actually read (§20.16.3). Non-nil on every instance, like the translator —
+	// the drift has a deterministic answer that needs no key, so an instance with
+	// no credential still serves the whole surface.
+	palettes *smart.Palettes
 	// pool drains the durable job queue (§22.7). Always non-nil; Start is what
 	// decides whether it actually runs, so a test can enqueue and drain by hand.
 	pool *jobs.Pool
@@ -439,6 +444,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	}
 	a.llm = llm.New(smartKey)
 	a.translator = smart.NewTranslator(a.llm, a.settings)
+	a.palettes = smart.NewPalettes(a.llm, a.settings)
 
 	// The interest layer (§18) and the pool that runs it (§22.7).
 	//
@@ -1013,7 +1019,11 @@ func (a *App) buildHandler() {
 		grpcsrv.NewSmartServer(a.settings, a.llm, a.translator, a.scopeFromContext, a.log).
 			// The voice's spend, beside the model's (TODO P3). Nil on an instance
 			// with no key, which reports zeroes rather than nothing.
-			WithSpeechMeter(a.tts))
+			WithSpeechMeter(a.tts).
+			// Theming (§20.16.3). The repo comes with it because the drift is
+			// derived from this reader's topics, and the consent preference for a
+			// model-written palette is read from the same place.
+			WithTheming(a.palettes, a.repo))
 	// Live updates (§20.3). The only streaming surface in the API: it holds a
 	// goroutine and a subscription for as long as a tab is open, which is why it
 	// is its own service rather than another method on the reader.
@@ -1202,6 +1212,11 @@ func (a *App) buildHandler() {
 			fmt.Fprintln(w, "ingested", ing.New)
 		})
 	}
+
+	// Published scopes (§7.8b, TODO F29). Public by design and rate-limited on
+	// its own budget: the address is the only credential, so an endpoint anybody
+	// can poll needs a limit that does not come out of a reader's.
+	mux.Handle("/pub/", a.shareLimit(http.HandlerFunc(a.servePublicShare)))
 
 	if a.cfg.WebRoot != "" {
 		mux.Handle("/", a.securityHeaders(a.static(a.cfg.WebRoot)))

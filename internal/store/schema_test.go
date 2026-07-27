@@ -120,8 +120,9 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 		"login_attempts": {
 			"tenant_id": "the interesting rows are attempts on accounts that do not exist",
 		},
-		"shares":    {"object_id": "polymorphic: the kind is in object_kind"},
-		"item_tags": {"applied_by_rule_id": "kept after the rule is deleted, so the tags stay cleanable"},
+		"shares":           {"object_id": "polymorphic: the kind is in object_kind"},
+		"published_scopes": {"target_id": "polymorphic: the kind is in kind, and a share whose folder is deleted publishes nothing rather than dangling"},
+		"item_tags":        {"applied_by_rule_id": "kept after the rule is deleted, so the tags stay cleanable"},
 		// Same argument as item_tags, and the direction of the surprise matters:
 		// a cascade here would silently UNMUTE a backlog the moment a rule was
 		// deleted, which is the opposite of what anyone deleting a rule expects.
@@ -190,6 +191,14 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 				fkShaped = append(fkShaped, name)
 			}
 		}
+		// This is the dangerous direction. Next() stops both when the columns
+		// run out and when the query fails, so an unchecked loop hands the
+		// assertion below a SHORTER list of columns — and a schema guard that
+		// silently examines fewer columns passes while missing exactly the
+		// undeclared foreign key it exists to catch.
+		if err := cols.Err(); err != nil {
+			t.Fatal(err)
+		}
 		_ = cols.Close()
 		if len(fkShaped) == 0 {
 			continue
@@ -206,6 +215,13 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			declared[from] = true
+		}
+		// The other direction, and it fails loudly rather than quietly: a short
+		// `declared` set makes the loop below report a foreign key as missing
+		// when it is declared. Noisy is better than silent, but neither is the
+		// answer the test is supposed to give.
+		if err := fks.Err(); err != nil {
+			t.Fatal(err)
 		}
 		_ = fks.Close()
 

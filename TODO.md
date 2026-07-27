@@ -5075,11 +5075,45 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: a rule can POST an item to a URL, failures retry with backoff and are visible in
       F12, and the payload is versioned.*
 
-- [ ] **F29 · Public feeds and sharing.** §5 already reserves `/pub/:slug` and §7 describes it as the
+- [x] **F29 · Public feeds and sharing.** §5 already reserves `/pub/:slug` and §7 describes it as the
       social layer whose removal people still bring up about Google Reader. This is our own Atom
       output from our own server.
       *Done when: a folder or a tag can be published as an Atom feed at a slug, the slug can be
       revoked, and an unpublished scope is genuinely unreachable rather than merely unlinked.*
+
+      ✅ 2026-07-27 — `migrations/0022_published_scopes.sql` · `internal/store/shares.go` ·
+      `internal/app/share.go`, 12 tests. A folder or a tag comes out of `/pub/:slug` as Atom, and
+      **it needs no client of ours**: whoever holds the address subscribes in whatever reader they
+      already use.
+
+      **Three tables are named for sharing and they are three different things.** `shares` (0009) is a
+      private GRANT — this folder, to that user, read or contribute. `public_shares` (0009) is one
+      ITEM at its own slug with the sharer's comment, §7.8b's per-item half and still unbuilt. This is
+      the third, and it got its own table rather than a discriminator column on either: a grant has a
+      grantee and a permission, an item share has a comment and a view count, a published scope has a
+      title and an indexing policy, and one table carrying all three would be mostly NULL.
+
+      **The slug IS the credential, and that decides everything else.** There is no identity on the
+      read path — a feed reader will never sign in — so possession of the address is the permission,
+      which is why `ShareBySlug` is unscoped by necessity rather than convenience. 128 bits in
+      Crockford base32, so it survives being read aloud. **Rotation is the only revocation available
+      against somebody who already has the URL**, and it necessarily breaks existing subscribers — the
+      tag URI is built from the slug, so a rotated share is honestly a different feed.
+
+      **Excerpt-only, permanently.** The publisher's own summary, sanitized; never `ContentHTML` and
+      never the extracted article. A test asserts the full body is absent from the bytes, because this
+      is a licensing decision rather than a setting.
+
+      **A crawler is the visitor that turns "hard to find" into "listed on Google"** without anybody
+      meaning to, so `X-Robots-Tag: noindex, nofollow` unless the owner opts in. An unknown address and
+      a revoked one answer identically, because any difference is a free oracle for "was this ever
+      real". Conditional GETs with an ETag **over the rendered bytes** rather than the newest
+      timestamp: a retitle or an item ageing out of the window changes the document without moving any
+      date. Its own rate limit (`PublicSharePerIP`, already reserved), **not exempted in DevMode** —
+      development is exactly where somebody points a script at it.
+
+      *Owed, and it is the management surface rather than the feature:* RPCs and a screen to create,
+      rotate and revoke. The repository is scoped and tested; today a share is created from Go.
 
 - [ ] **F30 · An installable PWA, and trip packs.** The honest answer to the mobile gap that is ours
       alone to build. `web/sw.js` already exists and already caches the app shell network-first for

@@ -253,6 +253,8 @@ var unscopedByDesign = map[string]string{
 	"UserForLogin":           "produces the identity a Scope is built from; there is none yet",
 	"CreateSession":          "creates the credential a Scope is resolved from",
 	"RevokeSession":          "the token hash IS the authorisation to revoke it",
+	"ShareBySlug":            "the slug IS the credential; a public feed's reader has no identity to scope by",
+	"ShareSources":           "reads the scope behind a slug the caller already presented; the owner comes from the share row",
 	"SessionAuthenticatedAt": "reads one session's sudo stamp by token hash; the hash IS the session, exactly as for RevokeSession",
 	"StampAuthenticated":     "records a re-authentication against the token hash the caller just proved it holds",
 	"RevokeOtherSessions":    "the token hash IS the session being kept; the user id comes from the scope it resolved to",

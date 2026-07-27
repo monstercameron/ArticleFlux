@@ -68,6 +68,8 @@ var unscopedByDesign = map[string]string{
 	"ReconcileUnread":        "an instance-wide repair of denormalised columns; it reads nothing back to a caller and writes each row only the values of the item that row already names",
 	"CreateSession":          "same",
 	"RevokeSession":          "keyed by token hash, which the holder already has",
+	"ShareBySlug":            "the slug IS the credential — a public feed's reader has no identity to scope by, exactly like ScopeForSession",
+	"ShareSources":           "resolves the scope behind a slug the caller already presented; the owner comes from the share row, not from the request",
 	"SessionAuthenticatedAt": "keyed by token hash, like RevokeSession: it reads one session's sudo stamp, and the hash is the session",
 	"StampAuthenticated":     "keyed by token hash: it records a re-authentication against the session the caller just proved it holds",
 	"RevokeOtherSessions":    "keyed by token hash for the session being KEPT; the user id whose other sessions end comes from the scope that token resolved to",
@@ -375,6 +377,21 @@ func argFor(ft reflect.Type, i int, method string, bIDs map[string]string) refle
 	t := ft.In(i)
 
 	if t.Kind() == reflect.String {
+		// A NAMED string type — `store.ShareKind` and anything like it — has to
+		// be converted rather than handed a plain string, or the call panics
+		// inside reflect and the harness reports a crash where it meant to
+		// report a leak. Every return in this branch goes through `asString`
+		// below for that reason.
+		asString := func(v string) reflect.Value {
+			return reflect.ValueOf(v).Convert(t)
+		}
+		// A typed string is almost always an enum, and an invalid member makes
+		// the method refuse before it reads anything — which would pass this
+		// test by doing nothing. `ShareKind` is the only one today; a new one
+		// that needs a real member belongs here beside it.
+		if t.Name() == "ShareKind" {
+			return asString("folder")
+		}
 		// The parameter names are not available through reflection, so the id is
 		// chosen by method rather than by name. Where a method takes several
 		// strings the first is the identifier in every current signature; the
@@ -385,10 +402,10 @@ func argFor(ft reflect.Type, i int, method string, bIDs map[string]string) refle
 			"UpdateFeedSettings", "Unsubscribe", "SetFeedTag", "SourcesForTag",
 			"UpdateTag", "DeleteFolder", "RenameFolder", "SetFeedFolder", "MarkAllRead":
 			if v, ok := firstID(method, bIDs); ok {
-				return reflect.ValueOf(v)
+				return asString(v)
 			}
 		}
-		return reflect.ValueOf("")
+		return asString("")
 	}
 
 	switch t.Kind() {
