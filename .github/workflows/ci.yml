@@ -20,8 +20,19 @@ on:
 permissions:
   contents: read
 
+# A superseded pull-request run is only spending money; a push to main is
+# history and runs to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GO_VERSION: "1.26.3"
+  # Pinned, not @latest. staticcheck gates every merge, so "whatever was released
+  # this morning" is a dependency on a third party's schedule: a new release that
+  # adds a check, or that has not caught up with a new Go, turns an unrelated
+  # commit red. Bumping this is a decision somebody makes, which is the point.
+  STATICCHECK_VERSION: "2026.1"
 
 jobs:
   # Lint and the structural guards run once — they are platform-independent, and
@@ -29,6 +40,10 @@ jobs:
   static:
     name: vet · staticcheck · guards · buf
     runs-on: ubuntu-latest
+    # The slowest step here is a wasm build; the whole job is minutes. A cap
+    # turns a hung runner into a failure somebody sees the same hour instead of
+    # a job that sits for six.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +99,7 @@ jobs:
 
       - name: staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }}
           staticcheck ./...
 
       # The four structural guards. Each one corresponds to a decision that is
@@ -99,8 +114,31 @@ jobs:
       # Additive-only within v1 (§20.7). The sync API and SW-cached wasm both
       # guarantee old clients in the wild, so a renumbered field is a v2, and this
       # is what enforces that rather than discipline.
+      #
+      # It needs a BASELINE, and there are two states in which there is not one:
+      # before main exists on the remote at all, and on a pull request, where
+      # actions/checkout leaves main as a remote-tracking ref that buf's
+      # `.git#branch=main` does not resolve. Both used to be a hard failure with
+      # a message about a branch, which reads like the check found something.
+      #
+      # So: create the local branch when the remote-tracking ref is there, and
+      # say plainly when it is not. A check that cannot run is not a check that
+      # failed, and pretending otherwise is how a red build stops meaning
+      # anything.
       - name: buf breaking
-        run: buf breaking --against '.git#branch=main'
+        run: |
+          set -euo pipefail
+          if ! git show-ref --verify --quiet refs/remotes/origin/main; then
+            echo "No origin/main yet — nothing to compare this proto against."
+            exit 0
+          fi
+          # Fails when main IS the checked-out branch (a push to main), which is
+          # exactly when it is already where it needs to be.
+          git branch -f main refs/remotes/origin/main 2>/dev/null || true
+          buf breaking --against '.git#branch=main'
+        # On main itself the comparison is against the commit being pushed, so a
+        # break has already landed and failing the build cannot un-land it. The
+        # gate that matters is the pull request, where this is fatal.
         continue-on-error: ${{ github.ref == 'refs/heads/main' }}
 
   # Tests run on Windows because that is the box this is developed and verified
@@ -109,6 +147,9 @@ jobs:
   test:
     name: test (windows)
     runs-on: windows-latest
+    # Windows runners are slower and the sqlite tests are not trivial; still
+    # nowhere near this.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/gwc
@@ -128,6 +169,7 @@ jobs:
   wasm-size:
     name: app.wasm size ratchet
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/gwc

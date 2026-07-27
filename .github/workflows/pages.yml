@@ -1,10 +1,10 @@
 # The public demo — build client/demo and publish it to GitHub Pages.
 #
 # ArticleFlux is self-hosted, which means "try it" otherwise costs a Go
-# toolchain, two clones, a wasm build and a running server. That is a lot to ask
-# of somebody who has not decided whether they care yet. This workflow removes
-# every step: the demo is a static page whose "server" is an in-memory instance
-# compiled into the same module (client/demodata).
+# toolchain, two clones, a WebAssembly build and a running server. That is a lot
+# to ask of somebody who has not decided whether they care yet. This workflow
+# removes every step: the demo is a static page whose "server" is an in-memory
+# instance compiled into the same module (client/demodata).
 #
 # WHAT IS PUBLISHED, exactly three files:
 #
@@ -14,14 +14,20 @@
 #
 # The last one is why the boot shim in web/index.html has a compressed path.
 # GitHub Pages cannot negotiate a content encoding for a wasm file, so publishing
-# the raw module would hand a stranger a 30 MB download; the shim fetches
+# the raw module would hand a stranger a 28 MB download; the shim fetches
 # app.wasm.gz and decompresses it in the browser, which is 6 MB. Nothing is
 # published uncompressed, so that path is the one this build exercises.
 #
-# BEFORE THE FIRST RUN, one manual step nobody can do from here: the repository's
-# Settings → Pages → Build and deployment → Source must be set to "GitHub
-# Actions". Without it the deploy step fails with a 404 that reads like a
-# permissions problem.
+# THE SHAPE OF THIS FILE is "prove it works, then publish it":
+#
+#   build   → test the instance, build, VERIFY THE ARTIFACT, BOOT IT IN A BROWSER
+#   deploy  → enable Pages if it is not, and publish what build proved
+#
+# The verification steps are the point. Every other check in CI can pass while
+# the bundle they produced does not start — a truncated gzip, a missing
+# wasm_exec.js, an index.html that fetches a path this build does not ship. The
+# demo is the only build of this application that strangers see, and it is the
+# one nobody is watching when it breaks.
 #
 # HOW TO PUBLISH:
 #
@@ -36,56 +42,61 @@ on:
   push:
     tags:
       - "v*"
-  # A pull request BUILDS the demo and does not deploy it. The demo is the only
-  # build of this application that strangers see, so "did that change break it?"
-  # should be answerable before merging rather than at tag time.
+  # A pull request BUILDS the demo, verifies it, and does not deploy it. "Did
+  # that change break the demo?" should be answerable before merging rather than
+  # at tag time, when the answer arrives as a broken public URL.
   pull_request:
     paths:
       - "client/**"
       - "web/index.html"
       - "internal/pb/**"
+      - "e2e/demo-smoke.mjs"
+      - "Makefile"
       - ".github/workflows/pages.yml"
+      - ".github/actions/gwc/**"
   workflow_dispatch:
     inputs:
       version:
         description: "What the build calls itself on the settings screen"
         required: false
         default: "v1.0.0"
+      deploy:
+        description: "Publish it, or just build and verify"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
 
 # One deploy at a time, and never cancel one in flight: a cancelled Pages deploy
-# can leave the site on a half-published state, and there is nothing to gain by
-# racing two of them.
+# can leave the site half-published, and there is nothing to gain by racing two
+# of them. Pull-request builds are a different group and DO cancel, because a
+# superseded PR build is only spending money.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GO_VERSION: "1.26.3"
+  # Where the demo is served while it is being checked. Not 9000 (the port a
+  # development server sits on) and not 9010 (the e2e suite's), so a local run of
+  # this same sequence collides with neither.
+  DEMO_PORT: "9310"
 
 jobs:
   build:
-    name: build the demo
+    name: build · verify · boot
     runs-on: ubuntu-latest
+    # Long enough for a cold module cache and a wasm build, short enough that a
+    # hung step is noticed the same hour. The whole job is ~5 minutes warm.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      # D0: go.mod replaces GoWebComponents/v5 with a SIBLING directory, because
-      # v5.0.0 was never tagged or published. actions/checkout refuses a path
-      # outside the workspace, so the checkout lands inside and is then moved
-      # next door — which is what makes the repository's own replace directive,
-      # the Makefile's `deps` check, and this build agree without editing go.mod
-      # in CI. An edited go.mod is a build that is not the build anybody runs.
-      - name: Check out GoWebComponents (D0 — no published v5 tag)
-        uses: actions/checkout@v4
-        with:
-          repository: monstercameron/GoWebComponents
-          ref: v5
-          path: _gwc
-      - name: Move it next door
-        run: mv _gwc "${GITHUB_WORKSPACE}/../GoWebComponents"
+      # D0 — see .github/actions/gwc. `path: ../GoWebComponents` is not a thing
+      # actions/checkout will do, and this is the four lines that make it work.
+      - uses: ./.github/actions/gwc
 
       - uses: actions/setup-go@v5
         with:
@@ -93,15 +104,21 @@ jobs:
           cache: true
 
       # The version the build reports for itself. A tag names itself; a manual
-      # run is told what to say; anything else is honestly "dev".
+      # run is told what to say; a pull request is honestly "dev".
+      #
+      # Written to the step output rather than used inline so there is exactly
+      # one place that decides it, and so the log says what was chosen.
       - name: Decide the version
         id: v
         run: |
+          set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF_NAME}"
           else
-            echo "version=${{ inputs.version || 'dev' }}" >> "$GITHUB_OUTPUT"
+            version="${{ inputs.version || 'dev' }}"
           fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "this build calls itself ${version}"
 
       # The demo's backend is ordinary Go with no build tag, so it is testable
       # without a browser — and it is tested here rather than only in the main
@@ -117,8 +134,104 @@ jobs:
       - name: Build
         run: make demo VERSION=${{ steps.v.outputs.version }}
 
-      - name: What is being published
-        run: ls -lh bin/demo
+      # Everything that can be known about the artifact without running it.
+      #
+      # Each check below is a failure that has a name. A truncated .gz looks
+      # exactly like a successful build until a browser tries to instantiate it;
+      # a missing wasm_exec.js fails at instantiate with an import mismatch that
+      # reads like a corrupt binary; an index.html with an absolute /app.wasm
+      # works perfectly on a server and 404s on a project page. None of them are
+      # visible in a green `make demo`.
+      - name: Verify the artifact
+        run: |
+          set -euo pipefail
+          cd bin/demo
+          echo "--- what was built ---"
+          ls -l
+
+          for f in index.html wasm_exec.js app.wasm.gz; do
+            [ -s "$f" ] || { echo "::error::bin/demo/$f is missing or empty"; exit 1; }
+          done
+
+          # The raw module must NOT be here. Publishing it would mean a 28 MB
+          # download for anyone whose browser takes the uncompressed path, which
+          # is the entire thing the compressed one exists to avoid.
+          if [ -e app.wasm ]; then
+            echo "::error::bin/demo/app.wasm was published uncompressed (28 MB)"
+            exit 1
+          fi
+
+          # Integrity, not just size: gzip -t reads the whole stream and checks
+          # its CRC, which is what catches the compressor that died halfway.
+          gzip -t app.wasm.gz
+
+          # And it is a WebAssembly module rather than whatever else may have
+          # ended up compressed: every wasm binary starts \0asm.
+          magic=$(gzip -dc app.wasm.gz | head -c 4 | od -An -tx1 | tr -d ' ')
+          if [ "$magic" != "0061736d" ]; then
+            echo "::error::app.wasm.gz does not decompress to a wasm module (magic $magic)"
+            exit 1
+          fi
+
+          raw=$(gzip -dc app.wasm.gz | wc -c)
+          gz=$(stat -c%s app.wasm.gz)
+          echo "app.wasm.gz: $gz bytes on the wire, $raw decompressed"
+          # A module this application's size cannot be under a megabyte. The
+          # bound is deliberately far below the real figure (~28 MB): it is here
+          # to catch an empty or stub build, not to ratchet the size — that is
+          # the wasm-size job's business, and a second ratchet here would be a
+          # second number to keep in step.
+          [ "$raw" -gt 1000000 ] || { echo "::error::the module is only $raw bytes"; exit 1; }
+
+          # The page and the files it asks for have to agree. Relative, because a
+          # project page is served from /<repo>/ and an absolute path resolves to
+          # the domain root.
+          grep -q "app.wasm" index.html || { echo "::error::index.html never fetches the module"; exit 1; }
+          grep -q 'src="wasm_exec.js"' index.html || { echo "::error::index.html does not load wasm_exec.js relatively"; exit 1; }
+          if grep -q '"/app.wasm' index.html || grep -q 'src="/wasm_exec.js"' index.html; then
+            echo "::error::index.html uses absolute asset paths, which 404 on a project page"
+            exit 1
+          fi
+          grep -q "DecompressionStream" index.html || {
+            echo "::error::index.html has no compressed path, and the compressed module is all this publishes"
+            exit 1; }
+
+      # The last check that can fail, and the only one that runs the thing.
+      #
+      # Everything above proves the bundle is well-formed. This proves it BOOTS:
+      # served by a dumb static file server with no negotiation and no fallbacks —
+      # as unhelpful as Pages is — and driven by a real browser until the rail
+      # lists the seeded feeds and an article opens.
+      - name: Install the browser
+        working-directory: e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Boot it
+        run: |
+          set -euo pipefail
+          python3 -m http.server "${DEMO_PORT}" --bind 127.0.0.1 --directory bin/demo >/dev/null 2>&1 &
+          server=$!
+          trap 'kill $server 2>/dev/null || true' EXIT
+          # Wait for the port rather than sleeping at it: a fixed sleep is either
+          # too short on a slow runner or wasted on a fast one.
+          for _ in $(seq 1 50); do
+            curl -sf "http://127.0.0.1:${DEMO_PORT}/index.html" >/dev/null && break
+            sleep 0.2
+          done
+          node e2e/demo-smoke.mjs "http://127.0.0.1:${DEMO_PORT}/" bin/demo-smoke.png
+
+      # Only on failure, and only the screenshot: it is the difference between
+      # "the demo did not boot" and knowing what it showed instead.
+      - name: What it looked like when it failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-smoke-failure
+          path: bin/demo-smoke.png
+          if-no-files-found: ignore
+          retention-days: 7
 
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -126,11 +239,14 @@ jobs:
 
   deploy:
     name: publish
-    # Pull requests build and stop. Only a tag or a deliberate manual run
-    # replaces what is on the public URL.
-    if: github.event_name != 'pull_request'
+    # A pull request builds and stops. Only a tag, or a deliberate manual run
+    # that asked for it, replaces what is on the public URL.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' || inputs.deploy)
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -138,5 +254,18 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # enablement: true turns Pages on for the repository if nobody has, which
+      # removes the one manual step this workflow otherwise depends on — and the
+      # failure it removes is a 404 from the deploy step that reads like a
+      # permissions problem rather than "Pages was never switched on".
+      #
+      # It is a no-op when Pages is already configured to build from Actions.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Where it went
+        run: echo "published ${{ steps.deployment.outputs.page_url }}"
