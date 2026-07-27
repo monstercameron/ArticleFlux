@@ -1,16 +1,6 @@
 //go:build js && wasm
 
-// Package data is the client's connection to the server.
-//
-// It owns exactly one thing: a gRPC connection over the GoGRPCBridge tunnel, and
-// the connection state the UI shows. Everything above it works in domain terms
-// and never touches a stub.
-//
-// Why a tunnel rather than plain gRPC: browsers cannot open the HTTP/2
-// connection gRPC-over-HTTP normally requires. The tunnel carries gRPC frames
-// over one WebSocket, which is also why the standard Service Worker offline
-// recipe does not apply here — a Service Worker cannot see WebSocket frames, so
-// offline packs travel over plain HTTPS instead.
+// Dialling and the stub: the browser half of the package described in doc.go.
 package data
 
 import (

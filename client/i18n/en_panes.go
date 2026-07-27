@@ -171,6 +171,12 @@ func init() {
 		// screen reader arriving at it mid-row has no way to know it is an explanation
 		// rather than more of the article.
 		"whyAria": "Why this is in My Feed",
+		// The lead-in for a Smart+ promotion reason. The model is asked for a fragment
+		// completing "moved up because …", so this supplies the clause its answer was
+		// written against — without it the line reads as a sentence missing its subject.
+		//
+		// Two words, because it shares one row with the reason itself.
+		"whyMovedUp": "moved up:",
 		// The Smart+ mark. Short, because it sits in a metadata line beside a source and an
 		// age — and a word rather than only a colour, because the first version was a
 		// border tint nobody could see.
@@ -203,6 +209,17 @@ func init() {
 	plural(DefaultLocale, "list", "subUnreadCount", map[PluralCategory]string{
 		One:   "1 unread, newest first.",
 		Other: "{count} unread, newest first.",
+	})
+	// My Feed's own subtitle. It cannot borrow subUnreadCount: that sentence makes two
+	// claims — a count and an ordering — and My Feed matches neither. It is a ranked
+	// selection, not the unread list, and it is ordered by interest rather than by date.
+	//
+	// "picks" rather than "items" is deliberate. Something CHOSE these, the reader is
+	// entitled to know that from the header, and the per-row blurbs underneath then say
+	// why each one is here.
+	plural(DefaultLocale, "list", "subMyFeed", map[PluralCategory]string{
+		One:   "1 pick, ranked by what you read.",
+		Other: "{count} picks, ranked by what you read.",
 	})
 	plural(DefaultLocale, "list", "readingTime", map[PluralCategory]string{
 		One:   "1 min read",

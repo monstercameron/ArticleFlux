@@ -236,6 +236,16 @@ func Reader(p readerProps) ui.Node {
 	smartNotice := ui.UseState("")
 	smartErr := ui.UseState("")
 	smartLoading := ui.UseState(false)
+	// Theming (§20.16.3). All transient: the prompt being typed, whether a
+	// composition is in flight, and what the readability floor reported about the
+	// last answer. The palette itself is not here — it lands in `look`, which is the
+	// stored preference, because a theme survives a reload and a repair note does
+	// not.
+	themePrompt := ui.UseState("")
+	themeBusy := ui.UseState(false)
+	themeErr := ui.UseState("")
+	themeRepairs := ui.UseState[[]design.Repair](nil)
+	themeTrimmed := ui.UseState(false)
 	// undoToken identifies the last bulk mark, for as long as the banner offering
 	// to reverse it is on screen. Client-side rather than a server-side session:
 	// a reader who reloads loses the offer, which is the right trade for keeping
@@ -307,6 +317,9 @@ func Reader(p readerProps) ui.Node {
 	// has to say so, and inside the slideshow, where the reader is actually
 	// looking. The reader's usual notice banner is underneath the overlay.
 	showVoice := ui.UseState("")
+	// showNeeds is whether the prerequisites dialog is up. Opened when read-to-me
+	// is asked for and cannot speak, and from the line on the slide that says so.
+	showNeeds := ui.UseState(false)
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
@@ -490,6 +503,7 @@ func Reader(p readerProps) ui.Node {
 	onFilterInputRef.Set(onFilterInput)
 	onSmartKeyInput := ui.UseEvent(func(v string) { smartKeyDraft.Set(v) })
 	onSmartModelInput := ui.UseEvent(func(v string) { smartModelDraft.Set(v) })
+	onThemePromptInput := ui.UseEvent(func(v string) { themePrompt.Set(v) })
 	onFeedTitleInput := ui.UseEvent(func(v string) { fsTitle.Set(v) })
 	onTagLabelInput := ui.UseEvent(func(v string) { tsLabel.Set(v) })
 	onPaletteInput := ui.UseEvent(func(v string) {
@@ -3301,6 +3315,24 @@ func Reader(p readerProps) ui.Node {
 		return it.GetWordCount()
 	}
 
+	// slidePrereqsNow answers "can read-to-me actually speak, right now", from
+	// live state rather than from anything remembered.
+	//
+	// The server's half is read off the STORY ON SCREEN: SpeechURL mints a
+	// listening ticket only when the instance has a key and can synthesise, so a
+	// non-empty speech_url on a fetched article is a direct, current answer to a
+	// question that would otherwise need its own RPC — and one that cannot go
+	// stale the way a cached config response can. An unfetched story reports
+	// false, which is right: nothing is known yet, and the dialog says "not on
+	// this server" only once something has been asked.
+	slidePrereqsNow := func() []slidePrereq {
+		key := false
+		if b := bodies.Get()[showID.Get()]; b != nil && b.GetSpeechUrl() != "" {
+			key = true
+		}
+		return slidePrereqs(speakSmart.Get(), speakPodcast.Get(), speakAuto.Get(), key)
+	}
+
 	// slideOpen puts one story on screen and starts its clock from zero.
 	//
 	// The custom properties are reset BEFORE the state change, and that ordering
@@ -3453,17 +3485,26 @@ func Reader(p readerProps) ui.Node {
 				// The narrator is driving. slideAudio owns the pacing.
 				return
 			}
-			// Waiting for it. The title card holds rather than the clock running
-			// out behind it — the server can take several seconds to write and
-			// synthesise a segment, and that wait is a legitimate part of the mode.
-			if time.Since(showStart.Get()) < slideVoiceWait {
+			// Waiting for it, and the wait is a legitimate part of the mode: on a
+			// cold cache a broadcast segment is TWO paid round trips — write it,
+			// then synthesise it — and the title card holding through that is the
+			// correct thing to be looking at.
+			//
+			// The only reasons to stop waiting are a real failure reported by the
+			// player, or a backstop long enough that nothing healthy reaches it.
+			// An earlier version stopped at twenty seconds and announced that the
+			// server had no Smart+ voice, on an instance whose key was working —
+			// a configuration claim inferred from a stopwatch, which is how
+			// software tells confident lies about itself.
+			if speakState.Get() != "error" && time.Since(showStart.Get()) < slideVoiceWait {
 				slideVars(0, 0)
 				return
 			}
-			// It never came. Say so, silence whatever did start, and hand the
-			// story back to the clock from this moment rather than from whenever
-			// the slide opened — the reader has not seen any of it yet.
-			showVoice.Set(slideVoiceUnavailable)
+			// It failed, or it never came. Say only that — an observation, not a
+			// diagnosis — silence whatever did start, and hand the story back to
+			// the clock from this moment rather than from whenever the slide
+			// opened, because the reader has not seen any of it yet.
+			showVoice.Set(slideVoiceFailed)
 			platform.SpeechStop()
 			platform.AudioStop()
 			speakID.Set("")
@@ -3672,11 +3713,22 @@ func Reader(p readerProps) ui.Node {
 		// turned on here: it is an egress decision, and a switch that sends the
 		// reader's articles to OpenAI because they asked to be read to is exactly
 		// the consent this application does not take.
-		if !speakSmart.Get() {
+		// Which requirement is missing decides both the sentence and whether the
+		// dialog opens: a switch the reader owns is worth interrupting them for,
+		// because pressing it is the whole remedy. A server with no key is not —
+		// there is nothing in that dialog they can act on, so it says so on the
+		// slide and the show carries on.
+		switch slidePrereqBlocked(slidePrereqsNow()) {
+		case "":
+			showVoice.Set("")
+		case prereqServerKey:
+			showVoice.Set(slideVoiceNoKey)
+			return
+		default:
 			showVoice.Set(slideVoiceOff)
+			showNeeds.Set(true)
 			return
 		}
-		showVoice.Set("")
 		if !speakAuto.Get() {
 			speakAuto.Set(true)
 			savePrefs(map[string]string{"tts.autoplay": "true"})
@@ -3684,6 +3736,59 @@ func Reader(p readerProps) ui.Node {
 		if it, i := slideAt(showID.Get()); i >= 0 {
 			slideNarrate(it)
 		}
+	}
+
+	// The prerequisites dialog.
+	//
+	// Opening it is also how the line on the slide is answered — that line is a
+	// button, so "Read to me needs the Smart+ voice" and the thing that turns the
+	// Smart+ voice on are one press apart rather than one screen apart.
+	act.Get().slideNeeds = func() { showNeeds.Set(true) }
+	// Closing is a decision, not a dismissal: the reader was asked whether to
+	// turn some switches on and said no, so read-to-me goes back off rather than
+	// staying nominally on and silent. Leaving it on would put the same line back
+	// on the next slide, which is nagging.
+	act.Get().slideNeedsClose = func() {
+		showNeeds.Set(false)
+		if showAudio.Get() && !slidePrereqsMet(slidePrereqsNow()) {
+			act.Get().slideListen()
+		}
+	}
+	// One switch, flipped for real and at once. Not staged behind an Apply: a
+	// staged copy of four preferences is a second source of truth for them, and
+	// the first time it disagrees with the Listening tab nobody can say which is
+	// right.
+	act.Get().slideNeedsFix = func(key string) {
+		switch key {
+		case prereqSmartVoice:
+			if !speakSmart.Get() {
+				act.Get().smartVoice()
+			}
+		case prereqPodcast:
+			act.Get().podcastVoice()
+		case prereqKeepPlaying:
+			if !speakAuto.Get() {
+				act.Get().autoPlay()
+			}
+		}
+	}
+	// Start, once the requirements are met. Refuses rather than closing on a
+	// half-answered dialog — the button says what it will do, and doing nothing
+	// while looking like it worked is the worse of the two failures.
+	act.Get().slideNeedsStart = func() {
+		if !slidePrereqsMet(slidePrereqsNow()) {
+			return
+		}
+		showNeeds.Set(false)
+		showVoice.Set("")
+		showStart.Set(time.Now())
+		showHeld.Set(0)
+		showNarrating.Set(false)
+		if !showAudio.Get() {
+			showAudio.Set(true)
+			savePrefs(map[string]string{slidesAudioPref: "true"})
+		}
+		act.Get().slideListenOn()
 	}
 
 	act.Get().slideListen = func() {
@@ -4189,10 +4294,30 @@ func Reader(p readerProps) ui.Node {
 		applyAppearance(next)
 		savePrefs(next.prefsMap())
 	}
+	// Declared here and assigned below, because setTheme needs it and it needs
+	// setLook's neighbours. Safe by construction: the whole component body runs
+	// before any handler can fire, so it is never nil when called — the guard is
+	// there for the reader rather than for the runtime.
+	var refreshDrift func()
+
+	// Picking a theme RESTARTS the drift, and does not merely change the base.
+	//
+	// The walk's anchor is a snapshot of a palette, and the target was built for a
+	// particular base and a particular tone — so keeping either across a change of
+	// theme means painting a blend of the theme the reader just left. Somebody who
+	// presses Daylight expects Daylight, not a fortnight of Ink still showing
+	// through it.
 	act.Get().setTheme = func(name string) {
 		next := look.Get()
+		if next.Theme == name {
+			return
+		}
 		next.Theme = name
-		setLook(next)
+		setLook(next.anchorTo())
+		savePrefs(look.Get().attunePrefs())
+		if refreshDrift != nil {
+			refreshDrift()
+		}
 	}
 	act.Get().setAccent = func(name string) {
 		next := look.Get()
@@ -4221,6 +4346,170 @@ func Reader(p readerProps) ui.Node {
 		next := look.Get()
 		next.Motion = design.MotionSystem
 		setLook(next)
+	}
+
+	// --- theming (§20.16.3) ----------------------------------------------------
+	//
+	// saveDrift is setLook's counterpart for the drift's own bookkeeping: paint it,
+	// remember it, put it in state. Two write paths rather than one because the six
+	// keys behind this one move on a different schedule — once when a target is set
+	// and once a day after — and folding them in would rewrite six rows every time
+	// somebody tried a different accent.
+	saveDrift := func(next appearance) {
+		look.Set(next)
+		applyAppearance(next)
+		savePrefs(next.attunePrefs())
+	}
+
+	// refreshDrift asks where the theme should be heading, and aims it there.
+	//
+	// Called on exactly three occasions: at boot when there is nowhere to walk to or
+	// the walk has finished, when the reader switches attuning on, and after they
+	// pick a different theme (because a target is built for a particular base and
+	// tone). Never on a timer — see appearance.needsTarget for why that is what keeps
+	// a feature which repaints daily from being a request which happens daily.
+	refreshDrift = func() {
+		c, cur := client.Get(), look.Get()
+		if c == nil || !cur.Attune {
+			return
+		}
+		base := cur.base()
+		// The palette on screen RIGHT NOW, captured before the call rather than
+		// after: if a previous drift was part-way along, this is the blend, and it
+		// becomes the new anchor. That is what makes a change of destination
+		// invisible — the walk continues from here instead of snapping back.
+		painted := cur.resolve()
+		go func() {
+			got, err := c.SuggestTheme(context.Background(), base)
+			ui.PostAsync(func() {
+				if err != nil {
+					// Silent. The drift is not something the reader asked for at this
+					// moment, so a banner about it would be the app interrupting them
+					// to report a failure of its own decoration. They keep the theme
+					// they have, which is the whole fallback.
+					return
+				}
+				next := look.Get()
+				if got.Empty() {
+					// Cold start (§18.4): the interest layer has no topics yet. The
+					// screen says so rather than the feature looking broken.
+					next.Why = ""
+					next.Sig = ""
+					saveDrift(next)
+					return
+				}
+				// Already heading there. The signature is the taste this target came
+				// from, so an unchanged one after an ARRIVAL means the reader's
+				// interests have not moved and neither should the room.
+				if got.Signature == next.Sig && next.Target != "" {
+					return
+				}
+				saveDrift(next.aimAt(painted, got.Target, got.Why, got.Signature, got.Smart))
+			})
+		}()
+	}
+
+	// composeTheme is the one action on this screen that spends money.
+	//
+	// On success the generated palette becomes the SELECTED theme, not merely an
+	// available one: somebody who described a room wants to be in it, and a
+	// composition that only added a card to the grid would make the button feel
+	// broken. It also re-anchors the drift, because the walk was measured from a
+	// theme that is no longer the one in force.
+	act.Get().composeTheme = func() {
+		c := client.Get()
+		if c == nil || themeBusy.Get() {
+			return
+		}
+		// From the DOM rather than from state, for the reason fs-rename reads that
+		// way: Enter and the button are two paths to one action and both have to send
+		// the value actually in the box.
+		prompt := strings.TrimSpace(platform.FieldValue(roleThemePrompt))
+		if prompt == "" {
+			prompt = strings.TrimSpace(themePrompt.Get())
+		}
+		if prompt == "" {
+			return
+		}
+		themeBusy.Set(true)
+		themeErr.Set("")
+		themeRepairs.Set(nil)
+		themeTrimmed.Set(false)
+		// The tone of the theme in force, because that is the theme this answer has
+		// to be able to blend with (design.Blend refuses to cross tones).
+		tone := look.Get().resolve().Tone
+		go func() {
+			res, err := c.ComposeTheme(context.Background(), prompt, tone)
+			ui.PostAsync(func() {
+				themeBusy.Set(false)
+				if err != nil {
+					themeErr.Set(serverText(tr, err))
+					return
+				}
+				next := look.Get()
+				next.Custom = res.Theme.Encode()
+				next.Prompt = prompt
+				next.Theme = design.CustomName
+				next = next.anchorTo()
+				look.Set(next)
+				applyAppearance(next)
+				savePrefs(next.prefsMap())
+				savePrefs(next.attunePrefs())
+				themeRepairs.Set(res.Repairs)
+				themeTrimmed.Set(res.Trimmed)
+				refreshDrift()
+			})
+		}()
+	}
+
+	act.Get().dropCustom = func() {
+		next := look.Get()
+		next.Custom = ""
+		next.Prompt = ""
+		if strings.EqualFold(next.Theme, design.CustomName) {
+			// Back to the house theme, because the theme it was pointing at no longer
+			// exists — and leaving `ui.theme` at "custom" with nothing behind it would
+			// resolve to Fanciful anyway, with a picker showing nothing selected.
+			next.Theme = ""
+			next = next.anchorTo()
+		}
+		look.Set(next)
+		applyAppearance(next)
+		savePrefs(next.prefsMap())
+		savePrefs(next.attunePrefs())
+		themeRepairs.Set(nil)
+		themeTrimmed.Set(false)
+	}
+
+	// toggleAttune keeps the drift state when switching OFF rather than clearing it,
+	// so switching back on resumes the walk instead of restarting it. Resetting is
+	// its own control, because "stop this" and "put it back" are different requests.
+	act.Get().toggleAttune = func() {
+		next := look.Get()
+		next.Attune = !next.Attune
+		look.Set(next)
+		applyAppearance(next)
+		savePrefs(next.prefsMap())
+		if next.Attune {
+			refreshDrift()
+		}
+	}
+
+	// toggleAttuneSmart changes who writes the next target, not this one.
+	//
+	// The palette in force is left exactly where it is, and that is deliberate: a
+	// switch that repainted the interface the moment it was pressed would make the
+	// consent question ("may this spend money") look like a theme picker.
+	act.Get().toggleAttuneSmart = func() {
+		next := look.Get()
+		next.AttuneSmart = !next.AttuneSmart
+		look.Set(next)
+		savePrefs(next.prefsMap())
+	}
+
+	act.Get().resetAttune = func() {
+		saveDrift(look.Get().anchorTo())
+		refreshDrift()
 	}
 
 	act.Get().undoMarkAll = func() {
@@ -4578,8 +4867,31 @@ func Reader(p readerProps) ui.Node {
 				// render — and it does not need one: applyAppearance touches
 				// documentElement, not the component tree.
 				if l := appearanceFromPrefs(p); l != (appearance{}) {
+					// One step of the drift, if one is owed for today (§20.16.3).
+					//
+					// Here rather than in Root's applyBootAppearance, and rather than
+					// on a timer, for two reasons. Root paints before the client
+					// exists, so it cannot persist the step it took — and a step
+					// applied but not saved is a drift that walks the same day over
+					// and over until the reader closes the tab. And a timer would tie
+					// the rate to how much somebody uses the reader, which is exactly
+					// what appearance.advanceDrift declines to do.
+					//
+					// Applied in the same pass as the rest of the look, so the reader
+					// sees one paint rather than the stored theme and then a
+					// correction.
+					if moved, ok := l.advanceDrift(today()); ok {
+						l = moved
+						savePrefs(l.attunePrefs())
+					}
 					look.Set(l)
 					applyAppearance(l)
+					// And ask where to go next, but only when there is nowhere to walk
+					// to or the walk has finished. On an ordinary boot in the middle of
+					// a three-week drift this makes no call at all.
+					if l.needsTarget() {
+						refreshDrift()
+					}
 				}
 				// Restored BEFORE the list is fetched, because loadItems takes
 				// the unread flag as an argument — setting it afterwards would
@@ -4933,7 +5245,8 @@ func Reader(p readerProps) ui.Node {
 	keyboardMap{
 		tr: tr, act: act, pane: pane, current: current,
 		items: items, stream: stream, feeds: feeds, tags: tags,
-		focusMode: focusMode, showOpen: showOpen, fsOpen: fsOpen, tsOpen: tsOpen,
+		focusMode: focusMode, showOpen: showOpen, showNeeds: showNeeds,
+		fsOpen: fsOpen, tsOpen: tsOpen,
 		paletteActive: paletteActive,
 		openItem:      openItem, refresh: refresh,
 	}.wire()
@@ -5200,6 +5513,14 @@ func Reader(p readerProps) ui.Node {
 						loading:     smartLoading.Get(),
 						feedPlus:    feedPlus.Get(),
 					},
+					theme: themeProps{
+						prompt:       themePrompt.Get(),
+						onPromptEdit: onThemePromptInput,
+						busy:         themeBusy.Get(),
+						err:          themeErr.Get(),
+						repairs:      themeRepairs.Get(),
+						trimmed:      themeTrimmed.Get(),
+					},
 				})
 			}),
 			articlePane(tr, articleProps{
@@ -5331,6 +5652,8 @@ func Reader(p readerProps) ui.Node {
 				audio:      showAudio.Get(),
 				speakState: speakState.Get(),
 				voice:      showVoice.Get(),
+				needs:      slidePrereqsNow(),
+				needsOpen:  showNeeds.Get(),
 				index:      i,
 				total:      len(items.Get()),
 				hosts:      hosts,

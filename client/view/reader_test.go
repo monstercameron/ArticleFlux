@@ -114,6 +114,83 @@ func TestResumeScopeNeverRestoresADislikedScope(t *testing.T) {
 		"anywhere in client/view", got)
 }
 
+// --- toggleUnreadResult: what pressing "u" (or the chip) actually does ----------
+
+// TestToggleUnreadResult is Bug 5 (and the click half of Bug 4): the
+// toggle-unread action used to just flip unreadOnly regardless of scope. That
+// is a no-op on screen when sel.Unread is true, because loadItems ORs the two
+// together (`unreadOnly.Get() || s.Unread`) — so pressing u on the rail's
+// Unread stream looked like it did nothing, contradicting both the chip
+// (TestListHeadToggleUnreadChipReflectsEffectiveFilter, components_test.go)
+// and emptyUnreadHint's promise "Press u to show everything again."
+//
+// toggleUnreadResult is the pure decision extracted from that action so this
+// can be pinned without mounting the whole Reader closure.
+func TestToggleUnreadResult(t *testing.T) {
+	tr := mustRuntime(t)
+	allScope := scope{Title: "All feeds"}
+
+	cases := []struct {
+		name           string
+		sel            scope
+		unreadOnly     bool
+		wantDest       scope
+		wantUnreadOnly bool
+		wantLeaving    bool
+	}{
+		{
+			name: "the plain toggle, currently off, stays on the same scope",
+			sel:  scope{Title: "Ars Technica", SourceID: "src-1"}, unreadOnly: false,
+			wantDest: scope{Title: "Ars Technica", SourceID: "src-1"}, wantUnreadOnly: true, wantLeaving: false,
+		},
+		{
+			name: "the plain toggle, currently on, stays on the same scope",
+			sel:  scope{Title: "Ars Technica", SourceID: "src-1"}, unreadOnly: true,
+			wantDest: scope{Title: "Ars Technica", SourceID: "src-1"}, wantUnreadOnly: false, wantLeaving: false,
+		},
+		{
+			// The bug: sel.Unread forces unread-only through loadItems' OR
+			// independently of unreadOnly, so there is no "Unread stream but
+			// not unread-only" state — the only way off is to leave the
+			// stream, back to All.
+			name: "the rail's Unread stream, unreadOnly off, leaves the stream",
+			sel:  scope{Title: "Unread", Unread: true}, unreadOnly: false,
+			wantDest: allScope, wantUnreadOnly: false, wantLeaving: true,
+		},
+		{
+			name: "the rail's Unread stream with unreadOnly ALSO on, still leaves the stream",
+			sel:  scope{Title: "Unread", Unread: true}, unreadOnly: true,
+			wantDest: allScope, wantUnreadOnly: false, wantLeaving: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dest, nextUnreadOnly, leaving := toggleUnreadResult(tr, c.sel, c.unreadOnly)
+			if dest != c.wantDest {
+				t.Errorf("toggleUnreadResult(sel=%+v, unreadOnly=%v) dest = %+v, want %+v",
+					c.sel, c.unreadOnly, dest, c.wantDest)
+			}
+			if nextUnreadOnly != c.wantUnreadOnly {
+				t.Errorf("toggleUnreadResult(sel=%+v, unreadOnly=%v) nextUnreadOnly = %v, want %v",
+					c.sel, c.unreadOnly, nextUnreadOnly, c.wantUnreadOnly)
+			}
+			if leaving != c.wantLeaving {
+				t.Errorf("toggleUnreadResult(sel=%+v, unreadOnly=%v) leaving = %v, want %v",
+					c.sel, c.unreadOnly, leaving, c.wantLeaving)
+			}
+			// The promise this whole fix exists to keep: after leaving,
+			// unread-only must actually be OFF and the destination scope must
+			// not itself be forcing it back on.
+			if leaving && (nextUnreadOnly || dest.Unread) {
+				t.Errorf("toggleUnreadResult(sel=%+v) leaves the stream but the result "+
+					"still forces unread-only (nextUnreadOnly=%v, dest.Unread=%v) — "+
+					"\"press u to show everything again\" would still be false",
+					c.sel, nextUnreadOnly, dest.Unread)
+			}
+		})
+	}
+}
+
 // --- relTime -----------------------------------------------------------------
 
 func TestRelTime(t *testing.T) {

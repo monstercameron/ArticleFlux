@@ -10,6 +10,7 @@
 // DOM belongs here**, so it can be decided in a test instead.
 //
 // Spec: plan.md §20.19, decision A40.
+
 package data
 
 import (

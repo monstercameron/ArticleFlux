@@ -82,6 +82,19 @@ func init() {
 		"unsupportedLanguage":   "“{locale}” is not one of the offered languages",
 		"alreadySourceLanguage": "the interface is already in English",
 
+		// --- theming (§20.16.3)
+		//
+		// Four refusals, and each one is here rather than folded into a generic
+		// failure because the remedy differs. "Try again" genuinely works for a
+		// truncated or malformed answer and is useless when there is no key; "pick a
+		// theme again" is the fix for a base this server will not read and would
+		// never be guessed from "invalid argument".
+		"themeNoPrompt":    "describe the theme you want in a few words",
+		"themeTruncated":   "the palette was cut off before it finished — try again",
+		"themeNotAPalette": "that came back as something other than a palette — try again",
+		"themeFailed":      "couldn't make a theme just now",
+		"themeBadBase":     "the theme you are using could not be read",
+
 		// §7.5's authorization map. "Not allowed" rather than "denied", and the
 		// same words whether the method is unknown to the map or the role is too
 		// low: a message that distinguishes them lets a caller map the server's

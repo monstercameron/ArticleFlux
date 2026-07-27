@@ -95,6 +95,124 @@ const (
 	slideMaxDwell = 60 * time.Second
 )
 
+// slideVoiceWait is how long read-to-me waits for the narrator before giving up
+// on it and running the story on the clock instead.
+//
+// Generous, because the wait is legitimate: the server has to write the segment
+// and then synthesise it, and on a long article both take real seconds. Twenty
+// is past the point where any healthy path has produced sound, and short enough
+// that a display which is never going to speak starts working within one story
+// rather than looking broken forever.
+// Raised from 20s, which was wrong for the case it most had to serve. A cold
+// broadcast segment is a model call that writes ~210 words and then a synthesis
+// of them; twenty seconds is inside the normal range for that, so the backstop
+// was firing on healthy instances and announcing that their voice did not exist.
+// This is now a backstop against a genuine hang, not a judgement about the
+// server — the player's own `error` state is what reports a real failure, and it
+// arrives immediately.
+const slideVoiceWait = 90 * time.Second
+
+// Why read-to-me is not speaking, as the string the surface renders and the
+// stylesheet reads. Empty means it is, or is still expected to.
+//
+// Three values, because they have three different remedies and the remedy is the
+// whole point of saying anything at all: a switch this reader can flip, a
+// deployment fact they cannot, and a failure that is neither.
+//
+// `failed` is worded as an OBSERVATION, and that is a correction rather than a
+// nicety. It used to say "the Smart+ voice isn't available on this server",
+// inferred from a twenty-second timeout — on an instance whose key was working
+// perfectly, and where the first broadcast segment is legitimately slow because
+// it is two paid round trips on a cold cache: write the segment, then synthesise
+// it. Asserting a configuration fact from a stopwatch is how software tells
+// confident lies about itself.
+const (
+	slideVoiceOff    = "off"
+	slideVoiceNoKey  = "nokey"
+	slideVoiceFailed = "failed"
+)
+
+// --- what read-to-me needs before it can speak --------------------------------
+
+// The prerequisites, in the order the dialog lists them. The order is the order
+// they MATTER in: the one that gates everything, then the one that turns a queue
+// into a broadcast, then the two that are consequences rather than choices.
+const (
+	prereqSmartVoice  = "smartVoice"
+	prereqPodcast     = "podcast"
+	prereqKeepPlaying = "keepPlaying"
+	prereqServerKey   = "serverKey"
+)
+
+// slidePrereq is one line of the dialog: a thing that has to be true, whether it
+// is, and whether this reader can make it so from here.
+type slidePrereq struct {
+	Key string
+	On  bool
+	// Fixable is whether a control in the dialog can change it. The server's key
+	// is not — it is somebody's deployment, and offering a switch that cannot
+	// work is worse than stating the fact.
+	Fixable bool
+	// Required separates "read-to-me cannot speak without this" from "this is
+	// what makes it a broadcast rather than a queue read in a row". Conflating
+	// the two would either block a reader who is happy with plain narration, or
+	// let someone turn the mode on and wonder why it does not sound like the
+	// thing they were promised.
+	Required bool
+}
+
+// slidePrereqs is the whole dependency graph of read-to-me, in one place.
+//
+// It exists as a pure function because this list is the thing that was WRONG
+// before: the dependency was real, undocumented, and discoverable only by
+// turning the mode on and getting silence. A reader should be able to see every
+// condition at once, with its current state, and fix the ones that are theirs to
+// fix — which is what the dialog this feeds renders.
+func slidePrereqs(smartVoice, podcast, keepPlaying, serverKey bool) []slidePrereq {
+	return []slidePrereq{
+		// The gate. The browser's own synthesiser reads the DOM, so it cannot
+		// speak a written segment, cannot hand over between stories, and reports
+		// no position for the display to follow.
+		{Key: prereqSmartVoice, On: smartVoice, Fixable: true, Required: true},
+		// Not required, and deliberately so: read-to-me with plain Smart+ voice
+		// is a perfectly good narrated slideshow. This is what makes it a
+		// programme.
+		{Key: prereqPodcast, On: podcast, Fixable: true},
+		// Required, and switched on for the reader when the show starts — listed
+		// anyway, because the dialog is a complete picture of what turning this
+		// on CHANGES, and a setting that flips itself without appearing anywhere
+		// is the kind of surprise that erodes trust in the rest of the screen.
+		{Key: prereqKeepPlaying, On: keepPlaying, Fixable: true, Required: true},
+		// A fact about the deployment rather than a choice. Read from whether the
+		// server minted a listening ticket for the story on screen, which is the
+		// same question asked in the only way that cannot go stale.
+		{Key: prereqServerKey, On: serverKey, Required: true},
+	}
+}
+
+// slidePrereqsMet reports whether read-to-me can actually speak.
+func slidePrereqsMet(list []slidePrereq) bool {
+	for _, p := range list {
+		if p.Required && !p.On {
+			return false
+		}
+	}
+	return true
+}
+
+// slidePrereqBlocked returns the first REQUIRED prerequisite that is missing, or
+// "". It is what decides the wording of the line on the slide: a reader who has
+// to flip a switch and a reader whose server cannot do this at all are owed
+// different sentences.
+func slidePrereqBlocked(list []slidePrereq) string {
+	for _, p := range list {
+		if p.Required && !p.On {
+			return p.Key
+		}
+	}
+	return ""
+}
+
 // slideAuto is the stored value that means "work it out from the story".
 const slideAuto = "auto"
 
@@ -311,6 +429,12 @@ const (
 	// The pace, from the settings screen. Carries its value in data-value like
 	// every other segmented control here.
 	actSlideDwell = "slide-dwell"
+	// The prerequisites dialog: opening it from the line on the slide, flipping
+	// one of the switches it lists, starting once they are met, and leaving.
+	actSlideNeeds      = "slide-needs"
+	actSlideNeedsFix   = "slide-needs-fix"
+	actSlideNeedsStart = "slide-needs-start"
+	actSlideNeedsClose = "slide-needs-close"
 )
 
 // The transport glyphs. ‹ and › rather than ◀ and ▶, because ▶ is already the
@@ -342,6 +466,19 @@ type slideProps struct {
 	// "waiting for the server to synthesise this" from "paused" — a wait of five
 	// or ten seconds that says nothing looks like a mode that has stopped working.
 	speakState string
+	// voice is why read-to-me is NOT speaking, or "" when it is. It has to be
+	// rendered here rather than left to the reader's notice banner, because the
+	// banner is underneath this overlay: a mode that quietly stopped doing the
+	// thing its name promises, with the explanation hidden behind itself, is
+	// indistinguishable from one that is broken.
+	voice string
+	// needs is every condition read-to-me depends on, with its current state, and
+	// needsOpen is whether the dialog listing them is up. Always computed, even
+	// when the dialog is closed — it is four booleans, and the alternative is a
+	// second code path that assembles them only when something has already gone
+	// wrong, which is the path that would rot.
+	needs     []slidePrereq
+	needsOpen bool
 	// index and total are the running order. One-based when rendered; this is the
 	// slice index.
 	index int
@@ -397,6 +534,10 @@ func slideshow(tr i18n.Runtime, p slideProps) ui.Node {
 			html.Div(html.Props{Class: "slide-rule", Aria: map[string]string{"hidden": "true"}},
 				html.I(html.Props{Key: "fill-" + currentID(p.it)})),
 			slideHud(tr, p),
+			// Above the show and inside it: the reader is in a fullscreen mode,
+			// and sending them to a settings screen to answer a question the mode
+			// itself raised would mean leaving the thing they were watching.
+			slideNeeds(tr, p),
 		)
 	})
 }
@@ -448,9 +589,28 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 			html.H1(html.Props{Class: "slide-head"}, html.Text(it.GetTitle())),
 			// Only while the card is still up. Once the story has opened, a line
 			// saying it is opening is a contradiction on screen.
-			ui.If(p.body == nil && p.phase == "card", func() ui.Node {
+			ui.If(p.voice == "" && p.body == nil && p.phase == "card", func() ui.Node {
 				return html.Div(html.Props{Class: "slide-wait"},
 					html.Text(tr.T("slides", "opening")))
+			}),
+			// Why the voice is not speaking, under the headline where the reader
+			// is already looking — not in the HUD, which is invisible until a
+			// pointer goes hunting for it.
+			//
+			// It stays up rather than appearing once. A reader who asked to be
+			// read to and is being shown silent slides will wonder again on every
+			// story, and a one-time toast they may have missed answers that
+			// exactly once.
+			//
+			// A BUTTON, not a line of text: it says what is wrong, and pressing it
+			// opens the thing that fixes it. A message that names a switch in
+			// another screen and cannot reach it is a message that has made the
+			// reader's problem their own homework.
+			ui.If(p.voice != "", func() ui.Node {
+				return html.Button(html.Props{
+					Class: "slide-wait slide-voice",
+					Raw:   map[string]any{"data-action": actSlideNeeds},
+				}, html.Text(tr.T("slides", "voice."+p.voice)))
 			}),
 		),
 		// The stage is rendered even when there is nothing to put in it, so the
@@ -494,6 +654,107 @@ func slideHud(tr i18n.Runtime, p slideProps) ui.Node {
 	)
 }
 
+// slideNeeds is the dialog that says what read-to-me is waiting on, and lets the
+// reader deal with it without leaving the mode.
+//
+// # Why a dialog rather than a better sentence
+//
+// The dependency is not one fact, it is four, and three of them are switches on
+// two different settings tabs. A line of copy can name one of them; it cannot
+// show which are already on, and it cannot be pressed. Turning a mode on and
+// being told — in a sentence, over the top of the thing you wanted — that it
+// will not work, with the remedy somewhere else, is the shape of the problem
+// this replaces.
+//
+// # Why the switches are real and immediate
+//
+// Each toggle here writes the same preference the Listening tab writes, at the
+// moment it is pressed. It is not a form with an Apply button: a staged copy of
+// four settings is a second source of truth for them, and the first time it
+// disagrees with the settings screen nobody will be able to say which is right.
+//
+// The two that spend money say so on the row. Consent to being read aloud is not
+// consent to being read, rewritten and joined up, and a dialog that turns three
+// egress switches on behind one confident button would be exactly the kind of
+// consent this application does not help itself to.
+func slideNeeds(tr i18n.Runtime, p slideProps) ui.Node {
+	rows := make([]ui.Node, 0, len(p.needs))
+	for _, q := range p.needs {
+		rows = append(rows, slideNeedRow(tr, q))
+	}
+	met := slidePrereqsMet(p.needs)
+	return html.Div(html.Props{
+		Class: "slide-scrim",
+		Data:  map[string]string{"open": strconv.FormatBool(p.needsOpen)},
+		Raw:   map[string]any{"data-action": actSlideNeedsClose},
+	},
+		html.Div(html.Props{
+			Class: "slide-needs", Role: "dialog",
+			// Stops a click inside the panel counting as a click on the backdrop.
+			Raw:  map[string]any{"data-action": "modal-keep"},
+			Aria: map[string]string{"modal": "true", "label": tr.T("slides", "needsTitle")},
+		},
+			html.Div(html.Props{Class: "slide-needs-head"},
+				html.Strong(html.Props{}, html.Text(tr.T("slides", "needsTitle"))),
+				html.Span(html.Props{Class: "slide-needs-sub"},
+					html.Text(tr.T("slides", "needsSub"))),
+			),
+			html.Div(html.Props{Class: "slide-needs-rows"}, rows...),
+			html.Div(html.Props{Class: "slide-needs-foot"},
+				// Present but refusing rather than absent, and the label says why:
+				// a button that vanishes leaves the reader looking for it, and one
+				// that is merely greyed out leaves them guessing which row is the
+				// problem.
+				html.Button(html.Props{
+					Class: "chip slide-needs-go",
+					Raw:   map[string]any{"data-action": actSlideNeedsStart},
+					Aria:  map[string]string{"disabled": strconv.FormatBool(!met)},
+				}, html.Text(tr.T("slides", "needsStart"))),
+				html.Button(html.Props{
+					Class: "chip chip-mini",
+					Raw:   map[string]any{"data-action": actSlideNeedsClose},
+				}, html.Text(tr.T("slides", "needsNotNow"))),
+			),
+		),
+	)
+}
+
+// slideNeedRow is one requirement: what it is, why, and its state.
+//
+// The state control is a chip for something the reader owns and a plain word for
+// something they do not. That distinction is the row's real job — a screen where
+// the server's configuration looks like a switch is a screen that will be
+// pressed, repeatedly, by someone who cannot fix what it names.
+func slideNeedRow(tr i18n.Runtime, q slidePrereq) ui.Node {
+	var control ui.Node
+	switch {
+	case q.Fixable:
+		control = pickChip(actSlideNeedsFix, q.Key, onOff(tr, q.On), q.On)
+	case q.On:
+		control = html.Span(html.Props{Class: "chip chip-static"},
+			html.Text(tr.T("slides", "needsPresent")))
+	default:
+		control = html.Span(html.Props{Class: "chip chip-static is-missing"},
+			html.Text(tr.T("slides", "needsAbsent")))
+	}
+	return html.Div(html.Props{Class: "slide-need", Key: "need-" + q.Key,
+		Data: map[string]string{
+			"on": strconv.FormatBool(q.On),
+			// Optional requirements are marked so the stylesheet can keep them
+			// quieter: they are the difference between "this will not work" and
+			// "this is what makes it the thing you wanted".
+			"required": strconv.FormatBool(q.Required),
+		}},
+		html.Div(html.Props{Class: "slide-need-text"},
+			html.Span(html.Props{Class: "slide-need-name"},
+				html.Text(tr.T("slides", "need."+q.Key))),
+			html.Span(html.Props{Class: "slide-need-why"},
+				html.Text(tr.T("slides", "why."+q.Key))),
+		),
+		control,
+	)
+}
+
 // slideBtn is the HUD's only control shape. Its accessible name is the label,
 // and the glyph is hidden, for the reason lead() gives: a screen reader
 // announcing the character is worse than announcing the word.
@@ -520,6 +781,11 @@ func slideState(tr i18n.Runtime, p slideProps) string {
 	switch {
 	case p.paused:
 		return tr.T("slides", "statePaused")
+	// Before the two narrating states, because it is the one that CONTRADICTS
+	// them: a display reporting "Narrating" in the corner while saying nothing is
+	// the reason someone concludes the feature is broken rather than off.
+	case p.voice != "":
+		return tr.T("slides", "stateSilent")
 	case p.audio && p.speakState == "loading":
 		return tr.T("slides", "stateSynthesising")
 	case p.audio:

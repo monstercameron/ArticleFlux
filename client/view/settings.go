@@ -10,6 +10,7 @@ import (
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
@@ -125,6 +126,35 @@ type settingsProps struct {
 	// because none of it is read by any other tab and settingsProps is already
 	// long enough to be scanned rather than read.
 	smart smartProps
+	// theme is the Appearance tab's transient state (§20.16.3): the prompt being
+	// typed, whether a composition is in flight, and what the readability floor
+	// reported about the last one. Grouped for the same reason `smart` is.
+	//
+	// Separate from `look`, and the distinction is worth keeping: `look` is the
+	// stored preference and this is what is happening right now. A prompt half typed
+	// is not a preference, and a repair note describes one answer rather than a
+	// setting.
+	theme themeProps
+}
+
+// themeProps is the Appearance tab's transient state. See settingsProps.theme.
+type themeProps struct {
+	// prompt is the draft, held by Reader like every other draft so typing survives
+	// the re-render a sibling control causes.
+	prompt       string
+	onPromptEdit ui.Handler
+	// busy is true while a composition is in flight. A bool rather than a token,
+	// unlike the language tab's `busy`: there is one button here, so there is no
+	// question about which control the work belongs to.
+	busy bool
+	err  string
+	// repairs and trimmed describe the LAST answer, not the current state — see
+	// repairNote and design.Repair for why they are reported at all.
+	repairs []design.Repair
+	trimmed bool
+	// driftSmart records whether the drift target in force was written by a model or
+	// by the deterministic tint, so the screen can say which.
+	driftSmart bool
 }
 
 func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {

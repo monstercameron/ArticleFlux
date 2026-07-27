@@ -298,3 +298,89 @@ func TestEveryOfferedPaceIsOneDwellForUnderstands(t *testing.T) {
 		}
 	}
 }
+
+// --- what read-to-me needs -------------------------------------------------------
+
+// The dependency graph is the thing that was wrong before this existed: real,
+// undocumented, and discoverable only by turning the mode on and getting
+// silence. These pin the two distinctions the dialog rests on.
+func TestPrereqsSeparateRequiredFromOptional(t *testing.T) {
+	all := slidePrereqs(true, true, true, true)
+	if !slidePrereqsMet(all) {
+		t.Fatal("everything on is not enough to speak")
+	}
+
+	byKey := map[string]slidePrereq{}
+	for _, p := range all {
+		byKey[p.Key] = p
+	}
+	// Read-to-me with the plain Smart+ voice is a perfectly good narrated
+	// slideshow. Requiring the broadcast rewrite would block a reader who is
+	// happy without it — and charge them for it.
+	if byKey[prereqPodcast].Required {
+		t.Error("joining the stories up is marked required; it is what makes the mode " +
+			"a broadcast, not what makes it work")
+	}
+	for _, key := range []string{prereqSmartVoice, prereqKeepPlaying, prereqServerKey} {
+		if !byKey[key].Required {
+			t.Errorf("%s is not marked required, but read-to-me cannot speak without it", key)
+		}
+	}
+	// The server's key is a deployment fact. A screen where it looks like a
+	// switch is a screen that gets pressed, repeatedly, by someone who cannot
+	// fix what it names.
+	if byKey[prereqServerKey].Fixable {
+		t.Error("the server's key is offered as something the reader can turn on")
+	}
+	for _, key := range []string{prereqSmartVoice, prereqPodcast, prereqKeepPlaying} {
+		if !byKey[key].Fixable {
+			t.Errorf("%s is a preference this reader owns, but the dialog cannot change it", key)
+		}
+	}
+}
+
+// Missing the optional one must not block, and missing any required one must.
+func TestPrereqsMet(t *testing.T) {
+	if !slidePrereqsMet(slidePrereqs(true, false, true, true)) {
+		t.Error("no broadcast rewrite blocked read-to-me, which works without it")
+	}
+	for _, c := range []struct {
+		name                                   string
+		smart, podcast, keepPlaying, serverKey bool
+	}{
+		{"no Smart+ voice", false, true, true, true},
+		{"no keep playing", true, true, false, true},
+		{"no key on the server", true, true, true, false},
+	} {
+		if slidePrereqsMet(slidePrereqs(c.smart, c.podcast, c.keepPlaying, c.serverKey)) {
+			t.Errorf("%s: reported as able to speak", c.name)
+		}
+	}
+}
+
+// **Which requirement is missing decides both the sentence and whether the
+// dialog opens.** A switch the reader owns is worth interrupting them for,
+// because pressing it is the whole remedy; a server with no key is not, because
+// there is nothing in that dialog they can act on.
+func TestPrereqBlockedNamesTheFirstMissingRequirement(t *testing.T) {
+	if got := slidePrereqBlocked(slidePrereqs(true, true, true, true)); got != "" {
+		t.Errorf("nothing missing reported %q", got)
+	}
+	if got := slidePrereqBlocked(slidePrereqs(false, true, true, true)); got != prereqSmartVoice {
+		t.Errorf("blocked on %q, want %q", got, prereqSmartVoice)
+	}
+	if got := slidePrereqBlocked(slidePrereqs(true, true, true, false)); got != prereqServerKey {
+		t.Errorf("blocked on %q, want %q", got, prereqServerKey)
+	}
+	// The optional one is never the answer, however absent it is.
+	if got := slidePrereqBlocked(slidePrereqs(true, false, true, true)); got != "" {
+		t.Errorf("blocked on the optional requirement (%q)", got)
+	}
+	// Order matters: Smart+ voice comes first because it is the one that gates
+	// everything, and naming Keep playing to a reader whose voice is off would
+	// send them to fix the second problem first.
+	if got := slidePrereqBlocked(slidePrereqs(false, true, false, false)); got != prereqSmartVoice {
+		t.Errorf("with everything missing the dialog leads with %q, want %q",
+			got, prereqSmartVoice)
+	}
+}

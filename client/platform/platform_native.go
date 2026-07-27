@@ -7,6 +7,7 @@
 // Every function is a no-op returning a zero value. That is deliberate: a native
 // build has no DOM, and faking one here would produce tests that pass against a
 // fiction. Behaviour that needs a browser is covered by the e2e suite instead.
+
 package platform
 
 func SetRootVar(name, value string) {}
@@ -156,8 +157,10 @@ func Origin() string { return "" }
 // is for.
 func BasePath() string { return "/" }
 
-// A native build has no browser, so it has no network events and nothing that
-// resumes. Online reports true for the same reason LocalGet reports "": the
+// Online reports true, always, because a native build has no browser and
+// therefore no network events and nothing that resumes.
+//
+// True for the same reason LocalGet reports "": the
 // honest answer for a process with no navigator is not "offline", it is "this
 // question does not apply" — and of the two available answers, the one that
 // does not suppress connection attempts is the safe one.
@@ -169,10 +172,11 @@ func OnResume(fn func()) Listener { return Listener{} }
 
 func RefreshTopmost() {}
 
-// Local storage has no native equivalent, and inventing an in-memory map here
-// would make a native test of the login gate pass against a fiction. Absent is
-// the honest answer: a native build has no browser and therefore no stored
-// credential.
+// LocalGet always reports "", because local storage has no native equivalent.
+//
+// Inventing an in-memory map here would make a native test of the login gate
+// pass against a fiction. Absent is the honest answer: a native build has no
+// browser and therefore no stored credential.
 func LocalGet(key string) string { return "" }
 
 func LocalSet(key, val string) bool { return false }

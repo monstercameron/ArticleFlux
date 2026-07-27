@@ -28,10 +28,25 @@ import { test, expect, boot } from './fixtures.mjs';
 /** slides is the overlay, which does not exist at all until the mode starts. */
 const slides = (page) => page.locator('.slides');
 
-/** startShow opens the slideshow from the list header and waits for a story. */
+/**
+ * startShow opens the slideshow from the list header and waits for a story.
+ *
+ * The click is retried until the overlay appears, and that is about the harness
+ * rather than the feature. Every control in this app is dispatched through one
+ * delegated listener registered in an effect, so a click that lands between the
+ * shell painting and that effect running does nothing at all — `boot` waits for
+ * the connection and the first row, neither of which implies the listener. On an
+ * unloaded machine the window is invisible; on this one, with two agents and a
+ * browser competing, it is occasionally real.
+ *
+ * `toPass` rather than a fixed second sleep: it retries at the speed the machine
+ * is actually running at instead of at the speed one was once measured at.
+ */
 async function startShow(page) {
-  await page.getByRole('button', { name: /^Slideshow$/ }).click();
-  await expect(slides(page)).toBeVisible();
+  await expect(async () => {
+    await page.getByRole('button', { name: /^Slideshow$/ }).click();
+    await expect(slides(page)).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
   await expect(page.locator('.slide-head')).not.toBeEmpty();
 }
 
@@ -202,6 +217,68 @@ test.describe('slideshow', () => {
 
     await page.getByRole('button', { name: 'Leave the slideshow' }).click();
     await expect(slides(page)).toHaveCount(0);
+  });
+
+  // The regression this file most needs.
+  //
+  // Read to me used to switch the clock OFF and hand pacing to the narrator. When
+  // the narrator never started — no Smart+ voice, no key on the server, a refused
+  // ticket, a failed synthesis — nothing was left to drive the display: it froze
+  // on its first title card, the headline never opened onto the story, the scroll
+  // never ran, and the browser's own voice read the article underneath it. There
+  // was no error, because nothing had errored; the mode had simply removed its
+  // own clock. The reader's notice banner said why, and sat behind the overlay.
+  //
+  // This instance has no OpenAI key and the account has not opted in, which is
+  // exactly that case.
+  test('read to me without the Smart+ voice keeps running, and says why', async ({ page }) => {
+    await boot(page);
+    await startShow(page);
+
+    await page.keyboard.press('v');
+
+    // It asks, rather than failing quietly. The dialog is the answer to "what
+    // does this need" — four requirements, each with its state.
+    const needs = page.locator('.slide-needs');
+    await expect(needs).toBeVisible();
+    await expect(needs.locator('.slide-need')).toHaveCount(4);
+
+    // This instance has no key, so the one thing the reader cannot fix says so
+    // in words rather than offering a switch that could not work.
+    await expect(needs.locator('.slide-need[data-on="false"]').last())
+      .toContainText(/not on this server/i);
+    // And Start refuses rather than disappearing: a button that vanishes leaves
+    // the reader hunting for it.
+    await expect(page.getByRole('button', { name: /Start reading to me/i }))
+      .toHaveAttribute('aria-disabled', 'true');
+
+    // The switches are real. Flipping one here is the same as flipping it in
+    // Settings — no staged copy, no Apply.
+    const smartRow = needs.locator('.slide-need').first();
+    await smartRow.getByRole('button').click();
+    await expect(smartRow).toHaveAttribute('data-on', 'true');
+
+    // Escape peels ONE layer: the dialog, not the show.
+    await page.keyboard.press('Escape');
+    await expect(needs).not.toBeVisible();
+    await expect(slides(page)).toBeVisible();
+
+    // And the show goes on. Both halves matter: the phase reaching `read` is the
+    // headline having animated into its header and the story having opened, and
+    // the fill moving is the clock still running underneath it.
+    await expect(slides(page)).toHaveAttribute('data-phase', 'read', { timeout: 40_000 });
+    await expect(page.locator('.slide-body')).toBeVisible();
+    await expect.poll(
+      () => slides(page).evaluate(
+        (el) => parseFloat(getComputedStyle(el).getPropertyValue('--fill')) || 0),
+      { timeout: 30_000 }).toBeGreaterThan(0.25);
+
+    // Declining the dialog turned read-to-me back OFF, which is a decision
+    // rather than a dismissal — so the line explaining it went too. A mode left
+    // nominally on and silent would put the same sentence on every slide.
+    await expect(page.locator('.slide-voice')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Read to me' }))
+      .toHaveAttribute('aria-pressed', 'false');
   });
 
   test('the pace is a saved preference', async ({ page }) => {

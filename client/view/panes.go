@@ -272,8 +272,41 @@ type railProps struct {
 	// long enough that finding a feed is a scroll-and-scan, which is slower than
 	// typing three letters of its name — and the unread/all toggle does not help
 	// when the feed you want is quiet.
-	filter        string
-	onFilterInput ui.Handler
+	filter string
+	// onFilterInput is held through a Ref, and the indirection is the whole point.
+	//
+	// It was a bare ui.Handler, under a comment at the call site reading "a
+	// ui.Handler is a value and compares fine; a func field would defeat the
+	// bailout on every render". The first half is true and the second half is the
+	// trap: ui.Handler IS a value — `struct{ value any }` — but the value it
+	// holds is the handler function, and nothing about the wrapper stops the
+	// comparison from descending into it.
+	//
+	// railProps has slice fields, so it is not reflect.Type.Comparable, so GWC's
+	// fastEqual takes its last branch and calls reflect.DeepEqual. DeepEqual
+	// recurses into unexported fields and its rule for functions is absolute:
+	// "Func values are deeply equal if both are nil; otherwise they are not
+	// deeply equal." So identical props carrying the SAME handler compared
+	// UNEQUAL, every time, and railPane never bailed out once.
+	//
+	// The cost was not on the paths anyone was watching. The list pane writes
+	// scrollTop once per painted frame while scrolling (see the OnScrollMetrics
+	// effect in reader.go), each write re-renders Reader, and each of those
+	// rebuilt all 151 sidebar rows — sixty times a second, for a column whose
+	// data had not changed. That is the flicker in the leftmost pane while
+	// scrolling the middle one.
+	//
+	// A Ref fixes it because Ref[T] is `struct{ raw *runtime.RefValue }` and
+	// DeepEqual short-circuits on pointer equality before it descends: "Pointer
+	// values are deeply equal if they are equal using Go's == operator". The
+	// pointer is stable across renders by construction, so the comparison stops
+	// there and never reaches the func. It is also the idiom already used for the
+	// scroll listener a few lines below — "through the Ref, never the closure".
+	//
+	// It must stay a Ref that Reader OWNS. Taking &handler of a local produces a
+	// fresh pointer per render, which descends again and restores the bug with
+	// no visible difference in the code.
+	onFilterInput ui.Ref[ui.Handler]
 	// The three sections a reader can fold away. Booleans rather than a map,
 	// deliberately: railProps is compared by value so GWC can skip re-rendering
 	// 151 rows, and a map field would compare by identity and defeat that on
@@ -441,7 +474,7 @@ func railPane(p railProps) ui.Node {
 				html.Input(html.Props{
 					Class: "field", Type: "search", Placeholder: tr.T("rail", "filterPlaceholder"),
 					Value:   p.filter,
-					OnInput: p.onFilterInput,
+					OnInput: p.onFilterInput.Get(),
 					Data:    map[string]string{"role": "feed-filter"},
 					Aria:    map[string]string{"label": tr.T("rail", "filterAria")},
 				})))
@@ -1531,20 +1564,41 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 	switch {
 	case p.sel.Search != "":
 		sub = tr.T("list", "subSearch")
+	case p.sel.MyFeed:
+		// My Feed is neither newest-first nor the unread count, and it said both:
+		// the header read "3875 unread, newest first" while the rail badge beside it
+		// read 199. Two numbers for one list, and the larger one belonged to a
+		// different stream.
+		//
+		// p.total, not p.unread, for that reason: total is how many items THIS scope
+		// matches, so the sentence under the title and the badge beside it are counting
+		// the same thing. p.unread is a property of the unread stream and belongs to it.
+		//
+		// And the ordering claim is the interest layer's, not recency's, which is the
+		// whole point of the stream (§18.9: the ranking explains itself, starting here).
+		sub = tr.T("list", "subMyFeed", i18n.Count(p.total))
 	case p.sel.Later:
 		sub = tr.T("list", "subLater")
 	case p.sel.Rating > 0:
 		sub = tr.T("list", "subLiked")
 	case p.sel.Rating < 0:
 		sub = tr.T("list", "subDisliked")
-	case p.unreadOnly:
+	case p.unreadOnly, p.sel.Unread:
+		// Same two fields, same OR, as emptyList and the chip below: the
+		// persistent "u" toggle and the rail's dedicated Unread stream row
+		// both put the reader on a view loadItems is already filtering to
+		// unread-only (`unreadOnly.Get() || s.Unread` in reader.go). Without
+		// sel.Unread here this fell through to subUnreadCount/subNewest,
+		// which describe an UNfiltered list — "Newest first" under a list
+		// that is, in fact, unread-only.
 		sub = tr.T("list", "subUnread")
 	case p.unread > 0:
 		sub = tr.T("list", "subUnreadCount", i18n.Count(p.unread))
 	}
 
+	effectiveUnread := p.unreadOnly || p.sel.Unread
 	unreadLabel := tr.T("list", "unreadOnly")
-	if p.unreadOnly {
+	if effectiveUnread {
 		unreadLabel = tr.T("list", "showingUnread")
 	}
 
@@ -1614,7 +1668,15 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 				Aria: map[string]string{"label": tr.T("list", "searchAria")},
 			}),
 			glyphChip("refresh", glyphRefresh, tr.T("list", "refresh"), false),
-			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly),
+			// Pressed state reflects the EFFECTIVE filter (see effectiveUnread
+			// above), not just p.unreadOnly — otherwise the chip reads
+			// unpressed while the rail's Unread stream is filtering to
+			// unread-only underneath it. Clicking it (toggleUnread, reader.go)
+			// is coherent with what is shown: when sel.Unread put the reader
+			// here, toggleUnread's sel.Unread branch leaves the stream (back to
+			// All) rather than merely flipping unreadOnly, so a pressed chip
+			// always un-presses on click.
+			glyphChip("toggle-unread", glyphUnread, unreadLabel, effectiveUnread),
 			glyphChip("mark-all", glyphMarkRead, tr.T("list", "markAllRead"), false),
 			// The slideshow (§19). Here rather than beside the article controls,
 			// because it acts on the FEED you are looking at rather than on one
@@ -1771,19 +1833,54 @@ func rankBlurb(tr i18n.Runtime, it *pb.Item) ui.Node {
 	if len(shown) > MaxBlurbReasons {
 		shown = shown[:MaxBlurbReasons]
 	}
+
+	// A promoted row's reason needs a lead-in, because the model was asked for a FRAGMENT.
+	//
+	// The prompt asks it to complete "moved up because …", so it answers with "explains the
+	// mechanism" or "the only one with actual numbers" — true and, on its own, ungrammatical
+	// as a line of UI. The lead-in supplies the clause it was written against, which is also
+	// what makes the SMART+ badge beside it mean something instead of just being present.
+	//
+	// Only when the leading reason IS the Smart+ one: a promoted row whose model reason was
+	// dropped (too long, or absent) falls back to its free-tier reason, and that one is a
+	// standalone phrase that must not be prefixed with a claim about causality.
+	lead := glyphMyFeed
+	plusLed := isSmartPlusLed(it)
+	if plusLed {
+		lead = tr.T("list", "whyMovedUp")
+	}
 	return html.Div(html.Props{
 		Class: "item-why",
 		Raw: map[string]any{
 			"data-rank-slot": it.GetRankSlot(),
-			// Every clause, on hover. The line shows the two that mattered; §18.9 wants
+			// So the stylesheet can mark the paid tier's own words without spending any of
+			// the line's width on saying so.
+			"data-why-plus": strconv.FormatBool(plusLed),
+			// Every clause, on hover. The line shows the one that mattered; §18.9 wants
 			// the whole explanation reachable, not merely summarised.
 			"title": strings.Join(reasons, " · "),
 		},
 		Aria: map[string]string{"label": tr.T("list", "whyAria")},
 	},
-		html.Span(html.Props{Class: "why-mark"}, html.Text(glyphMyFeed)),
+		html.Span(html.Props{Class: "why-mark"}, html.Text(lead)),
 		html.Text(strings.Join(shown, " · ")),
 	)
+}
+
+// isSmartPlusLed reports whether the paid tier's own reason is the one this row will show.
+//
+// It re-derives the ordering rather than being told by rankBlurb, because the two questions
+// have different answers: leadWithContent decides ORDER over every reason, and this decides
+// whether the FIRST of them is the Smart+ one after truncation to MaxBlurbReasons. Threading a
+// bool out of the sort would couple them for one caller.
+func isSmartPlusLed(it *pb.Item) bool {
+	terms := it.GetRankReasonTerms()
+	for _, t := range terms {
+		if t == smartPlusTerm {
+			return true
+		}
+	}
+	return false
 }
 
 // contentReasonTerms are the scoring factors that say what an item is ABOUT.
@@ -1797,6 +1894,15 @@ func rankBlurb(tr i18n.Runtime, it *pb.Item) ui.Node {
 var contentReasonTerms = map[string]bool{
 	"topic": true, "entity": true, "corroboration": true, "manual": true,
 }
+
+// smartPlusTerm is the reason the paid tier wrote about its own decision.
+//
+// It leads ahead of every other reason on a row that has one, and that ordering is the whole
+// point of separating it from contentReasonTerms. A promoted row wears a SMART+ badge, and the
+// badge raises exactly one question — why did the paid tier move this? A free-tier reason
+// answers a different one: why is it on my feed at all. Leading with the free reason left the
+// badge unexplained, which is what it did when this shipped.
+const smartPlusTerm = "smartplus"
 
 // leadWithContent reorders the reasons so the one that answers "why THIS article" comes
 // first.
@@ -1819,16 +1925,24 @@ func leadWithContent(reasons, terms []string) []string {
 	if len(terms) == 0 {
 		return reasons
 	}
-	lead := make([]string, 0, len(reasons))
-	rest := make([]string, 0, len(reasons))
+	// Three buckets, in this order: what the paid tier said about its own decision, what the
+	// item is about, and the circumstances. Each keeps the score's ordering within itself, so
+	// the strongest reason of a kind still leads its bucket.
+	var plus, lead, rest []string
 	for i, why := range reasons {
-		if i < len(terms) && contentReasonTerms[terms[i]] {
+		switch {
+		case i < len(terms) && terms[i] == smartPlusTerm:
+			plus = append(plus, why)
+		case i < len(terms) && contentReasonTerms[terms[i]]:
 			lead = append(lead, why)
-			continue
+		default:
+			rest = append(rest, why)
 		}
-		rest = append(rest, why)
 	}
-	return append(lead, rest...)
+	out := make([]string, 0, len(reasons))
+	out = append(out, plus...)
+	out = append(out, lead...)
+	return append(out, rest...)
 }
 
 // smartPlusMark labels a row the paid tier actually moved.
@@ -1902,7 +2016,14 @@ func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 		// unread-only by construction, so "All caught up — press u to show everything
 		// again" would offer a key that does nothing on this stream.
 		return emptyState(tr, "emptyMyFeed", "emptyMyFeedHint")
-	case p.unreadOnly:
+	case p.unreadOnly, p.sel.Unread:
+		// Two different fields can put a reader on an unread-only view: the
+		// persistent "u" toggle (p.unreadOnly) layered over any stream, and the
+		// rail's dedicated "Unread" stream row (p.sel.Unread), which loadItems'
+		// own query already ORs together (`unreadOnly.Get() || s.Unread` in
+		// reader.go). This case has to agree with that OR, or the rail's stream
+		// falls through to the generic "no articles yet" copy instead of "All
+		// caught up".
 		return emptyState(tr, "emptyUnread", "emptyUnreadHint")
 	case p.sel.Later:
 		return emptyState(tr, "emptyLater", "emptyLaterHint")

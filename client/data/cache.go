@@ -17,6 +17,7 @@
 // No build tag: it is a bounded map with an eviction rule, which is where the
 // interesting failures are (unbounded growth, serving one scope's answer to
 // another's question, a stale entry outliving its usefulness).
+
 package data
 
 import (

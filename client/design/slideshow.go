@@ -471,6 +471,135 @@ func slideStage(r func(string, string) css.Rule) {
 		r("color", "var(--mute)"),
 		r("margin-top", "clamp(16px, 2vw, 30px)"),
 	)
+	// The voice's own line is the same shape, one step brighter and in the
+	// accent. It is not an error state — the display is working and one part of
+	// it is switched off — so it gets the colour that means "look here", not the
+	// one that means "something broke". No border, no box, no icon: this sits
+	// under a headline on a screen whose whole proposition is that it is calm.
+	//
+	// It is a BUTTON, so it needs the affordance to be pressed and none of the
+	// chrome: an underline on hover, and nothing at rest. A bordered pill here
+	// would be the only object on the screen asking to be clicked, on a display
+	// designed to be watched.
+	css.Global(".slide-voice",
+		r("color", "var(--cc)"),
+		r("max-width", "46ch"), r("line-height", "1.5"),
+		r("text-align", "left"),
+		r("background", "none"), r("border", "0"), r("padding", "0"),
+		r("cursor", "pointer"),
+		r("font-family", "var(--ui)"), r("font-size", "clamp(13px, 1vw, 16px)"),
+		r("letter-spacing", ".1em"), r("text-transform", "uppercase"),
+		r("text-decoration", "none"),
+		r("transition", "color "+warm),
+	)
+	css.Global(".slide-voice:hover",
+		r("color", "var(--cream)"), r("text-decoration", "underline"),
+		r("text-underline-offset", ".3em"))
+
+	slideNeedsCSS(r)
+}
+
+// slideNeedsCSS is the prerequisites dialog.
+//
+// A panel rather than the reader's own `.pal-scrim`, and above it: this opens
+// over a fullscreen mode at z-index 70, and the shared scrim sits at 60. It
+// borrows the shape — a bordered well on the raised surface, a backdrop that
+// blurs what is behind — so it reads as the same application, but it centres
+// rather than aligning to the upper third. There is no growing list here; it is
+// a fixed set of four rows, and a fixed panel belongs in the middle of the
+// screen it interrupted.
+func slideNeedsCSS(r func(string, string) css.Rule) {
+	css.Global(".slide-scrim",
+		r("position", "fixed"), r("inset", "0"), r("z-index", "80"),
+		r("background", "color-mix(in srgb, var(--bg) 78%, transparent)"),
+		r("backdrop-filter", "blur(4px)"),
+		r("display", "grid"), r("place-items", "center"),
+		r("padding", "24px"),
+		// Closed is INVISIBLE and unreachable, not merely transparent: visibility
+		// takes it out of the tab order and the accessibility tree, which opacity
+		// alone would not — and this panel is full of buttons.
+		r("opacity", "0"), r("visibility", "hidden"),
+		r("transition", "opacity "+move+", visibility 0s linear var(--t2)"),
+	)
+	css.Global(".slide-scrim[data-open='true']",
+		r("opacity", "1"), r("visibility", "visible"),
+		r("transition", "opacity "+move+", visibility 0s"))
+
+	css.Global(".slide-needs",
+		r("width", "min(680px, 100%)"),
+		r("max-height", "82vh"), r("overflow-y", "auto"),
+		r("background", "var(--sur)"),
+		r("border", "1px solid var(--line)"),
+		r("border-radius", "18px"),
+		r("padding", "26px 28px 22px"),
+		r("box-shadow", "0 24px 60px -20px color-mix(in srgb, var(--bg) 90%, transparent)"),
+		r("transform", "translateY(calc(var(--mo) * 10px))"),
+		r("transition", "transform "+move),
+	)
+	css.Global(".slide-scrim[data-open='true'] .slide-needs", r("transform", "none"))
+
+	css.Global(".slide-needs-head", r("margin-bottom", "20px"))
+	css.Global(".slide-needs-head strong",
+		r("display", "block"),
+		r("font-family", "var(--dsp)"), r("font-size", "22px"),
+		r("font-weight", "600"), r("color", "var(--cream)"),
+	)
+	css.Global(".slide-needs-sub",
+		r("display", "block"), r("margin-top", "6px"),
+		r("font-family", "var(--rd)"), r("font-size", "13.5px"),
+		r("line-height", "1.6"), r("color", "var(--mute)"),
+		r("max-width", "56ch"),
+	)
+
+	css.Global(".slide-needs-rows",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "2px"))
+	css.Global(".slide-need",
+		r("display", "flex"), r("align-items", "center"), r("gap", "16px"),
+		r("padding", "13px 0"),
+		r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".slide-need-text", r("flex", "1 1 auto"), r("min-width", "0"))
+	css.Global(".slide-need-name",
+		r("display", "block"),
+		r("font-size", "14.5px"), r("color", "var(--cream)"),
+	)
+	css.Global(".slide-need-why",
+		r("display", "block"), r("margin-top", "3px"),
+		r("font-family", "var(--rd)"), r("font-size", "12.5px"),
+		r("line-height", "1.55"), r("color", "var(--mute)"),
+	)
+	// An optional requirement is quieter, so the eye lands on the ones that
+	// actually block. It is still legible — "optional" is not "ignorable", and
+	// this is the row that turns a narrated slideshow into the broadcast the
+	// reader probably came for.
+	css.Global(".slide-need[data-required='false'] .slide-need-name",
+		r("color", "var(--soft)"))
+	// A requirement that is met stops asking for attention. The mark is the row
+	// going quiet rather than a tick being added: a column of green ticks is a
+	// checklist, and this is a list of settings.
+	css.Global(".slide-need[data-on='true'] .slide-need-why", r("opacity", ".72"))
+	// The one thing here nobody can fix from this screen, said in the colour that
+	// means it: not an error, but not something to keep pressing either.
+	css.Global(".chip-static.is-missing",
+		r("color", "var(--neg)"), r("border-color", "color-mix(in srgb, var(--neg) 45%, transparent)"))
+
+	css.Global(".slide-needs-foot",
+		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
+		r("margin-top", "22px"), r("padding-top", "18px"),
+		r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".slide-needs-go",
+		r("background", "var(--cc)"), r("color", "var(--bg)"),
+		r("border-color", "var(--cc)"), r("font-weight", "500"),
+	)
+	// Refusing rather than absent. aria-disabled rather than the attribute,
+	// because a truly disabled button is not focusable and cannot explain
+	// itself — this one stays reachable, and pressing it does nothing while the
+	// rows above it say what is still missing.
+	css.Global(".slide-needs-go[aria-disabled='true']",
+		r("background", "none"), r("color", "var(--mute)"),
+		r("border-color", "var(--line)"), r("cursor", "default"),
+	)
 }
 
 // slideRule is the signature: one hairline across the foot of the screen.

@@ -50,8 +50,13 @@ func init() {
 		// duration in any language.
 		"slidesSeconds": "{n} sec",
 		"slidesRead":    "Read to me",
-		"slidesReadHint": "The voice sets the pace instead of the clock: each story stays up until it has been read out, and the page scrolls in step with it. " +
-			"Uses the same voice and the same Keep playing behaviour as listening does.",
+		// The dependency is stated FIRST rather than as a footnote. It is the
+		// whole reason someone turns this on and finds a silent slideshow: the
+		// browser's own synthesiser reads the page rather than a written segment,
+		// and reports no position for the display to follow.
+		"slidesReadHint": "Needs the Smart+ voice, which is under Listening. The voice then sets the pace instead of the clock: " +
+			"each story stays up until it has been read out, and the page scrolls in step with it. " +
+			"Without it, the slideshow runs silently on the clock and says so.",
 
 		// --- listening
 		"voiceGroup":       "Voice",
@@ -70,7 +75,8 @@ func init() {
 		// actually does is join the articles up, and saying so is both accurate
 		// and the reason someone would want it.
 		"podcast": "Join the stories up",
-		"podcastHint": "Rewrites each article as one segment of a continuous broadcast that hands over from the story before it, so a queue sounds like a programme rather than a playlist. " +
+		"podcastHint": "Needs the Smart+ voice above — the segments are written and spoken on the server, so the browser's own voice cannot read them. " +
+			"Rewrites each article as one segment of a continuous broadcast that hands over from the story before it, so a queue sounds like a programme rather than a playlist. " +
 			"Replaces the summary above when both are on. Charged once per pair of articles and then cached.",
 		// The queue is its own group because it is a different KIND of decision:
 		// the two above change what one article sounds like, this changes what

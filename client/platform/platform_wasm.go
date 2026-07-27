@@ -1,5 +1,7 @@
 //go:build js && wasm
 
+// The browser half of the split described in doc.go.
+//
 // Package platform is the only package in ArticleFlux permitted to import
 // syscall/js, and CI enforces that (A26, guard 2).
 //
@@ -909,7 +911,7 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 	topmostRefresh = func() {
 		last = ""
 		if !el.Truthy() {
-			el = doc.Call("querySelector", rootSelector)
+			el = resolveTopmostFallback(doc, rootSelector, matchSelector)
 		}
 		if pending {
 			return
@@ -922,6 +924,37 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 	opts.Set("capture", true)
 	root.Call("addEventListener", "scroll", f, opts)
 	return Listener{target: root, event: "scroll", fn: f, capture: true}
+}
+
+// resolveTopmostFallback picks the element `frame` should measure when a
+// refresh is asked for before any real scroll has ever set `el`.
+//
+// It has to be matchSelector — the actual scrolling pane — and NOT
+// rootSelector, the delegation root the listener is merely anchored to for
+// event capture. Before this, an on-demand refresh with `el` still unset fell
+// back to `querySelector(rootSelector)` (`#app`, the whole shell), which does
+// not scroll at all: `frame` would read a permanently-zero scrollTop and a
+// clientHeight/scrollHeight pair that never satisfy the "at the bottom"
+// check, so its offsetTop-vs-top comparison degenerates to "whichever article
+// renders first in DOM order" — reported as topmost regardless of where the
+// pane had actually been scrolled to.
+//
+// This is exactly the window a jump opens: `expectFocus` is cleared and
+// `RefreshTopmost` is called back-to-back (see releaseFocus in reader.go)
+// the instant the pane's `scrollTop` is assigned, which is BEFORE the browser
+// has necessarily dispatched the resulting native `scroll` event that would
+// have set `el` to the real pane. If that refresh's `frame` pass runs first —
+// a genuine race, not a fixed ordering — it reports the article seeded ABOVE
+// the jump's target as topmost, and the guard that was supposed to protect it
+// has already been lowered, so it gets marked read.
+//
+// A pure function so the failure mode is provable without depending on
+// requestAnimationFrame timing or a real scroll event ever firing — see
+// topmost_fallback_wasm_test.go, which fails if this is changed back to
+// querying rootSelector and passes against matchSelector.
+func resolveTopmostFallback(doc js.Value, rootSelector, matchSelector string) js.Value {
+	_ = rootSelector // kept in the signature so reverting this line stays a one-line change
+	return doc.Call("querySelector", matchSelector)
 }
 
 // topmostRefresh re-runs the topmost calculation and re-announces the result.

@@ -56,6 +56,13 @@ var dynamicPrefixes = map[string]string{
 	"feedSettings.cache.": "the cacheChoices values",
 	"feedSettings.mute.":  "the muteChoices values",
 	"list.empty":          "emptyState(titleKey, hintKey) call sites",
+	// The slideshow's reason for not speaking, built as "voice."+p.voice from
+	// the slideVoice* constants in client/view.
+	"slides.voice.": "the slideVoice* constants, via view.slideBody",
+	// The prerequisites dialog names each requirement and says why, both keyed
+	// off slidePrereq.Key — the prereq* constants in client/view.
+	"slides.need.": "the prereq* constants, via view.slideNeedRow",
+	"slides.why.":  "the prereq* constants, via view.slideNeedRow",
 }
 
 func TestEveryReferencedKeyExists(t *testing.T) {

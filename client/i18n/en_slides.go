@@ -57,5 +57,57 @@ func init() {
 		"stateSynthesising": "Writing the segment",
 		"stateNarrating":    "Narrating",
 		"statePlaying":      "Playing",
+		// Read to me is on and nothing is speaking. It outranks the two above,
+		// because a corner reporting "Narrating" over silence is the reason
+		// someone concludes the feature is broken rather than switched off.
+		"stateSilent": "Not speaking",
+
+		// --- why read to me is not speaking, shown under the headline.
+		//
+		// Both name the REMEDY, because that is the only reason to say anything:
+		// the first is a switch this reader can flip, the second is the server's
+		// configuration and nothing they do in this window will change it. Neither
+		// apologises, and neither says "error" — the display is working, and one
+		// part of it is switched off.
+		// All three end in the same place — press this to see what is needed —
+		// because the line IS a button. None of them says "error": the display is
+		// working, and one part of it is not switched on.
+		//
+		// `failed` is an OBSERVATION and deliberately not a diagnosis. It replaced
+		// "The Smart+ voice isn't available on this server", which was inferred
+		// from a timeout on an instance whose key worked perfectly — a confident
+		// claim about somebody's deployment, drawn from a stopwatch. If we do not
+		// know why, we do not get to say why.
+		"voice.off":    "Read to me needs a couple of things switched on — see what",
+		"voice.nokey":  "This server has no Smart+ key, so read to me can't speak here. Playing silently",
+		"voice.failed": "The voice didn't start, so this is playing silently — see what read to me needs",
+
+		// --- the prerequisites dialog
+		//
+		// The title says what the reader ASKED FOR rather than what is wrong,
+		// because they have just pressed something and this is the answer to it.
+		"needsTitle": "Read to me needs a few things on",
+		"needsSub":   "Each of these is a real setting. Turning one on here is the same as turning it on in Settings.",
+		// The two states of something the reader does not control. "Ready" rather
+		// than "on", because a key is not a switch they flipped.
+		"needsPresent": "ready",
+		"needsAbsent":  "not on this server",
+		"needsStart":   "Start reading to me",
+		// "Not now" rather than "Cancel": it turns read to me back off, and the
+		// slideshow carries on silently, which is a real outcome rather than an
+		// abandoned action.
+		"needsNotNow": "Not now",
+
+		// One line per requirement, and one line saying WHY. The why is the part
+		// that stops this reading as a checklist somebody has to satisfy: each one
+		// names what it buys, or what breaks without it.
+		"need.smartVoice":  "Smart+ voice",
+		"why.smartVoice":   "The browser's own voice reads the page, so it can't speak a written segment or say where it has got to. Sends article text to OpenAI.",
+		"need.podcast":     "Join the stories up",
+		"why.podcast":      "Optional. Rewrites each article to hand over from the one before it, so it sounds like a broadcast rather than a queue.",
+		"need.keepPlaying": "Keep playing",
+		"why.keepPlaying":  "The queue moving on is what moves the picture on. Without it the display stops after one story.",
+		"need.serverKey":   "An OpenAI key on the server",
+		"why.serverKey":    "Set by whoever runs this server, not from here.",
 	})
 }

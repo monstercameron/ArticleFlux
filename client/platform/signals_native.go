@@ -8,6 +8,7 @@
 // order and expire events and a monotonically zero clock would make every event
 // look simultaneous — which is a fiction that would break logic rather than one
 // that merely fails to exercise it.
+
 package platform
 
 import "time"

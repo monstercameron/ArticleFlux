@@ -68,15 +68,15 @@ const (
 const glyphNone = "__none__"
 
 func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
-	// The one dialog that still guards, and only on the tag: every line below
-	// dereferences it, so there is nothing honest to render without one.
-	// `p.open` is deliberately NOT part of the guard — a closing panel keeps
-	// its tag for the length of the exit, which is what lets it animate out
-	// like the other five.
-	if p.t == nil {
-		return scrim(false, actTagSettingsClose)
-	}
-
+	// No early return on p.t == nil: like its five siblings (feed settings,
+	// add-feed, category, palette, help), this panel is rendered
+	// unconditionally and leans on `scrim`'s data-open attribute to carry
+	// open/closed — that is what lets the CSS transition run on the way out.
+	// An early return here would tear the whole ".fs" subtree out of the DOM
+	// in the same render that clears tsOpen, which is exactly what happened
+	// before: the dialog vanished instead of animating out. Every field below
+	// goes through p.t's generated getters, which are nil-safe, so there is
+	// nothing to guard against.
 	return scrim(p.open, actTagSettingsClose,
 		// data-action on the dialog itself stops the delegated walk before it
 		// reaches the backdrop's close — the same no-op the feed panel needs,

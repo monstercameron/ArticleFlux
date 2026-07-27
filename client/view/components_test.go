@@ -4,6 +4,7 @@ package view
 
 import (
 	"html"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -276,6 +277,15 @@ func TestEmptyListScopeGetsItsOwnCopy(t *testing.T) {
 		{"a search", listProps{sel: scope{Search: "golang"}}, "emptySearch", "emptySearchHint"},
 		{"My Feed", listProps{sel: scope{MyFeed: true}}, "emptyMyFeed", "emptyMyFeedHint"},
 		{"unread-only", listProps{unreadOnly: true}, "emptyUnread", "emptyUnreadHint"},
+		// The rail's "Unread" stream row sets sel.Unread, a DIFFERENT field
+		// from the "u" toggle's p.unreadOnly (reader.go: `a.pick(scope{...,
+		// Unread: true})` never touches the unreadOnly state). emptyList's
+		// switch has to recognise both as "the reader is looking at
+		// unread-only", the same way loadItems' query already does
+		// (`unreadOnly.Get() || s.Unread`) — otherwise this entry point falls
+		// through to the generic "No articles yet" default instead of "All
+		// caught up".
+		{"the rail's Unread stream", listProps{sel: scope{Unread: true}}, "emptyUnread", "emptyUnreadHint"},
 		{"read later", listProps{sel: scope{Later: true}}, "emptyLater", "emptyLaterHint"},
 		{"liked", listProps{sel: scope{Rating: 1}}, "emptyLiked", "emptyLikedHint"},
 		{"disliked", listProps{sel: scope{Rating: -1}}, "emptyDisliked", "emptyDislikedHint"},
@@ -301,6 +311,113 @@ func TestEmptyListScopeGetsItsOwnCopy(t *testing.T) {
 			if !strings.Contains(out, wantHint) {
 				t.Errorf("emptyList(%s) is missing its direction (list.%s = %q):\n%s",
 					c.name, c.hintKey, wantHint, out)
+			}
+		})
+	}
+}
+
+// --- listHead ------------------------------------------------------------------
+
+// TestListHeadSubtitleReflectsEffectiveUnreadFilter pins the same OR emptyList
+// (above) and the toggle-unread chip (below) already honor: the persistent
+// "u" toggle (unreadOnly) and the rail's dedicated Unread stream row
+// (sel.Unread) both put the reader on a view loadItems is ALREADY filtering
+// to unread-only (`unreadOnly.Get() || s.Unread` in reader.go).
+//
+// Before this fix, listHead's `sub` switch only checked p.unreadOnly.
+// Arriving via the rail's Unread stream (sel.Unread, unreadOnly still false)
+// fell through to subUnreadCount or subNewest — both of which describe an
+// UNfiltered list ("Newest first.") while the list underneath is, in fact,
+// unread-only.
+func TestListHeadSubtitleReflectsEffectiveUnreadFilter(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+	subUnread := ns.T("subUnread")
+
+	cases := []struct {
+		name string
+		p    listProps
+	}{
+		{"the persistent u toggle", listProps{unreadOnly: true}},
+		{"the rail's Unread stream", listProps{sel: scope{Unread: true}}},
+		{"both set at once", listProps{unreadOnly: true, sel: scope{Unread: true}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return listHead(tr, c.p) })
+			if !strings.Contains(out, subUnread) {
+				t.Errorf("listHead(%s) subtitle is missing %q (list.subUnread):\n%s",
+					c.name, subUnread, out)
+			}
+		})
+	}
+}
+
+// TestListHeadSubtitleUnfilteredCaseUnaffected guards the branch the fix above
+// must NOT touch: with neither filter set, the subtitle still falls to
+// subUnreadCount (or subNewest, unpinned here) exactly as before, and must
+// NOT show the unread-only copy.
+func TestListHeadSubtitleUnfilteredCaseUnaffected(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+
+	out := renderView(t, func(tr i18n.Runtime) ui.Node {
+		return listHead(tr, listProps{unread: 3})
+	})
+	wantCount := ns.T("subUnreadCount", i18n.Count(3))
+	if !strings.Contains(out, wantCount) {
+		t.Errorf("listHead(no filter, unread=3) missing %q (list.subUnreadCount):\n%s",
+			wantCount, out)
+	}
+	if strings.Contains(out, ns.T("subUnread")) {
+		t.Errorf("listHead(no filter, unread=3) shows the unread-only subtitle:\n%s", out)
+	}
+}
+
+// TestListHeadToggleUnreadChipReflectsEffectiveFilter is Bug 4: the chip's
+// pressed state and label used to read only p.unreadOnly, so viewing the
+// rail's Unread stream showed it unpressed and labelled "Unread only" — as if
+// unread filtering were off — while loadItems was in fact filtering to
+// unread-only via sel.Unread. The chip must reflect the SAME effective
+// condition as the subtitle test above and emptyList.
+//
+// This only pins what is DISPLAYED. The coherent click behaviour for the
+// sel.Unread case (toggleUnreadResult routing back to All rather than merely
+// flipping unreadOnly) is pinned separately by TestToggleUnreadResult in
+// reader_test.go, because listHead has no access to the click handler's
+// effect — only glyphChip's static `pressed` bool, which is exactly what the
+// pre-fix bug left disagreeing with reality.
+func TestListHeadToggleUnreadChipReflectsEffectiveFilter(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+	pressedLabel := ns.T("showingUnread")
+	unpressedLabel := ns.T("unreadOnly")
+
+	cases := []struct {
+		name    string
+		p       listProps
+		pressed bool
+	}{
+		{"neither filter set", listProps{}, false},
+		{"the persistent u toggle", listProps{unreadOnly: true}, true},
+		{"the rail's Unread stream", listProps{sel: scope{Unread: true}}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return listHead(tr, c.p) })
+			chip := buttonBlock(t, out, `data-action="toggle-unread"`)
+			wantPressed := strconv.FormatBool(c.pressed)
+			if !strings.Contains(chip, `aria-pressed="`+wantPressed+`"`) {
+				t.Errorf("toggle-unread chip aria-pressed does not match effective filter "+
+					"(%s, want pressed=%s):\n%s", c.name, wantPressed, chip)
+			}
+			wantLabel := unpressedLabel
+			if c.pressed {
+				wantLabel = pressedLabel
+			}
+			if !strings.Contains(chip, html.EscapeString(wantLabel)) {
+				t.Errorf("toggle-unread chip label does not match effective filter "+
+					"(%s, want %q):\n%s", c.name, wantLabel, chip)
 			}
 		})
 	}
