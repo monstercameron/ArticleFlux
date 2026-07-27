@@ -87,6 +87,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Version-skew refusal** (`internal/skew`, TODO 7.8 / 8c.16, §22.10). The wasm bundle is cached by
+  a Service Worker, so "old client, new server" is not an edge case — it is the default state of
+  every tab left open across a deploy. The client has recognised the skew sentinel since before
+  anything sent it, deliberately: the client that must act on a skew refusal is by definition the
+  old one, so recognition had to be in the field first. The server now sends it. A client with no
+  stamp, or one this build cannot parse, is **allowed through** — refusing on unknown would lock out
+  curl, tests and the sync API, and turn a formatting change into an instance-wide outage.
+  `GetVersion` is exempt, because refusing the call that explains the refusal is a closed loop.
+
 - **Request ids threaded through handlers *and* jobs** (`internal/reqid`, TODO 7.11, §22.11). §20.7's
   bargain is that the message a reader sees is always safe and the useful detail goes to the log —
   which only pays if the id reaches both ends. The queue is where this normally stops, and the queue

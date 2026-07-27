@@ -1461,8 +1461,44 @@ Business logic over repositories. Still headless.
       credentials, storage writable, LLM keys well-formed, IMAP reachable), graceful shutdown
       ◧ 2026-07-26 (night) — **`app.Preflight`** covers three of the five and the server refuses to listen without them: an account exists (unless `-dev`), `webRoot/index.html` exists, and the data directory is writable. It returns a **joined** error rather than the first, because someone setting up a droplet usually has several wrong at once and a one-at-a-time boot loop is a miserable way to find that out. The writability check **writes and removes a probe file** rather than stat-ing the directory — a directory can be listable and not writable, and SQLite must create the `-wal` and `-shm` siblings, not just open the database. `-dev` off a loopback bind is refused here too, which is the bind-vs-credentials check in its only form that currently applies. Graceful shutdown is wired (`signal.NotifyContext`). *Owed: TLS files, LLM key shape, IMAP reachability — none of which have a configuration to validate yet.*
 
-- [ ] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
+- [x] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
       version, refusal below it. The SW-cached wasm makes this inevitable, not hypothetical. §22.10
+
+      ✅ 2026-07-27 — `internal/skew` + `internal/buildver`, 11 tests, wired as the FIRST of four
+      interceptors so a below-minimum client is refused before its request touches the database.
+
+      **`internal/buildver` is a leaf package that imports nothing**, and that is the requirement
+      rather than tidiness: the wasm client has to state its own version on every call, the version
+      was a constant inside `cmd/articleflux` where the client cannot reach it, and reaching for
+      `internal/skew` instead would pull `apierr` → `store` → the SQLite driver into the browser
+      bundle. One constant, both halves — so in a matched deployment the client's stamp *is* the
+      server's version and the check can never fire. What fires it is a Service Worker still serving
+      a bundle from an older deploy, which has an older constant compiled in. It is a comparison
+      between two builds, not between a build and a wish.
+
+      **A metadata header, not a handshake message**, because there is no handshake: the tunnel
+      multiplexes ordinary RPCs and which one a client makes first varies. Attached by the client's
+      existing auth interceptor — unconditionally, including on unauthenticated calls, because the
+      client that most needs identifying as stale is the one that cannot log in.
+
+      **`RefuseUnstamped` defaults to false, and that is the judgement call.** A caller with no
+      header is either a build predating the header — genuinely too old, exactly what §22.10 is
+      about — or something that is not the wasm client at all: a curl, a test, the sync API. Nothing
+      in the request distinguishes them, so it is an operator's decision rather than one this package
+      makes silently. An **unparseable** stamp is likewise not treated as old: refusing on unknown
+      turns a formatting change into an outage for everybody at once.
+
+      **`GetVersion` is exempt.** It is how a stale client finds out what the server is, and refusing
+      the call that explains the refusal is a closed loop.
+
+      **The sentinel is duplicated across the client/server boundary and now pinned by a test** that
+      reads the constant out of `client/data/conn.go`. It must be duplicated — importing the wasm
+      client here would drag `syscall/js` across a guard boundary — and duplication nothing checks is
+      duplication that drifts, silently: the server refuses, the client fails to classify it, and
+      retries forever. Which is the exact failure §22.10 exists to prevent.
+
+      `Check` returns the converted status rather than the pre-conversion error, so its documented
+      promise is true of what it actually returns.
 - [x] **7.9 G4 · `articleflux init`** — create tenant 1 + the first superadmin, or print a one-time
       15-minute enrolment token. **The server refuses to serve while no superadmin exists.**
       *Done when: it runs once, is audited, and cannot be re-run.* §22.3
@@ -2391,12 +2427,48 @@ be **one commit**.
       the replay path is traceable, since it is the one nobody can reproduce; idem sits ahead of the
       timer so a drained outbox does not register as a latency improvement on a method that did no
       work.
-- [ ] **8c.16 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
+- [x] **8c.16 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
       classifies it terminal, stops retrying and offers Reload. **Nothing sends it.** The ordering was
       deliberate — the client that must act on a skew refusal is by definition the OLD one, so
       recognition has to ship before the refusal does or the first refusal ever sent lands on clients
       that cannot understand it. Needs: a build stamp in the tunnel handshake, a minimum-supported
       version on the server, and the refusal carrying the sentinel.
+
+      ✅ 2026-07-27 — `internal/skew` + `internal/buildver`, 11 tests, wired as the FIRST of four
+      interceptors so a below-minimum client is refused before its request touches the database.
+
+      **`internal/buildver` is a leaf package that imports nothing**, and that is the requirement
+      rather than tidiness: the wasm client has to state its own version on every call, the version
+      was a constant inside `cmd/articleflux` where the client cannot reach it, and reaching for
+      `internal/skew` instead would pull `apierr` → `store` → the SQLite driver into the browser
+      bundle. One constant, both halves — so in a matched deployment the client's stamp *is* the
+      server's version and the check can never fire. What fires it is a Service Worker still serving
+      a bundle from an older deploy, which has an older constant compiled in. It is a comparison
+      between two builds, not between a build and a wish.
+
+      **A metadata header, not a handshake message**, because there is no handshake: the tunnel
+      multiplexes ordinary RPCs and which one a client makes first varies. Attached by the client's
+      existing auth interceptor — unconditionally, including on unauthenticated calls, because the
+      client that most needs identifying as stale is the one that cannot log in.
+
+      **`RefuseUnstamped` defaults to false, and that is the judgement call.** A caller with no
+      header is either a build predating the header — genuinely too old, exactly what §22.10 is
+      about — or something that is not the wasm client at all: a curl, a test, the sync API. Nothing
+      in the request distinguishes them, so it is an operator's decision rather than one this package
+      makes silently. An **unparseable** stamp is likewise not treated as old: refusing on unknown
+      turns a formatting change into an outage for everybody at once.
+
+      **`GetVersion` is exempt.** It is how a stale client finds out what the server is, and refusing
+      the call that explains the refusal is a closed loop.
+
+      **The sentinel is duplicated across the client/server boundary and now pinned by a test** that
+      reads the constant out of `client/data/conn.go`. It must be duplicated — importing the wasm
+      client here would drag `syscall/js` across a guard boundary — and duplication nothing checks is
+      duplication that drifts, silently: the server refuses, the client fails to classify it, and
+      retries forever. Which is the exact failure §22.10 exists to prevent.
+
+      `Check` returns the converted status rather than the pre-conversion error, so its documented
+      promise is true of what it actually returns.
 - [ ] **8c.17 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
       and assert `live` plus a refetched list; `context.setOffline(true)` and assert `offline`, not
       `down`. ← **8b.34**: adding specs to a suite that is not currently a gate buys nothing.
