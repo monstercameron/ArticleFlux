@@ -2347,13 +2347,50 @@ be **one commit**.
 
 ### Owed, and now specified rather than implied
 
-- [ ] **8c.15 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
+- [x] **8c.15 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
       `idgen.IdempotencyKey()` exists, and **nothing reads or writes either** — the client has been
       stamping keys onto every mutating RPC into a void. Store `(user_id, key) → response` for 24h and
       replay it verbatim. *Was theoretical; the outbox made it load-bearing, because at-least-once
       delivery is only safe today by the accident that every queued mutation sets an absolute value
       (see §20.19.8). The first queued operation that is not idempotent-by-value needs this first.*
       ← **8c.13**, which is what makes the keys safe to honour.
+
+      ✅ 2026-07-27 — `internal/idem`, 8 tests, wired as the second of three interceptors.
+
+      **An interceptor, not per-handler**, for the same reason the capability map is one map: there
+      are thirty-odd mutating RPCs and the thirty-first will be added by somebody who does not know
+      this exists. A method opts in by declaring an `idempotency_key` field — a property of the
+      proto rather than of anyone's memory — and a call with no field or an empty key passes
+      straight through, because a read has nothing to replay and requiring a key everywhere would
+      make the table a log of every request the instance ever served.
+
+      **Marshalling is `Deterministic: true`, and that is load-bearing.** The stored request hash is
+      what catches a key reused for a *different* request. Protobuf marshalling is not canonical by
+      default — map entries can come out in any order — so the ordinary options would hash the same
+      request differently on a retry and every replay would return a spurious conflict. That is
+      worse than no idempotency at all: the write is refused and the caller is blamed for it.
+
+      **Failures are not stored**, deliberately. Storing them makes a transient failure permanent for
+      24 hours: the client retries with the same key — which is exactly what a client draining an
+      outbox does — and gets the stored failure back forever with no way to ask again. The exposure
+      is a non-idempotent operation that fails halfway being attempted twice, and nothing is in that
+      position: every mutation writes absolute values inside one transaction.
+
+      **A storage failure after a successful handler is swallowed.** The work happened; telling the
+      caller it failed would make them retry a mutation that already applied, which is the exact
+      double-apply this package exists to prevent.
+
+      **The replay decodes through the protobuf registry.** The interceptor never sees the response
+      type on a replay, because it does not call the handler — so the method's declared output type
+      is resolved from `/articleflux.v1.ReaderService/SetItemState`. Stored bytes that no longer
+      parse (a response shape changed across a deploy) fall back to re-running rather than erroring,
+      which is safe for every mutation that exists and does not strand a client that cannot stop
+      retrying its key.
+
+      **Interceptor order is the design**: reqid → idem → latency. The request id is minted first so
+      the replay path is traceable, since it is the one nobody can reproduce; idem sits ahead of the
+      timer so a drained outbox does not register as a latency improvement on a method that did no
+      work.
 - [ ] **8c.16 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
       classifies it terminal, stops retrying and offers Reload. **Nothing sends it.** The ordering was
       deliberate — the client that must act on a skew refusal is by definition the OLD one, so

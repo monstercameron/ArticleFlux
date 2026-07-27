@@ -1,0 +1,312 @@
+package idem
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/store"
+)
+
+const setItemState = "/articleflux.v1.ReaderService/SetItemState"
+
+type fixture struct {
+	repo   *store.ReaderRepo
+	sc     store.Scope
+	ctx    context.Context
+	inter  grpc.UnaryServerInterceptor
+	info   *grpc.UnaryServerInfo
+	called int
+}
+
+func setup(t *testing.T) *fixture {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "idem.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewReaderRepo(db)
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "T", UserID: "u1", Username: "u", Hash: "x",
+		Role: "member", Now: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sc := store.Scope{TenantID: "t1", UserID: "u1", Role: "member"}
+
+	f := &fixture{repo: repo, sc: sc, ctx: ctx,
+		info: &grpc.UnaryServerInfo{FullMethod: setItemState}}
+	f.inter = Unary(repo, func(context.Context) (store.Scope, error) { return sc, nil })
+	return f
+}
+
+// call runs the interceptor over a handler that counts its invocations and
+// returns a response whose rev increases every time — so a replay is
+// distinguishable from a second execution by the VALUE, not just the count.
+func (f *fixture) call(t *testing.T, req *pb.SetItemStateRequest) (*pb.SetItemStateResponse, error) {
+	t.Helper()
+	res, err := f.inter(f.ctx, req, f.info,
+		func(ctx context.Context, r any) (any, error) {
+			f.called++
+			return &pb.SetItemStateResponse{Rev: int64(f.called)}, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	out, ok := res.(*pb.SetItemStateResponse)
+	if !ok {
+		t.Fatalf("handler returned %T", res)
+	}
+	return out, nil
+}
+
+// The whole point. A drain that reconnects mid-flight resends, and the second
+// attempt must not apply a second time.
+func TestAReplayedRequestRunsOnceAndReturnsTheFirstAnswer(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-1"}
+
+	first, err := f.call(t, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.call(t, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if f.called != 1 {
+		t.Errorf("the handler ran %d times for one key — the mutation applied twice", f.called)
+	}
+	// Verbatim, not recomputed. A client receiving a DIFFERENT response to the
+	// same request cannot tell a replay from a second effect.
+	if first.GetRev() != second.GetRev() {
+		t.Errorf("replay returned rev %d, first call returned %d — the stored "+
+			"response was not replayed verbatim", second.GetRev(), first.GetRev())
+	}
+}
+
+// A key is chosen by the client, so two different requests can arrive under one:
+// a bug, a reused constant, a truncated uuid. Replaying the first answer for the
+// second write drops the write AND reports success.
+func TestTheSameKeyWithADifferentRequestIsRefused(t *testing.T) {
+	f := setup(t)
+	if _, err := f.call(t, &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.call(t, &pb.SetItemStateRequest{ItemId: "i2", IdempotencyKey: "k-2"})
+	if err == nil {
+		t.Fatal("a different request under the same key was accepted — the write " +
+			"was silently dropped and the caller told it succeeded")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Errorf("= %v, want FailedPrecondition", got)
+	}
+	if f.called != 1 {
+		t.Errorf("the handler ran %d times; the conflicting call must not execute", f.called)
+	}
+}
+
+// Protobuf marshalling is not canonical by default. Non-deterministic bytes
+// would hash the same request differently on retry, so every replay would come
+// back as a spurious conflict — worse than no idempotency, because the write is
+// refused and the caller is blamed.
+func TestTheRequestHashIsStableAcrossMarshals(t *testing.T) {
+	f := setup(t)
+	// Two separately constructed but equal messages, which is what a retry
+	// actually produces — the client rebuilds the message, it is not the same
+	// object.
+	a := &pb.SetItemStateRequest{ItemId: "i9", IdempotencyKey: "k-3", Read: ptr(true)}
+	b := &pb.SetItemStateRequest{ItemId: "i9", IdempotencyKey: "k-3", Read: ptr(true)}
+
+	if _, err := f.call(t, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.call(t, b); err != nil {
+		t.Fatalf("an identical retry was refused as a conflict: %v", err)
+	}
+	if f.called != 1 {
+		t.Errorf("the handler ran %d times", f.called)
+	}
+}
+
+// A read has nothing to replay, and forcing a key onto every call would make
+// the table a log of every request the instance ever served.
+func TestCallsWithoutAKeyPassStraightThrough(t *testing.T) {
+	f := setup(t)
+
+	// Same message, no key: runs every time.
+	for i := 0; i < 3; i++ {
+		if _, err := f.call(t, &pb.SetItemStateRequest{ItemId: "i1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.called != 3 {
+		t.Errorf("the handler ran %d times for three unkeyed calls, want 3", f.called)
+	}
+
+	// A message type with no key field at all.
+	res, err := f.inter(f.ctx, &pb.ListFeedsRequest{},
+		&grpc.UnaryServerInfo{FullMethod: "/articleflux.v1.ReaderService/ListFeeds"},
+		func(ctx context.Context, r any) (any, error) {
+			return &pb.ListFeedsResponse{TotalUnread: 7}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.(*pb.ListFeedsResponse).GetTotalUnread() != 7 {
+		t.Error("an unkeyed method was not passed through")
+	}
+}
+
+// Storing failures would make a transient failure permanent for 24 hours: the
+// client retries the same key — which is what a client with a queued mutation
+// does — and gets the stored failure back forever.
+func TestAFailureIsNotStoredSoARetryCanSucceed(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-4"}
+
+	boom := errors.New("the database was busy")
+	_, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		return nil, boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("= %v, want the handler's error", err)
+	}
+
+	// The retry, same key, now succeeding.
+	out, err := f.call(t, req)
+	if err != nil {
+		t.Fatalf("a retry after a transient failure was refused: %v", err)
+	}
+	if out.GetRev() != 1 {
+		t.Errorf("rev = %d; the retry did not actually run", out.GetRev())
+	}
+}
+
+// Keys are per user. One reader's key must not answer another's request — that
+// would be a cross-tenant response replay, which is worse than a leak: it is
+// somebody else's data returned as your own.
+func TestKeysAreScopedToTheirUser(t *testing.T) {
+	f := setup(t)
+	if err := f.repo.AddUser(f.ctx, store.NewTenant{
+		TenantID: "t1", UserID: "u2", Username: "other", Hash: "x", Role: "member",
+		Now: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "shared-key"}
+	if _, err := f.call(t, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same key, the same request, a different user.
+	other := Unary(f.repo, func(context.Context) (store.Scope, error) {
+		return store.Scope{TenantID: "t1", UserID: "u2", Role: "member"}, nil
+	})
+	ran := false
+	res, err := other(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		ran = true
+		return &pb.SetItemStateResponse{Rev: 99}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("another user's key replayed a response they never asked for")
+	}
+	if res.(*pb.SetItemStateResponse).GetRev() != 99 {
+		t.Error("the second user got the first user's stored response")
+	}
+}
+
+// The interceptor never sees the response type on a replay, because it does not
+// call the handler. It resolves it from the protobuf registry, and this asserts
+// that resolution actually works for a real method rather than silently falling
+// back to re-running.
+func TestTheStoredResponseIsDecodedIntoItsRealType(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-5"}
+
+	if _, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		return &pb.SetItemStateResponse{
+			Rev:  42,
+			Item: &pb.Item{Id: "i1", Title: "A stored title"},
+		}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		t.Fatal("the handler ran on a replay")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, ok := res.(*pb.SetItemStateResponse)
+	if !ok {
+		t.Fatalf("replay returned %T, not the method's declared response type", res)
+	}
+	if out.GetRev() != 42 || out.GetItem().GetTitle() != "A stored title" {
+		t.Errorf("the nested message did not survive the round trip: %+v", out)
+	}
+}
+
+// A drain reconnecting mid-flight can send the same key twice at once. Exactly
+// one execution, and both callers get an answer.
+func TestConcurrentReplaysOfOneKeyExecuteOnce(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-race"}
+
+	var mu sync.Mutex
+	runs := 0
+	handler := func(ctx context.Context, r any) (any, error) {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return &pb.SetItemStateResponse{Rev: 1}, nil
+	}
+
+	const racers = 6
+	var wg sync.WaitGroup
+	errs := make([]error, racers)
+	wg.Add(racers)
+	for i := 0; i < racers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = f.inter(f.ctx, req, f.info, handler)
+		}(i)
+	}
+	wg.Wait()
+
+	if runs != 1 {
+		// != rather than >, because a test that passes at zero passes when the
+		// interceptor refuses everything, which is not the property.
+		t.Errorf("the handler ran %d times for one key sent concurrently, want exactly 1", runs)
+	}
+	// A conflict here would be wrong: these are the SAME request, so a caller
+	// that loses the race must still get an answer rather than an error.
+	for i, err := range errs {
+		if err != nil && status.Code(err) == codes.FailedPrecondition {
+			t.Errorf("racer %d got a conflict for an identical request: %v", i, err)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

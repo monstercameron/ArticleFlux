@@ -27,6 +27,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/idem"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
@@ -472,12 +473,22 @@ func (a *App) whenReady(next http.Handler) http.Handler {
 }
 
 func (a *App) buildHandler() {
-	// One interceptor, recording every call. It is the only place that sees all
-	// of them, and per-handler timing would drift the first time someone added a
-	// handler and forgot.
+	// Three interceptors, and the ORDER is the design.
+	//
+	//   1. reqid   — mints the id, so everything after it can be correlated,
+	//                including the idempotency replay path and its failures.
+	//   2. idem    — §20.7's replay. Ahead of the timer, so a replayed call is
+	//                not recorded as a fast one: a drained outbox would show up
+	//                as a latency improvement on a method that did no work.
+	//   3. latency — records every call. One place, because per-handler timing
+	//                drifts the first time somebody adds a handler and forgets.
+	//
+	// Getting 1 and 2 the other way round is the tempting mistake: the replay is
+	// exactly the path you want traceable, since it is the one nobody can
+	// reproduce.
 	a.grpc = grpc.NewServer(
-		grpc.UnaryInterceptor(
-			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+		grpc.ChainUnaryInterceptor(
+			func(ctx context.Context, req any, _ *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
 				// One id per call, minted here because this is the only place
 				// that sees all of them (§22.11). It is what connects the safe
@@ -488,7 +499,16 @@ func (a *App) buildHandler() {
 				// Minted rather than taken from the client: an id a caller
 				// chooses is one they can collide, reuse across users, or use
 				// to ask the log about somebody else.
-				ctx = reqid.With(ctx, "")
+				return handler(reqid.With(ctx, ""), req)
+			},
+			// The missing half of a contract already in use: the client stamps a
+			// key onto every mutating RPC and nothing on the server read one
+			// (TODO 8c.15). Survivable only because every queued mutation sets
+			// an absolute value, so applying it twice lands on the same state —
+			// the first relative operation would have double-applied silently.
+			idem.Unary(a.repo, a.scopeFromContext),
+			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+				handler grpc.UnaryHandler) (any, error) {
 				start := time.Now()
 				res, err := handler(ctx, req)
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last

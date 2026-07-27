@@ -24,6 +24,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The client had been stamping idempotency keys into a void** (TODO 8c.15, §20.7). The
+  `idempotency_keys` table, the repository methods and the key generator all existed, and nothing on
+  the server read one. That was survivable only by accident: every mutation the outbox queues sets an
+  absolute value, so applying it twice lands on the same state. The accident ends at the first
+  relative operation — an append, a counter, a toggle — and the failure is silent when it comes: a
+  star toggles back off, a note is appended twice, an unread count moves by two. A gRPC interceptor
+  now stores `(user, key) → response` for 24h and replays it verbatim; a method opts in by declaring
+  the field, so the thirty-first mutating RPC is covered without anyone remembering.
+
 - **Items ingested outside fan-out were invisible to every unread count.** 80 of 3,806 items in the
   development database had no `user_item_state` row. That row's existence is what makes an item
   known to a user, and it was being created by fan-out — a *queued job that applies rules*, which
