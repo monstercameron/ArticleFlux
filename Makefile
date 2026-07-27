@@ -164,7 +164,22 @@ wasm: deps
 demo: deps
 	@mkdir -p $(DEMO)
 	cp web/index.html $(DEMO)/index.html
-	cp web/sw.js $(DEMO)/sw.js
+	@# sw.js, with its cache identity STAMPED — the one file the demo does not
+	@# ship verbatim, and the reason is a failure that is invisible for weeks.
+	@#
+	@# The Service Worker keys its cache on VERSION and serves the wasm module
+	@# cache-first, because within a build that URL's contents never change. On
+	@# the server that is right: VERSION is buildver.Version, a release changes
+	@# the constant, and `activate` drops every older cache. The demo is
+	@# published from a TAG, and a tag does not change buildver — so a second
+	@# demo release under an unchanged constant would leave every returning
+	@# visitor on the module they cached the first time. web/sw.js itself is
+	@# untouched, so internal/buildver's test still pins the source to the
+	@# constant.
+	@sed "s|^const VERSION = .*|const VERSION = '$(VERSION)';|" web/sw.js > $(DEMO)/sw.js
+	@grep -q "const VERSION = '$(VERSION)';" $(DEMO)/sw.js || { \
+	  echo "sw.js has no 'const VERSION = ...' line to stamp — the demo would ship a stale cache key"; \
+	  exit 1; }
 	GOOS=js GOARCH=wasm go build -trimpath \
 	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \

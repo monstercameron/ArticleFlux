@@ -192,7 +192,36 @@ function Invoke-Demo {
     Step "building the demo -> bin/demo  ($DemoVersion)"
     New-Item -ItemType Directory -Force $DemoDir | Out-Null
     Copy-Item (Join-Path $WebSrc 'index.html') (Join-Path $DemoDir 'index.html') -Force
-    Copy-Item (Join-Path $WebSrc 'sw.js') (Join-Path $DemoDir 'sw.js') -Force
+
+    # sw.js, with its cache identity STAMPED — the one file the demo does not
+    # ship verbatim, and the reason is a failure that is invisible for weeks.
+    #
+    # The Service Worker keys its cache on VERSION and serves the wasm module
+    # cache-first, because within a build that URL's contents never change. On
+    # the server that is exactly right: VERSION is buildver.Version, a new
+    # release changes the constant, and `activate` drops every older cache.
+    #
+    # The demo is published from a TAG, and a tag does not change buildver. So a
+    # second demo release under an unchanged constant would leave every
+    # returning visitor on the module their browser cached the first time —
+    # publishing an update that nobody who has already looked can see, which is
+    # the worst possible version of a demo being wrong. Stamping the copy makes
+    # each published demo its own cache generation.
+    #
+    # web/sw.js itself is untouched, so internal/buildver's test still pins the
+    # source file to the constant.
+    # One line, and it has to be: PowerShell does not continue a statement after
+    # a binary operator, so breaking after `-replace` is a parse error in a file
+    # that is otherwise never parsed until somebody runs this verb.
+    $swPath = Join-Path $DemoDir 'sw.js'
+    $swStamp = "const VERSION = '$DemoVersion';"
+    $sw = (Get-Content (Join-Path $WebSrc 'sw.js') -Raw) -replace "(?m)^const VERSION = .*", $swStamp
+    # WriteAllText, not Set-Content: Set-Content defaults to the system ANSI
+    # codepage, and this file has em dashes in it.
+    [System.IO.File]::WriteAllText($swPath, $sw)
+    if ($sw -notmatch [regex]::Escape($swStamp)) {
+        Fail "sw.js has no 'const VERSION = ...' line to stamp - the demo would ship a stale cache key"
+    }
 
     $raw = Join-Path $DemoDir 'app.wasm'
     $env:GOOS = 'js'; $env:GOARCH = 'wasm'
