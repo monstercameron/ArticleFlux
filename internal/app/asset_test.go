@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/base64"
 	"io"
 	"log/slog"
@@ -152,8 +153,14 @@ func TestUnsignedAndTamperedRequestsAreRefused(t *testing.T) {
 			if rec.Code == http.StatusOK {
 				t.Fatalf("request was served; this endpoint is forgeable")
 			}
-			if rec.Code != http.StatusForbidden && rec.Code != http.StatusBadRequest {
-				t.Errorf("status %d, want 400 or 403", rec.Code)
+			// Exactly 403, not "400 or 403": every case here starts from a
+			// validly-shaped u/e and only breaks the signature, so VerifySignature
+			// is what must fire. A union of two codes would also pass if the
+			// signature check were skipped entirely and the request fell through to
+			// a DIFFERENT failure (a bad-url or bad-expiry 400) for an unrelated
+			// reason, which is exactly the ambiguity a capability check must not have.
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status %d, want 403", rec.Code)
 			}
 		})
 	}
@@ -178,16 +185,34 @@ func TestExpiredCapabilityIsGone(t *testing.T) {
 // A validly-signed URL for a blocked address must still be refused: the
 // capability says who may ask, the guard says what may be reached, and losing
 // either one is an SSRF hole.
+//
+// The status code alone cannot prove which guard fired: the handler
+// deliberately hides the origin's own error from the response (§22.11), so a
+// blocked address and an address that is merely unreachable both come back as
+// the identical 502 "could not fetch that image". Asserting only "not OK" — or
+// even "exactly 502" — would still pass with the SSRF guard deleted, since
+// dialing a real 169.254.169.254 from a box with no route to it fails on its
+// own. So this also inspects the log line the handler DOES write the detail
+// to, and requires it to name netguard's specific refusal.
 func TestSignedButBlockedAddressIsRefused(t *testing.T) {
+	var logBuf bytes.Buffer
 	key, _ := secret.NewKey()
 	a := &App{
-		cfg: Config{}, log: testLogger(), assetKey: key,
+		cfg: Config{}, assetKey: key,
+		// The handler logs this failure at Debug (§22.11 keeps it out of the
+		// response), so the capturing handler has to be told to keep Debug too.
+		log:    slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		assets: assetproxy.New(assetproxy.Options{Dir: t.TempDir()}), // AllowPrivate off
 	}
 	minted := a.AssetURL("http://169.254.169.254/latest/meta-data/iam/")
 	rec := get(t, a, minted)
-	if rec.Code == http.StatusOK {
-		t.Fatal("the metadata endpoint was proxied")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", rec.Code)
+	}
+	if !strings.Contains(logBuf.String(), "not publicly routable") {
+		t.Fatalf("the logged failure does not name netguard's refusal — the metadata "+
+			"endpoint must be refused BY THE GUARD, not merely fail to connect:\n%s",
+			logBuf.String())
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,76 @@ func TestTicketNamesItsOwnItem(t *testing.T) {
 	}
 	if item != "item-1" {
 		t.Fatalf("item = %q; the ticket did not name its own item", item)
+	}
+}
+
+// speechAppWithUser is a real App (real repo, DevMode on) with a seeded
+// tenant and user, for the two gates speechApp's repo-less fixture cannot
+// reach: whether the item exists (gate 2, 404) and whether the account opted
+// in (gate 4, 403). DevMode means a header-less `?item=` request resolves to
+// this seeded user via devScope.
+func speechAppWithUser(t *testing.T) (*App, store.Scope) {
+	t.Helper()
+	ctx := context.Background()
+	a, err := Open(ctx, Config{
+		DBPath: filepath.Join(t.TempDir(), "speech.db"), DevMode: true, Log: testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	key, err := secret.NewKey()
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	a.speechKey = key
+	a.tts = tts.New(t.TempDir(), func(context.Context) string { return "sk-test" })
+
+	if err := a.repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "T", UserID: "u1", Username: "reader",
+		Hash: "x", Role: "member", Now: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("CreateTenantAndUser: %v", err)
+	}
+	return a, store.Scope{TenantID: "t1", UserID: "u1", Role: "member"}
+}
+
+// Gate 4 runs before gate 2 in the actual handler (opt-in is checked before
+// the item is even looked up), and its own status is the reader's to fix —
+// unlike gate 3's 501, this is "turn Smart+ speech on in settings". A caller
+// who has never opted in must be refused here, before an item id is ever
+// consulted, or the 403/404 boundary could be used to probe whether an id
+// exists ahead of opting in.
+func TestServeSpeechRejectsAnOptedOutAccount(t *testing.T) {
+	a, _ := speechAppWithUser(t)
+
+	rec := httptest.NewRecorder()
+	a.serveSpeech(rec, httptest.NewRequest(http.MethodGet, "/speech?item=whatever", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403 for an account that has not opted in: %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// Gate 2: an opted-in account asking for an item that does not exist (or is
+// outside its scope) gets 404, never 403 — a permission error here would
+// confirm the item exists to someone probing ids (§20.7). This only reaches
+// the item lookup at all because the account IS opted in; an opted-out
+// account asking for the same missing id must still get gate 4's 403, which
+// TestServeSpeechRejectsAnOptedOutAccount pins.
+func TestServeSpeechRejectsAnUnknownItemWithNotFoundNot403(t *testing.T) {
+	a, sc := speechAppWithUser(t)
+	if err := a.repo.SetPrefs(context.Background(), sc, store.Prefs{ttsPrefKey: "true"}); err != nil {
+		t.Fatalf("SetPrefs: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	a.serveSpeech(rec, httptest.NewRequest(http.MethodGet, "/speech?item=does-not-exist", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404: %s", rec.Code, rec.Body.String())
 	}
 }
 

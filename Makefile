@@ -44,8 +44,8 @@ VERSION  ?= dev
 # was quietly measuring a different binary from the one CI and make.ps1 measure.
 WASMFLAGS := -trimpath '-ldflags=-s -w'
 
-.PHONY: help deps gen build test wasmtest wasm demo run dev e2e lint migrate tools clean \
-        linux install-service backup
+.PHONY: help deps gen build test wasmtest wasm demo run dev e2e lint migrate perf perf-compare \
+        tools clean linux install-service backup
 
 help:
 	@echo 'ArticleFlux task runner (mirrors scripts/make.ps1)'
@@ -63,6 +63,9 @@ help:
 	@echo '  make run       build, then serve on 127.0.0.1:$(PORT)'
 	@echo '  make dev       wasm + run, with -dev (NO LOGIN; loopback only)'
 	@echo '  make e2e       build, then run the Playwright suite'
+	@echo '  make perf      benchmark every package that has one, with CPU/heap profiles'
+	@echo '                 LABEL=baseline BENCH=. COUNT=6'
+	@echo '  make perf-compare FROM=baseline TO=after   benchstat two runs'
 	@echo '  make clean     remove bin/ (which is all generated output)'
 	@echo
 	@echo 'Deployment (see deploy/README.md):'
@@ -247,6 +250,43 @@ dev: wasm build
 
 e2e: build wasm
 	cd e2e && { [ -d node_modules ] || npm install; } && npx playwright test
+
+# perf — the mirror of Invoke-Perf in make.ps1, where the reasoning for every
+# flag is written down. The short version: -run '^$' because the store's TESTS
+# build a 50,000-row fixture, -benchmem because allocation is half the answer,
+# -count because a single sample on a thermally-limited box is a coin flip, and
+# a loop over packages because `go test` refuses -cpuprofile across more than one.
+#
+#	make perf                          -> bin/perf/baseline.txt + profiles
+#	make perf LABEL=after              -> bin/perf/after.txt
+#	make perf-compare FROM=baseline TO=after
+LABEL ?= baseline
+BENCH ?= .
+COUNT ?= 6
+FROM  ?= baseline
+TO    ?= after
+PERFDIR := $(BIN)/perf
+
+perf:
+	@mkdir -p $(PERFDIR)/prof
+	@: > $(PERFDIR)/$(LABEL).txt
+	@for pkg in $$(go list ./...); do \
+	  dir=$$(go list -f '{{.Dir}}' $$pkg); \
+	  grep -lq '^func Benchmark' $$dir/*_test.go 2>/dev/null || continue; \
+	  short=$$(basename $$pkg); \
+	  echo "==> bench $$pkg"; \
+	  go test $$pkg -run '^$$' -bench '$(BENCH)' -benchmem -count $(COUNT) \
+	    -cpuprofile $(PERFDIR)/prof/$$short.cpu.pprof \
+	    -memprofile $(PERFDIR)/prof/$$short.mem.pprof \
+	    -o $(PERFDIR)/prof/$$short.test 2>&1 | tee -a $(PERFDIR)/$(LABEL).txt; \
+	done
+	@echo "==> wrote $(PERFDIR)/$(LABEL).txt; profiles in $(PERFDIR)/prof"
+
+perf-compare:
+	@command -v benchstat >/dev/null || { echo 'benchstat not on PATH: go install golang.org/x/perf/cmd/benchstat@latest'; exit 1; }
+	@test -f $(PERFDIR)/$(FROM).txt || { echo "$(PERFDIR)/$(FROM).txt does not exist; run: make perf LABEL=$(FROM)"; exit 1; }
+	@test -f $(PERFDIR)/$(TO).txt   || { echo "$(PERFDIR)/$(TO).txt does not exist; run: make perf LABEL=$(TO)"; exit 1; }
+	benchstat '$(FROM)=$(PERFDIR)/$(FROM).txt' '$(TO)=$(PERFDIR)/$(TO).txt'
 
 clean:
 	rm -rf $(BIN)

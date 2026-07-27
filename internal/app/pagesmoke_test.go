@@ -95,6 +95,13 @@ func TestServePageRefusesForgery(t *testing.T) {
 
 // An asset capability must not open a page. Without the message prefix the two
 // signatures over the same URL would be identical.
+//
+// Exactly 403, not "not 200": with the message-prefix domain separation
+// removed, VerifySignature would succeed and the handler would go on to fetch
+// example.com for real. That fetch might still fail for an unrelated reason —
+// a network hiccup, a redirect the test did not expect — and come back as a
+// 502 that a bare "!= 200" check would also accept, hiding exactly the
+// forgery this test exists to catch.
 func TestAssetCapabilityCannotOpenAPage(t *testing.T) {
 	a := pageApp(t)
 	a.assets = nil
@@ -104,8 +111,8 @@ func TestAssetCapabilityCannotOpenAPage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.servePage(rec, httptest.NewRequest(http.MethodGet,
 		"/p?u=aHR0cDovL2V4YW1wbGUuY29tL3g&e=99999999999&s="+sig, nil))
-	if rec.Code == http.StatusOK {
-		t.Fatal("an asset capability opened a page")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403 — an asset capability opened a page", rec.Code)
 	}
 }
 

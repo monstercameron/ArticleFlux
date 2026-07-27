@@ -1,4 +1,4 @@
-<#
+﻿<#
     ArticleFlux task runner — TODO 1.4.
 
     This is `make.ps1` and not a `Makefile` for one reason: **there is no `make` on
@@ -27,7 +27,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('gen', 'build', 'test', 'wasmtest', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'tools', 'clean', 'help')]
+    [ValidateSet('gen', 'build', 'test', 'wasmtest', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'perf', 'tools', 'clean', 'help')]
     [string]$Target = 'help',
 
     # 9000 is the port Cam watches to follow along; changing the default moves the
@@ -36,7 +36,33 @@ param(
 
     # What a `demo` build calls itself. The release workflow passes the tag it
     # was triggered by; a build from a laptop is honestly "dev".
-    [string]$Version = 'dev'
+    [string]$Version = 'dev',
+
+    # `perf` writes bin/perf/<Label>.txt. The default is the word every
+    # comparison needs one of, and naming the other side is the entire workflow:
+    #
+    #   ./scripts/make.ps1 perf                     -> bin/perf/baseline.txt
+    #   ...make a change...
+    #   ./scripts/make.ps1 perf -Label after        -> bin/perf/after.txt
+    #   ./scripts/make.ps1 perf -Compare            -> benchstat baseline after
+    [string]$Label = 'baseline',
+
+    # Which benchmarks to run, as a `go test -bench` regexp. The default is
+    # everything; narrowing it is how a single hot path gets iterated on without
+    # paying for the 25-second store fixture every time.
+    [string]$Bench = '.',
+
+    # How many times to run each benchmark. Statistics, not decoration — see
+    # Invoke-Perf for why 6 and not 1.
+    [int]$Count = 6,
+
+    # Compare two previous runs instead of measuring a new one.
+    [switch]$Compare,
+
+    # The two labels -Compare reads. Defaults to the two names the workflow
+    # above produces.
+    [string]$From = 'baseline',
+    [string]$To = 'after'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,6 +181,99 @@ function Invoke-WasmTest {
                 ./client/i18n/... ./client/view/...
         } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
     }
+}
+
+# perf — measure, profile, and compare (plan.md M13's "perf pass").
+#
+# # Why a verb and not a remembered incantation
+#
+# The incantation is `go test -run '^$' -bench . -benchmem -count 6 -cpuprofile
+# ...`, and every part of it is load-bearing in a way that is easy to get wrong
+# once and then keep getting wrong:
+#
+#   -run '^$'    without it every TEST runs too, and internal/store's tests
+#                build a 50,000-row fixture, so the numbers arrive twenty-five
+#                seconds late and mixed with test output.
+#   -benchmem    allocation is half the answer. A change that is 3% faster and
+#                allocates 40% less is usually the better change, and a run
+#                without this cannot see the second half.
+#   -count 6     THIS BOX IS FANLESS. It throttles under sustained load, so two
+#                consecutive single-shot runs of the same unchanged code differ
+#                by 20-30% — which is larger than most real wins. One sample is
+#                not a measurement here; it is a coin flip that looks like a
+#                number. Six samples and a median (benchstat's job) is the
+#                cheapest thing that is honest.
+#   -cpuprofile  `go test` refuses it across multiple packages, which is why
+#                this loops per package rather than running ./... once.
+#
+# # Why benchstat rather than reading the two files
+#
+# Because eyeballing "594µs vs 633µs" is how a 6% thermal drift gets recorded as
+# a regression and a real 6% win gets called noise. benchstat computes the
+# median and a confidence interval and prints `~` when the difference does not
+# clear it, which is exactly the judgement a person should not be making by
+# hand on this machine.
+function Invoke-Perf {
+    $outDir  = Join-Path $Root 'bin\perf'
+    $profDir = Join-Path $outDir 'prof'
+    New-Item -ItemType Directory -Force $profDir | Out-Null
+    $outFile = Join-Path $outDir "$Label.txt"
+
+    # Packages that actually have benchmarks. Running `go test -bench` against
+    # the rest costs a compile and a link each to print nothing.
+    Step 'finding packages with benchmarks'
+    $pkgs = @()
+    foreach ($line in (go list -f '{{.ImportPath}}|{{.Dir}}' ./...)) {
+        $parts = $line -split '\|', 2
+        if ($parts.Count -ne 2) { continue }
+        $hits = Get-ChildItem -Path $parts[1] -Filter '*_test.go' -File -ErrorAction SilentlyContinue |
+                Select-String -Pattern '^func Benchmark' -List
+        if ($hits) { $pkgs += [pscustomobject]@{ Path = $parts[0]; Dir = $parts[1] } }
+    }
+    if (-not $pkgs) { Fail 'no package in this module declares a Benchmark function' }
+    Write-Host ("    " + ($pkgs.Path -join "`n    "))
+
+    # Truncated rather than appended: a label names ONE run, and a file holding
+    # two of them silently doubles every sample count benchstat sees.
+    Set-Content -Path $outFile -Value '' -Encoding utf8 -NoNewline
+
+    foreach ($pkg in $pkgs) {
+        $short = ($pkg.Path -split '/')[-1]
+        Step "bench $($pkg.Path)"
+        $cpu = Join-Path $profDir "$short.cpu.pprof"
+        $mem = Join-Path $profDir "$short.mem.pprof"
+        # NOT Invoke-Checked: a package whose benchmark fails should not throw
+        # away the packages already measured into this file. The exit code is
+        # reported and the loop continues.
+        $text = & go test $pkg.Path -run '^$' -bench $Bench -benchmem -count $Count `
+                    -cpuprofile $cpu -memprofile $mem -o (Join-Path $profDir "$short.test.exe") 2>&1 |
+                Out-String
+        if ($LASTEXITCODE -ne 0) { Write-Host "!!! $($pkg.Path) exited $LASTEXITCODE" -ForegroundColor Yellow }
+        Write-Host $text
+        Add-Content -Path $outFile -Value $text -Encoding utf8
+    }
+
+    Write-Host "==> wrote $outFile" -ForegroundColor Green
+    Write-Host "    profiles in $profDir — read one with:" -ForegroundColor DarkGray
+    Write-Host "      go tool pprof -top -nodecount=25 $profDir\PKG.test.exe $profDir\PKG.cpu.pprof" -ForegroundColor DarkGray
+    Write-Host "    compare against another run with:" -ForegroundColor DarkGray
+    Write-Host "      ./scripts/make.ps1 perf -Compare -From $Label -To OTHER" -ForegroundColor DarkGray
+}
+
+function Invoke-PerfCompare {
+    $outDir = Join-Path $Root 'bin\perf'
+    $a = Join-Path $outDir "$From.txt"
+    $b = Join-Path $outDir "$To.txt"
+    foreach ($f in @($a, $b)) {
+        if (-not (Test-Path $f)) {
+            Fail "$f does not exist. Measure it first: ./scripts/make.ps1 perf -Label $([IO.Path]::GetFileNameWithoutExtension($f))"
+        }
+    }
+    if (-not (Get-Command benchstat -ErrorAction SilentlyContinue)) {
+        Fail 'benchstat is not on PATH. go install golang.org/x/perf/cmd/benchstat@latest'
+    }
+    Step "benchstat $From -> $To"
+    & benchstat "$From=$a" "$To=$b"
 }
 
 function Invoke-Wasm {
@@ -364,6 +483,7 @@ switch ($Target) {
     'demo'    { Invoke-Demo -DemoVersion $Version }
     'lint'    { Invoke-Lint }
     'migrate' { Invoke-Migrate }
+    'perf'    { if ($Compare) { Invoke-PerfCompare } else { Invoke-Perf } }
     'run'     { Invoke-Run }
     'dev'     { Invoke-Wasm; Invoke-Run }
     'e2e'     {
@@ -393,6 +513,11 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
   ./scripts/make.ps1 demo       build the GitHub Pages demo into bin/demo (-Version v1.0.0)
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards
+  ./scripts/make.ps1 perf       benchmark every package that has one, with CPU/heap profiles
+                                -Label baseline   name this run (bin/perf/<label>.txt)
+                                -Bench Hot        only benchmarks matching this regexp
+                                -Count 6          samples per benchmark (this box throttles)
+                                -Compare -From baseline -To after    benchstat two runs
   ./scripts/make.ps1 migrate    apply migrations
   ./scripts/make.ps1 run        build, then serve on :9000
   ./scripts/make.ps1 dev        wasm + run          <- the loop to leave open

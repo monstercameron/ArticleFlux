@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 )
@@ -86,12 +87,19 @@ func TestCapabilitiesDoNotCrossRungs(t *testing.T) {
 	}
 
 	// And the stream capability must not work on the other two either.
+	//
+	// The asset proxy has to actually be CONFIGURED for this to mean anything:
+	// with a.assets == nil, serveAsset answers 501 before it ever looks at the
+	// signature, and this assertion would pass whether or not the message-prefix
+	// domain separation existed at all — proving nothing about the guard under
+	// test.
+	a.assets = assetproxy.New(assetproxy.Options{Dir: t.TempDir(), AllowPrivate: true})
 	streamSig := secret.Sign(a.assetKey, streamMessage(target, exp))
 	rec := httptest.NewRecorder()
 	a.serveAsset(rec, httptest.NewRequest(http.MethodGet,
 		"/asset?u="+encoded+"&e=99999999999&s="+streamSig, nil))
-	if rec.Code == http.StatusOK {
-		t.Fatal("a stream capability fetched an asset")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403 — a stream capability fetched an asset", rec.Code)
 	}
 }
 

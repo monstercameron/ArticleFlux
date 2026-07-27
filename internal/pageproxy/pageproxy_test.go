@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 )
 
 // prox is a recognisable stand-in for the real capability minter.
@@ -279,26 +281,31 @@ func TestPageCacheExpiresAfterTTL(t *testing.T) {
 	}
 }
 
-// A non-http(s) scheme must never reach the fetch. In practice net/http's own
-// client already refuses these transports, so this mostly pins the outcome
-// rather than proving netguard's CheckURL is what stopped it — the case that
-// actually isolates netguard's contribution (a blocked address on an allowed
-// scheme) is TestBlockedAddressIsRefused below. Kept anyway as an explicit,
-// scheme-by-scheme statement of the property rather than an implicit reliance
-// on stdlib behaviour.
+// A non-http(s) scheme must never reach the fetch. net/http's own client
+// already refuses these transports too, so this pins the outcome to
+// netguard's own sentinel rather than to "some error happened" — the latter
+// would still pass with CheckURL deleted, since the stdlib's "unsupported
+// protocol scheme" is a different failure wearing the same shape.
 func TestSchemeIsRefused(t *testing.T) {
 	f := fetcher(t)
 	for _, u := range []string{"file:///etc/passwd", "gopher://x/1", "ftp://x/y.html"} {
-		if _, err := f.Get(context.Background(), u, prox, page); err == nil {
-			t.Errorf("%s was not refused", u)
+		if _, err := f.Get(context.Background(), u, prox, page); !errors.Is(err, netguard.ErrScheme) {
+			t.Errorf("%s: err = %v, want netguard.ErrScheme", u, err)
 		}
 	}
 }
 
+// The case that actually isolates netguard's contribution: a blocked address
+// on an allowed scheme. An `err == nil` check here cannot tell "the guard
+// rejected it" from "169.254.169.254 was simply unreachable from this box",
+// which is exactly the failure mode a deleted guard produces — so pin the
+// specific sentinel.
 func TestBlockedAddressIsRefused(t *testing.T) {
 	f := New(Options{Dir: t.TempDir()}) // AllowPrivate off
-	if _, err := f.Get(context.Background(), "http://169.254.169.254/latest/meta-data/", prox, page); err == nil {
-		t.Fatal("the metadata endpoint must never be fetchable")
+	_, err := f.Get(context.Background(), "http://169.254.169.254/latest/meta-data/", prox, page)
+	if !errors.Is(err, netguard.ErrBlockedIP) {
+		t.Fatalf("err = %v, want netguard.ErrBlockedIP — the metadata endpoint "+
+			"must be refused BY THE GUARD, not merely fail to connect", err)
 	}
 }
 

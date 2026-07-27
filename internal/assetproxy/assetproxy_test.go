@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 )
 
 // onePixelPNG is a real PNG, because the sniffing path is part of what is under
@@ -234,22 +236,35 @@ func TestCacheSurvivesANewFetcher(t *testing.T) {
 	}
 }
 
+// The guard is netguard's, but the wiring is ours, and a proxy that forgot to
+// pass AllowPrivate=false through would be an SSRF hole with a passing test
+// suite.
+//
+// Asserting only that SOME error came back is not enough: 169.254.169.254 is
+// also simply unreachable on a box with no route to it, so a fetch with the
+// guard deleted entirely can fail for that unrelated reason and still satisfy
+// "err != nil". errors.Is pins the failure to netguard's own sentinel, which
+// only fires when the guard actually ran and rejected the address BEFORE any
+// socket was opened.
 func TestBlockedAddressIsRefused(t *testing.T) {
-	// The guard is netguard's, but the wiring is ours, and a proxy that
-	// forgot to pass AllowPrivate=false through would be an SSRF hole with a
-	// passing test suite.
 	f := New(Options{Dir: t.TempDir()})
 	_, err := f.Get(context.Background(), "http://169.254.169.254/latest/meta-data/")
-	if err == nil {
-		t.Fatal("the metadata endpoint must never be fetchable")
+	if !errors.Is(err, netguard.ErrBlockedIP) {
+		t.Fatalf("err = %v, want netguard.ErrBlockedIP — the metadata endpoint "+
+			"must be refused BY THE GUARD, not merely fail to connect", err)
 	}
 }
 
+// A disallowed scheme must be refused by CheckURL before any request is built —
+// checking only that an error came back would also pass if the guard were
+// deleted, since net/http's own transport refuses these schemes anyway with
+// "unsupported protocol scheme". errors.Is distinguishes "netguard rejected
+// this" from "the standard library eventually did".
 func TestSchemeIsRefused(t *testing.T) {
 	f := newFetcher(t)
 	for _, u := range []string{"file:///etc/passwd", "gopher://x/1", "ftp://x/y.png"} {
-		if _, err := f.Get(context.Background(), u); err == nil {
-			t.Errorf("%s was not refused", u)
+		if _, err := f.Get(context.Background(), u); !errors.Is(err, netguard.ErrScheme) {
+			t.Errorf("%s: err = %v, want netguard.ErrScheme", u, err)
 		}
 	}
 }
