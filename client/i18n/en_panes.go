@@ -299,8 +299,6 @@ func init() {
 
 		"focusMode":    "Read full width, or bring the columns back",
 		"openOriginal": "Open the original in a new tab",
-		"viewPage":     "Show the page here, fetched by your server",
-		"viewPageFull": "Open the fetched page full width in a new tab",
 		"like":         "Like",
 		"dislike":      "Dislike",
 		"readLater":    "Save to read later",
