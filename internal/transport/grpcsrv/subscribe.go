@@ -17,7 +17,12 @@ import (
 
 // The subscribe ladder's transport half (§11, §14.2).
 
-// smartSubscribePref is the per-user opt-in for the model reading a page.
+// smartFollowPref is the per-user opt-in for the model reading a page.
+//
+// The key names the SETTING — "Smart+ follow" in the interface — rather than the
+// tier it bills to. Smart+ is the brand every model-backed feature wears (Smart+
+// voice is the other), so a key called `smart.on` would be a key for all of
+// them.
 //
 // Its own key rather than sharing tts.smartPlus, because they are different
 // decisions about different content: one sends the article you chose to read to
@@ -27,7 +32,7 @@ import (
 //
 // Default off, checked here, at the caller — which is rule 1 of the three
 // internal/llm documents for every egress path.
-const smartSubscribePref = "smart.subscribe"
+const smartFollowPref = "smart.follow"
 
 func (s *ReaderServer) AnalyzeSite(ctx context.Context, req *pb.AnalyzeSiteRequest) (
 	*pb.AnalyzeSiteResponse, error) {
@@ -46,7 +51,7 @@ func (s *ReaderServer) AnalyzeSite(ctx context.Context, req *pb.AnalyzeSiteReque
 	useSmart := req.GetSmart()
 	if useSmart {
 		prefs, perr := s.svc.GetPrefs(ctx, sc)
-		if perr != nil || prefs[smartSubscribePref] != "true" {
+		if perr != nil || prefs[smartFollowPref] != "true" {
 			// Not an error: the dialog turns this into the sentence that
 			// explains what turning it on would do. An error here would be a red
 			// message for something the reader has not done wrong.

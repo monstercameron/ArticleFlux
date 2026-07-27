@@ -40,18 +40,30 @@ const mjpegBoundary = "articlefluxframe"
 // frame by frame, with no client code at all. No proto change, no wasm
 // streaming, no canvas compositor, no tile format.
 //
-// What that costs is real and worth stating: no input channel, so this is
-// look-don't-touch, and whole frames rather than the tile diff §10.1d wants.
-// Both are additive later; neither blocks the toggle this exists to serve.
+// What that costs is whole frames rather than the tile diff §10.1d wants, which
+// is additive later.
 //
-// # The connection IS the session
+// # Input comes back a different way
 //
-// There is no session table, no id, and nothing to clean up on a timer. The
-// browser tab lives exactly as long as the HTTP response: when the reader
-// switches away or closes the tab, the `<img>` disconnects, the request context
-// cancels, and the tab dies with it. A stream that outlived its viewer would be
-// a browser nobody is watching, which on a home box is the expensive kind of
-// leak.
+// Frames go down this pipe; scroll comes back up the gRPC tunnel as
+// `ScrollLiveView`. Two channels for one feature looks odd until you notice
+// they carry opposite traffic: a continuous one-way flood of images, and a
+// trickle of tiny coalesced messages. Forcing the second into the first is what
+// would have required the bidi RPC and the client-side compositor this design
+// avoids.
+//
+// # The connection is still the session's lifetime
+//
+// There is no session table and nothing to clean up on a timer. The browser tab
+// lives exactly as long as the HTTP response: when the reader switches away or
+// closes the tab, the `<img>` disconnects, the request context cancels, and the
+// tab dies with it.
+//
+// It does need a NAME, so input can find it — and the capability signature is
+// already one. It is unguessable, unique per mint, stable for the life of the
+// URL, and the client already holds it. Inventing a second identifier would
+// have meant generating it, threading it through the URL, and keeping it stable
+// across re-renders, all to reproduce a string that was sitting there.
 func (a *App) serveStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -106,7 +118,16 @@ func (a *App) serveStream(w http.ResponseWriter, r *http.Request) {
 
 	frames := make(chan render.Frame, 2)
 	errc := make(chan error, 1)
-	go func() { errc <- a.renderer.Stream(ctx, string(raw), frames) }()
+	sessionKey := q.Get("s")
+
+	// The viewport is requested by the client and clamped here. It is NOT part
+	// of the signed message, and that is deliberate: it changes when the reader
+	// widens the view, and re-minting a capability for a resize would mean a
+	// round trip to move a slider. The ceiling in render.Viewport.Clamp is what
+	// makes leaving it unsigned safe — the worst a forged value can do is ask
+	// for a size the renderer already refuses to exceed.
+	vp := render.Viewport{Width: atoiOr(q.Get("w"), 0), Height: atoiOr(q.Get("h"), 0)}
+	go func() { errc <- a.renderer.Stream(ctx, sessionKey, string(raw), vp, frames) }()
 
 	for {
 		select {
@@ -131,6 +152,43 @@ func (a *App) serveStream(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 		}
+	}
+}
+
+// ScrollLive delivers a wheel event to a running live view.
+//
+// The session key is the capability signature the client already holds, which
+// means possession of a valid stream URL is what authorises scrolling it — the
+// same proof that authorised opening it. There is nothing extra to check and
+// nothing extra to leak.
+//
+// Deltas are clamped rather than trusted. They arrive from a browser wheel
+// event, where one notch is tens of pixels and a trackpad fling is hundreds;
+// a client sending 10^9 would ask the page to scroll to an absurd offset and
+// the browser to do real work getting there.
+func (a *App) ScrollLive(key string, dx, dy float64) error {
+	if a.renderer == nil {
+		return render.ErrNoSession
+	}
+	return a.renderer.Scroll(key, clampDelta(dx), clampDelta(dy))
+}
+
+// maxScrollDelta is about two screens of wheel in one message. Anything larger
+// is either a bug or someone playing.
+const maxScrollDelta = 2000
+
+func clampDelta(v float64) float64 {
+	switch {
+	case v > maxScrollDelta:
+		return maxScrollDelta
+	case v < -maxScrollDelta:
+		return -maxScrollDelta
+	// NaN fails every comparison above, so it lands here and is neutralised
+	// rather than handed to the protocol as a JSON literal it cannot encode.
+	case !(v == v):
+		return 0
+	default:
+		return v
 	}
 }
 
@@ -160,4 +218,17 @@ func (a *App) streamPrefix() string {
 // two: a capability for one rung must not be spendable on another.
 func streamMessage(rawURL string, exp int64) string {
 	return "stream\n" + rawURL + "\n" + strconv.FormatInt(exp, 10)
+}
+
+// atoiOr parses a small positive integer, falling back on anything unparseable.
+//
+// No error path on purpose: every caller here has a sensible default and a
+// clamp behind it, so a junk query parameter should produce the default rather
+// than a 400 telling the reader their window is the wrong shape.
+func atoiOr(s string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }

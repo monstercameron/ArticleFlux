@@ -14,12 +14,18 @@
 // change and stays silent when they do not, so a static article costs roughly
 // one frame and a page that is still settling corrects itself as it goes.
 //
-// # What this deliberately is not
+// # How far the input channel goes
 //
-// Not interactive. There is no input channel here, and adding one is a separate
-// decision with its own consent story (§10.1d, R22). This package answers "show
-// me what that page looks like", and a reader who needs to click something is
-// told to open the real site.
+// Scroll, and only scroll. That is not where the line was meant to be — the
+// first version had no input at all — and it moved because a view you cannot
+// scroll is a poster of the top of a page, which answers almost nothing anyone
+// opens a live view for.
+//
+// Clicking is deliberately still absent. A wheel event moves a viewport and can
+// do nothing else; a click can follow a link, submit something, or start a
+// download, and each of those needs an answer about what a remote page is
+// allowed to reach from this box. Scroll needed no such answer, which is why it
+// could ship on its own.
 package render
 
 import (
@@ -34,6 +40,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
@@ -45,6 +52,9 @@ var (
 	ErrNoBrowser = errors.New("render: no chromium-family browser found")
 	// ErrBusy is returned when every render slot is taken.
 	ErrBusy = errors.New("render: another page is already streaming")
+	// ErrNoSession is returned when input arrives for a stream that is not
+	// running — usually one that timed out or whose viewer already left.
+	ErrNoSession = errors.New("render: no live session")
 )
 
 // Frame is one painted image.
@@ -85,6 +95,10 @@ type Renderer struct {
 	opt  Options
 	sem  chan struct{}
 	once sync.Once
+	// live maps a session key to the tab currently serving it, so input can be
+	// delivered to a stream that is already running. Guarded by mu.
+	mu   sync.Mutex
+	live map[string]*liveSession
 	// alloc is the shared browser process. Created on first use rather than at
 	// boot: an instance where nobody opens a live view should never pay for a
 	// browser, and on a small box that is 300 MB of not paying for it.
@@ -110,7 +124,11 @@ func New(opt Options) *Renderer {
 	if opt.IdleTimeout <= 0 {
 		opt.IdleTimeout = 3 * time.Minute
 	}
-	return &Renderer{opt: opt, sem: make(chan struct{}, opt.MaxSessions)}
+	return &Renderer{
+		opt:  opt,
+		sem:  make(chan struct{}, opt.MaxSessions),
+		live: map[string]*liveSession{},
+	}
 }
 
 // Available reports whether a browser could be found, without starting one.
@@ -219,7 +237,88 @@ func (r *Renderer) browser() (context.Context, error) {
 // That is a genuinely weaker position than every other fetch in this codebase,
 // and it is why this rung is opt-in at the instance level rather than on by
 // default like the other two.
-func (r *Renderer) Stream(ctx context.Context, rawURL string, out chan<- Frame) error {
+// liveSession is a running stream: the tab it lives in, and the size it is
+// rendering at. The size is here rather than read from Options because input
+// has to be aimed at the middle of THIS session's viewport, and two sessions
+// can be different sizes.
+type liveSession struct {
+	tab context.Context
+	vp  Viewport
+}
+
+// Scroll delivers a wheel event to a running session.
+//
+// The key is whatever the caller registered the stream under; §10.1d's handler
+// uses the capability signature, which is already unguessable and already
+// unique per stream. Unknown keys are an error rather than a silent no-op: a
+// scroll that goes nowhere looks exactly like a page that will not move, and
+// the reader would keep trying.
+func (r *Renderer) Scroll(key string, dx, dy float64) error {
+	r.mu.Lock()
+	s, ok := r.live[key]
+	r.mu.Unlock()
+	if !ok {
+		return ErrNoSession
+	}
+	// Dispatched at the middle of the viewport. A wheel event goes to whatever
+	// is under the pointer, and the pointer is on the reader's screen, not
+	// ours — the centre is the only position that reliably lands on the
+	// document rather than on a sidebar that happens to sit under the corner.
+	x, y := float64(s.vp.Width)/2, float64(s.vp.Height)/2
+	return chromedp.Run(s.tab,
+		input.DispatchMouseEvent(input.MouseWheel, x, y).
+			WithDeltaX(dx).WithDeltaY(dy))
+}
+
+func (r *Renderer) register(key string, tab context.Context, vp Viewport) {
+	r.mu.Lock()
+	r.live[key] = &liveSession{tab: tab, vp: vp}
+	r.mu.Unlock()
+}
+
+func (r *Renderer) unregister(key string) {
+	r.mu.Lock()
+	delete(r.live, key)
+	r.mu.Unlock()
+}
+
+// Viewport is the size a session renders at.
+//
+// Per-session rather than per-Renderer because the reader can widen the view,
+// and a wider view wants more pixels — a 1280-wide render scaled up to fill a
+// 1800-wide pane is a blurry page, and the whole point of this rung is showing
+// the page as it really looks.
+type Viewport struct{ Width, Height int }
+
+// Clamp bounds a requested viewport to something sane.
+//
+// The request arrives from the client unsigned, which is fine because this is
+// the only thing it can influence and the ceiling is what makes that safe: a
+// client asking for 16000x16000 would have the browser lay out and JPEG-encode
+// an enormous surface, several times a second, on a box with one reader.
+func (v Viewport) Clamp(def Viewport) Viewport {
+	if v.Width <= 0 {
+		v.Width = def.Width
+	}
+	if v.Height <= 0 {
+		v.Height = def.Height
+	}
+	v.Width = clampInt(v.Width, 320, 1920)
+	v.Height = clampInt(v.Height, 240, 1200)
+	return v
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func (r *Renderer) Stream(ctx context.Context, key, rawURL string, vp Viewport, out chan<- Frame) error {
 	if r.opt.AllowPrivate {
 		if err := netguard.CheckURLPermissive(rawURL); err != nil {
 			return fmt.Errorf("render: %w", err)
@@ -242,6 +341,13 @@ func (r *Renderer) Stream(ctx context.Context, rawURL string, out chan<- Frame) 
 
 	tabCtx, cancelTab := chromedp.NewContext(alloc)
 	defer cancelTab()
+
+	// Registered for the tab's whole life and removed on the way out, so input
+	// arriving a moment after the reader closed the view is an honest
+	// ErrNoSession rather than a panic on a dead context.
+	vp = vp.Clamp(Viewport{Width: r.opt.Width, Height: r.opt.Height})
+	r.register(key, tabCtx, vp)
+	defer r.unregister(key)
 
 	// The whole session is bounded. A page that never settles must not hold a
 	// tab open until the process restarts.
@@ -289,7 +395,7 @@ func (r *Renderer) Stream(ctx context.Context, rawURL string, out chan<- Frame) 
 	})
 
 	if err := chromedp.Run(tabCtx,
-		emulation.SetDeviceMetricsOverride(int64(r.opt.Width), int64(r.opt.Height), 1, false),
+		emulation.SetDeviceMetricsOverride(int64(vp.Width), int64(vp.Height), 1, false),
 		chromedp.Navigate(rawURL),
 	); err != nil {
 		return fmt.Errorf("render: navigate: %w", err)
@@ -299,8 +405,8 @@ func (r *Renderer) Stream(ctx context.Context, rawURL string, out chan<- Frame) 
 		page.StartScreencast().
 			WithFormat(page.ScreencastFormatJpeg).
 			WithQuality(int64(r.opt.Quality)).
-			WithMaxWidth(int64(r.opt.Width)).
-			WithMaxHeight(int64(r.opt.Height)).
+			WithMaxWidth(int64(vp.Width)).
+			WithMaxHeight(int64(vp.Height)).
 			WithEveryNthFrame(1),
 	); err != nil {
 		return fmt.Errorf("render: screencast: %w", err)

@@ -22,6 +22,10 @@ service ReaderService {
 
   // GetItem returns one item with its full content.
   rpc GetItem(GetItemRequest) returns (GetItemResponse);
+  // Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
+  // fire dozens per second and one RPC each would flood the tunnel to move a
+  // page a few hundred pixels.
+  rpc ScrollLiveView(ScrollLiveViewRequest) returns (ScrollLiveViewResponse);
 
   // SetItemState marks read/unread and starred/unstarred. One RPC rather than
   // four because they share a row, a rev, and an idempotency key — and because
@@ -229,6 +233,24 @@ message Item {
   // holds a browser tab open for as long as you look at it. The client decides
   // which to show; the server decides which are available at all.
   string stream_url = 18;
+}
+
+// ScrollLiveViewRequest scrolls a running §10.1d live view.
+//
+// The session is named by the signature from its stream URL: holding a valid
+// one is what authorised opening the view, and it is the same proof for moving
+// it. Deltas are wheel deltas in CSS pixels and are clamped server-side.
+message ScrollLiveViewRequest {
+  string session_id = 1;
+  double delta_x = 2;
+  double delta_y = 3;
+}
+
+message ScrollLiveViewResponse {
+  // False when the session is gone — timed out, or its viewer left. The client
+  // uses it to stop sending into a void and to say so on screen, which is the
+  // difference between "this page will not scroll" and "this view has ended".
+  bool live = 1;
 }
 
 message ListFeedsRequest {}

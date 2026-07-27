@@ -22,6 +22,7 @@ const (
 	ReaderService_ListFeeds_FullMethodName          = "/articleflux.v1.ReaderService/ListFeeds"
 	ReaderService_ListItems_FullMethodName          = "/articleflux.v1.ReaderService/ListItems"
 	ReaderService_GetItem_FullMethodName            = "/articleflux.v1.ReaderService/GetItem"
+	ReaderService_ScrollLiveView_FullMethodName     = "/articleflux.v1.ReaderService/ScrollLiveView"
 	ReaderService_SetItemState_FullMethodName       = "/articleflux.v1.ReaderService/SetItemState"
 	ReaderService_UndoMarkAllRead_FullMethodName    = "/articleflux.v1.ReaderService/UndoMarkAllRead"
 	ReaderService_MarkAllRead_FullMethodName        = "/articleflux.v1.ReaderService/MarkAllRead"
@@ -68,6 +69,10 @@ type ReaderServiceClient interface {
 	ListItems(ctx context.Context, in *ListItemsRequest, opts ...grpc.CallOption) (*ListItemsResponse, error)
 	// GetItem returns one item with its full content.
 	GetItem(ctx context.Context, in *GetItemRequest, opts ...grpc.CallOption) (*GetItemResponse, error)
+	// Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
+	// fire dozens per second and one RPC each would flood the tunnel to move a
+	// page a few hundred pixels.
+	ScrollLiveView(ctx context.Context, in *ScrollLiveViewRequest, opts ...grpc.CallOption) (*ScrollLiveViewResponse, error)
 	// SetItemState marks read/unread and starred/unstarred. One RPC rather than
 	// four because they share a row, a rev, and an idempotency key — and because
 	// the offline outbox replays them together.
@@ -219,6 +224,16 @@ func (c *readerServiceClient) GetItem(ctx context.Context, in *GetItemRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetItemResponse)
 	err := c.cc.Invoke(ctx, ReaderService_GetItem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) ScrollLiveView(ctx context.Context, in *ScrollLiveViewRequest, opts ...grpc.CallOption) (*ScrollLiveViewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScrollLiveViewResponse)
+	err := c.cc.Invoke(ctx, ReaderService_ScrollLiveView_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -485,6 +500,10 @@ type ReaderServiceServer interface {
 	ListItems(context.Context, *ListItemsRequest) (*ListItemsResponse, error)
 	// GetItem returns one item with its full content.
 	GetItem(context.Context, *GetItemRequest) (*GetItemResponse, error)
+	// Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
+	// fire dozens per second and one RPC each would flood the tunnel to move a
+	// page a few hundred pixels.
+	ScrollLiveView(context.Context, *ScrollLiveViewRequest) (*ScrollLiveViewResponse, error)
 	// SetItemState marks read/unread and starred/unstarred. One RPC rather than
 	// four because they share a row, a rev, and an idempotency key — and because
 	// the offline outbox replays them together.
@@ -620,6 +639,9 @@ func (UnimplementedReaderServiceServer) ListItems(context.Context, *ListItemsReq
 }
 func (UnimplementedReaderServiceServer) GetItem(context.Context, *GetItemRequest) (*GetItemResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetItem not implemented")
+}
+func (UnimplementedReaderServiceServer) ScrollLiveView(context.Context, *ScrollLiveViewRequest) (*ScrollLiveViewResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ScrollLiveView not implemented")
 }
 func (UnimplementedReaderServiceServer) SetItemState(context.Context, *SetItemStateRequest) (*SetItemStateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetItemState not implemented")
@@ -764,6 +786,24 @@ func _ReaderService_GetItem_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ReaderServiceServer).GetItem(ctx, req.(*GetItemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_ScrollLiveView_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScrollLiveViewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).ScrollLiveView(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_ScrollLiveView_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).ScrollLiveView(ctx, req.(*ScrollLiveViewRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1218,6 +1258,10 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetItem",
 			Handler:    _ReaderService_GetItem_Handler,
+		},
+		{
+			MethodName: "ScrollLiveView",
+			Handler:    _ReaderService_ScrollLiveView_Handler,
 		},
 		{
 			MethodName: "SetItemState",
