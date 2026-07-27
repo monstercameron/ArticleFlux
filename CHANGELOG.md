@@ -56,6 +56,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Preservation and the degrade ladder** (`internal/preserve`, `internal/store/archive.go`,
+  `internal/degrade`, TODO 6.12 & 6.13). §10.6's tiered archival, including the trigger worth having:
+  **a distress sweep when a source starts failing**, because a feed erroring is the best early
+  warning that a site is in trouble and it usually arrives while the article URLs still resolve —
+  that window is the whole opportunity. The ticket's bar is met: killing the fixture site mid-test
+  leaves every item still readable in full. **Eviction can never drop an archive whose origin is
+  dead** — at that point it is the only copy that exists anywhere — enforced in the `WHERE` clause
+  and re-checked inside the delete, since a sweep may discover the origin is gone in between. §22.6's
+  ladder is a pure function of free space, so every rung is testable without filling a disk. Its
+  order is the design: at 5% free, polling stops while reading, marking read and notes keep working
+  — new articles are re-fetchable from the publisher and a note is not, so that is the correct
+  priority rather than a compromise. The outbox drain is never refused at any rung, because those
+  writes already happened on a device and refusing them destroys work the reader believes is saved.
+
 - **The poller is a priority queue by staleness ratio** (TODO 6.8, §22.7), not oldest-due-first. The
   distinction only shows under load and then compounds: at 10:30, a 15-minute feed due at 10:00 has
   missed two whole cycles (ratio 2.0) while a 24-hour feed due at 09:00 is barely late by its own

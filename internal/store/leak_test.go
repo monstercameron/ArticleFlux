@@ -77,6 +77,24 @@ var unscopedByDesign = map[string]string{
 	"RecordFetch": "poll health on a global source row",
 	"DueSources":  "the poller's queue over global sources",
 	"PollerLag":   "instance-wide polling health over global sources (A14)",
+	// Archives (6.12). Of GLOBAL items (A14): one copy serves every subscriber,
+	// and two tenants on the same feed must not cause the same article to be
+	// fetched and stored twice. Nothing per-user is stored or returned.
+	"PutArchive":      "archives global items; one copy serves every subscriber (A14)",
+	"GetArchive":      "same",
+	"HasArchive":      "same",
+	"MarkOriginDead":  "records that a global item's URL no longer resolves",
+	"UnarchivedItems": "the §10.6 distress sweep over one global source",
+	"EvictArchives":   "instance-wide disk reclamation",
+	"ArchiveStats":    "instance-wide archive footprint for §22.6's ladder",
+
+	// Scraped sources (4.7/6.8), added alongside this work. Reasons mirrored
+	// from internal/tools/guards so the two lists cannot say different things
+	// about the same method.
+	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
+	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
+	"KnownGUIDs":          "reads global item guids for one global source (A14)",
+
 	"SourceHosts": "global; feeds the favicon fetcher",
 	"GetFavicon":  "global cache keyed by host",
 	"PutFavicon":  "same",
