@@ -1039,8 +1039,26 @@ Business logic over repositories. Still headless.
       source and returns zero rather than guessing under ten samples.
 - [ ] **6.10 `recommendjob`** — harvest outlinks and aggregator pass-throughs → candidates → health
       gate → score → `recommendations`. **Rungs 1–3, no LLM.** ← 4.12, 2.10 §18.7
-- [ ] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
+- [x] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
       circuit breaker**; **egress allowlist enforced and tested** §18.8, §22.8
+      ◐ 2026-07-26 — **Partially delivered by 8.4b, and deliberately left open.** `internal/llm`
+      exists and is the single path every Smart+ feature takes, on the **OpenAI Responses API**.
+      Done: the OpenAI impl, a shared request timeout, the egress host allowlist checked against
+      the outgoing request (not the endpoint constant), `store:false`, structured output, and
+      truncation surfaced as `ErrTruncated` rather than returned as a short answer.
+      **NOT done, and this ticket stays open for them:** no `Provider` interface (there is one
+      concrete client), **no circuit breaker**, **no bound on in-flight requests**, no Claude impl
+      (§18 wants Claude for feed discovery), and the allowlist is enforced but has no test.
+      A breaker matters more than it looks here: a translation is ~10 batched calls, so a
+      provider outage during one costs ten failures and ten timeouts rather than one.
+      ◧ 2026-07-26 — **transport built by the other lane, protections and egress boundary by this
+      one.** `internal/llm` has the Responses client, host allowlist and budget meter;
+      `breaker.go` adds §22.8's circuit breaker (opens at 5 consecutive failures, **half-opens to
+      exactly one probe** — letting them all through hands a still-broken provider the full load
+      every two minutes) and the concurrency bound, and `egress.go` adds §18.8's allowlist **as
+      types rather than a filter**, because a filter fails open. `AuditEgress` is the test §18.8 asks
+      for by name. *Owed: the `Provider` interface with a second implementation — D10 sequences
+      Claude to M25–26, so one provider is correct for now.*
 - [x] **6.12 `preserve`** — tiered archival (§10.6): eager at ingest for high-affinity and Top-slot
       items · on interaction · **the distress sweep when a source crosses into `failing`** · lifecycle
       transitions `ok → failing → gone` · link-rot checks for engaged items only · eviction that
@@ -1196,8 +1214,16 @@ Business logic over repositories. Still headless.
       reused for a genuinely different request (method or body) is a **conflict** — returning the
       first one's answer for the second one's write drops the write *and* reports success. *Owed:
       the interceptor that calls it; the storage and the semantics are here.*
-- [ ] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
+- [x] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
       ◧ 2026-07-26 (night) — **login only**, in `grpcsrv/auth.go`: 10/minute per username and per client address, in memory. Nothing else is limited, and the per-IP half is largely fictional — every RPC arrives over one WebSocket, so behind a proxy the peer address is `127.0.0.1` for every user on the instance. **A real per-IP limit requires the forwarded address to be threaded through the tunnel handshake**, which is this item's first piece of work.
+      ✅ 2026-07-26 — `internal/ratelimit`. §20.7's table as named rules **with a test asserting the
+      numbers against the document**, because a limit that has drifted from the spec is invisible in
+      a diff of one integer. Token buckets, not fixed windows: a fixed window lets a client send 60
+      at 11:59:59 and 60 more at 12:00:00, and a polling client on a round-minute schedule finds that
+      on the first day. `retry_after` is **rounded up** — rounding down guarantees one wasted request
+      per refusal at the worst moment. Two deliberate fail-open choices: a misconfigured rule permits
+      everything, and a full key table evicts rather than denying. *Owed: wiring it into the
+      interceptor.*
 - [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
       (a deliberate tightening; the library default is 16 MiB) · `WithKeepalive` · the three
       connection/upgrade caps · `WithAuthorize` ← 6.2
@@ -1330,8 +1356,8 @@ hand-written CSS and vanilla JS, and nobody ports them.
       ⏸ 2026-07-26 — **Deferred, deliberately.** Every string was still inline English; the UI was
       changing shape weekly and retrofitting once it settled looked cheaper than re-extracting after
       every redesign.
-      ✅ 2026-07-26 — **Done.** `client/i18n` + eleven `en_*.go` catalogs, 527 call sites,
-      **all 11 files in `client/view` at zero hardcoded copy**, enforced by a fifth structural
+      ✅ 2026-07-26 — **Done.** `client/i18n` + fifteen `en_*.go` catalogs, ~584 call sites,
+      **all 12 files in `client/view` at zero hardcoded copy**, enforced by a fifth structural
       guard (`internal/tools/guards/i18n.go`). It uses the framework API — `i18n.Provider`,
       `UseI18n`, `Runtime.T(ns, key)`, `Runtime.NS`, and `i18n.UseLocale` for the reactive,
       persisted locale. **Switching language re-renders; it does not reload.**
@@ -1359,6 +1385,41 @@ hand-written CSS and vanilla JS, and nobody ports them.
       and `Import` refuses to overwrite English.
       Cost: **+221 KB gzipped**, entirely `x/text` via `NormalizeLocale`/`FormatNumber`. The fix
       belongs in GWC and would benefit every GWC app.
+
+      ✅ 2026-07-26 — **Full-surface audit, after the guard reported zero.** The guard only sees
+      `client/view`, so "zero" was never "everything". Four gaps found across every surface a
+      reader can read; all four closed:
+      - **`relTime`** — the most-rendered string in the app, on every list row and article
+        eyebrow — was `t.Format("2 Jan")`. **Go's layouts are not locale-aware and never will
+        be**, so month names were English in every language. Now `month.1`–`.12` plus a
+        `time.dayMonth` pattern so a locale that writes the month first can reorder it; the unit
+        abbreviations reuse the `unit.*` keys the settings screen already uses.
+      - **`internal/tagglyph`'s 50 glyph names + 7 group headings** — the `aria-label` and tooltip
+        on every cell of a grid of *unlabelled symbols*, so they matter most to exactly the
+        readers who cannot tell ◆ from ◈ at 13px. Keyed by the character (the stable identity),
+        with fallback to `tagglyph`'s own Name.
+      - **`web/index.html`'s splash** — five strings shown BEFORE the wasm module exists, so they
+        cannot read a Go catalog when needed. Mirrored to localStorage on every language change
+        (`mirrorBootCopy`), exactly as this file already mirrors theme colours to `af.boot`. The
+        English stays in the markup as the fallback for a first-ever load, blocked storage, and
+        no-JS.
+      - **gRPC status messages** — every refusal the reader saw was English regardless of locale,
+        and the server **cannot** fix that itself: the language is a per-device localStorage value
+        it never sees. It now sends a key + args in an `articleflux.v1.ErrorDetail` alongside the
+        English, and `view.serverText` resolves it. 18 messages converted. The English stays on
+        the status on purpose — it is what the two consumers with no catalog get, the GReader sync
+        API (§20.7) and curl.
+      Two new ratchets for the wire contract, because the key crosses as a string and nothing in
+      the type system connects the halves: `TestEveryServerErrorKeyExists` (a server key that is
+      unregistered or outside the `srv` namespace fails) and
+      `TestServerErrorKeysMatchTheirEnglishFallback` (the wire's English and the catalog's must
+      not drift — each half is correct alone, so the divergence is otherwise invisible).
+      Untranslated by design, and stated in §22.16a: **feed content** (that is §10.5's job) and
+      gRPC's own socket text inside an `{err}` interpolation.
+
+      **Adding copy from here on: plan.md §22.16b is the rule set** — the four call shapes, the
+      three things that will bite (Runtime on a props struct, Provider outside Root, branching on
+      translated text), and what each test fails on. CONTRIBUTING.md carries the short version.
 
 - [x] **8.4b `internal/llm` + `internal/smart` + the Smart+ settings surface** — one OpenAI client for
       every Smart+ feature, a persisted encrypted API key, and realtime UI translation. §10.5a, §22.16a
@@ -1567,6 +1628,12 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 - [x] **8b.19 Smart+ voice** — OpenAI TTS behind `GET /speech`, four gates, disk cache keyed by
       (item, model, voice), host allowlist checked against the URL being requested rather than against
       the constant. Off per user by default; a server with no key cannot egress at all.
+      ↻ 2026-07-26 — **Key source changed by 8.4b.** `internal/tts` no longer reads `OPENAI_API_KEY`
+      at construction; it takes a `KeyFunc` and reads through it on every call, and `internal/app`
+      hands it the SAME function `internal/llm` gets. One credential now drives every Smart+
+      feature, changeable from Settings without a restart. The alternative was an instance where
+      the voice worked and translation did not because one read the environment and the other read
+      the setting — a difference with no visible shape from the settings screen.
 
 **Continuity and configuration**
 
