@@ -242,7 +242,16 @@ type Item struct {
 	// round trip on every article open to produce a string the server had already
 	// computed everything for. It expires in hours, which is why it is minted per
 	// GetItem rather than stored.
-	ProxyUrl      string `protobuf:"bytes,17,opt,name=proxy_url,json=proxyUrl,proto3" json:"proxy_url,omitempty"`
+	ProxyUrl string `protobuf:"bytes,17,opt,name=proxy_url,json=proxyUrl,proto3" json:"proxy_url,omitempty"`
+	// A short-TTL signed URL that streams a live browser view of this article's
+	// page as MJPEG (plan.md §10.1d). GetItem only, and empty unless the instance
+	// has the live view turned on AND found a browser to run it with.
+	//
+	// Separate from proxy_url rather than a mode parameter on it, because the two
+	// are different rungs with different costs: one re-serves markup, the other
+	// holds a browser tab open for as long as you look at it. The client decides
+	// which to show; the server decides which are available at all.
+	StreamUrl     string `protobuf:"bytes,18,opt,name=stream_url,json=streamUrl,proto3" json:"stream_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -392,6 +401,13 @@ func (x *Item) GetRating() int32 {
 func (x *Item) GetProxyUrl() string {
 	if x != nil {
 		return x.ProxyUrl
+	}
+	return ""
+}
+
+func (x *Item) GetStreamUrl() string {
+	if x != nil {
+		return x.StreamUrl
 	}
 	return ""
 }
@@ -4052,7 +4068,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\xca\x03\n" +
+	" \x01(\tR\tlastError\"\xe9\x03\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -4073,7 +4089,9 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\vrank_reason\x18\x0e \x01(\tR\n" +
 	"rankReason\x12\x16\n" +
 	"\x06rating\x18\x10 \x01(\x05R\x06rating\x12\x1b\n" +
-	"\tproxy_url\x18\x11 \x01(\tR\bproxyUrl\"\x12\n" +
+	"\tproxy_url\x18\x11 \x01(\tR\bproxyUrl\x12\x1d\n" +
+	"\n" +
+	"stream_url\x18\x12 \x01(\tR\tstreamUrl\"\x12\n" +
 	"\x10ListFeedsRequest\"b\n" +
 	"\x11ListFeedsResponse\x12*\n" +
 	"\x05feeds\x18\x01 \x03(\v2\x14.articleflux.v1.FeedR\x05feeds\x12!\n" +

@@ -36,6 +36,9 @@ type ReaderServer struct {
 	// instance does not proxy pages, and the client hides the control rather
 	// than offering one that 501s.
 	mintPage func(absURL string) string
+	// mintStream turns an article URL into a §10.1d live-view URL. Nil means
+	// the instance does not run a browser, and the client offers no Live toggle.
+	mintStream func(absURL string) string
 }
 
 // NewReaderServer wires a service to gRPC.
@@ -60,6 +63,12 @@ func (s *ReaderServer) WithAssetProxy(mint func(absURL string) string) *ReaderSe
 // WithPageProxy lets the client open the publisher's page through us (§10.1b).
 func (s *ReaderServer) WithPageProxy(mint func(absURL string) string) *ReaderServer {
 	s.mintPage = mint
+	return s
+}
+
+// WithLiveView offers the §10.1d browser stream alongside the page proxy.
+func (s *ReaderServer) WithLiveView(mint func(absURL string) string) *ReaderServer {
+	s.mintStream = mint
 	return s
 }
 
@@ -184,8 +193,13 @@ func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb
 		out.Note = note
 	}
 	out.ContentHtml = s.proxyImages(ctx, sc, it, out.GetContentHtml())
-	if s.mintPage != nil && it.URL != "" {
-		out.ProxyUrl = s.mintPage(it.URL)
+	if it.URL != "" {
+		if s.mintPage != nil {
+			out.ProxyUrl = s.mintPage(it.URL)
+		}
+		if s.mintStream != nil {
+			out.StreamUrl = s.mintStream(it.URL)
+		}
 	}
 	return &pb.GetItemResponse{Item: out}, nil
 }
