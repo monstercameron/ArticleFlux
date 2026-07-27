@@ -108,11 +108,6 @@ func init() {
 
 	// The receipt after following a page, so "it worked" is a number rather
 	// than a feeling.
-	plural(DefaultLocale, "addFeed", "followed", map[PluralCategory]string{
-		One:   "Now following {name} · 1 article",
-		Other: "Now following {name} · {count} articles",
-	})
-
 	text(DefaultLocale, "category", map[string]string{
 		"title":  "Category",
 		"close":  "Close",

@@ -53,8 +53,6 @@ func init() {
 		"errNewCategory": "Couldn't make that category: {err}",
 		// The ladder (§11). Two failures with different remedies: one is about
 		// the address, the other about the page behind it.
-		"errAnalyzeSite":  "Couldn't read that address: {err}",
-		"errFollowPage":   "Couldn't follow that page: {err}",
 		"errMoveFeed":     "Couldn't move that feed: {err}",
 		"errUnsubscribe":  "Couldn't unsubscribe: {err}",
 		"errFeedSettings": "Couldn't load this feed's settings: {err}",
