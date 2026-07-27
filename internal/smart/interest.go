@@ -32,12 +32,15 @@ import (
 // complete product. The one thing this must never do is make the homepage worse than it
 // would have been without a key.
 type Interest struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 }
 
 // NewInterest wires the Smart+ interest enhancer.
-func NewInterest(c *llm.Client, s *store.SettingsRepo) *Interest {
+//
+// c is the llmClient seam (see llmclient.go): production keeps passing a
+// *llm.Client, tests pass a fake that never reaches the network.
+func NewInterest(c llmClient, s *store.SettingsRepo) *Interest {
 	return &Interest{llm: c, settings: s}
 }
 
@@ -77,6 +80,12 @@ You will be given numbered candidates (title and short summary) that a determini
 scorer already selected and ordered, plus a profile describing what this reader tends to
 read. Return the candidate ids you would put at the top, best first.
 
+For each id, give a SHORT reason — at most eight words, no full stop — saying what you saw
+in that specific article that earned the promotion. Write it as a fragment that completes
+"moved up because …": "reports the filing itself, not the rumour", "explains the mechanism",
+"the only one with actual numbers". Name what is in the piece. Do not restate the headline,
+do not say "matches your interests", and do not describe your own process.
+
 Judge on substance:
 - Prefer articles that report something new, specific and verifiable.
 - Prefer depth over recap. An article that explains beats one that announces.
@@ -98,14 +107,34 @@ Do NOT:
 var rerankSchema = map[string]any{
 	"type":                 "object",
 	"additionalProperties": false,
-	"required":             []string{"ids"},
+	"required":             []string{"picks"},
 	"properties": map[string]any{
-		"ids": map[string]any{
-			"type":  "array",
-			"items": map[string]any{"type": "integer"},
+		"picks": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				// `why` is REQUIRED in the schema and OPTIONAL to the caller, which is not a
+				// contradiction: requiring it is how the model is made to produce one, and
+				// tolerating its absence is how a provider that drops the field costs the
+				// explanation instead of the whole re-rank.
+				"required": []string{"id", "why"},
+				"properties": map[string]any{
+					"id":  map[string]any{"type": "integer"},
+					"why": map[string]any{"type": "string"},
+				},
+			},
 		},
 	},
 }
+
+// MaxWhyRunes caps a promotion reason.
+//
+// Eighty. The prompt asks for at most eight words and a model asked for eight words
+// occasionally writes a paragraph. It sits on a list row, so an over-long one is DROPPED
+// rather than truncated: a clipped fragment mid-sentence reads as a rendering bug, and the
+// row is perfectly readable with the free-tier reason instead.
+const MaxWhyRunes = 80
 
 // RerankCandidates asks the model which of the top candidates should lead.
 //
@@ -113,12 +142,12 @@ var rerankSchema = map[string]any{
 // positions in this request and nothing else — never database ids, which would let a
 // provider correlate across requests and assemble the per-item history §18.8 forbids.
 func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candidate,
-	prof derive.ProfileHint, want int) ([]int, error) {
+	prof derive.ProfileHint, want int) ([]derive.Pick, error) {
 
 	if len(cands) == 0 {
 		return nil, fmt.Errorf("smart: no candidates")
 	}
-	if !in.llm.Configured(ctx) {
+	if in.llm == nil || !in.llm.Configured(ctx) {
 		return nil, fmt.Errorf("smart: no API key")
 	}
 
@@ -172,24 +201,47 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 	}
 
 	var reply struct {
-		IDs []int `json:"ids"`
+		Picks []struct {
+			ID  int    `json:"id"`
+			Why string `json:"why"`
+		} `json:"picks"`
 	}
 	if err := json.Unmarshal([]byte(out), &reply); err != nil {
 		return nil, fmt.Errorf("smart: rerank reply was not the schema: %w", err)
 	}
-	idx := make([]int, 0, len(reply.IDs))
-	for _, id := range reply.IDs {
+	picks := make([]derive.Pick, 0, len(reply.Picks))
+	for _, p := range reply.Picks {
 		// Back to zero-based. Out-of-range ids are dropped here AND re-checked by the
 		// caller — the caller cannot trust this package and this package cannot trust the
 		// provider, and both checks are cheap.
-		if id >= 1 && id <= len(cands) {
-			idx = append(idx, id-1)
+		if p.ID < 1 || p.ID > len(cands) {
+			continue
 		}
+		picks = append(picks, derive.Pick{Index: p.ID - 1, Why: cleanWhy(p.Why)})
 	}
-	if len(idx) == 0 {
+	if len(picks) == 0 {
 		return nil, fmt.Errorf("smart: rerank returned no usable ids")
 	}
-	return idx, nil
+	return picks, nil
+}
+
+// cleanWhy normalises a promotion reason, or drops it.
+//
+// Dropping rather than truncating: this lands on one line of a list row, and a reason cut
+// mid-word reads as a rendering fault, where its absence just means the row shows its
+// free-tier reason instead. The reason is a bonus; the promotion is the product.
+//
+// The trailing full stop goes because the phrase is rendered as a CLAUSE beside other
+// clauses — "moved up: explains the mechanism" — and a sentence-ending period inside a list
+// of fragments is the kind of detail that makes generated copy look generated.
+func cleanWhy(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, ".")
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" || len([]rune(s)) > MaxWhyRunes {
+		return ""
+	}
+	return s
 }
 
 // entityInstructions asks for named things and nothing else.
@@ -249,7 +301,7 @@ func (in *Interest) ExtractEntities(ctx context.Context, titles []string) ([]der
 	if len(titles) == 0 {
 		return nil, fmt.Errorf("smart: no titles")
 	}
-	if !in.llm.Configured(ctx) {
+	if in.llm == nil || !in.llm.Configured(ctx) {
 		return nil, fmt.Errorf("smart: no API key")
 	}
 	if len(titles) > MaxEntityTitles {
@@ -356,7 +408,7 @@ func (in *Interest) LabelTopic(ctx context.Context, terms []string, fallback str
 	if len(terms) == 0 {
 		return "", fmt.Errorf("smart: no terms")
 	}
-	if !in.llm.Configured(ctx) {
+	if in.llm == nil || !in.llm.Configured(ctx) {
 		return "", fmt.Errorf("smart: no API key")
 	}
 

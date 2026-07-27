@@ -11,22 +11,18 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
-// interest.go had no test file at all before this one. Everything here is
-// deliberately restricted to paths that return BEFORE llm.Client.Do is called:
-// Interest holds a concrete *llm.Client with no exported way to swap its
-// transport from this package (that seam only exists inside internal/llm
-// itself, white-box, the way tts_test.go and the new llm_test.go use it). A
-// test here that supplied a non-empty key and reached Do() would be a real
-// network call to api.openai.com — exactly what this task forbids — so every
-// case below uses an UNCONFIGURED client. llm.Client.Do refuses on its own the
-// moment the key is empty, which is the second line of defence if the guards
-// tested here were ever removed.
+// interest.go had no test file at all before this one, and every case below
+// still uses an UNCONFIGURED client and returns BEFORE llm.Client.Do is
+// called: these are the request-shape guards (no candidates, no key, no
+// terms) that the exported methods check first. llm.Client.Do refuses on its
+// own the moment the key is empty, which is the second line of defence if the
+// guards tested here were ever removed.
 //
-// What is NOT covered here, and why: the id-remapping and the caps in
-// RerankCandidates/ExtractEntities (one-based→zero-based, MaxEntityTitles
-// truncation) only run once Do() has already returned, so exercising them
-// would require either a real call or a transport seam this package does not
-// have. Left untested rather than faked into false confidence.
+// Everything PAST the Configured() gate — the id-remapping, the `why` cap,
+// MaxEntityTitles truncation, malformed replies, provider errors, cancellation
+// — is covered in interest_llm_test.go using the llmClient seam (llmclient.go)
+// and fakeLLM (fake_llm_test.go), which answers Do() in-process and never
+// reaches api.openai.com.
 
 func unconfigured() *llm.Client {
 	return llm.New(func(context.Context) string { return "" })

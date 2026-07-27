@@ -10,22 +10,18 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
-// translate.go had no test file at all before this one. As in interest_test.go,
-// every case here uses an UNCONFIGURED llm.Client: Translator holds a concrete
-// *llm.Client with no transport seam reachable from this package, so any test
-// that got as far as t.llm.Do would be a real call to OpenAI. Catalog()
+// translate.go had no test file at all before this one, and every case here
+// still uses an UNCONFIGURED llm.Client: the locale-validation and cache-gate
+// guards below all return before t.llm.Do would ever be called. Catalog()
 // happens to make that easy to respect correctly, because it checks the cache
 // BEFORE it checks the key — the cache-hit tests below exercise real
 // production logic (the whole reason a translated UI is free after the first
 // call) without ever coming near the network.
 //
-// Not covered: translateBatch's request construction (batching, the schema,
-// what exactly goes in Instructions/Input) and the batching loop in Catalog
-// that calls it — both require Do() to return successfully, which requires a
-// key, which requires a transport this package cannot fake. Lower risk than
-// the ranking/profile allowlist this task is centred on: the content going
-// over the wire there is the static English UI catalog (button labels, not
-// reader data), not reading history or notes.
+// translateBatch's request construction and the batching loop in Catalog that
+// calls it repeatedly — both of which required Do() to return successfully —
+// are covered in translate_llm_test.go using the llmClient seam (llmclient.go)
+// and fakeLLM (fake_llm_test.go), which answers Do() in-process.
 
 // --- locale validation (no client or settings touched) -----------------------
 

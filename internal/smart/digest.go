@@ -19,6 +19,7 @@
 // the text. Article text is immutable, so there is no TTL here for the same
 // reason there is none on the audio cache: an expiry could only ever be a
 // schedule for re-buying an identical paragraph.
+
 package smart
 
 import (
@@ -72,7 +73,7 @@ var ErrNothingToSummarise = errors.New("smart: nothing to summarise")
 
 // Digest writes spoken summaries.
 type Digest struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 	dir      string
 }
@@ -80,7 +81,11 @@ type Digest struct {
 // NewDigest wires the summariser. dir may be empty, in which case nothing is
 // cached and every listen re-summarises — correct for a test, expensive for a
 // server.
-func NewDigest(client *llm.Client, settings *store.SettingsRepo, dir string) *Digest {
+//
+// client is the llmClient seam, not the concrete type: production callers keep
+// passing a *llm.Client (it satisfies the seam implicitly) and tests pass a
+// fake that never reaches the network.
+func NewDigest(client llmClient, settings *store.SettingsRepo, dir string) *Digest {
 	return &Digest{llm: client, settings: settings, dir: dir}
 }
 

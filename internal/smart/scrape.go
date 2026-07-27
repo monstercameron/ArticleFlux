@@ -87,18 +87,21 @@ const analyzeEffort = "low"
 
 // SiteAnalyzer proposes scrape rules.
 type SiteAnalyzer struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 }
 
 // NewSiteAnalyzer wires the analyzer to the one LLM client.
-func NewSiteAnalyzer(c *llm.Client, s *store.SettingsRepo) *SiteAnalyzer {
+//
+// c is the llmClient seam (see llmclient.go): production keeps passing a
+// *llm.Client, tests pass a fake that never reaches the network.
+func NewSiteAnalyzer(c llmClient, s *store.SettingsRepo) *SiteAnalyzer {
 	return &SiteAnalyzer{llm: c, settings: s}
 }
 
 // Configured reports whether this instance can egress at all.
 func (a *SiteAnalyzer) Configured(ctx context.Context) bool {
-	return a != nil && a.llm.Configured(ctx)
+	return a != nil && a.llm != nil && a.llm.Configured(ctx)
 }
 
 // Proposal is a rule that has already been run against the page it was written

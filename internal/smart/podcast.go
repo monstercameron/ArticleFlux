@@ -30,6 +30,7 @@
 // word "podcast", they are all fabrications about a product that does not exist,
 // and a listener who hears "you're listening to the Morning Wire" from their own
 // RSS reader has been lied to by their own software.
+
 package smart
 
 import (
@@ -89,14 +90,17 @@ type Segment struct {
 
 // Podcast writes broadcast segments.
 type Podcast struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 	dir      string
 }
 
 // NewPodcast wires the writer. dir may be empty, in which case nothing is cached
 // and every listen rewrites — correct for a test, expensive for a server.
-func NewPodcast(client *llm.Client, settings *store.SettingsRepo, dir string) *Podcast {
+//
+// client is the llmClient seam (see llmclient.go): production keeps passing a
+// *llm.Client, tests pass a fake.
+func NewPodcast(client llmClient, settings *store.SettingsRepo, dir string) *Podcast {
 	return &Podcast{llm: client, settings: settings, dir: dir}
 }
 

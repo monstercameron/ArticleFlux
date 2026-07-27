@@ -82,12 +82,15 @@ const pluralSep = "#"
 
 // Translator turns the English UI catalog into another language.
 type Translator struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 }
 
 // NewTranslator wires the UI translator.
-func NewTranslator(client *llm.Client, settings *store.SettingsRepo) *Translator {
+//
+// client is the llmClient seam (see llmclient.go): production keeps passing a
+// *llm.Client, tests pass a fake that never reaches the network.
+func NewTranslator(client llmClient, settings *store.SettingsRepo) *Translator {
 	return &Translator{llm: client, settings: settings}
 }
 
@@ -140,7 +143,7 @@ func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]
 		}
 	}
 
-	if !t.llm.Configured(ctx) {
+	if t.llm == nil || !t.llm.Configured(ctx) {
 		return nil, llm.ErrNotConfigured
 	}
 
