@@ -18,6 +18,7 @@ package track
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"sync"
 
@@ -91,6 +92,21 @@ type Collector struct {
 	// list for being long.
 	visTicks  map[string]int
 	impressed map[string]bool
+
+	// store makes the buffer survive the tab closing. Zero value = in memory
+	// only, which is what a native test gets unless it says otherwise.
+	store Store
+
+	// sending is true while a batch is in the air.
+	//
+	// Without it the flush triggers stack. A batch takes up to engagementTimeout
+	// to give up, the periodic ship fires every ten seconds, and Emit starts one
+	// more every time the buffer crosses BatchSize — so a slow or wedged tunnel
+	// accumulates blocked goroutines each holding a slice of events, and the
+	// browser ends up carrying several simultaneous RPCs for a stream of data
+	// nobody is waiting for. Analytics is not allowed to cost the reader
+	// anything, and that includes the connection.
+	sending bool
 
 	stop chan struct{}
 	once sync.Once
@@ -391,6 +407,15 @@ func (c *Collector) Start() []platform.Listener {
 		// fold, because the click was queued behind an RPC that had deadlocked the
 		// page against itself.
 		c.Leave(signals.SurfaceReader)
+		// Write to storage FIRST, synchronously, and ship second.
+		//
+		// The order is the whole point. The flush above cannot be waited on —
+		// see the paragraph above — so on this path there is no way to know
+		// whether it landed, and if the connection is down it certainly will
+		// not. Persisting first means the worst case is that the events are
+		// sent AND stored, and a duplicate batch is something the server
+		// already dedupes on id (A34). The other order loses the session.
+		c.persist()
 		go c.Flush()
 	})
 
@@ -414,26 +439,118 @@ func (c *Collector) Tick() {
 // common failure is a reconnect, and the events are still true afterwards. It is
 // put back in order, because the outbox is the only thing preserving the order
 // events happened in once they have left the DOM.
+// One at a time. A second caller while a batch is in the air returns at once and
+// leaves the events buffered — they are not lost, and the next flush takes them
+// along with whatever has accumulated since. Batching harder under pressure is
+// the correct response to a slow connection; opening a second connection to it
+// is not.
 func (c *Collector) Flush() {
 	c.mu.Lock()
-	if len(c.buf) == 0 {
+	if c.sending || len(c.buf) == 0 {
 		c.mu.Unlock()
 		return
 	}
 	batch := c.buf
 	c.buf = nil
-	c.mu.Unlock()
-
 	if c.send == nil {
+		c.mu.Unlock()
 		return
 	}
-	if err := c.send(context.Background(), batch); err != nil {
-		c.mu.Lock()
+	c.sending = true
+	c.mu.Unlock()
+
+	err := c.send(context.Background(), batch)
+
+	c.mu.Lock()
+	c.sending = false
+	if err != nil {
 		c.buf = append(batch, c.buf...)
 		if over := len(c.buf) - MaxBuffered; over > 0 {
 			c.buf = c.buf[over:]
 		}
-		c.mu.Unlock()
+	}
+	c.mu.Unlock()
+	// Write through on both outcomes: on failure so the events survive the tab,
+	// and on success so storage does not keep replaying a batch the server
+	// already has. A flush is the only moment the buffer changes by a lot, which
+	// makes it the right place and keeps this off the per-event path — a
+	// localStorage write per pointermove would be a real cost for a layer whose
+	// whole rule is that it may not cost the reader anything.
+	c.persist()
+}
+
+// --- durability (§20.19.8) ----------------------------------------------------
+//
+// The buffer was RAM-only, and its `pagehide` flush CANNOT succeed while
+// disconnected — so closing a tab at the end of an offline session discarded the
+// whole session's signals. A34 calls this an outbox; an outbox that does not
+// survive its process is a queue.
+//
+// Storage is injected rather than reached for, so all of this stays testable
+// natively: `client/platform`'s native build has no localStorage and honestly
+// says so, which would make a native test of persistence pass against a fiction.
+
+// Store is durable storage for the pending buffer. Both halves may be nil.
+type Store struct {
+	Load func() []byte
+	Save func([]byte)
+}
+
+// WithStore makes the buffer survive the tab, and restores whatever the last one
+// left behind. It returns how many events came back.
+//
+// Called before Start: the restored events belong to the session that produced
+// them and carry their own ids, so they are shipped as-is rather than being
+// re-stamped into this one.
+func (c *Collector) WithStore(s Store) int {
+	c.mu.Lock()
+	c.store = s
+	c.mu.Unlock()
+	if s.Load == nil {
+		return 0
+	}
+	var evs []signals.Event
+	if b := s.Load(); len(b) > 0 {
+		if err := json.Unmarshal(b, &evs); err != nil {
+			// Truncated or mangled storage. Dropping it is the right failure:
+			// these are analytics, and A35 says this layer may never degrade
+			// reading — including by refusing to start.
+			evs = nil
+		}
+	}
+	if len(evs) == 0 {
+		return 0
+	}
+	c.mu.Lock()
+	c.buf = append(evs, c.buf...)
+	if over := len(c.buf) - MaxBuffered; over > 0 {
+		c.buf = c.buf[over:]
+	}
+	n := len(c.buf)
+	c.mu.Unlock()
+	return n
+}
+
+// Pending reports how many observations are waiting to be shipped.
+func (c *Collector) Pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.buf)
+}
+
+// persist writes the buffer out. Cheap and synchronous by design: it is called
+// from `pagehide`, where an asynchronous write is not guaranteed to commit
+// before the tab is gone.
+func (c *Collector) persist() {
+	c.mu.Lock()
+	save := c.store.Save
+	var b []byte
+	if save != nil && len(c.buf) > 0 {
+		b, _ = json.Marshal(c.buf)
+	}
+	c.mu.Unlock()
+	if save != nil {
+		save(b)
 	}
 }
 

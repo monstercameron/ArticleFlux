@@ -164,6 +164,18 @@ type Key struct {
 	Ctrl bool
 }
 
+// boolOf reads a boolean property without trusting that it exists.
+//
+// `Value.Bool()` panics on anything that is not a JS boolean — including
+// `undefined`, which is what a missing property returns. Every read of an event
+// property crossing this boundary goes through here or through an explicit
+// Type() check, because "the object has the shape I expect" is precisely the
+// assumption a package wrapping an untyped runtime is not allowed to make.
+func boolOf(v js.Value, prop string) bool {
+	p := v.Get(prop)
+	return p.Type() == js.TypeBoolean && p.Bool()
+}
+
 // OnKeyDown registers a document-level key handler.
 func OnKeyDown(fn func(Key)) Listener {
 	doc := js.Global().Get("document")
@@ -172,17 +184,38 @@ func OnKeyDown(fn func(Key)) Listener {
 			return nil
 		}
 		e := args[0]
+		// A document-level listener receives whatever ANYTHING dispatches, and
+		// not everything that arrives as "keydown" is a KeyboardEvent.
+		//
+		// This is not hypothetical and it is not cheap to get wrong. A password
+		// manager filling the login form dispatches a synthetic `new
+		// Event('keydown')` to make frameworks notice the value it just wrote —
+		// and a plain Event has no `key`, no `altKey`, no `ctrlKey`. Reading one
+		// returns `undefined`, and `Value.Bool()` on undefined does not return
+		// false, it PANICS. In wasm a panic is not a caught error: it tears down
+		// the whole module, every listener with it, and the page becomes a dead
+		// screenshot of itself with `Go program has already exited` in the
+		// console.
+		//
+		// `key` is the discriminator rather than checking the constructor name,
+		// because that is the property this function exists to read: an event
+		// with no key is one with nothing to report no matter what type it
+		// claims to be.
+		name := e.Get("key")
+		if name.Type() != js.TypeString {
+			return nil
+		}
 		// Modified keystrokes belong to the browser, not to us. Intercepting
 		// Ctrl-R or Cmd-K would break the surrounding application.
 		// Alt-modified keys always belong to the browser. Ctrl/Cmd is passed
 		// through so Ctrl+Enter can save a note; every other Ctrl combination
 		// falls through the switch below untouched.
-		if e.Get("altKey").Bool() {
+		if boolOf(e, "altKey") {
 			return nil
 		}
 		k := Key{
-			Name: e.Get("key").String(),
-			Ctrl: e.Get("ctrlKey").Bool() || e.Get("metaKey").Bool(),
+			Name: name.String(),
+			Ctrl: boolOf(e, "ctrlKey") || boolOf(e, "metaKey"),
 		}
 		if t := e.Get("target"); t.Truthy() {
 			tag := strings.ToUpper(t.Get("tagName").String())
@@ -1005,7 +1038,11 @@ func PrefersReducedMotion() bool {
 		return false
 	}
 	q := js.Global().Call("matchMedia", "(prefers-reduced-motion: reduce)")
-	return q.Truthy() && q.Get("matches").Bool()
+	// boolOf rather than .Bool(): Truthy() checks the MediaQueryList, not the
+	// property read off it, and an unguarded Bool() on a missing property panics
+	// the module rather than returning false. Same class of bug as the synthetic
+	// keydown in OnKeyDown.
+	return boolOf(q, "matches")
 }
 
 // MotionReduced reports whether motion is currently suppressed, by the app's
@@ -1376,4 +1413,186 @@ func Origin() string {
 		return ""
 	}
 	return loc.Get("origin").String()
+}
+
+// --- the connection's view of the outside world (§20.19.5) --------------------
+//
+// Three facts the transport cannot discover for itself, and without which a
+// reconnect can only ever be a timer.
+//
+// gRPC's backoff is not interruptible: `Connect` is a no-op while a subchannel
+// sits in TRANSIENT_FAILURE, so a client that has just been told by the
+// operating system that the network is back has no way to act on knowing it and
+// waits out a delay that may have grown to twenty seconds. These are what turn
+// "the network changed" into an immediate re-dial.
+
+// Online reports the browser's own opinion of whether there is a network.
+//
+// Worth exactly what it costs: `navigator.onLine` false is reliable — there is
+// definitely no network — while true only means an interface exists, not that
+// anything is reachable. That asymmetry is why it is used only to DISTINGUISH
+// "you are offline" from "the server is unreachable", never to decide whether
+// to try. Absent (a browser without the property) reads as online, because
+// refusing to connect on missing evidence is the worse failure.
+func Online() bool {
+	nav := js.Global().Get("navigator")
+	if !nav.Truthy() {
+		return true
+	}
+	v := nav.Get("onLine")
+	if v.IsUndefined() || v.IsNull() {
+		return true
+	}
+	return v.Bool()
+}
+
+// OnNetworkChange reports the browser gaining or losing its network.
+func OnNetworkChange(fn func(online bool)) Listener {
+	win := js.Global().Get("window")
+	on := js.FuncOf(func(js.Value, []js.Value) any {
+		fn(Online())
+		return nil
+	})
+	win.Call("addEventListener", "online", on)
+	win.Call("addEventListener", "offline", on)
+	return Listener{
+		target: win, event: "online", fn: on,
+		extra: func() { win.Call("removeEventListener", "offline", on) },
+	}
+}
+
+// OnResume fires when this page starts mattering again.
+//
+// Three events, because they cover three different disappearances and no one of
+// them covers the others:
+//
+//	visibilitychange  the tab was backgrounded, or the phone was locked
+//	pageshow          restored from the back/forward cache
+//	focus             the window regained it without ever being hidden
+//
+// The bfcache case is the one that is easy to miss and the most likely to
+// mislead: a restored page comes back with its WebSocket already closed by the
+// browser, and gRPC can sit on that for a while before noticing. The others
+// matter because a **hidden tab makes no promises** — Chrome throttles timers
+// there to roughly one a minute, so neither the backoff nor the keepalive probe
+// can be trusted to have run. Rather than fight the throttle (a Worker, an
+// audio-context trick — battery spent on accuracy nobody is looking at), the
+// deal is that a tab becoming visible VERIFIES before it renders.
+//
+// Firing more than once for a single resume is harmless: everything downstream
+// is either idempotent or paced (see data.RecoveryGate).
+func OnResume(fn func()) Listener {
+	doc := js.Global().Get("document")
+	win := js.Global().Get("window")
+
+	f := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		// visibilitychange fires in both directions; only one of them is a
+		// resume, and acting on the other would kick the connection on the way
+		// out of the tab rather than on the way back in.
+		if s := doc.Get("visibilityState"); s.Truthy() && s.String() != "visible" {
+			return nil
+		}
+		fn()
+		return nil
+	})
+	doc.Call("addEventListener", "visibilitychange", f)
+	win.Call("addEventListener", "pageshow", f)
+	win.Call("addEventListener", "focus", f)
+	return Listener{
+		target: doc, event: "visibilitychange", fn: f,
+		extra: func() {
+			win.Call("removeEventListener", "pageshow", f)
+			win.Call("removeEventListener", "focus", f)
+		},
+	}
+}
+
+// --- local storage -----------------------------------------------------------
+//
+// Used for exactly one thing: the session token and the device id that go with
+// it. Reading preferences from here would be wrong — those live on the server,
+// so they follow a reader between the laptop and the phone — but a credential is
+// per-device by definition and has nowhere else to go.
+//
+// localStorage rather than a cookie because the credential travels as a gRPC
+// metadata header over the tunnel, not as a header the browser attaches. A
+// cookie would be sent automatically on every request to the origin, which is
+// what makes CSRF possible; a value that only Go code ever reads and only ever
+// puts in an explicit header cannot be replayed by a cross-site form post.
+//
+// Every call is guarded: localStorage throws rather than returning null when the
+// browser blocks storage — Safari private browsing historically, and any modern
+// browser with third-party storage partitioned off. An unguarded read there
+// panics the wasm module, which presents as a blank page.
+
+func localStorage() js.Value {
+	defer func() { _ = recover() }()
+	ls := js.Global().Get("localStorage")
+	if !ls.Truthy() {
+		return js.Undefined()
+	}
+	return ls
+}
+
+// LocalGet reads a key, returning "" when it is absent or storage is unavailable.
+func LocalGet(key string) (val string) {
+	defer func() {
+		if recover() != nil {
+			val = ""
+		}
+	}()
+	ls := localStorage()
+	if !ls.Truthy() {
+		return ""
+	}
+	v := ls.Call("getItem", key)
+	if !v.Truthy() {
+		return ""
+	}
+	return v.String()
+}
+
+// LocalSet writes a key, and reports whether it stuck.
+//
+// The boolean is not decoration. If the token cannot be persisted, the reader
+// will be asked to log in again on every reload, and saying so once at login is
+// far better than letting them rediscover it every morning.
+func LocalSet(key, val string) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	ls := localStorage()
+	if !ls.Truthy() {
+		return false
+	}
+	ls.Call("setItem", key, val)
+	return true
+}
+
+// LocalRemove deletes a key.
+func LocalRemove(key string) {
+	defer func() { _ = recover() }()
+	ls := localStorage()
+	if !ls.Truthy() {
+		return
+	}
+	ls.Call("removeItem", key)
+}
+
+// Reload reloads the page.
+//
+// This is how an expired or revoked session returns to the login screen. A
+// reload rather than an in-place state change because a session ending
+// invalidates every piece of loaded state at once — the item list, the bodies,
+// the note drafts, the open panels — and rebuilding that by hand is a long list
+// of things to forget. The credential has already been cleared before this is
+// called, so the reload lands on the login screen.
+func Reload() {
+	loc := js.Global().Get("location")
+	if !loc.Truthy() {
+		return
+	}
+	loc.Call("reload")
 }

@@ -128,3 +128,26 @@ func ScrollPaneToTop(selector string) {}
 func ScrollIntoView(selector string) {}
 
 func Origin() string { return "" }
+
+// A native build has no browser, so it has no network events and nothing that
+// resumes. Online reports true for the same reason LocalGet reports "": the
+// honest answer for a process with no navigator is not "offline", it is "this
+// question does not apply" — and of the two available answers, the one that
+// does not suppress connection attempts is the safe one.
+func Online() bool { return true }
+
+func OnNetworkChange(fn func(online bool)) Listener { return Listener{} }
+
+func OnResume(fn func()) Listener { return Listener{} }
+
+// Local storage has no native equivalent, and inventing an in-memory map here
+// would make a native test of the login gate pass against a fiction. Absent is
+// the honest answer: a native build has no browser and therefore no stored
+// credential.
+func LocalGet(key string) string { return "" }
+
+func LocalSet(key, val string) bool { return false }
+
+func LocalRemove(key string) {}
+
+func Reload() {}

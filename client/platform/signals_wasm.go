@@ -212,7 +212,13 @@ func OnTextSelection(fn func(chars int)) Listener {
 		if !s.Truthy() {
 			return nil
 		}
-		n := s.Get("length").Int()
+		// s is a js string, not an object: .Get("length") on one PANICS with
+		// "call of Value.Get on string" and takes the whole client down — the
+		// program exits, the tab keeps its last paint, and every later click does
+		// nothing. Measured in runes rather than bytes, because the floor is
+		// about how much a reader selected and a multi-byte character is one
+		// character to them.
+		n := len([]rune(s.String()))
 		if n < MinSelectionChars {
 			return nil
 		}

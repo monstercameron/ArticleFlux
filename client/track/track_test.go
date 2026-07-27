@@ -315,3 +315,85 @@ func TestSessionRollsAfterAGap(t *testing.T) {
 		t.Error("a gap longer than SessionGapMS should start a new session")
 	}
 }
+
+// --- durability (§20.19.8) ----------------------------------------------------
+
+// memStore is storage that outlives a Collector, the way a browser's does.
+type memStore struct{ b []byte }
+
+func (m *memStore) store() Store {
+	return Store{
+		Load: func() []byte { return m.b },
+		Save: func(b []byte) { m.b = b },
+	}
+}
+
+// TestBufferSurvivesTheTab is the gap this closes: the buffer was RAM-only and
+// its page-hide flush CANNOT succeed while disconnected, so closing a tab at the
+// end of an offline session discarded the whole session.
+func TestBufferSurvivesTheTab(t *testing.T) {
+	mem := &memStore{}
+
+	// A session's worth of reading against a server that is not answering.
+	down := &capture{fail: true}
+	c := New(down.send)
+	c.WithStore(mem.store())
+	c.Emit(signals.Opened, "i1", "s1", 0, signals.SurfaceList, "")
+	c.Emit(signals.Opened, "i2", "s1", 0, signals.SurfaceList, "")
+	c.Flush() // fails, and must write the events out rather than only holding them
+
+	if len(mem.b) == 0 {
+		t.Fatal("a failed flush left nothing in storage: closing the tab here " +
+			"loses the session, which is the whole bug")
+	}
+
+	// The tab closes and a new one opens against a working server.
+	up := &capture{}
+	c2 := New(up.send)
+	if n := c2.WithStore(mem.store()); n != 2 {
+		t.Fatalf("restored %d events, want 2", n)
+	}
+	c2.Flush()
+	if got := len(up.all()); got != 2 {
+		t.Fatalf("the new tab shipped %d events, want 2", got)
+	}
+	// Ids are the originals: the server dedupes on them (A34), so re-stamping
+	// restored events into the new session would defeat that and double-count.
+	for _, e := range up.all() {
+		if e.ID == "" {
+			t.Error("a restored event lost its id, which is the dedupe key")
+		}
+	}
+}
+
+// TestSuccessfulFlushClearsStorage — otherwise every reload replays a batch the
+// server already has, forever.
+func TestSuccessfulFlushClearsStorage(t *testing.T) {
+	mem := &memStore{}
+	cap := &capture{}
+	c := New(cap.send)
+	c.WithStore(mem.store())
+
+	c.Emit(signals.Opened, "i1", "s1", 0, signals.SurfaceList, "")
+	c.Flush()
+
+	if len(mem.b) != 0 {
+		t.Errorf("storage still holds %d bytes after a successful flush: every "+
+			"reload would replay it", len(mem.b))
+	}
+}
+
+// TestCorruptStorageIsIgnored — A35: analytics may never degrade reading,
+// including by refusing to start.
+func TestCorruptStorageIsIgnored(t *testing.T) {
+	mem := &memStore{b: []byte("{not json")}
+	c := New((&capture{}).send)
+	if n := c.WithStore(mem.store()); n != 0 {
+		t.Errorf("restored %d events from corrupt storage", n)
+	}
+	// And it still works afterwards.
+	c.Emit(signals.Opened, "i1", "s1", 0, signals.SurfaceList, "")
+	if c.Pending() != 1 {
+		t.Error("the collector did not recover from unreadable storage")
+	}
+}
