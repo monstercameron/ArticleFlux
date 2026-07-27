@@ -231,3 +231,12 @@ func indent(b *strings.Builder, depth int) {
 		b.WriteString("  ")
 	}
 }
+
+// Outline is distill, exported.
+//
+// It exists for two callers that are not the analyser: the pagescan tool, which
+// prints what the model would receive so a proposal that missed the list can be
+// diagnosed rather than guessed at, and — eventually — a rule editor that wants
+// to show the same thing. Both need to see EXACTLY what is sent, which is why
+// this is the same function rather than a second one that drifts.
+func Outline(pageHTML string) string { return distill(pageHTML) }

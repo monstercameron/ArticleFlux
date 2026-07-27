@@ -50,6 +50,12 @@
 *.wasm
 *.wasm.gz
 
+# A `go build` with no -o, or one aimed at the wrong place, drops a 31 MB
+# binary here named after its directory. Root-anchored on purpose: a bare
+# `app` would also ignore client/app, which is source.
+/app
+/app.exe
+
 # Node, which only the e2e suite uses.
 /e2e/node_modules/
 /e2e/.tmp/
