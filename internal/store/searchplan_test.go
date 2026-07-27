@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,12 @@ import (
 //
 // If Search's output ever legitimately changes, this constant changes with it in
 // the same commit, and the diff says which one moved first.
+//
+// It has changed once, deliberately: the snippet column moved from -1 to 1 (see
+// snippetColumn). The column is held EQUAL on both sides here on purpose — this
+// test is about the two-phase rewrite and must not also be a test of the snippet
+// decision, which TestSearchSnippetsComeFromTheSummary owns. Two properties
+// checked by one assertion is one property that can break unnoticed.
 const searchBefore = `
 	SELECT i.id, i.source_id,
 	       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
@@ -23,7 +30,7 @@ const searchBefore = `
 	       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 	       COALESCE(uis.rating,0),
 	       i.word_count, COALESCE(i.image_url,''),
-	       snippet(items_fts, -1, '<mark>', '</mark>', '…', 12)
+	       snippet(items_fts, 1, '<mark>', '</mark>', '…', 12)
 	  FROM items_fts
 	  JOIN items i ON i.rowid = items_fts.rowid
 	  JOIN sources src ON src.id = i.source_id
@@ -151,4 +158,61 @@ func searchFixture(t *testing.T) (*DB, *ReaderRepo, Scope) {
 	}
 	db := buildG3Fixture(t)
 	return db, NewReaderRepo(db), Scope{TenantID: "t0", UserID: "u0", Role: "member"}
+}
+
+// TestSearchSnippetsComeFromTheSummary pins the snippetColumn decision.
+//
+// The excerpt used to be cut from `content_html`, which cost ~1.4 seconds on a
+// common-word search over the real development database and produced raw
+// publisher markup with `<mark>` spliced into it. It now comes from `summary`,
+// which is plain text by construction — feed.summarize strips the tags before
+// the row is ever written.
+//
+// Two properties, and they are the two that would be lost by "tidying" the
+// column back to -1:
+//
+//   - the excerpt never contains markup other than the highlight itself
+//   - the rows and their ORDER are unaffected, because MATCH and bm25 still read
+//     every column; only the excerpt text moved
+func TestSearchSnippetsComeFromTheSummary(t *testing.T) {
+	db, repo, sc := searchFixture(t)
+	ctx := context.Background()
+
+	// Give one item a body that would dominate an auto-selected snippet, and a
+	// summary that would not. If the column ever reverts, the excerpt for this
+	// item comes back full of markup and this test says so.
+	var rowid int64
+	if err := db.Write.QueryRowContext(ctx,
+		`SELECT rowid FROM items ORDER BY rowid LIMIT 1`).Scan(&rowid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Write.ExecContext(ctx, `
+		UPDATE items
+		   SET summary = 'A plain sentence about zarquon and nothing else.',
+		       content_html = '<div class="body"><p>zarquon zarquon zarquon</p>' ||
+		                      '<img src="x.png"><a href="y">zarquon</a></div>'
+		 WHERE rowid = ?`, rowid); err != nil {
+		t.Fatal(err)
+	}
+
+	items, snippets, err := repo.Search(ctx, sc, "zarquon", "", 50)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("the seeded item did not come back; the FTS triggers are not maintaining the index")
+	}
+	if len(snippets) != len(items) {
+		t.Fatalf("%d snippets for %d items — the two are index-aligned by contract",
+			len(snippets), len(items))
+	}
+
+	for i, s := range snippets {
+		// The highlight is the ONLY markup allowed through.
+		bare := strings.ReplaceAll(strings.ReplaceAll(s, "<mark>", ""), "</mark>", "")
+		if strings.ContainsAny(bare, "<>") {
+			t.Errorf("snippet %d for %q carries markup beyond the highlight: %q",
+				i, items[i].Title, s)
+		}
+	}
 }

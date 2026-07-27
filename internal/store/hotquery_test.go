@@ -417,6 +417,14 @@ func g3SourcesInFolder(t testing.TB, db *DB, sc Scope, folderID string) []string
 		}
 		out = append(out, id)
 	}
+	// Next() returns false both when the rows run out and when the iteration
+	// fails, and it does not distinguish them. A helper that swallows the
+	// difference hands the caller a SHORTER list and no error — which in a
+	// benchmark reads as a folder with fewer feeds in it, and in the G3 gate
+	// reads as a query that got faster.
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
@@ -448,12 +456,24 @@ func TestG3QueryPlans(t *testing.T) {
 		}
 		t.Logf("--- %s", s.name)
 		for rows.Next() {
-			var a, b, c int
+			// EXPLAIN QUERY PLAN returns four columns: (id, parent, notused,
+			// detail). Only the last carries the sentence a person reads —
+			// "SEARCH i USING INDEX items_published" — and the first three are
+			// the tree structure, which matters only if you are drawing the
+			// plan rather than reading it. Named rather than left as a, b, c so
+			// the discard is deliberate instead of looking like sloppiness.
+			var planID, planParent, planUnused int
 			var detail string
-			if err := rows.Scan(&a, &b, &c, &detail); err != nil {
+			if err := rows.Scan(&planID, &planParent, &planUnused, &detail); err != nil {
 				t.Fatal(err)
 			}
 			t.Logf("    %s", detail)
+		}
+		// Without this, a plan that failed halfway prints a SHORTER plan and the
+		// test still passes — and a missing line in an EXPLAIN output is exactly
+		// the thing this function exists to notice.
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
 		}
 		_ = rows.Close()
 	}

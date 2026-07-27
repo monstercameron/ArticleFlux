@@ -13,6 +13,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -39,6 +40,18 @@ type SmartServer struct {
 	tr      *smart.Translator
 	scopeOf func(context.Context) (store.Scope, error)
 	log     *slog.Logger
+
+	// The theming half (§20.16.3, theme.go). All three are optional and all three
+	// are installed together by WithTheming.
+	//
+	// `palettes` is nil on an instance with no key, and the drift still works —
+	// the deterministic rung needs no model. `reader` is where the interests and
+	// the consent preference are read from. `themeLimit` is the per-user budget,
+	// which is what makes these the only non-owner RPCs on this service that are
+	// safe to serve.
+	palettes   *smart.Palettes
+	reader     *store.ReaderRepo
+	themeLimit *ratelimit.Limiter
 }
 
 // NewSmartServer wires the Smart+ surface.

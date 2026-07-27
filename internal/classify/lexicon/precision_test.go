@@ -220,10 +220,17 @@ const (
 // once each rather than in the clusters a term-count classifier needs. The
 // intended fix is a per-label `MinScore` on exactly these (see the note on
 // `classify.DefaultStrategy`), not a lower bar for everybody.
+// **`transport` was removed 2026-07-27** after `electric vehicles` took its
+// recall from 0.375 to 0.500. That deletion is the ratchet doing its job, and it
+// is worth recording how close it came to not happening: the agent that mined the
+// term added it, saw this test fail with "remove it from weakRecall", could not
+// edit a test file, and REVERTED the improvement. The rule is right and the
+// consequence was that a real coverage gain was thrown away for twenty minutes —
+// so anyone who sees that failure should read it as "you have fixed something,
+// now delete a line", never as "back this out".
 var weakRecall = map[string]float64{
-	"politics":  0.125,
-	"science":   0.273,
-	"transport": 0.375,
+	"politics": 0.125,
+	"science":  0.273,
 }
 
 type counts struct{ tp, fp, fn int }

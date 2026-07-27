@@ -140,6 +140,18 @@ func DefaultPolicy() *authz.Map {
 	// Choosing an interface language is not an administrative act.
 	m.Require(smart+"ListLanguages", authz.CapReadItems)
 	m.Require(smart+"TranslateUI", authz.CapReadItems)
+	// Neither is choosing what your own reader looks like (§20.16.3). These are
+	// the only two methods on this service with no inline role check, and the
+	// spend is bounded per-user by ratelimit.ThemePerUser instead — the same line
+	// the Smart+ voice draws, and for the same reason: a member may pay for their
+	// own reading experience, and may not read the key or re-bill the instance.
+	//
+	// CapReadItems rather than CapSelfAccount, which SetPrefs holds: an API token
+	// minted for a phone is deliberately denied CapSelfAccount, and a token that
+	// can read the feed should be able to render it in the theme the account has
+	// chosen.
+	m.Require(smart+"ComposeTheme", authz.CapReadItems)
+	m.Require(smart+"SuggestTheme", authz.CapReadItems)
 
 	// --- diagnostics ----------------------------------------------------------
 	//

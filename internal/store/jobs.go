@@ -53,6 +53,13 @@ const (
 	JobLinkCheck JobKind = "linkcheck"
 	JobEmbed     JobKind = "embed"
 	JobDerive    JobKind = "derive"
+	// JobAnalyze is the shared per-item analysis pass (plan.md §27.2a, M29).
+	//
+	// Upstream of fan-out rather than beside it: a rule matching `category =
+	// software` must not race the thing that decides the category. It is global —
+	// one row per ITEM, not per subscriber — which is what keeps a source with 200
+	// readers from costing 200 analyses of the same article.
+	JobAnalyze JobKind = "analyze"
 )
 
 // JobState is where a job is in its life.

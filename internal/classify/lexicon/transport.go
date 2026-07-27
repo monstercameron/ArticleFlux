@@ -23,6 +23,15 @@ func transport() classify.Label {
 			{Text: "autonomous vehicle", Weight: 2.2},
 			{Text: "aviation safety", Weight: 2.0},
 			{Text: "electric vehicle", Weight: 2.0},
+			// The plural is a separate term because the scanner lowercases but
+			// does not stem, and headlines use it at least as often as the
+			// singular. It was found by mining the live corpus, added, and then
+			// REVERTED by the agent that found it — because raising transport's
+			// recall past the weakRecall floor fails the ratchet until the entry
+			// is deleted, and it could not edit the test. The ratchet was working
+			// as designed and the design punished an improvement; the fix is this
+			// term plus the deletion in precision_test.go, not a smaller lexicon.
+			{Text: "electric vehicles", Weight: 2.0},
 			{Text: "freight rail", Weight: 2.0},
 			{Text: "light rail", Weight: 2.0},
 			{Text: "commuter rail", Weight: 2.0},

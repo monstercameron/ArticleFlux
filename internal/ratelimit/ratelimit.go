@@ -64,6 +64,27 @@ var (
 	PackBuildPerUser = Rule{Name: "pack build", Per: time.Hour, Limit: 10, Burst: 3}
 	DefaultPerUser   = Rule{Name: "requests", Per: time.Minute, Limit: 600, Burst: 60}
 
+	// ThemePerUser covers ComposeTheme and SuggestTheme (§20.16.3).
+	//
+	// It is the only thing standing between a member account and the instance's
+	// OpenAI bill on that surface — theming is a per-user preference rather than an
+	// administrative act, so unlike the rest of SmartService it is not gated on a
+	// role (see grpcsrv/theme.go). DefaultPerUser's ten-a-second backstop is the
+	// wrong order of magnitude for a call that costs money.
+	//
+	// What it has to permit is ITERATION. Somebody composing a theme will press the
+	// button eight or nine times in a couple of minutes — "warmer", "less blue",
+	// "like the first one but darker" — and that is the feature working, not abuse.
+	// A burst of 4 lets a run of those through back to back; twenty an hour is
+	// several such runs and is nowhere near a number a person reaches by using the
+	// screen as intended.
+	//
+	// SuggestTheme shares the rule rather than getting its own. The client calls it
+	// at most once a day by design (it compares the taste signature first), so the
+	// only caller that could approach this limit is one that has lost that
+	// comparison — which is exactly the runaway this should catch.
+	ThemePerUser = Rule{Name: "theme", Per: time.Hour, Limit: 20, Burst: 4}
+
 	// ProxyPerClient covers /asset and /p — TODO 6.14 and 6.15 both record a
 	// per-user rate limit as owed to 7.3d.
 	//

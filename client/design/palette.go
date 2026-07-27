@@ -326,6 +326,10 @@ func Sanitize(t Theme) (Theme, []Repair, error) {
 		reps = append(reps, *r)
 	}
 
+	// 7. The source hues as TEXT. See fixInk — this is the check that no build
+	// could make until a generated theme existed to need it.
+	t = fixInk(t, &reps)
+
 	// The assertion, not a belief. Every path above is bounded, so "it cannot
 	// still be failing" is an argument rather than a fact, and this is the one
 	// place a wrong argument would ship an unreadable theme.

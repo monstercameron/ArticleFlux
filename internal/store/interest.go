@@ -294,6 +294,22 @@ func (r *ReaderRepo) ReplaceTopics(ctx context.Context, s Scope, ts []topics.Top
 				label: label, source: source, suppressed: suppressed,
 			}
 		}
+		// rows.Err() is not a formality here, and the failure it catches is
+		// silent and destructive.
+		//
+		// Next() returns false for two reasons — the rows ran out, or the
+		// iteration failed — and it does not distinguish them. Without this
+		// check a query that died halfway leaves `preserved` holding SOME of
+		// the labels, and the code below proceeds to delete and rewrite the
+		// topics as though the rest had never existed. What that loses is
+		// precisely the labels that cannot be recomputed: the ones the reader
+		// typed themselves (`label_source='user'`) and the clusters they chose
+		// to suppress. They would come back re-derived under a machine label,
+		// with nothing anywhere reporting an error.
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
 		_ = rows.Close()
 
 		if _, err := tx.ExecContext(ctx,

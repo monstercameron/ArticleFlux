@@ -76,7 +76,7 @@ func NewSettingsRepo(db *DB, encKey []byte) *SettingsRepo {
 // accepting one and losing it.
 func (r *SettingsRepo) CanStoreSecrets() bool { return r != nil && len(r.encKey) == 32 }
 
-// Get returns a plain (non-secret) system setting.
+// SystemValue returns a plain (non-secret) system setting.
 //
 // Values are stored as JSON because the column says value_json and because a
 // setting that is a number today is a struct next quarter. A string round-trips
@@ -102,7 +102,8 @@ func (r *SettingsRepo) SystemValue(ctx context.Context, key SystemKey) (string, 
 	return s, nil
 }
 
-// Set writes a plain system setting. by is the user id to record, or empty.
+// SetSystemValue writes a plain system setting. by is the user id to record, or
+// empty.
 func (r *SettingsRepo) SetSystemValue(ctx context.Context, key SystemKey, value string, by string) error {
 	enc, err := json.Marshal(value)
 	if err != nil {
@@ -111,7 +112,7 @@ func (r *SettingsRepo) SetSystemValue(ctx context.Context, key SystemKey, value 
 	return r.write(ctx, key, string(enc), by)
 }
 
-// GetSecret returns a decrypted secret setting.
+// SystemSecret returns a decrypted secret setting.
 //
 // A row that cannot be decrypted returns the error rather than an empty string.
 // Silently treating an undecryptable key as "not configured" would tell the
@@ -135,7 +136,7 @@ func (r *SettingsRepo) SystemSecret(ctx context.Context, key SystemKey) (string,
 	return string(plain), nil
 }
 
-// SetSecret encrypts and stores a secret setting. An empty value CLEARS it,
+// SetSystemSecret encrypts and stores a secret setting. An empty value CLEARS it,
 // which is how the settings screen offers "remove the key" without a second
 // RPC that means almost the same thing.
 func (r *SettingsRepo) SetSystemSecret(ctx context.Context, key SystemKey, value string, by string) error {
@@ -156,7 +157,8 @@ func (r *SettingsRepo) SetSystemSecret(ctx context.Context, key SystemKey, value
 	return r.SetSystemValue(ctx, key, sealed, by)
 }
 
-// Delete removes a system setting entirely, so Get reports ErrNoSetting again.
+// DeleteSystemValue removes a system setting entirely, so SystemValue reports
+// ErrNoSetting again.
 func (r *SettingsRepo) DeleteSystemValue(ctx context.Context, key SystemKey) error {
 	_, err := r.db.Write.ExecContext(ctx,
 		`DELETE FROM settings WHERE scope = 'system' AND scope_id IS NULL AND key = ?`,

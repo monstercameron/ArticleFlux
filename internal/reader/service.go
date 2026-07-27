@@ -43,6 +43,12 @@ type Service struct {
 	// Nil on an instance with no job pool, which is every test that does not want
 	// one.
 	onSignals func(store.Scope)
+	// onRankPrefs is called when a preference that changes HOW the ranking is built
+	// is written — today only the Smart+ opt-in. Separate from onSignals because the
+	// two want opposite scheduling: signals arrive on their own and want rate
+	// limiting, a toggle is deliberate and wants the work to start now (App.ForceDerive
+	// versus App.NudgeDerive). Nil wherever onSignals is nil, and for the same reason.
+	onRankPrefs func(store.Scope)
 	// onIngest is called after a poll writes new items, so §20.3's live update
 	// can announce them. Nil on an instance with no event bus — which is every
 	// test, and every deployment before this was wired.
@@ -555,9 +561,10 @@ func (s *Service) SubscribeOnly(ctx context.Context, sc store.Scope, rawURL, tit
 	})
 }
 
-// The category surface. Thin, like the rest of this layer: the naming rules, the
-// cap and the ownership checks live in the repository, where a second caller
-// cannot skip them.
+// ListFolders opens the category surface.
+//
+// Thin, like the rest of this layer: the naming rules, the cap and the ownership
+// checks live in the repository, where a second caller cannot skip them.
 func (s *Service) ListFolders(ctx context.Context, sc store.Scope) ([]store.Folder, error) {
 	return s.repo.ListFolders(ctx, sc)
 }
@@ -601,9 +608,37 @@ func (s *Service) GetPrefs(ctx context.Context, sc store.Scope) (map[string]stri
 	return p, err
 }
 
+// SmartPlusPrefKey is the Smart+ opt-in for My Feed's ranking.
+//
+// The same string as derive.SmartPlusPrefKey, written out rather than imported: this
+// package deliberately does not depend on the deriver (see WithSignalHook), and one
+// constant is a smaller price than that dependency. TestRankPrefKeyMatchesTheDeriver in
+// internal/app holds the two together — that package already imports both, so the
+// duplication is checked by a compiler somewhere rather than by memory.
+const SmartPlusPrefKey = "feed.smartPlus"
+
 // SetPrefs merges preferences.
+//
+// Most preferences are the client's own business and this is a straight write. The Smart+
+// opt-in is not: the SERVER reads it, on the next derivation, so saving it changes nothing
+// a reader can see until something else happens to schedule one. The hook closes that gap,
+// for the same reason onSignals exists — a control that produces no visible result is one
+// people conclude is broken, and this one they have just chosen to pay for.
 func (s *Service) SetPrefs(ctx context.Context, sc store.Scope, p map[string]string) error {
-	return s.repo.SetPrefs(ctx, sc, p)
+	if err := s.repo.SetPrefs(ctx, sc, p); err != nil {
+		return err
+	}
+	// After the write, and only if it stuck. Announcing a preference that failed to
+	// persist would rebuild the ranking from the OLD value and look like the toggle
+	// silently reverted itself.
+	//
+	// Fired on the way off as well as on. Turning Smart+ back off has to drop the paid
+	// ordering, and leaving it on screen after the switch says off is the worse
+	// direction of the same bug: it looks like the feature is still being billed.
+	if _, ok := p[SmartPlusPrefKey]; ok && s.onRankPrefs != nil {
+		s.onRankPrefs(sc)
+	}
+	return nil
 }
 
 // ListTags returns a user's tags and the feed associations.

@@ -64,6 +64,13 @@ func DefaultCaps() []Cap {
 		{store.JobFanout, 4},
 		{store.JobRank, 2},
 		{store.JobDerive, 1},
+		// Two. Analysis is CPU-bound and short on the free tier — measured at
+		// 88µs per item — so it does not need room; but it sits upstream of
+		// fan-out, and a batch that escalates to the model holds its slot for the
+		// length of a provider call. Two lets a slow escalating batch proceed
+		// while a fast free-tier one still gets through, without letting the
+		// model-bound case occupy the pool.
+		{store.JobAnalyze, 2},
 		{store.JobExtract, 2},
 		{store.JobPreserve, 1},
 		{store.JobRecommend, 1},

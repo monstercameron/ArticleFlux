@@ -376,8 +376,13 @@ func BenchmarkEvaluate(b *testing.B) {
 		rule("d", 4, Condition{FieldTag, OpContains, "systems"}, Action{Kind: ActionMarkRead}),
 	}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = Evaluate(item, set, now)
+	// b.Loop rather than `for i := 0; i < b.N; i++`, and not only for style.
+	// The compiler is allowed to eliminate a call whose result is discarded, and
+	// `_ = Evaluate(...)` is exactly that shape — a benchmark that measures
+	// nothing still reports a number. b.Loop keeps the call alive and owns the
+	// timer, so setup before it is excluded without a ResetTimer to forget.
+	for b.Loop() {
+		Evaluate(item, set, now)
 	}
 }
 

@@ -151,7 +151,8 @@ type Value struct {
 	def   Def
 }
 
-// Bool, Int, Float and String read a value at its registered type.
+// Bool reads a value at its registered type. Int, Float and String below are the
+// same function for theirs, and the paragraphs here describe all four.
 //
 // They return the DEFAULT rather than an error on a type mismatch, and that is
 // deliberate: a corrupt stored value must not take a screen down. The mismatch

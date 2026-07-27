@@ -639,6 +639,56 @@ func (r *ReaderRepo) UndoMarkAllRead(ctx context.Context, s Scope, batch string)
 	return affected, err
 }
 
+// snippetColumn is which indexed column search excerpts are drawn from.
+//
+// `1`, meaning `summary`. items_fts indexes (title, summary, content_html) in
+// that order, and this used to be `-1` — "pick whichever column matched best",
+// which in practice is almost always content_html because that is where most of
+// the words are.
+//
+// # Why it moved, measured on the real development database
+//
+// content_html averages 5,611 bytes per item against summary's 195, and it is
+// the ONLY reason a common-word search was slow. `snippet()` on an
+// external-content FTS5 table has to fetch and re-tokenise the original document
+// for every row it is evaluated on, and SQLite evaluates it before the LIMIT can
+// discard anything. Searching "the" matches 3,375 of 4,138 items, so producing
+// fifty excerpts meant processing nineteen megabytes of article text:
+//
+//	match only                            2.9ms
+//	+ bm25 ranking and LIMIT 50           9.7ms
+//	+ snippet over content_html        1,011ms
+//	+ snippet over summary               14.8ms
+//	+ snippet auto-selected (-1)       1,496ms
+//
+// The whole shipped query went from ~1.4 SECONDS to ~25ms on that database. The
+// rows returned and their order are untouched — MATCH and bm25 still read every
+// column, so what matches and how it ranks is exactly what it was. Only the text
+// of the excerpt changed.
+//
+// # Why this is not merely the fast option
+//
+// content_html is raw publisher markup, so an excerpt cut from it is raw
+// publisher markup with `<mark>` spliced into the middle of it — a fragment that
+// no client can render as HTML without inheriting an XSS surface, and that reads
+// as tag soup if rendered as text. `summary` is already plain text: feed.summarize
+// strips the markup before it is ever stored. The cheap column is also the only
+// one whose output was ever safe to display.
+//
+// # What is lost
+//
+// An item that matches only in its body no longer gets its match highlighted;
+// its excerpt is the opening of its summary, unmarked. That is a real if small
+// loss, and it is the reason this is a decision rather than a cleanup. Nothing
+// reads the field today — SearchResponse.snippets has no consumer outside
+// client/demodata — so it is being made correct and cheap before it acquires
+// one, rather than after.
+//
+// Restoring exact `-1` behaviour costs ~226ms even when the surviving fifty
+// rowids are seeked individually, because FTS5 re-runs the match for each seek.
+// It is not a matter of writing the query better.
+const snippetColumn = "1"
+
 // Search runs an FTS5 query scoped to what the user subscribes to.
 //
 // The MATCH runs first and the filter narrows it, so the index does the
@@ -711,7 +761,7 @@ func (r *ReaderRepo) Search(ctx context.Context, s Scope, query, sourceID string
 		WITH hits AS (
 		  SELECT items_fts.rowid AS rid,
 		         bm25(items_fts) AS score,
-		         snippet(items_fts, -1, '<mark>', '</mark>', '…', 12) AS snip
+		         snippet(items_fts, ` + snippetColumn + `, '<mark>', '</mark>', '…', 12) AS snip
 		    FROM items_fts
 		    JOIN items i ON i.rowid = items_fts.rowid
 		   WHERE items_fts MATCH ?

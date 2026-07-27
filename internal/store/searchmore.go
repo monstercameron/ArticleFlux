@@ -99,6 +99,40 @@ type BookmarkHit struct {
 // publisher chose, and the reason someone saved it is usually a sentence
 // somewhere inside. It is also the only search that keeps working after the
 // origin goes away.
+//
+// # A known cost, deliberately not paid down (see BenchmarkSearchBookmarks)
+//
+// `snippet(bookmarks_fts, -1, ...)` lets SQLite pick whichever column matched
+// best, which for an archived bookmark is `archived_text` — the whole saved
+// page. snippet() on an external-content FTS table re-reads and re-tokenises the
+// original document for every row it is evaluated on, and SQLite evaluates it
+// before ORDER BY ... LIMIT can discard anything. That is the exact shape that
+// cost item search 1.4 seconds (see snippetColumn in repo.go), and it is here
+// too.
+//
+// Measured on 400 archived bookmarks of 6KB each, returning fifty rows for a
+// term that matches nearly all of them:
+//
+//	snippet(-1), every match          36.6ms
+//	snippet(description), every match  2.7ms
+//	rank and cut first, snippet the 50 48.6ms
+//
+// The third line is why this stays as it is. The two-phase shape that fixed item
+// search is SLOWER here, because naming `bookmarks_fts MATCH ?` a second time
+// re-runs the whole match, and on a corpus this size that costs more than the
+// snippets it avoids. So the only cheap option is the second line — and that one
+// takes the excerpt from `description`, which throws away the thing this search
+// is FOR. MatchedArchive exists to say "the phrase is buried on page four", and
+// that flag is worth much less without the fragment beside it.
+//
+// So the archive excerpt is kept and the cost is recorded rather than hidden. It
+// is linear in the number of archived bookmarks: 400 costs 37ms, 4,000 would
+// cost about 370ms, and at that point this needs a real answer — most likely a
+// separate short column materialised at archive time, holding the first few
+// hundred bytes around nothing in particular, so the excerpt has a cheap source
+// that is still page text. That is a schema change and a decision about what a
+// bookmark result should show, which is not a decision to make from inside a
+// performance pass.
 func (r *ReaderRepo) SearchBookmarks(ctx context.Context, s Scope, query string, limit int) ([]BookmarkHit, error) {
 	if !s.Valid() {
 		return nil, ErrNoScope

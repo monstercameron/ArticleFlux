@@ -399,7 +399,7 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 	}, nil
 }
 
-// The category RPCs.
+// ListFolders is the first of the category RPCs.
 //
 // Naming errors — empty, too long, a duplicate on rename — are InvalidArgument
 // rather than Internal: they are the reader's to fix and the message says how,

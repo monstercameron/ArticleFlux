@@ -1516,11 +1516,37 @@ const NudgeInterval = 90 * time.Second
 // have already been accepted — failing that write because a ranking could not be
 // scheduled would trade the irreplaceable thing for the recomputable one.
 func (a *App) NudgeDerive(sc store.Scope) {
+	a.enqueueDerive(sc, false)
+}
+
+// ForceDerive asks for a derivation the reader is WAITING for, ignoring the rate limit.
+//
+// The one caller is the Smart+ opt-in. Flipping that switch used to save the preference
+// and nothing else: the deriver reads it on its next run, so the ranking stayed exactly as
+// it was — for up to NudgeInterval, or until the next poll — and My Feed looked identical
+// after the reader had just turned on a paid feature. The complaint that followed was "I
+// don't see the Smart+ branding", which was true, and the cause was not the badge.
+//
+// Exempt from the limit because the limit is aimed at something else. NudgeInterval bounds
+// a signal path that fires several times a minute on its own; a toggle is a deliberate act
+// a person performs once and then watches for a result. Throttling the deliberate act to
+// protect against the automatic one drops precisely the request that someone is waiting on.
+//
+// It is still bounded: derive.Enqueue dedupes per user, so holding the switch down cannot
+// queue a second job while the first waits, and a toggle is not a thing anyone can perform
+// several times a second.
+func (a *App) ForceDerive(sc store.Scope) {
+	a.enqueueDerive(sc, true)
+}
+
+// enqueueDerive is the shared body: schedule a derivation for one user, off the caller's
+// goroutine, honouring the shutdown handshake — and, unless forced, the rate limit.
+func (a *App) enqueueDerive(sc store.Scope, force bool) {
 	if a.pool == nil || !sc.Valid() {
 		return
 	}
 	a.deriveMu.Lock()
-	if a.closing || time.Since(a.lastNudge) < NudgeInterval {
+	if a.closing || (!force && time.Since(a.lastNudge) < NudgeInterval) {
 		a.deriveMu.Unlock()
 		return
 	}

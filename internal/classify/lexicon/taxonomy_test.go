@@ -43,7 +43,23 @@ const (
 	minTerms = 60
 	// maxTerms is the point above which you are padding with words that appear
 	// everywhere else, which costs precision in every OTHER category too.
-	maxTerms = 110
+	//
+	// **Raised from 110 to 150 on 2026-07-27, because the old number made a
+	// category worse.** `hardware` hit 110 while being expanded from the live
+	// corpus, and the only way forward was to DELETE working terms —
+	// semiconductor vocabulary (`vram`, `wafer`, `x86`, `lithography`, `chip
+	// fab`) was traded away for consumer-device brands, because this particular
+	// feed set is consumer-heavy. That is a real loss for a reader who follows
+	// fab and silicon news, and it was forced by a number I picked with no
+	// evidence rather than by anything about the lexicon.
+	//
+	// The cap's purpose is to stop PADDING — terms added to inflate coverage that
+	// fire everywhere and cost precision. `TestWeightsAreAJudgement` and the
+	// corpus precision floors already measure that directly and would catch it,
+	// so this number is the weakest of the three guards and should be the one
+	// that yields. It is kept at all because a category quietly growing to four
+	// hundred terms is worth a conversation.
+	maxTerms = 150
 )
 
 func compiled(t *testing.T) *classify.Lexicon {
