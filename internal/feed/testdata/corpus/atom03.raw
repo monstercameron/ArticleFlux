@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Atom 0.3. No publisher still serves this, which is exactly why it is here:
+     a format with no live example is a format a live-feed test can never cover.
+     Reconstructed from the 0.3 draft's own examples and from archived Blogger
+     output, which was the last large deployment of it. Note the differences from
+     1.0 that break naive parsers: <modified> and <issued> instead of <updated>
+     and <published>, <tagline> instead of <subtitle>, and type="text/html" as an
+     attribute rather than 1.0's type="html". -->
+<feed version="0.3" xmlns="http://purl.org/atom/ns#" xml:lang="en">
+  <title mode="escaped" type="text/html">Dive into Mark</title>
+  <tagline mode="escaped" type="text/html">A wretched hive of scum and villainy</tagline>
+  <link rel="alternate" type="text/html" href="https://example.org/"/>
+  <modified>2003-12-13T18:30:02Z</modified>
+  <author>
+    <name>Mark Pilgrim</name>
+    <url>https://example.org/</url>
+    <email>mark@example.org</email>
+  </author>
+  <generator url="https://www.example.org/" version="1.0">Example Toolkit</generator>
+  <copyright>Copyright (c) 2003, Mark Pilgrim</copyright>
+
+  <entry>
+    <title mode="escaped" type="text/html">Atom 0.3 snapshot</title>
+    <link rel="alternate" type="text/html" href="https://example.org/2003/12/13/atom03"/>
+    <id>tag:example.org,2003:3.2397</id>
+    <issued>2003-12-13T08:29:29-04:00</issued>
+    <modified>2003-12-13T18:30:02Z</modified>
+    <summary mode="escaped" type="text/html">An overview of the 0.3 draft.</summary>
+    <content type="text/html" mode="escaped"><![CDATA[<p>The <code>issued</code> element is
+    what 1.0 renamed to <code>published</code>. A parser that only knows 1.0 sees an entry
+    with no date at all and quietly stamps it with the time it was fetched.</p>]]></content>
+  </entry>
+
+  <entry>
+    <title>Escaped versus base64</title>
+    <link rel="alternate" type="text/html" href="https://example.org/2003/12/14/modes"/>
+    <id>tag:example.org,2003:3.2398</id>
+    <issued>2003-12-14T09:00:00Z</issued>
+    <modified>2003-12-14T09:00:00Z</modified>
+    <content type="text/html" mode="escaped">&lt;p&gt;Entity-escaped rather than
+    CDATA-wrapped. Both are legal and both appear in the wild.&lt;/p&gt;</content>
+  </entry>
+
+  <!-- An entry with <modified> but no <issued>: legal in 0.3, and the case that
+       decides whether the date falls through to first-seen. -->
+  <entry>
+    <title>Modified only</title>
+    <link rel="alternate" type="text/html" href="https://example.org/2003/12/15/modified"/>
+    <id>tag:example.org,2003:3.2399</id>
+    <modified>2003-12-15T11:15:00Z</modified>
+    <summary>No issued date on this one.</summary>
+  </entry>
+</feed>

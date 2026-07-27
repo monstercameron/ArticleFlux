@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!-- Byte-for-byte Windows-1252, not UTF-8. Do not "fix" the encoding of this
+     file: the bytes below in 0x80-0x9F are what makes it evidence. In UTF-8
+     those positions are illegal continuation bytes, so a reader that ignores the
+     declaration produces U+FFFD rather than mojibake, and the failure is visible
+     rather than subtle.
+
+     The .meta file claims charset=utf-8 on the HTTP header. That disagreement is
+     deliberate and it is the common real-world one: a server default set once in
+     1998 and never revisited, over a file the publisher generates correctly. The
+     declaration has to win. -->
+<rss version="2.0">
+  <channel>
+    <title>Café “Le Piège” — le blog</title>
+    <link>http://example.fr/</link>
+    <description>Des accents, des guillemets… et un tiret cadratin.</description>
+    <language>fr</language>
+
+    <item>
+      <title>L’été où tout a changé</title>
+      <link>http://example.fr/2003/ete</link>
+      <guid isPermaLink="false">cp1252-1</guid>
+      <description>“Naïve” se dit d’une personne qui croit que l’encodage
+      est un détail. — Anonyme, 1998…</description>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 +0100</pubDate>
+    </item>
+
+    <item>
+      <title>Le € contre le £</title>
+      <link>http://example.fr/2003/euro</link>
+      <guid isPermaLink="false">cp1252-2</guid>
+      <description>Le signe euro vit à 0x80, une position que l'ISO-8859-1 laisse
+      vide. C’est la différence qui compte entre les deux œ jeux .</description>
+      <pubDate>Tue, 03 Jan 2006 15:04:05 +0100</pubDate>
+    </item>
+  </channel>
+</rss>

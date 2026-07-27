@@ -1,0 +1,28 @@
+# slug	url	note — TODO 4.2. Append-only in spirit: a fixture is evidence.
+arstechnica-rss20	http://feeds.arstechnica.com/arstechnica/everything	RSS 2.0 with media: and content:encoded
+blogger-atom10	https://www.blogger.com/feeds/7615673/posts/default	Atom 1.0 with Blogger's own extensions
+blogger-rss20	http://a-hackers-craic.blogspot.com/feeds/posts/default?alt=rss	Blogger's RSS rendering of an Atom source
+changelog-itunes	https://changelog.com/podcast/feed	podcast: itunes: namespace and enclosures
+cnx-software-rss20	https://www.cnx-software.com/feed/	WordPress: content:encoded, dc:creator
+cpuworld-rdf-empty	http://www.cpu-world.com/cpu_news.xml	RDF that parses cleanly and contains zero items — a dead feed, still served
+eurogamer-rss20	https://www.eurogamer.net/feed	RSS 2.0
+feedburner-rss20	http://feeds.feedburner.com/AndroidPolice	FeedBurner rewrites guids and links
+freshrss-releases-atom	https://github.com/FreshRSS/FreshRSS/releases.atom	GitHub Atom: HTML content, no summary
+gizmodo-rss20	https://gizmodo.com/feed	RSS 2.0
+golang-atom10	https://go.dev/blog/feed.atom	Atom 1.0, minimal
+gsmarena-rss	https://www.gsmarena.com/rss-news-reviews.php3	hand-rolled, .php3 extension, CDATA descriptions
+hn-rss20	https://news.ycombinator.com/rss	RSS 2.0 at its most minimal
+lobsters-rss20	https://lobste.rs/rss	RSS 2.0 with an author extension
+newatlas-rss20	https://newatlas.com/index.rss	RSS 2.0
+rustblog-atom10	https://blog.rust-lang.org/feed.xml	Atom 1.0
+simonwillison-atom10	https://simonwillison.net/atom/everything/	Atom 1.0, mixed entry kinds
+slashdot-rdf	http://rss.slashdot.org/Slashdot/slashdotMain	RSS 1.0 / RDF — the format gofeed is least exercised on
+theverge-atom10	https://www.theverge.com/rss/index.xml	Atom 1.0 at volume
+wordpress-comments-rss20	https://engineswapdepot.com/?feed=comments-rss2	a comments feed: every item untitled-ish and guid-only
+xkcd-rss20	https://xkcd.com/rss.xml	RSS 2.0, CDATA body, img-only content
+atom03	-	Atom 0.3 — hand-written; no publisher still serves it
+jsonfeed11	-	JSON Feed 1.1 — hand-written to the spec's own example shape
+malformed-dates	-	fifteen date layouts feeds actually emit, including the illegal ones
+rss091	-	RSS 0.91 with the Netscape DTD — hand-written
+windows1252	-	declares Windows-1252 and means it; the smart quotes must survive
+no-guids	-	no guid, no link on some items: forces the stableGUID hash path

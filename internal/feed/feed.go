@@ -57,7 +57,10 @@ type Parsed struct {
 	SiteURL     string
 	IconURL     string
 	Language    string
-	Items       []Item
+	// Author is the channel's own author, used as the fallback for items that
+	// declare none.
+	Author string
+	Items  []Item
 
 	// ETag and LastModified carry conditional-GET state back to the caller.
 	ETag         string
@@ -191,10 +194,27 @@ func (f *Fetcher) Fetch(ctx context.Context, feedURL string, cond Conditional) (
 		return nil, ErrTooLarge
 	}
 
+	out, err := f.ParseBytes(body, resp.Header.Get("Content-Type"), feedURL, timeutil.Now())
+	if err != nil {
+		return nil, err
+	}
+	out.ETag = resp.Header.Get("ETag")
+	out.LastModified = resp.Header.Get("Last-Modified")
+	return out, nil
+}
+
+// ParseBytes decodes and parses a feed body that has already been retrieved.
+//
+// Split out of Fetch so the committed corpus (TODO 4.2) exercises the real
+// decode-parse-normalise path rather than a test-local reimplementation of it. A
+// fixture test that re-implements the pipeline proves the fixtures parse; it does
+// not prove the application parses them, and those come apart the first time
+// Fetch changes.
+func (f *Fetcher) ParseBytes(body []byte, contentType, feedURL string, now time.Time) (*Parsed, error) {
 	// Decode before parsing: a Windows-1252 or Shift-JIS feed handed to an XML
 	// parser as raw bytes produces mojibake, not an error, so nothing would
 	// notice.
-	decoded, _, err := charsetdec.Decode(body, resp.Header.Get("Content-Type"))
+	decoded, _, err := charsetdec.Decode(body, contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -203,11 +223,7 @@ func (f *Fetcher) Fetch(ctx context.Context, feedURL string, cond Conditional) (
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotAFeed, err)
 	}
-
-	out := Normalize(parsed, feedURL, timeutil.Now())
-	out.ETag = resp.Header.Get("ETag")
-	out.LastModified = resp.Header.Get("Last-Modified")
-	return out, nil
+	return Normalize(parsed, feedURL, now), nil
 }
 
 // Normalize converts a gofeed result into our shape. Separate from Fetch so it
@@ -227,14 +243,17 @@ func Normalize(f *gofeed.Feed, feedURL string, now time.Time) *Parsed {
 	if f.Image != nil {
 		p.IconURL = f.Image.URL
 	}
+	if len(f.Authors) > 0 && f.Authors[0] != nil {
+		p.Author = strings.TrimSpace(f.Authors[0].Name)
+	}
 
 	for _, it := range f.Items {
-		p.Items = append(p.Items, normalizeItem(it, feedURL, now))
+		p.Items = append(p.Items, normalizeItem(it, feedURL, p.Author, now))
 	}
 	return p
 }
 
-func normalizeItem(it *gofeed.Item, feedURL string, now time.Time) Item {
+func normalizeItem(it *gofeed.Item, feedURL, feedAuthor string, now time.Time) Item {
 	content := firstNonEmpty(it.Content, it.Description)
 	summary := summarize(firstNonEmpty(it.Description, it.Content))
 
@@ -253,6 +272,17 @@ func normalizeItem(it *gofeed.Item, feedURL string, now time.Time) Item {
 	}
 	if len(it.Authors) > 0 && it.Authors[0] != nil {
 		out.Author = strings.TrimSpace(it.Authors[0].Name)
+	}
+	if out.Author == "" {
+		// Fall back to the channel's author. Podcast feeds are the common case:
+		// the corpus's Changelog fixture carries one <itunes:author> at the
+		// channel and none on any of its 1,012 episodes, so an item-only reading
+		// shows no author anywhere in the application. A single-author blog is the
+		// same shape.
+		//
+		// This is a normalisation decision rather than a parser one, which is why
+		// it lives here: gofeed reports exactly what the document said, correctly.
+		out.Author = feedAuthor
 	}
 	if it.Image != nil {
 		out.ImageURL = it.Image.URL
@@ -292,7 +322,10 @@ func stableGUID(it *gofeed.Item, feedURL string) string {
 		return g
 	}
 	if l := strings.TrimSpace(it.Link); l != "" {
-		return urlnorm.Norm(l)
+		// ItemKey, not Norm: Norm drops the fragment, and a linkblog that
+		// publishes a day's entries as anchors on one page has nothing else to
+		// tell them apart. See urlnorm.ItemKey.
+		return urlnorm.ItemKey(l)
 	}
 	h := sha256.Sum256([]byte(feedURL + "\x00" + it.Title + "\x00" + it.Description))
 	return "sha256:" + hex.EncodeToString(h[:16])

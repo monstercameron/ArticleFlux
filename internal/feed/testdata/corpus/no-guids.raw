@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The stableGUID fallback ladder, one item per rung.
+
+     This is the fixture that decides whether re-polling is idempotent. Get it
+     wrong and every entry in a guid-less feed looks new on every poll, which
+     means the unread count climbs forever and marking all read does nothing —
+     the single most visible way a reader can be broken. -->
+<rss version="2.0">
+  <channel>
+    <title>A feed somebody wrote by hand in 2009</title>
+    <link>https://example.org/handmade</link>
+    <description>No guids anywhere.</description>
+
+    <!-- Rung 1: guid present. Authoritative, even when it is not a URL. -->
+    <item>
+      <title>Has a guid</title>
+      <link>https://example.org/handmade/1?utm_source=rss&amp;utm_medium=feed</link>
+      <guid isPermaLink="false">urn:uuid:6d3f8b9a-0000-4000-8000-000000000001</guid>
+      <description>Identity comes from the guid.</description>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 -0700</pubDate>
+    </item>
+
+    <!-- Rung 2: no guid, but a link. The link is normalised before use, so the
+         tracking parameters below must not change identity between polls — some
+         generators re-stamp utm_content on every render. -->
+    <item>
+      <title>No guid, has a link</title>
+      <link>https://example.org/handmade/2?utm_source=rss&amp;utm_content=999</link>
+      <description>Identity comes from the normalised link.</description>
+      <pubDate>Mon, 02 Jan 2006 16:04:05 -0700</pubDate>
+    </item>
+
+    <!-- Rung 3: neither. Hashing title+description is the last resort. -->
+    <item>
+      <title>Neither guid nor link</title>
+      <description>Identity comes from a hash of the feed URL, title and body.</description>
+      <pubDate>Mon, 02 Jan 2006 17:04:05 -0700</pubDate>
+    </item>
+
+    <!-- Rung 3 again, and the case that proves the hash is content-derived rather
+         than positional: same feed, different text, must not collide with the
+         entry above. -->
+    <item>
+      <title>Also neither</title>
+      <description>Different body, therefore a different identity.</description>
+      <pubDate>Mon, 02 Jan 2006 18:04:05 -0700</pubDate>
+    </item>
+
+    <!-- No title either. Common in microblog and comment feeds; the row has to
+         show something, and the summary is what a person would read anyway. -->
+    <item>
+      <link>https://example.org/handmade/5</link>
+      <description>An entry with no title element, which is legal and which the
+      list still has to render as something other than a blank row.</description>
+      <pubDate>Mon, 02 Jan 2006 19:04:05 -0700</pubDate>
+    </item>
+  </channel>
+</rss>

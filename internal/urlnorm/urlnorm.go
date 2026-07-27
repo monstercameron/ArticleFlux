@@ -67,6 +67,32 @@ func Norm(raw string) string {
 	return u.String()
 }
 
+// ItemKey canonicalises a feed item's link for identity WITHIN its source — the
+// second rung of the guid fallback ladder, used when a feed omits <guid>.
+//
+// It is Norm plus the fragment, and the fragment is the entire reason it exists
+// separately. A linkblog that publishes a day's entries as anchors on one page —
+// scripting.com/1999/07/08.html#stockMarket, #nodesc, #ents — is the oldest
+// shape in this format, and Norm collapses all three onto one key. The corpus
+// caught it: three items, one guid, two of them permanently unstorable.
+//
+// The asymmetry with Norm is deliberate rather than an oversight in one of them.
+// Norm serves bookmarks, where a saved page#section really is the saved page.
+// Identity serves storage, where merging two items is unrecoverable. When those
+// two purposes disagree the answer is two functions, not a compromise that is
+// slightly wrong for both.
+func ItemKey(raw string) string {
+	u, ok := parse(raw)
+	if !ok {
+		return strings.TrimSpace(raw)
+	}
+	stripQuery(u, nil)
+	frag, rawFrag := u.Fragment, u.RawFragment
+	trimTrailingSlash(u)
+	u.Fragment, u.RawFragment = frag, rawFrag
+	return u.String()
+}
+
 // dupeOnly are parameters stripped for duplicate detection but kept for bookmark
 // identity — pagination and view state, which change the rendering of a document
 // without changing which document it is.
@@ -90,6 +116,12 @@ func DupeKey(raw string) string {
 		return strings.ToLower(strings.TrimSpace(raw))
 	}
 	stripQuery(u, dupeOnly)
+	// The fragment goes, unlike in ItemKey. Across sources, #section-2, #top and
+	// #:~:text=... are three ways of pointing at one article, and collapsing them
+	// is the entire job. Within a source the opposite is true — see ItemKey — and
+	// the reason those can differ safely is that dedup must never merge two items
+	// from the SAME source: those already have distinct guids, and a suppression
+	// pass that ignored that would eat a linkblog's whole day.
 	u.Fragment = ""
 	u.RawFragment = ""
 	u.Host = strings.TrimPrefix(u.Host, "www.")

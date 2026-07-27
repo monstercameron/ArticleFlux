@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"io"
 	"mime"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -53,6 +54,14 @@ type Result struct {
 // Result.Replaced is set. A feed with three bad bytes should lose three
 // characters, not an entire day's items.
 func Decode(body []byte, contentType string) ([]byte, Result, error) {
+	out, res, err := decode(body, contentType)
+	// Whatever we just did, the output is UTF-8 and the document may still be
+	// carrying a declaration that says otherwise. See retagDeclaration: leaving it
+	// is a double-decode waiting to happen in whatever parses these bytes next.
+	return retagDeclaration(out), res, err
+}
+
+func decode(body []byte, contentType string) ([]byte, Result, error) {
 	if len(body) == 0 {
 		return body, Result{Encoding: "utf-8", Source: "assumed-utf8"}, nil
 	}
@@ -111,6 +120,52 @@ func DecodeReader(r io.Reader, contentType string, limit int64) ([]byte, Result,
 		return nil, Result{}, err
 	}
 	return Decode(body, contentType)
+}
+
+// reXMLEncoding matches the encoding pseudo-attribute of an XML declaration.
+// Anchored at the start of the document because that is the only place a
+// declaration is legal, which also keeps it from rewriting the word "encoding"
+// inside an article.
+var reXMLEncoding = regexp.MustCompile(`^(\s*<\?xml[^>]*?encoding\s*=\s*)("[^"]*"|'[^']*')`)
+
+// retagDeclaration rewrites `encoding="windows-1252"` to `encoding="utf-8"` in a
+// leading XML declaration.
+//
+// This exists because of a bug the feed corpus caught and nothing else could
+// have: charsetdec decoded a Windows-1252 feed perfectly, handed the UTF-8 result
+// to gofeed, and gofeed — reading the declaration, which still said
+// windows-1252 — decoded it a second time. "Café" became "CafÃ©" on every
+// non-UTF-8 feed in the application.
+//
+// The reason it went unnoticed for so long is instructive: for a UTF-8 feed the
+// second decode is a no-op, and UTF-8 is ~97% of feeds. The unit tests for this
+// package were correct and passed; the integration was never looked at. A
+// declaration that contradicts the bytes it introduces is a lie this package is
+// responsible for, because this package is what made it untrue.
+//
+// Stripping the attribute would also work — XML defaults to UTF-8 — but
+// rewriting is less surprising to anyone who dumps the bytes to look at them.
+func retagDeclaration(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	// Cheap guard: only documents that open with a declaration can match, and
+	// the regexp is anchored anyway. This keeps JSON feeds and bare HTML off the
+	// regexp engine entirely.
+	head := body
+	if len(head) > MaxSniff {
+		head = head[:MaxSniff]
+	}
+	loc := reXMLEncoding.FindSubmatchIndex(head)
+	if loc == nil {
+		return body
+	}
+	// loc[4]:loc[5] is the quoted value, quotes included.
+	out := make([]byte, 0, len(body))
+	out = append(out, body[:loc[4]]...)
+	out = append(out, `"utf-8"`...)
+	out = append(out, body[loc[5]:]...)
+	return out
 }
 
 func apply(enc encoding.Encoding, body []byte) ([]byte, bool, error) {

@@ -1,0 +1,62 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "JSON Feed 1.1, by hand",
+  "home_page_url": "https://example.org/",
+  "feed_url": "https://example.org/feed.json",
+  "description": "Not XML at all, which is the whole point of including it.",
+  "icon": "https://example.org/icon-512.png",
+  "favicon": "https://example.org/favicon-64.png",
+  "language": "en-US",
+  "authors": [
+    { "name": "Brent Simmons", "url": "https://example.org/about" }
+  ],
+  "items": [
+    {
+      "id": "https://example.org/2019/10/17/json-feed-11",
+      "url": "https://example.org/2019/10/17/json-feed-11",
+      "title": "Both content fields",
+      "content_html": "<p>An item carrying <em>both</em> content_html and content_text. The HTML one wins, because it is the one with structure in it.</p>",
+      "content_text": "An item carrying both content_html and content_text.",
+      "summary": "The precedence case.",
+      "date_published": "2019-10-17T20:00:00-04:00",
+      "date_modified": "2019-10-18T09:00:00-04:00",
+      "authors": [{ "name": "Brent Simmons" }],
+      "tags": ["jsonfeed", "formats"]
+    },
+    {
+      "id": "2",
+      "url": "https://example.org/2019/10/18/text-only",
+      "title": "Text only",
+      "content_text": "No HTML anywhere in this item. The reader still has to render it, and escaping it is not optional: an ampersand & a less-than < in plain text must not become markup.",
+      "date_published": "2019-10-18T08:00:00Z"
+    },
+    {
+      "id": "3",
+      "url": "https://example.org/2019/10/19/untitled",
+      "content_html": "<p>No title. Microblog items routinely omit it and the row still has to say something.</p>",
+      "date_published": "2019-10-19T08:00:00Z"
+    },
+    {
+      "id": "4",
+      "url": "https://example.org/2019/10/20/no-date",
+      "title": "No date at all",
+      "content_html": "<p>Falls through to first-seen rather than to the zero time.</p>"
+    },
+    {
+      "id": "5",
+      "url": "https://example.org/2019/10/21/attachment",
+      "title": "With an attachment",
+      "content_html": "<p>An enclosure, which is how a JSON Feed carries a podcast.</p>",
+      "date_published": "2019-10-21T08:00:00Z",
+      "image": "https://example.org/img/hero.jpg",
+      "attachments": [
+        {
+          "url": "https://example.org/audio/ep1.mp3",
+          "mime_type": "audio/mpeg",
+          "size_in_bytes": 31415926,
+          "duration_in_seconds": 1873
+        }
+      ]
+    }
+  ]
+}

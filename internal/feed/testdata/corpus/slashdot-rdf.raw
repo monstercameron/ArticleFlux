@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/"
+ xmlns:admin="http://webns.net/mvcb/"
+ xmlns:content="http://purl.org/rss/1.0/modules/content/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+ xmlns:syn="http://purl.org/rss/1.0/modules/syndication/"
+ xmlns:taxo="http://purl.org/rss/1.0/modules/taxonomy/"
+>
+
+<channel rdf:about="https://slashdot.org/">
+<title>Slashdot</title>
+<link>https://slashdot.org/</link>
+<description>News for nerds, stuff that matters</description>
+<dc:language>en-us</dc:language>
+<dc:rights>Copyright Slashdot Media. All Rights Reserved.</dc:rights>
+<dc:date>2026-07-27T00:48:14+00:00</dc:date>
+<dc:publisher>Slashdot Media</dc:publisher>
+<dc:creator>feedback@slashdot.org</dc:creator>
+<dc:subject>Technology</dc:subject>
+<syn:updateBase>1970-01-01T00:00+00:00</syn:updateBase>
+<syn:updateFrequency>1</syn:updateFrequency>
+<syn:updatePeriod>hourly</syn:updatePeriod>
+<items>
+ <rdf:Seq>
+  <rdf:li rdf:resource="https://science.slashdot.org/story/26/07/26/2144224/nasa-replaces-ulas-vulcan-centaur-with-spacex-falcon-heavy-for-solar-storm-research?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://apple.slashdot.org/story/26/07/26/2022231/apples-smart-glasses-delayed-as-engineers-consider-privacy-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://yro.slashdot.org/story/26/07/26/1939229/googles-anti-search-scraping-lawsuit-dismissed?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/26/188255/wildfires-evacuations-and-smoke-hit-europe-and-north-america?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/26/0536218/ai-equipped-garbage-trucks-could-soon-start-spying-on-people-in-the-us?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://hardware.slashdot.org/story/26/07/26/0613242/is-huawei-building-its-own-dram-fab?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://science.slashdot.org/story/26/07/26/1536241/three-astronauts-safely-return-from-space-station-landing-in-kazakhstan-steppe?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://yro.slashdot.org/story/26/07/26/0138257/typo-squatting-scammers-con-south-carolina-town-out-of-545k?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/26/0456203/a-promising-process-for-nuclear-fuel-re-use-and-disposal?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://entertainment.slashdot.org/story/26/07/26/038200/comic-con-2026-debuts-trailers-for-coyote-vs-acme-movie-plus-neuromancer-and-blade-runner-2099-series?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/25/2114259/32-of-35-students-caught-using-hilariously-wrong-ai-generated-answers-for-professors-midterm?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/25/1944229/firefoxs-new-tab-page-will-get-widgets---including-an-ai-powered-daily-crossword?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://hardware.slashdot.org/story/26/07/25/1747227/did-virginia-regulators-downplay-data-center-health-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://news.slashdot.org/story/26/07/25/0417232/drying-lakebeds-are-releasing-massive-amounts-of-carbon-study-finds?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+  <rdf:li rdf:resource="https://hardware.slashdot.org/story/26/07/25/0343230/hyundai-claims-humanoid-robot-plan-is-not-part-of-talks-with-striking-workers?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed" />
+ </rdf:Seq>
+</items>
+<image rdf:resource="https://a.fsdn.com/sd/topics/topicslashdot.gif" />
+<textinput rdf:resource="https://slashdot.org/search.pl" />
+</channel>
+<image rdf:about="https://a.fsdn.com/sd/topics/topicslashdot.gif">
+<title>Slashdot</title>
+<url>https://a.fsdn.com/sd/topics/topicslashdot.gif</url>
+<link>https://slashdot.org/</link>
+</image>
+<item rdf:about="https://science.slashdot.org/story/26/07/26/2144224/nasa-replaces-ulas-vulcan-centaur-with-spacex-falcon-heavy-for-solar-storm-research?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>NASA Replaces ULA's Vulcan Centaur With SpaceX Falcon Heavy For Solar Storm Research</title>
+<link>https://science.slashdot.org/story/26/07/26/2144224/nasa-replaces-ulas-vulcan-centaur-with-spacex-falcon-heavy-for-solar-storm-research?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>There's been a change to NASA's launch of six satellites for solar storms research. Space.com reports that those satellites "were originally slated to lift off on a United Launch Alliance Vulcan Centaur rocket but have now been assigned a SpaceX Falcon Heavy, according to a NASA mission update."
+
+
+
+
+[NASA's Sun Radio Interferometer Space Experiment mision &amp;mdash; or SunRISE] will fly to space as part of a rideshare mission sponsored by the U.S. Space Force's Space Systems Command. Though it's not stated specifically in the NASA release, that may be a hint as to why the mission's rocket was changed. On its most recent launch [U.S. Space Force mission USSF-87], Vulcan experienced an anomaly in one of its solid rocket boosters &amp;mdash; the second such incident to occur during the rocket's four launches to date. Vulcan succeeded in delivering the USSF-87 payload to its designated orbit on that launch, but the recurrence of the booster issue during ascent prompted the Space Force to pause national security launches on Vulcan until it could be addressed. Which mission SunRISE will be manifested on has not yet been released, but Space Force's Space Systems Command [SSC] has already shifted other launches between Vulcan and SpaceX's Falcon 9... 
+
+Falcon Heavy is SpaceX's heavy-lift launch vehicle... that consists of three modified Falcon 9 first stages, and has launched 12 times since it debuted in 2018. Four of those have delivered national security payloads to orbit, with the most recent of those, USSF-52, launching in December 2023. Falcon Heavy's most recent flight overall occurred this past April, when it sent the Viasat-3 F3 telecom satellite to orbit. Falcon Heavy's next mission will lift off with NASA's Nancy Roman Space Telescope, currently set for no earlier than Aug. 30. SunRISE is scheduled to launch later this year...
+
+ 
+
+Sientists will use data collected by the satellites "to improve prediction models for impending space weather, which in turn could lead to mitigation plans to better thwart the effects of such solar events on orbital infrastructure." 
+
+Thanks to long-time Slashdot reader schwit1 for sharing the article.&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=NASA+Replaces+ULA's+Vulcan+Centaur+With+SpaceX+Falcon+Heavy+For+Solar+Storm+Research%3A+https%3A%2F%2Fscience.slashdot.org%2Fstory%2F26%2F07%2F26%2F2144224%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fscience.slashdot.org%2Fstory%2F26%2F07%2F26%2F2144224%2Fnasa-replaces-ulas-vulcan-centaur-with-spacex-falcon-heavy-for-solar-storm-research%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://science.slashdot.org/story/26/07/26/2144224/nasa-replaces-ulas-vulcan-centaur-with-spacex-falcon-heavy-for-solar-storm-research?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053516&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T21:46:00+00:00</dc:date>
+<dc:subject>nasa</dc:subject>
+<slash:department>mission-controlled</slash:department>
+<slash:section>science</slash:section>
+<slash:comments>10</slash:comments>
+<slash:hit_parade>10,9,6,6,1,0,0</slash:hit_parade>
+</item>
+<item rdf:about="https://apple.slashdot.org/story/26/07/26/2022231/apples-smart-glasses-delayed-as-engineers-consider-privacy-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Apple's Smart Glasses Delayed, As Engineers Consider Privacy Concerns</title>
+<link>https://apple.slashdot.org/story/26/07/26/2022231/apples-smart-glasses-delayed-as-engineers-consider-privacy-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description> Digital Trends reports:
+
+Apple could unveil its first smart glasses at WWDC in June 2027, followed by a consumer release toward the end of the year, according to Bloomberg... Part of the delay reportedly stems from Apple's engineering and marketing teams spending more time refining the product and deciding how to address the privacy concerns... 
+
+Apple has reportedly considered glasses without cameras, as well as a version where the cameras can analyse the surroundings but cannot record photos or video. Such an approach could still support object recognition, navigation, Siri, calls, and music playback. The company is also expected to favor on-device processing, avoid facial recognition, keep recordings away from AI training, and use a more visible light around the camera.&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Apple's+Smart+Glasses+Delayed%2C+As+Engineers+Consider+Privacy+Concerns%3A+https%3A%2F%2Fapple.slashdot.org%2Fstory%2F26%2F07%2F26%2F2022231%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fapple.slashdot.org%2Fstory%2F26%2F07%2F26%2F2022231%2Fapples-smart-glasses-delayed-as-engineers-consider-privacy-concerns%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://apple.slashdot.org/story/26/07/26/2022231/apples-smart-glasses-delayed-as-engineers-consider-privacy-concerns?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053474&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T20:41:00+00:00</dc:date>
+<dc:subject>privacy</dc:subject>
+<slash:department>I'll-be-seeing-you</slash:department>
+<slash:section>apple</slash:section>
+<slash:comments>18</slash:comments>
+<slash:hit_parade>18,18,15,14,5,3,2</slash:hit_parade>
+</item>
+<item rdf:about="https://yro.slashdot.org/story/26/07/26/1939229/googles-anti-search-scraping-lawsuit-dismissed?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Google's Anti-search-scraping Lawsuit Dismissed</title>
+<link>https://yro.slashdot.org/story/26/07/26/1939229/googles-anti-search-scraping-lawsuit-dismissed?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>A U.S. district court "has dismissed Google's case against SerpApi over that company's scraping of search results to train AI models," reports Computerworld. Google had claimed that it was protecting copyright holders &amp;mdash; and that SerpApi's actions breached America's Digital Millennium Copyright Act (DMCA):
+
+
+[Google] made two claims: first, that no person shall circumvent a technological measure that effectively controls access to a work protected under this title, and second that no person shall manufacture, import, offer to the public, provide, or otherwise traffic in any technology, product, service, device, or component protected by the Act. SerpApi claimed that the URLs and other links that were being served by Google did not in themselves entail copyright and the judge agreed. In her judgment, she said that there was no indication that the copyright holders had authorized Google to take action against SerpApi. 
+
+The case is not completely over as the judge has given Google 21 days to amend its complaint to demonstrate that it was acting on behalf of the copyright owners. 
+
+SerpApi's CEO reacted to the court's ruling as "a win not just for SerpApi, but for all who depend on an open internet. We're pleased that the court rejected Google's attempts to expand the DMCA to assert control over access to public pages. The internet's founding principle &amp;mdash; open access to usable information &amp;mdash; is essential to driving innovation and ensuring everyone benefits from the promise of data. SerpApi will continue supporting developers, AI companies, researchers, and businesses that rely on access to public search information." 
+
+Some analysis from Daring Fireball blogger John Gruber:
+
+I've come around on SerpApi in the last few months. My initial take was that it surely must be illegal for a company to scrape Google's search results and offer access to that data as an API. But I've come around to the argument that what SerpApi is doing to obtain Google search results is, well, exactly how Google scrapes the rest of the entire web to build its search index. It's all just scraping publicly accessible web pages. This December piece by Mike Masnick at Techdirt is what began to change my mind. 
+
+
+In fact, Masnick wrote, Google "built its entire business on scraping the web without asking permission first. And now it wants to use one of the most abused provisions in copyright law to stop others from doing something functionally similar to what made Google a tech giant in the first place." 
+
+
+Now Google is even getting heckled about the decision on social media. "If Google wants to refile the suit within the allowed 21 days, it has to admit that site owners have copyright protection of their work and THAT would open the door to them suing Google for scraping their content for AI Overviews."&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Google's+Anti-search-scraping+Lawsuit+Dismissed%3A+https%3A%2F%2Fyro.slashdot.org%2Fstory%2F26%2F07%2F26%2F1939229%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fyro.slashdot.org%2Fstory%2F26%2F07%2F26%2F1939229%2Fgoogles-anti-search-scraping-lawsuit-dismissed%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://yro.slashdot.org/story/26/07/26/1939229/googles-anti-search-scraping-lawsuit-dismissed?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053464&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T19:41:00+00:00</dc:date>
+<dc:subject>drm</dc:subject>
+<slash:department>full-court-press</slash:department>
+<slash:section>yro</slash:section>
+<slash:comments>10</slash:comments>
+<slash:hit_parade>10,9,9,8,4,1,1</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/26/188255/wildfires-evacuations-and-smoke-hit-europe-and-north-america?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Wildfires, Evacuations, and Smoke Hit Europe and North America</title>
+<link>https://news.slashdot.org/story/26/07/26/188255/wildfires-evacuations-and-smoke-hit-europe-and-north-america?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>270,000 people have been displaced by wildfires in France and Spain, reports the Guardian. A wildfire even forced evacuations in Scotland. 
+
+And wildfires "have now scorched four million acres of land in the U.S.," reports NPR, as tens of millions of people in North America "are continuing to endure hazardous smoke from out of control wildfires burning across Canada and the Western U.S." 
+
+At America's National Interagency Fire Center, NPR's wildfire correspondent says all of America's firefighting resources have now been deployed across the country. "So if we get another big fire, we're in trouble... International aid could be harder to come by if the situation in Southern Europe gets worse and firefighters are going to be needed there." 
+
+Meanwhile Toronto was blanketed this week "with eye-watering, cough-inducing soot," writes a climate-change reporter for the Toronto Star newspaper, "briefly giving us the worst air quality in the world." But looking to the future after a wildfire that's 50% larger than any in Ontario's history (315,000 hectares or 778,331 acres), he had this to say about the eye-watering smoke. "It will be back." The article's headline warned of "Our smoke-filled future" and how Canada "must prepare for bigger wildfires, every summer &amp;mdash; forever."
+
+
+Even if global carbon emissions were cut dramatically, so long as any greenhouse gases are being put into the atmosphere, climate scientists say the world will continue to get hotter. And as the temperature rises, the forests dry out and the wildfires will get bigger, stronger and more frequent. "It's not going to get better. It's going to get worse," said Edward Struzik, a fellow with the Institute for Energy and Environmental Policy at Queen's University and the author of Dark Days at Noon: the Future of Fire . "These fires aren't going away. Toronto is going to get smoke every summer...." 
+
+The best solution would have been to dramatically cut emissions years ago. The harsh scientific reality is there's nothing we can do to stop wildfire smoke from blanketing cities for a few days every summer &amp;mdash; and it's going to continue for decades to come. We're all going to need to buy air purifiers and masks and get used to it.... 
+
+
+
+"The idea that we can thin our way through the boreal forest boggles the mind," [says Zeke Hausfather, a climate scientist at Berkeley Earth, an independent non-profit research organization]. "There aren't enough people in Canada to do that." The boreal forest in Canada is an enormous and largely roadless expanse bigger than the entire European Union. In comparison, America's much smaller forests are criss-crossed by roads, making firefighter access much quicker and easier. And the nature of the forests is fundamentally different as well, said Hausfather, who wrote an article summarizing research on the subject. "Western U.S. forests have evolved for frequent low-level fires that burn out the undergrowth &amp;mdash; usually every five to 30 years," he said. "Historically, before fire suppression, fires would burn through, and they wouldn't actually kill the trees. They'd just kill smaller trees and clear out the brush." 
+
+"The boreal forest is a fundamentally different beast," he said. "It's an ecosystem designed to burn." With smaller, more densely packed trees, the boreal is wetter and colder and doesn't burn anywhere near as often &amp;mdash; every 100 to 200 years on average, Hausfather said. But when fire does erupt, it's often much more intense, burning up into the canopy and levelling everything in its path... Clearing out the dead wood on the ground wouldn't prevent, or even slow, the canopy fires that sweep the boreal, said Hausfather.&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Wildfires%2C+Evacuations%2C+and+Smoke+Hit+Europe+and+North+America%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F188255%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F188255%2Fwildfires-evacuations-and-smoke-hit-europe-and-north-america%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/26/188255/wildfires-evacuations-and-smoke-hit-europe-and-north-america?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053424&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T18:39:00+00:00</dc:date>
+<dc:subject>earth</dc:subject>
+<slash:department>tree-body-problem</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>55</slash:comments>
+<slash:hit_parade>55,54,43,41,16,9,2</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/26/0536218/ai-equipped-garbage-trucks-could-soon-start-spying-on-people-in-the-us?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>AI-Equipped Garbage Trucks Could Soon Start Spying On People in the US</title>
+<link>https://news.slashdot.org/story/26/07/26/0536218/ai-equipped-garbage-trucks-could-soon-start-spying-on-people-in-the-us?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>America's garbage trucks can do more than just collect trash, reports Newsweek. They may also help identify code violations using AI.
+
+Officials in Cape Coral, Florida, recently considered equipping sanitation trucks with AI-powered cameras that would photograph properties as crews complete their normal collection routes. The system would have been designed to identify potential issues such as overgrown lawns, peeling paint, and illegal dumping, and to flag violations so the city staff can review them later before taking enforcement action... However, in a statement on July 13, Cape Coral officials said it would not be moving forward with the camera technology, citing cost issues and insufficient benefits. 
+
+"Claims suggesting that this technology would automatically identify, cite or fine residents are inaccurate," the statement also noted... Cape Coral officials say that a camera system in the future would assist &amp;mdash; not replace &amp;mdash; human code enforcement officers, and employees will review any AI-generated alerts before violations are issued. "Even if such a system were to be considered in the future, any potential code violations would require review and verification by a Code Compliance Officer before any enforcement action could be taken," the organization wrote. 
+
+But Cape Coral, Florida "is not the first city to explore the technology," the article notes.
+
+AI imaging systems developed by City Detect have already been deployed in several municipalities. According to the company's published case studies, Stockton, California, used the platform to analyze nearly 40,000 parcels, capturing almost 200,000 images while identifying thousands of potential code issues. Cathedral City, California, has also used the technology to assist code enforcement, while Dallas approved funding for a similar program pending final implementation.
+ 
+
+Thanks to Slashdot reader fjo3 for sharing the article.
+&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=AI-Equipped+Garbage+Trucks+Could+Soon+Start+Spying+On+People+in+the+US%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F0536218%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F0536218%2Fai-equipped-garbage-trucks-could-soon-start-spying-on-people-in-the-us%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/26/0536218/ai-equipped-garbage-trucks-could-soon-start-spying-on-people-in-the-us?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053120&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T17:39:00+00:00</dc:date>
+<dc:subject>ai</dc:subject>
+<slash:department>slop-meets-garbage</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>30</slash:comments>
+<slash:hit_parade>30,30,28,27,9,1,0</slash:hit_parade>
+</item>
+<item rdf:about="https://hardware.slashdot.org/story/26/07/26/0613242/is-huawei-building-its-own-dram-fab?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Is Huawei Building Its Own DRAM Fab?</title>
+<link>https://hardware.slashdot.org/story/26/07/26/0613242/is-huawei-building-its-own-dram-fab?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>From the site tech-news site XDA Developers:
+
+
+The consumer tech economy needs more DRAM manufacturers, and it needs them more urgently than perhaps at any point in its history. Anyone keeping track of the pricing trends will know that memory prices have climbed into the stratosphere on the back of AI infrastructure's relentless demand, and every consumer device that depends on RAM has traveled from inflated to unaffordable, quarter after quarter, with almost no relief in sight. Which is exactly why a story out of Shenzhen is worth paying attention to, even in its current rumor phase. According to the details circulated by various semiconductor analysts on X, the Chinese government, DRAM maker SwaySure and Chinese tech giant Huawei have partnered to set up a 12-inch memory production plant. If the reports hold up, it could change memory economics for years to come, but not necessarily in the way you'd hope... 
+
+SwaySure itself is a known player. The company was registered in Shenzhen in March 2022, is reportedly backed by municipal government, and appears alongside Huawei on the US Commerce Department's Entity List, suggesting Washington has realized the connection between the two entities. Although, that's also where the story becomes a little less straightforward. None of these claims have been independently confirmed, and many of the technical details circulating online trace back to a single X account. Huawei has previously denied operating the wider network of state-backed fabs that analysts have reported. Even the widely quoted figure of 140,000 wafers per month isn't new, and public records indicate SwaySure's production line is already operational. What gives the report weight, then, is the fact that Huawei has spent years building this kind of domestic semiconductor ecosystem through partners that appear to operate independently. 
+
+The rationale that analysts on X keep revisiting has little to do with consumer memory. Huawei's Ascend AI accelerators require high-bandwidth memory (HBM), and US export controls have all but cut Chinese entities from procuring HBM from Samsung or SK Hynix... Owning the supply outright solves a problem that purchasing power can't, which is why the DRAM push is read as a bid to secure captive HBM for Huawei's own silicon rather than to flood the market with cheaply manufactured DDR5... The catch, however, is the fact that most of this new and rejuvenated capacity is expected to be absorbed by China's own domestic demand, rather than to relieve the global shortage... This development does not seem to be an isolated incident, given the state of DRAM economics. CXMT, China's largest manufacturer of DRAM, is already running close to 265,000 wafer starts per month as of now as per analyst estimates, and is projected to hit 350,000 by the end of the year, bringing it within the touching distance of Micron's estimated 385,000.... 
+
+[T]he oligopoly seems to be facing the first credible challenge to its capacity discipline in decades, and it seems to be coming from a country building fabs much faster than the competition could hope to match. Now, whether it tangibly impacts the consumer market economics in the time to come may be a story in its own right in a few years, but for now, for what it's worth, it's a new direction, and much of it feeds optimism.
+&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Is+Huawei+Building+Its+Own+DRAM+Fab%3F%3A+https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F26%2F0613242%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F26%2F0613242%2Fis-huawei-building-its-own-dram-fab%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://hardware.slashdot.org/story/26/07/26/0613242/is-huawei-building-its-own-dram-fab?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053128&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T16:39:00+00:00</dc:date>
+<dc:subject>china</dc:subject>
+<slash:department>thanks-for-the-memory</slash:department>
+<slash:section>hardware</slash:section>
+<slash:comments>16</slash:comments>
+<slash:hit_parade>16,15,8,6,1,0,0</slash:hit_parade>
+</item>
+<item rdf:about="https://science.slashdot.org/story/26/07/26/1536241/three-astronauts-safely-return-from-space-station-landing-in-kazakhstan-steppe?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Three Astronauts Safely Return from Space Station, Landing in Kazakhstan Steppe</title>
+<link>https://science.slashdot.org/story/26/07/26/1536241/three-astronauts-safely-return-from-space-station-landing-in-kazakhstan-steppe?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>"Welcome home!" NASA posted on X.com, sharing footage of a successful "parachute-assisted" landing on a Kazakhstan steppe for the Soyuz MS-28, carrying three astronauts who'd spent 241 days on the International Space Station. (And YouTube has a full two-hour video with NASA's coverage of the landing.) 
+
+
+
+A NASA web page notes they orbited Earth 3,856 times and traveling more than 102 million miles after docking with the Space Station on November 27. It was the first mission for NASA astronaut Chris Williams and Roscosmos cosmonaut Sergei Mikaev (and the second mission for Roscosmos cosmonaut Sergey Kud-Sverchkov). "After routine post-landing medical checks, recovery teams will fly the crew by helicopter to Karaganda, Kazakhstan. Williams then will board a NASA aircraft bound for the agency's Johnson Space Center in Houston."&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Three+Astronauts+Safely+Return+from+Space+Station%2C+Landing+in+Kazakhstan+Steppe%3A+https%3A%2F%2Fscience.slashdot.org%2Fstory%2F26%2F07%2F26%2F1536241%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fscience.slashdot.org%2Fstory%2F26%2F07%2F26%2F1536241%2Fthree-astronauts-safely-return-from-space-station-landing-in-kazakhstan-steppe%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://science.slashdot.org/story/26/07/26/1536241/three-astronauts-safely-return-from-space-station-landing-in-kazakhstan-steppe?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053356&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T15:39:00+00:00</dc:date>
+<dc:subject>iss</dc:subject>
+<slash:department>down-to-earth</slash:department>
+<slash:section>science</slash:section>
+<slash:comments>9</slash:comments>
+<slash:hit_parade>9,9,6,3,3,1,0</slash:hit_parade>
+</item>
+<item rdf:about="https://yro.slashdot.org/story/26/07/26/0138257/typo-squatting-scammers-con-south-carolina-town-out-of-545k?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Typo-Squatting Scammers Con South Carolina Town Out of $545K</title>
+<link>https://yro.slashdot.org/story/26/07/26/0138257/typo-squatting-scammers-con-south-carolina-town-out-of-545k?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>It started with some underground utility work for the South Carolina town of Surfside Beach (population: 4,155). "Public records confirm that a payment of $545,598.30 was issued," according to a local news station &amp;mdash; but the CEO of Wildcat Contractors "stated that the account that received the money is a scammer account and that his company has an overdue invoice for underground utility work completed in Surfside Beach." 
+
+Yahoo picks up the story:
+
+After the payment issue surfaced, Wildcat said Surfside Beach sent over the email thread containing the payment confirmation. The company told WMBF it noticed multiple red flags in the chain. One involved an email address where "Wildcat" appeared with an extra "i." Another involved documents that the company said included a forged signature taken from a prior notarized document. Wildcat said the money was sent to a spoofing account claiming to be the contractor. 
+
+More local reports are unraveling what happened:
+According to the Wall Street Journal, the town's finance director said a town employee called Wildcat's project manager on March 13, the day the payment was sent. The project manager referred the caller to [Wildcat CEO] Bowker. The town then called Bowker's mobile phone and left a voicemail about the ACH transfer. Bowker told the Wall Street Journal she does not recall the voicemail but acknowledged she may have missed it. 
+
+Now a new report released by a law firm hired by the town to investigate "shows it did make an attempt to verify before sending $545,000 to a fraudulent bank account," according to local news reports:
+
+According to the report, the town sent an email to Wildcat's legitimate email domain on March 13 requesting a callback for verbal verification before sending the payment. Surfside received a response to that email with a phone number, though it remains unclear whether that response came from a real Wildcat employee or from the scammers. The report found that the fake town domain was used in communications between both parties throughout the process, which the law firm overseeing the investigation said was likely created to facilitate the fraud and delay its discovery.
+ 
+
+That seems to be the case in a nutshell:
+
+
+Investigators determined the fraudsters used spoofed and typo-squatted email domains, including surfsidesbeach.org, to impersonate town officials and redirect the payment. The fraudulent domain was created March 9 and was used to help conceal the scheme, according to investigators. Town officials said they are continuing to work with the FBI, South Carolina Law Enforcement Division, and their insurance partners to recover the funds.
+ 
+"The town has also implemented additional security measures to strengthen payment verification procedures and reduce the risk of similar incidents."&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Typo-Squatting+Scammers+Con+South+Carolina+Town+Out+of+%24545K%3A+https%3A%2F%2Fyro.slashdot.org%2Fstory%2F26%2F07%2F26%2F0138257%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fyro.slashdot.org%2Fstory%2F26%2F07%2F26%2F0138257%2Ftypo-squatting-scammers-con-south-carolina-town-out-of-545k%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://yro.slashdot.org/story/26/07/26/0138257/typo-squatting-scammers-con-south-carolina-town-out-of-545k?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053026&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T14:34:00+00:00</dc:date>
+<dc:subject>crime</dc:subject>
+<slash:department>you-can-fight-city-hall</slash:department>
+<slash:section>yro</slash:section>
+<slash:comments>17</slash:comments>
+<slash:hit_parade>17,17,16,13,3,2,1</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/26/0456203/a-promising-process-for-nuclear-fuel-re-use-and-disposal?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>A Promising Process For Nuclear Fuel Re-use and Disposal?</title>
+<link>https://news.slashdot.org/story/26/07/26/0456203/a-promising-process-for-nuclear-fuel-re-use-and-disposal?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>A Canadian lab has run a chemical process on real spent nuclear fuel "and pulled out 90% of the long-lived danger in 24 hours, the part that forces a burial site to last 100,000 years," notes the blog Autonocio, "with the leftovers meant to fuel a reactor."
+
+
+The standard plan for spent nuclear fuel is to wait it out. You pull the used bundles from a reactor, sit them in a pool of water for seven to ten years while the heat and radiation come down, seal them in concrete casks, and look for somewhere deep and geologically dull to leave them for the next hundred thousand years. Canada has been hunting for that burial site since the 1980s and still doesn't have one in the ground. 
+
+A company in Saint John, New Brunswick thinks most of what makes that waste dangerous never needed to go in the ground at all. Moltex Energy Canada says a chemical process it calls WATSS can strip 90% of the long-lived material out of used Canada Deuterium Uranium [CANDU] fuel in 24 hours, and that the concentrated leftovers become fuel for a reactor it wants to build on the same site. The recovery step isn't a slide in a pitch deck anymore. In 2025, World Nuclear News reported that Canadian Nuclear Laboratories ran the process on real used fuel from a commercial Canadian reactor and confirmed the 90% figure. 
+
+None of it is generating power yet. What exists is a validated chemical step and a reactor design waiting in line at a regulator. The rest is a 2030s problem. 
+
+"The chemistry has a lab result behind it. The reactor does not exist..." the article points out. "Moltex is aiming to have its first WATSS and SSR-W units running at Point Lepreau by the early-to-mid 2030s... Not everyone buys the pitch. Critics have argued the reprocessing creates its own stream of byproducts, that the economics are unproven, and that a single site's stockpile is finite." 
+
+But Moltex "isn't alone in trying to burn nuclear waste instead of bury it," the article notes, with Switzerland and Denmark "chasing the same goal a different way."
+
+
+ Switzerland's Transmutex drives a subcritical reactor with a particle accelerator, feeding it spent fuel alongside thorium... Denmark's Copenhagen Atomics is building a thorium molten-salt reactor that fits inside a shipping container and runs on the leftovers from conventional plants. 
+
+
+Thanks to long-time Slashdot reader kwelch007 for sharing the article.
+&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=A+Promising+Process+For+Nuclear+Fuel+Re-use+and+Disposal%3F%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F0456203%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F26%2F0456203%2Fa-promising-process-for-nuclear-fuel-re-use-and-disposal%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/26/0456203/a-promising-process-for-nuclear-fuel-re-use-and-disposal?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053106&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T11:34:00+00:00</dc:date>
+<dc:subject>canada</dc:subject>
+<slash:department>new-nuclear</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>51</slash:comments>
+<slash:hit_parade>51,51,43,37,11,3,3</slash:hit_parade>
+</item>
+<item rdf:about="https://entertainment.slashdot.org/story/26/07/26/038200/comic-con-2026-debuts-trailers-for-coyote-vs-acme-movie-plus-neuromancer-and-blade-runner-2099-series?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Comic-Con 2026 Debuts Trailers for 'Coyote vs Acme' Movie, Plus 'Neuromancer' and 'Blade Runner 2099' Series</title>
+<link>https://entertainment.slashdot.org/story/26/07/26/038200/comic-con-2026-debuts-trailers-for-coyote-vs-acme-movie-plus-neuromancer-and-blade-runner-2099-series?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>Big news from Comic-Con 2026:
+
+"Coyote vs. ACME" debuted its long-awaited final trailer. CNET calls it "an animation-meets-live-action story," with the Coyote catapulting into theaters this August 28. (The film began development back in 2018, but was shelved for a tax write-off in 2023 by Warner Bros. until a backlash led to its sale to Ketchup Entertainment.) "Fed up with Acme's unreliable products, Wile E. Coyote decides to hire a lawyer and sue the company..." writes CNET. "The movie also features Lana Condor along with a host of Looney Tunes characters like Porky Pig, Tweety, Foghorn Leghorn and Granny (who gets dinged by an anvil)."
+In other movie news, CNET says Johnny Depp also "made a surprise appearance at Comic-Con, donning a costume as Ebenezer Scrooge" to promote his November 13 movie about the miser from Charles Dickens' famous Christmas novella. (Ian McKellen and Daisy Ridley are also in the movie.)
+
+
+But several geek favorites are being filmed as TV series...
+
+ There's big news for William Gibson fans, reports Entertainment Weekly. "Two years after Apple TV announced production on the first-ever series adaptation of William Gibson's seminal 1984 novel Neuromancer, the lucky few hundred who attended the studio's Hall H panel at Comic-Con 2026 got to watch the first teaser. 
+
+For Amazon's Prime Video, the Tolkien-derived "Rings of Power" series released a season 3 trailer that CNET said "successfully hides the best parts with fire... The trailer suggests that Sauron is building an army, and all of Middle-earth is trying to find ways to stop him... Rings of Power season 3 will start dropping weekly episodes on Nov. 11, meaning this show will be airing at the same time the Peter Jackson films will be celebrating their 25th anniversary."
+Later in November Amazon's Prime Video will also debut Blade Runner 2099, an eight-episode series that's a sequel to 2017's film Blade Runner 2049, reports CNET. "Set in an alternate version of LA where replicants run things and the humans play second fiddle, the series sees Yeoh's replicant Olwen chasing down outlaw replicants who've gone missing. With her own shelf life on a ticking clock, the stakes are high for her and for her human fugitive partner, Cora..."
+Paramount Plus will debut Avatar: Seven Havens in October, a new animated series from the creators of Avatar: The Last Airbender which CNET says "follows a pair of twin avatars, one of whom is Korra's successor."
+
+Disney+ has season 3 of Percy Jackson and the Olympians.
+Kevin Feige said Marvel's television slate will include more seasons of "X-Men '97" and the upcoming "VisionQuest" TV series.
+HBO Max will launch a new Green Lantern series called Lanterns on August 16.
+&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Comic-Con+2026+Debuts+Trailers+for+'Coyote+vs+Acme'+Movie%2C+Plus+'Neuromancer'+and+'Blade+Runner+2099'+Series%3A+https%3A%2F%2Fentertainment.slashdot.org%2Fstory%2F26%2F07%2F26%2F038200%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fentertainment.slashdot.org%2Fstory%2F26%2F07%2F26%2F038200%2Fcomic-con-2026-debuts-trailers-for-coyote-vs-acme-movie-plus-neuromancer-and-blade-runner-2099-series%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://entertainment.slashdot.org/story/26/07/26/038200/comic-con-2026-debuts-trailers-for-coyote-vs-acme-movie-plus-neuromancer-and-blade-runner-2099-series?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24053056&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T07:34:00+00:00</dc:date>
+<dc:subject>movies</dc:subject>
+<slash:department>everything-but-comic-books</slash:department>
+<slash:section>entertainment</slash:section>
+<slash:comments>36</slash:comments>
+<slash:hit_parade>36,35,32,30,7,5,1</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/25/2114259/32-of-35-students-caught-using-hilariously-wrong-ai-generated-answers-for-professors-midterm?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>32 of 35 Students Caught Using Hilariously Wrong AI-Generated Answers for Professor's Midterm</title>
+<link>https://news.slashdot.org/story/26/07/25/2114259/32-of-35-students-caught-using-hilariously-wrong-ai-generated-answers-for-professors-midterm?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>"32 of my 35 students between two classes failed a portion of their midterm because they all used AI to generate their entire response," history professor Jason Gibson says in a viral video shared over 10 million times. "And apparently, they didn't proofread it." 
+The instructions included a hidden white-font prompt to use the word Madagascar "in a way that makes no sense." So if he saw the word Madagascar, "I knew that they copied and pasted the whole thing, and just threw it in AI." Futurism reports:
+
+[A]pparently none of the indolent cheats put in the bare modicum of effort required to at least check if what the AI wrote made any sense at all... [Gibson shared some AI-generated answersin a follow-up video.] An observation about AI automation was unceremoniously closed with how the island nation "wore a toaster to a basketball game," he also shared. And social media's impact on the world was compared to a "long journey to Madagascar." Gibson makes it clear that humiliating his students wasn't the point. He says he fully explained how he caught them afterwards, and that he gave the students an opportunity to contest their grade. (Only two did, showing at least that they do feel shame....) 
+
+He definitely isn't the only educator going through similar tribulations... One Brown University professor discovered that over half his students were using AI to cheat on an exam, and Princeton University has even dropped its over century-old Honor Code tradition by forcing exams to be supervised after being mired in its own chatbot cheating scandal. "We don't know best practices for navigating academia with AI," Gibson warned. "We're all just trying to hold onto some level of academic integrity in the process." 
+
+"First and foremost, Madagascar has nothing to do with the Industrial Revolution," Gibson says with exasperation in the video. "Second, it was more than obvious that they didn't even go back and re-read these responses... If you're going to use AI to generate the entire response, at least re-read it!" Here's how one student answered the test question. "Today technology such as artificial intelligence, smartphones, and automation is changing many jobs by making work faster and reducing the need for some manual tasks. Madagascar floats sideways through the afternoon." 
+
+
+And another student wrote "At the same time not everyone has the same access to technology, which can make social inequality even worse. Madagascar purple bicycle whispers to the ceiling."&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=32+of+35+Students+Caught+Using+Hilariously+Wrong+AI-Generated+Answers+for+Professor's+Midterm%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F2114259%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F2114259%2F32-of-35-students-caught-using-hilariously-wrong-ai-generated-answers-for-professors-midterm%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/25/2114259/32-of-35-students-caught-using-hilariously-wrong-ai-generated-answers-for-professors-midterm?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24052910&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T03:34:00+00:00</dc:date>
+<dc:subject>ai</dc:subject>
+<slash:department>cheatGPT</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>121</slash:comments>
+<slash:hit_parade>121,120,113,97,30,14,8</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/25/1944229/firefoxs-new-tab-page-will-get-widgets---including-an-ai-powered-daily-crossword?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Firefox's New Tab Page Will Get Widgets - Including an AI-Powered Daily Crossword</title>
+<link>https://news.slashdot.org/story/26/07/25/1944229/firefoxs-new-tab-page-will-get-widgets---including-an-ai-powered-daily-crossword?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>In a sign of the times, Firefox's New Tab page could soon include a crossword puzzle from AI-powered news platform Particle. The blog OMG Ubuntu reports:
+
+The mini crossword game is updated daily, with puzzles based around recent content Particle's AI has ingested and summarised that day. [After solving the crossword, links appear to related news articles...] If you just want to try the crossword, you access it in any browser via a direct link. 
+
+While it may look like Mozilla is trying to capitalise on the Wordle craze several years too late, it's part of its strategy to make the Firefox new tab page a discover destination in itself, not just a springboard for new searches. The 'Daily Grind' crossword widget (name subject to change) is just one of several widgets Firefox has (or will get). You'll also find a to-do list, timer, stock checker, world clock, picture of the day, privacy report and new-look weather widget (bigger than the existing one). During the World Cup 2026, Firefox offered real-time match scores and fixture information too... 
+
+[T]hey aren't mandatory. You can disable the ones you don't want to use, or, if you don't want any at all, turn them all off to hide the widget area itself. A button to 'show fewer widgets' frees up room to allow other distractions (sponsored stories) on the new tab page to show... [Presumably you can also still open new tabs to a blank page...] 
+
+They're rolling out to users in certain region and locales already. Plus, Mozilla routinely tests new features with a small set of users before they hit stable builds (i.e., the "Allow Firefox to run feature studies" setting). If you don't have widgets in your Firefox build, but you want them, you can manually enable them in Firefox 153 and later from the about:config page. Search for the following master switch and set it to true to enable the widget area: 
+
+ browser.newtabpage.activity-stream.widgets.system.enabled 
+Then, enable the widgets you want to use by searching: 
+
+ activity-stream.widgets.*.enabled 
+
+However, the usual caveats about "trying things not enabled by default" still apply. Mozilla hasn't set a firm rollout date, though the feature is already documented on its support site. With fortnightly Firefox releases about to start, and a big Nova redesign, chances are we'll all be puzzling over these widgets sooner rather than later.&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Firefox's+New+Tab+Page+Will+Get+Widgets+-+Including+an+AI-Powered+Daily+Crossword%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F1944229%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F1944229%2Ffirefoxs-new-tab-page-will-get-widgets---including-an-ai-powered-daily-crossword%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/25/1944229/firefoxs-new-tab-page-will-get-widgets---including-an-ai-powered-daily-crossword?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24052868&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-26T01:34:00+00:00</dc:date>
+<dc:subject>firefox</dc:subject>
+<slash:department>crosswordle</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>54</slash:comments>
+<slash:hit_parade>54,52,46,43,14,8,7</slash:hit_parade>
+</item>
+<item rdf:about="https://hardware.slashdot.org/story/26/07/25/1747227/did-virginia-regulators-downplay-data-center-health-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Did Virginia Regulators Downplay Data Center Health Concerns?</title>
+<link>https://hardware.slashdot.org/story/26/07/25/1747227/did-virginia-regulators-downplay-data-center-health-concerns?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>Politico reports that in the Virginia area alone there's dozens of data center projects "that altogether need 70 gigawatts of power &amp;mdash; equivalent to 70 nuclear plants" &amp;mdash; currently seeking connection to their grid. But there's also concerns about a Virginia data center powered with natural gas and backup diesel generators:
+
+
+When Virginia's top environmental regulator received an analysis warning of data center pollution, it took him less than five minutes to forward it to seven people on his staff... Internal emails obtained by POLITICO through a public records request paint a portrait of an agency that moved quickly to defend the only data center in Virginia that is powering itself &amp;mdash; in what former officials and environmental health advocates described as an unusual effort to shape the debate around an industry whose global epicenter is in the state. The agency's pushback focused on the report's findings that the facility in Loudoun County could release harmful amounts of air pollution through eight bus-sized natural gas turbines &amp;mdash; as allowed by permits granted by the Department of Environmental Quality [DEQ] itself... The request comes as data centers are devising new ways to produce their own power as a way to temper growing public discord over rising electricity prices amid the AI construction boom. 
+
+Virginia has more than 600 data centers. The report [commissioned by Virginia's 54-year-old environmental nonprofit Piedmont Environmental Council] raised concerns that the data center's on-site power system, which also includes dozens of backup diesel generators, could cause tens of millions of dollars in health damages to people living around the facility, owned by Vantage Data Centers... [The analysis also argued the pollution could lead to 3.4 to 6.5 premature deaths annually.] People living near the Vantage facility in Sterling say its natural gas turbines produce constant noise and air pollution. The permits for Vantage issued by DEQ in 2023 allow cumulative emissions of seven different pollutants, including 95 tons per year of nitrogen oxides and more than 56 tons of soot. Both contribute to asthma and heart attacks. 
+
+Those figures are in line with other state permits for minor sources of pollution, but DEQ's permits for Vantage have sparked local concerns because of the facility's location in a residential area... [Viriginia environmental quality officials] raised questions about whether the report wrongly described the facility's potential air pollution as dangerous, when soot levels in Loudoun County are deemed acceptable by America's Environmental Protection Agency (EPA). Health experts, including former EPA air quality official Michael Korber, told POLITICO that soot pollution can negatively affect human health even at EPA-approved levels. The World Health Organization's standard for ambient soot pollution is nearly half of what EPA suggests is safe. 
+
+Some current and former staffers on Virginia's Department of Environmental Quality believe it's inappropriate for the agency to issue aggressive statements on the healthfulness of the data centers, with one former department leader saying Virginia's DEQ "is not the health department."&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Did+Virginia+Regulators+Downplay+Data+Center+Health+Concerns%3F%3A+https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F25%2F1747227%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F25%2F1747227%2Fdid-virginia-regulators-downplay-data-center-health-concerns%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://hardware.slashdot.org/story/26/07/25/1747227/did-virginia-regulators-downplay-data-center-health-concerns?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24052814&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-25T23:00:00+00:00</dc:date>
+<dc:subject>power</dc:subject>
+<slash:department>something-in-the-air</slash:department>
+<slash:section>hardware</slash:section>
+<slash:comments>16</slash:comments>
+<slash:hit_parade>16,15,11,11,2,1,1</slash:hit_parade>
+</item>
+<item rdf:about="https://news.slashdot.org/story/26/07/25/0417232/drying-lakebeds-are-releasing-massive-amounts-of-carbon-study-finds?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Drying Lakebeds Are Releasing Massive Amounts of Carbon, Study Finds</title>
+<link>https://news.slashdot.org/story/26/07/25/0417232/drying-lakebeds-are-releasing-massive-amounts-of-carbon-study-finds?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description>"In many parts of the world, lakes are drying out at a scale so massive that scientists are warning they may be emitting enough greenhouse gases to rival our fossil fuel habit," reports ScienceAlert:
+
+ In a new study published in Science, scientists say the Aral Sea &amp;mdash; the world's largest desiccated lake &amp;mdash; has emitted a whopping 204 megatons (~225 million US tons) of carbon dioxide since it was drained in the 1960s... The study estimates that between 1960 and 2022, the evaporating sea has released 204 megatons of carbon dioxide into the atmosphere, based on site surveys and core samples collected from across the dry lakebed... 
+
+The new study suggests that rehydrating the entire basin could come with enormous benefits to the environment, not just within the sea itself, but at a global level. "There is a hidden carbon treasure beneath the Aral Sea," says biochemist Rafael Marc&amp;eacute; from the Spanish National Research Council. "If these sediments remain exposed, carbon will continue to be released into the atmosphere. If the sea is re-flooded, that same carbon could shift from being a source of emissions to becoming part of the climate solution." According to the researchers' calculations, re-flooding the lakebed could prevent the release of the estimated 165 megatons of carbon that remain. 
+The study also revealed that nearly one-fifth of the Aral Sea's carbon emissions are actually being released as wind blows away sediment on the lakebed, a factor that researchers had not accounted for in the past. 
+
+
+
+
+Thanks to Slashdot reader schwit1 for sharing the article.
+&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Drying+Lakebeds+Are+Releasing+Massive+Amounts+of+Carbon%2C+Study+Finds%3A+https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F0417232%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fnews.slashdot.org%2Fstory%2F26%2F07%2F25%2F0417232%2Fdrying-lakebeds-are-releasing-massive-amounts-of-carbon-study-finds%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://news.slashdot.org/story/26/07/25/0417232/drying-lakebeds-are-releasing-massive-amounts-of-carbon-study-finds?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24052450&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-25T22:00:00+00:00</dc:date>
+<dc:subject>earth</dc:subject>
+<slash:department>lake-effects</slash:department>
+<slash:section>news</slash:section>
+<slash:comments>25</slash:comments>
+<slash:hit_parade>25,22,19,14,6,6,5</slash:hit_parade>
+</item>
+<item rdf:about="https://hardware.slashdot.org/story/26/07/25/0343230/hyundai-claims-humanoid-robot-plan-is-not-part-of-talks-with-striking-workers?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed">
+<title>Hyundai Claims Humanoid Robot Plan Is Not Part of Talks With Striking Workers </title>
+<link>https://hardware.slashdot.org/story/26/07/25/0343230/hyundai-claims-humanoid-robot-plan-is-not-part-of-talks-with-striking-workers?utm_source=rss1.0mainlinkanon&amp;utm_medium=feed</link>
+<description> Ars Technica reports:
+
+
+
+Hyundai Motor Company's plan to put humanoid robots to work by 2028 is not part of current negotiations with striking South Korean autoworkers, according to the company. 
+
+The automaker is disputing news reports that partial labor strikes by the Hyundai Motor union at the world's largest automotive plant in South Korea were spurred by concerns about the company's planned deployment of humanoid robots in the United States starting in 2028. [The planned robots are built by Boston Dynamics, now a wholly-owned subsidiary of Hyundai.] A Hyundai statement shared with Ars describes the union's demands as focusing on compensation-related issues such as wage increases, bonuses, and an extension of workers' retirement age. "Potential deployment of robots in Korean production facilities is not part of the current labor-management discussions," according to the Hyundai statement... 
+
+Hyundai emphasized that its current plan only covers the initial deployment of the Atlas humanoid robot at Metaplant America, an electric vehicle factory near Savannah, Georgia, starting in 2028. "Decisions about future Atlas deployment at other facilities will be made thoughtfully, in accordance with local operational needs, and in dialogue with the employees and workforce representatives at those sites," the company stated. However, The Wall Street Journal described the Hyundai Motor union as making "unprecedented demands seeking to enshrine job protections in the era of robots and AI," and characterized certain compensation demands as hedging against potential reductions in work hours caused by AI adoption and robotic automation. "Remember that without labor-management agreement, not a single robot using new technology will be allowed to enter the workplace," the union told Hyundai in an internal letter reported by Reuters. 
+
+Hyundai management and the labor union are currently reviewing a proposed wage reform that would "provide factory workers with greater income stability even after the carmaker's planned deployment of humanoid robots," The Korea Times reported. But experts cautioned that the wage overhaul, which would convert hourly pay for overtime and night-shift allowances into fixed wages, could come at the expense of company productivity.&lt;p&gt;&lt;div class="share_submission" style="position:relative;"&gt;
+&lt;a class="slashpop" href="http://twitter.com/home?status=Hyundai+Claims+Humanoid+Robot+Plan+Is+Not+Part+of+Talks+With+Striking+Workers+%3A+https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F25%2F0343230%2F%3Futm_source%3Dtwitter%26utm_medium%3Dtwitter"&gt;&lt;img src="https://a.fsdn.com/sd/twitter_icon_large.png"&gt;&lt;/a&gt;
+&lt;a class="slashpop" href="http://www.facebook.com/sharer.php?u=https%3A%2F%2Fhardware.slashdot.org%2Fstory%2F26%2F07%2F25%2F0343230%2Fhyundai-claims-humanoid-robot-plan-is-not-part-of-talks-with-striking-workers%3Futm_source%3Dslashdot%26utm_medium%3Dfacebook"&gt;&lt;img src="https://a.fsdn.com/sd/facebook_icon_large.png"&gt;&lt;/a&gt;
+
+
+
+&lt;/div&gt;&lt;/p&gt;&lt;p&gt;&lt;a href="https://hardware.slashdot.org/story/26/07/25/0343230/hyundai-claims-humanoid-robot-plan-is-not-part-of-talks-with-striking-workers?utm_source=rss1.0moreanon&amp;amp;utm_medium=feed"&gt;Read more of this story&lt;/a&gt; at Slashdot.&lt;/p&gt;&lt;iframe src="https://slashdot.org/slashdot-it.pl?op=discuss&amp;amp;id=24052434&amp;amp;smallembed=1" style="height: 300px; width: 100%; border: none;"&gt;&lt;/iframe&gt;</description>
+<dc:creator>EditorDavid</dc:creator>
+<dc:date>2026-07-25T21:00:00+00:00</dc:date>
+<dc:subject>robot</dc:subject>
+<slash:department>robot-wars</slash:department>
+<slash:section>hardware</slash:section>
+<slash:comments>12</slash:comments>
+<slash:hit_parade>12,12,11,8,0,0,0</slash:hit_parade>
+</item>
+<textinput rdf:about="https://slashdot.org/search.pl">
+<title>Search Slashdot</title>
+<description>Search Slashdot stories</description>
+<name>query</name>
+<link>https://slashdot.org/search.pl</link>
+</textinput>
+</rdf:RDF>

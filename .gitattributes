@@ -29,6 +29,13 @@ internal/pb/**/*.go linguist-generated=true -diff
 # mockups as the frontend.
 design/** linguist-documentation=true
 
+# Feed fixtures are recordings, not text (TODO 4.2). `text=auto` would rewrite
+# CRLFs inside a file whose whole purpose is to be byte-identical to what a real
+# server sent, and windows1252.raw is not valid UTF-8 at all — git's own text
+# heuristics would have to guess, and a wrong guess silently destroys the
+# evidence. Marking them binary is how a fixture stays a fixture.
+internal/feed/testdata/corpus/*.raw  binary
+
 # Binary, so git never tries to be clever with it.
 *.png       binary
 *.wasm      binary

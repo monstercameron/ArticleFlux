@@ -225,3 +225,84 @@ func TestDecodeReaderRespectsTheLimit(t *testing.T) {
 		t.Errorf("read %d bytes, want the 100-byte limit", len(got))
 	}
 }
+
+// The regression test for the double-decode bug the feed corpus caught.
+//
+// Decode's output is UTF-8. If the XML declaration it carries still names the
+// original encoding, the next parser in the chain believes the declaration and
+// decodes again — which is how "Café" became "CafÃ©" on every non-UTF-8 feed in
+// the application while every test in this package passed.
+func TestDeclarationIsRetaggedAfterDecoding(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{{
+		name: "double quotes",
+		in:   `<?xml version="1.0" encoding="windows-1252"?><rss/>`,
+		want: `<?xml version="1.0" encoding="utf-8"?><rss/>`,
+	}, {
+		name: "single quotes, as Blogger and half of PHP emit",
+		in:   `<?xml version='1.0' encoding='ISO-8859-1'?><rss/>`,
+		want: `<?xml version='1.0' encoding="utf-8"?><rss/>`,
+	}, {
+		name: "spaces around the equals sign",
+		in:   `<?xml version="1.0" encoding = "Shift_JIS" ?><rss/>`,
+		want: `<?xml version="1.0" encoding = "utf-8" ?><rss/>`,
+	}, {
+		name: "already utf-8 is left alone",
+		in:   `<?xml version="1.0" encoding="utf-8"?><rss/>`,
+		want: `<?xml version="1.0" encoding="utf-8"?><rss/>`,
+	}, {
+		name: "no encoding attribute: XML already defaults to UTF-8",
+		in:   `<?xml version="1.0"?><rss/>`,
+		want: `<?xml version="1.0"?><rss/>`,
+	}, {
+		name: "no declaration at all",
+		in:   `<rss version="2.0"><channel/></rss>`,
+		want: `<rss version="2.0"><channel/></rss>`,
+	}, {
+		name: "JSON feeds have no declaration to retag",
+		in:   `{"version":"https://jsonfeed.org/version/1.1","items":[]}`,
+		want: `{"version":"https://jsonfeed.org/version/1.1","items":[]}`,
+	}, {
+		// The word "encoding" in an article body must not be rewritten. The
+		// pattern is anchored to the document start for exactly this reason.
+		name: "the word encoding in content is untouched",
+		in:   `<rss><item><description>encoding = "windows-1252" is a lie</description></item></rss>`,
+		want: `<rss><item><description>encoding = "windows-1252" is a lie</description></item></rss>`,
+	}}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, _, err := Decode([]byte(c.in), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != c.want {
+				t.Errorf("\n got %s\nwant %s", got, c.want)
+			}
+		})
+	}
+}
+
+// End to end through the real decoder, on bytes that are genuinely not UTF-8.
+func TestRetaggingSurvivesARealTranscode(t *testing.T) {
+	// "Café" in Windows-1252: the é is one byte, 0xE9, which is illegal UTF-8.
+	body := append([]byte(`<?xml version="1.0" encoding="windows-1252"?><rss><channel><title>Caf`),
+		0xE9, '<', '/', 't', 'i', 't', 'l', 'e', '>', '<', '/', 'c', 'h', 'a', 'n', 'n', 'e', 'l', '>', '<', '/', 'r', 's', 's', '>')
+
+	got, res, err := Decode(body, "text/xml; charset=utf-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Encoding != "windows-1252" {
+		t.Errorf("decoded as %q; the declaration should have beaten the HTTP header", res.Encoding)
+	}
+	if !strings.Contains(string(got), "Café") {
+		t.Errorf("did not decode: %q", got)
+	}
+	if strings.Contains(string(got), "windows-1252") {
+		t.Errorf("declaration still claims windows-1252, so the next parser will decode again: %q", got)
+	}
+}

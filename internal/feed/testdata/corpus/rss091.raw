@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!DOCTYPE rss PUBLIC "-//Netscape Communications//DTD RSS 0.91//EN"
+            "http://my.netscape.com/publish/formats/rss-0.91.dtd">
+<!-- RSS 0.91, Netscape flavour. Hand-written, because the format is thirty years
+     old and the sites that served it are gone.
+
+     Three things here break parsers written against 2.0:
+       - the DOCTYPE, which makes an XML parser with entity resolution enabled go
+         to the network for a DTD that has not existed since 2001,
+       - no <guid> element at all — 0.91 had no concept of one, so identity has to
+         fall back to the link,
+       - no namespaces whatsoever. -->
+<rss version="0.91">
+  <channel>
+    <title>Scripting News</title>
+    <link>http://www.scripting.com/</link>
+    <description>News and commentary from the cross-platform scripting community.</description>
+    <language>en-us</language>
+    <copyright>Copyright 1997-1999 UserLand Software</copyright>
+    <managingEditor>dave@userland.com</managingEditor>
+    <webMaster>dave@userland.com</webMaster>
+    <lastBuildDate>Thu, 08 Jul 1999 07:00:00 GMT</lastBuildDate>
+    <docs>http://my.netscape.com/publish/formats/rss-spec-0.91.html</docs>
+
+    <image>
+      <title>Scripting News</title>
+      <url>http://www.scripting.com/gifs/tinyScriptingNews.gif</url>
+      <link>http://www.scripting.com/</link>
+      <width>40</width>
+      <height>31</height>
+      <description>What is this?</description>
+    </image>
+
+    <item>
+      <title>stock market</title>
+      <link>http://www.scripting.com/1999/07/08.html#stockMarket</link>
+      <description>The Dow gained 20 points today.</description>
+    </item>
+
+    <item>
+      <title>an item with no description</title>
+      <link>http://www.scripting.com/1999/07/08.html#nodesc</link>
+    </item>
+
+    <item>
+      <title>entities, unescaped and otherwise</title>
+      <link>http://www.scripting.com/1999/07/08.html#ents</link>
+      <description>AT&amp;T &amp; friends &lt;em&gt;emphasise&lt;/em&gt; things.</description>
+    </item>
+  </channel>
+</rss>

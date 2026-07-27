@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Dates feeds actually emit. Every value below was observed in the wild or is
+     the documented output of a generator that is still shipping; none of them is
+     invented to be difficult.
+
+     This fixture is the reason internal/feeddate exists as its own package. The
+     rule it encodes: a date we cannot parse must fall through to first-seen, and
+     must NEVER be silently zero — an item stamped year 1 sorts to the bottom of
+     every list forever and is functionally deleted. -->
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Dates, as publishers write them</title>
+    <link>https://example.org/dates</link>
+    <description>One item per layout.</description>
+
+    <item>
+      <title>RFC 1123, the correct one</title>
+      <link>https://example.org/dates/1</link>
+      <guid isPermaLink="false">dates-1</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 -0700</pubDate>
+    </item>
+
+    <item>
+      <title>RFC 1123 with a named zone</title>
+      <link>https://example.org/dates/2</link>
+      <guid isPermaLink="false">dates-2</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 GMT</pubDate>
+    </item>
+
+    <item>
+      <title>No leading zero on the day</title>
+      <link>https://example.org/dates/3</link>
+      <guid isPermaLink="false">dates-3</guid>
+      <pubDate>Mon, 2 Jan 2006 15:04:05 -0700</pubDate>
+    </item>
+
+    <item>
+      <title>No weekday at all</title>
+      <link>https://example.org/dates/4</link>
+      <guid isPermaLink="false">dates-4</guid>
+      <pubDate>02 Jan 2006 15:04:05 -0700</pubDate>
+    </item>
+
+    <item>
+      <title>-0000, which RFC 2822 says means unknown zone</title>
+      <link>https://example.org/dates/5</link>
+      <guid isPermaLink="false">dates-5</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 -0000</pubDate>
+    </item>
+
+    <item>
+      <title>GMT+0000, which is not a thing but is emitted anyway</title>
+      <link>https://example.org/dates/6</link>
+      <guid isPermaLink="false">dates-6</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05 GMT+0000</pubDate>
+    </item>
+
+    <item>
+      <title>No timezone whatsoever</title>
+      <link>https://example.org/dates/7</link>
+      <guid isPermaLink="false">dates-7</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04:05</pubDate>
+    </item>
+
+    <item>
+      <title>No seconds</title>
+      <link>https://example.org/dates/8</link>
+      <guid isPermaLink="false">dates-8</guid>
+      <pubDate>Mon, 02 Jan 2006 15:04 -0700</pubDate>
+    </item>
+
+    <item>
+      <title>ISO 8601 in a pubDate field</title>
+      <link>https://example.org/dates/9</link>
+      <guid isPermaLink="false">dates-9</guid>
+      <pubDate>2006-01-02T15:04:05Z</pubDate>
+    </item>
+
+    <item>
+      <title>ISO 8601 with an offset and no colon</title>
+      <link>https://example.org/dates/10</link>
+      <guid isPermaLink="false">dates-10</guid>
+      <pubDate>2006-01-02T15:04:05-0700</pubDate>
+    </item>
+
+    <item>
+      <title>Date only</title>
+      <link>https://example.org/dates/11</link>
+      <guid isPermaLink="false">dates-11</guid>
+      <pubDate>2006-01-02</pubDate>
+    </item>
+
+    <item>
+      <title>dc:date instead of pubDate</title>
+      <link>https://example.org/dates/12</link>
+      <guid isPermaLink="false">dates-12</guid>
+      <dc:date>2006-01-02T15:04:05+00:00</dc:date>
+    </item>
+
+    <item>
+      <title>The year 2087, claimed in earnest</title>
+      <link>https://example.org/dates/13</link>
+      <guid isPermaLink="false">dates-13</guid>
+      <pubDate>Thu, 02 Jan 2087 15:04:05 -0700</pubDate>
+    </item>
+
+    <item>
+      <title>Epoch zero, which is how a null date renders</title>
+      <link>https://example.org/dates/14</link>
+      <guid isPermaLink="false">dates-14</guid>
+      <pubDate>Thu, 01 Jan 1970 00:00:00 +0000</pubDate>
+    </item>
+
+    <item>
+      <title>Not a date at all</title>
+      <link>https://example.org/dates/15</link>
+      <guid isPermaLink="false">dates-15</guid>
+      <pubDate>Coming soon</pubDate>
+    </item>
+
+    <item>
+      <title>Empty pubDate</title>
+      <link>https://example.org/dates/16</link>
+      <guid isPermaLink="false">dates-16</guid>
+      <pubDate></pubDate>
+    </item>
+
+    <item>
+      <title>No date element at all</title>
+      <link>https://example.org/dates/17</link>
+      <guid isPermaLink="false">dates-17</guid>
+    </item>
+  </channel>
+</rss>
