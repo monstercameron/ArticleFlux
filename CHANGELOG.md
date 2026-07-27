@@ -300,6 +300,28 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **One analysis pass per item, for the whole instance** (`internal/pipeline`, migration 0021,
+  §27.2, A41). Classification, tags and the vector were each re-derived by whatever needed them;
+  they are computed once now and everything downstream reads the row. The affordability is entirely
+  in where it sits: items are global (A14), so this runs once per item and nothing in it may depend
+  on who is going to read the article. That is the decision most likely to be made backwards —
+  every other per-item feature here is correctly per-user — and the per-subscriber version would
+  work, pass its tests, and cost 200× on the busiest path in the application.
+- **The slideshow: the reader with nothing else on the screen** (§19). Watched from across a room,
+  or half-watched for an hour while something else is being done — which rules out most of what a
+  slideshow normally is. Nothing is small enough to need leaning in for, nothing blinks, nothing
+  waits for a pointer, nothing must be dismissed. The vocabulary is a newscast rather than a
+  carousel, because a carousel's furniture is for choosing between things and nobody is choosing:
+  the running order is decided and the next story arrives whether or not anyone is watching.
+- **Podcast mode** (§19) — each article rewritten as one slot of a continuous broadcast, handing
+  over from what played before it. A third opt-in, default off, separate from the digest for the
+  reason the digest is separate from the voice: its own egress, its own bill. It *outranks* the
+  digest rather than composing with it, because summarising a summary drops what the first pass
+  judged unimportant twice over.
+- **Five e2e specs for surfaces that had none** — dialogs, empty states, keyboard, settings, the
+  slideshow. Each covers a failure that is invisible from the server's side: a dialog that cannot be
+  dismissed, an empty state that says nothing about what to do next, a key that stopped being bound,
+  a setting that does not persist.
 - **Every RPC declares who may call it, in one table** (`grpcsrv/authzmap.go` + an interceptor).
   "Who is allowed to do this" is now readable top to bottom instead of being a check inside each
   handler — the version where the thirty-first handler is the one that forgets. The map is
@@ -321,6 +343,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
   attribute is a bounded label — counts and durations, no feed URL, title or username. A heap or
   goroutine dump is the opposite: it carries whatever the process was holding. So profiling is off
   until an operator says otherwise, and the flag says so.
+- **`perf` and `perf-compare` verbs, and a tool that says whether to believe them.** The incantation
+  is `go test -run '^$' -bench . -benchmem -count 6 -cpuprofile ...`, and every part of it is
+  load-bearing in a way that is easy to get wrong once and then keep getting wrong — `-run '^$'`
+  because the store's TESTS build a 50,000-row fixture, a loop over packages because `go test`
+  refuses `-cpuprofile` across more than one. Comparison is `benchstat`, which was already installed.
+  What is new is `internal/tools/benchspread`: this box is fanless and is frequently not the only
+  thing running on itself, and under either condition `ns/op` stops describing the code. A full
+  capture taken while another `go test` was in flight reported one unchanged query between 273ms and
+  **3.3 seconds** across six samples, and a single-row primary-key fetch across a 24-fold range;
+  `-count` does not rescue that, because contention and thermal drift push one direction for as long
+  as they last, so the samples agree with each other and are wrong together — and benchstat will
+  report a confident, significant difference between two such runs. It keys on the fact that
+  allocation is deterministic: a benchmark whose timings swing while its `allocs/op` holds exactly is
+  measuring the room, not the code. `perf` now ends with that verdict instead of leaving forty lines
+  of plausible numbers on screen.
 - **Benchmarks on the four paths that get slower with a real database** — feed parsing, sanitizing,
   the store's hot queries, and the vectoriser. Plus `searchplan_test`, which pins the index the
   search query drives, because a query plan is the thing that regresses silently.

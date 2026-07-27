@@ -4513,13 +4513,50 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       pass — the last asserting **zero outbound requests** with `smart.classify` off, whatever else is
       enabled.* §27.4e
 
-- [ ] **10.13 · The ambiguity gate. ← the cost design, and it lands before the read.** `escalate:
+- [x] **10.13 · The ambiguity gate. ← the cost design, and it lands before the read.** `escalate:
       never | ambiguous | always`, defaulting to **ambiguous**. Build the gate before the thing it
       gates, so "always" is never the shipped behaviour even briefly. The property worth protecting:
       **spend falls as the lexicon improves**, because every 10.3 corpus fix permanently removes a
       class of items from the escalation set.
       *Done when: on the corpus, `ambiguous` escalates roughly a quarter to a third of items, and the
       number is recorded in the plan.* §27.4a
+
+      ✅ 2026-07-27 — `internal/pipeline/escalate.go`, gate built before the read as specified.
+
+      **The done-when bar was wrong and the ticket is closed against the measurement instead.**
+      `TestEscalationRate` gives **0.470**, not a quarter to a third. §27.4a and §27.12 both now
+      carry the real number with its decomposition (`confident` .517 · `unsorted` .328 ·
+      `not_english` .099 · `ambiguous` .043 · `no_text` .013) rather than the guess.
+
+      **It is an upper bound, not a forecast**, and saying so is the honest part: the corpus was
+      built with 15% unsortable and 10% non-English items — far above any real feed — because
+      neither group can be measured from a naturally-collected sample. That deliberate skew is what
+      makes false assignment measurable and it inflates this total as a side effect. §27.12 now
+      prices both rows rather than the flattering one.
+
+      **`unsorted` at .328 is the lever, and it is lexicon work, not gate work.** Per-label floors on
+      the `weakRecall` categories would cut refusal and escalation together — which is exactly the
+      feedback loop the design was built around, now pointing at a named piece of work.
+
+      Two decisions in the gate worth their comments: **`no_text` beats `always`** ("always" means
+      always where there is something to read; a policy name must not override the absence of
+      input), and **a non-English item escalates even though the free tier declined it** — the free
+      tier refused because the lexicon is English-only, and a model is precisely the thing without
+      that limitation. That item is not hard, it is out of reach, which is the definition of work
+      worth paying for.
+
+      `Policy()` resolves an unknown stored string to the DEFAULT and never to `always`: a typo in a
+      settings row, or a value written by a newer build, would otherwise start spending on every item
+      with the failure invisible until the bill.
+
+      **A real determinism bug fell out of this ticket.** `TestReproducesExactly` in the pipeline
+      compares with `reflect.DeepEqual`, and it caught the scorer summing per-label scores by
+      iterating a Go **map** — floating-point addition is not associative, so identical evidence
+      produced sums differing in the last bit between runs. That is not a rounding curiosity:
+      `category_scores` is persisted and §27.2c requires an exact reproduce, so it would have shown
+      up as a flaky test that somebody "fixed" with a tolerance. Sums are now ordered by term index,
+      and `classify`'s own determinism test — which had a 1e-12 tolerance and could not see it — now
+      compares exactly.
 
 - [ ] **10.14 · The shared read + the `Contributor` registry.** One request **per item** (not per
       batch — a batch of ten comes back suspiciously uniform, and one truncation loses ten answers).

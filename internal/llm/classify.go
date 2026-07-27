@@ -228,20 +228,20 @@ func firstNWords(s string, n int) string {
 // `body` never appears in `EgressKeys`, which is the guard that makes the split
 // real rather than a convention.
 var ClassifyKeys = map[string]bool{
-	"article":   true,
-	"title":     true,
-	"summary":   true,
-	"source":    true,
-	"body":      true,
-	"labels":    true,
+	"article":    true,
+	"title":      true,
+	"summary":    true,
+	"source":     true,
+	"body":       true,
+	"labels":     true,
 	"categories": true,
-	"tags":      true,
-	"slug":      true,
-	"name":      true,
-	"prompt":    true,
-	"want":      true,
-	"category":  true,
-	"secondary": true,
+	"tags":       true,
+	"slug":       true,
+	"name":       true,
+	"prompt":     true,
+	"want":       true,
+	"category":   true,
+	"secondary":  true,
 }
 
 // ForbiddenKeys are the ones no payload may ever carry, on any list.

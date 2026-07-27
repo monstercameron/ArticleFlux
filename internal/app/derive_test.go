@@ -151,6 +151,63 @@ func TestMyFeedServesTheRankingInOrder(t *testing.T) {
 	}
 }
 
+// The count in the rail must equal the list it describes.
+//
+// CountRanked duplicates RankedItems' WHERE clause — unread only, subscribed, both rows live
+// — because counting in SQL is the only way to report a number larger than one page. Two
+// copies of a filter can drift, and a count that disagrees with the list is a badge that
+// LIES, which is worse than no badge at all. This is the test that makes the duplication
+// safe rather than merely commented.
+func TestRankedCountMatchesTheList(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "count.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	sc := seedReader(t, a)
+	a.StartWorkers(ctx)
+	a.DeriveDue(ctx)
+	waitUntil(t, 30*time.Second, func() bool { return countRanked(t, a, sc) > 0 })
+
+	assertAgrees := func(when string) int {
+		t.Helper()
+		n, err := a.svc.CountRanked(ctx, sc)
+		if err != nil {
+			t.Fatalf("CountRanked (%s): %v", when, err)
+		}
+		ranked, _, err := a.svc.ListRanked(ctx, sc, 0, store.MaxRankedPage)
+		if err != nil {
+			t.Fatalf("ListRanked (%s): %v", when, err)
+		}
+		if n != len(ranked) {
+			t.Fatalf("%s: the rail would show %d and the list has %d", when, n, len(ranked))
+		}
+		return n
+	}
+
+	before := assertAgrees("after deriving")
+	if before == 0 {
+		t.Fatal("nothing was ranked, so this test proves nothing")
+	}
+
+	// Reading one has to move BOTH, or the badge drifts for as long as the reader keeps
+	// reading — which is the whole session.
+	ranked, _, err := a.svc.ListRanked(ctx, sc, 0, 1)
+	if err != nil {
+		t.Fatalf("ListRanked: %v", err)
+	}
+	if _, _, err := a.svc.SetItemState(ctx, sc, ranked[0].ItemID, store.StateChange{
+		Read: boolPtr(true),
+	}); err != nil {
+		t.Fatalf("SetItemState: %v", err)
+	}
+	if after := assertAgrees("after reading one"); after != before-1 {
+		t.Errorf("count went %d then %d after reading one item, want %d", before, after, before-1)
+	}
+}
+
 // A feed the reader took off their front page must not appear on it.
 //
 // in_megafeed has existed in the schema and in feed settings from the start, and the

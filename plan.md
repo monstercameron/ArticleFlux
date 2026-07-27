@@ -1894,6 +1894,7 @@ decision:
 |---|---|---|
 | `tts.smartPlus` | Who speaks — OpenAI instead of the browser | The egress boundary |
 | `tts.digest` | What is spoken — ~1 minute of summary instead of the article | A *second* egress and a second bill. Consent to being read aloud is not consent to being read and rewritten |
+| `tts.podcast` | What is spoken — the article as one slot of a continuous broadcast, opening by handing over from the story just played (§19) | A *third* egress. It **outranks** `tts.digest` rather than combining with it: both replace the article text, and there is no coherent "summary of a broadcast segment" |
 | `tts.autoplay` | What happens when it ends — the next article, until the list runs out | Changes nothing about this article, so it is the one toggle that does not interrupt playback |
 
 The digest is written to be HEARD, which is a different job from being
@@ -5495,7 +5496,7 @@ screen and a trends histogram are all still legible. Sub-division is what tags a
 | 14 | `energy` | Energy & Industry | grid, solar, nuclear, lithium, refinery, turbine, pipeline, battery plant | |
 | 15 | `transport` | Transport & Mobility | ev, rail, airline, autonomous, freight, cycling infrastructure, faa, transit | |
 | 16 | `gaming` | Gaming | steam, playstation, nintendo, speedrun, patch notes, indie game, esports, mod | `patch notes` beats `security.patch` by weight |
-| 17 | `film-tv` | Film & TV | box office, streaming, season finale, director, trailer, netflix, cast, a24 | |
+| 17 | `filmtv` | Film & TV | box office, streaming, season finale, director, trailer, netflix, cast, a24 | |
 | 18 | `music` | Music | album, tour dates, single, vinyl, label, festival, spotify, mixing | |
 | 19 | `culture` | Art & Culture | museum, exhibition, gallery, sculpture, archive, restoration, curator | |
 | 20 | `books` | Books & Writing | novel, memoir, publisher, translation, essay collection, prose, manuscript | |
@@ -5579,11 +5580,35 @@ is unsure**, which it can already do precisely because §27.3b made refusing an 
 | The reader has custom categories or custom tags with prompts | **Yes** for those labels specifically (§27.4d) |
 | Body text unavailable and title+summary under 25 words | **No.** There is nothing to read; escalating buys a coin flip at full price |
 
-`escalate: never | ambiguous | always`, defaulting to **ambiguous**. On a real feed set this is
-roughly a quarter to a third of items rather than all of them, and — the property that makes it worth
-building this way — **the spend falls as the lexicon improves**. Every corpus-driven lexicon fix in
+`escalate: never | ambiguous | always`, defaulting to **ambiguous**. The property that makes it worth
+building this way: **the spend falls as the lexicon improves**. Every corpus-driven lexicon fix in
 §27.11 permanently removes a class of items from the escalation set. A pipeline that always calls the
 model has no such feedback loop and costs the same forever.
+
+> **Measured 2026-07-27, and it corrects this section.** This first said "roughly a quarter to a
+> third of items", which was a guess and was optimistic. `TestEscalationRate` over the 302-item
+> corpus gives **0.470**, decomposed:
+>
+> | reason | share | |
+> |---|---|---|
+> | `confident` | 0.517 | not sent — the gate doing its job |
+> | `unsorted` | 0.328 | **the lever** |
+> | `not_english` | 0.099 | the free tier cannot read it and the model can |
+> | `ambiguous` | 0.043 | the tie-break the margin was built for |
+> | `no_text` | 0.013 | nothing worth sending |
+>
+> **That figure is an upper bound on production, not a forecast of it.** The corpus is deliberately
+> not a representative sample: it carries **15% unsortable and 10% non-English** items, far above any
+> real subscription list, because neither group can be measured from a naturally-collected sample —
+> nobody's feed contains forty-six articles that are definitively about nothing. Over-representing
+> them is what makes false assignment measurable at all, and it inflates this total as a side effect.
+>
+> **`unsorted` at 0.328 is the number to work on, and it is not mainly a gate problem.** At
+> `MinScore` 3.0 the free tier declines 30% of the articles that *have* a correct answer (§27.3b),
+> and every one of those escalates. Per-label floors on the diffuse categories — §27.11's
+> `weakRecall` list — would cut the refusal rate and the escalation rate together. That is the
+> feedback loop this section is built around, pointing at a specific piece of work rather than at a
+> hope.
 
 #### 27.4b The shared read
 
@@ -5686,10 +5711,26 @@ quietly worked around, with the argument stated so it can be disagreed with:
 > treatment: it only leaves under the per-user consent key (§27.4d), never in the global read.
 >
 > **Enforcement is the same mechanism, not a promise.** `ClassifyPayload` has fields only for what may
-> leave; `EgressKeys` gains `article`, `body`, `source`, `labels`, `categories`, `tags`, `slug`,
-> `name`, `prompt`, `kind`; `AuditEgress` runs against the **assembled** body in a test, and the union
-> read from §27.2b is audited as assembled rather than as templated — a contributor cannot add a key
-> the allowlist has not seen.
+> leave, and the audit runs against the **assembled** body in a test — the union read from §27.2b is
+> audited as assembled rather than as templated, so a contributor cannot add a key the allowlist has
+> not seen.
+>
+> **Corrected 2026-07-27, during 10.12 — a SECOND allowlist, not additions to `EgressKeys`.** This
+> first said "`EgressKeys` gains `article`, `body`, `source`, …", and that would have quietly undone
+> the thing §18.8 is built on. `AuditEgress` is one global check, so admitting `body` there makes a
+> body legal in a **rank** payload too — and the entire argument for types-as-enforcement is that the
+> boundary must be impossible to widen by accident from somewhere else. One shared list means every
+> future exception loosens every existing caller, which is the failure-open mode §18.8 rejected a
+> scrubbing function for.
+>
+> So the interest layer keeps `EgressKeys` unchanged, classification carries `ClassifyKeys`, and each
+> has its own audit over one shared walk. Two further guards make the split real rather than a
+> convention: `TestEgressKeysWereNotWidened` asserts `body` never appears in `EgressKeys` and that it
+> still has exactly its original ten entries, and `ForbiddenKeys` enumerates what **no** list may ever
+> admit — `url` · `feed_url` · `user_id` · `tenant_id` · `note` · `read_at` · `dwell` ·
+> `published_at` · `author` · `folder` — checked against every allowlist in the package. An allowlist
+> is a statement about today's payloads; that one is a statement about the boundary, and only the
+> second survives the next amendment.
 
 **Consent is two keys, and neither implies the other** — the precedent `smart.subscribe` set for
 exactly this shape:
@@ -5773,7 +5814,7 @@ lexicon misses.
 ```sql
 -- Global, one row per item. Derived: ClearDerived + re-run reproduces it.
 CREATE TABLE item_analysis (
-  item_id         TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+  item_id         TEXT PRIMARY KEY REFERENCES items(id),   -- no cascade; see below
   analyzer_version INTEGER NOT NULL,   -- code constant; bump forces re-analysis
   lexicon_hash    TEXT    NOT NULL,    -- hash of the shipped lexicon, same purpose
   lang            TEXT,
@@ -5782,7 +5823,7 @@ CREATE TABLE item_analysis (
   keyphrases      TEXT,                -- JSON []string
   entities        TEXT,                -- JSON [{name,label}] — feeds entity_affinity
   abstract        TEXT,                -- one-line, Smart+ only, NULL otherwise
-  vector          BLOB,                -- the TF-IDF vector derive stops recomputing
+  vector          BLOB,                -- the TERM-FREQUENCY vector — see the correction below
   analyzed_at     TEXT NOT NULL,
   llm_at          TEXT,                -- NULL = free tier answered; also the retry marker
   llm_model       TEXT
@@ -5845,6 +5886,26 @@ CREATE TABLE tag_rules (
 ALTER TABLE item_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'user';
 ALTER TABLE item_tags ADD COLUMN score  REAL;
 ```
+
+> **Corrected 2026-07-27, during 10.5 — the vector column cannot hold TF-IDF.** The line above first
+> read *"the TF-IDF vector derive stops recomputing"*, and that is not a thing this table can store,
+> for a reason that is not an implementation detail:
+>
+> **TF is a property of the document. IDF is a property of the collection.**
+>
+> There is no collection here. This row is written once per item, globally, before anyone has read
+> it — while `internal/derive` computes IDF over one reader's engaged items in a rolling ninety-day
+> window, which is a different corpus per user and per day. Freezing an IDF at ingest would score
+> every reader against document frequencies taken from whatever else happened to be in that poll's
+> batch, and the numbers would then drift as batch composition changed rather than as anyone's
+> interests did.
+>
+> So the column holds **TF**, and `derive` applies its own IDF at derivation time. That keeps
+> derive's semantics exactly as they are today while still removing the expensive half from the hot
+> path: tokenising and counting a four-thousand-word article is the cost; looking up a document
+> frequency per term is not. The saving A41 was written for survives intact — a derivation fires
+> after every poll and every engagement batch, and each one currently re-tokenises every engaged item
+> from raw text.
 
 `item_analysis` is the only new **global** table; everything else is per-user and carries `tenant_id`
 + `user_id` for the leak harness (T1). `SubscribersOf`/`ItemsByID`-style unscoped access to
@@ -5916,11 +5977,35 @@ Three explicit reclassification triggers, all of which reuse the same machinery:
 
 ### 27.11 Tests, and the corpus ratchet
 
-The one that matters: **`internal/classify/testdata/corpus.jsonl`** — a few hundred real feed items,
-hand-labeled, committed. `TestTaxonomyPrecision` asserts **per-category precision and recall floors**
-and the floors **only go up**. This is the same ratchet discipline the motion spec and the coverage
-manifest already use in this house, and it is the only thing that stops a lexicon from decaying one
-well-meaning term at a time. A term added without a corpus case that motivates it is a guess.
+The one that matters: **`internal/classify/lexicon/testdata/corpus.jsonl`** — a few hundred real feed
+items, hand-labeled, committed. `TestTaxonomyPrecision` asserts **per-category precision and recall
+floors** and the floors **only go up**. This is the same ratchet discipline the motion spec and the
+coverage manifest already use in this house, and it is the only thing that stops a lexicon from
+decaying one well-meaning term at a time. A term added without a corpus case that motivates it is a
+guess.
+
+> **Built 2026-07-27 — 302 items**, 249 real (pulled read-only from the development database) and 53
+> written for the categories a tech-only feed set has no examples of, of which **46 have no correct
+> category at all**. That last group is the one most likely to be skimped on and the only way to
+> measure false assignment; the corpus test asserts its size for that reason.
+>
+> It lives beside the lexicon rather than in `internal/classify`, because `go test` resolves
+> `testdata/` per package and a test reaching up out of its own directory breaks the day somebody
+> moves a package. The corpus grades the taxonomy, so it belongs to the taxonomy.
+>
+> **First measurement: precision 0.83–1.00 across almost every category, and recall as low as 0.00 —
+> with every one of the twelve worst confusions being `X→(none)`.** That is a precise and reassuring
+> diagnosis. The lexicon was not misfiling articles, it was *refusing* them, which means the term
+> lists are right and only the bar was wrong. The opposite result — confident misfiles — would have
+> meant rewriting every category.
+>
+> **The recall ratchet is a named list, not a lower floor.** Three categories (`politics` 0.125,
+> `science` 0.273, `transport` 0.375) do not clear the 0.45 bar, and lowering the bar to accommodate
+> them would assert nothing about the other twenty-three. They are enumerated with their measured
+> values instead: each may not get worse, the list may only shrink, and **a category that starts
+> clearing the floor fails the test until it is removed from the list** — because an exception that
+> outlives its problem is a permanently lowered bar. What the three have in common is diagnostic:
+> their vocabulary is diffuse, and the intended fix is a per-label `MinScore`, not a global one.
 
 | Test | Asserts |
 |---|---|
@@ -5944,8 +6029,19 @@ well-meaning term at a time. A term added without a corpus case that motivates i
 
 Prices move and a plan that quotes them is wrong within a quarter. Per **escalated** item, with the
 default contributor set: ~1,400–2,200 input tokens (2,000 words of body dominates) and ~150–400
-output. At 150 feeds × ~40 items/day × ~30% escalation ≈ **1,800 reads/day ≈ 3.2M input + 0.5M output
-tokens/day** on the default small model.
+output.
+
+Volume depends entirely on the escalation rate, and §27.4a now carries a measured one — **0.470 on
+the corpus, which is an upper bound** because that corpus over-represents the two groups that always
+escalate. Both ends are worth writing down rather than picking the flattering one:
+
+| | escalation | reads/day | input | output |
+|---|---|---|---|---|
+| **corpus rate** (upper bound) | 47% | ~2,800 | ~5.0M | ~0.8M |
+| **plausible production** | ~30% | ~1,800 | ~3.2M | ~0.5M |
+
+at 150 feeds × ~40 items/day on the default small model. The gap between those rows is mostly
+`unsorted`, which is lexicon work rather than a fixed cost — see §27.4a.
 
 Three levers, in the order they should be reached for: **`escalate: never`** (free tier only, and the
 product still works), **body off** (title + summary only — roughly a fifth of the tokens and

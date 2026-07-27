@@ -472,3 +472,61 @@ func TestSpeechTextEmptyItem(t *testing.T) {
 		t.Errorf("an empty item produced %q", got)
 	}
 }
+
+// --- broadcast mode (§19) ---------------------------------------------------
+
+// The recording is named by the PAIR, not the article. Serving the segment
+// written for a different predecessor would have the narrator hand over from a
+// story the listener never heard — which sounds completely convincing and is
+// completely wrong, the worst combination available.
+func TestPodcastKeyIsPerOrderedPair(t *testing.T) {
+	base := podcastKey("item-2", "item-1")
+
+	if other := podcastKey("item-2", "item-9"); other == base {
+		t.Error("the same story after two different stories shares one audio key")
+	}
+	if opening := podcastKey("item-2", ""); opening == base {
+		t.Error("the opening segment shares an audio key with a mid-broadcast one")
+	}
+	if other := podcastKey("item-3", "item-1"); other == base {
+		t.Error("two different stories share an audio key")
+	}
+	// And it must not collide with either of the other two things this item can
+	// be, which are keyed `item` and `item#digest`.
+	for _, mode := range []string{"item-2", "item-2#digest"} {
+		if base == mode {
+			t.Errorf("the broadcast key collides with %q", mode)
+		}
+	}
+}
+
+// **The degradation chain.** Every writer this feature can use is optional, and
+// an instance that has none must still read the article aloud — the reader asked
+// to hear it, and silence is the one answer that is never acceptable.
+//
+// speechApp builds an App with neither a digest nor a podcast writer, which is
+// exactly the shape of an instance whose Smart+ key was never set.
+func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) {
+	a := speechApp(t, "sk-test")
+	it := store.Item{ID: "item-2", Title: "Fsyncgate", SourceTitle: "LWN",
+		ContentHTML: "<p>The body.</p>"}
+	prev := store.Item{ID: "item-1", Title: "Postgres", SourceTitle: "Hacker News"}
+
+	for _, prefs := range []map[string]string{
+		nil,
+		{podcastPrefKey: "true"},
+		{digestPrefKey: "true"},
+		{podcastPrefKey: "true", digestPrefKey: "true"},
+	} {
+		text, key := a.speechScript(context.Background(), prefs, it, prev)
+		if !strings.Contains(text, "The body.") {
+			t.Errorf("prefs %v: the article was not read aloud: %q", prefs, text)
+		}
+		// The key has to fall back with the text. A key that said "podcast" over
+		// the plain article would poison the audio cache for the day the writer
+		// starts working.
+		if key != it.ID {
+			t.Errorf("prefs %v: cache key = %q, want the plain item id", prefs, key)
+		}
+	}
+}
