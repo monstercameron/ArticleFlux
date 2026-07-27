@@ -29,6 +29,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/opml"
+	"github.com/monstercameron/ArticleFlux/internal/seedread"
 )
 
 // The single build constant, shared with the wasm client so the two cannot
@@ -63,6 +64,8 @@ func main() {
 		err = backup(log, args)
 	case "seed":
 		err = seed(log, args)
+	case "seed-reading":
+		err = seedReading(log, args)
 	case "poll":
 		err = poll(log, args)
 	case "import":
@@ -93,6 +96,7 @@ func usage() {
   articleflux migrate [-db path]
   articleflux backup  -out path [-db path] [-keep n]
   articleflux seed    [-db path] [-feeds url,url,...]
+  articleflux seed-reading [-db path] [-focus word,word] [-read 0.6] [-seed 1]
   articleflux poll    [-db path]
   articleflux import  -file feeds.opml [-db path] [-fetch]
   articleflux export  [-file feeds.opml] [-db path]
@@ -134,6 +138,11 @@ func serve(log *slog.Logger, args []string) error {
 	// derived from the bind address any more.
 	devFlag := fs.Bool("dev", envBool("ARTICLEFLUX_DEV"),
 		"serve the local account with NO login; loopback binds only (env: ARTICLEFLUX_DEV)")
+	// Profiling rides on exactly the same two-part gate as -dev, below, and for
+	// a related reason: both publish something that assumes the only caller is
+	// the person running the process. See internal/app/pprof.go.
+	pprofFlag := fs.Bool("pprof", envBool("ARTICLEFLUX_PPROF"),
+		"mount /debug/pprof and turn on the block and mutex profilers; loopback binds only (env: ARTICLEFLUX_PPROF)")
 	origin := fs.String("origin", envOr("ARTICLEFLUX_ORIGIN", ""),
 		"comma-separated page origins allowed to open the tunnel, e.g. https://reader.example.com")
 	// Off by default, because X-Forwarded-For is a header any client can send.
@@ -235,16 +244,41 @@ func serve(log *slog.Logger, args []string) error {
 				"never apply to. Unset ARTICLEFLUX_DEV, or drop -behind-proxy if nothing is in front")
 	}
 
+	// The same two clauses -dev gets, for the same two reasons, and it is worth
+	// saying why rather than only mirroring the shape.
+	//
+	// A profiling endpoint is not authentication-shaped, so the instinct is that
+	// it needs a weaker rule. It does not. /debug/pprof/profile parks a CPU
+	// sampler on this process for thirty seconds per request and ?gc=1 forces a
+	// collection, both from an unauthenticated GET — so anyone who can reach it
+	// can hold the reader down. And the loopback clause alone is no more
+	// sufficient here than it is there: the shipped systemd unit binds
+	// 127.0.0.1 and puts nginx in front, so a stale `.env` carrying
+	// ARTICLEFLUX_PPROF onto a server would pass a loopback check and publish it.
+	prof := *pprofFlag
+	if prof && !isLoopback(*addr) {
+		return fmt.Errorf(
+			"-pprof publishes an unauthenticated profiling surface and %s is not a loopback address; "+
+				"profile over an SSH tunnel to a loopback bind instead", *addr)
+	}
+	if prof && *behindProxy {
+		return errors.New(
+			"-pprof and -behind-proxy are mutually exclusive: a proxy in front of a loopback bind " +
+				"is a published instance, and /debug/pprof is not something to publish. " +
+				"Unset ARTICLEFLUX_PPROF, or drop -behind-proxy if nothing is in front")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	a, err := app.Open(ctx, app.Config{
-		DBPath:  *dbPath,
-		WebRoot: *webRoot,
-		Log:     log,
-		Version: version,
-		Commit:  commit(),
-		DevMode: dev,
+		DBPath:    *dbPath,
+		WebRoot:   *webRoot,
+		Log:       log,
+		Version:   version,
+		Commit:    commit(),
+		DevMode:   dev,
+		Profiling: prof,
 		// Loopback development wants to subscribe to a fixture feed served from
 		// the same machine, which the SSRF guard blocks by design.
 		AllowPrivateFeeds: dev,
@@ -340,6 +374,79 @@ var starterFeeds = []string{
 	"https://blog.rust-lang.org/feed.xml",
 	"https://go.dev/blog/feed.atom",
 	"https://xkcd.com/rss.xml",
+}
+
+// seedReading writes a simulated reading history over the items already in the database.
+//
+// # Why this is a command and not a flag on `seed`
+//
+// `seed` subscribes to feeds — it makes the instance have CONTENT. This makes it have a
+// READER. They are separate acts with separate risks: subscribing fetches from other
+// people's servers, and this only writes rows locally, so mixing them would mean nobody
+// could do the harmless one without doing the impolite one.
+//
+// It exists because My Feed is now honestly empty on a fresh database: a ranked page only
+// shows items with a content-level reason (derive.hasContentMatch), and a reader who has
+// read nothing has no interests to match. That is the correct behaviour and it makes the
+// feature unobservable in development — a blank page cannot tell you whether the code
+// works. This produces the weeks of reading that would otherwise be required.
+//
+// Deliberately NOT wired into `serve` or run automatically anywhere. Fabricated engagement
+// in a real reader's database would corrupt the one table in the interest layer that cannot
+// be recomputed, and it must take a person typing the command to do that.
+func seedReading(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("seed-reading", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	user := fs.String("user", "cam", "username for the local account")
+	pass := fs.String("password", devPassword, "password, on first run only")
+	focus := fs.String("focus", "",
+		"comma-separated title words this reader cares about; empty derives them from the corpus")
+	read := fs.Float64("read", seedread.DefaultRead,
+		"share of interesting items the reader opens, 0..1")
+	seedVal := fs.Uint64("seed", 1,
+		"makes the history reproducible; the same value gives the same reader")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	a, err := app.Open(ctx, app.Config{
+		DBPath: *dbPath, Log: log, Version: version, DevMode: true,
+	})
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+
+	sc, err := a.EnsureDevUser(ctx, *user, *pass)
+	if err != nil {
+		return err
+	}
+
+	var terms []string
+	for _, t := range strings.Split(*focus, ",") {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			terms = append(terms, t)
+		}
+	}
+
+	res, err := seedread.Run(ctx, a.Repo(), sc, seedread.Options{
+		Focus: terms, Read: *read, Seed: *seedVal,
+	})
+	if err != nil {
+		return err
+	}
+	log.Info("seeded a reading history",
+		"items", res.Items, "focus", res.Focus,
+		"impressions", res.Impressions, "opened", res.Opened,
+		"completed", res.Completed, "reread", res.Reread, "liked", res.Liked,
+		"bounced", res.Bounced, "skipped", res.Skipped)
+
+	// Derive immediately, so the command's output is the answer rather than a promise. A
+	// seeder that requires the operator to wait for a poll to find out whether it worked is
+	// one they will run twice.
+	a.DeriveNow(ctx, sc)
+	return nil
 }
 
 func seed(log *slog.Logger, args []string) error {
