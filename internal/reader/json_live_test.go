@@ -3,10 +3,16 @@ package reader
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/monstercameron/ArticleFlux/internal/discover"
+	"github.com/monstercameron/ArticleFlux/internal/extract"
+	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
+	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -87,4 +93,95 @@ func TestLiveJSONSubscribeAndPoll(t *testing.T) {
 	if len(res.Errors) > 0 {
 		t.Errorf("poll errors: %v", res.Errors)
 	}
+}
+
+// The whole chain, model included — the pipeline as a reader experiences it:
+//
+//	url → discovery → client-rendered? → find the data → the model reads its
+//	shape → paths → extract → "have I seen this?" → items in the database
+//
+// Skipped unless AF_LIVE=1 and a key is present. It costs one small model call
+// and depends on somebody else's site, so it is a thing you run deliberately.
+//
+//	AF_LIVE=1 OPENAI_API_KEY=... go test ./internal/reader/ -run LiveEndToEnd -v
+func TestLiveEndToEndWithTheModel(t *testing.T) {
+	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if os.Getenv("AF_LIVE") != "1" || key == "" {
+		t.Skip("set AF_LIVE=1 and OPENAI_API_KEY to run the full chain")
+	}
+	ctx := context.Background()
+	const page = "https://hni-scantrad.net/comics/hajime-no-ippo"
+
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "e2e.db")})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := store.NewReaderRepo(db)
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "Test", UserID: "u1", Username: "cam",
+		Hash: "x", Role: "superadmin", Now: "2026-07-27T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateTenantAndUser: %v", err)
+	}
+	sc := store.Scope{TenantID: "t1", UserID: "u1", Role: "superadmin"}
+
+	svc := New(repo, feed.NewFetcher()).WithSiteAnalysis(
+		discover.New(discover.Config{}),
+		extract.New(extract.Config{}),
+		smart.NewSiteAnalyzer(
+			llm.New(func(context.Context) string { return key }),
+			store.NewSettingsRepo(db, nil),
+		),
+	)
+
+	// One call: the free rungs find no feed, the page is recognised as an app
+	// shell, the data behind it is found, and the model is asked what its fields
+	// mean.
+	res, err := svc.AnalyzeSite(ctx, sc, page, true)
+	if err != nil {
+		t.Fatalf("AnalyzeSite: %v", err)
+	}
+	if len(res.Feeds) != 0 {
+		t.Errorf("this site has no feed, but %d were offered", len(res.Feeds))
+	}
+	if res.JSON == nil {
+		t.Fatalf("no proposal; status = %q", res.Status)
+	}
+	t.Logf("proposal: items=%q title=%q link=%q date=%q id=%q",
+		res.JSON.Rule.ItemsPath, res.JSON.Rule.TitlePath, res.JSON.Rule.LinkPath,
+		res.JSON.Rule.DatePath, res.JSON.Rule.IDPath)
+	t.Logf("notes: %s", res.JSON.Notes)
+
+	// Accepting it is what the reader does next.
+	f, n, err := svc.SubscribeJSON(ctx, sc, page, "", "", res.JSON.Rule)
+	if err != nil {
+		t.Fatalf("SubscribeJSON: %v", err)
+	}
+	t.Logf("subscribed %q — %d entries", f.Title, n)
+	if n < 100 {
+		t.Fatalf("ingested %d entries, expected the archive", n)
+	}
+
+	items, _, err := repo.ListItems(ctx, sc, store.ListQuery{Limit: 3})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("ListItems: %v (%d)", err, len(items))
+	}
+	for _, it := range items {
+		t.Logf("  %s  %s  %s", it.PublishedAt[:10], it.Title, it.URL)
+	}
+
+	// And the poll that runs an hour later adds nothing, because every entry is
+	// already known by its id.
+	again, err := svc.Refresh(ctx, sc, nil)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if again.NewItems != 0 {
+		t.Errorf("a second poll produced %d new items", again.NewItems)
+	}
+	var _ = jsonsel.Rule{}
 }

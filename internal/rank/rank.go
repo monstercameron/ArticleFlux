@@ -49,6 +49,7 @@ type Weights struct {
 	Negative      float64
 	Domain        float64
 	External      float64
+	Skip          float64
 }
 
 // DefaultWeights are the starting point, not a result.
@@ -69,6 +70,17 @@ func DefaultWeights() Weights {
 		Negative:      1.2,
 		Domain:        0.7,
 		External:      0.2,
+		// Deliberately the smallest penalty here, and smaller than Duplicate.
+		//
+		// A skip is the most ambiguous signal in the taxonomy — signals.go calls it
+		// "genuinely ambiguous between 'declining' and 'meaning to get to it'" — and
+		// the two readings want opposite treatment. Weighted heavily it becomes a
+		// machine for burying the longform piece someone has been meaning to read all
+		// week, which is the article they would be most annoyed to lose.
+		//
+		// So it demotes and never excludes: enough to let today's unseen items past
+		// something already passed over four times, not enough to remove it.
+		Skip: 0.25,
 	}
 }
 
@@ -100,6 +112,21 @@ type Item struct {
 	Corroboration int
 	// SimilarToRecent is 0..1: how close this is to something already shown.
 	SimilarToRecent float64
+	// Skips is how many times this item was on screen, across separate sittings,
+	// and passed over anyway.
+	//
+	// The signals taxonomy has carried a `skipped` kind — prior -0.2, "visible
+	// repeatedly, still passed over" — since it was written, and nothing has ever
+	// emitted one. This is where that judgement finally lands, derived from the
+	// impression log rather than sent by the client, because only the server can
+	// see across sittings.
+	//
+	// It is NOT an impression count. A single impression is the denominator and
+	// means nothing on its own (R17); this counts repeat exposures that the reader
+	// had a real opportunity to act on and did not. Zero for anything the reader
+	// engaged with at all, however briefly — an item they opened is not one they
+	// skipped, and conflating the two would punish articles for being read.
+	Skips int
 	// ExternalSignal is the feed's own popularity number where it exposes one
 	// (slash:comments, points). Advisory only — popularity is not interest.
 	ExternalSignal float64
@@ -238,6 +265,25 @@ func Score(item Item, sig Signals, w Weights, now time.Time) Result {
 		add("negative", "in a topic you marked as not an interest", -w.Negative*sig.NegativeAffinity)
 	}
 
+	// "It keeps showing up and I never open it" — the one form of recurrence the
+	// interest layer could not previously express. Every affinity signal is derived
+	// from what the reader ENGAGED with, so an item shown ten times and ignored ten
+	// times produced exactly nothing.
+	//
+	// Sublinear, and that shape is the whole safety argument. The first skip is worth
+	// most of the penalty and the tenth adds almost nothing, so a stale item settles
+	// at a mild demotion instead of sinking without limit. A linear count would
+	// eventually drive anything old below everything else regardless of how good it
+	// is, which is the same "converges on the trivially fresh" failure D18 rejects,
+	// arriving from the other direction.
+	if item.Skips > 0 {
+		p := math.Log1p(float64(item.Skips)) / math.Log(5)
+		if p > 1 {
+			p = 1
+		}
+		add("skipped", skipText(item.Skips), -w.Skip*p)
+	}
+
 	// Advisory only, and weighted an order of magnitude below everything else on
 	// purpose: popularity is not interest, and a scorer that believes otherwise
 	// reinvents the front page it was built to replace.
@@ -374,6 +420,22 @@ func volumeText(perDay float64) string {
 		return "from a very high-volume feed"
 	}
 	return "from a busy feed"
+}
+
+// skipText explains a skip demotion without accusing the reader of a decision they
+// may not have made.
+//
+// §18.9 says explainability is the product, and this is the reason line most likely
+// to be WRONG about someone: a skip is ambiguous between "not interested" and "have
+// been meaning to get to it". So the prose states the observation — it has been on
+// screen before and is still unread — rather than the inference. A reader who has
+// been saving it for the weekend reads that and understands the demotion instead of
+// being told they are not interested in something they fully intend to read.
+func skipText(n int) string {
+	if n >= 5 {
+		return "on screen several times and still unread"
+	}
+	return "you have scrolled past this before"
 }
 
 func displayDomain(d string) string {
