@@ -20,7 +20,29 @@ import (
 // The Limiter is created here and closed over rather than hung off App,
 // because it is built once when the gRPC server is and nothing else has any
 // business reaching into it.
+//
+// # Off in DevMode, and that is not a shortcut
+//
+// DevMode serves a single local account with NO authentication, on a bind
+// cmd/articleflux refuses unless it is loopback and `-behind-proxy` is unset.
+// No authentication means no credential, and the key falls all the way back to
+// the peer address — which is 127.0.0.1 for every tab the developer has open,
+// every browser the e2e suite starts, and every worker running them in
+// parallel. The limiter would not be limiting a user; it would be summing all
+// of them into one bucket and then refusing the developer's own second window.
+//
+// A per-user limit with nothing to tell users apart is not a weaker limit, it
+// is a different one. Rather than keep it and quietly widen the number until
+// the symptom stops — which would also widen it in production, where the key
+// works — it is off in exactly the mode that cannot key it, and the reason is
+// written here.
 func (a *App) rateLimitUnary() grpc.UnaryServerInterceptor {
+	if a.cfg.DevMode {
+		return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler) (any, error) {
+			return handler(ctx, req)
+		}
+	}
 	return ratelimit.Unary(
 		ratelimit.New(ratelimit.Options{}),
 		ratelimit.DefaultPerUser,

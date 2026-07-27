@@ -6,8 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+
+	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 )
 
 func ctxWithAuth(token string) context.Context {
@@ -89,5 +92,41 @@ func TestSessionAndAddressKeysAreInDifferentNamespaces(t *testing.T) {
 	address := a.rateKey(ctxFromAddr("203.0.113.7", 1))
 	if !strings.HasPrefix(session, "s:") || !strings.HasPrefix(address, "c:") {
 		t.Errorf("keys are not namespaced: session=%q address=%q", session, address)
+	}
+}
+
+// DevMode has no credential to key on, so the limiter would collapse every tab
+// and every parallel e2e worker into the 127.0.0.1 bucket and start refusing
+// the developer's own second window. It is off there, deliberately.
+func TestTheLimiterIsOffInDevModeAndOnOtherwise(t *testing.T) {
+	ran := 0
+	handler := func(ctx context.Context, req any) (any, error) {
+		ran++
+		return nil, nil
+	}
+	dev := (&App{cfg: Config{DevMode: true}}).rateLimitUnary()
+	// Far past DefaultPerUser's burst, from one indistinguishable caller.
+	ctx := ctxFromAddr("127.0.0.1", 1)
+	for i := 0; i < ratelimit.DefaultPerUser.Burst+50; i++ {
+		if _, err := dev(ctx, nil, &grpc.UnaryServerInfo{}, handler); err != nil {
+			t.Fatalf("dev call %d was rate limited: %v", i+1, err)
+		}
+	}
+	if ran != ratelimit.DefaultPerUser.Burst+50 {
+		t.Errorf("the dev handler ran %d times, want every call", ran)
+	}
+
+	// And the same traffic against a non-dev instance IS refused, so the
+	// exemption above is the only thing turning it off.
+	prod := (&App{}).rateLimitUnary()
+	refused := false
+	for i := 0; i < ratelimit.DefaultPerUser.Burst+50; i++ {
+		if _, err := prod(ctx, nil, &grpc.UnaryServerInfo{}, handler); err != nil {
+			refused = true
+			break
+		}
+	}
+	if !refused {
+		t.Error("a non-dev instance never refused; the limiter is not wired at all")
 	}
 }
