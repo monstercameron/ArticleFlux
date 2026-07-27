@@ -1629,6 +1629,11 @@ func (a *App) StartPoller(ctx context.Context) {
 				} else if n > 0 {
 					a.log.Info("purged sessions", "count", n)
 				}
+				// Retention (TODO F36). Runs on the same heartbeat and does
+				// NOTHING unless somebody set a window: the stated default is
+				// keep-forever, and `retention.Sweep` returns before touching the
+				// database when the policy is zero.
+				a.sweepRetention(ctx)
 				// A span per cycle. The poll is the app's heartbeat — if it
 				// stops, the reader goes quiet and looks like a slow news day,
 				// which is the failure mode §22.11 exists to make visible.

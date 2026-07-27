@@ -38,6 +38,13 @@ const (
 	// four dropdowns, and features that disagree about the model are features
 	// whose costs cannot be compared.
 	KeySmartModel SystemKey = "smart.model"
+	// KeyRetentionItemDays is how many days of articles this instance keeps.
+	// "0" — and an absent row — mean forever, which is the stated default
+	// (TODO F36). A SystemKey rather than a per-user preference because items
+	// are global (A14): a window is a decision about rows that belong to no
+	// tenant, and offering it per-user would be offering to delete somebody
+	// else's reading.
+	KeyRetentionItemDays SystemKey = "retention.items.days"
 	// KeyUITranslationPrefix is joined with a locale to hold that language's
 	// translated catalog: "smart.ui_translation.fr".
 	KeyUITranslationPrefix SystemKey = "smart.ui_translation."

@@ -4368,6 +4368,50 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       Also reconciled: plan.md §27.3d's table said slug `film-tv`; the code and the test say `filmtv`.
       The doc was corrected, since the executable contract is the one that cannot drift silently.
 
+      **Second pass, 2026-07-27 — the lexicon was measured against the LIVE database and it was
+      badly short.** The 302-item corpus said ~70% of items would be placed; 3,000 real articles said
+      **34%**. The corpus was not representative, and a term list written from general knowledge does
+      not contain the vocabulary a real subscription list uses — `sdr`, `lumens`, `duv`, `alternator`,
+      `projector`, and a long tail of phone, camera and EV vocabulary.
+
+      Fixed by mining rather than guessing: `cmd/classifyprobe -mine` ranks the n-grams that appear
+      in UNSORTED articles and that the lexicon does not already watch for, by document frequency.
+      ~110 terms added across 13 categories over nine measured rounds.
+
+      | | unsorted |
+      |---|---|
+      | baseline | 61.0% |
+      | language-detector fix (below) | 51.3% |
+      | corpus-driven term expansion | 45.2% |
+      | `electric vehicles` + cap fix | **44.8%** |
+
+      **Precision did not move**: false assignment stayed at 0.130 across 110 added terms, accuracy
+      rose 0.578 → 0.594, top-hit 0.613 → 0.637. All three ratchet floors were tightened afterwards,
+      which is the half of the discipline that usually gets skipped.
+
+      **Two flaws in the guards themselves, both found by an agent hitting them:**
+
+      1. **The `weakRecall` ratchet punished an improvement.** `electric vehicles` took `transport`
+         recall from 0.375 to 0.500 — past the floor — which fails the test with "remove it from
+         weakRecall". The agent could not edit a test file, so it **reverted the improvement**. The
+         rule is right; the consequence was that a real gain was thrown away. The term is back,
+         `transport` is off the list, and the failure message now says plainly that it means "you
+         have fixed something, delete a line", never "back this out".
+      2. **A 110-term cap I picked with no evidence forced a category to get worse.** `hardware` hit
+         it, and the only way forward was deleting working semiconductor vocabulary (`wafer`,
+         `lithography`, `x86`, `vram`, `chip fab`) to fit consumer brands — because *this* feed set
+         is consumer-heavy. That is a real loss for a reader who follows silicon news, and a default
+         taxonomy has to serve readers the development corpus does not contain. Cap raised to 150,
+         terms restored. The cap was always the weakest of the three guards — `TestWeightsAreAJudgement`
+         and the precision floors measure padding directly — so it is the one that should yield.
+
+      **Deliberately not added**, and the list is as useful as what was: `launch`, `series`, `pro`,
+      `ultra`, `models`, `market`, `price`, `watch`, `china` (ambiguous across categories with no
+      cheap guard); `trump` (tried, broke `politics` precision, reverted); and `cnevpost` /
+      `"please visit…"` / `"appeared first"` — RSS syndication furniture that correlates almost
+      perfectly with China-EV content and would be keying off attribution text instead of fixing
+      vocabulary. The real EV brand names were used instead.
+
 - [x] **10.3 · The corpus, and the ratchet. ← do not skip, and do not do it last.** A few hundred real
       feed items, hand-labeled, committed at `internal/classify/lexicon/testdata/corpus.jsonl`.
       `TestTaxonomyPrecision` (**T24**) asserts per-category precision and recall floors and the
@@ -5152,9 +5196,36 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: a feed advertising a hub is refreshed by push rather than by poll, and falls back to
       polling silently when the subscription lapses.* §15.6
 
-- [ ] **F36 · A retention policy, stated.** NewsBlur Archive, Feedbin, Readwise and every self-hosted
+- [x] **F36 · A retention policy, stated.** NewsBlur Archive, Feedbin, Readwise and every self-hosted
       competitor promise items never expire. We evict, correctly (F7's rules), and never say so.
       *Done when: retention is a setting with a stated default, and what was evicted is auditable.*
+
+      ✅ 2026-07-27 — `internal/retention` · `migrations/0023_retention.sql` ·
+      `store.SweepItems`/`RecordSweep`/`RecentSweeps`, 16 tests.
+      **The stated default is FOREVER**, and stating it is the point: `retention.items.days` defaults
+      to 0, and a policy of zero never reaches the database at all — the delete statement is not
+      issued rather than issued and matching nothing. Bounded at ten years, which is a typo ceiling
+      rather than a storage one: 365 and 3650 are one keystroke apart and only one direction is
+      recoverable. `ScopeSystem`, because items are global (A14) and offering a window per-user would
+      be offering to delete somebody else's reading.
+      **Nothing anybody touched is ever removed.** A star, a rating, a note, an item tag, an archived
+      copy, a public share, or a label correction is a claim, and the sweep spares every item carrying
+      one. `item_analysis` and `item_categories` are deleted freely — 0021 already drew that line
+      itself: "safe to recompute" and "safe to discard" are the same answer.
+      **A dry run is genuinely dry.** Retention is the only operation here that destroys something a
+      reader might want, and the first run is the worst moment to discover its blast radius — so a
+      screen offering "90 days" can say "4,206 articles, and 112 of them are ones you starred" before
+      anybody agrees.
+      **The ledger is one row per SWEEP**, not per item, and it copies the policy that was in force
+      rather than referencing today's — reading the current setting to explain a deletion from March
+      is how an audit trail starts lying the moment somebody changes their mind. It counts what was
+      KEPT as well as what went, because "removed 4,000" reads as loss and "removed 4,000, kept 112
+      you had annotated" reads as the policy working. Counts only, never titles: a list of what was
+      removed would be a record of everybody's reading.
+      Runs on the poll heartbeat, and the window is re-read every cycle — an operator who sets it back
+      to zero expects the sweep to stop immediately, not after a restart.
+      *Owed:* the screen. The setting is a `SystemKey` today, so a window is set from Go or SQL; F10's
+      registry work is where the control belongs.
 
 ### Band D — what the code says that no document does
 
