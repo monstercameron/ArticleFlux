@@ -23,6 +23,8 @@ const (
 	SmartService_SetSmartConfig_FullMethodName = "/articleflux.v1.SmartService/SetSmartConfig"
 	SmartService_ListLanguages_FullMethodName  = "/articleflux.v1.SmartService/ListLanguages"
 	SmartService_TranslateUI_FullMethodName    = "/articleflux.v1.SmartService/TranslateUI"
+	SmartService_ComposeTheme_FullMethodName   = "/articleflux.v1.SmartService/ComposeTheme"
+	SmartService_SuggestTheme_FullMethodName   = "/articleflux.v1.SmartService/SuggestTheme"
 )
 
 // SmartServiceClient is the client API for SmartService service.
@@ -39,8 +41,14 @@ const (
 // (§7) can gate the whole surface with one entry rather than remembering to
 // mark individual reader RPCs.
 //
-// **Every RPC here is owner-only.** The API key is instance configuration, and
+// **Most RPCs here are owner-only.** The API key is instance configuration, and
 // a translation is a spend against the instance's bill.
+//
+// The two theming RPCs are the exception, and the line is the same one drawn for
+// the Smart+ voice: a member may spend on THEIR OWN reading experience, because
+// that is a per-user preference costing the instance nothing they cannot already
+// spend, but may not read the key, change the model, or start a translation that
+// re-bills the whole instance. See grpcsrv.SmartServer.requireReader.
 type SmartServiceClient interface {
 	// GetSmartConfig reports whether Smart+ can run at all, and what it has spent.
 	//
@@ -64,6 +72,33 @@ type SmartServiceClient interface {
 	// bypasses the cache — the only lever a reader has when a translation came
 	// back wrong.
 	TranslateUI(ctx context.Context, in *TranslateUIRequest, opts ...grpc.CallOption) (*TranslateUIResponse, error)
+	// ComposeTheme turns a phrase into a complete palette (§20.16.3).
+	//
+	// What leaves the instance is the phrase and the tone, and nothing else — see
+	// internal/llm/theme.go for the allowlist and the argument for it.
+	//
+	// The palette that comes back has already passed the readability floor every
+	// shipped theme passes: `repairs` says what had to be moved to get there, which
+	// the screen reports rather than hides, because a palette that came back
+	// slightly different from the one described is a thing the reader should be
+	// told rather than left to suspect.
+	ComposeTheme(ctx context.Context, in *ComposeThemeRequest, opts ...grpc.CallOption) (*ComposeThemeResponse, error)
+	// SuggestTheme returns where an attuning theme should be drifting to.
+	//
+	// The reader's interests decide the answer, and the ladder is the usual one
+	// (§18.7, §11): deterministic first, model last. With no key — or with Smart+
+	// theming switched off — the target is the base theme tinted toward the hue of
+	// the reader's largest topic, computed in Go and costing nothing. With a key it
+	// is a palette written for those subjects.
+	//
+	// The CLIENT sends the base it is drifting from, because the client is the only
+	// place that resolves which theme is actually being painted, and a second
+	// resolution on the server is a second answer.
+	//
+	// `signature` fingerprints the taste this target came from. The client stores
+	// it and only calls again when it changes, which is what keeps a feature that
+	// repaints itself daily from being a request that happens daily.
+	SuggestTheme(ctx context.Context, in *SuggestThemeRequest, opts ...grpc.CallOption) (*SuggestThemeResponse, error)
 }
 
 type smartServiceClient struct {
@@ -114,6 +149,26 @@ func (c *smartServiceClient) TranslateUI(ctx context.Context, in *TranslateUIReq
 	return out, nil
 }
 
+func (c *smartServiceClient) ComposeTheme(ctx context.Context, in *ComposeThemeRequest, opts ...grpc.CallOption) (*ComposeThemeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ComposeThemeResponse)
+	err := c.cc.Invoke(ctx, SmartService_ComposeTheme_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *smartServiceClient) SuggestTheme(ctx context.Context, in *SuggestThemeRequest, opts ...grpc.CallOption) (*SuggestThemeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuggestThemeResponse)
+	err := c.cc.Invoke(ctx, SmartService_SuggestTheme_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SmartServiceServer is the server API for SmartService service.
 // All implementations must embed UnimplementedSmartServiceServer
 // for forward compatibility.
@@ -128,8 +183,14 @@ func (c *smartServiceClient) TranslateUI(ctx context.Context, in *TranslateUIReq
 // (§7) can gate the whole surface with one entry rather than remembering to
 // mark individual reader RPCs.
 //
-// **Every RPC here is owner-only.** The API key is instance configuration, and
+// **Most RPCs here are owner-only.** The API key is instance configuration, and
 // a translation is a spend against the instance's bill.
+//
+// The two theming RPCs are the exception, and the line is the same one drawn for
+// the Smart+ voice: a member may spend on THEIR OWN reading experience, because
+// that is a per-user preference costing the instance nothing they cannot already
+// spend, but may not read the key, change the model, or start a translation that
+// re-bills the whole instance. See grpcsrv.SmartServer.requireReader.
 type SmartServiceServer interface {
 	// GetSmartConfig reports whether Smart+ can run at all, and what it has spent.
 	//
@@ -153,6 +214,33 @@ type SmartServiceServer interface {
 	// bypasses the cache — the only lever a reader has when a translation came
 	// back wrong.
 	TranslateUI(context.Context, *TranslateUIRequest) (*TranslateUIResponse, error)
+	// ComposeTheme turns a phrase into a complete palette (§20.16.3).
+	//
+	// What leaves the instance is the phrase and the tone, and nothing else — see
+	// internal/llm/theme.go for the allowlist and the argument for it.
+	//
+	// The palette that comes back has already passed the readability floor every
+	// shipped theme passes: `repairs` says what had to be moved to get there, which
+	// the screen reports rather than hides, because a palette that came back
+	// slightly different from the one described is a thing the reader should be
+	// told rather than left to suspect.
+	ComposeTheme(context.Context, *ComposeThemeRequest) (*ComposeThemeResponse, error)
+	// SuggestTheme returns where an attuning theme should be drifting to.
+	//
+	// The reader's interests decide the answer, and the ladder is the usual one
+	// (§18.7, §11): deterministic first, model last. With no key — or with Smart+
+	// theming switched off — the target is the base theme tinted toward the hue of
+	// the reader's largest topic, computed in Go and costing nothing. With a key it
+	// is a palette written for those subjects.
+	//
+	// The CLIENT sends the base it is drifting from, because the client is the only
+	// place that resolves which theme is actually being painted, and a second
+	// resolution on the server is a second answer.
+	//
+	// `signature` fingerprints the taste this target came from. The client stores
+	// it and only calls again when it changes, which is what keeps a feature that
+	// repaints itself daily from being a request that happens daily.
+	SuggestTheme(context.Context, *SuggestThemeRequest) (*SuggestThemeResponse, error)
 	mustEmbedUnimplementedSmartServiceServer()
 }
 
@@ -174,6 +262,12 @@ func (UnimplementedSmartServiceServer) ListLanguages(context.Context, *ListLangu
 }
 func (UnimplementedSmartServiceServer) TranslateUI(context.Context, *TranslateUIRequest) (*TranslateUIResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TranslateUI not implemented")
+}
+func (UnimplementedSmartServiceServer) ComposeTheme(context.Context, *ComposeThemeRequest) (*ComposeThemeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ComposeTheme not implemented")
+}
+func (UnimplementedSmartServiceServer) SuggestTheme(context.Context, *SuggestThemeRequest) (*SuggestThemeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SuggestTheme not implemented")
 }
 func (UnimplementedSmartServiceServer) mustEmbedUnimplementedSmartServiceServer() {}
 func (UnimplementedSmartServiceServer) testEmbeddedByValue()                      {}
@@ -268,6 +362,42 @@ func _SmartService_TranslateUI_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SmartService_ComposeTheme_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ComposeThemeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SmartServiceServer).ComposeTheme(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SmartService_ComposeTheme_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SmartServiceServer).ComposeTheme(ctx, req.(*ComposeThemeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SmartService_SuggestTheme_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuggestThemeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SmartServiceServer).SuggestTheme(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SmartService_SuggestTheme_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SmartServiceServer).SuggestTheme(ctx, req.(*SuggestThemeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SmartService_ServiceDesc is the grpc.ServiceDesc for SmartService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -290,6 +420,14 @@ var SmartService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TranslateUI",
 			Handler:    _SmartService_TranslateUI_Handler,
+		},
+		{
+			MethodName: "ComposeTheme",
+			Handler:    _SmartService_ComposeTheme_Handler,
+		},
+		{
+			MethodName: "SuggestTheme",
+			Handler:    _SmartService_SuggestTheme_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

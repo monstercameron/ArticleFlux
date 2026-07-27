@@ -14,8 +14,14 @@ option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/articlefl
 // (§7) can gate the whole surface with one entry rather than remembering to
 // mark individual reader RPCs.
 //
-// **Every RPC here is owner-only.** The API key is instance configuration, and
+// **Most RPCs here are owner-only.** The API key is instance configuration, and
 // a translation is a spend against the instance's bill.
+//
+// The two theming RPCs are the exception, and the line is the same one drawn for
+// the Smart+ voice: a member may spend on THEIR OWN reading experience, because
+// that is a per-user preference costing the instance nothing they cannot already
+// spend, but may not read the key, change the model, or start a translation that
+// re-bills the whole instance. See grpcsrv.SmartServer.requireReader.
 service SmartService {
   // GetSmartConfig reports whether Smart+ can run at all, and what it has spent.
   //
@@ -42,6 +48,121 @@ service SmartService {
   // bypasses the cache — the only lever a reader has when a translation came
   // back wrong.
   rpc TranslateUI(TranslateUIRequest) returns (TranslateUIResponse);
+
+  // ComposeTheme turns a phrase into a complete palette (§20.16.3).
+  //
+  // What leaves the instance is the phrase and the tone, and nothing else — see
+  // internal/llm/theme.go for the allowlist and the argument for it.
+  //
+  // The palette that comes back has already passed the readability floor every
+  // shipped theme passes: `repairs` says what had to be moved to get there, which
+  // the screen reports rather than hides, because a palette that came back
+  // slightly different from the one described is a thing the reader should be
+  // told rather than left to suspect.
+  rpc ComposeTheme(ComposeThemeRequest) returns (ComposeThemeResponse);
+
+  // SuggestTheme returns where an attuning theme should be drifting to.
+  //
+  // The reader's interests decide the answer, and the ladder is the usual one
+  // (§18.7, §11): deterministic first, model last. With no key — or with Smart+
+  // theming switched off — the target is the base theme tinted toward the hue of
+  // the reader's largest topic, computed in Go and costing nothing. With a key it
+  // is a palette written for those subjects.
+  //
+  // The CLIENT sends the base it is drifting from, because the client is the only
+  // place that resolves which theme is actually being painted, and a second
+  // resolution on the server is a second answer.
+  //
+  // `signature` fingerprints the taste this target came from. The client stores
+  // it and only calls again when it changes, which is what keeps a feature that
+  // repaints itself daily from being a request that happens daily.
+  rpc SuggestTheme(SuggestThemeRequest) returns (SuggestThemeResponse);
+}
+
+// ThemeTokens is one complete palette: exactly the fields client/design.Theme
+// carries, in Vars() order after the four identity fields.
+//
+// Explicit fields rather than an opaque encoded string, even though both ends are
+// Go and share client/design. The proto IS the contract (§20.7), and a contract
+// whose payload is "whatever this build's encoder produces" cannot be read by
+// anything else — including the person debugging a palette in a request log.
+message ThemeTokens {
+  // The stable id. "custom" for a generated theme; a built-in's name when this
+  // carries one. Never model-authored — see design.CustomName.
+  string name = 1;
+  string label = 2;
+  string blurb = 3;
+  // "dark" or "light". Derived from the ground rather than claimed, because a
+  // model naming the mood it was asked for is not describing the palette it
+  // produced (design.ToneOf).
+  string tone = 4;
+
+  string ground = 10;
+  string raised = 11;
+  string sunk = 12;
+  string line = 13;
+  string hair = 14;
+  string cream = 15;
+  string soft = 16;
+  string dim = 17;
+  string read = 18;
+  string accent = 19;
+  string pos = 20;
+  string neg = 21;
+  // The modal lift. Never model-authored: it is the one token whose value is a
+  // whole CSS declaration, and it is derived from the tone (design.GeneratedShadow).
+  string shadow = 22;
+  // The article gradient's strength, as the token carries it: "14%".
+  string wash = 23;
+}
+
+// ThemeRepair is one change the readability floor made to a generated palette.
+message ThemeRepair {
+  // The CSS custom property without its dashes: "mute".
+  string token = 1;
+  string from = 2;
+  string to = 3;
+  // A stable reason id, not prose — the client's catalog turns it into a
+  // sentence. See design.ReasonUnreadable and friends.
+  string reason = 4;
+}
+
+message ComposeThemeRequest {
+  // The reader's own words. Capped at llm.MaxThemePromptRunes on the way out.
+  string prompt = 1;
+  // The tone to build for: "dark" or "light". The tone of the theme currently in
+  // force, because that is the theme this answer has to be able to blend with.
+  string tone = 2;
+}
+
+message ComposeThemeResponse {
+  ThemeTokens theme = 1;
+  repeated ThemeRepair repairs = 2;
+  // True when the prompt was longer than the cap and was cut. Said out loud
+  // rather than applied silently: a theme that answers half a sentence looks
+  // exactly like a model that misunderstood the whole one.
+  bool prompt_trimmed = 3;
+}
+
+message SuggestThemeRequest {
+  // The palette to drift FROM. Validated server-side like any other input.
+  ThemeTokens base = 1;
+}
+
+message SuggestThemeResponse {
+  ThemeTokens target = 1;
+  // The interest this target was built from — a topic label, in the reader's own
+  // vocabulary. Shown on the Appearance screen, because a theme that changes
+  // itself and will not say why is a theme nobody trusts (§18.9).
+  string why = 2;
+  // A stable fingerprint of the taste behind this target. Opaque to the client,
+  // which stores it and compares it.
+  string signature = 3;
+  // True when a model wrote this palette, false when it is the deterministic
+  // tint. The screen says which, so "I turned Smart+ off and it still drifts" is
+  // explainable rather than alarming.
+  bool smart = 4;
+  repeated ThemeRepair repairs = 5;
 }
 
 message GetSmartConfigRequest {}

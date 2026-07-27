@@ -21,6 +21,520 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ThemeTokens is one complete palette: exactly the fields client/design.Theme
+// carries, in Vars() order after the four identity fields.
+//
+// Explicit fields rather than an opaque encoded string, even though both ends are
+// Go and share client/design. The proto IS the contract (§20.7), and a contract
+// whose payload is "whatever this build's encoder produces" cannot be read by
+// anything else — including the person debugging a palette in a request log.
+type ThemeTokens struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The stable id. "custom" for a generated theme; a built-in's name when this
+	// carries one. Never model-authored — see design.CustomName.
+	Name  string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Label string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	Blurb string `protobuf:"bytes,3,opt,name=blurb,proto3" json:"blurb,omitempty"`
+	// "dark" or "light". Derived from the ground rather than claimed, because a
+	// model naming the mood it was asked for is not describing the palette it
+	// produced (design.ToneOf).
+	Tone   string `protobuf:"bytes,4,opt,name=tone,proto3" json:"tone,omitempty"`
+	Ground string `protobuf:"bytes,10,opt,name=ground,proto3" json:"ground,omitempty"`
+	Raised string `protobuf:"bytes,11,opt,name=raised,proto3" json:"raised,omitempty"`
+	Sunk   string `protobuf:"bytes,12,opt,name=sunk,proto3" json:"sunk,omitempty"`
+	Line   string `protobuf:"bytes,13,opt,name=line,proto3" json:"line,omitempty"`
+	Hair   string `protobuf:"bytes,14,opt,name=hair,proto3" json:"hair,omitempty"`
+	Cream  string `protobuf:"bytes,15,opt,name=cream,proto3" json:"cream,omitempty"`
+	Soft   string `protobuf:"bytes,16,opt,name=soft,proto3" json:"soft,omitempty"`
+	Dim    string `protobuf:"bytes,17,opt,name=dim,proto3" json:"dim,omitempty"`
+	Read   string `protobuf:"bytes,18,opt,name=read,proto3" json:"read,omitempty"`
+	Accent string `protobuf:"bytes,19,opt,name=accent,proto3" json:"accent,omitempty"`
+	Pos    string `protobuf:"bytes,20,opt,name=pos,proto3" json:"pos,omitempty"`
+	Neg    string `protobuf:"bytes,21,opt,name=neg,proto3" json:"neg,omitempty"`
+	// The modal lift. Never model-authored: it is the one token whose value is a
+	// whole CSS declaration, and it is derived from the tone (design.GeneratedShadow).
+	Shadow string `protobuf:"bytes,22,opt,name=shadow,proto3" json:"shadow,omitempty"`
+	// The article gradient's strength, as the token carries it: "14%".
+	Wash          string `protobuf:"bytes,23,opt,name=wash,proto3" json:"wash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ThemeTokens) Reset() {
+	*x = ThemeTokens{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ThemeTokens) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ThemeTokens) ProtoMessage() {}
+
+func (x *ThemeTokens) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ThemeTokens.ProtoReflect.Descriptor instead.
+func (*ThemeTokens) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *ThemeTokens) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetBlurb() string {
+	if x != nil {
+		return x.Blurb
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetTone() string {
+	if x != nil {
+		return x.Tone
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetGround() string {
+	if x != nil {
+		return x.Ground
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetRaised() string {
+	if x != nil {
+		return x.Raised
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetSunk() string {
+	if x != nil {
+		return x.Sunk
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetLine() string {
+	if x != nil {
+		return x.Line
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetHair() string {
+	if x != nil {
+		return x.Hair
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetCream() string {
+	if x != nil {
+		return x.Cream
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetSoft() string {
+	if x != nil {
+		return x.Soft
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetDim() string {
+	if x != nil {
+		return x.Dim
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetRead() string {
+	if x != nil {
+		return x.Read
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetAccent() string {
+	if x != nil {
+		return x.Accent
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetPos() string {
+	if x != nil {
+		return x.Pos
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetNeg() string {
+	if x != nil {
+		return x.Neg
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetShadow() string {
+	if x != nil {
+		return x.Shadow
+	}
+	return ""
+}
+
+func (x *ThemeTokens) GetWash() string {
+	if x != nil {
+		return x.Wash
+	}
+	return ""
+}
+
+// ThemeRepair is one change the readability floor made to a generated palette.
+type ThemeRepair struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The CSS custom property without its dashes: "mute".
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	From  string `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`
+	To    string `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`
+	// A stable reason id, not prose — the client's catalog turns it into a
+	// sentence. See design.ReasonUnreadable and friends.
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ThemeRepair) Reset() {
+	*x = ThemeRepair{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ThemeRepair) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ThemeRepair) ProtoMessage() {}
+
+func (x *ThemeRepair) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ThemeRepair.ProtoReflect.Descriptor instead.
+func (*ThemeRepair) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ThemeRepair) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ThemeRepair) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *ThemeRepair) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *ThemeRepair) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ComposeThemeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The reader's own words. Capped at llm.MaxThemePromptRunes on the way out.
+	Prompt string `protobuf:"bytes,1,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// The tone to build for: "dark" or "light". The tone of the theme currently in
+	// force, because that is the theme this answer has to be able to blend with.
+	Tone          string `protobuf:"bytes,2,opt,name=tone,proto3" json:"tone,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ComposeThemeRequest) Reset() {
+	*x = ComposeThemeRequest{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ComposeThemeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ComposeThemeRequest) ProtoMessage() {}
+
+func (x *ComposeThemeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ComposeThemeRequest.ProtoReflect.Descriptor instead.
+func (*ComposeThemeRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ComposeThemeRequest) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *ComposeThemeRequest) GetTone() string {
+	if x != nil {
+		return x.Tone
+	}
+	return ""
+}
+
+type ComposeThemeResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Theme   *ThemeTokens           `protobuf:"bytes,1,opt,name=theme,proto3" json:"theme,omitempty"`
+	Repairs []*ThemeRepair         `protobuf:"bytes,2,rep,name=repairs,proto3" json:"repairs,omitempty"`
+	// True when the prompt was longer than the cap and was cut. Said out loud
+	// rather than applied silently: a theme that answers half a sentence looks
+	// exactly like a model that misunderstood the whole one.
+	PromptTrimmed bool `protobuf:"varint,3,opt,name=prompt_trimmed,json=promptTrimmed,proto3" json:"prompt_trimmed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ComposeThemeResponse) Reset() {
+	*x = ComposeThemeResponse{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ComposeThemeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ComposeThemeResponse) ProtoMessage() {}
+
+func (x *ComposeThemeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ComposeThemeResponse.ProtoReflect.Descriptor instead.
+func (*ComposeThemeResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ComposeThemeResponse) GetTheme() *ThemeTokens {
+	if x != nil {
+		return x.Theme
+	}
+	return nil
+}
+
+func (x *ComposeThemeResponse) GetRepairs() []*ThemeRepair {
+	if x != nil {
+		return x.Repairs
+	}
+	return nil
+}
+
+func (x *ComposeThemeResponse) GetPromptTrimmed() bool {
+	if x != nil {
+		return x.PromptTrimmed
+	}
+	return false
+}
+
+type SuggestThemeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The palette to drift FROM. Validated server-side like any other input.
+	Base          *ThemeTokens `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SuggestThemeRequest) Reset() {
+	*x = SuggestThemeRequest{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SuggestThemeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SuggestThemeRequest) ProtoMessage() {}
+
+func (x *SuggestThemeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SuggestThemeRequest.ProtoReflect.Descriptor instead.
+func (*SuggestThemeRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SuggestThemeRequest) GetBase() *ThemeTokens {
+	if x != nil {
+		return x.Base
+	}
+	return nil
+}
+
+type SuggestThemeResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Target *ThemeTokens           `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	// The interest this target was built from — a topic label, in the reader's own
+	// vocabulary. Shown on the Appearance screen, because a theme that changes
+	// itself and will not say why is a theme nobody trusts (§18.9).
+	Why string `protobuf:"bytes,2,opt,name=why,proto3" json:"why,omitempty"`
+	// A stable fingerprint of the taste behind this target. Opaque to the client,
+	// which stores it and compares it.
+	Signature string `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
+	// True when a model wrote this palette, false when it is the deterministic
+	// tint. The screen says which, so "I turned Smart+ off and it still drifts" is
+	// explainable rather than alarming.
+	Smart         bool           `protobuf:"varint,4,opt,name=smart,proto3" json:"smart,omitempty"`
+	Repairs       []*ThemeRepair `protobuf:"bytes,5,rep,name=repairs,proto3" json:"repairs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SuggestThemeResponse) Reset() {
+	*x = SuggestThemeResponse{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SuggestThemeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SuggestThemeResponse) ProtoMessage() {}
+
+func (x *SuggestThemeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SuggestThemeResponse.ProtoReflect.Descriptor instead.
+func (*SuggestThemeResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SuggestThemeResponse) GetTarget() *ThemeTokens {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *SuggestThemeResponse) GetWhy() string {
+	if x != nil {
+		return x.Why
+	}
+	return ""
+}
+
+func (x *SuggestThemeResponse) GetSignature() string {
+	if x != nil {
+		return x.Signature
+	}
+	return ""
+}
+
+func (x *SuggestThemeResponse) GetSmart() bool {
+	if x != nil {
+		return x.Smart
+	}
+	return false
+}
+
+func (x *SuggestThemeResponse) GetRepairs() []*ThemeRepair {
+	if x != nil {
+		return x.Repairs
+	}
+	return nil
+}
+
 type GetSmartConfigRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -29,7 +543,7 @@ type GetSmartConfigRequest struct {
 
 func (x *GetSmartConfigRequest) Reset() {
 	*x = GetSmartConfigRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[0]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +555,7 @@ func (x *GetSmartConfigRequest) String() string {
 func (*GetSmartConfigRequest) ProtoMessage() {}
 
 func (x *GetSmartConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[0]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +568,7 @@ func (x *GetSmartConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSmartConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetSmartConfigRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{0}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{6}
 }
 
 type GetSmartConfigResponse struct {
@@ -102,7 +616,7 @@ type GetSmartConfigResponse struct {
 
 func (x *GetSmartConfigResponse) Reset() {
 	*x = GetSmartConfigResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[1]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -114,7 +628,7 @@ func (x *GetSmartConfigResponse) String() string {
 func (*GetSmartConfigResponse) ProtoMessage() {}
 
 func (x *GetSmartConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[1]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -127,7 +641,7 @@ func (x *GetSmartConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSmartConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetSmartConfigResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{1}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetSmartConfigResponse) GetConfigured() bool {
@@ -231,7 +745,7 @@ type SetSmartConfigRequest struct {
 
 func (x *SetSmartConfigRequest) Reset() {
 	*x = SetSmartConfigRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[2]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -243,7 +757,7 @@ func (x *SetSmartConfigRequest) String() string {
 func (*SetSmartConfigRequest) ProtoMessage() {}
 
 func (x *SetSmartConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[2]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -256,7 +770,7 @@ func (x *SetSmartConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSmartConfigRequest.ProtoReflect.Descriptor instead.
 func (*SetSmartConfigRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{2}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SetSmartConfigRequest) GetOpenaiApiKey() string {
@@ -289,7 +803,7 @@ type SetSmartConfigResponse struct {
 
 func (x *SetSmartConfigResponse) Reset() {
 	*x = SetSmartConfigResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[3]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +815,7 @@ func (x *SetSmartConfigResponse) String() string {
 func (*SetSmartConfigResponse) ProtoMessage() {}
 
 func (x *SetSmartConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[3]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +828,7 @@ func (x *SetSmartConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSmartConfigResponse.ProtoReflect.Descriptor instead.
 func (*SetSmartConfigResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{3}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SetSmartConfigResponse) GetConfig() *GetSmartConfigResponse {
@@ -332,7 +846,7 @@ type ListLanguagesRequest struct {
 
 func (x *ListLanguagesRequest) Reset() {
 	*x = ListLanguagesRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[4]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -344,7 +858,7 @@ func (x *ListLanguagesRequest) String() string {
 func (*ListLanguagesRequest) ProtoMessage() {}
 
 func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[4]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -357,7 +871,7 @@ func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesRequest.ProtoReflect.Descriptor instead.
 func (*ListLanguagesRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{4}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{10}
 }
 
 type ListLanguagesResponse struct {
@@ -372,7 +886,7 @@ type ListLanguagesResponse struct {
 
 func (x *ListLanguagesResponse) Reset() {
 	*x = ListLanguagesResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[5]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -384,7 +898,7 @@ func (x *ListLanguagesResponse) String() string {
 func (*ListLanguagesResponse) ProtoMessage() {}
 
 func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[5]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -397,7 +911,7 @@ func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesResponse.ProtoReflect.Descriptor instead.
 func (*ListLanguagesResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{5}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ListLanguagesResponse) GetLanguages() []*SmartLanguage {
@@ -429,7 +943,7 @@ type SmartLanguage struct {
 
 func (x *SmartLanguage) Reset() {
 	*x = SmartLanguage{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[6]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -441,7 +955,7 @@ func (x *SmartLanguage) String() string {
 func (*SmartLanguage) ProtoMessage() {}
 
 func (x *SmartLanguage) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[6]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -454,7 +968,7 @@ func (x *SmartLanguage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SmartLanguage.ProtoReflect.Descriptor instead.
 func (*SmartLanguage) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{6}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SmartLanguage) GetCode() string {
@@ -496,7 +1010,7 @@ type TranslateUIRequest struct {
 
 func (x *TranslateUIRequest) Reset() {
 	*x = TranslateUIRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[7]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +1022,7 @@ func (x *TranslateUIRequest) String() string {
 func (*TranslateUIRequest) ProtoMessage() {}
 
 func (x *TranslateUIRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[7]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +1035,7 @@ func (x *TranslateUIRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranslateUIRequest.ProtoReflect.Descriptor instead.
 func (*TranslateUIRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{7}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TranslateUIRequest) GetLocale() string {
@@ -550,7 +1064,7 @@ type TranslateUIResponse struct {
 
 func (x *TranslateUIResponse) Reset() {
 	*x = TranslateUIResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[8]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -562,7 +1076,7 @@ func (x *TranslateUIResponse) String() string {
 func (*TranslateUIResponse) ProtoMessage() {}
 
 func (x *TranslateUIResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[8]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -575,7 +1089,7 @@ func (x *TranslateUIResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranslateUIResponse.ProtoReflect.Descriptor instead.
 func (*TranslateUIResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{8}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TranslateUIResponse) GetLocale() string {
@@ -615,7 +1129,7 @@ type UIMessage struct {
 
 func (x *UIMessage) Reset() {
 	*x = UIMessage{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[9]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -627,7 +1141,7 @@ func (x *UIMessage) String() string {
 func (*UIMessage) ProtoMessage() {}
 
 func (x *UIMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[9]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -640,7 +1154,7 @@ func (x *UIMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIMessage.ProtoReflect.Descriptor instead.
 func (*UIMessage) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{9}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UIMessage) GetKey() string {
@@ -668,7 +1182,47 @@ var File_articleflux_v1_smart_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\n" +
-	"\x1aarticleflux/v1/smart.proto\x12\x0earticleflux.v1\"\x17\n" +
+	"\x1aarticleflux/v1/smart.proto\x12\x0earticleflux.v1\"\x85\x03\n" +
+	"\vThemeTokens\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x14\n" +
+	"\x05blurb\x18\x03 \x01(\tR\x05blurb\x12\x12\n" +
+	"\x04tone\x18\x04 \x01(\tR\x04tone\x12\x16\n" +
+	"\x06ground\x18\n" +
+	" \x01(\tR\x06ground\x12\x16\n" +
+	"\x06raised\x18\v \x01(\tR\x06raised\x12\x12\n" +
+	"\x04sunk\x18\f \x01(\tR\x04sunk\x12\x12\n" +
+	"\x04line\x18\r \x01(\tR\x04line\x12\x12\n" +
+	"\x04hair\x18\x0e \x01(\tR\x04hair\x12\x14\n" +
+	"\x05cream\x18\x0f \x01(\tR\x05cream\x12\x12\n" +
+	"\x04soft\x18\x10 \x01(\tR\x04soft\x12\x10\n" +
+	"\x03dim\x18\x11 \x01(\tR\x03dim\x12\x12\n" +
+	"\x04read\x18\x12 \x01(\tR\x04read\x12\x16\n" +
+	"\x06accent\x18\x13 \x01(\tR\x06accent\x12\x10\n" +
+	"\x03pos\x18\x14 \x01(\tR\x03pos\x12\x10\n" +
+	"\x03neg\x18\x15 \x01(\tR\x03neg\x12\x16\n" +
+	"\x06shadow\x18\x16 \x01(\tR\x06shadow\x12\x12\n" +
+	"\x04wash\x18\x17 \x01(\tR\x04wash\"_\n" +
+	"\vThemeRepair\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x12\n" +
+	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\x03 \x01(\tR\x02to\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"A\n" +
+	"\x13ComposeThemeRequest\x12\x16\n" +
+	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x12\n" +
+	"\x04tone\x18\x02 \x01(\tR\x04tone\"\xa7\x01\n" +
+	"\x14ComposeThemeResponse\x121\n" +
+	"\x05theme\x18\x01 \x01(\v2\x1b.articleflux.v1.ThemeTokensR\x05theme\x125\n" +
+	"\arepairs\x18\x02 \x03(\v2\x1b.articleflux.v1.ThemeRepairR\arepairs\x12%\n" +
+	"\x0eprompt_trimmed\x18\x03 \x01(\bR\rpromptTrimmed\"F\n" +
+	"\x13SuggestThemeRequest\x12/\n" +
+	"\x04base\x18\x01 \x01(\v2\x1b.articleflux.v1.ThemeTokensR\x04base\"\xc8\x01\n" +
+	"\x14SuggestThemeResponse\x123\n" +
+	"\x06target\x18\x01 \x01(\v2\x1b.articleflux.v1.ThemeTokensR\x06target\x12\x10\n" +
+	"\x03why\x18\x02 \x01(\tR\x03why\x12\x1c\n" +
+	"\tsignature\x18\x03 \x01(\tR\tsignature\x12\x14\n" +
+	"\x05smart\x18\x04 \x01(\bR\x05smart\x125\n" +
+	"\arepairs\x18\x05 \x03(\v2\x1b.articleflux.v1.ThemeRepairR\arepairs\"\x17\n" +
 	"\x15GetSmartConfigRequest\"\xc4\x03\n" +
 	"\x16GetSmartConfigResponse\x12\x1e\n" +
 	"\n" +
@@ -716,12 +1270,14 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\n" +
 	"FormsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\x86\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xbc\x04\n" +
 	"\fSmartService\x12_\n" +
 	"\x0eGetSmartConfig\x12%.articleflux.v1.GetSmartConfigRequest\x1a&.articleflux.v1.GetSmartConfigResponse\x12_\n" +
 	"\x0eSetSmartConfig\x12%.articleflux.v1.SetSmartConfigRequest\x1a&.articleflux.v1.SetSmartConfigResponse\x12\\\n" +
 	"\rListLanguages\x12$.articleflux.v1.ListLanguagesRequest\x1a%.articleflux.v1.ListLanguagesResponse\x12V\n" +
-	"\vTranslateUI\x12\".articleflux.v1.TranslateUIRequest\x1a#.articleflux.v1.TranslateUIResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
+	"\vTranslateUI\x12\".articleflux.v1.TranslateUIRequest\x1a#.articleflux.v1.TranslateUIResponse\x12Y\n" +
+	"\fComposeTheme\x12#.articleflux.v1.ComposeThemeRequest\x1a$.articleflux.v1.ComposeThemeResponse\x12Y\n" +
+	"\fSuggestTheme\x12#.articleflux.v1.SuggestThemeRequest\x1a$.articleflux.v1.SuggestThemeResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
 
 var (
 	file_articleflux_v1_smart_proto_rawDescOnce sync.Once
@@ -735,38 +1291,53 @@ func file_articleflux_v1_smart_proto_rawDescGZIP() []byte {
 	return file_articleflux_v1_smart_proto_rawDescData
 }
 
-var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_articleflux_v1_smart_proto_goTypes = []any{
-	(*GetSmartConfigRequest)(nil),  // 0: articleflux.v1.GetSmartConfigRequest
-	(*GetSmartConfigResponse)(nil), // 1: articleflux.v1.GetSmartConfigResponse
-	(*SetSmartConfigRequest)(nil),  // 2: articleflux.v1.SetSmartConfigRequest
-	(*SetSmartConfigResponse)(nil), // 3: articleflux.v1.SetSmartConfigResponse
-	(*ListLanguagesRequest)(nil),   // 4: articleflux.v1.ListLanguagesRequest
-	(*ListLanguagesResponse)(nil),  // 5: articleflux.v1.ListLanguagesResponse
-	(*SmartLanguage)(nil),          // 6: articleflux.v1.SmartLanguage
-	(*TranslateUIRequest)(nil),     // 7: articleflux.v1.TranslateUIRequest
-	(*TranslateUIResponse)(nil),    // 8: articleflux.v1.TranslateUIResponse
-	(*UIMessage)(nil),              // 9: articleflux.v1.UIMessage
-	nil,                            // 10: articleflux.v1.UIMessage.FormsEntry
+	(*ThemeTokens)(nil),            // 0: articleflux.v1.ThemeTokens
+	(*ThemeRepair)(nil),            // 1: articleflux.v1.ThemeRepair
+	(*ComposeThemeRequest)(nil),    // 2: articleflux.v1.ComposeThemeRequest
+	(*ComposeThemeResponse)(nil),   // 3: articleflux.v1.ComposeThemeResponse
+	(*SuggestThemeRequest)(nil),    // 4: articleflux.v1.SuggestThemeRequest
+	(*SuggestThemeResponse)(nil),   // 5: articleflux.v1.SuggestThemeResponse
+	(*GetSmartConfigRequest)(nil),  // 6: articleflux.v1.GetSmartConfigRequest
+	(*GetSmartConfigResponse)(nil), // 7: articleflux.v1.GetSmartConfigResponse
+	(*SetSmartConfigRequest)(nil),  // 8: articleflux.v1.SetSmartConfigRequest
+	(*SetSmartConfigResponse)(nil), // 9: articleflux.v1.SetSmartConfigResponse
+	(*ListLanguagesRequest)(nil),   // 10: articleflux.v1.ListLanguagesRequest
+	(*ListLanguagesResponse)(nil),  // 11: articleflux.v1.ListLanguagesResponse
+	(*SmartLanguage)(nil),          // 12: articleflux.v1.SmartLanguage
+	(*TranslateUIRequest)(nil),     // 13: articleflux.v1.TranslateUIRequest
+	(*TranslateUIResponse)(nil),    // 14: articleflux.v1.TranslateUIResponse
+	(*UIMessage)(nil),              // 15: articleflux.v1.UIMessage
+	nil,                            // 16: articleflux.v1.UIMessage.FormsEntry
 }
 var file_articleflux_v1_smart_proto_depIdxs = []int32{
-	1,  // 0: articleflux.v1.SetSmartConfigResponse.config:type_name -> articleflux.v1.GetSmartConfigResponse
-	6,  // 1: articleflux.v1.ListLanguagesResponse.languages:type_name -> articleflux.v1.SmartLanguage
-	9,  // 2: articleflux.v1.TranslateUIResponse.messages:type_name -> articleflux.v1.UIMessage
-	10, // 3: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
-	0,  // 4: articleflux.v1.SmartService.GetSmartConfig:input_type -> articleflux.v1.GetSmartConfigRequest
-	2,  // 5: articleflux.v1.SmartService.SetSmartConfig:input_type -> articleflux.v1.SetSmartConfigRequest
-	4,  // 6: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
-	7,  // 7: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
-	1,  // 8: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
-	3,  // 9: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
-	5,  // 10: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
-	8,  // 11: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
-	8,  // [8:12] is the sub-list for method output_type
-	4,  // [4:8] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	0,  // 0: articleflux.v1.ComposeThemeResponse.theme:type_name -> articleflux.v1.ThemeTokens
+	1,  // 1: articleflux.v1.ComposeThemeResponse.repairs:type_name -> articleflux.v1.ThemeRepair
+	0,  // 2: articleflux.v1.SuggestThemeRequest.base:type_name -> articleflux.v1.ThemeTokens
+	0,  // 3: articleflux.v1.SuggestThemeResponse.target:type_name -> articleflux.v1.ThemeTokens
+	1,  // 4: articleflux.v1.SuggestThemeResponse.repairs:type_name -> articleflux.v1.ThemeRepair
+	7,  // 5: articleflux.v1.SetSmartConfigResponse.config:type_name -> articleflux.v1.GetSmartConfigResponse
+	12, // 6: articleflux.v1.ListLanguagesResponse.languages:type_name -> articleflux.v1.SmartLanguage
+	15, // 7: articleflux.v1.TranslateUIResponse.messages:type_name -> articleflux.v1.UIMessage
+	16, // 8: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
+	6,  // 9: articleflux.v1.SmartService.GetSmartConfig:input_type -> articleflux.v1.GetSmartConfigRequest
+	8,  // 10: articleflux.v1.SmartService.SetSmartConfig:input_type -> articleflux.v1.SetSmartConfigRequest
+	10, // 11: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
+	13, // 12: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
+	2,  // 13: articleflux.v1.SmartService.ComposeTheme:input_type -> articleflux.v1.ComposeThemeRequest
+	4,  // 14: articleflux.v1.SmartService.SuggestTheme:input_type -> articleflux.v1.SuggestThemeRequest
+	7,  // 15: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
+	9,  // 16: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
+	11, // 17: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
+	14, // 18: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
+	3,  // 19: articleflux.v1.SmartService.ComposeTheme:output_type -> articleflux.v1.ComposeThemeResponse
+	5,  // 20: articleflux.v1.SmartService.SuggestTheme:output_type -> articleflux.v1.SuggestThemeResponse
+	15, // [15:21] is the sub-list for method output_type
+	9,  // [9:15] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_smart_proto_init() }
@@ -780,7 +1351,7 @@ func file_articleflux_v1_smart_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_smart_proto_rawDesc), len(file_articleflux_v1_smart_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -36,6 +36,62 @@ func init() {
 		"motionFollow":    "Follow my system setting",
 		"motionSystemOn":  "Following this machine, which does not ask for reduced motion.",
 		"motionSystemOff": "Following this machine, which asks for reduced motion. Turning animations on here overrides that for ArticleFlux only.",
+
+		// --- composing a theme (§20.16.3) ---
+		//
+		// The hint says what leaves the machine, in the same breath as the control
+		// that sends it. Smart+ copy elsewhere in the app follows the same rule, and
+		// it is the difference between a feature someone consents to and one they
+		// discover the shape of later.
+		"composeGroup":       "Make me a theme",
+		"composeGroupHint":   "Describe a room and Smart+ will build the palette for it. Your description and whether you want light or dark are the only things sent.",
+		"composeLabel":       "Describe it",
+		"composeHint":        "A place, a time of day, a mood — anything a room could be. Every colour is checked for legibility before it is used.",
+		"composePlaceholder": "a cold library at 2am",
+		"composeAria":        "Describe the theme you want",
+		"composeGo":          "Make it",
+		"composeWorking":     "Choosing colours…",
+		"composeTrimmed":     "That was longer than the box takes, so only the first part was used.",
+		"composeDrop":        "Forget this theme",
+		"composeUnnamed":     "Yours",
+		"composeNoPrompt":    "Made for you.",
+
+		// The wash half of the repair note. The two colour-counting halves are
+		// pluralised and registered below.
+		"repairedWash": "The article tint was turned down to keep the page calm.",
+
+		// --- attuning (§20.16.3) ---
+		//
+		// "Slowly" is doing real work in this copy. The whole feature rests on the
+		// reader never catching it move, and someone who expects an immediate change
+		// will press the switch, see nothing, and conclude it is broken.
+		"attuneGroup":      "Follow my reading",
+		"attuneGroupHint":  "The reader can take on the colour of whatever you actually read, moving a little each day. It takes about three weeks to arrive, and it never changes how legible anything is.",
+		"attuneLabel":      "Attune the theme",
+		"attuneHint":       "Your theme stays your theme — it drifts toward a room built for your interests, one small step per day.",
+		"attuneNothingYet": "Nothing to follow yet. Once you have read enough for interests to form, the drift starts on its own.",
+		"attuneProgress":   "About {percent}% of the way to a room built around your {why} reading.",
+		"attuneArrived":    "Arrived: this is the room your {why} reading built. It will start moving again when your interests do.",
+		"attuneReset":      "Start over from my theme",
+		"attuneSmartLabel": "Let Smart+ choose the colours",
+		"attuneSmartHint":  "Off, the room is tinted toward your top interest's own colour — free, and nothing leaves the machine. On, Smart+ writes a palette for what you read, and only the interest names are sent.",
+		"attuneBySmart":    "This room was written by Smart+.",
+		"attuneByHue":      "This room was worked out on this machine, from your top interest's colour.",
+	})
+
+	// The two counted repair notes.
+	//
+	// A count and a consequence, never a list of token names: a reader cannot act on
+	// "--mute" and can act on "the small type stays legible". See view.repairNote for
+	// why the wash gets its own sentence rather than joining the count — two colours
+	// and a percentage is not "three colours".
+	plural(DefaultLocale, "appearance", "repairedColours", map[PluralCategory]string{
+		One:   "One colour was adjusted so the text stays legible.",
+		Other: "{count} colours were adjusted so the text stays legible.",
+	})
+	plural(DefaultLocale, "appearance", "repairedBoth", map[PluralCategory]string{
+		One:   "One colour was adjusted and the article tint turned down, so the text stays legible.",
+		Other: "{count} colours were adjusted and the article tint turned down, so the text stays legible.",
 	})
 
 	// Keyed by design.Theme.Name.

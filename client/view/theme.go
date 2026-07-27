@@ -5,6 +5,7 @@ package view
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
@@ -36,10 +37,52 @@ import (
 // screen offer a way back to following the system, and what stops a reader who
 // never opened this screen from having a preference invented for them.
 type appearance struct {
-	Theme   string // design.Theme.Name
+	Theme   string // design.Theme.Name, or design.CustomName
 	Accent  string // design.Swatch.Name, or "" for the theme's own
 	Reading string // design.ReadingSize.Name
 	Motion  string // design.MotionFull, design.MotionReduced, or ""
+
+	// --- the generated theme (§20.16.3) ---
+	//
+	// Custom is one encoded palette (design.Theme.Encode) and Prompt is the
+	// sentence that produced it. Kept even while another theme is selected, so
+	// switching to Ledger for an afternoon does not throw away a theme that cost
+	// an API call — and Prompt is kept beside it because a card labelled "Custom"
+	// tells a reader nothing about which custom theme it is.
+	Custom string
+	Prompt string
+
+	// --- the drift (§20.16.3) ---
+	//
+	// Attune is the switch. AttuneSmart is the separate opt-in for a MODEL-written
+	// target rather than the deterministic tint — separate because storing an API
+	// key is not consent to spend it, which is the rule every other paid feature
+	// here follows (see smartsettings.go).
+	Attune      bool
+	AttuneSmart bool
+
+	// From and Target are the two ends of the walk, both encoded. From is a
+	// SNAPSHOT of what was on screen when the target was set, and that is why it
+	// is stored rather than derived: without it, a change of target would jump the
+	// interface by however far the previous drift had already travelled.
+	From   string
+	Target string
+	// Step is how many days of the walk have been taken, 0…design.AttuneSteps.
+	Step int
+	// Day is the date the last step was taken, as YYYY-MM-DD in the reader's own
+	// timezone, and it is what makes stepping idempotent: two tabs, or a reload
+	// an hour later, must not each advance the drift.
+	Day string
+	// Why is the interest the target was built from, and Sig fingerprints the
+	// whole taste it came from. Why is shown; Sig is compared.
+	Why string
+	Sig string
+	// BySmart records whether a model wrote the target or the deterministic tint
+	// did. Stored rather than held in component state because the sentence that
+	// reports it has to survive a reload: a reader who switched Smart+ off, came
+	// back the next day and found the interface still moving would reasonably
+	// conclude the switch does nothing.
+	BySmart bool
 }
 
 // prefs keys. They are namespaced `ui.` because prefs is one flat map shared
@@ -50,6 +93,24 @@ const (
 	prefAccent  = "ui.accent"
 	prefReading = "ui.reading"
 	prefMotion  = "ui.motion"
+
+	prefCustom = "ui.theme.custom"
+	prefPrompt = "ui.theme.prompt"
+
+	prefAttune = "ui.attune"
+	// prefAttuneSmart is grpcsrv.AttunePrefKey. Written as a literal here rather
+	// than imported, because client/view has no business importing a transport —
+	// the same arrangement `feed.smartPlus` already has, and the same obligation:
+	// the two spellings are one contract, and internal/transport/grpcsrv/theme.go
+	// is the other half of it.
+	prefAttuneSmart  = "ui.attune.smart"
+	prefAttuneFrom   = "ui.attune.from"
+	prefAttuneTarget = "ui.attune.target"
+	prefAttuneStep   = "ui.attune.step"
+	prefAttuneDay    = "ui.attune.day"
+	prefAttuneWhy    = "ui.attune.why"
+	prefAttuneSig    = "ui.attune.sig"
+	prefAttuneBy     = "ui.attune.bysmart"
 )
 
 // resolve turns the stored preference into the theme that will actually be
@@ -57,9 +118,185 @@ const (
 // same answer — the accent swatches offered depend on the resolved theme's tone,
 // and offering pale accents on a light theme is offering seven ways to make the
 // "new" tag unreadable.
+//
+// # Three layers, in this order, and the order is the argument
+//
+//  1. **The base** is the theme the reader chose: a built-in, or their generated
+//     one.
+//  2. **The drift** moves it toward the target, if attuning is on and there is
+//     somewhere to go. The identity is forced back to the base's afterwards, so
+//     the Appearance card the reader picked stays the pressed one — a drifting
+//     theme is still that theme.
+//  3. **The accent** is applied LAST, so an explicitly chosen swatch outranks the
+//     attuned one. That is the whole reason the accent is a separate preference
+//     (see design.Theme.WithAccent): it is the one colour a reader reliably has
+//     an opinion about, and a feature that derives it must lose to somebody who
+//     said what they wanted.
 func (a appearance) resolve() design.Theme {
-	t := design.ThemeByName(a.Theme)
+	base := a.base()
+	t := base
+	if from, target, ok := a.drift(); ok {
+		t = design.Blend(from, target, a.progress())
+		t.Name, t.Label, t.Blurb = base.Name, base.Label, base.Blurb
+	}
 	return t.WithAccent(design.AccentHex(t.Tone, a.Accent))
+}
+
+// base is the theme before any drift: a built-in, or the reader's generated one.
+//
+// A stored custom theme that will not decode falls back to the house theme rather
+// than erroring, which is design.ThemeByName's rule extended to the one theme it
+// cannot resolve on its own. The reasons a decode fails are all "this value was
+// written by a different build or by a hand" — and none of them is a reason to
+// leave somebody looking at unstyled HTML.
+func (a appearance) base() design.Theme {
+	if strings.EqualFold(strings.TrimSpace(a.Theme), design.CustomName) {
+		if t, err := a.customTheme(); err == nil {
+			return t
+		}
+	}
+	return design.ThemeByName(a.Theme)
+}
+
+// customTheme decodes the stored generated palette, if there is one.
+func (a appearance) customTheme() (design.Theme, error) {
+	if strings.TrimSpace(a.Custom) == "" {
+		return design.Theme{}, design.ErrNotAPalette
+	}
+	return design.DecodeTheme(a.Custom)
+}
+
+// hasCustom reports whether there is a generated theme to offer in the picker.
+func (a appearance) hasCustom() bool {
+	_, err := a.customTheme()
+	return err == nil
+}
+
+// drift returns the two ends of the walk, and whether there is a walk at all.
+//
+// Four ways to have nothing: attuning is off, no target has been fetched, either
+// end fails to decode, or — the one worth naming — the anchor's TONE no longer
+// matches the base's. That last case is a reader who switched from a dark theme to
+// a light one, and design.Blend would refuse the pair anyway; catching it here
+// means the drift is reported as absent rather than as present and stuck.
+func (a appearance) drift() (from, target design.Theme, ok bool) {
+	if !a.Attune || a.Target == "" {
+		return design.Theme{}, design.Theme{}, false
+	}
+	target, err := design.DecodeTheme(a.Target)
+	if err != nil {
+		return design.Theme{}, design.Theme{}, false
+	}
+	base := a.base()
+	from = base
+	if a.From != "" {
+		if f, err := design.DecodeTheme(a.From); err == nil {
+			from = f
+		}
+	}
+	if from.Tone != base.Tone || target.Tone != base.Tone {
+		return design.Theme{}, design.Theme{}, false
+	}
+	return from, target, true
+}
+
+// progress is how far along the walk the reader is, 0…1.
+func (a appearance) progress() float64 {
+	switch {
+	case a.Step <= 0:
+		return 0
+	case a.Step >= design.AttuneSteps:
+		return 1
+	}
+	return float64(a.Step) / float64(design.AttuneSteps)
+}
+
+// driftPercent is progress as a whole number, for the sentence on the screen.
+func (a appearance) driftPercent() int {
+	return int(a.progress()*100 + 0.5)
+}
+
+// arrived reports that the drift has reached its target, which is when it is worth
+// asking where to go next.
+func (a appearance) arrived() bool { return a.Step >= design.AttuneSteps }
+
+// needsTarget reports whether a SuggestTheme call is owed.
+//
+// Two cases only: there is nowhere to walk to, or the walk is finished. **This is
+// what keeps a feature that repaints every day from being a request every day** —
+// on the ordinary boot, in the middle of a three-week walk, the answer is no and
+// nothing is called at all.
+func (a appearance) needsTarget() bool {
+	return a.Attune && (a.Target == "" || a.arrived())
+}
+
+// today is the reader's own date, as the step marker stores it.
+//
+// Local rather than UTC, deliberately. The drift is a daily rhythm in somebody's
+// life, and a reader in Los Angeles opening the app at nine in the evening is
+// having a Tuesday, not a Wednesday.
+func today() string {
+	return time.Now().Format("2006-01-02")
+}
+
+// advanceDrift takes one step, if one is owed. It returns the moved preference and
+// whether anything changed.
+//
+// # One step per day the reader actually opens the app
+//
+// Not per day on the calendar. A reader who was away for a month comes back to the
+// room they left rather than to one that walked three weeks without them, and that
+// is the right surprise to offer — which is none. The drift is meant to track what
+// somebody is reading, so a month of not reading is a month of nothing to track.
+//
+// The date comparison, rather than a timestamp and an interval, is what makes this
+// idempotent across two tabs and a reload: both see the same date, and the second
+// one finds the step already taken.
+func (a appearance) advanceDrift(day string) (appearance, bool) {
+	if !a.Attune || a.Target == "" || a.arrived() || a.Day == day {
+		return a, false
+	}
+	if _, _, ok := a.drift(); !ok {
+		return a, false
+	}
+	a.Step++
+	a.Day = day
+	return a, true
+}
+
+// anchorTo restarts the walk from a palette, keeping the destination.
+//
+// Called when the reader picks a different theme, or generates one: the anchor has
+// to become the theme they just chose, or the interface would keep painting a blend
+// of the theme they left. The target is cleared with it, because a target is built
+// for a particular base and tone — and clearing Sig is what makes the next boot
+// fetch a new one rather than deciding it already has the right one.
+func (a appearance) anchorTo() appearance {
+	a.From = ""
+	a.Target = ""
+	a.Step = 0
+	a.Day = ""
+	a.Sig = ""
+	a.Why = ""
+	a.BySmart = false
+	return a
+}
+
+// aimAt points the drift at a new target, from wherever it currently is.
+//
+// `painted` is what is on screen at this moment — a blend, if a previous drift was
+// part-way along — and it becomes the anchor. That is what makes a change of target
+// invisible: the walk continues from here rather than snapping back to the base and
+// starting again.
+func (a appearance) aimAt(painted, target design.Theme, why, sig string, bySmart bool) appearance {
+	a.From = painted.Encode()
+	a.Target = target.Encode()
+	a.Step = 0
+	a.Day = today()
+	a.Why = why
+	a.Sig = sig
+	a.BySmart = bySmart
+	return a
 }
 
 // applyAppearance paints a preference.
@@ -168,16 +405,44 @@ func mirrorBootCopy(at i18n.At) {
 
 // prefsMap is what gets written back to the server.
 //
-// All four keys every time, including the empty ones. SetPrefs is an upsert of a
-// handful of rows, and sending only what changed means an empty value never
+// All of these keys every time, including the empty ones. SetPrefs is an upsert of
+// a handful of rows, and sending only what changed means an empty value never
 // reaches the server — so "go back to following my system" would be a preference
 // the reader could set and never persist.
+//
+// The drift's own six keys are NOT here; see attunePrefs. The split is not
+// cosmetic: everything in this map is something a reader pressed, and everything in
+// that one is bookkeeping the app does to itself.
 func (a appearance) prefsMap() map[string]string {
 	return map[string]string{
-		prefTheme:   a.Theme,
-		prefAccent:  a.Accent,
-		prefReading: a.Reading,
-		prefMotion:  a.Motion,
+		prefTheme:       a.Theme,
+		prefAccent:      a.Accent,
+		prefReading:     a.Reading,
+		prefMotion:      a.Motion,
+		prefCustom:      a.Custom,
+		prefPrompt:      a.Prompt,
+		prefAttune:      strconv.FormatBool(a.Attune),
+		prefAttuneSmart: strconv.FormatBool(a.AttuneSmart),
+	}
+}
+
+// attunePrefs is the drift's bookkeeping: where it started, where it is going, how
+// far it has got.
+//
+// A separate map because it is written on a different schedule — once when a target
+// is set and once a day afterwards — and folding it into prefsMap would mean
+// rewriting six rows every time somebody tried a different accent. It also keeps
+// the write that happens WITHOUT the reader doing anything clearly separated from
+// the writes that record what they did.
+func (a appearance) attunePrefs() map[string]string {
+	return map[string]string{
+		prefAttuneFrom:   a.From,
+		prefAttuneTarget: a.Target,
+		prefAttuneStep:   strconv.Itoa(a.Step),
+		prefAttuneDay:    a.Day,
+		prefAttuneWhy:    a.Why,
+		prefAttuneSig:    a.Sig,
+		prefAttuneBy:     strconv.FormatBool(a.BySmart),
 	}
 }
 
@@ -187,11 +452,28 @@ func (a appearance) prefsMap() map[string]string {
 // meaningful value at every one of them — see the doc comment on appearance. The
 // defaulting happens in design.ThemeByName and friends, at the point of use.
 func appearanceFromPrefs(p map[string]string) appearance {
+	step, _ := strconv.Atoi(p[prefAttuneStep])
 	return appearance{
 		Theme:   p[prefTheme],
 		Accent:  p[prefAccent],
 		Reading: p[prefReading],
 		Motion:  p[prefMotion],
+
+		Custom: p[prefCustom],
+		Prompt: p[prefPrompt],
+
+		Attune:      p[prefAttune] == "true",
+		AttuneSmart: p[prefAttuneSmart] == "true",
+		From:        p[prefAttuneFrom],
+		Target:      p[prefAttuneTarget],
+		// A step that will not parse reads as zero, which restarts the walk rather
+		// than refusing to walk. It is the one field here where a bad value has an
+		// obviously correct interpretation: nowhere along the way is the beginning.
+		Step:    step,
+		Day:     p[prefAttuneDay],
+		Why:     p[prefAttuneWhy],
+		Sig:     p[prefAttuneSig],
+		BySmart: p[prefAttuneBy] == "true",
 	}
 }
 
@@ -234,9 +516,18 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 	a := p.look
 	t := a.resolve()
 
-	cards := make([]ui.Node, 0, len(design.Themes))
+	cards := make([]ui.Node, 0, len(design.Themes)+1)
 	for _, th := range design.Themes {
 		cards = append(cards, themeCard(tr, th, th.Name == t.Name, a.Accent))
+	}
+	// The generated theme is a card like any other, at the END of the grid rather
+	// than the start: the five built-ins are the design, and a reader who has made
+	// one theme has not made the house theme less important. It is painted in its
+	// own colours by exactly the same function, which is the point of having stored
+	// a whole palette instead of a prompt.
+	if custom, err := a.customTheme(); err == nil {
+		cards = append(cards, themeCard(tr, customCard(tr, custom, a.Prompt),
+			t.Name == design.CustomName, a.Accent))
 	}
 
 	swatches := make([]ui.Node, 0, 8)
@@ -265,11 +556,18 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 		motionLabel = tr.T("appearance", "motionFull")
 	}
 
-	return []ui.Node{
+	out := []ui.Node{
 		fsGroup(glyphYours, tr.T("appearance", "themeGroup"),
 			tr.T("appearance", "themeGroupHint")),
 		html.Div(html.Props{Class: "thm-grid"}, cards...),
+	}
+	// Composing and attuning sit directly under the picker, because both of them
+	// produce a card in it. Above the accent, because the accent is a choice made
+	// against whatever theme is in force and these two change which theme that is.
+	out = append(out, composeSection(tr, p)...)
+	out = append(out, attuneSection(tr, p)...)
 
+	out = append(out,
 		fsGroup(glyphAll, tr.T("appearance", "accentGroup"),
 			tr.T("appearance", "accentGroupHint")),
 		html.Div(html.Props{Class: "acc-row"}, swatches...),
@@ -300,7 +598,221 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 			return html.Div(html.Props{Class: "set-note"},
 				html.Text(systemMotionNote(tr, motionOn)))
 		}),
+	)
+	return out
+}
+
+// --- composing a theme -------------------------------------------------------------
+
+// roleThemePrompt is the prompt field's data-role, which is how Enter commits it
+// from the keyboard handler — the same arrangement `feed-title` and `tag-label`
+// have, and for the same reason: the click path and the Enter path have to send the
+// value that is actually in the box, and only the DOM knows that.
+const roleThemePrompt = "theme-prompt"
+
+// The delegated actions the two new groups dispatch.
+const (
+	actComposeTheme = "theme-compose"
+	actDropCustom   = "theme-drop-custom"
+	actAttune       = "theme-attune"
+	actAttuneSmart  = "theme-attune-smart"
+	actAttuneReset  = "theme-attune-reset"
+)
+
+// composeSection is the prompt box.
+//
+// # Why it is not gated on whether Smart+ is configured
+//
+// Every other paid control in the app is disabled without a key, with a hint that
+// says what it would do — and that pattern cannot be used here. Reading the key's
+// status is `GetSmartConfig`, which is owner-only and answers PermissionDenied to a
+// member: a screen that disabled this control whenever it could not read the
+// config would disable it for exactly the accounts that are allowed to use it.
+//
+// So the box is always live and the failure is reported when it happens. That is
+// the honest arrangement for a control whose precondition this account may not be
+// permitted to see.
+func composeSection(tr i18n.Runtime, p settingsProps) []ui.Node {
+	th := p.theme
+	out := []ui.Node{
+		fsGroup(glyphShared, tr.T("appearance", "composeGroup"),
+			tr.T("appearance", "composeGroupHint")),
+		setRow(tr.T("appearance", "composeLabel"), tr.T("appearance", "composeHint"),
+			html.Div(html.Props{Class: "fs-rename"},
+				html.Input(html.Props{
+					Class: "field fs-field", Type: "text",
+					Placeholder: tr.T("appearance", "composePlaceholder"),
+					Value:       th.prompt,
+					OnInput:     th.onPromptEdit,
+					Data:        map[string]string{"role": roleThemePrompt},
+					Aria:        map[string]string{"label": tr.T("appearance", "composeAria")},
+					Raw:         map[string]any{"autocomplete": "off"},
+				}),
+				// Disabled only while one is in flight. Two concurrent compositions
+				// are two bills for one decision — the same reason the language chips
+				// disable each other.
+				html.Button(html.Props{
+					Class:    "chip",
+					Raw:      map[string]any{"data-action": actComposeTheme},
+					Disabled: th.busy,
+				}, html.Text(tr.T("appearance", "composeGo"))),
+			)),
 	}
+
+	if th.busy {
+		out = append(out, html.Div(html.Props{Class: "set-note", Role: "status",
+			Aria: map[string]string{"live": "polite"}},
+			html.Text(tr.T("appearance", "composeWorking"))))
+	}
+	if th.trimmed {
+		// Said out loud. A theme that answers half a sentence looks exactly like a
+		// model that misunderstood the whole one, and the reader is the only one who
+		// can tell the difference.
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("appearance", "composeTrimmed"))))
+	}
+	if note := repairNote(tr, th.repairs); note != "" {
+		out = append(out, html.Div(html.Props{Class: "set-note"}, html.Text(note)))
+	}
+	if th.err != "" {
+		out = append(out, html.Div(html.Props{Class: "fs-error", Role: "alert"},
+			html.Text(th.err)))
+	}
+	// Removing is behind its own control and only exists when there is something to
+	// remove — the same shape the Smart+ key's "remove" has, and destructive in the
+	// same small way: a theme that cost a call is not recoverable by pressing
+	// undo.
+	if p.look.hasCustom() {
+		out = append(out, html.Div(html.Props{Class: "set-actions"},
+			html.Button(html.Props{
+				Class: "chip fs-danger",
+				Raw:   map[string]any{"data-action": actDropCustom},
+			}, html.Text(tr.T("appearance", "composeDrop")))))
+	}
+	return out
+}
+
+// repairNote says what the readability floor had to change.
+//
+// One sentence with a count rather than a list of twelve token names, because the
+// reader cannot act on "--mute" and can act on "two colours were adjusted so the
+// small type stays legible". The tokens are not hidden — they are in the palette
+// they can see — they are just not the useful form of the sentence.
+//
+// Empty when nothing was repaired, which is the common case for a model that was
+// told the floor is enforced (see smart.composeInstructions).
+func repairNote(tr i18n.Runtime, reps []design.Repair) string {
+	if len(reps) == 0 {
+		return ""
+	}
+	// The wash being clamped is a different sentence from a colour being moved, and
+	// counting them together would produce "3 colours adjusted" for two colours and
+	// a percentage.
+	colours := 0
+	wash := false
+	for _, r := range reps {
+		if r.Why == design.ReasonWashClamped {
+			wash = true
+			continue
+		}
+		colours++
+	}
+	switch {
+	case colours > 0 && wash:
+		return tr.T("appearance", "repairedBoth", i18n.Count(colours))
+	case colours > 0:
+		return tr.T("appearance", "repairedColours", i18n.Count(colours))
+	default:
+		return tr.T("appearance", "repairedWash")
+	}
+}
+
+// --- attuning ----------------------------------------------------------------------
+
+// attuneSection is the drift.
+//
+// It says three things, and the third is the one that makes the feature acceptable
+// rather than unsettling: what it is following. §18.9's rule is that explainability
+// IS the product — an unexplained ranker feels arbitrary and you stop trusting it —
+// and an interface that changes its own colours and will not say why is the same
+// claim about a much more visible surface.
+func attuneSection(tr i18n.Runtime, p settingsProps) []ui.Node {
+	a := p.look
+	out := []ui.Node{
+		fsGroup(glyphRefresh, tr.T("appearance", "attuneGroup"),
+			tr.T("appearance", "attuneGroupHint")),
+		setRow(tr.T("appearance", "attuneLabel"), tr.T("appearance", "attuneHint"),
+			glyphChip(actAttune, glyphRefresh, onOff(tr, a.Attune), a.Attune)),
+	}
+	if !a.Attune {
+		return out
+	}
+
+	// What it is following, and how far along it is. Two separate sentences because
+	// there are two separate states worth distinguishing: no target yet (which for a
+	// new account means the interest layer has not formed one — the cold start of
+	// §18.4, and not a fault) and a walk in progress.
+	switch {
+	case a.Why == "" || a.Target == "":
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("appearance", "attuneNothingYet"))))
+	case a.arrived():
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("appearance", "attuneArrived", i18n.Args{"why": a.Why}))))
+	default:
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("appearance", "attuneProgress",
+				i18n.Args{"why": a.Why, "percent": a.driftPercent()}))))
+	}
+
+	out = append(out,
+		setRow(tr.T("appearance", "attuneSmartLabel"), tr.T("appearance", "attuneSmartHint"),
+			glyphChip(actAttuneSmart, glyphShared, onOff(tr, a.AttuneSmart), a.AttuneSmart)),
+		// Starting over is the way out of a room somebody does not like, and it is
+		// not the same as switching the feature off: off leaves the drift where it
+		// got to, and this puts the theme back to the one they picked. Both are
+		// wanted, and a single switch that did both would make "I liked it, I just
+		// want it to stop here" impossible.
+		html.Div(html.Props{Class: "set-actions"},
+			glyphChip(actAttuneReset, glyphRefresh, tr.T("appearance", "attuneReset"), false)),
+	)
+	if a.Target != "" {
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(driftSourceNote(tr, a.BySmart))))
+	}
+	return out
+}
+
+// driftSourceNote says whether a model wrote the room or the arithmetic did.
+//
+// Worth a sentence because the deterministic drift keeps working with no key and no
+// consent, and a reader who switched Smart+ off and then watched their interface
+// keep moving would reasonably conclude the switch does nothing.
+func driftSourceNote(tr i18n.Runtime, smart bool) string {
+	if smart {
+		return tr.T("appearance", "attuneBySmart")
+	}
+	return tr.T("appearance", "attuneByHue")
+}
+
+// customCard names a generated theme for the picker.
+//
+// The LABEL comes from the model and the BLURB is replaced with the reader's own
+// prompt, which is the more useful of the two: they know what they asked for, and
+// "Slate and rain" tells them less about which of their themes this is than the
+// sentence they typed to get it. A theme composed before the prompt was stored — or
+// one whose model returned no label — falls back to the catalog rather than to an
+// empty card.
+func customCard(tr i18n.Runtime, t design.Theme, prompt string) design.Theme {
+	if strings.TrimSpace(t.Label) == "" {
+		t.Label = tr.T("appearance", "composeUnnamed")
+	}
+	if p := strings.TrimSpace(prompt); p != "" {
+		t.Blurb = p
+	} else if strings.TrimSpace(t.Blurb) == "" {
+		t.Blurb = tr.T("appearance", "composeNoPrompt")
+	}
+	return t
 }
 
 // systemMotionNote says which way the machine answered, because "following the

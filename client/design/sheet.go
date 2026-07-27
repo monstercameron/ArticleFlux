@@ -682,6 +682,16 @@ func list(r func(string, string) css.Rule) {
 	// to stop the page converging on one topic (§18.4). Marking it keeps that honest: it
 	// looks different because it was chosen on a different basis.
 	css.Global(".item-why[data-rank-slot='explore'] .why-mark", r("opacity", ".55"))
+	// The paid tier's own words, in the accent, so the badge on the row above has something
+	// to point at. Upright rather than italic: this is a quotation of a judgement, where the
+	// deterministic reasons are the app describing itself.
+	css.Global(".item-why[data-why-plus='true']",
+		r("color", "var(--soft)"), r("font-style", "normal"),
+	)
+	css.Global(".item-why[data-why-plus='true'] .why-mark",
+		r("font-size", "10px"), r("letter-spacing", ".04em"),
+		r("text-transform", "uppercase"), r("font-weight", "600"),
+	)
 
 	// The Smart+ mark: a word, in the accent, on rows the paid tier actually moved.
 	//

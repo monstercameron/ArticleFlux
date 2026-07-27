@@ -1,8 +1,6 @@
 package design
 
 import (
-	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -357,31 +355,14 @@ func uniq(in []string) []string {
 }
 
 // --- contrast --------------------------------------------------------------------
-
-// relLum is WCAG 2.1 relative luminance.
-func relLum(hex string) float64 {
-	hex = strings.TrimPrefix(hex, "#")
-	ch := make([]float64, 3)
-	for i := 0; i < 3; i++ {
-		var v int
-		_, _ = fmt.Sscanf(hex[i*2:i*2+2], "%02x", &v)
-		c := float64(v) / 255
-		if c <= 0.03928 {
-			ch[i] = c / 12.92
-		} else {
-			ch[i] = math.Pow((c+0.055)/1.055, 2.4)
-		}
-	}
-	return 0.2126*ch[0] + 0.7152*ch[1] + 0.0722*ch[2]
-}
-
-func contrast(a, b string) float64 {
-	la, lb := relLum(a), relLum(b)
-	if la < lb {
-		la, lb = lb, la
-	}
-	return (la + 0.05) / (lb + 0.05)
-}
+//
+// The WCAG arithmetic used to live here, in this file, as a test helper. It now
+// lives in color.go as ContrastRatio, and this test calls it — because the
+// generated-theme work (§20.16.3) needs the SAME floor at runtime, to check a
+// palette a model just wrote, and two implementations of one floor is the worst
+// arrangement of them: the build would say the shipped themes are readable, the
+// runtime would say a generated one is, and nothing would say those two
+// sentences mean the same thing.
 
 // TestEveryThemeIsReadable is the test a theme picker needs and almost never
 // has.
@@ -398,7 +379,9 @@ func contrast(a, b string) float64 {
 // direction it is actually used — as a FILL with `var(--bg)` text on top of it,
 // which is what the "new" tag and every pressed chip are.
 func TestEveryThemeIsReadable(t *testing.T) {
-	const aa = 4.5
+	// The floor itself is AAFloor, from color.go, for the same one-definition
+	// reason the ratio is.
+	const aa = AAFloor
 	for _, th := range Themes {
 		for _, ground := range []struct{ name, hex string }{
 			{"the page", th.Ground},
@@ -412,7 +395,7 @@ func TestEveryThemeIsReadable(t *testing.T) {
 				{"cream", th.Cream}, {"soft", th.Soft}, {"mute", th.Dim},
 				{"read", th.Read}, {"pos", th.Pos}, {"neg", th.Neg},
 			} {
-				got := contrast(tok.hex, ground.hex)
+				got := ContrastRatio(tok.hex, ground.hex)
 				if floor, ok := known[key{th.Name, tok.name, ground.name}]; ok {
 					// A recorded exception is still a ratchet: it may not get
 					// any worse than it already is.
@@ -430,7 +413,7 @@ func TestEveryThemeIsReadable(t *testing.T) {
 		}
 		// The accent carries bg-coloured text on it, so this one ratio covers
 		// both "the accent as a mark" and "the accent as a fill".
-		if got := contrast(th.Accent, th.Ground); got < aa {
+		if got := ContrastRatio(th.Accent, th.Ground); got < aa {
 			t.Errorf("%s: --cc against --bg is %.2f:1 — too low for the ground "+
 				"colour to be legible as TEXT on an accent fill (the 'new' tag, "+
 				"every pressed chip)", th.Name, got)
