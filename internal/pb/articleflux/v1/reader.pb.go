@@ -251,7 +251,21 @@ type Item struct {
 	// are different rungs with different costs: one re-serves markup, the other
 	// holds a browser tab open for as long as you look at it. The client decides
 	// which to show; the server decides which are available at all.
-	StreamUrl     string `protobuf:"bytes,18,opt,name=stream_url,json=streamUrl,proto3" json:"stream_url,omitempty"`
+	StreamUrl string `protobuf:"bytes,18,opt,name=stream_url,json=streamUrl,proto3" json:"stream_url,omitempty"`
+	// A short-TTL sealed URL that reads this article aloud in the Smart+ voice
+	// (plan.md §10.7). GetItem only, and empty whenever the instance has no
+	// OpenAI key — which is the signal the client uses to leave the control on
+	// the browser's own synthesiser instead of offering an upgrade that cannot
+	// work.
+	//
+	// It exists for the same reason proxy_url does, and one more: an `<audio
+	// src>` cannot send an Authorization header. Without a capability in the URL
+	// itself, /speech can only identify a caller through the DevMode fallback,
+	// so the whole feature is dev-only. Unlike the two above the ticket is
+	// SEALED rather than signed, because this capability is per-reader: it
+	// carries who may hear it, and an identity in a query string would land in
+	// history, referrers and access logs in the clear.
+	SpeechUrl     string `protobuf:"bytes,19,opt,name=speech_url,json=speechUrl,proto3" json:"speech_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -408,6 +422,13 @@ func (x *Item) GetProxyUrl() string {
 func (x *Item) GetStreamUrl() string {
 	if x != nil {
 		return x.StreamUrl
+	}
+	return ""
+}
+
+func (x *Item) GetSpeechUrl() string {
+	if x != nil {
+		return x.SpeechUrl
 	}
 	return ""
 }
@@ -4228,7 +4249,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\xe9\x03\n" +
+	" \x01(\tR\tlastError\"\x88\x04\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -4251,7 +4272,9 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x06rating\x18\x10 \x01(\x05R\x06rating\x12\x1b\n" +
 	"\tproxy_url\x18\x11 \x01(\tR\bproxyUrl\x12\x1d\n" +
 	"\n" +
-	"stream_url\x18\x12 \x01(\tR\tstreamUrl\"h\n" +
+	"stream_url\x18\x12 \x01(\tR\tstreamUrl\x12\x1d\n" +
+	"\n" +
+	"speech_url\x18\x13 \x01(\tR\tspeechUrl\"h\n" +
 	"\x15ScrollLiveViewRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +

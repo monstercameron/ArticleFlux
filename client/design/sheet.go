@@ -1245,6 +1245,105 @@ func listening(r func(string, string) css.Rule) {
 		r("color", "var(--bg)"),
 	)
 
+	nowPlayingCSS(r)
+}
+
+// nowPlayingCSS styles the floating transport (.np).
+//
+// The comment above says a floating player covers the text it is reading, and
+// that is still true — which is why this one only exists when the article it is
+// reading has left the viewport. It covers whatever you scrolled away TO, at the
+// moment you have no other way to stop it.
+//
+// It is deliberately the same material as the command palette: `--sur` on
+// `--line` with `var(--shadow)`. Anything else would read as a notification from
+// somewhere else rather than a piece of this application that moved.
+func nowPlayingCSS(r func(string, string) css.Rule) {
+	css.Global(".np",
+		r("position", "fixed"),
+		// Centred by transform rather than by `left: 50%; margin-left: -Wpx`,
+		// because the width depends on the title and is not knowable here.
+		r("left", "50%"), r("transform", "translateX(-50%)"),
+		r("bottom", "18px"), r("z-index", "45"),
+		r("display", "flex"), r("align-items", "center"), r("gap", "14px"),
+		r("max-width", "min(680px, calc(100vw - 32px))"),
+		r("padding", "8px 10px 8px 14px"),
+		r("background", "var(--sur)"),
+		r("border", "1px solid var(--line)"),
+		r("border-radius", "99px"),
+		r("box-shadow", "var(--shadow)"),
+		// Below the palette scrim (60) and above everything that scrolls. A
+		// player that outranked the palette would sit on top of a dialog that
+		// had taken the keyboard.
+	)
+	// Rises into place. One motion moment, and it earns it: something appearing
+	// instantly at the bottom of the screen reads as an error toast, which is
+	// the wrong first impression for a control that is working correctly.
+	//
+	// Its own keyframe rather than design/motion.go's shared `rise`, because
+	// this element is centred with a transform: a keyframe that animates
+	// `translateY` alone would overwrite `translateX(-50%)` and the bar would
+	// fly in from the middle-right. Both axes have to travel together.
+	//
+	// Written in terms of --mo so that motion-off is a genuine no-op rather
+	// than a fast animation: at --mo: 0 the duration is zero AND the start
+	// state is the end state, so nothing moves and nothing flashes.
+	npRise := css.Keyframes("np-rise",
+		css.At("0%", r("opacity", "calc(1 - var(--mo))"),
+			r("transform", "translateX(-50%) translateY(calc(var(--mo) * 12px))")),
+		css.At("100%", r("opacity", "1"), r("transform", "translateX(-50%) translateY(0)")),
+	)
+	css.Global(".np", npRise,
+		r("animation-duration", "var(--t2)"),
+		r("animation-timing-function", "var(--e-out)"),
+		r("animation-fill-mode", "both"),
+	)
+
+	// The title block is the control that takes you back, so it has to look
+	// pressable without becoming a button-shaped thing competing with the two
+	// real buttons beside it.
+	css.Global(".np-what",
+		r("display", "flex"), r("align-items", "baseline"), r("gap", "8px"),
+		r("min-width", "0"), r("flex", "1 1 auto"),
+		r("text-align", "left"), r("color", "var(--cream)"),
+		r("padding", "2px 4px"), r("border-radius", "8px"),
+	)
+	css.Global(".np-what:hover .np-title", r("text-decoration", "underline"))
+	css.Global(".np-glyph",
+		r("color", "var(--cc)"), r("font-size", "13px"), r("flex", "none"),
+		// Nudged off the baseline the flex row aligns to: the glyph is a symbol
+		// rather than a letter, and sitting it on the text baseline hangs it low.
+		r("transform", "translateY(1px)"),
+	)
+	css.Global(".np-src",
+		r("font-size", "11px"), r("color", "var(--mute)"),
+		r("white-space", "nowrap"), r("flex", "none"),
+		r("text-transform", "uppercase"), r("letter-spacing", ".06em"),
+	)
+	css.Global(".np-title",
+		r("font-size", "13px"), r("font-weight", "500"), r("color", "var(--cream)"),
+		// The one thing allowed to be cut. Everything else in the bar is fixed
+		// width, so the title absorbs whatever the viewport leaves.
+		r("overflow", "hidden"), r("text-overflow", "ellipsis"),
+		r("white-space", "nowrap"), r("min-width", "0"),
+	)
+	css.Global(".np-controls",
+		r("display", "flex"), r("gap", "6px"), r("flex", "none"),
+	)
+
+	// On a phone the tab bar owns the bottom of the screen as a real grid row,
+	// so a fixed player at `bottom: 18px` would sit on top of the navigation.
+	// Lifted clear of it, and of the home indicator underneath that.
+	css.Global(".np", css.Media(css.MaxW(900),
+		r("bottom", "calc(70px + env(safe-area-inset-bottom, 0))"),
+		r("max-width", "calc(100vw - 20px)"),
+		r("gap", "8px"), r("padding", "7px 8px 7px 12px"),
+	)...)
+	// The source label is the first thing to go when there is no room: the
+	// title identifies the article, and the publication is a nicety that costs
+	// the title its last twelve characters.
+	css.Global(".np-src", css.Media(css.MaxW(560), r("display", "none"))...)
+
 	// Source marks. Three sizes, one shape: the hue underneath, the favicon on
 	// top. A site with no icon stays identifiable by colour; a site you know is
 	// recognised from its icon faster than you can read its name.

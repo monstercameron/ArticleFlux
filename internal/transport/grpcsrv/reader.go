@@ -42,6 +42,14 @@ type ReaderServer struct {
 	mintStream func(absURL string) string
 	// scrollLive delivers a wheel event to a running live view.
 	scrollLive func(sessionID string, dx, dy float64) error
+	// mintSpeech turns an item into a §10.7 Smart+ listening URL. Nil, or ""
+	// back, means this instance has no OpenAI key and the client leaves the
+	// listen control on the browser's own synthesiser.
+	//
+	// It takes a scope where the others take a URL, because what it authorises
+	// is per-reader rather than per-target: the article is private, so the
+	// ticket has to say who may hear it. See app.SpeechURL.
+	mintSpeech func(ctx context.Context, sc store.Scope, itemID string) string
 }
 
 // NewReaderServer wires a service to gRPC.
@@ -66,6 +74,14 @@ func (s *ReaderServer) WithAssetProxy(mint func(absURL string) string) *ReaderSe
 // WithPageProxy lets the client open the publisher's page through us (§10.1b).
 func (s *ReaderServer) WithPageProxy(mint func(absURL string) string) *ReaderServer {
 	s.mintPage = mint
+	return s
+}
+
+// WithSpeech offers the §10.7 Smart+ voice on an opened article.
+func (s *ReaderServer) WithSpeech(
+	mint func(ctx context.Context, sc store.Scope, itemID string) string,
+) *ReaderServer {
+	s.mintSpeech = mint
 	return s
 }
 
@@ -225,6 +241,12 @@ func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb
 		if s.mintStream != nil {
 			out.StreamUrl = s.mintStream(it.URL)
 		}
+	}
+	// Outside the URL guard above: the other two proxy the publisher's page and
+	// need somewhere to point, but reading an article aloud only needs the text
+	// we already hold. A scraped item with no canonical URL is still listenable.
+	if s.mintSpeech != nil {
+		out.SpeechUrl = s.mintSpeech(ctx, sc, it.ID)
 	}
 	return &pb.GetItemResponse{Item: out}, nil
 }

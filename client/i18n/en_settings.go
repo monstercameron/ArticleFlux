@@ -42,6 +42,17 @@ func init() {
 		"smartGroupHint":   "Sends the text of the article you are listening to, to OpenAI.",
 		"smartVoice":       "Smart+ voice",
 		"smartVoiceHint":   "A better voice, at the cost of leaving this machine. Off until you turn it on, and unavailable entirely unless the server was started with an API key.",
+		// Named for what it produces, not for the machinery. "Summarise before
+		// reading" says what you get; "LLM summarisation" says what we built.
+		"digest":     "Summarise before reading",
+		"digestHint": "Turns a long article into about a minute of spoken summary instead of reading the whole thing. A second request to OpenAI, charged once per article and then cached forever.",
+		// The queue is its own group because it is a different KIND of decision:
+		// the two above change what one article sounds like, this changes what
+		// happens when it ends.
+		"queueGroup":     "Continuous play",
+		"queueGroupHint": "Listening to a list rather than an article",
+		"autoplay":       "Keep playing",
+		"autoplayHint":   "When an article finishes, mark it read and start the next one down the list. Stops at the end of what's loaded. Works with either voice.",
 		// Lowercase on purpose: these sit inside a chip that the row above has
 		// already named, so they are the value and not a heading.
 		"on":             "on",

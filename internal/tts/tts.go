@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -84,6 +85,18 @@ type Client struct {
 	keyOf    KeyFunc
 	cacheDir string
 	http     *http.Client
+
+	// inflight collapses concurrent requests for the same artifact into one
+	// paid synthesis. See Speak.
+	mu       sync.Mutex
+	inflight map[string]*synthesis
+}
+
+// synthesis is one in-progress paid call that several callers are waiting on.
+type synthesis struct {
+	done  chan struct{}
+	audio []byte
+	err   error
 }
 
 // New returns a client, or one that reports ErrNotConfigured from every call.
@@ -116,6 +129,22 @@ func (c *Client) Configured(ctx context.Context) bool {
 // key identifies the cached artifact — the item id. It is hashed together with
 // the model and voice, so changing either produces a new file rather than
 // serving yesterday's voice from cache.
+//
+// # What it costs
+//
+// One article is paid for ONCE, and three things have to hold for that to be
+// true rather than approximately true:
+//
+//   - the disk cache never expires, so a re-listen next month is still free;
+//   - concurrent requests for the same artifact collapse into one call, so a
+//     second press of play during the tens of seconds a real article takes does
+//     not start a second synthesis;
+//   - a synthesis already paid for is finished and cached even if the reader who
+//     started it navigates away.
+//
+// Deliberately no TTL on any of that. An expiry would be a schedule for
+// re-buying audio that has not changed — the article text is immutable, so the
+// only thing a shorter cache life could produce is the same bill again.
 func (c *Client) Speak(ctx context.Context, key, text, model, voice string) ([]byte, error) {
 	// apiKey, not key: `key` is this function's cache identifier.
 	apiKey := strings.TrimSpace(c.keyOf(ctx))
@@ -149,6 +178,70 @@ func (c *Client) Speak(ctx context.Context, key, text, model, voice string) ([]b
 		}
 	}
 
+	// Past here the call is BILLED, so everything from here down exists to make
+	// sure it happens at most once per artifact.
+	//
+	// The disk cache above already makes a re-listen free forever, but it only
+	// helps a request that arrives after the first one finished — and finishing
+	// takes tens of seconds for a real article. Two things fall through that
+	// window and both are ordinary rather than exotic: a reader who presses play
+	// again because nothing has happened yet, and an <audio> element that
+	// reloads. Without this they are two synthesised articles on the same bill.
+	return c.once(ctx, cacheID(key, model, voice), func(ctx context.Context) ([]byte, error) {
+		return c.synthesise(ctx, apiKey, path, text, model, voice)
+	})
+}
+
+// once runs fn for id, or waits for the run already in progress.
+//
+// The work is deliberately NOT cancelled when the caller that started it goes
+// away. A reader who presses stop halfway through has already been billed for
+// whatever the provider generated; abandoning the response would throw that
+// away and charge again on the next press. So the request runs to completion on
+// a detached context — still bounded by the client's own timeout — and lands in
+// the cache, where the next listen gets it for nothing.
+func (c *Client) once(ctx context.Context, id string,
+	fn func(context.Context) ([]byte, error)) ([]byte, error) {
+
+	c.mu.Lock()
+	if c.inflight == nil {
+		c.inflight = make(map[string]*synthesis)
+	}
+	if s, ok := c.inflight[id]; ok {
+		c.mu.Unlock()
+		select {
+		case <-s.done:
+			return s.audio, s.err
+		case <-ctx.Done():
+			// Only THIS caller gave up. The synthesis carries on for whoever is
+			// still listening, and for the cache.
+			return nil, ctx.Err()
+		}
+	}
+	s := &synthesis{done: make(chan struct{})}
+	c.inflight[id] = s
+	c.mu.Unlock()
+
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			delete(c.inflight, id)
+			c.mu.Unlock()
+			close(s.done)
+		}()
+		s.audio, s.err = fn(context.WithoutCancel(ctx))
+	}()
+
+	select {
+	case <-s.done:
+		return s.audio, s.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// synthesise is the billed call itself.
+func (c *Client) synthesise(ctx context.Context, apiKey, path, text, model, voice string) ([]byte, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model":           model,
 		"voice":           voice,
@@ -214,9 +307,27 @@ func (c *Client) cachePath(key, model, voice string) string {
 	if c.cacheDir == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(key + "\x00" + model + "\x00" + voice))
-	name := hex.EncodeToString(sum[:]) + ".mp3"
+	name := cacheID(key, model, voice) + ".mp3"
 	// One level of fan-out, so a heavy listener does not end up with a directory
 	// holding tens of thousands of entries.
 	return filepath.Join(c.cacheDir, name[:2], name)
+}
+
+// inflightLen reports how many syntheses are running. For tests: the in-flight
+// map is the thing standing between one press of play and two bills, and an
+// entry that never gets deleted is a leak on a long-running server.
+func (c *Client) inflightLen() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.inflight)
+}
+
+// cacheID is the identity of one synthesised artifact.
+//
+// Shared by the disk cache and the in-flight map on purpose: they are answering
+// the same question a moment apart — "has this already been paid for?" — and two
+// definitions of identity would leave a gap between them that bills twice.
+func cacheID(key, model, voice string) string {
+	sum := sha256.Sum256([]byte(key + "\x00" + model + "\x00" + voice))
+	return hex.EncodeToString(sum[:])
 }

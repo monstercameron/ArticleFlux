@@ -86,6 +86,11 @@ func init() {
 		// --- listening
 		"noSpeech":     "This browser has no speech synthesiser. Turn on Smart+ voice to use the server's.",
 		"smartVoiceOn": "Smart+ voice on — article text is sent to OpenAI to synthesise it.",
+		"noSmartVoice": "The Smart+ voice isn't available — this server has no OpenAI key. Reading with the browser's voice instead.",
+		"digestOn":     "Summarising first — articles are sent to OpenAI to be condensed, then read aloud.",
+		"autoplayOn":   "Keep playing on — each article will be marked read and the next one started.",
+		// Not an error. Reaching the end of the queue is the queue working.
+		"queueFinished": "That's the end of the list.",
 
 		// --- the fatal overlay, when the socket will not come back
 		"fatalTitle": "ArticleFlux can't reach its server",

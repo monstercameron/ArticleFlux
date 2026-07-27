@@ -233,6 +233,20 @@ message Item {
   // holds a browser tab open for as long as you look at it. The client decides
   // which to show; the server decides which are available at all.
   string stream_url = 18;
+  // A short-TTL sealed URL that reads this article aloud in the Smart+ voice
+  // (plan.md §10.7). GetItem only, and empty whenever the instance has no
+  // OpenAI key — which is the signal the client uses to leave the control on
+  // the browser's own synthesiser instead of offering an upgrade that cannot
+  // work.
+  //
+  // It exists for the same reason proxy_url does, and one more: an `<audio
+  // src>` cannot send an Authorization header. Without a capability in the URL
+  // itself, /speech can only identify a caller through the DevMode fallback,
+  // so the whole feature is dev-only. Unlike the two above the ticket is
+  // SEALED rather than signed, because this capability is per-reader: it
+  // carries who may hear it, and an identity in a query string would land in
+  // history, referrers and access logs in the clear.
+  string speech_url = 19;
 }
 
 // ScrollLiveViewRequest scrolls a running §10.1d live view.
