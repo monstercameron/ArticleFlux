@@ -9,6 +9,7 @@ package grpcsrv
 import (
 	"context"
 	"errors"
+	"net/url"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -16,6 +17,7 @@ import (
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/rewrite"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -27,11 +29,28 @@ type ReaderServer struct {
 	// scopeOf resolves the caller. Injected rather than hard-wired so the auth
 	// interceptor owns identity and this file stays about translation.
 	scopeOf func(context.Context) (store.Scope, error)
+	// mintAsset turns an absolute subresource URL into a proxy URL, or "" to
+	// leave it alone. Nil disables the §10.1a rewrite entirely.
+	mintAsset func(absURL string) string
 }
 
 // NewReaderServer wires a service to gRPC.
 func NewReaderServer(svc *reader.Service, scopeOf func(context.Context) (store.Scope, error)) *ReaderServer {
 	return &ReaderServer{svc: svc, scopeOf: scopeOf}
+}
+
+// WithAssetProxy points article images at the local proxy (§10.1a).
+//
+// This lives at the transport edge on purpose, and it is the one place in this
+// file that needed an argument for being here. The rewrite is not domain logic
+// — the stored HTML is left exactly as the publisher wrote it, and nothing
+// downstream of the database changes. What it produces is a URL for *this*
+// client to fetch, minted with an expiry, valid for hours. Doing it in the
+// service would mean caching or persisting URLs that expire, which is how you
+// end up serving a stale capability from a pack built last week.
+func (s *ReaderServer) WithAssetProxy(mint func(absURL string) string) *ReaderServer {
+	s.mintAsset = mint
+	return s
 }
 
 // toStatus maps a domain error to the §20.7 taxonomy.
@@ -147,8 +166,53 @@ func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb
 	if note, nerr := s.svc.GetNote(ctx, sc, req.GetId()); nerr == nil {
 		out.Note = note
 	}
+	out.ContentHtml = s.proxyImages(ctx, sc, it, out.GetContentHtml())
 	return &pb.GetItemResponse{Item: out}, nil
 }
+
+// proxyImages repoints an article's subresources at the local proxy (§10.1a).
+//
+// Returns the HTML unchanged whenever it cannot do better, which is most of the
+// interesting cases: no proxy configured, no item URL to resolve relative
+// references against, the user opted out, or the rewrite itself failed. A
+// broken rewrite must degrade to the publisher's own URLs — those work on any
+// network that is not blocking them, which is every network but the one this
+// feature exists for.
+func (s *ReaderServer) proxyImages(ctx context.Context, sc store.Scope, it store.Item, htm string) string {
+	if s.mintAsset == nil || htm == "" {
+		return htm
+	}
+	// Relative URLs resolve against the article, not the feed: a feed hosted on
+	// one domain routinely carries items on another.
+	base, err := url.Parse(it.URL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return htm
+	}
+	// Opt-out, not opt-in. The default is on because the failure it prevents —
+	// an article whose pictures never load — looks like this application is
+	// broken, and the reader has no way to know the difference.
+	if prefs, perr := s.svc.GetPrefs(ctx, sc); perr == nil && prefs[proxyImagesPref] == "false" {
+		return htm
+	}
+	out, err := rewrite.HTML(htm, rewrite.Options{
+		Base:  base,
+		Asset: s.mintAsset,
+		// Links stay pointed at the publisher: the reader is reading our copy
+		// of the article, and clicking a link is a deliberate act of leaving.
+		// Tier 2 is where that changes.
+		DropIntegrity: true,
+		DropMetaCSP:   true,
+	})
+	if err != nil {
+		return htm
+	}
+	return out
+}
+
+// proxyImagesPref is the per-user opt-out. Only the exact string "false" turns
+// it off, so an unset preference — which is every user until one goes looking —
+// means on.
+const proxyImagesPref = "proxy.images"
 
 func (s *ReaderServer) SetItemState(ctx context.Context, req *pb.SetItemStateRequest) (*pb.SetItemStateResponse, error) {
 	sc, err := s.scopeOf(ctx)
