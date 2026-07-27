@@ -752,6 +752,10 @@ func (a *App) buildHandler() {
 			// recognition had to be in the field before the first refusal was
 			// ever sent.
 			skew.Unary(a.skewPolicy()),
+			// The §20.7 limits (TODO 7.3d). Before idem, because reserving an
+			// idempotency key for a call that is then refused burns it — the
+			// client retries with the same key and meets its own reservation.
+			a.rateLimitUnary(),
 			// The missing half of a contract already in use: the client stamps a
 			// key onto every mutating RPC and nothing on the server read one
 			// (TODO 8c.15). Survivable only because every queued mutation sets
