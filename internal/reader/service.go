@@ -124,7 +124,14 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 
 	// A source another tenant already polls has items waiting, so only a genuinely
 	// new source needs the synchronous fetch.
-	if !existed {
+	//
+	// "Already polls" means SUCCESSFULLY. A source with no last_success_at is one
+	// nobody has ever got anything out of — including one this very check
+	// rejected a minute ago, because A22 keeps the row after the subscription is
+	// rolled back. Skipping the poll for those would mean the second attempt at
+	// an HTML page quietly succeeded where the first was refused, which is
+	// exactly the loophole the refusal exists to close.
+	if !existed || f.LastSuccess == "" {
 		if _, err := s.pollOne(ctx, store.SourceRow{ID: f.SourceID, FeedURL: rawURL}); err != nil {
 			// A refused ADDRESS is not a failed fetch, and the two cannot be
 			// treated the same. A feed that is briefly down deserves the
@@ -139,7 +146,19 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 			// field they typed it into, which is the only place the mistake can
 			// be fixed.
 			if errors.Is(err, netguard.ErrBlockedIP) || errors.Is(err, netguard.ErrScheme) {
-				_ = s.repo.Unsubscribe(ctx, sc, f.SourceID)
+				s.rollback(ctx, sc, f.SourceID)
+				return store.Feed{}, false, err
+			}
+			// Not a feed at all — an HTML page, usually, which is what most
+			// people paste. Same reasoning as a refused address and a different
+			// remedy: the subscription is rolled back and the error is returned,
+			// because the caller's next move is the subscribe ladder (§11), and
+			// a ladder that runs while a junk source sits in the sidebar has
+			// already lost. A page that becomes a feed tomorrow is not a thing
+			// that happens; a page that HAS a feed is, and finding it is the
+			// point.
+			if errors.Is(err, feed.ErrNotAFeed) {
+				s.rollback(ctx, sc, f.SourceID)
 				return store.Feed{}, false, err
 			}
 			return f, existed, nil
@@ -154,6 +173,23 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 		}
 	}
 	return f, existed, nil
+}
+
+// rollback undoes a subscription whose very first poll proved the address
+// unusable, and retires the source it created.
+//
+// Both halves matter. Dropping only the subscription leaves a source nobody is
+// subscribed to and the scheduler still polls — DueSources works over `sources`,
+// not over subscriptions — so a mistyped address would be fetched, and fail,
+// forever. Retiring only the source would leave the reader looking at a sidebar
+// row for something that will never load.
+//
+// Errors are swallowed deliberately: this is the cleanup after a failure that
+// has already been decided, and a failure to clean up must not replace the
+// message that says what actually went wrong.
+func (s *Service) rollback(ctx context.Context, sc store.Scope, sourceID string) {
+	_ = s.repo.Unsubscribe(ctx, sc, sourceID)
+	_ = s.repo.RetireUnusableSource(ctx, sourceID)
 }
 
 // Unsubscribe drops the subscription, never the source (A22).

@@ -335,3 +335,63 @@ func TestAnalyzeSiteWithoutAKeyStillClimbsTheFreeRungs(t *testing.T) {
 		t.Errorf("page title = %q", got.PageTitle)
 	}
 }
+
+// Pasting a PAGE must not create a subscription.
+//
+// It did once, and the failure was invisible in exactly the way that matters: a
+// poll that cannot parse the response is swallowed so a feed having a bad
+// afternoon keeps its subscription — which also meant every HTML page anyone
+// pasted became a permanent source named after its URL, and the ladder that is
+// supposed to find the real feed never ran, because subscribing had "worked".
+func TestSubscribingToAPageIsRefused(t *testing.T) {
+	svc, repo, sc := testService(t)
+	s := newSite()
+	srv := httptest.NewServer(s.handler())
+	defer srv.Close()
+	ctx := context.Background()
+
+	_, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", "")
+	if err == nil {
+		t.Fatal("an HTML page became a subscription")
+	}
+	feeds, ferr := repo.ListFeeds(ctx, sc)
+	if ferr != nil {
+		t.Fatalf("ListFeeds: %v", ferr)
+	}
+	if len(feeds) != 0 {
+		t.Errorf("%d subscriptions left behind by the refusal: %+v", len(feeds), feeds)
+	}
+}
+
+// The loophole that made the refusal decorative: A22 keeps the source row after
+// the subscription is rolled back, so a second attempt at the same page found an
+// "existing" source, skipped the poll that would have rejected it, and
+// subscribed. It has to be refused every time, not only the first.
+func TestSubscribingToAPageIsRefusedTwice(t *testing.T) {
+	svc, repo, sc := testService(t)
+	s := newSite()
+	srv := httptest.NewServer(s.handler())
+	defer srv.Close()
+	ctx := context.Background()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", ""); err == nil {
+			t.Fatalf("attempt %d: an HTML page became a subscription", attempt)
+		}
+		feeds, _ := repo.ListFeeds(ctx, sc)
+		if len(feeds) != 0 {
+			t.Fatalf("attempt %d: %d subscriptions left behind", attempt, len(feeds))
+		}
+	}
+
+	// And the dead source is not left for the poller to retry forever.
+	due, err := repo.DueSources(ctx, 50)
+	if err != nil {
+		t.Fatalf("DueSources: %v", err)
+	}
+	for _, d := range due {
+		if strings.Contains(d.FeedURL, "/blog") {
+			t.Errorf("the retired source is still in the poll queue: %+v", d)
+		}
+	}
+}

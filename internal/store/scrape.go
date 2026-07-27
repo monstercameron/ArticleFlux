@@ -236,3 +236,30 @@ func validateRule(rule ScrapeRule) error {
 	}
 	return nil
 }
+
+// RetireUnusableSource deactivates a source that turned out not to be a feed.
+//
+// A22 says global rows are never hard-deleted, and this obeys it: the row stays,
+// `deactivated_at` is set, and the poller's query skips it. Without this a
+// rejected subscription leaves a source nobody subscribes to and everybody
+// polls — DueSources works over `sources`, not over subscriptions, so a page
+// someone pasted once would be fetched forever, failing forever.
+//
+// Two guards, and both are the point rather than caution: it refuses when
+// anyone still subscribes (another tenant's working feed must not be retired by
+// this tenant's mistake) and when the source has EVER fetched successfully (a
+// feed having a bad day is not an unusable source). Unscoped for the reason
+// every other global-row method here is — the row belongs to no tenant.
+func (r *ReaderRepo) RetireUnusableSource(ctx context.Context, sourceID string) error {
+	if sourceID == "" {
+		return ErrNotFound
+	}
+	_, err := r.db.Write.ExecContext(ctx, `
+		UPDATE sources
+		   SET deactivated_at = ?, next_fetch_at = NULL
+		 WHERE id = ?
+		   AND last_success_at IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE source_id = sources.id)`,
+		time.Now().UTC().Format(time.RFC3339Nano), sourceID)
+	return err
+}
