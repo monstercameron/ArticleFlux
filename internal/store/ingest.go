@@ -201,7 +201,7 @@ func (r *ReaderRepo) DueSources(ctx context.Context, limit int) ([]SourceRow, er
 	// guards against a zero or absurdly small interval turning into a division by
 	// zero and pinning one feed at the top forever.
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT id, feed_url, COALESCE(etag,''), COALESCE(last_modified,''),
+		SELECT id, feed_url, kind, COALESCE(etag,''), COALESCE(last_modified,''),
 		       CASE
 		         WHEN next_fetch_at IS NULL THEN 1e9
 		         ELSE (julianday(?) - julianday(next_fetch_at)) * 86400.0
@@ -220,7 +220,8 @@ func (r *ReaderRepo) DueSources(ctx context.Context, limit int) ([]SourceRow, er
 	var out []SourceRow
 	for rows.Next() {
 		var s SourceRow
-		if err := rows.Scan(&s.ID, &s.FeedURL, &s.ETag, &s.LastModified, &s.Staleness); err != nil {
+		if err := rows.Scan(&s.ID, &s.FeedURL, &s.Kind, &s.ETag, &s.LastModified,
+			&s.Staleness); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

@@ -154,12 +154,12 @@ type Request struct {
 // responsesRequest is the wire shape. Kept separate from Request so the public
 // type can stay ergonomic while this one stays faithful to the API.
 type responsesRequest struct {
-	Model           string          `json:"model"`
-	Input           string          `json:"input"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Text            *responsesText  `json:"text,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Store           bool            `json:"store"`
+	Model           string         `json:"model"`
+	Input           string         `json:"input"`
+	Instructions    string         `json:"instructions,omitempty"`
+	Text            *responsesText `json:"text,omitempty"`
+	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
+	Store           bool           `json:"store"`
 }
 
 type responsesText struct {

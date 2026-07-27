@@ -1,0 +1,297 @@
+package smart
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
+	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/timeutil"
+)
+
+// Following a page that has no feed — plan.md §11 rung 5, §14.2.
+//
+// The model's job here is narrow and worth stating precisely, because a broader
+// one is what makes AI features untrustworthy: it never sees an article, never
+// summarises anything, and never produces content a reader will read. It looks
+// at the STRUCTURE of one index page and answers a question about CSS selectors.
+// Everything a reader eventually sees was extracted from the site's own HTML by
+// internal/scrapesel, deterministically, from a rule that was checked against
+// that page before anyone was shown it.
+//
+// That is the same "the LLM proposes, the parser disposes" rule §11 applies to
+// feed discovery, and it has a sharper consequence here: a hallucinated selector
+// cannot invent an article, it can only fail to match — and a rule that matches
+// nothing is refused below rather than saved.
+//
+// # What leaves the machine
+//
+// A DISTILLED OUTLINE of the page, not the page. distill() drops scripts,
+// styles, inline SVG, comments and most text, keeping the tag/class/id skeleton
+// with short samples — which is both what the model needs and a fraction of the
+// bytes. On a typical blog index this is 6-12 KB against 300-800 KB of HTML.
+// Egress is still egress and the reader consents per request (§18.8); the point
+// is that the smallest useful thing is what goes.
+
+var (
+	// ErrNoRule means the model answered and nothing it proposed survived being
+	// run against the page. Distinct from a transport failure because the remedy
+	// differs: this one is "this page cannot be followed this way", and retrying
+	// it costs money to be told so again.
+	ErrNoRule = errors.New("smart: no working rule for this page")
+)
+
+// minItems is the floor for accepting a proposed rule.
+//
+// Two, not one. A rule matching exactly one item is the signature of a selector
+// that latched onto the page's hero article or a singleton banner — it looks
+// like success and produces a feed with one entry that never changes. Two is the
+// smallest number that demonstrates the selector found a LIST.
+const minItems = 2
+
+// maxSamples is how many extracted items travel back to the client. Enough to
+// judge the rule by, few enough that the response stays a preview.
+const maxSamples = 6
+
+// analyzeMaxTokens bounds the answer. The reply is eight short selectors and a
+// sentence; anything approaching this bound is a model narrating instead of
+// answering.
+const analyzeMaxTokens = 1200
+
+// SiteAnalyzer proposes scrape rules.
+type SiteAnalyzer struct {
+	llm      *llm.Client
+	settings *store.SettingsRepo
+}
+
+// NewSiteAnalyzer wires the analyzer to the one LLM client.
+func NewSiteAnalyzer(c *llm.Client, s *store.SettingsRepo) *SiteAnalyzer {
+	return &SiteAnalyzer{llm: c, settings: s}
+}
+
+// Configured reports whether this instance can egress at all.
+func (a *SiteAnalyzer) Configured(ctx context.Context) bool {
+	return a != nil && a.llm.Configured(ctx)
+}
+
+// Proposal is a rule that has already been run against the page it was written
+// for, plus the evidence.
+type Proposal struct {
+	Rule    scrapesel.Rule
+	Items   []scrapesel.Item
+	Matched int
+	Notes   string
+}
+
+// Propose reads one page and returns a rule that works on it, or ErrNoRule.
+//
+// Two attempts at most. The second is not a retry in the "maybe it will be
+// luckier" sense — it is given the specific failure (nothing matched, no links,
+// one item) as input, which is the difference between asking again and asking
+// better. A third would be spending a reader's money on diminishing returns.
+func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (*Proposal, error) {
+	if a == nil || a.llm == nil {
+		return nil, llm.ErrNotConfigured
+	}
+	if !a.llm.Configured(ctx) {
+		return nil, llm.ErrNotConfigured
+	}
+	outline := distill(pageHTML)
+	if strings.TrimSpace(outline) == "" {
+		return nil, ErrNoRule
+	}
+	model, _ := a.settings.SystemValue(ctx, store.KeySmartModel)
+
+	input := "Index URL: " + indexURL + "\n\nPage outline:\n" + outline
+	var lastProblem string
+
+	for attempt := 0; attempt < 2; attempt++ {
+		in := input
+		if lastProblem != "" {
+			in = input + "\n\nYour previous answer did not work on this page: " +
+				lastProblem + "\nPropose different selectors."
+		}
+		raw, err := a.llm.Do(ctx, llm.Request{
+			Model:           model,
+			Instructions:    scrapeInstructions,
+			Input:           in,
+			SchemaName:      "scrape_rule",
+			Schema:          scrapeSchema(),
+			MaxOutputTokens: analyzeMaxTokens,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		var answer struct {
+			ItemSelector    string `json:"item_selector"`
+			TitleSelector   string `json:"title_selector"`
+			LinkSelector    string `json:"link_selector"`
+			DateSelector    string `json:"date_selector"`
+			DateLayout      string `json:"date_layout"`
+			SummarySelector string `json:"summary_selector"`
+			ImageSelector   string `json:"image_selector"`
+			AuthorSelector  string `json:"author_selector"`
+			Notes           string `json:"notes"`
+		}
+		if err := json.Unmarshal([]byte(raw), &answer); err != nil {
+			return nil, fmt.Errorf("smart: the proposed rule was not readable: %w", err)
+		}
+
+		rule := scrapesel.Rule{
+			IndexURL:        indexURL,
+			ItemSelector:    strings.TrimSpace(answer.ItemSelector),
+			TitleSelector:   strings.TrimSpace(answer.TitleSelector),
+			LinkSelector:    strings.TrimSpace(answer.LinkSelector),
+			DateSelector:    strings.TrimSpace(answer.DateSelector),
+			DateLayout:      strings.TrimSpace(answer.DateLayout),
+			SummarySelector: strings.TrimSpace(answer.SummarySelector),
+			ImageSelector:   strings.TrimSpace(answer.ImageSelector),
+			AuthorSelector:  strings.TrimSpace(answer.AuthorSelector),
+		}
+
+		res, problem := tryRule(rule, pageHTML)
+		if problem == "" {
+			return &Proposal{
+				Rule:    rule,
+				Items:   res.Items,
+				Matched: res.Matched,
+				Notes:   strings.TrimSpace(answer.Notes),
+			}, nil
+		}
+		lastProblem = problem
+	}
+	return nil, ErrNoRule
+}
+
+// tryRule compiles a rule, runs it, and returns the reason it is unacceptable.
+//
+// The empty string means "use it". Everything else is a sentence written to be
+// fed back to the model, which is why the failures are specific: "0 of 14
+// containers had a link" tells it what to change, where "it did not work" tells
+// it to guess again.
+func tryRule(r scrapesel.Rule, pageHTML string) (scrapesel.Result, string) {
+	c, err := scrapesel.Compile(r)
+	if err != nil {
+		return scrapesel.Result{}, "the selectors were rejected: " + err.Error()
+	}
+	res, err := scrapesel.Extract(c, []byte(pageHTML), timeutil.Now())
+	if err != nil {
+		return res, "the page could not be extracted: " + err.Error()
+	}
+	switch {
+	case res.Matched == 0:
+		return res, "the item selector " + quote(r.ItemSelector) + " matched nothing on the page"
+	case len(res.Items) == 0:
+		return res, fmt.Sprintf(
+			"the item selector matched %d containers but none produced a usable item (%s)",
+			res.Matched, strings.Join(res.Problems, "; "))
+	case len(res.Items) < minItems:
+		return res, fmt.Sprintf(
+			"the rule produced only %d item, which usually means the selector matched one "+
+				"featured post rather than the list", len(res.Items))
+	}
+	// Titles that are all identical mean the title selector reached outside the
+	// item container — a site-wide <h1>, typically — and every entry in the feed
+	// would carry the site's name instead of its own.
+	if allSame(res.Items) {
+		return res, "every item came out with the same title " +
+			quote(res.Items[0].Title) + ", so the title selector is matching outside the item"
+	}
+	return res, ""
+}
+
+func allSame(items []scrapesel.Item) bool {
+	if len(items) < 2 {
+		return false
+	}
+	first := items[0].Title
+	for _, it := range items[1:] {
+		if it.Title != first {
+			return false
+		}
+	}
+	return true
+}
+
+func quote(s string) string { return "“" + s + "”" }
+
+// Samples trims a proposal's items to what the client is shown.
+func (p *Proposal) Samples() []scrapesel.Item {
+	if len(p.Items) <= maxSamples {
+		return p.Items
+	}
+	return p.Items[:maxSamples]
+}
+
+// Age reports how old the newest sampled item is, which is the cheapest
+// available check on whether a page is a live index or an archive nobody has
+// touched since 2019. Zero when nothing carried a date.
+func (p *Proposal) Age() time.Duration {
+	var newest time.Time
+	for _, it := range p.Items {
+		if it.PublishedAt.After(newest) {
+			newest = it.PublishedAt
+		}
+	}
+	if newest.IsZero() {
+		return 0
+	}
+	return timeutil.Now().Sub(newest)
+}
+
+func scrapeSchema() map[string]any {
+	str := map[string]any{"type": "string"}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"item_selector":    str,
+			"title_selector":   str,
+			"link_selector":    str,
+			"date_selector":    str,
+			"date_layout":      str,
+			"summary_selector": str,
+			"image_selector":   str,
+			"author_selector":  str,
+			"notes":            str,
+		},
+		// Strict mode requires every property in `required` and
+		// additionalProperties:false, so the optional selectors are "required to
+		// be present" and carry "" when the site does not have one. That is also
+		// the honest encoding: "this page has no author on its index" is an
+		// answer, and a missing key would be indistinguishable from a lapse.
+		"required": []string{
+			"item_selector", "title_selector", "link_selector", "date_selector",
+			"date_layout", "summary_selector", "image_selector", "author_selector", "notes",
+		},
+		"additionalProperties": false,
+	}
+}
+
+const scrapeInstructions = `You are writing a scraping rule for ArticleFlux, a feed reader, so that a page WITHOUT an RSS or Atom feed can be followed like one.
+
+You are given the URL of an index page (a blog index, a news section, a changelog, an author page) and a distilled outline of its HTML. The outline keeps tags, ids, classes and a few attributes, and collapses repeated siblings as "x N more" — that collapse is your strongest clue: the list of articles is almost always the repeated block.
+
+Return CSS selectors that pull the list of entries out of that page.
+
+THE SELECTOR LANGUAGE
+
+- Plain CSS selectors, evaluated by Go's cascadia. Tag, class, id, descendant, child, attribute and :nth-child work. jQuery extensions do NOT: no :has(), no :contains(), no :visible, no :first (use :first-child).
+- Append @attr to read an attribute instead of the text: "h2 a@href" is the anchor's href, "time@datetime" is the machine-readable date, "img@src" is the image address. Without @attr you get the element's text.
+- item_selector selects the CONTAINER of one entry. Every other selector is evaluated INSIDE a container match, so they must be relative to it and must not reach out to the page's header, nav or footer.
+
+RULES
+
+1. item_selector, title_selector and link_selector are required. The others are "" when the page does not carry them. Do not invent a selector for something that is not there — an empty string is a correct answer.
+2. link_selector MUST end in @href. A link selector that reads text produces an unopenable item.
+3. Prefer stable, meaningful class names ("post", "entry", "article-card") over generated ones ("css-1x7ab2", "sc-fzXfMB"), and prefer semantic elements (article, li, time) over div soup. A rule survives a redesign only if it keys on what the page MEANS.
+4. Choose the selector that matches the WHOLE list, not the featured item at the top. If the outline shows one hero block and then a repeated block, the repeated block is the list.
+5. date_selector: prefer time@datetime or an attribute holding an ISO date. Only set date_layout when the date is human text — it is a Go time layout using the reference "Mon Jan 2 15:04:05 2006", so "January 2, 2006" or "2 Jan 2006". Leave date_layout "" when the value is ISO 8601.
+6. summary_selector is the entry's own excerpt or standfirst, not the article body and not a category label.
+7. Do not select navigation, pagination, related-posts rails, comment counts, tag clouds, newsletter forms or "most popular" sidebars. Those repeat too and they are not the list.
+8. notes: one short sentence naming what you keyed on, for a person deciding whether to trust this. No preamble, no restating the selectors.`

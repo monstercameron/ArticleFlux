@@ -655,6 +655,15 @@ type NewSubscription struct {
 	// FolderID files the feed on the way in. Empty leaves it unfiled, which is
 	// where a feed added without a category belongs.
 	FolderID string
+	// Kind is the source kind: "feed" (the default), "scrape" for a page
+	// followed by a rule (§14.2), or "mailbox". It is set only when the source
+	// is CREATED — an existing source's kind belongs to whoever added it first,
+	// and a second subscriber cannot reinterpret a feed as a page to scrape.
+	Kind string
+	// FetchIntervalS overrides the default poll interval on creation. Scraped
+	// sources take §14.2's one-hour floor; a feed leaves this zero and gets the
+	// schema default.
+	FetchIntervalS int
 }
 
 // Subscribe attaches a user to a source, creating the source if no tenant has it
@@ -691,11 +700,26 @@ func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, n NewSubscription) 
 			}
 		case errors.Is(err, sql.ErrNoRows):
 			sourceID = idgen.New()
+			kind := n.Kind
+			if kind == "" {
+				kind = "feed"
+			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO sources (id,natural_key,feed_url,site_url,title,created_at,next_fetch_at)
-				VALUES (?,?,?,?,?,?,?)`,
-				sourceID, naturalKey, feedURL, siteURL, title, now, now); err != nil {
+				INSERT INTO sources (id,natural_key,feed_url,site_url,title,kind,created_at,next_fetch_at)
+				VALUES (?,?,?,?,?,?,?,?)`,
+				sourceID, naturalKey, feedURL, siteURL, title, kind, now, now); err != nil {
 				return err
+			}
+			// The interval is applied as an override rather than as a column in
+			// the INSERT, so the schema keeps owning what "normal" is. A caller
+			// that says nothing gets the default without this file having to
+			// know what the default is.
+			if n.FetchIntervalS > 0 {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE sources SET fetch_interval_s = ? WHERE id = ?`,
+					n.FetchIntervalS, sourceID); err != nil {
+					return err
+				}
 			}
 		default:
 			return err
@@ -765,7 +789,7 @@ func (r *ReaderRepo) SubscribedSources(ctx context.Context, s Scope) ([]SourceRo
 		return nil, ErrNoScope
 	}
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT src.id, src.feed_url, COALESCE(src.etag,''), COALESCE(src.last_modified,'')
+		SELECT src.id, src.feed_url, src.kind, COALESCE(src.etag,''), COALESCE(src.last_modified,'')
 		  FROM subscriptions sub
 		  JOIN sources src ON src.id = sub.source_id
 		 WHERE sub.user_id = ? AND sub.tenant_id = ? AND src.deactivated_at IS NULL`,
@@ -778,7 +802,7 @@ func (r *ReaderRepo) SubscribedSources(ctx context.Context, s Scope) ([]SourceRo
 	var out []SourceRow
 	for rows.Next() {
 		var sr SourceRow
-		if err := rows.Scan(&sr.ID, &sr.FeedURL, &sr.ETag, &sr.LastModified); err != nil {
+		if err := rows.Scan(&sr.ID, &sr.FeedURL, &sr.Kind, &sr.ETag, &sr.LastModified); err != nil {
 			return nil, err
 		}
 		out = append(out, sr)
@@ -788,8 +812,12 @@ func (r *ReaderRepo) SubscribedSources(ctx context.Context, s Scope) ([]SourceRo
 
 // SourceRow is the polling view of a source.
 type SourceRow struct {
-	ID           string
-	FeedURL      string
+	ID      string
+	FeedURL string
+	// Kind is "feed", "scrape" or "mailbox". The poller branches on it: a
+	// scraped source's feed_url is an index PAGE, and handing that to the feed
+	// parser produces "not a recognisable feed" on every poll forever.
+	Kind         string
 	ETag         string
 	LastModified string
 	// Staleness is how overdue this source is in units of its OWN fetch
