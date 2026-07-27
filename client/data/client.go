@@ -304,8 +304,12 @@ func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, st
 	return res.GetMarked(), res.GetUndoToken(), nil
 }
 
-// Subscribe adds a feed.
-func (c *Client) Subscribe(parent context.Context, url string) (*pb.SubscribeResponse, error) {
+// Subscribe adds a feed, optionally named and filed on the way in.
+//
+// title and folderID are both "leave it to the defaults" when empty: the
+// publisher's own title, and no category. The add-a-feed form sends whatever the
+// reader filled in and nothing more.
+func (c *Client) Subscribe(parent context.Context, url, title, folderID string) (*pb.SubscribeResponse, error) {
 	// Subscribing polls the feed synchronously on the server, so it gets the
 	// full budget rather than the shared one.
 	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
@@ -315,7 +319,9 @@ func (c *Client) Subscribe(parent context.Context, url string) (*pb.SubscribeRes
 	// because the tunnel is down and the call is patiently waiting for it, is
 	// indistinguishable from a feed that will not answer. Better to say
 	// "disconnected" at once and let the reader press it again.
-	res, err := c.reader.Subscribe(ctx, &pb.SubscribeRequest{Url: url}, grpc.WaitForReady(false))
+	res, err := c.reader.Subscribe(ctx,
+		&pb.SubscribeRequest{Url: url, Title: title, FolderId: folderID},
+		grpc.WaitForReady(false))
 	return res, c.track(err)
 }
 
@@ -381,6 +387,63 @@ func (c *Client) ListTags(parent context.Context) (*pb.ListTagsResponse, error) 
 	defer cancel()
 	res, err := c.reader.ListTags(ctx, &pb.ListTagsRequest{})
 	return res, c.track(err)
+}
+
+// ListFolders returns this user's categories.
+//
+// Separate from ListFeeds rather than embedded in it: the rail asks for feeds on
+// every navigation and after every state change, where the categories move only
+// when someone edits them. One call reloads on a click; the other reloads when
+// the taxonomy changes.
+func (c *Client) ListFolders(parent context.Context) ([]*pb.Folder, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.ListFolders(ctx, &pb.ListFoldersRequest{})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetFolders(), nil
+}
+
+// CreateFolder makes a category, or returns the one that already has that name.
+func (c *Client) CreateFolder(parent context.Context, name string) (*pb.Folder, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.CreateFolder(ctx, &pb.CreateFolderRequest{Name: name})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetFolder(), nil
+}
+
+// RenameFolder changes a category's name.
+func (c *Client) RenameFolder(parent context.Context, folderID, name string) (*pb.Folder, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.RenameFolder(ctx, &pb.RenameFolderRequest{FolderId: folderID, Name: name})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res.GetFolder(), nil
+}
+
+// DeleteFolder removes a category. The feeds in it are unfiled, never
+// unsubscribed.
+func (c *Client) DeleteFolder(parent context.Context, folderID string) error {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	_, err := c.reader.DeleteFolder(ctx, &pb.DeleteFolderRequest{FolderId: folderID})
+	return c.track(err)
+}
+
+// SetFeedFolder files a feed, or unfiles it when folderID is empty.
+func (c *Client) SetFeedFolder(parent context.Context, sourceID, folderID string) error {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	_, err := c.reader.SetFeedFolder(ctx, &pb.SetFeedFolderRequest{
+		SourceId: sourceID, FolderId: folderID,
+	})
+	return c.track(err)
 }
 
 // SetFeedTag adds or removes a tag on a feed.
