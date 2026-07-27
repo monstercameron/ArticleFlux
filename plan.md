@@ -3058,6 +3058,100 @@ reader: that is an egress decision, and taking it because someone asked to be re
 consent this application does not help itself to. The reader's ordinary notice banner cannot serve here,
 because it renders underneath this overlay.
 
+### FluxCast: the name, and where it is allowed to appear
+
+The slideshow with read-to-me and `tts.podcast` on is a distinct product capability, and it has a
+name: **FluxCast**, presented as *ArticleFlux Broadcast — powered by FluxCast*.
+
+Where it appears is the whole of the decision. The Settings tab that configures it is called
+**FluxCast**, and its first line carries the full form — that screen is where a reader turns the
+capability on, finds out why it is silent, and decides whether to spend money on it, so a name there
+is doing work. Nowhere else. Every control keeps its plain verb: the button says **Slideshow**, the
+transport says **Read to me**, the switch says **Join the stories up**. A button named after a brand
+is a button that has stopped saying what it does, and this application has one screen it can afford
+to name and forty controls it cannot.
+
+The code does not rename either. `client/view/slideshow.go`, `slides.*` in the catalogue and §19
+itself stay as they are: a brand is a thing marketing changes on a Tuesday, and a codebase that
+renamed its files to match would be one rename behind for the rest of its life.
+
+### The music, and why the greeting is its own recording
+
+The broadcast has two pieces of music and they are doing different jobs. The **opening** has a front to
+it: it starts loud, drops under the narrator while they introduce the programme, comes back up for five
+seconds when they finish, and leaves. The **bed** is furniture — it fades in under the first story and
+stays there, at a level nobody is meant to notice, for as long as the show runs. Which recording is
+which is declared beside the files on the SERVER (`internal/transport/grpcsrv/audio.go`), because a
+piece written to sit under speech and a piece written to open a programme are not interchangeable and a
+client inferring it from a filename would get it wrong the day somebody adds a fifth track.
+
+The sequence, in order:
+
+    theme, loud                              Sting(track)
+    theme under the voice                    StingUnder()  when the greeting is audible
+    "Good evening — nine stories tonight…"   the OPENING, its own recording
+    theme swells                             StingSwell()  the greeting has ended
+    the first story is asked for             immediately — the theme covers the wait
+    theme alone, at least introHold          4s, however fast the segment arrives
+    theme fades, bed rises under it          introCross(), on the player's `ready`
+    the narrator starts the news             introLead — 2s into the crossfade
+
+    … and at every seam after that:
+
+    the story ends                           the bed LIFTS above its resting level
+    three seconds of music                   seamHold, measured from the end
+    the next story starts into it            AudioGo, then the bed ducks again
+
+The seam is the same held-playback mechanism as the opening, for the same reason:
+one story ending and the next beginning in the same half second is what makes a
+queue sound like a queue. Measured from the END of the last story, so a segment
+that took ten seconds to synthesise adds nothing on top of it — the wait it
+already imposed WAS the seam.
+
+**The handover is triggered by the VOICE, not by a clock**, and getting that
+wrong is what the first version did. It ran the whole sequence on timers: swell,
+hold, fade, bring the bed in, then ask for the story. That is out of phase by
+construction, because the one duration it cannot know is the only one that
+matters — writing and synthesising a segment takes anywhere from a second to
+half a minute. So the theme ended, the bed came up, and the broadcast sat on
+quiet music with nobody talking over it.
+
+It also cannot be fixed by reacting to playback starting: a crossfade that begins
+when the voice does is a crossfade you hear happening *underneath* the voice. So
+the player reports `ready` (`canplay`) and HOLDS the audio — `PlayAudioIn` with a
+negative lead — while the music moves; `AudioGo` releases it two seconds in. The
+`introHold` floor is the other half: without it a cached segment reports ready in
+the same tenth of a second the theme swells, and the swell and the fade collapse
+into one event that sounds like the music being cut off.
+
+That timeline is the whole reason **the greeting is a separate `/speech` request** (`smart.Segment.
+OpenOnly`, `i=1`). Inside the first segment there is no moment the client can see coming: the audio is
+one file, the greeting ends somewhere in the middle of it, and nothing on the client knows where. As its
+own recording it ends, and an `ended` event is something music can be timed against. The cost is one
+extra synthesis per broadcast and one more thing to get wrong — the first story then has to say
+`i=0`, "do not greet anybody", because in a split broadcast it genuinely has no predecessor and would
+otherwise be greeted a second time.
+
+**The tracks come down the tunnel, not from a URL** — the opposite of the choice `/speech` makes
+(§10.7), argued in `proto/articleflux/v1/system.proto`. Three things fell out of that and all three
+were bugs before they were decisions:
+
+- **One fetch at a time.** A stream is a held resource and a caller may hold four (`maxStreamsPerCaller`).
+  Asking for both pieces at once, on top of the event pump, was enough to be refused with
+  `ResourceExhausted` — and because the refusal was silent and never retried, the symptom was simply no
+  music, with every part of the machinery working. They are wanted a minute apart anyway.
+- **A failure is not final.** Three attempts per track, then silence. The first version marked a track as
+  asked before the answer arrived, so one transient error meant no music for the rest of the session.
+- **The music is started by an EFFECT, not by the click.** At the moment the show opens the bytes are
+  usually still coming, so the imperative version called `Sting("")` once, at the only moment it could,
+  and nothing ever revisited it. The synthesised chime covers the gap until the track lands.
+
+One more, recorded because it looked exactly like a browser with no audio: on a `BiquadFilterNode` and an
+`OscillatorNode`, `frequency` is an AudioParam and **`type` is a plain string**. Setting it as
+`node.Get("type").Set("value", …)` panics the wasm module, which the sound layer's own `recover()`
+swallows — so the chime silently did nothing from the day it was written until the day somebody hooked
+`createOscillator` and watched it never get called.
+
 ### Keeping the screen, and giving it back
 
 `navigator.wakeLock` on the way in, released on the way out and **re-acquired on `visibilitychange`**,

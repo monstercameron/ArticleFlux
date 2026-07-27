@@ -3,6 +3,7 @@
 package view
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -327,9 +328,16 @@ func bedPicker(tr i18n.Runtime, current string, tracks []data.AudioTrack) ui.Nod
 	// "auto" is not offered as a chip — it is what the stored preference says
 	// before anybody has picked a piece, and it resolves to the first track. So
 	// the first track is what shows as selected, which is what is playing.
-	sel := bedTrackID(current, tracksFor(tracks, roleBed))
+	beds := tracksFor(tracks, roleBed)
+	sel := bedTrackID(current, beds)
 	chips := []ui.Node{pickChip(actBed, bedOff, tr.T("settings", "bedOff"), !on)}
 	for _, t := range tracks {
+		// Beds only. The openings are not choices: they play at the top of a
+		// broadcast and nowhere else, and one offered here would be picked by
+		// somebody who then cannot hear the news over it.
+		if !slices.Contains(beds, t.ID) {
+			continue
+		}
 		chips = append(chips, pickChip(actBed, t.ID, t.Title, on && t.ID == sel))
 	}
 	return html.Span(html.Props{Class: "set-picks", Role: "group",

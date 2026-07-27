@@ -228,9 +228,11 @@ type actions struct {
 	// introEnded is the broadcast's greeting finishing — which is not a story
 	// finishing, and must not advance the queue. It starts the interlude.
 	introEnded func()
-	// introPlay starts the first story once the interlude is over, or early
-	// when a paused reader presses play during it.
+	// introPlay starts the first story once the greeting has ended.
 	introPlay func()
+	// introCross hands the sound over from the theme to the bed. Triggered by
+	// the narrator becoming audible rather than by a clock — see reader.go.
+	introCross func()
 	// setRate changes how fast the narrator reads.
 	setRate func(v string)
 	// slideSetDwell changes the pace from the settings screen.

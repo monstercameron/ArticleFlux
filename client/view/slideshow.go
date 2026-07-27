@@ -616,20 +616,22 @@ const podcastVibePref = "tts.podcastVibe"
 // reading faster rather than like a cartoon.
 const (
 	speechRatePref    = "tts.rate"
-	speechRateDefault = "1.2"
+	speechRateDefault = "1.1"
 )
 
 // speechRateChoices are what the settings screen offers.
 //
-// 1.2 is the DEFAULT rather than 1.0, which is a real opinion: synthesised
+// 1.1 is the DEFAULT rather than 1.0, which is a real opinion: synthesised
 // speech is read at a measured, evenly-paced clip that a person listening to
-// news does not need, and a fifth faster is the point at which most people stop
-// noticing the pace and start noticing the content. Slower is offered because
-// "most people" is not everybody, and because a second language makes 1.2
-// tiring.
-var speechRateChoices = []string{"0.9", "1", "1.2", "1.4", "1.6"}
+// news does not need, and a little faster is where most people stop noticing the
+// pace and start noticing the content. It was 1.2 first and came back down after
+// listening to a whole broadcast at it — a tenth is a lot over twenty minutes,
+// and the point where "brisk" becomes "hurried" is earlier than it sounds in a
+// single paragraph. Slower is offered because "most people" is not everybody,
+// and because a second language makes even this tiring.
+var speechRateChoices = []string{"0.9", "1", "1.1", "1.3", "1.5"}
 
-// speechRateFrom reads the stored rate, defaulting to 1.2.
+// speechRateFrom reads the stored rate, defaulting to 1.1.
 //
 // An unrecognised value is replaced rather than kept, unlike the dwell pace: a
 // dwell of "17" is a perfectly good number of seconds nobody offered, while a
@@ -656,18 +658,50 @@ func speechRateValue(pref string) float64 {
 // The opening interlude: what happens between the greeting ending and the first
 // story starting. See the choreography in reader.go.
 //
-// introHold is how long the theme plays alone once the narrator has finished
-// introducing the programme. Five seconds is short enough not to be a wait and
-// long enough to be a phrase of music rather than a swell and a fade — under
-// about four it reads as a mistake, as though something was cut off.
+// # The handover is triggered by the VOICE, not by a clock
 //
-// introHandover is the overlap: the theme is fading, the bed is rising, and this
-// is how far into that the narrator starts. Two seconds means the voice arrives
-// while the music is still audibly leaving, which is what makes it sound like
-// one programme rather than a jingle followed by a podcast.
+// The first version ran it on timers: swell, hold five seconds, fade the theme
+// out, bring the bed in, then ask for the first story. That is out of phase by
+// construction, because the one duration it does not know is the only one that
+// matters — writing and synthesising a segment takes anywhere from a second to
+// half a minute. So the theme ended, the bed came up, and the broadcast sat on
+// quiet music with nobody talking over it.
+//
+// Now the theme simply KEEPS PLAYING until the narrator is audible, and the
+// crossfade happens on the player's own `playing` event. Nothing waits on a
+// guess.
+//
+// introLead is the one delay left, and it is a delay on the VOICE rather than on
+// the music: the player reports the segment ready, the crossfade starts, and the
+// narrator is held back two seconds so the news begins into a bed that is
+// already there. A crossfade that starts when the voice does is a crossfade you
+// hear happening underneath the voice, which is the difference between a
+// programme and two things overlapping.
+//
+// introWait is the backstop. If the voice never arrives at all, the theme must
+// not loop under a silent screen forever — so at some point the show crosses to
+// the bed anyway and gets on with looking like a broadcast. Long, because the
+// legitimate wait is long, and the player's own error state reports a real
+// failure immediately.
+//
+// introHold is the other half, and it is a MINIMUM rather than a schedule: the
+// theme plays alone for at least this long after the greeting, however quickly
+// the segment turns up. Without it a cached broadcast swells and crossfades in
+// the same tenth of a second, which sounds like the music being cut off rather
+// than like the end of a phrase. The story is still asked for immediately —
+// this delays the handover, never the request.
+//
+// seamHold is the same idea between two stories: the music comes up, holds, and
+// the next segment starts into it. Three seconds, which is short enough not to
+// be a pause and long enough to be a beat — without it one story ends and the
+// next begins in the same half second, which is what makes a queue sound like a
+// queue rather than a programme. Measured from the END of the last story, so a
+// segment that took ten seconds to synthesise adds nothing on top.
 const (
-	introHold     = 5 * time.Second
-	introHandover = 2 * time.Second
+	introHold = 4 * time.Second
+	introLead = 2 * time.Second
+	introWait = 45 * time.Second
+	seamHold  = 3 * time.Second
 )
 
 // podcastBedPref is the opening sting and the low pad underneath the broadcast.

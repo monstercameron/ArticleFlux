@@ -238,7 +238,11 @@ func Reader(p readerProps) ui.Node {
 	// trusting them would sound like.
 	bedBlobs := ui.UseRef(map[string]string{})
 	bedPlaying := ui.UseRef("")
-	bedAsked := ui.UseRef(map[string]bool{})
+	// bedTries counts attempts per track and bedFetching names the one in
+	// flight. Together they are the whole fetch policy: one stream at a time,
+	// three tries each, then silence.
+	bedTries := ui.UseRef(map[string]int{})
+	bedFetching := ui.UseRef("")
 	// bedNudge exists to wake the effect when a fetch finishes. State rather than
 	// a ref precisely because it must cause a commit — the arrival of the bytes
 	// is the one thing that changes nothing else on the screen.
@@ -261,10 +265,36 @@ func Reader(p readerProps) ui.Node {
 	// say — and it is what tells the FIRST STORY's request not to greet anybody,
 	// because the greeting has already happened in a file of its own.
 	introSplit := ui.UseRef(false)
+	// introWaiting is the window between the greeting ending and the first story
+	// being ready to play: the theme is up, the story has been asked for, and
+	// nothing has been handed over yet. It is what the player's "ready" state
+	// looks at to know that its arrival is a cue for the music. introSince is
+	// when the window opened, so the theme is guaranteed its phrase even when
+	// the segment was already cached and arrives at once.
+	introWaiting := ui.UseRef(false)
+	introSince := ui.UseRef(time.Time{})
+	// The same pair for the seam between two stories: the music has come up and
+	// the next segment is being held so it starts INTO the lift rather than
+	// underneath it.
+	seamWaiting := ui.UseRef(false)
+	seamSince := ui.UseRef(time.Time{})
+	// Declared here and assigned with the rest of the interlude, far below,
+	// because the two places that schedule and cancel its steps — the player's
+	// state callback and the show's own transport — are both written before it.
+	var (
+		introAt     func(d time.Duration, fn func())
+		introCancel func()
+	)
 	// stingID is which opening this session plays, chosen once when the show
 	// opens. Once, because choosing it per render would pick a different piece
 	// every commit and download all of them.
 	stingID := ui.UseRef("")
+	// stingOn is whether the theme should be playing, and stingPlaying is what
+	// the platform layer currently holds. State for the first because the effect
+	// that starts the music has to see it change; a Ref for the second because it
+	// exists only to keep that effect from restarting the track on every commit.
+	stingOn := ui.UseState(false)
+	stingPlaying := ui.UseRef("")
 	// introTimers are the pending steps of the interlude, held so that pausing or
 	// leaving can cancel them. A timer that fires after the reader has gone is a
 	// narrator starting up in an empty room.
@@ -747,28 +777,44 @@ func Reader(p readerProps) ui.Node {
 		if u := bedBlobs.Get()[id]; u != "" {
 			return u
 		}
-		if bedAsked.Get()[id] {
+		// ONE AT A TIME. A stream is a held resource and a caller may hold four
+		// (see maxStreamsPerCaller): the event pump is one, a reload racing its
+		// own teardown is two, and asking for both pieces of music at once was
+		// enough to be refused with ResourceExhausted — which, because the
+		// refusal was silent and never retried, is precisely what "I don't hear
+		// any music" looked like. They are wanted a minute apart anyway.
+		if bedFetching.Get() != "" {
+			return ""
+		}
+		// And a failure is not final. The first version marked a track as asked
+		// before the answer came back and never asked again, so one transient
+		// error meant silence for the rest of the session. Three attempts,
+		// because the two reasons this fails — a busy tunnel and a track that is
+		// not there — are told apart by whether trying again works.
+		if bedTries.Get()[id] >= 3 {
 			return ""
 		}
 		c := client.Get()
 		if c == nil {
 			return ""
 		}
-		bedAsked.Get()[id] = true
+		bedTries.Get()[id]++
+		bedFetching.Set(id)
 		go func() {
 			b, err := c.GetAudioTrack(context.Background(), id)
 			ui.PostAsync(func() {
-				if err != nil || len(b) == 0 {
-					return
+				bedFetching.Set("")
+				if err == nil && len(b) > 0 {
+					if u := platform.BlobURL("audio/mpeg", b); u != "" {
+						bedBlobs.Get()[id] = u
+					}
 				}
-				u := platform.BlobURL("audio/mpeg", b)
-				if u == "" {
-					return
-				}
-				bedBlobs.Get()[id] = u
-				// A commit rather than a call to play it: this callback does not
-				// know whether the show is still open or what should be playing
-				// now, and the effect that does is one render away.
+				// A commit either way, and that is what makes the queue work: on
+				// success the effects start the music, and on failure they get
+				// another turn to ask for the piece that was waiting behind this
+				// one. Nothing is reported to the reader — the broadcast is the
+				// point, and a missing bed is not worth a message on a screen
+				// somebody is watching from across the room.
 				bedNudge.Set(bedNudge.Get() + 1)
 			})
 		}()
@@ -3257,6 +3303,22 @@ func Reader(p readerProps) ui.Node {
 			notice.Set(tr.T("reader", "queueFinished"))
 			return
 		}
+		// THE SEAM. The bed comes up, and the next segment is held so that it
+		// starts into the lift rather than on top of it. Only inside the show
+		// and only with music playing: an ordinary listening session has no bed
+		// to breathe with, and adding three seconds of silence to it would be a
+		// pause with nothing in it.
+		if showOpen.Get() && showAudio.Get() && speakBed.Get() != bedOff {
+			platform.BedSeam()
+			seamWaiting.Set(true)
+			seamSince.Set(time.Now())
+			// The same backstop the opening has: whatever is held must be let
+			// go, or a segment whose "ready" never arrived would never play.
+			introAt(introWait, func() {
+				seamWaiting.Set(false)
+				platform.AudioGo()
+			})
+		}
 		// Held across the round trip. The ticket is minted by GetItem, so a
 		// body that has not landed yet has nothing to play; autoWant is the
 		// note that says "start this one the moment it does".
@@ -3301,9 +3363,70 @@ func Reader(p readerProps) ui.Node {
 				// from a second to half a minute — and ducking for that whole
 				// wait would be a broadcast that goes quiet before it starts.
 				switch s {
+				case "ready":
+					// THE HANDOVER, and it happens BEFORE a word is spoken.
+					// `ready` is the player saying the segment could start now;
+					// it is being held for introLead while the theme leaves and
+					// the bed arrives, so the news begins into a bed that is
+					// already there rather than on top of a fade.
+					//
+					// Everything before this was a guess at how long writing and
+					// synthesising a segment takes, and the guess is what left
+					// the bed playing under a silent screen.
+					if introWaiting.Get() {
+						// The theme gets its phrase first. In the slow case this
+						// has long since elapsed and the handover is immediate;
+						// in the cached case it is the difference between a
+						// musical ending and a cut.
+						hold := introHold - time.Since(introSince.Get())
+						if hold < 0 {
+							hold = 0
+						}
+						introAt(hold, func() {
+							act.Get().introCross()
+							// And the news begins into a bed that is already
+							// there, two seconds into the crossfade rather than
+							// at the top of it.
+							introAt(introLead, platform.AudioGo)
+						})
+					}
+					if seamWaiting.Get() {
+						seamWaiting.Set(false)
+						introCancel()
+						// From the end of the LAST story, not from now: a
+						// segment that took ten seconds to write has already
+						// given the seam more than it asked for, and adding
+						// three more would be a gap rather than a beat.
+						hold := seamHold - time.Since(seamSince.Get())
+						if hold < 0 {
+							hold = 0
+						}
+						introAt(hold, platform.AudioGo)
+					}
+					// Not a state the rest of the application knows about: it
+					// describes what is about to happen, and "ready" on a play
+					// button means nothing to anybody.
+					return
 				case "playing":
 					if introFor.Get() != "" {
 						platform.StingUnder()
+					}
+					// THE HANDOVER. The narrator is audible — not requested, not
+					// buffering, audible — which is the only moment at which the
+					// theme has finished its job. Everything before this was a
+					// guess at how long a segment takes to write and synthesise,
+					// and the guess is what left the bed playing under silence.
+					//
+					// Held back to introBeat after the greeting so the swell is
+					// not cut off in the case where the audio was already cached.
+					// The voice comes in over the tail of the theme either way,
+					// which is how a radio desk does it.
+					// A backstop for the handover. `ready` above is what
+					// normally does it, and this catches the case where the
+					// element never emitted one — a cached response can go
+					// straight to playing on some browsers.
+					if introWaiting.Get() {
+						act.Get().introCross()
 					}
 					platform.BedDuck(true)
 				case "paused":
@@ -3350,7 +3473,20 @@ func Reader(p readerProps) ui.Node {
 			if src := it.GetSpeechUrl(); src != "" {
 				platform.SpeechStop()
 				speakState.Set("loading")
-				platform.PlayAudio(speechFrom(src, speechAsk{
+				// A lead ONLY for the first story of a split broadcast: the
+				// crossfade out of the theme has to start before the voice, so
+				// the player holds the audio back while the music moves. Every
+				// other track plays as soon as it can.
+				// HELD for the first story of a split broadcast: the crossfade
+				// out of the theme has to start before the voice, and when it
+				// starts depends on how long the theme has been playing — which
+				// the player cannot know. So it loads, says "ready", and waits
+				// to be told. Every other track plays as soon as it can.
+				lead := 0
+				if introWaiting.Get() || seamWaiting.Get() {
+					lead = -1
+				}
+				platform.PlayAudioIn(speechFrom(src, speechAsk{
 					prevID:  prev,
 					podcast: speakPodcast.Get(),
 					// Read here rather than once at mount: a broadcast started
@@ -3363,7 +3499,7 @@ func Reader(p readerProps) ui.Node {
 					// story: a bulletin lists its own top story first.
 					lineup: slideLineup(itemsRef.Get(), it.GetId(), slideMaxLineup),
 					intro:  introAskFor(it.GetId()),
-				}), onState)
+				}), lead, onState)
 				// Warm the NEXT article's audio while this one plays.
 				//
 				// Without this a continuous session is forty seconds of silence
@@ -3699,10 +3835,6 @@ func Reader(p readerProps) ui.Node {
 	// one. It is the same mechanism a continuous listening session already uses,
 	// which is the point of building this mode on top of Keep playing rather than
 	// beside it.
-	// Declared here and assigned below, because slideNarrate has to be able to
-	// call it and is written first. See the interlude block for what it cancels.
-	var introCancel func()
-
 	slideNarrate := func(it *pb.Item) {
 		if it == nil {
 			return
@@ -3711,11 +3843,9 @@ func Reader(p readerProps) ui.Node {
 		// and the timer waiting to start the old one has to go with the choice.
 		// Without this, the news starts twice: once where they went, and once
 		// where they were.
-		if id := introOwed.Get(); id != "" && id != it.GetId() {
-			introCancel()
+		if introWaiting.Get() {
 			introOwed.Set("")
-			platform.StingOut()
-			bedFrom.Set(true)
+			act.Get().introCross()
 		}
 		// The theme opens the broadcast, and it plays NOW rather than when the
 		// audio arrives — which is the whole reason it works. The greeting takes
@@ -3727,13 +3857,23 @@ func Reader(p readerProps) ui.Node {
 		// with nothing to say.
 		if speakBed.Get() != bedOff && speakID.Get() == "" && !introSplit.Get() {
 			introSplit.Set(true)
-			if u := trackURL(stingID.Get()); u != "" {
-				platform.Sting(u)
-			} else {
-				// The track has not arrived yet, or this deployment ships none.
-				// Three synthesised notes rather than nothing: the point of the
-				// sound is to say the broadcast has started, and that survives
-				// being a chime.
+			// Chosen HERE and not left to the warming effect. This runs inside
+			// the click that opened the show, before any effect has had a
+			// commit to run in — so an opening picked by the effect is always
+			// one beat too late for the first broadcast, which is the only one
+			// that has an opening.
+			if stingID.Get() == "" {
+				ms, _ := platform.LocalNow()
+				stingID.Set(stingPick(bedTracks.Get(), ms))
+			}
+			// The theme is asked for as STATE and started by the effect below,
+			// because the track may still be coming down the tunnel. Calling
+			// Sting here would start silence and never revisit it.
+			stingOn.Set(true)
+			if trackURL(stingID.Get()) == "" {
+				// Nothing to play yet — three synthesised notes rather than a
+				// silent start. The point of the sound is to say the broadcast
+				// has begun, and that survives being a chime.
 				platform.StingChime()
 			}
 			// The greeting becomes its own recording only in broadcast mode.
@@ -3773,7 +3913,7 @@ func Reader(p readerProps) ui.Node {
 	// Every timer goes in introTimers so that pausing or leaving can cancel it. A
 	// timer that fires after the reader has gone is a narrator starting up in an
 	// empty room.
-	introAt := func(d time.Duration, fn func()) {
+	introAt = func(d time.Duration, fn func()) {
 		t := time.AfterFunc(d, func() { ui.PostAsync(fn) })
 		introTimers.Set(append(introTimers.Get(), t))
 	}
@@ -3804,6 +3944,27 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().introPlay = introPlay
 
+	// introCross is the handover itself: the theme leaves and the bed arrives, in
+	// the same gesture. Idempotent, because three different things can call it —
+	// the narrator starting, the backstop timer, and a reader who skipped — and
+	// two of them can happen close together.
+	introCross := func() {
+		if !introWaiting.Get() {
+			return
+		}
+		introWaiting.Set(false)
+		introCancel()
+		stingOn.Set(false)
+		stingPlaying.Set("")
+		platform.StingOut()
+		// The bed rises UNDER the theme's fade rather than after it. The two
+		// overlap by design, over the same two and a half seconds — a gap between
+		// them would be the one moment of silence in a broadcast meant to sound
+		// continuous.
+		bedFrom.Set(true)
+	}
+	act.Get().introCross = introCross
+
 	act.Get().introEnded = func() {
 		id := introFor.Get()
 		introFor.Set("")
@@ -3817,13 +3978,19 @@ func Reader(p readerProps) ui.Node {
 		// silently on a headline.
 		speakState.Set("loading")
 		platform.StingSwell()
-		introAt(introHold, func() {
-			platform.StingOut()
-			// The bed starts UNDER the theme's fade rather than after it. The two
-			// overlap by design — a gap between them would be the one moment of
-			// silence in a broadcast that is meant to sound continuous.
-			bedFrom.Set(true)
-			introAt(introHandover, introPlay)
+		introWaiting.Set(true)
+		introSince.Set(time.Now())
+		// The story is asked for NOW, not after a musical interval. The wait for
+		// it is the longest thing in this sequence and the least predictable, and
+		// the theme is what covers it — so there is nothing to gain by starting
+		// the wait later.
+		introPlay()
+		// If the voice never arrives, the theme must not loop under a silent
+		// screen forever — and whatever is held must be let go, or a segment
+		// that reported ready and then lost its cue would never play at all.
+		introAt(introWait, func() {
+			introCross()
+			platform.AudioGo()
 		})
 	}
 
@@ -4114,7 +4281,11 @@ func Reader(p readerProps) ui.Node {
 		introFor.Set("")
 		introOwed.Set("")
 		introSplit.Set(false)
+		introWaiting.Set(false)
+		seamWaiting.Set(false)
 		stingID.Set("")
+		stingOn.Set(false)
+		stingPlaying.Set("")
 		bedFrom.Set(false)
 		platform.StingOut()
 		showOpen.Set(false)
@@ -4160,12 +4331,7 @@ func Reader(p readerProps) ui.Node {
 		// Resuming out of the interlude goes straight to the story rather than
 		// replaying the music. Somebody who pressed play wants the news, and
 		// five more seconds of theme would read as the button not working.
-		if introOwed.Get() != "" {
-			platform.StingOut()
-			bedFrom.Set(true)
-			act.Get().introPlay()
-			return
-		}
+
 		if showAudio.Get() {
 			act.Get().listen(showID.Get())
 		}
@@ -6111,6 +6277,25 @@ func Reader(p readerProps) ui.Node {
 		return nil
 	}, []any{showOpen.Get(), showAudio.Get(), bedFrom.Get(), speakBed.Get(),
 		len(bedTracks.Get()), bedNudge.Get()})
+
+	// The theme, started when its bytes are actually here.
+	//
+	// An effect for the reason the bed is one, and for a sharper one besides: the
+	// track arrives over the tunnel, so at the moment the broadcast starts there
+	// is very often nothing to play yet. The imperative version of this called
+	// Sting("") once, at the only moment it could, and the music never came —
+	// which is exactly how "I don't hear any music" happens with every piece of
+	// the machinery working.
+	ui.UseEffect(func() func() {
+		if !showOpen.Get() || !stingOn.Get() {
+			return nil
+		}
+		if u := trackURL(stingID.Get()); u != "" && stingPlaying.Get() != u {
+			stingPlaying.Set(u)
+			platform.Sting(u)
+		}
+		return nil
+	}, []any{showOpen.Get(), stingOn.Get(), bedNudge.Get()})
 
 	// Choose the opening and pull both pieces down BEFORE anybody presses play.
 	//

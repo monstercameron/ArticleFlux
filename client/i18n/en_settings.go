@@ -13,10 +13,13 @@ func init() {
 		"tab.myfeed":     "My Feed",
 		"tab.appearance": "Appearance",
 		"tab.listening":  "Listening",
-		// "Podcast", not "Read to me": the tab is where the broadcast is
-		// configured, and read-to-me is one thing it enables. A reader looking for
-		// why the slideshow will not speak arrives here from the slide itself.
-		"tab.podcast":  "Podcast",
+		// The capability has a name, and this is the one screen where naming it
+		// earns anything: it is where the whole thing is turned on, explained and
+		// diagnosed. Every CONTROL stays plain — "Slideshow", "Read to me", "Join
+		// the stories up" — because a button named after a brand is a button that
+		// has stopped saying what it does. A reader looking for why the slideshow
+		// will not speak still arrives here, from the slide itself.
+		"tab.podcast":  "FluxCast",
 		"tab.smart":    "Smart+",
 		"tab.classify": "Classification",
 		"tab.feeds":    "Feeds",
@@ -103,10 +106,10 @@ func init() {
 		// notes and a low pad, and the pad is meant to be felt rather than heard.
 		// How fast the narrator reads. Named for the reader's experience rather
 		// than for playbackRate, and the default is marked in the chip itself
-		// because 1.2 is a deliberate choice and not the absence of one.
+		// because 1.1 is a deliberate choice and not the absence of one.
 		"rate": "Reading speed",
 		"rateHint": "How fast the voice reads. Applied in the player, so it costs nothing and works on audio you have already heard. " +
-			"1.2 is the default: news read at conversational pace sounds slow.",
+			"1.1 is the default: news read at conversational pace sounds slow.",
 		"rateTimes":        "{n}×",
 		"rateTimesDefault": "{n}× default",
 		"bed":              "Opening sting and music",

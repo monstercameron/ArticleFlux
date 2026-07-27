@@ -11,8 +11,10 @@ func init() {
 		// What the tab is FOR, in one line. It names the two things a reader
 		// might have come here to do — turn the broadcast on, or find out why it
 		// is silent — because the second is how most people arrive.
-		"intro": "Read to me turns the slideshow into a narrated programme. Everything it " +
-			"depends on is here, with what is on and what is not.",
+		"intro": "ArticleFlux Broadcast — powered by FluxCast. Read to me turns the " +
+			"slideshow into a narrated programme: your feed, written as a bulletin and " +
+			"read over music. Everything it depends on is here, with what is on and " +
+			"what is not.",
 
 		// The checklist's hint. It says the switches are REAL, because they are:
 		// each one writes the same preference the Listening tab writes, and a

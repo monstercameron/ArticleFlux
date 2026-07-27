@@ -738,19 +738,36 @@ func TestSpeechFromSplitsTheOpening(t *testing.T) {
 	}
 }
 
-// The interlude has to be long enough to be a phrase of music and short enough
-// not to be a wait. These are the numbers the choreography in reader.go depends
-// on; the test exists so that changing one is a decision rather than a typo.
-func TestTheInterludeIsAPhraseNotAWait(t *testing.T) {
-	if introHold < 4*time.Second || introHold > 8*time.Second {
-		t.Errorf("the theme plays alone for %v", introHold)
+// The handover waits for the VOICE, so the only two durations left are a beat
+// and a backstop. The test exists so that changing either is a decision rather
+// than a typo — and so that nobody reintroduces a "hold the theme for N
+// seconds" number, which is the thing that put the bed under a silent screen.
+func TestTheHandoverIsABeatAndABackstop(t *testing.T) {
+	// Long enough for the crossfade to have visibly started before the voice,
+	// short enough that holding the news back is not a wait anybody notices.
+	if introLead < time.Second || introLead > 4*time.Second {
+		t.Errorf("the voice is held back %v", introLead)
 	}
-	if introHandover >= introHold {
-		t.Errorf("the narrator starts %v in, which is not inside a %v fade",
-			introHandover, introHold)
+	// The backstop has to be longer than a legitimately slow segment — writing
+	// one and synthesising it is two paid round trips — or it fires on healthy
+	// instances and cuts the theme off under a narrator that was coming.
+	if introWait < 30*time.Second {
+		t.Errorf("the backstop fires after %v, inside a normal wait", introWait)
 	}
-	if introHandover < time.Second {
-		t.Errorf("the narrator starts %v after the fade begins, on top of the music",
-			introHandover)
+	if introLead >= introWait {
+		t.Errorf("the lead (%v) is not shorter than the backstop (%v)",
+			introLead, introWait)
+	}
+	// The theme's guaranteed phrase. Long enough that a swell and a fade are two
+	// gestures rather than one event — under about three seconds a cached
+	// broadcast sounds like the music was cut off.
+	if introHold < 3*time.Second || introHold > 8*time.Second {
+		t.Errorf("the theme is guaranteed %v alone", introHold)
+	}
+	// And the two together still have to be shorter than the backstop, or the
+	// backstop fires in the middle of a handover it was meant to replace.
+	if introHold+introLead >= introWait {
+		t.Errorf("hold (%v) plus lead (%v) reaches the backstop (%v)",
+			introHold, introLead, introWait)
 	}
 }

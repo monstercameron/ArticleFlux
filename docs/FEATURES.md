@@ -945,10 +945,29 @@ forty-second slide would move the text past too fast to follow, which is more ir
 at all — so a long article simply does not finish, and you get its opening at a pace you can take in.
 The whole thing is one keystroke away in the reader.
 
+### FluxCast
+
+With **Read to me** on and *Join the stories up* enabled, the slideshow stops being a slideshow and
+becomes **ArticleFlux Broadcast — powered by FluxCast**: your feed written as a bulletin, opened by a
+greeting and a run-through of the headlines, read over music, story handing over to story until you
+stop it. FluxCast is the name of that capability. Every control that turns it on keeps saying what it
+does — *Slideshow*, *Read to me*, *Join the stories up* — and the one place the name appears in the
+app is **Settings → FluxCast**, where the whole thing is switched on, explained and diagnosed.
+
 **Read to me** hands the pacing to the voice. Each story stays up until it has been read out, and the
 page scrolls in step with the narrator — driven by the audio's own clock, not by an estimate, so the
 text is where the voice is. With *Join the stories up* (§22a) on, the segments hand over to each other
 and what you get is a newscast rather than a queue.
+
+**And it has music.** The broadcast opens on a theme, loud, which drops under the narrator while they
+greet you and run through the headlines, swells for five seconds when they finish, and fades out as a
+quieter piece rises underneath the first story and stays there for the rest of the show. Four tracks
+ship with it: two openings, chosen at random so a regular listener does not hear the same one every
+evening, and two beds — pick yours in Settings → Listening, or turn the sound off there. The music is
+only downloaded when you first play it, and only the piece you chose.
+
+Pausing pauses the music where it is rather than fading it out, so pressing play again picks the
+programme up rather than starting the track over.
 
 **The screen is kept awake** while it runs, and released the moment it stops. Both that and fullscreen
 are requests the browser may refuse; the mode is correct either way rather than gated on them.

@@ -84,7 +84,7 @@ func init() {
 
 		// --- what read-to-me needs
 		//
-		// These moved to Settings → Podcast when the dialog they used to fill was
+		// These moved to Settings → FluxCast when the dialog they used to fill was
 		// taken out of the slideshow; the WORDING stays here because it describes
 		// the slideshow's own dependency, and a requirement with two descriptions
 		// in two packages is a requirement whose descriptions drift.

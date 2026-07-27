@@ -296,8 +296,8 @@ test.describe('slideshow', () => {
         (el) => parseFloat(getComputedStyle(el).getPropertyValue('--fill')) || 0),
       { timeout: 30_000 }).toBeGreaterThan(0.25);
 
-    // Pressing the line ends the show and lands on Settings -> Podcast, which is
-    // where every one of those switches lives.
+    // Pressing the line ends the show and lands on Settings -> FluxCast,
+    // which is where every one of those switches lives.
     await line.click();
     await expect(slides(page)).toHaveCount(0);
     const panel = page.locator('.set-panel');
