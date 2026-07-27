@@ -114,30 +114,16 @@ func cached[T proto.Message](c *Client, key string, fetch func() (T, error), emp
 // pages are deliberately absent: a cached page 3 with no page 2 behind it is a
 // list with a hole in it, and the virtual list would render placeholders that
 // can never resolve.
-func itemsKey(req *pb.ListItemsRequest) string {
-	if req.GetCursor() != "" {
-		return "" // not cacheable; see above
-	}
-	k := "items:" + req.GetScope().String()
-	if req.GetUnreadOnly() {
-		k += ":unread"
-	}
-	if id := req.GetSourceId(); id != "" {
-		k += ":src=" + id
-	}
-	for _, id := range req.GetSourceIds() {
-		k += ":s=" + id
-	}
-	return k
-}
-
-const feedsKey = "feeds"
-
-func itemKey(id string) string { return "item:" + id }
+// The key builders moved to keys.go (8.9).
+//
+// They were here, unexported and behind `//go:build js`, which made the one
+// piece of pure string arithmetic in this file the one piece that could not be
+// tested natively — and the view could not name a key it wanted invalidated.
+// The CACHE needs a build tag; the naming scheme does not.
 
 // ListItemsCached is ListItems, with the last answer as a fallback.
 func (c *Client) ListItemsCached(parent context.Context, req *pb.ListItemsRequest) (*pb.ListItemsResponse, Staleness, error) {
-	key := itemsKey(req)
+	key := KeyItems(req)
 	if key == "" {
 		res, err := c.ListItems(parent, req)
 		return res, Fresh, err
@@ -153,7 +139,7 @@ func (c *Client) ListItemsCached(parent context.Context, req *pb.ListItemsReques
 // feeds knows the app is working and one thing is missing, where an empty rail
 // reads as data loss.
 func (c *Client) ListFeedsCached(parent context.Context) (*pb.ListFeedsResponse, Staleness, error) {
-	return cached(c, feedsKey,
+	return cached(c, KeyFeeds,
 		func() (*pb.ListFeedsResponse, error) { return c.ListFeeds(parent) },
 		func() *pb.ListFeedsResponse { return &pb.ListFeedsResponse{} })
 }
@@ -165,7 +151,7 @@ func (c *Client) ListFeedsCached(parent context.Context) (*pb.ListFeedsResponse,
 // current one, a reader who loses the connection mid-stream can usually keep
 // reading in both directions rather than hitting a wall on the next press of j.
 func (c *Client) GetItemCached(parent context.Context, id string) (*pb.Item, Staleness, error) {
-	res, st, err := cached(c, itemKey(id),
+	res, st, err := cached(c, KeyItem(id),
 		func() (*pb.Item, error) { return c.GetItem(parent, id) },
 		func() *pb.Item { return &pb.Item{} })
 	if err != nil {
@@ -181,6 +167,6 @@ func (c *Client) GetItemCached(parent context.Context, id string) (*pb.Item, Sta
 // caching it at all — it looks like the app forgot.
 func (c *Client) InvalidateItem(id string) {
 	if c.cache != nil {
-		c.cache.Drop(itemKey(id))
+		c.cache.Drop(KeyItem(id))
 	}
 }

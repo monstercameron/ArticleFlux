@@ -21,6 +21,7 @@ package data
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 )
@@ -127,6 +128,42 @@ func (c *Cache) Drop(key string) {
 		c.bytes -= len(e.Body)
 		delete(c.items, key)
 	}
+}
+
+// DropPrefix removes every entry whose key begins with prefix.
+//
+// This is what makes the key hierarchy in keys.go usable: after a write that
+// changes which items are in a list — a subscribe, an unsubscribe, a
+// mark-all-read under the unread filter — every list has to go, and the caller
+// cannot know how many there were or what filters each was under. Enumerating
+// them at the call site would mean the call site knowing the key scheme, which
+// is the thing keys.go exists to keep in one place.
+//
+// Deliberately NOT used for per-item state changes. Those write through, and
+// dropping every list to reflect one star would replace an instant toggle with
+// a spinner over the whole pane.
+//
+// Returns how many entries went, so a caller that wants to log an eviction can
+// say something true rather than "dropped some".
+func (c *Cache) DropPrefix(prefix string) int {
+	if prefix == "" {
+		// An empty prefix matches everything, and a caller that computed one by
+		// accident — a key builder that returned "" for an uncacheable request —
+		// would silently empty the cache. Refusing is the safe reading: nobody
+		// means "drop everything" by passing nothing.
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for key, e := range c.items {
+		if strings.HasPrefix(key, prefix) {
+			c.bytes -= len(e.Body)
+			delete(c.items, key)
+			n++
+		}
+	}
+	return n
 }
 
 // Len and Bytes report what the cache is holding.
