@@ -64,6 +64,7 @@ var unscopedByDesign = map[string]string{
 	// Authentication: by definition these run before the caller is identified.
 	"ScopeForSession":      "turns a token into a Scope; requiring one would be circular",
 	"UserForLogin":         "the login path, before identity is established",
+	"ReconcileUnread":      "an instance-wide repair of denormalised columns; it reads nothing back to a caller and writes each row only the values of the item that row already names",
 	"CreateSession":        "same",
 	"RevokeSession":        "keyed by token hash, which the holder already has",
 	"RevokeAllSessions":    "admin and break-glass; keyed by user id",

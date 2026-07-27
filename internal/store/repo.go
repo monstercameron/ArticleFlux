@@ -78,9 +78,11 @@ type Feed struct {
 // than a subquery per feed, because the sidebar renders on every navigation and
 // N+1 there is the difference between an instant sidebar and a visible stall.
 //
-// An item with no user_item_state row is unread: state rows are created on first
-// interaction, so "no row" is the common case for a fresh item and must not be
-// mistaken for "read".
+// Unread is counted from user_item_state alone (0015), which means it depends on
+// every delivered item having a row. Fan-out writes one for every item whether
+// or not a rule matched, precisely so that this count can exist; a trigger fills
+// the denormalised columns for any writer that forgets, and ReconcileUnread
+// repairs rows that predate either.
 func (r *ReaderRepo) ListFeeds(ctx context.Context, s Scope) ([]Feed, error) {
 	if !s.Valid() {
 		return nil, ErrNoScope
@@ -91,11 +93,15 @@ func (r *ReaderRepo) ListFeeds(ctx context.Context, s Scope) ([]Feed, error) {
 		       src.feed_url, COALESCE(src.site_url,''), COALESCE(sub.folder_id,''),
 		       COALESCE(src.last_success_at,''), src.consecutive_failures,
 		       COALESCE(src.last_error,''),
-		       (SELECT count(*) FROM items i
-		         LEFT JOIN user_item_state uis
-		                ON uis.item_id = i.id AND uis.user_id = ?
-		        WHERE i.source_id = src.id
-		          AND i.deactivated_at IS NULL
+		       -- One index range per feed, over uis_unread_by_source (0015), and
+		       -- nothing else. The previous version was a correlated subquery that
+		       -- joined items to user_item_state per feed: 150 feeds, 150 scans,
+		       -- 447ms at 50k items on the single most-rendered query in the
+		       -- application. This depends on every subscribed item having a state
+		       -- row, which 0015 establishes and fan-out maintains.
+		       (SELECT count(*) FROM user_item_state uis
+		         INDEXED BY uis_unread_by_source
+		        WHERE uis.user_id = ? AND uis.source_id = src.id
 		          AND uis.read_at IS NULL) AS unread
 		  FROM subscriptions sub
 		  JOIN sources src ON src.id = sub.source_id
@@ -476,10 +482,11 @@ func (r *ReaderRepo) SetItemState(ctx context.Context, s Scope, itemID string, c
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO user_item_state (tenant_id,user_id,item_id,read_at,starred_at,rating,rev,updated_at)
-			VALUES (?,?,?,?,?,?,?,?)
+			INSERT INTO user_item_state (tenant_id,user_id,item_id,source_id,published_at,
+			                             read_at,starred_at,rating,rev,updated_at)
+			SELECT ?,?,i.id,i.source_id,i.published_at,?,?,?,?,? FROM items i WHERE i.id = ?
 			ON CONFLICT(user_id,item_id) DO UPDATE SET `+strings.Join(set, ", "),
-			append([]any{s.TenantID, s.UserID, itemID, readAt, starredAt, rating, rev, now}, args...)...); err != nil {
+			append([]any{s.TenantID, s.UserID, readAt, starredAt, rating, rev, now, itemID}, args...)...); err != nil {
 			return err
 		}
 		return nil
@@ -516,8 +523,9 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before 
 		}
 
 		q := `
-			INSERT INTO user_item_state (tenant_id,user_id,item_id,read_at,rev,updated_at)
-			SELECT ?, ?, i.id, ?, ?, ?
+			INSERT INTO user_item_state (tenant_id,user_id,item_id,source_id,published_at,
+			                             read_at,rev,updated_at)
+			SELECT ?, ?, i.id, i.source_id, i.published_at, ?, ?, ?
 			  FROM items i
 			  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
 			 WHERE sub.tenant_id = ? AND i.published_at <= ? AND i.deactivated_at IS NULL`
@@ -795,6 +803,27 @@ func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, n NewSubscription) 
 			idgen.New(), s.TenantID, s.UserID, sourceID, folder, title, now); err != nil {
 			return err
 		}
+		// Deliver what the source already holds.
+		//
+		// The mirror of ingest's delivery, and the case A14 makes inevitable:
+		// items are global, so subscribing to a feed somebody else already reads
+		// means subscribing to a source that is ALREADY FULL. Ingest will not run
+		// again for those items, so without this the new subscriber's unread
+		// count starts at zero and only counts what arrives from now on.
+		//
+		// DO NOTHING rather than upsert: re-subscribing to a feed you previously
+		// dropped must not wipe what you had read of it.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
+			                             published_at, rev, updated_at)
+			SELECT ?, ?, i.id, i.source_id, i.published_at, 0, ?
+			  FROM items i
+			 WHERE i.source_id = ? AND i.deactivated_at IS NULL
+			ON CONFLICT(user_id, item_id) DO NOTHING`,
+			s.TenantID, s.UserID, now, sourceID); err != nil {
+			return err
+		}
+
 		if n.FolderID != "" {
 			_, err := tx.ExecContext(ctx, `
 				UPDATE subscriptions SET folder_id = ?
@@ -1015,6 +1044,10 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 	if !s.Valid() {
 		return 0, ErrNoScope
 	}
+	if n, ok, err := r.countUnreadFast(ctx, s, q); ok {
+		return n, err
+	}
+
 	where, filterArgs, err := listFilter(q, false)
 	if err != nil {
 		return 0, err
@@ -1043,6 +1076,104 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 	var n int
 	err = r.db.Read.QueryRowContext(ctx, sb.String(), args...).Scan(&n)
 	return n, err
+}
+
+// countUnreadFast answers the sidebar's badge from uis_unread_by_source alone.
+//
+// The badge is the single most-rendered number in the application, and the
+// general CountQuery path computes it by joining every item to every state row
+// and counting what survives: 556ms at 50,000 items (G3). A count cannot stop
+// early the way a paged list can, so the index hint that fixed the list shapes
+// does nothing here — this needs §6.5's denormalisation, which 0015 finally
+// builds.
+//
+// It is deliberately the SAME expression the sidebar's per-feed counts use, one
+// index range per subscribed source, summed. The badge and the sum of the
+// numbers beside each feed have to agree, and computing them two different ways
+// is how they stop agreeing.
+//
+// Returns ok=false for anything but a bare unread count, because that is the
+// only shape this index answers; everything else falls through to the general
+// query, which is correct and merely slower.
+func (r *ReaderRepo) countUnreadFast(ctx context.Context, s Scope, q ListQuery) (int, bool, error) {
+	bare := q.UnreadOnly && !q.StarredOnly && q.RatedOnly == 0 &&
+		q.SourceID == "" && len(q.SourceIDs) == 0
+	if !bare {
+		return 0, false, nil
+	}
+	var n int
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT COALESCE(sum(
+		           (SELECT count(*) FROM user_item_state uis
+		             INDEXED BY uis_unread_by_source
+		             WHERE uis.user_id = ? AND uis.source_id = src.id
+		               AND uis.read_at IS NULL)), 0)
+		  FROM subscriptions sub
+		  JOIN sources src ON src.id = sub.source_id
+		 WHERE sub.user_id = ? AND sub.tenant_id = ?
+		   AND src.deactivated_at IS NULL`,
+		s.UserID, s.UserID, s.TenantID).Scan(&n)
+	return n, true, err
+}
+
+// ReconcileUnread recomputes every state row's denormalised columns and reports
+// how many were wrong.
+//
+// A denormalised count fails silently. Nothing throws; the badge is simply a
+// little low, and it stays a little low forever because nothing recomputes it.
+// So there is a function that recomputes it, it returns the drift rather than
+// swallowing it, and a test drives reads, unreads and mark-all-reads at random
+// and asserts the drift is zero — see TestUnreadCountNeverDrifts.
+//
+// Cheap enough to run at boot: it touches only rows that disagree with `items`.
+func (r *ReaderRepo) ReconcileUnread(ctx context.Context) (int, error) {
+	var fixed int
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		// Rows whose denormalised columns disagree with the item they describe.
+		res, err := tx.ExecContext(ctx, `
+			UPDATE user_item_state AS uis
+			   SET source_id    = (SELECT i.source_id FROM items i WHERE i.id = uis.item_id),
+			       published_at = (SELECT i.published_at FROM items i WHERE i.id = uis.item_id)
+			 WHERE EXISTS (
+			         SELECT 1 FROM items i
+			          WHERE i.id = uis.item_id
+			            AND i.deactivated_at IS NULL
+			            AND (uis.source_id IS NOT i.source_id
+			                 OR uis.published_at IS NOT i.published_at))`)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		fixed = int(n)
+
+		// And the rows that should exist and do not: an item ingested by a path
+		// that never ran fan-out is invisible to a count that reads only state
+		// rows. 80 of 3,806 items were in this state when the counter was built.
+		res, err = tx.ExecContext(ctx, `
+			INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
+			                             published_at, rev, updated_at)
+			SELECT sub.tenant_id, sub.user_id, i.id, i.source_id, i.published_at, 0, ?
+			  FROM subscriptions sub
+			  JOIN items i ON i.source_id = sub.source_id
+			 WHERE i.deactivated_at IS NULL
+			   AND NOT EXISTS (
+			         SELECT 1 FROM user_item_state uis
+			          WHERE uis.user_id = sub.user_id AND uis.item_id = i.id)`,
+			time.Now().UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		fixed += int(n)
+		return nil
+	})
+	return fixed, err
 }
 
 // ResetUserState clears a user's reading state: read/starred flags, notes and

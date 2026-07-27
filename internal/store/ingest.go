@@ -75,6 +75,7 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 		}
 		defer upd.Close()
 
+		var fresh []string
 		for _, it := range items {
 			var id string
 			err := sel.QueryRowContext(ctx, sourceID, it.GUID).Scan(&id)
@@ -87,21 +88,68 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 				}
 				res.Updated++
 			case sql.ErrNoRows:
-				if _, err := ins.ExecContext(ctx, idgen.New(), sourceID, it.GUID,
+				newID := idgen.New()
+				if _, err := ins.ExecContext(ctx, newID, sourceID, it.GUID,
 					nullify(it.DupeKey), nullify(it.URL), it.Title, nullify(it.Author),
 					nullify(it.Summary), nullify(it.ContentHTML),
 					it.PublishedAt.UTC().Format(time.RFC3339Nano), now,
 					it.WordCount, nullify(it.ImageURL)); err != nil {
 					return err
 				}
+				fresh = append(fresh, newID)
 				res.New++
 			default:
 				return err
 			}
 		}
-		return nil
+		return deliver(ctx, tx, sourceID, fresh, now)
 	})
 	return res, err
+}
+
+// deliver gives every subscriber a state row for each newly ingested item.
+//
+// The row's existence is what makes an item known to a user, and since 0015 it
+// is also what the unread count reads — the count no longer touches `items` at
+// all, so an item with no row is an item nobody is told about.
+//
+// This was fan-out's job, and that was the bug. Fan-out is a queued job that
+// applies RULES; it runs after ingest, on a worker, and may be delayed, retried
+// or (for a user with no rules) skipped. Delivery is not a rule outcome — it is
+// what ingest means — so it belongs in ingest's transaction, where an item and
+// the fact of its delivery become visible together. 80 of 3,806 items in the
+// development database had no state row, which is exactly this gap.
+//
+// Fan-out still upserts, and `coalesce` still protects whatever the reader did;
+// finding the row already present is now the normal case rather than a race.
+func deliver(ctx context.Context, tx *sql.Tx, sourceID string, itemIDs []string, now string) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	// Only the new items, not every item in the source: a popular feed with a
+	// thousand entries and fifty subscribers would otherwise re-examine fifty
+	// thousand rows on every poll to discover that nothing changed.
+	args := make([]any, 0, len(itemIDs)+2)
+	args = append(args, now)
+	ph := make([]byte, 0, len(itemIDs)*2)
+	for i, id := range itemIDs {
+		if i > 0 {
+			ph = append(ph, ',')
+		}
+		ph = append(ph, '?')
+		args = append(args, id)
+	}
+	args = append(args, sourceID)
+
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
+		                             published_at, rev, updated_at)
+		SELECT sub.tenant_id, sub.user_id, i.id, i.source_id, i.published_at, 0, ?
+		  FROM items i
+		  JOIN subscriptions sub ON sub.source_id = i.source_id
+		 WHERE i.id IN (`+string(ph)+`) AND sub.source_id = ?
+		ON CONFLICT(user_id, item_id) DO NOTHING`, args...)
+	return err
 }
 
 // FetchOutcome records what happened on a poll.

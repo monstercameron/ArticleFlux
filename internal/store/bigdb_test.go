@@ -51,6 +51,16 @@ func openDev(t *testing.T) *DB {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+
+	// Migrate the copy. The development database is whatever schema the running
+	// instance last left behind, which is by definition older than the migration
+	// being written — and a test that runs new code against an old schema
+	// reports a missing column rather than the thing it was measuring. Migrating
+	// here also means these tests exercise the migrations against real data
+	// volume, which is the only place that happens.
+	if _, err := db.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrating the development copy: %v", err)
+	}
 	return db
 }
 

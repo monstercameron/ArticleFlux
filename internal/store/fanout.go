@@ -250,10 +250,11 @@ func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 	// delivery rather than merely possible.
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO user_item_state
-		    (tenant_id, user_id, item_id, read_at, starred_at, muted_at,
-		     muted_by_rule_id, home_weight, rev, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-		        (SELECT ifnull(max(rev),0)+1 FROM user_item_state WHERE user_id = ?), ?)
+		    (tenant_id, user_id, item_id, source_id, published_at, read_at, starred_at,
+		     muted_at, muted_by_rule_id, home_weight, rev, updated_at)
+		SELECT ?, ?, i.id, i.source_id, i.published_at, ?, ?, ?, ?, ?,
+		       (SELECT ifnull(max(rev),0)+1 FROM user_item_state WHERE user_id = ?), ?
+		  FROM items i WHERE i.id = ?
 		ON CONFLICT(user_id, item_id) DO UPDATE SET
 		    read_at    = coalesce(user_item_state.read_at, excluded.read_at),
 		    starred_at = coalesce(user_item_state.starred_at, excluded.starred_at),
@@ -261,8 +262,8 @@ func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 		    muted_by_rule_id = coalesce(user_item_state.muted_by_rule_id, excluded.muted_by_rule_id),
 		    home_weight = excluded.home_weight,
 		    updated_at = excluded.updated_at`,
-		sub.TenantID, sub.UserID, itemID, readAt, starredAt, mutedAt, mutedBy,
-		homeWeight, sub.UserID, now)
+		sub.TenantID, sub.UserID, readAt, starredAt, mutedAt, mutedBy,
+		homeWeight, sub.UserID, now, itemID)
 	return err
 }
 

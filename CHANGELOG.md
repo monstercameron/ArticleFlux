@@ -22,6 +22,31 @@ The full reasoning behind any entry lives in the commit message; this file is th
   that may decide whether to ask for a password. It is now an explicit `-dev` flag, defaulting off
   and **refused on any non-loopback bind**.
 
+### Fixed
+
+- **Items ingested outside fan-out were invisible to every unread count.** 80 of 3,806 items in the
+  development database had no `user_item_state` row. That row's existence is what makes an item
+  known to a user, and it was being created by fan-out — a *queued job that applies rules*, which
+  runs on a worker after ingest, can be delayed or retried, and does nothing useful for a reader
+  with no rules. Delivery is not a rule outcome; it is what ingest means, so it now happens in
+  `IngestItems`' own transaction. `Subscribe` does the same for items a source already holds:
+  sources are global (A14), so subscribing to a feed someone else reads means subscribing to one
+  that is already full, and without this a new subscriber's unread count started at zero and only
+  counted what arrived afterwards.
+
+### Performance
+
+- **The unread counts went from ~500ms to ~3.5ms at 50,000 items** (TODO 5.4a, plan §6.5). The
+  sidebar's per-feed counts (447ms) and the flat badge (556ms) were the last two shapes over G3's
+  150ms budget: a count must visit every unread row and cannot stop at 50, so the index hint that
+  fixed the paged lists did nothing for them. Denormalising `source_id` onto `user_item_state` with
+  a partial index on unread rows makes "unread in this source" one index range that never touches
+  `items`. `knownSlow` is now empty. Both numbers are computed by the same expression — the badge is
+  the sum of the per-feed counts — since two numbers on one screen computed two ways is how they
+  stop agreeing. The index has to be named explicitly: with `ANALYZE`'s statistics SQLite preferred
+  an `ANY(user_id)` skip-scan of an older index and ran the query in 2.5s, *worse than before the
+  denormalisation existed*.
+
 ### Added
 
 - **A login** (`AuthService`, TODO 6.1 in part): `Login`/`Logout`/`WhoAmI` over the tunnel, a
@@ -55,6 +80,53 @@ The full reasoning behind any entry lives in the commit message; this file is th
 - **`serve -origin`** finishes TODO 7.4's `WithAllowedOrigins`, and **`serve -behind-proxy`** makes
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
+- **`.env` is actually read** (`internal/envfile`, TODO H3). `.env.example` had said "copy to .env and
+  fill in" since Tier 1 while nothing read the file, so the instruction was true only for someone who
+  already knew to export the variable by hand. Eighty lines, no dependency. A flag beats the
+  environment beats the file, and the real environment always wins — so a systemd `EnvironmentFile=`
+  cannot be overridden by a stray `.env` in the working directory. `ARTICLEFLUX_DEV=1` is the same
+  switch as `-dev`, which is why `-dev` is now refused alongside `-behind-proxy`: a proxy in front of
+  a loopback bind is a published instance, and without that refusal the original vulnerability walks
+  back in through a development `.env` copied to a server.
+- **Dev mode no longer asks for a password**, and the login screen prefills `cam` /
+  `articleflux-dev` on a loopback origin (TODO H6, H7). Whether a credential is required is a fact
+  about the server, so the client asks it rather than assuming from local storage. The prefill is
+  gated on the page origin parsed as a *host* — a substring test for "localhost" would fire on
+  `https://localhost.attacker.example`.
+
+### Fixed
+
+- **An empty feed showed the previous feed's articles** (TODO H10). `loadItems` set the loading flag
+  but never cleared the list, and the list pane only draws its skeleton when it is *both* loading and
+  empty — which a scope change never was. A feed with items hid this, because the response replaced
+  the rows; a feed with **zero** items never could, so the reader was looking at one feed's articles
+  filed under another feed's name. The list is now cleared on a scope change, in `selectScope` and
+  `runSearch` rather than in `loadItems`, because `loadItems` is also how the list refreshes in place
+  after "mark all read" and after a reconnect, where blanking the screen would turn a silent update
+  into a flash.
+- **A password manager could kill the wasm module** (TODO H9). Filling the login form dispatches a
+  synthetic `new Event('keydown')`, which has no `key`, no `altKey`, no `ctrlKey`. `Value.Bool()` on
+  the resulting `undefined` does not return false — it panics, and a panic in wasm tears down the
+  whole module and every listener with it, leaving the page a dead screenshot of itself. `OnKeyDown`
+  now discriminates on the event actually carrying a key, and boolean reads go through a guarded
+  helper; the same unguarded pattern in `PrefersReducedMotion` went with it. The login fields are now
+  inside a `<form>`, which Chrome had been asking for and which is what lets a manager pair and save
+  a credential at all.
+- **An infinite reload loop on the login screen** (TODO H8). The client interceptor treated any
+  `Unauthenticated` as a session ending and reloaded; asking `WhoAmI` at boot with no token gets
+  exactly that answer, correctly, so the page reloaded forever and the login screen never survived
+  long enough to submit. It presented as "Couldn't sign in. Check the server is running" — a message
+  about the transport, from a server answering perfectly. The whole `AuthService` is now excluded,
+  matched on the service prefix so a future method cannot reintroduce it by omission.
+
+### Known
+
+- **An async state write does not repaint when nothing else changed** (TODO H11). After the fix above,
+  a feed with no items shows a loading skeleton that never resolves, for a request that succeeded —
+  the response lands, the flag is cleared, and no render follows. On a populated feed the new rows are
+  self-evidently a change and the scroll-to-top fires a repaint; with an empty result the only change
+  is one boolean. Isolated to GWC's async scheduling rather than to the reader, and worth treating as
+  general: any update whose only change is a flag is currently invisible.
 
 - **Identity repositories and the capability model** (`internal/store/identityrepo.go`,
   `internal/authz`, TODO 5.1 & 6.2). D12's shape, so there is an invites table and no registration

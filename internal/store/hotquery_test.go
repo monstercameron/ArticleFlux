@@ -60,18 +60,16 @@ const g3Budget = 150 * time.Millisecond
 // knownSlow records the shapes that are over budget TODAY, with the measured
 // number, so this test is a ratchet rather than a wall.
 //
-// Both are counting problems: they must visit every unread row and cannot stop
-// at 50, so the index hint that fixed the list queries does nothing for them.
-// R2 names the fix — "a materialized per-user unread index" — and says to
-// measure first. These are the measurements. See TODO 5.4a.
+// It is EMPTY, and the emptying is the record worth keeping. The two counting
+// shapes were here at 556ms and 447ms, because a count must visit every unread
+// row and cannot stop at 50 the way a paged list can — so the index hint that
+// fixed the list shapes did nothing for them. 0015 built §6.5's denormalisation
+// and both came back at 3.4ms and 3.8ms. See TODO 5.4a.
 //
-// Recording the number rather than raising the budget is the point: a regression
-// past it still fails, and the entry has to be deleted when the counter lands,
-// which is what stops "known slow" from becoming permanent.
-var knownSlow = map[string]time.Duration{
-	"flat unread count":   700 * time.Millisecond,
-	"sidebar with counts": 700 * time.Millisecond,
-}
+// Recording the number rather than raising the budget is what made that happen:
+// the test fails when an entry is over its ceiling AND when a shape comes inside
+// budget with its entry still present, so "known slow" cannot become permanent.
+var knownSlow = map[string]time.Duration{}
 
 func TestG3HotQueriesAtScale(t *testing.T) {
 	if os.Getenv("HOTQUERY") == "" {
@@ -359,9 +357,10 @@ func buildG3Fixture(t *testing.T) *DB {
 					}
 					if _, err := tx.ExecContext(ctx, `
 						INSERT INTO user_item_state
-						    (tenant_id, user_id, item_id, read_at, rev, updated_at)
-						VALUES (?,?,?,?,?,?)`,
-						tenant, user, fmt.Sprintf("i%06d", i), readAt, i, stampNow,
+						    (tenant_id, user_id, item_id, source_id, published_at,
+						     read_at, rev, updated_at)
+						SELECT ?,?,i.id,i.source_id,i.published_at,?,?,? FROM items i WHERE i.id = ?`,
+						tenant, user, readAt, i, stampNow, fmt.Sprintf("i%06d", i),
 					); err != nil {
 						return err
 					}

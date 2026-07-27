@@ -537,6 +537,35 @@ loudly when it stops working. The Appearance tab applies all four prefs by writi
 `documentElement.style`, so **no component re-renders when the theme changes** — switching themes with
 151 rail rows and 3,600 virtualised items on screen costs a paint, not a reconciliation.
 
+**9a. What the motion is spent on, and the guards that keep it honest** (§20.16.1–2) — the selection
+in the item list is one cursor that **travels** rather than a background lighting on one row and going
+out on another, drawn as a pseudo-element of the scroll container so it lives in content space and
+needs no scroll arithmetic. Spawning animates the arrival of *data*, not of an element on screen: the
+list is virtualised, so `setItems` diffs each incoming list against the one it replaces and only
+genuinely-new ids animate — which is what keeps the list still under the reader's hand on `j`. The
+three waits that were bare text carry an indeterminate rule, and the four looping animations are gated
+on **amplitude** rather than duration, because `animation-duration: 0s` with `iteration-count:
+infinite` is a spec corner and "the skeleton froze at a visibly wrong offset" would appear only for the
+readers who asked for less motion. A39 stopped being a convention when `sheet_test.go` landed: no
+dangling token, no token a theme cannot reach, no ungated duration, no literal colour, and a
+readability floor that found four AA failures on the way in — three fixed, one (**D22**) escalated to
+the mockup.
+
+**9b. The splash** (§20.20) — the module is six megabytes gzipped, and a wordmark on a dark screen for
+eight seconds is indistinguishable from a hang. Real byte progress, streamed through a counter that
+still preserves streaming compilation, with `content-length` treated as a hint because the server
+prefers a precompressed `.gz` while `res.body` yields decoded bytes. It wears the reader's own theme,
+mirrored to `localStorage` by `applyAppearance` purely so this one frame can be right — the alternative
+is a dark flash on a bright screen on every load for anyone running the light theme, which is the one
+flash a splash exists to prevent.
+
+**9c. Focus mode** (§20.21) — the reading pane takes the window, on `w` or the control pinned top
+right. The columns **close** rather than vanish, because they are grid tracks and `display: none`
+cannot be animated: those two panes are the navigation, and something that disappears with no transit
+leaves the reader unsure whether it was hidden or lost. Full width is the means and not the point, so
+the article recentres — a 66-character column pinned to the left of a 1900px window is worse than the
+layout it replaced.
+
 **12. The login screen** — `client/view/{root,login}.go` + `client/data/auth.go`. `Root` is now the
 mount point and `Reader` is its child, so an unauthenticated page never *constructs* the reader: doing
 otherwise would fetch a feed list the caller is not entitled to and paint the furniture of an account
@@ -892,7 +921,7 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       measurement rather than assumed; see 5.4a. Recorded in `knownSlow` as a ratchet, so a
       regression past them fails and the entry must be deleted when the counter lands.
 
-- [ ] **5.4a · The materialised per-user unread counter** — R2's fallback, now measured and
+- [x] **5.4a · The materialised per-user unread counter** — R2's fallback, now measured and
       required. The sidebar renders per-feed unread counts on **every screen** and takes 447ms at
       50k items; the flat total takes 556ms. Both must visit every unread row, so no index helps.
       Maintain a count per `(user_id, source_id)`, written by ingest/fan-out, `SetItemState`,
@@ -900,6 +929,40 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       `knownSlow` entries are deleted, and a reconcile function proves the maintained counter equals
       a recomputed one after a randomised sequence of reads, unreads and mark-all-reads — drift is
       the whole risk of a denormalised counter and it is silent.*
+
+      ✅ 2026-07-26 — `migrations/0015_uis_source.sql` + `countUnreadFast`/`ReconcileUnread`.
+      **556ms → 3.4ms and 447ms → 3.8ms**; both `knownSlow` entries deleted, so `knownSlow` is now
+      empty. No counter table was needed: §6.5's `source_id`/`published_at` denormalisation on
+      `user_item_state` plus a partial index `WHERE read_at IS NULL` turns "unread in this source"
+      into one index range. Both numbers are computed by the **same expression** — the badge is the
+      sum of the sidebar's per-feed counts — because two numbers on one screen computed two ways is
+      how they stop agreeing.
+
+      **The index had to be pinned.** With `ANALYZE`'s statistics SQLite preferred the pre-existing
+      `uis_user_unread` via an `ANY(user_id)` skip-scan — 50,000 rows per feed, 150 times, for
+      **2.5s, worse than before the migration**. `INDEXED BY uis_unread_by_source` fixed it. That is
+      now twice on this table that the planner has chosen a scan over the right index; the pattern
+      is that a partial or composite index added late loses to whatever `ANALYZE` already has
+      statistics for.
+
+      **The real bug was upstream, and the counter only exposed it.** Counting from state rows is
+      only correct if every visible item has one, and 80 of 3,806 items in the development database
+      had none. Fan-out was creating them — but fan-out is a *queued job that applies rules*, so
+      delivery depended on a worker running, not being retried, and the user having rules at all.
+      Delivery is not a rule outcome; it is what ingest means. `deliver()` now writes the rows
+      inside `IngestItems`' transaction, and `Subscribe` writes them for the items a **global**
+      source (A14) already holds — without which a new subscriber to a popular feed starts at zero
+      unread and only counts what arrives afterwards.
+
+      Three guards, because the failure of a denormalised count is that nothing throws — the badge
+      is just quietly low forever. A trigger fills both columns for any writer that forgets (the hot
+      paths set them explicitly and the `WHEN` clause skips them, so it costs nothing); two more
+      move a deactivated item out of the count by nulling `source_id`, which keeps the reader's star
+      and rating intact where deleting the row would not; and `TestUnreadCountNeverDrifts` runs 120
+      randomised reads, unreads, stars and mark-all-reads, comparing against a recomputation **after
+      every single one**. `ReconcileUnread` returns the drift it repaired rather than swallowing it,
+      and the suite asserts that number is 0 after the sequence — a reconciler the write path quietly
+      relies on is not a safety net.
 - [x] **5.5** `tags` · `item_tags` — A21, prerequisite for both rules and the sync API
       ◧ 2026-07-26 — Tags exist and are per-user, but they attach to a **subscription**, not an item. `item_tags` — which is what A21 actually specifies and what the sync API needs — is not built.
 
@@ -1559,6 +1622,18 @@ hand-written CSS and vanilla JS, and nobody ports them.
       matching the response header exactly — belt at the embedding site, braces in the CSP.
       *Owed:* the mode switcher proper (auto/feed/reader/page/live), per-feed and global defaults, and
       the keyboard binding. Right now this is two buttons, not a ladder.
+      ⚠ **Correction, same day: `-proxy-pages` now defaults ON, and the first default was a mistake.**
+      The argument for off was "proxying a page fetches whole documents from arbitrary hosts". It does
+      not — a page capability is only ever minted for an item's OWN url, the same URL the *Open
+      original* button beside it already sends the reader's browser to. The marginal exposure is which
+      machine makes the request, not what gets requested, which is a far smaller step than the comment
+      claimed.
+      What defaulting it off actually bought was an invisible feature: the control is **absent** rather
+      than disabled when the proxy is off, so a missing flag and a missing feature look identical from
+      the reading pane. `app.Open` now logs which of the two you are on at boot — `proxy enabled
+      images=true pages=false note="the article's View page control will not appear"` — because a
+      feature whose absence has no explanation is one that gets reported as broken. The inconsistent
+      pair (`-proxy-pages` without `-proxy-images`) warns instead of failing in silence.
 
 - [ ] **8.21 `RemotePage`** — the tier-3 client (§10.1d). Holds the tile grid, composites 7.13's
       changed 64×64 blocks onto a canvas, forwards pointer/key/scroll events back up the stream, and
@@ -1755,9 +1830,83 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       server's own rules locally and rolls back on failure. Adding cannot — the id is the server's to
       assign — so the chip appears immediately in a pending state with the × withheld, rather than
       pretending or making the reader wait on two round trips with no feedback.
+- [x] **8b.39 The three guards that make A39 a decision** — §20.16.2. Native, in `client/design`, and
+      asserting against the **emitted** sheet (`css.Reset()` → `Sheet()` → `css.Harvest()`) rather than
+      the source that produced it. No dangling `var()`; no token the sheet reads that `Theme.Vars()`
+      cannot reach; no literal colour outside a `Theme` (`:root` and the reader-mode iframe's
+      deliberately-white base stripped **by name**, so a stray hex elsewhere still fails); no duration
+      that is not `calc(var(--mo) * …)`, with the four amplitude-gated loops named by exact duration so
+      a fifth fails rather than quietly joining the exemption. Plus a **readability floor**: every
+      theme's text tokens against all three grounds they land on — the page, a hovered row, and the
+      selected row a reader sits on for as long as they are reading it — at 4.5:1. It found four
+      failures on the way in. Three were mine (Daylight's `--mute`, `--pos` and `--neg` at 3.9–4.2:1
+      against the selected row) and are fixed; the fourth is **Fanciful's own `--mute`, 4.42:1 hovered
+      and 3.94:1 selected**, transcribed verbatim from the mockup — recorded with its measured ratios
+      and ratcheted rather than nudged, because that one is a decision about the mockup. See 8b.44.
+- [x] **8b.40 The selection travels.** The item list's highlight is one cursor on the scroll container,
+      not a background that lights on one row and goes out on another — two events where the reader
+      made one gesture. It is a pseudo-element of the scroller, so it is laid out in the container's
+      **content space** and its y is an index times the row height: no scroll arithmetic, and no
+      recompute as the list moves under it. `ScrollIntoView` goes `behavior: smooth` on the same bit,
+      so the list keeps step with the article rather than jumping to it. Two bugs caught before they
+      shipped: the state attribute was briefly written with `onOff()`, which returns **localised**
+      words and would have silently stopped matching `[data-cursor='false']` for any non-English
+      reader; and the cursor was opt-*out*, which put a highlight on the first skeleton row of every
+      load.
+- [x] **8b.41 Spawning animates the arrival of data, not of an element on screen.** The list is
+      virtualised, so a mount animation fires on every row that scrolls past — a slot machine at any
+      real speed. `setItems` diffs each incoming list against the one it replaces and only ids that
+      were absent carry `data-fresh`, cleared after 900ms. The property falls out with no special
+      cases: a scope change makes the first page fresh, *load more* makes only the appended page
+      fresh, and marking read rebuilds from items that are all already present — so **the list does
+      not move under the reader's hand on `j`**, which is the case that matters most because it
+      happens a thousand times a day. The stagger counts from the first fresh row the reader can
+      *see*: counting from the top of the page put every visible row past the cap on a *load more*,
+      which is a quarter-second of nothing and then the whole screen at once. Measured before
+      `[9,9,9,…]`, after `[0,0,…,1,2,3]`.
+- [x] **8b.42 The waits say they are still working.** An indeterminate hairline in the accent on the
+      three moments that were bare text — more items, the next article, a bulk operation. Not a
+      spinner: the note's save mark is already one and means something else, and reusing the shape
+      would make both mean less. `--mo-off` (`calc(1 - var(--mo))`) widens the travelling band to the
+      whole rule when motion is off, because a short band frozen at one end reads as a determinate
+      progress bar stuck at 0% — a worse lie than a steady mark.
+- [x] **8b.43 The splash** — §20.20. Real byte progress on a six-megabyte module, streamed through a
+      counter that still preserves streaming compilation; `content-length` treated as a hint, because
+      the server prefers a precompressed `.gz` while `res.body` yields decoded bytes, so the bar drops
+      the percentage and roams the moment the count passes it. The theme is mirrored to `localStorage`
+      by `applyAppearance` purely so this one frame can be right — otherwise a Daylight reader gets a
+      dark flash on a bright screen on every load, which is the one flash a splash exists to prevent.
+      The progress fill is the seven source hues, in order, because the bar should be made of the thing
+      it is loading. `client/design/bootpalette_test.go` pins the duplicated palette, the hue order,
+      the reduced-motion query and the `af.boot` handshake.
+- [x] **8b.45 Focus mode** — §20.21. `w`, or the control pinned top-right of the article. The columns
+      **close** rather than vanish: they are grid tracks, so it is four widths animating to zero, which
+      interpolates as long as the track count holds — hence three rules, one per breakpoint, because
+      the layout already redefines the columns at 1220px and 900px and a five-track value against a
+      three-track layout snaps. The article recentres via **padding** (it interpolates from the 60px it
+      already has; a `max-width` would have to animate from `none`), and the source wash halves by
+      *opacity*, because gradient stops do not interpolate and changing the mix would snap it while
+      everything around it slid. The control is the one piece of bespoke iconography in the
+      application, and it earns that because its meaning is a geometry no character states as plainly.
 
 **Owed**
 
+- [ ] **8b.44 Decide Fanciful's `--mute`** — **D22**. 8b.39 measured the house theme's tertiary text at
+      **4.42:1 on a hovered row and 3.94:1 on the selected one** — below AA at the 11.5px it is used
+      at, for datelines and counts. The value is transcribed verbatim from `design/03-fanciful.html`,
+      and the mockup is the specification, so this is not a value to nudge in `theme.go`. About
+      `#A093AC` clears 4.5:1 on all three grounds and is the smallest change that does. *Done when:
+      the mockup and `tokens.go` agree on a value that passes, and the exception is deleted from
+      `sheet_test.go` rather than re-ratcheted.*
+- [ ] **8b.46 Drive focus mode and the list cursor in the running app.** Both are verified against the
+      **emitted stylesheet** in a harness — grid interpolation measured mid-collapse (the rail at 31px
+      of 258, so it interpolates rather than snapping), the cursor's content-space y proven to hold
+      while its screen y moved by exactly the scroll delta, all four icon states, every breakpoint's
+      track count, and reduced motion collapsing instantly. What that cannot cover is the Go wiring:
+      `listPane` emitting `--cursor`, the `ui.focus` round trip, `w` and `Escape`. They type-check and
+      have not run, because `client/view` was mid-refactor for the whole batch. *Done when: an e2e case
+      toggles focus with `w` and asserts the rail's width goes to zero and back, and moves the
+      selection with `j` asserting `--cursor` follows.*
 - [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
       and during this batch the wasm build was broken for a stretch while the native build and every Go
       test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on
@@ -2609,7 +2758,7 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 | **A36** auth is not inferred from topology | **`-dev` refused off loopback** (7.7) · `Preflight` · guards' unscoped-by-design list · *owed: a test that a non-loopback bind with `-dev` exits non-zero* |
 | **A37** folders exclusive, tags not | 5.11 · `subscriptions.folder_id` is a single column, which is the enforcement |
 | **A38** tag identity vs presentation | 5.12 · **`UpdateTagRequest` has no `name` field** — the wire shape is the enforcement |
-| **A39** every value is a token | 8b.31 · *owed: a guard that fails on a hex literal outside `client/design/theme.go` and on a duration not written `calc(var(--mo) * …)` — until it exists this is a convention, not a decision* |
+| **A39** every value is a token | 8b.31 · **`client/design/sheet_test.go`** (8b.39) — fails on a hex outside a `Theme`, on a duration not written `calc(var(--mo) * …)`, on a token no theme can reach, and on a theme below AA. Asserted against the *emitted* sheet, so it is a decision now rather than a convention |
 
 **A2 and A8 are framing, not enforceable** — scope and vocabulary. Listed so the absence is deliberate.
 
@@ -2678,3 +2827,155 @@ size, or whether FTS5 is compiled in, from a document.
    subscriber, no duplicate rows, and an edit doesn't reset read state.
 4. **Bulk-read is neutral** (6.9) — `mark all read` over 143 items changes no affinity score. The
    failure is silent, and it eats weeks of signal.
+
+---
+
+## Hosting it, the login it forced, and an empty feed that lied (2026-07-26, night)
+
+Prompted by *"for articleflux make sure this is ready to be hosted on linux and preferably via ubuntu
+vps on digital ocean"*, and then by four follow-ups from actually running it: *"add the dev mode
+credentials in the env.example file for quick reference and add a flag that disables this login for
+dev mode"*, *"the dev server is down"*, and *"when a rss feed has not feed items, it shows the feed
+items from the last selected feed instead of also saying no items"*.
+
+The answer to the first was **no, and for one reason that mattered more than the rest of the list.**
+
+### The finding that reordered the work
+
+`DevMode` — no login at all, plus an unauthenticated `POST /debug/reset-state` — was **derived from a
+loopback bind**. The reasoning was that loopback cannot be reached from outside the machine, which is
+true of the *socket* and false of the *deployment*: every reverse-proxy setup terminates TLS on `:443`
+and forwards to `127.0.0.1:9000`, including the nginx site now in `deploy/`. So the canonical way to
+host this was also the way to publish an entire reading history to anyone who typed the domain. And
+the other bind — `0.0.0.0` — had no login to offer, so **no bind address was both usable and safe.**
+
+A bind address is a fact about network topology. It cannot tell you who is on the other end of a
+connection, and nothing that cannot tell you that may decide whether to ask for a password. That is
+why 6.1 was built ahead of its milestone rather than after it.
+
+### Shipped
+
+- [x] **H1 · `-dev` is a flag, not an inference.** Default off, refused on any non-loopback bind, and
+      refused alongside `-behind-proxy` — a proxy in front of a loopback bind is a published
+      instance, which is exactly the case it must never apply to. That second refusal exists because
+      `.env` can set it (H3): without it the original hole walks back in through a stale development
+      file copied to a server.
+- [x] **H2 · The Linux half of the build.** A `Makefile` mirroring `scripts/make.ps1` **verb for
+      verb**, plus `linux`, `install-service`, `backup`. 1.4's "no `make` on this box" reasoning was
+      about the DEVELOPMENT box and does not extend to the droplet, which has make and no PowerShell.
+      `Makefile text eol=lf` is pinned in `.gitattributes`: a recipe line with CRLF makes GNU make
+      hand a trailing carriage return to the shell, and `command not found: go` with an invisible
+      `\r` sends people hunting a broken toolchain.
+- [x] **H3 · `internal/envfile` + a documented `.env.example`.** `.env.example` had said "copy to
+      .env and fill in" since Tier 1 and **nothing ever read the file** — the only consumer read
+      `OPENAI_API_KEY` from the process environment, so the instruction was true only for someone who
+      already knew to export it by hand. Eighty lines, no dependency. The load order is the design:
+      flag beats environment beats file, and **the real environment always wins**, so an
+      `EnvironmentFile=` in a systemd unit cannot be overridden by a stray `.env` in the working
+      directory.
+- [x] **H4 · The deployment itself** — `deploy/` carries a hardened systemd unit, an nginx site, a
+      nightly verified-backup timer, and a runbook that takes a bare Ubuntu droplet to TLS in about
+      twenty minutes. The nginx `/grpc` block is the load-bearing part: `proxy_read_timeout` defaults
+      to 60s and the tunnel is idle whenever nobody is clicking, so the default severs it on a timer
+      and the client reconnects — which presents as "the reader refreshes randomly" rather than as a
+      proxy misconfiguration. `MemoryDenyWriteExecute=no` is deliberate and commented: the SQLite
+      driver is a wasm module JIT-compiled by wazero, and denying W^X kills the database on the first
+      query.
+- [x] **H5 · The dev account is one value.** It was five separate `"articleflux"` literals across
+      `main.go` and the client, at **eleven characters** — one short of the twelve `init` enforces. So
+      `.env.example` documented a password `init` refused, and following the documentation produced an
+      error and then a server that would not start because no account had been created. Now
+      `devUsername` / `devPassword` in `cmd/articleflux/admin.go`, `articleflux-dev`, referenced
+      everywhere including the client prefill.
+- [x] **H6 · Dev mode does not ask for a password.** `Root` used to short-circuit to the login screen
+      whenever local storage held no token, which is right for a deployed instance and wrong for
+      `serve -dev`: it presented a password prompt for a server that did not want one. Whether a
+      credential is required is a fact about the SERVER, so the server is asked — `WhoAmI` runs even
+      with no stored token. Cost is one fast RPC before the login screen on a genuinely
+      unauthenticated boot.
+- [x] **H7 · The login screen prefills on a loopback origin.** `cam` / `articleflux-dev`, both fields,
+      one click. Gated on `platform.Origin()` parsed as a HOST — a substring test for "localhost"
+      would prefill on `https://localhost.attacker.example`, which is a domain someone can own. A
+      deployed instance never prefills.
+
+### Three bugs found by running it rather than by reading it
+
+- [x] **H8 · The infinite reload loop.** Making `Root` always ask `WhoAmI` (H6) met an interceptor
+      that treated **any** `Unauthenticated` as "your session died" and reloaded the page. With no
+      token the server correctly answers `Unauthenticated`, so: dial, ask, reload, forever. The login
+      screen never survived long enough to submit, and the visible symptom was *"Couldn't sign in.
+      Check the server is running"* — a message about the transport, from a server answering
+      perfectly. Fixed by excluding the whole `AuthService`, matched on the **service prefix** rather
+      than method by method: every method on it is a question ABOUT authentication rather than a call
+      requiring it, and the failure mode of forgetting to add a new one is a reload loop.
+- [x] **H9 · A password manager could kill the wasm module.** Reported from a real console trace:
+      `panic: syscall/js: call of Value.Bool on undefined` in `OnKeyDown`. A manager filling the login
+      form dispatches a synthetic `new Event('keydown')` to make frameworks notice the value it wrote,
+      and a plain `Event` has no `key`, no `altKey`, no `ctrlKey`. Reading one returns `undefined`,
+      and `Value.Bool()` on undefined does not return false — it **panics**, which in wasm tears down
+      the module, every listener with it, and leaves the page a dead screenshot of itself. Now
+      discriminated on `key` being a string, with every boolean read going through a guarded helper.
+      The same unguarded pattern in `PrefersReducedMotion` went with it. **This is the class of bug
+      guard 2 exists to contain and does not catch**: quarantining `syscall/js` in one package is what
+      made it a five-line fix in one file, but nothing enforces that the package treats the runtime as
+      untyped. Chrome's *"Password field is not contained in a form"* warning arrived in the same
+      trace and was the clue; the fields are now in a `<form>`, which is also what lets a manager pair
+      and save the credential at all.
+- [x] **H10 · The empty feed showed the previous feed's articles.** Reproduced against the real
+      database — 151 feeds, of which a large number hold zero items. `loadItems` set
+      `itemsLoading = true` but never cleared `items`, and `listPane` only draws its skeleton when
+      **both** loading and empty — a condition a scope change never reached. So it fell through and
+      painted the old rows under the new title. On a feed with items this self-corrects when the
+      response replaces them; on a feed with **zero** items it never corrects, because the response
+      replaces them with nothing. The reader is then looking at one feed's articles filed under
+      another feed's name, which is worse than a slow list: it is a list that lies. Fixed by
+      `clearList()` on scope change in `selectScope` and `runSearch` — **not** inside `loadItems`,
+      which is also how the list refreshes in place after "mark all read" and after a reconnect, where
+      blanking the screen would turn a silent update into a flash. *Note the comment that was already
+      there claiming the loading flag prevented "one frame showing the previous feed's rows" — it
+      never could, because the branch it guarded was unreachable. A comment asserting a guarantee the
+      code does not provide is worse than no comment.*
+
+### Open, and it is not a UI bug
+
+- [ ] **H11 · An async state write does not repaint when nothing else changed.** After H10, an empty
+      feed no longer shows the wrong articles — it shows a **loading skeleton that never resolves**,
+      for a request that succeeded. Traced end to end: the RPC is sent with the correct scope, returns
+      without error, the response lands not-stale with `n=0`, and `itemsLoading` is set false and
+      **reads back false**. No render follows. A revision counter threaded into `listProps` confirmed
+      it — the state read back as `3` while the last render was `rev=2`.
+      > Why only empty feeds: on a populated feed the new rows are self-evidently a change, and
+      > `ScrollPaneToTop` fires a scroll event that repaints. With zero items every write in the
+      > handler is already a no-op — the rows were cleared on the scope change, the total is already
+      > 0, the cursor is already empty — so the only genuine change is one boolean, and that alone
+      > does not repaint. **The app has been masking this by repainting on incidental scroll events.**
+      >
+      > Three fixes tried and rejected as insufficient, all kept where they are independently
+      > correct: an in-flight counter so `itemsLoading` cannot stick when a superseded response
+      > returns last (kept — real hardening for that case); a revision counter in `listProps` (kept,
+      > and `rev` is marked "nothing reads it, do not remove"); and normalising an empty result to a
+      > non-nil slice, because `nil` meaning *never loaded* and empty meaning *loaded, nothing there*
+      > are different facts that must not share a representation (kept).
+      >
+      > **Next place to dig is `ui.PostAsync` and `runtime.PostAsyncGlobal` in the GWC checkout, not
+      > `reader.go`.** If confirmed there it is not one screen's problem: any async update whose only
+      > change is a flag is invisible, which is most "finished loading", "saved", and "failed" states
+      > in the application.
+
+### Owed from this batch
+
+- **H2's Makefile has never been executed.** There is no `make` on this box (1.4), so every recipe was
+  verified by running its shell body directly in bash — the `wasm_exec.js` discovery, the
+  compress-to-temp-then-move, the size formatter. That is not the same as `make wasm` passing, and the
+  first droplet build is where it gets proven.
+- **`deploy/` has never been run against a real droplet.** Every file in it is reasoned from the
+  failure it prevents, and none of it has met DigitalOcean.
+- **A sign-out button.** `data.SignOut` exists, works, and has no affordance — wiring it into the
+  settings screen means editing `reader.go` while another lane is rewriting it. Clearing local storage
+  is the current logout.
+- **D0 is now an operational footgun, not just a build inconvenience.** The droplet needs both
+  checkouts side by side and both kept in step on every update. `make deps` says so loudly instead of
+  failing with a path error, but tagging GWC v5.0.0 removes the whole class.
+- **Roles are stored and not enforced** (6.2). `deploy/README.md` says so in its own "what is not here
+  yet" section, because handing someone `-role viewer` while believing it restricts anything is the
+  kind of mistake a runbook should prevent rather than enable.

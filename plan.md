@@ -57,6 +57,8 @@ feature is one nobody can decide to keep. Each has its section; this is the inde
 | **The settings surface** — seven tabs, including the log ring and per-RPC latency | §20.17 |
 | **The add-a-feed dialog** — name and file it at the moment of adding | §20.18 |
 | **Themes, accents and the motion system** — every paintable value is a token, and the Appearance surface writes them at runtime | §20.16, **A39** |
+| **The splash** — real download progress, in the reader's own theme, before the module exists | §20.20 |
+| **Focus mode** — the reading pane takes the window; the columns close rather than vanish | §20.21 |
 | **`internal/sanitize`** — five named policies over GWC's engine | §21, TODO 2.9 |
 | **The D7 extraction bake-off** — 12 committed pages, three libraries, one command | §25.1 D7 |
 
@@ -215,7 +217,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 | **A23** | **Migrations** | **Numbered, forward-only, applied at boot, checksum-guarded**, one per milestone that touches schema (§22.1) |
 | **A24** | **SQLite concurrency** | **WAL + `busy_timeout` + a single serialized writer**, decided up front (§22.2) |
 | **A25** | **Ordering authority** | **Server-assigned `rev`, never client wall-clock**, for every conflict resolution (§12.4) |
-| **A26** | **Go all the way down** | **All UI logic and all CSS live in GWC.** No `.css` files, no application JavaScript. `syscall/js` is quarantined in one package. The only JS is `wasm_exec.js`, a ~15-line bootstrap, and the Service Worker — which cannot be Go (§20.6). |
+| **A26** | **Go all the way down** | **All UI logic and all CSS live in GWC.** No `.css` files, no application JavaScript. `syscall/js` is quarantined in one package. The only JS is `wasm_exec.js`, the boot shim, and the Service Worker — which cannot be Go. The shim and the inline `<style>` it comes with are the **one** exemption, and they are exempt for a reason that cannot be engineered away: they run *before the module that emits the stylesheet exists* (§20.6, §20.20). |
 | **A27** | **Verdicts, not bookmarks** | **Like / dislike (`user_item_state.rating` ∈ {-1,0,+1}) replaces starring in the UI** (§18.4). Starring answers "keep this"; a verdict answers "was this worth my time", and the *negative* half is the signal ranking actually needs. |
 | **A28** | **The reading pane is a stream** | Reaching the end of an article **appends** the next one and scrolling back **prepends** the previous, rather than replacing the pane's contents (§20.9). Scrolling through an article marks it read; scrolling is the whole reading loop. |
 | **A29** | **The item list is as long as the scope, not as long as what is loaded** | `ListItemsResponse.total` sizes the virtual list to the true result set from the first paint; unloaded rows are placeholders that resolve (§20.10). |
@@ -486,6 +488,51 @@ build it**: the sidebar renders per-feed unread counts on every screen, and half
 not something the client can work around. Tracked as **TODO 5.4a**, with the current numbers recorded
 in `knownSlow` as a ratchet — a regression past them fails, and the entry has to be deleted when the
 counter lands.
+
+---
+
+**5.4a · MEASURED 2026-07-26, same fixture.** The counter landed and `knownSlow` is now **empty**.
+
+| Shape | Before | After |
+|---|---|---|
+| flat unread count | 556 ms | **3.4 ms** |
+| sidebar with per-feed counts | 447 ms | **3.8 ms** |
+
+**§6.5's prescription was half right, and this is the half that was right.** No counter table and no
+maintained integer were needed — the denormalisation this section asked for was enough, once it
+actually existed (`0015_uis_source.sql`). `source_id` on `user_item_state` plus a **partial** index
+`(user_id, source_id) WHERE read_at IS NULL` turns "unread in this source" into one index range that
+never touches `items`. Partial matters twice over: it is only as large as the unread backlog, and it
+*shrinks as someone catches up*, which is the opposite of how the old count behaved.
+
+The badge is computed as the **sum of the sidebar's per-feed counts**, from the same expression, so
+the total and the numbers beside each feed cannot disagree. Two numbers on one screen computed two
+different ways is how they stop agreeing.
+
+**The index had to be pinned, again.** With `ANALYZE`'s statistics the planner preferred the older
+`uis_user_unread` via an `ANY(user_id)` skip-scan — 50,000 rows per feed, 150 feeds — and ran the
+sidebar in **2.5 s, worse than before the migration**. `INDEXED BY uis_unread_by_source` fixed it.
+That is now twice in this section that a correct index lost to the planner. The pattern worth
+carrying: **an index added after `ANALYZE` has statistics for an older one is not chosen by being
+better; it has to be named.**
+
+**The real defect was upstream and the counter only made it visible.** Counting from state rows is
+correct only if every visible item has one, and 80 of 3,806 items in the development database had
+none. Fan-out was creating them — but fan-out is a queued job that applies *rules*: it runs on a
+worker after ingest, can be delayed or retried, and does nothing for a reader with no rules.
+Delivery is not a rule outcome, it is what ingest means, so `deliver()` now runs inside
+`IngestItems`' transaction and `Subscribe` backfills the items a global source already holds. **A
+denormalisation is a good way to discover that the thing you were denormalising was already wrong.**
+
+**Guarding a count that fails silently.** Nothing throws when this drifts; the badge is just quietly
+low, forever, and nobody reports it. So: a trigger fills both columns for any writer that forgets
+(the hot paths set them explicitly and the `WHEN` clause skips them, so it is free); two more move a
+deactivated item out of every count by nulling `source_id`, which keeps the reader's star and rating
+where deleting the row would not; `ReconcileUnread` returns the drift it repaired rather than
+swallowing it; and `TestUnreadCountNeverDrifts` runs 120 randomised reads, unreads, stars and
+mark-all-reads, comparing against a recomputation after **every single one** — then asserts the
+reconciler finds nothing left to fix, because a write path quietly leaning on its own safety net has
+no safety net.
 
 ### 6.6 Item tags (A21) — the prerequisite
 
@@ -2629,7 +2676,20 @@ test, one place to fix when a browser API moves.
 **The three permitted pieces of JavaScript**, and why each is unavoidable:
 
 1. **`wasm_exec.js`** — Go's own runtime shim. Not ours, not editable.
-2. **The bootstrap** — ~15 lines in `index.html` that instantiate the wasm module. Nothing else.
+2. **The boot shim** — `web/index.html`. It was ~15 lines and is now closer to ninety, and the
+   growth is worth being honest about rather than rounding down: it instantiates the module, counts
+   the bytes on the way in, and paints the splash in the reader's own theme (§20.20). Every one of
+   those jobs happens **before the wasm module exists**, which is the only test a line of JavaScript
+   has to pass to live here. Anything that could wait for the module has not been added and will not
+   be.
+
+   The same exemption covers the **inline `<style>` block** in that file, which is the one place in
+   this repository where CSS is not authored in Go. It has to be: it paints on the first frame, and
+   the alternative is a white flash on a dark application on every load. The price is that the house
+   palette is duplicated in it, and the price is **paid, not waived** — `client/design/bootpalette_test.go`
+   fails if that copy and `client/design/tokens.go` disagree, if the progress rule stops being the
+   source hues in order, if the reduced-motion query goes, or if either side of the `af.boot`
+   handshake is renamed.
 3. **`sw.js`** — the Service Worker. **This one genuinely cannot be Go.** A worker is registered by
    URL as a JS file and runs in its own global scope, so a Go service worker would need its own
    `wasm_exec.js` and a multi-megabyte instantiate on every cold start — for a script whose entire job
@@ -2922,6 +2982,67 @@ hues reused as interface accents, with a **separate light set** taken down to wh
 white — the same `Tone` problem as `--ink`. Reading size is **three choices, not a slider**, and the
 prefs are server-side (A30), so the look of the reader travels with the account rather than with the
 browser.
+
+#### 20.16.1 What the four gestures are actually spent on
+
+**Marks travel; they do not cross-fade.** The selected row in the item list paints nothing of its own.
+The highlight is one cursor drawn on the *scroll container*, moved by `--cursor` — an index times the
+row height — and the reason it is a pseudo-element of the scroller rather than a real element is that
+an absolutely positioned child of a scroll container is laid out in that container's **content space**.
+Its y needs no scroll arithmetic and no recompute as the list moves under it. Two rows lighting and
+unlighting is two events where the reader made one gesture; a mark that slides is the gesture. This is
+the most-repeated interaction in the application (`j j j k`), so it is the one worth the most care, and
+`platform.ScrollIntoView` goes `behavior: smooth` on the same bit — the list keeps step with the
+article rather than jumping to it.
+
+**Spawning animates the arrival of *data*, not the arrival of an element on screen.** The list is
+virtualised, so a plain mount animation fires on every row that scrolls past — a slot machine at any
+real speed. So `setItems` diffs each incoming list against the one it replaces and marks only ids that
+were not there before; only those rows carry `data-fresh`, and the mark is cleared after 900ms so a row
+scrolled away from and back mounts quietly. The property falls out correctly with no special cases: a
+scope change makes the whole first page fresh, *load more* makes only the appended page fresh, and
+marking an article read rebuilds the list out of items that are all already present — so **the list
+does not move under the reader's hand on `j`**, which is the case that matters most because it happens
+a thousand times a day. The stagger counts from the first fresh row the reader can *see* rather than
+from the first row of the page, or a *load more* forty rows deep would pause and then flash the whole
+screen at once.
+
+**"Loading…" is a claim; a moving rule is evidence.** The three waits that used to be bare text — more
+items, the next article, a bulk operation — carry an indeterminate hairline in the accent. Not a
+spinner: the note's save mark is already a spinner meaning something else, and reusing the shape would
+make both mean less.
+
+**Looping animations are gated on amplitude, not duration.** `animation-duration: 0s` with
+`iteration-count: infinite` is a corner of the spec browsers have disagreed about, and "the skeleton
+froze mid-shimmer at a visibly wrong offset" is a bug that would appear *only* for the readers who
+asked for less motion. So the four loops keep a real duration and animate to the value they started
+from. `--mo-off` (`calc(1 - var(--mo))`) is the inverse, for the few places where turning motion off
+means changing a value rather than zeroing a time: the loading rule's travelling band widens to the
+whole rule and holds still, because a short band frozen at one end reads as a determinate progress bar
+stuck at 0%, which is a worse lie than a steady mark.
+
+#### 20.16.2 The three guards, which is what makes A39 a decision rather than a convention
+
+All native, all in `client/design`, all asserting against the **actually emitted** stylesheet
+(`css.Reset()` → `Sheet()` → `css.Harvest()`) rather than against the source that produced it. Each
+covers a failure that is invisible in a screenshot of either half alone:
+
+- **No dangling token, and no token a theme cannot reach.** A `var(--typo)` computes to nothing and
+  the declaration is silently dropped; a token the sheet reads that is absent from `Theme.Vars()` keeps
+  the house value forever, which only shows up when someone switches themes twice.
+- **No ungated duration**, with the four amplitude-gated loops named by their exact durations so a
+  fifth fails the test rather than quietly joining the exemption. And **no literal colour**, with
+  `:root` and the reader-mode iframe's deliberately-white base stripped by name — so a stray hex
+  anywhere else still fails.
+- **A readability floor.** Every theme's text tokens are checked against all three grounds they can
+  land on — the page, a hovered row, and the selected row a reader sits on for as long as they are
+  reading it — at 4.5:1, the accent in the direction it is actually used (a *fill*, carrying `--bg`).
+  Adding a theme is a five-line struct literal, which is exactly the property that makes it easy to add
+  an unreadable one. It found three: Daylight's `--mute`, `--pos` and `--neg` were 3.9–4.2:1 against
+  the selected row. It also found that **Fanciful's own `--mute` is 4.42:1 on a hovered row and 3.94:1
+  on the selected one** — transcribed verbatim from `design/03-fanciful.html`, so that one is a
+  decision about the mockup and not a value to nudge (**D22**, TODO 8b.44). It is recorded with its measured ratios and
+  ratcheted: it may not get worse, and no new theme inherits the exception.
 
 ### 20.17 The settings surface
 
@@ -3240,6 +3361,60 @@ Stated as a rule, because it generalises past this app: **a retry loop is a late
 outbox is a durability guarantee.** They are not substitutes, and shipping the first one makes the
 absence of the second harder to notice, not easier.
 
+#### 20.19.8a The read half: a cache, and what it is not
+
+Fixing writes alone left an asymmetry that was worse for being half-solved: a reader could mark up an
+article during an outage and keep the marks, then click the feed beside it and get a skeleton for
+twenty seconds followed by an error — for content the browser had held in memory minutes earlier. Two
+changes, and the second is the one that matters:
+
+- **A read started on a known-dead connection is bounded at 4 s, not 20.** `WaitForReady(true)` stays,
+  because a call made during a half-second reconnect should wait for it. But the same option applied
+  to a real outage means every click hangs for the full call deadline and *then* fails, which is the
+  worst possible ordering of those two events. Four seconds is chosen against the backoff schedule —
+  retries land at ~0.5 s, 1.3 s, 2.6 s, 4.6 s — so the window contains three or four whole attempts.
+  Anything that was coming back has come back.
+- **The last answer to each read is kept and served when the transport fails** (`client/data/cache.go`).
+  Bounded twice over, by entries and by bytes, because an entry count alone lets a handful of large
+  answers fill a quota shared with the outbox and the signals buffer — and those matter more. LRU by
+  *use*, not by age: the feed you keep returning to is the one that must survive. Persisted on
+  `pagehide` only, never on the read path, for the same reason the outbox is synchronous there and the
+  cache is not written on every navigation: a list response is tens of kilobytes and localStorage is
+  synchronous.
+
+Three rules make it safe rather than merely useful. **The server is tried first, always** — a cache
+consulted first is a cache that serves stale data to a working connection. **The fallback is only
+taken on a transport failure** — a `NotFound` is the server answering, and serving a cached copy of a
+deleted feed would be the application arguing with itself. **Only what the server said is stored** —
+never a cache hit, or an entry refreshes its own timestamp on every miss and the badge starts claiming
+an outage-old list is minutes old.
+
+> **This is not §12's trip packs and must not be described as them.** Packs are a deliberate, sized,
+> server-built bundle of things you have *not* read; this is only the last answer to each question you
+> have *already asked*. It makes "go back to what I was reading" work on a plane. It does not make
+> "read today's news" work on a plane, and §12 is still owed.
+
+**The badge is load-bearing** (§12.3's "unmistakable badge"). It carries the age as well as the fact,
+because a list from four minutes ago and one from yesterday are the same word and very different
+things to act on. Styled as a statement rather than an alarm: nothing is broken, and an alarm here
+would train readers to dismiss the one row that must not be dismissed.
+
+#### 20.19.8b Three operations that are refused rather than queued
+
+Queueing is not always the kind answer. `Refresh`, `Subscribe` and `MarkAllRead` return `ErrOffline`
+immediately, each for its own reason, and the reasons are worth keeping distinct:
+
+| Operation | Why not queued |
+|---|---|
+| `Refresh` | The fetching happens on the **server**, over the public internet. A disconnected client cannot merely not-hear the answer — it cannot cause the work to happen |
+| `Subscribe` | The server **validates** the feed before anything is stored. An optimistic subscribe would put a row in the rail that might turn out not to be a feed |
+| `MarkAllRead` | Mints a **new undo batch per call**, so a replay leaves two batches and an undo offer that reverses half its own work — the one mutation here that is not idempotent |
+
+Each says so in one plain line, in the same frame as the press, and none of them apologises or
+suggests retrying: the remedy is "wait", and an instruction the reader cannot follow is worse than a
+fact they can. This matters more than it looks, because by the time a reader meets it they have
+already watched three articles stay marked and will reasonably assume *everything* is queued.
+
 **Built 2026-07-26** (`client/outbox`, `client/data/outbox_wasm.go`), and three decisions in it are
 worth reading before extending it:
 
@@ -3309,6 +3484,86 @@ behind it (§20.17). Both halves are cheap:
 - **Tuning the 20 s cap down.** The countdown plus **Retry now** (§20.19.2) makes the cap a visible,
   skippable wait rather than a hang. Lowering it instead would have every reader's tab hammering a
   server during the minute it takes to come back up.
+
+### 20.20 The splash
+
+`web/index.html`. It exists because the module is **six megabytes gzipped**, and a wordmark sitting on
+a dark screen for eight seconds is indistinguishable from a hang.
+
+**Real progress, not a spinner.** The shim streams the fetch through a byte counter and still hands a
+`Response` to `instantiateStreaming`, so streaming compilation is preserved. `content-length` is
+treated as a *hint* rather than a fact, because the server prefers a precompressed `.gz` while
+`res.body` yields **decoded** bytes: the moment the count passes the header the bar drops the
+percentage and roams. An honest "4.1 MB downloaded" beats a confident wrong number, and a bar that
+sails past 100% is the confident wrong number this avoids. Any failure in the counting path falls
+straight back to the plain fetch — progress is a nicety, booting is not.
+
+**It wears the reader's theme.** Themes live on the server (A30), so the splash cannot know one — the
+transport is the thing that is loading. Left alone that means a plum flash on every load for someone
+running Daylight: a dark flash on a bright screen, forever, which is the one flash a splash exists to
+prevent. So `applyAppearance` mirrors four colours into `localStorage` under `af.boot`, purely so this
+one frame can be right. It is a rendering *hint* and not state — written from what the server already
+said, read one frame before the real values arrive, and a browser refusing storage simply gets the
+house theme.
+
+**The design is the product's own.** The progress fill is a gradient through the seven hand-picked
+source hues, in order, because the idea this whole reader rests on is that every source owns a hue —
+the bar is made of the thing it is loading. Above it the amber marker draws itself beside the wordmark,
+the same "you are here" gesture every row uses, making its first appearance at the door. The ground
+carries the same fractal noise the application does, so the first frame is already the material.
+
+Three details that are each a decision:
+
+- **The plate is delayed 120ms.** A warm cache boots well under that, and a wordmark that appears and
+  vanishes inside the window is a flash — worse than never having shown one. The ground is correct
+  either way, so nothing is missing during the wait.
+- **It hands over rather than cutting.** Fixed *above* `#app` and faded out over a reader that
+  `go.run` has already painted underneath, because `go.run` returns only once the Go program blocks and
+  `main` renders before it blocks.
+- **Reduced motion is answered by the machine**, because the app's own switch is a server-side
+  preference and the transport is what is loading. This is the one screen where the media query is not
+  a fallback but the only signal there is.
+
+### 20.21 Focus mode
+
+The reading pane takes the window: `w`, or the control pinned to the top right of the article. One
+attribute — `data-focus` on `.shell` — and the whole of it is CSS (`client/design/focus.go`).
+
+**The columns close; they do not vanish.** `display: none` cannot be animated, and the difference
+matters more here than usual: those two panes *are* the navigation, and something that disappears with
+no transit leaves the reader unsure whether it was hidden or lost. They are grid **tracks**, so closing
+them is animating four track widths to zero, which browsers interpolate as long as the track *count*
+does not change. The direction of the motion is the explanation.
+
+That constraint is why there are three rules and not one. The layout already redefines
+`grid-template-columns` at 1220px (three tracks) and 900px (one), and a five-track value against a
+three-track layout **snaps** — the exact thing being avoided. Each breakpoint gets a value with its own
+count, in narrowing order so the last matching one wins. On a phone the tab bar goes too: "focus" that
+leaves a navigation bar on screen is a setting that did not do what it said.
+
+**Full width is the means, not the point.** A 66-character column pinned to the left of a 1900px window
+is worse than the three-pane layout it replaced — a stripe of text and an acre of nothing. The
+article's gutters grow to whatever centring takes, expressed as **padding** rather than a `max-width`
+because padding interpolates from the 60px it already has and a max-width would have to animate from
+`none`. The nav, the note and the seams between articles move with it, or the column arrives centred
+with its own furniture still hugging the left. The source wash comes down to half: it is a gradient
+sized to the article's box, so the same declaration is atmosphere at pane width and a tinted slab at
+1600px — and it is dimmed by *opacity*, because a gradient's colour stops do not interpolate and
+changing the mix would snap the wash at the moment everything around it is sliding.
+
+**The control is the one piece of bespoke iconography in the application.** Everything else is a text
+glyph, deliberately: a row of drawn icons is a toolbar and this reader is not one. This earns the
+exception because its meaning *is* a geometry — four corner brackets moving apart, at 16px, which no
+character says as plainly — and because the brackets carry the state without a label, which is what
+lets it be a 34px square that never covers the prose it floats over. They rest pulled **in** when the
+columns are open and spring out under the pointer, a preview of the gesture; in focus mode they rest at
+the full box and pull in. It sits on a **zero-height sticky perch** so it pins to the top of the pane
+without the design growing the top bar it deliberately does not have, and it is translucent with a blur
+because a solid chip punches a hole in the paragraph behind it.
+
+It is a **persisted preference** (`ui.focus`), which is only safe because the way out never leaves the
+screen: the control stays pinned, and `Escape` peels focus mode first — "back to the list" is a dead
+key while the list is closed.
 
 ---
 
@@ -3791,6 +4046,81 @@ overwrite English. Keys built at runtime from a stable id (`tr.T("theme", t.Name
 invisible to the static checks, which is why `themeLabel` and its siblings fall back to
 the source package's own label rather than trusting the catalog.
 
+#### 22.16b Rules for adding UI copy
+
+The section above is why. This is what to do, and it is prescriptive: every rule below is
+enforced by a guard or a test, and the enforcement is named so you can see what will fail
+before it fails.
+
+**Rule 0 — a call site and its catalog key land in the SAME commit.** This is the one that
+gets broken, because adding copy is the interesting half and registering it is not. A key
+referenced but not registered renders the identifier to a reader (`list.staleNote` on
+screen, in a box, in production). `TestEveryReferencedKeyExists` fails on it;
+`TestNoOrphanedKeys` fails on the reverse.
+
+**Where a string comes from, by situation.** Four shapes, and there is always one that fits:
+
+| you are in | do this |
+|---|---|
+| a component (`ui.CreateElement`-mounted) | `tr := i18n.UseI18n()` **once**, at the top with the other hooks |
+| a plain helper that returns `ui.Node` or `string` | take `tr i18n.Runtime` as the **first** parameter |
+| a helper reading many keys from one surface | `ns := tr.NS("feedSettings")`, then `ns.T("key")` |
+| outside a render — a `UseEffect` body, a goroutine, a mirror to non-Go | `i18n.At(locale)` |
+
+`UseI18n` is a **hook**. Once, unconditionally, at the top. GWC matches hooks positionally,
+so one behind a branch or inside a loop binds to the wrong slot. Pass the Runtime down; do
+not call the hook again.
+
+**Never do these three.** Each has bitten once already:
+
+- **Never put a `Runtime` on a props struct.** It carries func fields, so the struct is not
+  comparable and GWC's memo bailout either breaks or never fires — which is the bailout
+  keeping 151 rail rows and 3,600 virtualised items from re-rendering. Pass it as a
+  parameter.
+- **Never mount `i18n.Provider` anywhere but `Root`.** A Provider re-render marks its whole
+  subtree dirty *before* props are compared, and the Runtime's func fields make the context
+  value read as changed on every render of whoever mounts it. In `Root` that is correct —
+  its only state is the auth phase and the locale, both redraw-everything events. In
+  `Reader` it would mark the rail and the list dirty on every keystroke.
+- **Never branch on translated text.** `strings.HasPrefix(label, "Unread")` is a bug in
+  every language but one. Branch on the flag that produced the label.
+
+**Plurals go through the catalog, never through `if n == 1`.** Register with `plural(...)`
+and call `tr.T("list", "readingTime", i18n.Count(n))`, or `i18n.CountWith(n, args)` when the
+message also interpolates. English distinguishes two forms; Polish and Arabic do not, and
+the call site is the wrong place to learn that. `TestPluralsHaveOther` fails on a plural
+missing its `other` form, which is the one the runtime falls back to.
+
+**Server refusals carry a key, not just prose.** The server cannot translate itself — the
+language is a per-device `localStorage` value it never sees. So:
+
+```go
+return errKey(codes.PermissionDenied, "srv.adminOnly",
+    "only an administrator can change Smart+ settings", nil)
+```
+
+…and register the same English in `client/i18n/en_srv.go`. The message on the status is not
+redundant: it is what the two consumers with no catalog get, the Google Reader sync API
+(§20.7) and curl. `TestEveryServerErrorKeyExists` fails if the key is unregistered or outside
+the `srv` namespace; `TestServerErrorKeysMatchTheirEnglishFallback` fails if the two Englishes
+drift, because each is correct alone and the divergence is otherwise invisible.
+
+**Keys built at runtime need a fallback.** `tr.T("theme", t.Name)` is invisible to every
+static check, so the call site compares against the missing-key form and falls back to the
+source package's own label — see `view.themeLabel`, `view.glyphName`. Add the prefix to
+`dynamicPrefixes` in `keycoverage_test.go` with a note saying what supplies the suffix.
+
+**Splash strings are special and there are five of them.** `web/index.html` runs before the
+wasm module exists, so it cannot read the catalog. Add to `en_boot.go`, mirror through
+`view.mirrorBootCopy`, AND update the English fallback baked into `index.html` — the two must
+agree, because the fallback is what a first-ever load, a storage-refusing browser and a no-JS
+reader see.
+
+**What is deliberately NOT translated**, so nobody "fixes" it: feed content (titles, bodies,
+authors — that is §10.5, a different machine); gRPC's own transport text inside an `{err}`
+interpolation (paraphrasing the actionable half helps nobody); command-line strings, model
+identifiers, keyboard key names, CSS class names, and `data-` attribute values.
+
 ---
 
 ## 23. Testing
@@ -3994,6 +4324,8 @@ sentence. **Until signed off these remain open**; nothing here is settled by hav
 | **D19** does the renderer ship, and where | **Yes, on the reference box, one render at a time, flag-gated off by default** | Edge is already installed and `chromedp` attaches to an existing Chromium, so this adds a dependency on a browser that is *already there* rather than a new host, a container or a Node toolchain. A second box would be the clean answer and is a second box to own | ~1 GB of headroom and a CPU spike per render on the machine that also serves reading. The queue (§22.7) is what keeps that from being felt. **If the box is the fanless one, expect thermal throttling under repeated renders** and treat sustained rendering as out of budget |
 | **D20** proxy origin | **A separate hostname (`proxy.<instance>`), from the first line of code** | Retrofitting an origin split *after* signed URLs are minted and cached is a migration of every stored artifact. The CSP-and-sandbox-only version is one mistake away from the session token, and it is the same amount of work today | One more DNS name and one more tunnel route — a single extra entry in the Cloudflare config. TLS is free on both under D8 |
 | **D17** quota accounting | **Subscription count + tenant-exclusive bytes.** Shared source/item storage excluded entirely | The only definition that is both enforceable and fair under global dedup (A14). Tenant-exclusive = packs, archives, audio, embeddings, mailbox items, notes, bookmarks | A tenant subscribing to 500 popular feeds costs almost no quota. Correct, and occasionally surprising |
+| **D22** Fanciful's `--mute` is below AA (§20.16.2) | **Take it to about `#A093AC`** — in the mockup first, then `tokens.go` | The house tertiary colour measures **4.90:1 on the page, 4.42:1 on a hovered row and 3.94:1 on the row a reader is sitting on**, at the 11.5px it is used at for datelines and counts. That is AA for large text only, and none of this text is large. It is transcribed verbatim from `design/03-fanciful.html` and **the mockup is the specification**, so the fix is a decision about the mockup rather than a value to nudge in Go — which is exactly why this is a D and not a bug | `#A093AC` clears 4.5:1 on all three grounds and is the smallest change that does; the four generated themes already pass everywhere. Until it is answered, `sheet_test.go` records the two failing pairs **with their measured ratios and ratchets them** — they may not get worse, and a new theme cannot inherit the exception |
+
 
 **The five that genuinely cannot be settled at a desk** stay open by necessity, not neglect:
 **D0** (tag and push v5.0.0 — an action), **D1** (gofeed coverage against real feeds), ~~**D2**~~
@@ -4003,7 +4335,7 @@ requires executing something. **That is why this plan is not, and cannot be, ful
 of its numbers are unknowable from a document. D2 is the proof: the desk answer said "largely
 resolved," and running it found a per-connection registration requirement that changes `store.Open()`.
 
-**Accepting all ten closes every desk-decidable question and leaves five spikes.** That is the most
+**Accepting all fourteen closes every desk-decidable question and leaves five spikes.** That is the most
 plan-complete this design can honestly be before code exists.
 
 ---
