@@ -58,6 +58,7 @@ func New(allowPrivate bool) *Fetcher {
 		DialTimeout:  5 * time.Second,
 		UserAgent:    "ArticleFlux/0.1 (favicon)",
 		AllowPrivate: allowPrivate,
+		Purpose:      "favicon",
 	})}
 }
 

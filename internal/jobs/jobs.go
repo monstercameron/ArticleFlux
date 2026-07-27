@@ -96,6 +96,18 @@ type Options struct {
 	StaleAfter time.Duration
 	// Log receives failures. Nil discards them.
 	Log *slog.Logger
+
+	// OnResult is called once per job with how long the handler took and whether
+	// it failed. Nil disables it.
+	//
+	// A callback rather than an instrument passed in, so this package keeps
+	// knowing nothing about telemetry: the queue is the thing being measured and
+	// it should not depend on the measuring. It also means a test can assert on
+	// job outcomes without a meter.
+	//
+	// Called on the worker goroutine, after the job is settled — so it must not
+	// block. Anything slow here becomes queue latency.
+	OnResult func(ctx context.Context, kind store.JobKind, d time.Duration, err error)
 }
 
 // Pool drains the queue.
@@ -253,6 +265,7 @@ func (p *Pool) run(ctx context.Context, job store.Job) {
 		return
 	}
 
+	start := time.Now()
 	err := func() (err error) {
 		defer func() {
 			if v := recover(); v != nil {
@@ -267,6 +280,13 @@ func (p *Pool) run(ctx context.Context, job store.Job) {
 		}()
 		return handler(ctx, job)
 	}()
+
+	// Before the bookkeeping below, so a job whose handler SUCCEEDED is recorded
+	// as a success even if writing that outcome to the database then fails. The
+	// two are different events and conflating them would hide the second.
+	if p.opt.OnResult != nil {
+		p.opt.OnResult(ctx, job.Kind, time.Since(start), err)
+	}
 
 	if err != nil {
 		p.logf(ctx, slog.LevelWarn, "a job failed",

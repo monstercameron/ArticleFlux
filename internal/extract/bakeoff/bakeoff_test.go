@@ -1,4 +1,3 @@
-
 // The D7 bake-off. Not part of the normal test run — it exists to be read once,
 // argued with, and then cited.
 //

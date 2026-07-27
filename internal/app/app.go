@@ -38,6 +38,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/idem"
 	"github.com/monstercameron/ArticleFlux/internal/jobs"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -322,6 +323,24 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		return nil, fmt.Errorf("app: telemetry: %w", err)
 	}
 
+	// Every outbound fetch, from all seven callers, through the one guard they
+	// already share. Installed before any client is constructed.
+	//
+	// This is the metric that answers "is the internet broken, or is it us?" —
+	// a reader whose feeds stop updating looks identical whether the publisher is
+	// down, the DNS is wrong, or the SSRF guard is refusing an address, and
+	// before this there was no way to tell from outside.
+	netguard.Observer = func(purpose string, d time.Duration, status int, err error) {
+		ctx := context.Background()
+		attrs := metric.WithAttributes(
+			attribute.String("purpose", purpose),
+			telemetry.StatusClass(status),
+			telemetry.Outcome(err),
+		)
+		tel.Instruments.EgressRequests.Add(ctx, 1, attrs)
+		tel.Instruments.EgressDuration.Record(ctx, d.Seconds(), attrs)
+	}
+
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log,
 		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
 		icons:  favicon.New(cfg.AllowPrivateFeeds),
@@ -379,7 +398,27 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// Recommend is the near-term one, and it needs a discovery Validator — that is
 	// /discover's build, not this one.
 	a.deriver = derive.New(repo, cfg.Log)
-	a.pool = jobs.New(repo, jobs.Options{Log: cfg.Log})
+	a.pool = jobs.New(repo, jobs.Options{
+		Log: cfg.Log,
+		// The job queue is where a self-hosted instance actually breaks: a
+		// derivation that started failing is invisible until somebody notices the
+		// homepage stopped re-ranking, which is weeks. `job.Kind` is a closed set
+		// from the schema, so it is safe as a label.
+		OnResult: func(ctx context.Context, kind store.JobKind, d time.Duration, err error) {
+			attrs := metric.WithAttributes(
+				attribute.String("kind", string(kind)),
+				telemetry.Outcome(err),
+			)
+			a.tel.Instruments.JobRuns.Add(ctx, 1, attrs)
+			a.tel.Instruments.JobDuration.Record(ctx, d.Seconds(), attrs)
+			if err != nil {
+				a.tel.Instruments.Errors.Add(ctx, 1, metric.WithAttributes(
+					attribute.String("subsystem", "jobs"),
+					attribute.String("class", string(kind)),
+				))
+			}
+		},
+	})
 	a.pool.Handle(store.JobDerive, a.deriver.Handle)
 	// Following a page that has no feed (§11, §14.2).
 	//
@@ -785,7 +824,11 @@ func (a *App) buildHandler() {
 	// different binary, and a client that can always call Login is a client with
 	// one code path instead of two.
 	pb.RegisterAuthServiceServer(a.grpc,
-		grpcsrv.NewAuthServer(a.repo, a.scopeFromContext, a.log, a.cfg.DevMode))
+		grpcsrv.NewAuthServer(a.repo, a.scopeFromContext, a.log, a.cfg.DevMode).
+			WithLoginMetrics(func(ctx context.Context, outcome store.LoginOutcome) {
+				a.tel.Instruments.LoginAttempts.Add(ctx, 1,
+					metric.WithAttributes(attribute.String("outcome", string(outcome))))
+			}))
 	// Smart+ (§10.5, §18). Registered on every instance, including one with no
 	// API key: the screen that says "Smart+ is not configured" is served by
 	// this, and an unconfigured instance that answered Unimplemented would look
@@ -1187,14 +1230,53 @@ func (a *App) StartPoller(ctx context.Context) {
 				} else if n > 0 {
 					a.log.Info("purged sessions", "count", n)
 				}
-				res, err := a.svc.PollDue(ctx, 25)
+				// A span per cycle. The poll is the app's heartbeat — if it
+				// stops, the reader goes quiet and looks like a slow news day,
+				// which is the failure mode §22.11 exists to make visible.
+				pollCtx, span := a.tel.Tracer.Start(ctx, "poll.cycle")
+				start := time.Now()
+				res, err := a.svc.PollDue(pollCtx, 25)
+				elapsed := time.Since(start)
+
+				a.tel.Instruments.PollDuration.Record(pollCtx, elapsed.Seconds(),
+					metric.WithAttributes(telemetry.Outcome(err)))
+				span.End()
+
 				if err != nil {
-					a.log.Warn("poll", "err", err)
+					// The whole cycle failed, which is different from some feeds
+					// failing and is worth its own counter: one means the
+					// database or the scheduler, the other means a publisher.
+					a.tel.Instruments.PollRuns.Add(ctx, 1,
+						metric.WithAttributes(attribute.String("outcome", "cycle_error")))
+					a.tel.RecordError(ctx, a.log, "poll", "cycle_failed", err)
 					continue
 				}
+
+				failed := len(res.Errors)
+				if ok := res.Polled - failed; ok > 0 {
+					a.tel.Instruments.PollRuns.Add(ctx, int64(ok),
+						metric.WithAttributes(attribute.String("outcome", "ok")))
+				}
+				if failed > 0 {
+					a.tel.Instruments.PollRuns.Add(ctx, int64(failed),
+						metric.WithAttributes(attribute.String("outcome", "source_error")))
+				}
+				if res.NewItems > 0 {
+					a.tel.Instruments.ItemsIngested.Add(ctx, int64(res.NewItems))
+				}
+
 				if res.Polled > 0 {
+					// Always logged when work happened, at Info: this line is how
+					// somebody tailing the log knows the instance is alive. The
+					// duration is here because "the poll is getting slower" is
+					// the earliest warning of a database that needs a vacuum.
 					a.log.Info("polled", "sources", res.Polled, "new", res.NewItems,
-						"errors", len(res.Errors))
+						"errors", failed, "duration_ms", elapsed.Milliseconds())
+				} else {
+					// Nothing was due. At Debug so it does not drown the log, but
+					// present — "the poller ran and had nothing to do" and "the
+					// poller is not running" are otherwise identical from outside.
+					a.log.Debug("poll cycle: nothing due", "duration_ms", elapsed.Milliseconds())
 				}
 				// After the fetch, not before: new items are what the ranking is
 				// over, and deriving first would rank the homepage against a

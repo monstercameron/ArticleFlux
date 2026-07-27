@@ -1520,32 +1520,9 @@ func PrefetchURL(src string) {
 // what happens when the reader navigates to Settings — and the caller wants
 // "not visible", which is what the zero Listener plus the initial call gives it.
 func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Listener {
-	dbg := func(k string) {
-		g := js.Global().Get("__afWatch")
-		if !g.Truthy() {
-			g = js.Global().Get("Object").New()
-			js.Global().Set("__afWatch", g)
-		}
-		n := 0
-		if v := g.Get(k); v.Type() == js.TypeNumber {
-			n = v.Int()
-		}
-		g.Set(k, n+1)
-	}
-	dbg("setup")
-	report := func(v bool, from string) {
-		g := js.Global().Get("__afWatch")
-		if g.Truthy() {
-			g.Set("last", v)
-			g.Set("lastFrom", from)
-		}
-		dbg(from + map[bool]string{true: "True", false: "False"}[v])
-		fn(v)
-	}
 	doc := js.Global().Get("document")
 	target := doc.Call("querySelector", targetSelector)
 	if !target.Truthy() {
-		dbg("noTarget")
 		fn(false)
 		return Listener{}
 	}
@@ -1559,7 +1536,6 @@ func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Li
 	}
 
 	cb := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		dbg("cb")
 		if len(args) == 0 {
 			return nil
 		}
@@ -1568,15 +1544,9 @@ func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Li
 		if n == 0 {
 			return nil
 		}
-		if entries.Index(n - 1).Get("isIntersecting").Bool() {
-			dbg("cbTrue")
-		} else {
-			dbg("cbFalse")
-		}
 		// The last entry wins: the callback can be handed a batch covering
 		// several frames, and only the final state is the current one.
-		v := entries.Index(n - 1).Get("isIntersecting").Bool()
-		report(v, "cb")
+		fn(entries.Index(n - 1).Get("isIntersecting").Bool())
 		return nil
 	})
 
@@ -1592,14 +1562,12 @@ func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Li
 	// which reads as two players fighting.
 	opts.Set("threshold", 0)
 	obs := ctor.New(cb, opts)
-	dbg("observing")
 	obs.Call("observe", target)
 
 	// Reported immediately rather than waiting for the observer's first
 	// delivery: that arrives a frame or more later, and the gap is long enough
 	// to flash a player that should never have appeared.
-	iv := inViewport(target, doc.Call("querySelector", rootSelector))
-	report(iv, "init")
+	fn(inViewport(target, doc.Call("querySelector", rootSelector)))
 
 	return Listener{extra: func() {
 		obs.Call("disconnect")

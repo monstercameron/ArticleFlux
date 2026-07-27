@@ -116,6 +116,7 @@ func New(opt Options) *Fetcher {
 			AllowPrivate: opt.AllowPrivate,
 			Timeout:      opt.Timeout,
 			UserAgent:    opt.UserAgent,
+			Purpose:      "asset",
 		}),
 		maxBytes:     opt.MaxBytes,
 		allowPrivate: opt.AllowPrivate,

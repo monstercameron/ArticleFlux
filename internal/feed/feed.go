@@ -127,6 +127,7 @@ func New(cfg Config) *Fetcher {
 		DialTimeout:  10 * time.Second,
 		UserAgent:    UserAgent,
 		AllowPrivate: cfg.AllowPrivateAddresses,
+		Purpose:      "feed",
 	})
 	return f
 }

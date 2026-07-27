@@ -77,7 +77,7 @@ var blocked = func() []*net.IPNet {
 		// entry is what catches a NAT64 address whose embedded IPv4 is public —
 		// still a route into a translator we did not choose.
 		"64:ff9b::/96",
-		"2001:db8::/32",      // documentation
+		"2001:db8::/32", // documentation
 		// NOTE: "::ffff:0:0/96" (IPv4-mapped IPv6) deliberately does NOT appear
 		// here, and adding it back is a severe bug rather than defence in depth.
 		// net.IPNet.Contains calls To4() on the network address, and
@@ -307,6 +307,38 @@ type Options struct {
 	// UserAgent identifies us to publishers. A reader that fetches anonymously is
 	// one a publisher can only respond to by blocking.
 	UserAgent string
+
+	// Purpose names what this client is for — "feed", "favicon", "extract",
+	// "asset", "page", "discover" — and is passed to Observer.
+	//
+	// A fixed word chosen by the CALLER, never anything derived from a URL: it
+	// becomes a metric label, and a label taken from user input is both an
+	// unbounded series count and, here, a published reading history.
+	Purpose string
+}
+
+// Observer is called after every outbound request, if set.
+//
+// A package-level hook rather than an Options field because there are seven
+// constructors across six packages and threading a recorder through all of them
+// would mean six packages importing the telemetry layer — for a guard whose job
+// is to be the one thing every fetch passes through. Set it once at startup,
+// before any client is built.
+//
+// `status` is 0 when the request never produced a response. `err` is the
+// transport error, and it is NOT safe to use as a metric label: it contains the
+// host and often the URL.
+var Observer func(purpose string, d time.Duration, status int, err error)
+
+func observe(purpose string, start time.Time, res *http.Response, err error) {
+	if Observer == nil {
+		return
+	}
+	status := 0
+	if res != nil {
+		status = res.StatusCode
+	}
+	Observer(purpose, time.Since(start), status, err)
 }
 
 // Client returns an http.Client safe to point at a user-supplied URL.
@@ -338,7 +370,7 @@ func Client(opt Options) *http.Client {
 	}
 	return &http.Client{
 		Timeout:   opt.Timeout,
-		Transport: &uaTransport{next: tr, ua: opt.UserAgent},
+		Transport: &uaTransport{next: tr, ua: opt.UserAgent, purpose: opt.Purpose},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= MaxRedirects {
 				return ErrTooManyRedirects
@@ -352,8 +384,9 @@ func Client(opt Options) *http.Client {
 }
 
 type uaTransport struct {
-	next http.RoundTripper
-	ua   string
+	next    http.RoundTripper
+	ua      string
+	purpose string
 }
 
 func (t *uaTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -361,7 +394,13 @@ func (t *uaTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		r = r.Clone(r.Context())
 		r.Header.Set("User-Agent", t.ua)
 	}
-	return t.next.RoundTrip(r)
+	// Per HOP, which is what makes a redirect chain and a blocked address both
+	// visible: a fetch refused by Control never reaches a status code, and
+	// counting only the final response would record it as nothing at all.
+	start := time.Now()
+	res, err := t.next.RoundTrip(r)
+	observe(t.purpose, start, res, err)
+	return res, err
 }
 
 // Get is the convenience path: validate, then fetch with a guarded client.

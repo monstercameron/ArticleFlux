@@ -1,4 +1,3 @@
-
 package bakeoff
 
 import (

@@ -3,6 +3,7 @@ package textvec
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,139 @@ func TestTokenizeDropsFurnitureButKeepsRealWords(t *testing.T) {
 			t.Errorf("Tokenize(%q) = %v, want %v — a real subject was dropped as furniture",
 				in, got, want)
 		}
+	}
+}
+
+// Brands and products survive as phrases, which single words cannot express.
+//
+// Before this, "GitHub Copilot" was `github` + `copilot` and "iPhone 17" was `iphone`
+// with the 17 discarded — so a reader following one product line looked, to the
+// interest layer, like someone interested in two generic words.
+func TestPhrasesCaptureNamesAndProducts(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		// Two capitalised words: a name.
+		{"GitHub Copilot now writes tests", []string{"github copilot"}},
+		{"the new Framework Laptop teardown", []string{"framework laptop"}},
+		// A capitalised head plus a small number: a product generation. Both the
+		// name and the generation come out, which is what lets a reader who follows
+		// one revision be told apart from one who follows the line.
+		{"Nintendo Switch 2 sold well", []string{"nintendo switch", "switch 2"}},
+		// Three capitalised words yield both overlapping pairs, which is correct —
+		// "Snapdragon X" and "X Elite" are each meaningful and IDF sorts out which
+		// one the corpus finds distinctive.
+		{"Qualcomm Snapdragon Elite", []string{"qualcomm snapdragon", "snapdragon elite"}},
+	}
+	for _, c := range cases {
+		got := Phrases(c.in)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Phrases(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// The heuristic must not manufacture names out of ordinary prose, because every false
+// phrase costs a slot in a 2000-term vocabulary that real subjects need.
+func TestPhrasesRejectNonNames(t *testing.T) {
+	for _, in := range []string{
+		// Sentence-initial capital followed by a lowercase word: not a phrase.
+		"Battery life is great",
+		// Neither word capitalised.
+		"battery life is great",
+		// A capitalised stopword leading, which is what a sentence start looks like.
+		"The Battery lasted",
+		// A sentence boundary between two names must not join them.
+		"I use the Pixel. Samsung makes the screen",
+		// Structural punctuation in feed markup separates fragments.
+		"Apple | Microsoft",
+	} {
+		if got := Phrases(in); len(got) != 0 {
+			t.Errorf("Phrases(%q) = %v, want no phrases", in, got)
+		}
+	}
+
+	// A four-digit number is a year and must never be joined to a name, or every
+	// product from one year clusters with every other.
+	for _, in := range []string{"Released Pixel 2026 edition", "the Switch 1999 model"} {
+		for _, p := range Phrases(in) {
+			if strings.Contains(p, "2026") || strings.Contains(p, "1999") {
+				t.Errorf("Phrases(%q) joined a year: %q", in, p)
+			}
+		}
+	}
+}
+
+// The known false positive, asserted so it stays known.
+//
+// A sentence-initial capital says nothing about proper-nounhood, so "Released Pixel"
+// becomes a phrase. The fix — refusing sentence-initial heads — is worse, because in a
+// feed almost every title is one sentence and the brand leads it; that rule would
+// throw away "GitHub Copilot now writes tests". This test exists so the trade is a
+// recorded decision rather than something a later reader assumes is a bug, and so that
+// anyone who does tighten the rule sees exactly what they changed.
+func TestPhrasesAcceptTheSentenceInitialFalsePositive(t *testing.T) {
+	got := Phrases("Released Pixel 2026 edition")
+	want := []string{"released pixel"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Phrases = %v, want %v — the documented trade-off changed", got, want)
+	}
+	// The mitigation is that it cannot accumulate: the same announcement written the
+	// normal way shares only the real name, so `released pixel` stays a single
+	// observation while `pixel` and any real pair recur.
+	c := NewCorpus()
+	c.Add("Released Pixel 2026 edition")
+	c.Add("Announced Pixel Fold today")
+	c.Add("Unveiled Pixel Fold pricing")
+	if c.docFreq["released pixel"] != 1 {
+		t.Errorf("a one-off false phrase recurred: df=%d", c.docFreq["released pixel"])
+	}
+	if c.docFreq["pixel fold"] != 2 {
+		t.Errorf("a real phrase failed to accumulate: df=%d", c.docFreq["pixel fold"])
+	}
+}
+
+// A phrase must be a term the corpus knows, or it gets the unseen-term IDF — the
+// highest weight available — and every brand name drowns out every real subject.
+func TestPhrasesShareTheCorpusVocabulary(t *testing.T) {
+	c := NewCorpus()
+	c.Add("Nintendo Switch sales rose")
+	c.Add("Nintendo Switch games list")
+	c.Add("unrelated article about cooking")
+
+	if c.IDF("nintendo switch") <= 0 {
+		t.Fatal("the phrase term is unknown to the corpus it was added to")
+	}
+	// Two of three documents contain it, so it must weigh less than a term seen once.
+	if c.IDF("nintendo switch") >= c.IDF("cooking") {
+		t.Errorf("a phrase in 2/3 documents (IDF %v) outweighs one in 1/3 (IDF %v)",
+			c.IDF("nintendo switch"), c.IDF("cooking"))
+	}
+	// And it reaches the vector, which is the point of the whole exercise.
+	if v := c.TFIDF("Nintendo Switch sales rose"); v["nintendo switch"] <= 0 {
+		t.Error("the phrase term did not reach the TF-IDF vector")
+	}
+}
+
+// Two articles about the same product line are more alike than two that merely share
+// a generic word — the reason phrases are worth their vocabulary cost.
+func TestPhrasesSharpenSimilarity(t *testing.T) {
+	c := NewCorpus()
+	sameProduct := []string{
+		"Framework Laptop 13 review and teardown",
+		"Framework Laptop 13 upgrade options",
+	}
+	other := "generic laptop buying advice for students"
+	for _, d := range sameProduct {
+		c.Add(d)
+	}
+	c.Add(other)
+
+	same := Cosine(c.TFIDF(sameProduct[0]), c.TFIDF(sameProduct[1]))
+	diff := Cosine(c.TFIDF(sameProduct[0]), c.TFIDF(other))
+	if same <= diff {
+		t.Errorf("same-product similarity %v did not exceed generic overlap %v", same, diff)
 	}
 }
 

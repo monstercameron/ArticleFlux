@@ -128,6 +128,7 @@ func New(cfg Config) *Fetcher {
 			DialTimeout:  10 * time.Second,
 			UserAgent:    UserAgent,
 			AllowPrivate: cfg.AllowPrivateAddresses,
+			Purpose:      "discover",
 		}),
 		feeds:  feed.New(feed.Config{AllowPrivateAddresses: cfg.AllowPrivateAddresses}),
 		robots: map[string]robotsEntry{},

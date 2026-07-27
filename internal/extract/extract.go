@@ -140,6 +140,7 @@ func New(cfg Config) *Extractor {
 			DialTimeout:  10 * time.Second,
 			UserAgent:    UserAgent,
 			AllowPrivate: cfg.AllowPrivateAddresses,
+			Purpose:      "extract",
 		}),
 	}
 }

@@ -139,6 +139,17 @@ func serve(log *slog.Logger, args []string) error {
 	// See clientAddr for why trusting it unconditionally is worse than useless.
 	behindProxy := fs.Bool("behind-proxy", envBool("ARTICLEFLUX_BEHIND_PROXY"),
 		"trust X-Forwarded-For / X-Real-IP for client addresses; ONLY behind a proxy you control")
+	// Metrics are always readable at /metrics with no configuration. This flag is
+	// only about SENDING them somewhere, which is a network decision and so is
+	// opt-in — the same position §18 takes about the model egress boundary.
+	//
+	// OTEL_EXPORTER_OTLP_ENDPOINT is the spelling every other OpenTelemetry
+	// program uses; honouring it means a collector already configured for the
+	// box needs nothing said twice.
+	otlpEndpoint := fs.String("otlp-endpoint", envOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		"OpenTelemetry collector base URL, e.g. http://localhost:4318; empty keeps metrics local to /metrics")
+	otlpInsecure := fs.Bool("otlp-insecure", envBool("ARTICLEFLUX_OTLP_INSECURE"),
+		"send OTLP over plain HTTP; only sane for a collector on this host")
 	// On by default, which is the odd one out among these flags and is
 	// deliberate (§10.1a). The failure it prevents is an article whose images
 	// silently never load because the *reader's* network blocks a publisher the
@@ -239,6 +250,8 @@ func serve(log *slog.Logger, args []string) error {
 		PollInterval:      *poll,
 		AllowedOrigins:    splitList(*origin),
 		BehindProxy:       *behindProxy,
+		OTLPEndpoint:      *otlpEndpoint,
+		OTLPInsecure:      *otlpInsecure,
 		ProxyImages:       *proxyImages,
 		ProxyPages:        *proxyPages,
 		ProxyStream:       *proxyStream,
