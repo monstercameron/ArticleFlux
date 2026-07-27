@@ -85,6 +85,24 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The HTTP metrics middleware took the tunnel's socket away.** Wrapping the response writer to
+  record status and bytes broke the WebSocket upgrade, and the failure was total: every client sat
+  in `TRANSIENT_FAILURE`, which reads as "the server is down" and was in fact "a middleware ate the
+  connection". *Embedding an interface promotes only that interface's methods* — a recorder
+  embedding `http.ResponseWriter` does not satisfy `http.Hijacker` whatever the value inside it is,
+  and the upgrade asserts for `http.Hijacker` directly rather than going through
+  `http.ResponseController`, so the `Unwrap` that existed for exactly this reason was never
+  consulted. Caught by the two keepalive tests, which are the only ones here that dial the tunnel
+  end to end.
+- **Every metric and span was missing its service name.** The telemetry resource was built with a
+  pinned semconv import, and `resource.Merge` refuses to merge resources carrying different schema
+  URLs — `resource.Default()` carries whichever the SDK was built against. The day the SDK moved,
+  the merge errored, the code fell back to the default resource, and the identity silently vanished
+  from everything exported. The warning said so and nothing was watching.
+- **A browser test's patience was shorter than a cold start under load.** The stream test failed
+  twice in fifteen contended runs, both at exactly its 60s ceiling — not the product being slow.
+  Raised to the 90s `internal/render` already settled on for the same shape of test, so it is a
+  number with a precedent rather than a fresh guess; a real hang still fails.
 - **The connection badge could say "down" over a working connection, forever** (`client/data`,
   §20.19, A40). An RPC that fails during an outage marks the transport failed. gRPC itself never
   notices — a socket that stops carrying traffic is indistinguishable from one nobody is using until
@@ -201,6 +219,29 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Entity affinity — the interest layer can name a thing, not just a subject** (migration 0019,
+  §18.2). It could describe what *subjects* a reader follows and could not name one *thing*: term
+  affinity holds a bag of words and topics hold clusters of them, so "cameras" was expressible and
+  "the Lumix line" was not. The cause was structural rather than a bug — the vectoriser exists to
+  flatten text into comparable weights, which is exactly the operation that destroys a proper noun's
+  identity — so entities are derived alongside the vector rather than out of it. Ranking reasons now
+  travel as a term with prose beside it, so counting them no longer means grepping English.
+- **A fuzz target on every parser that eats somebody else's bytes** — thirteen of them (apierr,
+  charsetdec, extract, feed, feeddate, jsonsel, mailparse, netguard, netscape, pwpolicy, rewrite,
+  scrapesel, urlnorm). Each asserts a *property* rather than an output — the sanitizer never emits a
+  script element, an unclassified error never leaks its detail, a decode never claims an encoding it
+  did not produce — and every crash the runs found is checked in as a seed. `netguard` also gains the
+  audit that had only been a comment: `neverAllowed` must be a subset of the default-blocked set, or
+  `-allow-private` refuses a range the strict policy quietly allows.
+- **`client/view` has unit tests, which first required a way to run them.** The package is entirely
+  `js && wasm`, so nothing in it had ever been asserted outside a browser and "tested" meant booting
+  a server and driving Chrome — the wrong tool for "what does this render when the list is empty",
+  and the reason those questions went unasked. The tests build under `GOOS=js GOARCH=wasm` and run
+  against the compiled binary through Node; both task runners carry a `wasmtest` verb.
+- **`scripts/run-checks.sh`** — build, wasm build, vet, the full suite, the wasm suite, staticcheck
+  and the structural guards, in that order, with one verdict at the end. The test stage gates with
+  nothing excluded; it briefly carried a single native exclusion, which is exactly how a local suite
+  starts drifting from what CI runs.
 - **Live updates: the list changes while you are looking at it** (`EventService.WatchEvents` ·
   `client/data`, TODO 8.7, §20.3). `internal/events` had been a complete, tested bus with nothing on
   either side of it — no publisher, no transport, and nothing in the application had ever called it.
