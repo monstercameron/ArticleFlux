@@ -13,6 +13,19 @@ func SetRootVar(name, value string) {}
 
 func RootVar(name string) string { return "" }
 
+func SetRootAttr(name, value string) {}
+
+func RootAttr(name string) string { return "" }
+
+// PrefersReducedMotion and MotionReduced both answer false natively: there is no
+// OS to ask and no document to carry the attribute. False is the honest zero
+// value here — "nothing has asked for less motion" — and the alternative, true,
+// would make every native test of a motion-dependent path exercise the branch a
+// reader almost never takes.
+func PrefersReducedMotion() bool { return false }
+
+func MotionReduced() bool { return false }
+
 func InnerWidth() int { return 0 }
 
 // Listener is the native stand-in. Release is safe to call.
@@ -75,6 +88,10 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 }
 
 func OnDelegatedInput(containerSelector, attr string, fn func(key, value string)) Listener {
+	return Listener{}
+}
+
+func OnDelegatedBlur(containerSelector, attr string, fn func(key, value string)) Listener {
 	return Listener{}
 }
 

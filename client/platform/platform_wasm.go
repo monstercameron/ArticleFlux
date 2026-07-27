@@ -30,6 +30,54 @@ func SetRootVar(name, value string) {
 	doc.Get("documentElement").Get("style").Call("setProperty", name, value)
 }
 
+// SetRootAttr sets an attribute on <html>.
+//
+// Two things are switched this way — `data-motion` and `data-tone` — and both
+// are read by CSS selectors rather than by any Go code. That is the point: an
+// attribute on the root element re-styles the whole document with one write and
+// no re-render, which is the same trick SetRootVar plays with custom properties
+// and for the same reason. A theme switch that re-rendered 151 sidebar rows and
+// a virtualised list would be visible as a stall.
+//
+// It is <html> rather than <body> because the sheet's `:root` block is where the
+// tokens live, and a switch that has to outrank them has to be on the same
+// element or above it.
+func SetRootAttr(name, value string) {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	el := doc.Get("documentElement")
+	if !el.Truthy() {
+		return
+	}
+	if value == "" {
+		// removeAttribute, not setAttribute(""): an empty string still MATCHES
+		// [data-motion], so clearing a preference by writing "" would leave the
+		// reader gated by an attribute selector that no branch sets a value for.
+		el.Call("removeAttribute", name)
+		return
+	}
+	el.Call("setAttribute", name, value)
+}
+
+// RootAttr reads an attribute from <html>, or "" when it is absent.
+func RootAttr(name string) string {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return ""
+	}
+	el := doc.Get("documentElement")
+	if !el.Truthy() {
+		return ""
+	}
+	v := el.Call("getAttribute", name)
+	if !v.Truthy() {
+		return ""
+	}
+	return v.String()
+}
+
 // RootVar reads a CSS custom property from :root.
 func RootVar(name string) string {
 	doc := js.Global().Get("document")
@@ -61,6 +109,12 @@ type Listener struct {
 	event   string
 	fn      js.Func
 	capture bool
+	// extra releases anything the four fields above cannot describe: a second
+	// event name, a listener on a different target, an interval. The attention
+	// gate needs all three at once, and the alternative — returning a slice of
+	// Listeners — would make every call site loop over something that is almost
+	// always one element.
+	extra func()
 }
 
 // Release detaches the listener and frees the Go function.
@@ -69,6 +123,9 @@ type Listener struct {
 // side can call it. An effect that registers without releasing leaks one closure
 // per mount, which in a list that remounts on every navigation is unbounded.
 func (l Listener) Release() {
+	if l.extra != nil {
+		l.extra()
+	}
 	if l.target.Truthy() {
 		// removeEventListener only matches a listener registered with the same
 		// capture flag; omitting it here would leak every capture-phase listener.
@@ -700,6 +757,47 @@ func OnDelegatedInput(containerSelector, attr string, fn func(key, value string)
 	return Listener{target: el, event: "input", fn: f}
 }
 
+// OnDelegatedBlur is OnDelegatedInput for leaving a field: it reports the
+// identifying attribute and the final value of a field that has just lost focus.
+//
+// `focusout`, not `blur`: blur does not bubble, so a delegated listener on a
+// stable container never sees it, and per-field listeners are exactly what the
+// stream of note fields cannot have.
+//
+// This is the debounced note's safety net. A reader who types and immediately
+// clicks away — to another article, to the sidebar, to a link — has finished
+// with that field, and waiting out the rest of the debounce to save what they
+// have already walked away from is how autosave loses writing.
+func OnDelegatedBlur(containerSelector, attr string, fn func(key, value string)) Listener {
+	doc := js.Global().Get("document")
+	el := doc.Call("querySelector", containerSelector)
+	if !el.Truthy() {
+		return Listener{}
+	}
+	f := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		t := args[0].Get("target")
+		if !t.Truthy() {
+			return nil
+		}
+		k := t.Call("getAttribute", attr)
+		if !k.Truthy() {
+			return nil
+		}
+		v := t.Get("value")
+		if !v.Truthy() {
+			fn(k.String(), "")
+			return nil
+		}
+		fn(k.String(), v.String())
+		return nil
+	})
+	el.Call("addEventListener", "focusout", f)
+	return Listener{target: el, event: "focusout", fn: f}
+}
+
 // FocusedAttr returns an attribute of the currently focused element.
 //
 // Used by the keyboard handler to learn which article's note field Ctrl+Enter
@@ -872,8 +970,11 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool) {
 			// two unrelated documents is not a transition, it is a blur.
 			//
 			// Reduced motion wins: a smooth scroll is exactly the kind of
-			// unrequested movement the preference exists to suppress.
-			if smooth && !prefersReducedMotion() {
+			// unrequested movement the preference exists to suppress. The app's
+			// own setting is what is consulted, falling back to the OS — a reader
+			// who turned motion off here should not still get a scroll animation
+			// because their machine never had an opinion.
+			if smooth && !MotionReduced() {
 				opts := js.Global().Get("Object").New()
 				opts.Set("top", child.Get("offsetTop"))
 				opts.Set("behavior", "smooth")
@@ -893,14 +994,37 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool) {
 	js.Global().Call("requestAnimationFrame", frame)
 }
 
-// prefersReducedMotion reports the user's OS-level motion preference.
-func prefersReducedMotion() bool {
+// PrefersReducedMotion reports the user's OS-level motion preference.
+//
+// This is the SYSTEM answer only. It is what seeds the app's own setting the
+// first time a reader arrives, and after that the app's setting is what counts —
+// see MotionReduced, which is the question every caller actually wants answered.
+func PrefersReducedMotion() bool {
 	mm := js.Global().Get("matchMedia")
 	if !mm.Truthy() {
 		return false
 	}
 	q := js.Global().Call("matchMedia", "(prefers-reduced-motion: reduce)")
 	return q.Truthy() && q.Get("matches").Bool()
+}
+
+// MotionReduced reports whether motion is currently suppressed, by the app's
+// preference if one has been set and by the OS otherwise.
+//
+// It reads the `data-motion` attribute on <html> rather than taking the answer
+// as a parameter, so that the CSS gate and every Go-side decision (which is to
+// say: smooth scrolling) are driven by literally the same bit. Threading a bool
+// down instead is how the sheet and the scroller end up disagreeing about
+// whether the reader asked for less movement.
+func MotionReduced() bool {
+	switch RootAttr("data-motion") {
+	case "reduced":
+		return true
+	case "full":
+		return false
+	default:
+		return PrefersReducedMotion()
+	}
 }
 
 // --- speech ------------------------------------------------------------------
