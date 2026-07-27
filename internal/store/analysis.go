@@ -48,7 +48,7 @@ type ItemAnalysis struct {
 	LLMAt    time.Time
 	LLMModel string
 
-	// The Smart+ verdict on the DEFAULT taxonomy (0024, §27.4b).
+	// The Smart+ verdict on the DEFAULT taxonomy (0026, §27.4b).
 	//
 	// Separate from CategoryScores because they are different kinds of fact and
 	// only one is recomputable: the scores are a pure function of the text and

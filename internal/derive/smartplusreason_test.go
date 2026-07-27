@@ -181,6 +181,66 @@ func TestSmartPlusReasonFollowsTheItemNotThePosition(t *testing.T) {
 	}
 }
 
+// The badge and the rationale travel together, on every row, in both directions.
+//
+// A pick the model left exactly where it already was is not a Smart+ pick — applySmartPlus
+// drops it from the tier so a configured key cannot relabel a page it did not change. The
+// reason was attached before that pruning and survived it, which produced the mirror of the
+// defect the reason exists to fix: first a badge with no rationale, then "moved up because
+// …" on a row that had not moved. Found in the browser, where the row wore no badge and
+// still explained its promotion.
+func TestAnUnmovedPickKeepsNeitherBadgeNorReason(t *testing.T) {
+	s := New(nil, nil)
+	out := scored("a", "b", "c", "d")
+
+	// The model picks index 0 — already first — and index 2, which really does move.
+	tier := s.applySmartPlus(context.Background(),
+		&fakePlus{rerank: []int{0, 2}, why: "the model's account"}, out, nil, nil)
+
+	// "a" did not move, so it is not a paid pick and must not claim to be one.
+	if tier[out[0].item.ID] {
+		t.Errorf("%q was already first and is marked as a Smart+ pick", out[0].item.ID)
+	}
+	for _, r := range out[0].res.Reasons {
+		if r.Term == "smartplus" {
+			t.Errorf("%q kept %q — a promotion blurb on a row that never moved",
+				out[0].item.ID, r.Text)
+		}
+	}
+	// "c" did move, and keeps both.
+	moved := out[1]
+	if moved.item.ID != "c" {
+		t.Fatalf("position 1 holds %q, want %q", moved.item.ID, "c")
+	}
+	if !tier[moved.item.ID] {
+		t.Errorf("%q moved but is not marked as a Smart+ pick", moved.item.ID)
+	}
+	var found bool
+	for _, r := range moved.res.Reasons {
+		if r.Term == "smartplus" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("%q moved and carries no reason; terms=%v", moved.item.ID, reasonTerms(moved))
+	}
+
+	// Stated as the invariant the client actually depends on, over the whole page: a
+	// smartplus reason exists exactly where the tier says the model changed something.
+	for i, sc := range out {
+		var hasReason bool
+		for _, r := range sc.res.Reasons {
+			if r.Term == "smartplus" {
+				hasReason = true
+			}
+		}
+		if hasReason != tier[sc.item.ID] {
+			t.Errorf("row %d (%s): badge=%v reason=%v — the two must agree",
+				i, sc.item.ID, tier[sc.item.ID], hasReason)
+		}
+	}
+}
+
 // Guards the shape the client relies on: the reason is appended, so it is LAST.
 //
 // rank.Score sorts its reasons by absolute delta, and this one is added afterwards with a

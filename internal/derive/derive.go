@@ -1511,9 +1511,16 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 	// A pick that was already going to be first was not influenced by the model, so it is
 	// not a Smart+ pick. This is what stops a configured key from relabelling the whole
 	// page as paid-for when it changed nothing.
+	//
+	// The REASON has to go with the badge, and for the same reason the badge goes. It says
+	// "moved up because …", which is a claim about a move; on a row that was already in
+	// this position it is simply false. Leaving it produced the mirror image of the defect
+	// this reason exists to fix — first a badge with no rationale, then a rationale with no
+	// badge, asserting a promotion that never happened.
 	for i, sc := range out[:head] {
 		if i < len(order) && order[i] == i {
 			delete(tier, sc.item.ID)
+			out[i].res.Reasons = withoutSmartPlus(sc.res.Reasons)
 		}
 	}
 	if s.log != nil {
@@ -1521,6 +1528,23 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 			"considered", head, "promoted", len(order), "changed", len(tier))
 	}
 	return tier
+}
+
+// withoutSmartPlus returns the reasons with the paid tier's own reason removed.
+//
+// Returns a NEW slice rather than truncating in place. The reason is appended last, so
+// re-slicing would usually work and would be wrong in the case that matters: `out` was
+// permuted by copy() a few lines above, so several entries share backing arrays with rows
+// that are still holding a legitimate reason. Allocating is the cheap way not to depend on
+// which ones.
+func withoutSmartPlus(rs []rank.Reason) []rank.Reason {
+	out := make([]rank.Reason, 0, len(rs))
+	for _, r := range rs {
+		if r.Term != "smartplus" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // firstRunes truncates on a rune boundary, so a multi-byte character is never cut in

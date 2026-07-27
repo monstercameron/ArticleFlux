@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
@@ -27,6 +30,9 @@ type IngestItem struct {
 type IngestResult struct {
 	New     int
 	Updated int
+	// Edited counts rows whose TEXT changed, which is a subset of Updated: a
+	// re-poll updates every row it sees, and almost none of them changed.
+	Edited int
 	// NewIDs are the items created by this call, in the order they arrived.
 	//
 	// Carried out because the caller has no other way to name them: ingest is
@@ -56,17 +62,26 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The stored hash and the text it belongs to come back with the id, so an
+		// edit can be NOTICED and the version being replaced can be kept
+		// (0024, TODO F34). One row of a query that was already happening.
 		sel, err := tx.PrepareContext(ctx,
-			`SELECT id FROM items WHERE source_id = ? AND guid = ?`)
+			`SELECT id, coalesce(content_hash,''), title, coalesce(summary,''),
+			        coalesce(content_html,'')
+			   FROM items WHERE source_id = ? AND guid = ?`)
 		if err != nil {
 			return err
 		}
 		defer sel.Close()
 
+		// The hash goes in with the row. Without it the very next poll would
+		// compare new text against an empty hash and report every article on the
+		// instance as edited once.
 		ins, err := tx.PrepareContext(ctx, `
 			INSERT INTO items (id,source_id,guid,dupe_key,url,title,author,summary,
-			                   content_html,published_at,first_seen_at,word_count,image_url)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+			                   content_html,published_at,first_seen_at,word_count,image_url,
+			                   content_hash)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -77,23 +92,68 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 		// otherwise resurrect a year-old article at the top of the feed.
 		upd, err := tx.PrepareContext(ctx, `
 			UPDATE items SET title=?, author=?, summary=?, content_html=?,
-			                 url=?, dupe_key=?, word_count=?, image_url=?
+			                 url=?, dupe_key=?, word_count=?, image_url=?,
+			                 content_hash=?
 			 WHERE id=?`)
 		if err != nil {
 			return err
 		}
 		defer upd.Close()
 
+		// An edit bumps the counter and stamps when it was seen. Separate from
+		// the update above so the common case — a re-poll of fifty unchanged
+		// articles — never touches these columns at all.
+		mark, err := tx.PrepareContext(ctx, `
+			UPDATE items SET revision = revision + 1, edited_at = ? WHERE id = ?`)
+		if err != nil {
+			return err
+		}
+		defer mark.Close()
+
+		// The version being REPLACED, kept so "what changed" has two sides.
+		// `INSERT OR IGNORE` against the (item_id, content_hash) index from 0010:
+		// a publisher who reverts an edit produces a body we have already stored,
+		// and recording it twice would show a change that did not happen.
+		keep, err := tx.PrepareContext(ctx, `
+			INSERT OR IGNORE INTO item_revisions
+			  (id,item_id,title,summary,content_html,content_hash,seen_at)
+			VALUES (?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer keep.Close()
+
 		var fresh []string
 		for _, it := range items {
-			var id string
-			err := sel.QueryRowContext(ctx, sourceID, it.GUID).Scan(&id)
+			var id, oldHash, oldTitle, oldSummary, oldBody string
+			err := sel.QueryRowContext(ctx, sourceID, it.GUID).
+				Scan(&id, &oldHash, &oldTitle, &oldSummary, &oldBody)
 			switch err {
 			case nil:
+				newHash := contentHash(it.Title, it.Summary, it.ContentHTML)
+				edited := newHash != oldHash
+				if edited && oldHash != "" {
+					// Keep what is about to be overwritten. Only when a hash was
+					// stored: a row from before 0024 has no recorded version, and
+					// filing its current text as "the old one" would claim we had
+					// been watching all along.
+					if _, err := keep.ExecContext(ctx, idgen.New(), id, oldTitle,
+						nullify(oldSummary), nullify(oldBody),
+						contentHash(oldTitle, oldSummary, oldBody), now); err != nil {
+						return err
+					}
+				}
 				if _, err := upd.ExecContext(ctx, it.Title, nullify(it.Author),
 					nullify(it.Summary), nullify(it.ContentHTML), nullify(it.URL),
-					nullify(it.DupeKey), it.WordCount, nullify(it.ImageURL), id); err != nil {
+					nullify(it.DupeKey), it.WordCount, nullify(it.ImageURL),
+					newHash, id); err != nil {
 					return err
+				}
+				if edited && oldHash != "" {
+					if _, err := mark.ExecContext(ctx, now, id); err != nil {
+						return err
+					}
+					res.Edited++
 				}
 				res.Updated++
 			case sql.ErrNoRows:
@@ -102,7 +162,8 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 					nullify(it.DupeKey), nullify(it.URL), it.Title, nullify(it.Author),
 					nullify(it.Summary), nullify(it.ContentHTML),
 					it.PublishedAt.UTC().Format(time.RFC3339Nano), now,
-					it.WordCount, nullify(it.ImageURL)); err != nil {
+					it.WordCount, nullify(it.ImageURL),
+					contentHash(it.Title, it.Summary, it.ContentHTML)); err != nil {
 					return err
 				}
 				fresh = append(fresh, newID)
@@ -388,4 +449,23 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// contentHash identifies a version of an article.
+//
+// Title, summary and body together, because an edit that changes only the
+// headline is still an edit — a correction usually shows up there first.
+// Separated by a byte that cannot appear in any of them, so moving text from the
+// summary into the body cannot produce the same hash as leaving it where it was.
+//
+// Normalised only by trimming: collapsing whitespace would hide a publisher
+// reflowing a paragraph, and that is a change a reader who saved a quote wants
+// to know about.
+func contentHash(title, summary, body string) string {
+	h := sha256.New()
+	for _, part := range []string{title, summary, body} {
+		h.Write([]byte(strings.TrimSpace(part)))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -143,6 +143,16 @@ type Item struct {
 	Rating    int
 	WordCount int
 	ImageURL  string
+	// Revision counts the times the publisher changed this article's text after
+	// we first stored it (TODO F34). Zero is the overwhelmingly common case and
+	// means "as published"; anything higher means the copy in front of the reader
+	// is not the copy that was sent out.
+	Revision int
+	// EditedAt is when we NOTICED the most recent change, RFC3339 and empty for
+	// an unedited article. Not when the publisher made it — nobody tells us that,
+	// and a feed carries no honest signal for it, so this is a poll timestamp and
+	// the UI has to say "we saw this change" rather than "this was changed".
+	EditedAt string
 }
 
 // ListQuery selects a page of items.
@@ -288,7 +298,8 @@ const (
 		       COALESCE(i.url,''), i.published_at,
 		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 		       COALESCE(uis.rating,0),
-		       i.word_count, COALESCE(i.image_url,'')
+		       i.word_count, COALESCE(i.image_url,''),
+		       COALESCE(i.revision,0), COALESCE(i.edited_at,'')
 		  FROM items i `
 	listSelectTail = `
 		  JOIN sources src ON src.id = i.source_id
@@ -354,7 +365,8 @@ func (r *ReaderRepo) ListItems(ctx context.Context, s Scope, q ListQuery) ([]Ite
 		var it Item
 		if err := rows.Scan(&it.ID, &it.SourceID, &it.SourceTitle, &it.Title,
 			&it.Author, &it.Summary, &it.URL, &it.PublishedAt,
-			&it.Read, &it.Starred, &it.Rating, &it.WordCount, &it.ImageURL); err != nil {
+			&it.Read, &it.Starred, &it.Rating, &it.WordCount, &it.ImageURL,
+			&it.Revision, &it.EditedAt); err != nil {
 			return nil, "", err
 		}
 		out = append(out, it)
@@ -388,7 +400,8 @@ func (r *ReaderRepo) GetItem(ctx context.Context, s Scope, id string) (Item, err
 		       COALESCE(i.content_html,''), COALESCE(i.url,''), i.published_at,
 		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 		       COALESCE(uis.rating,0),
-		       i.word_count, COALESCE(i.image_url,'')
+		       i.word_count, COALESCE(i.image_url,''),
+		       COALESCE(i.revision,0), COALESCE(i.edited_at,'')
 		  FROM items i
 		  JOIN sources src ON src.id = i.source_id
 		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
@@ -397,7 +410,8 @@ func (r *ReaderRepo) GetItem(ctx context.Context, s Scope, id string) (Item, err
 		s.UserID, s.UserID, id, s.TenantID).
 		Scan(&it.ID, &it.SourceID, &it.SourceTitle, &it.Title, &it.Author,
 			&it.Summary, &it.ContentHTML, &it.URL, &it.PublishedAt,
-			&it.Read, &it.Starred, &it.Rating, &it.WordCount, &it.ImageURL)
+			&it.Read, &it.Starred, &it.Rating, &it.WordCount, &it.ImageURL,
+			&it.Revision, &it.EditedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Item{}, ErrNotFound
 	}
