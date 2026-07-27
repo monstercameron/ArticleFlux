@@ -73,9 +73,17 @@ func (s *Service) SetItemState(ctx context.Context, sc store.Scope, itemID strin
 	return it, rev, err
 }
 
-// MarkAllRead marks a feed or everything read.
-func (s *Service) MarkAllRead(ctx context.Context, sc store.Scope, sourceID, before string) (int, error) {
+// MarkAllRead marks a feed or everything read, and returns the batch stamp that
+// undoes it. The stamp travels to the client so the undo needs no server-side
+// session state — a reader who reloads before pressing it simply loses the offer,
+// which is the right trade for not keeping per-user scratch state on disk.
+func (s *Service) MarkAllRead(ctx context.Context, sc store.Scope, sourceID, before string) (int, string, error) {
 	return s.repo.MarkAllRead(ctx, sc, sourceID, before)
+}
+
+// UndoMarkAllRead reverses one bulk mark.
+func (s *Service) UndoMarkAllRead(ctx context.Context, sc store.Scope, batch string) (int, error) {
+	return s.repo.UndoMarkAllRead(ctx, sc, batch)
 }
 
 // Search runs a full-text query.

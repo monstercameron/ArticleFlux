@@ -14,8 +14,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -189,11 +190,11 @@ func (s *ReaderServer) MarkAllRead(ctx context.Context, req *pb.MarkAllReadReque
 	if req.GetScope() == pb.ListScope_LIST_SCOPE_FEED {
 		sourceID = req.GetSourceId()
 	}
-	n, err := s.svc.MarkAllRead(ctx, sc, sourceID, before)
+	n, batch, err := s.svc.MarkAllRead(ctx, sc, sourceID, before)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.MarkAllReadResponse{Marked: int32(n)}, nil
+	return &pb.MarkAllReadResponse{Marked: int32(n), UndoToken: batch}, nil
 }
 
 func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) (*pb.SubscribeResponse, error) {
@@ -435,4 +436,52 @@ func toPBFeedSettings(f store.FeedSettings) *pb.FeedSettings {
 		ItemCount: int32(f.ItemCount), UnreadCount: int32(f.UnreadCount),
 		SubscriberCount: int32(f.SubscriberCount),
 	}
+}
+
+// RecordEngagements appends observations to the signals log (§18.1).
+//
+// Thin, like the rest of this file: strings cross the wire and internal/signals
+// owns what they mean. The kind is NOT translated through a switch here — a
+// transport that knew the taxonomy would be a second place that has to be
+// updated for every new signal, and the one that got forgotten would silently
+// drop events.
+func (s *ReaderServer) RecordEngagements(ctx context.Context, req *pb.RecordEngagementsRequest) (*pb.RecordEngagementsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	evs := make([]signals.Event, 0, len(req.GetEvents()))
+	for _, e := range req.GetEvents() {
+		evs = append(evs, signals.Event{
+			ID:        e.GetId(),
+			ItemID:    e.GetItemId(),
+			SourceID:  e.GetSourceId(),
+			Kind:      signals.Kind(e.GetKind()),
+			Value:     e.GetValue(),
+			Surface:   signals.Surface(e.GetSurface()),
+			Context:   e.GetContext(),
+			SessionID: e.GetSessionId(),
+			At:        e.GetAt(),
+		})
+	}
+	accepted, rejected, err := s.svc.RecordEngagements(ctx, sc, evs)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.RecordEngagementsResponse{
+		Accepted: int32(accepted), Rejected: int32(rejected),
+	}, nil
+}
+
+// UndoMarkAllRead reverses a bulk mark, using the token the mark returned.
+func (s *ReaderServer) UndoMarkAllRead(ctx context.Context, req *pb.UndoMarkAllReadRequest) (*pb.UndoMarkAllReadResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	n, err := s.svc.UndoMarkAllRead(ctx, sc, req.GetUndoToken())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.UndoMarkAllReadResponse{Restored: int32(n)}, nil
 }

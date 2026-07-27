@@ -63,7 +63,7 @@ func TestMarkAllReadCompletesPromptly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	n, err := repo.MarkAllRead(ctx, sc, "", "")
+	n, _, err := repo.MarkAllRead(ctx, sc, "", "")
 	if err != nil {
 		t.Fatalf("MarkAllRead: %v", err)
 	}
@@ -234,3 +234,73 @@ func TestKeysetPaginationCoversEveryRowOnce(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestUndoMarkAllReadRestoresOnlyThatBatch is the regression test for the most
+// expensive mistake this repository has actually made — twice.
+//
+// A bulk mark turned 3,500 unread items into none in one keystroke, with no way
+// back, and both times it took a hand-written UPDATE against a timestamp bucket
+// to recover. The undo has to put back exactly what one call marked and nothing
+// else: an undo that also resurrected items read last week would be a second,
+// quieter way to lose your read state.
+func TestUndoMarkAllReadRestoresOnlyThatBatch(t *testing.T) {
+	db := openTest(t)
+	repo, sc := seedReader(t, db)
+	ctx := context.Background()
+
+	items, _, err := repo.ListItems(ctx, sc, ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) < 3 {
+		t.Fatalf("fixture has %d items, need at least 3", len(items))
+	}
+
+	// One item read deliberately, BEFORE the bulk mark. This is the row the undo
+	// must not touch.
+	yes := true
+	readEarlier := items[0].ID
+	if _, err := repo.SetItemState(ctx, sc, readEarlier, StateChange{Read: &yes}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, token, err := repo.MarkAllRead(ctx, sc, "", "")
+	if err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	if token == "" {
+		t.Fatal("MarkAllRead returned no undo token")
+	}
+	// The deliberately-read row is not part of the batch: the upsert coalesces
+	// rather than overwriting an existing read_at, and the count is taken from
+	// the batch stamp so it reports what actually changed.
+	if want := len(items) - 1; n != want {
+		t.Errorf("marked %d, want %d (the pre-read item should be excluded)", n, want)
+	}
+
+	restored, err := repo.UndoMarkAllRead(ctx, sc, token)
+	if err != nil {
+		t.Fatalf("UndoMarkAllRead: %v", err)
+	}
+	if restored != n {
+		t.Errorf("restored %d, want %d", restored, n)
+	}
+
+	unread, _, err := repo.ListItems(ctx, sc, ListQuery{UnreadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := len(items) - 1; len(unread) != want {
+		t.Errorf("%d unread after undo, want %d", len(unread), want)
+	}
+	for _, it := range unread {
+		if it.ID == readEarlier {
+			t.Error("undo resurrected an item that was read before the bulk mark")
+		}
+	}
+
+	// A stale or unknown token is a no-op, not an error and not a wipe.
+	if again, err := repo.UndoMarkAllRead(ctx, sc, token); err != nil || again != 0 {
+		t.Errorf("second undo: restored %d, err %v; want 0, nil", again, err)
+	}
+}

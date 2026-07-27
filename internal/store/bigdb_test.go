@@ -94,7 +94,7 @@ func TestMarkAllReadAtRealScale(t *testing.T) {
 	t.Logf("items in the development database: %d", before)
 
 	start := time.Now()
-	n, err := repo.MarkAllRead(ctx, sc, "", "")
+	n, _, err := repo.MarkAllRead(ctx, sc, "", "")
 	if err != nil {
 		t.Fatalf("MarkAllRead: %v", err)
 	}

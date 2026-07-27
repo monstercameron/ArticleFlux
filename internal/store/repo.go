@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -427,16 +428,21 @@ func (r *ReaderRepo) SetItemState(ctx context.Context, s Scope, itemID string, c
 // `before` matters: without it, an item that arrives while the request is in
 // flight is silently marked read, and the user never sees an article that was
 // never on screen.
-func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before string) (int, error) {
+// MarkAllRead returns how many rows it touched AND the batch stamp that
+// identifies them, so the operation can be undone. See UndoMarkAllRead.
+func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before string) (int, string, error) {
 	if !s.Valid() {
-		return 0, ErrNoScope
+		return 0, "", ErrNoScope
 	}
 	if before == "" {
 		before = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
-	var affected int
+	var (
+		affected int
+		batch    string
+	)
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var rev int64
 		if err := tx.QueryRowContext(ctx,
@@ -456,11 +462,81 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before 
 			q += ` AND i.source_id = ?`
 			args = append(args, sourceID)
 		}
+		// The WHERE on DO UPDATE is what makes this undoable.
+		//
+		// COALESCE kept an already-read row's timestamp but still stamped it with
+		// this batch's rev, so the batch could not be told apart from what was
+		// read before it. Skipping those rows entirely means every row carrying
+		// this rev was flipped by THIS call — which is exactly the set the undo
+		// has to restore, and exactly the count to report.
 		q += ` ON CONFLICT(user_id,item_id) DO UPDATE SET
-		        read_at = COALESCE(user_item_state.read_at, excluded.read_at),
-		        rev = excluded.rev, updated_at = excluded.updated_at`
+		        read_at = excluded.read_at,
+		        rev = excluded.rev, updated_at = excluded.updated_at
+		      WHERE user_item_state.read_at IS NULL`
 
-		res, err := tx.ExecContext(ctx, q, args...)
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return err
+		}
+		// Counted from the rev, not from RowsAffected: with the WHERE above, the
+		// two now agree, and counting the rev keeps them agreeing if the upsert
+		// is ever rewritten.
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM user_item_state
+			  WHERE user_id = ? AND tenant_id = ? AND rev = ? AND read_at IS NOT NULL`,
+			s.UserID, s.TenantID, rev).Scan(&affected); err != nil {
+			return err
+		}
+		batch = strconv.FormatInt(rev, 10)
+		return nil
+	})
+	return affected, batch, err
+}
+
+// UndoMarkAllRead reverses one bulk mark, identified by the batch stamp it
+// returned.
+//
+// **This exists because the operation is otherwise irreversible and enormous.**
+// One press turns 3,500 unread items into none, and a reader who meant to mark
+// one feed and had "All feeds" selected has destroyed their whole backlog with no
+// way back. §18.1 already says a bulk read must never count as a rejection for
+// ranking; this is the other half of taking it seriously.
+//
+// The batch is identified by its `rev` — server-assigned, monotonic per user
+// (A25) — so no journal table is needed. A wall-clock timestamp was the obvious
+// choice and the wrong one: two calls in the same clock tick produce the same
+// string on Windows, so a row read deliberately a moment earlier became
+// indistinguishable from the batch and an undo resurrected it. A rev cannot
+// collide.
+//
+// The mark's upsert skips rows that were already read, so every row carrying
+// this rev was flipped by that one call — which is exactly what to restore.
+func (r *ReaderRepo) UndoMarkAllRead(ctx context.Context, s Scope, batch string) (int, error) {
+	if !s.Valid() {
+		return 0, ErrNoScope
+	}
+	if strings.TrimSpace(batch) == "" {
+		return 0, nil
+	}
+	batchRev, err := strconv.ParseInt(strings.TrimSpace(batch), 10, 64)
+	if err != nil {
+		// An unparseable token is a no-op rather than an error: it means a stale
+		// client, and refusing loudly would turn a harmless stale button into a
+		// visible failure.
+		return 0, nil
+	}
+	var affected int
+	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
+		var rev int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(max(rev),0)+1 FROM user_item_state WHERE user_id = ?`,
+			s.UserID).Scan(&rev); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE user_item_state
+			   SET read_at = NULL, rev = ?, updated_at = ?
+			 WHERE user_id = ? AND tenant_id = ? AND rev = ? AND read_at IS NOT NULL`,
+			rev, time.Now().UTC().Format(time.RFC3339Nano), s.UserID, s.TenantID, batchRev)
 		if err != nil {
 			return err
 		}

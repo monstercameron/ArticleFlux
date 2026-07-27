@@ -190,7 +190,10 @@ var specs = map[Kind]Spec{
 	NotInterested: {NotInterested, -2.0, ValueNone, false, true, "explicit instruction; see context.about"},
 	Unsubscribed:  {Unsubscribed, -2.0, ValueNone, false, true, "source-level, never attributed to items"},
 	RuleMuted:     {RuleMuted, -1.5, ValueNone, false, true, "attributed to what the rule matched"},
-	BulkRead:      {BulkRead, 0.0, ValueCount, true, false, "gave up on a backlog: NEUTRAL, never negative"},
+	// One row carrying a count, not N rows: bulk_read contributes nothing to
+	// affinity by design, so emitting 143 of them would add 143 rows of noise to
+	// the hottest table in the layer to record a single act.
+	BulkRead: {BulkRead, 0.0, ValueCount, false, false, "gave up on a backlog: NEUTRAL, never negative"},
 	SyncRead:      {SyncRead, 0.0, ValueNone, true, false, "auto-marked by a third-party client: neutral"},
 }
 

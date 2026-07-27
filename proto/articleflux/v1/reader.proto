@@ -28,6 +28,16 @@ service ReaderService {
   // the offline outbox replays them together.
   rpc SetItemState(SetItemStateRequest) returns (SetItemStateResponse);
 
+  // UndoMarkAllRead reverses one bulk mark, using the token that mark returned.
+  //
+  // Bulk marking is the largest irreversible action in the app: one press turns
+  // thousands of unread items into none, and a reader who meant one feed and had
+  // "All feeds" selected has lost their backlog. Every row in a batch shares the
+  // exact read_at the operation wrote, so the batch is identifiable without a
+  // journal table — and rows that were ALREADY read keep their earlier stamp, so
+  // an undo cannot resurrect something read last week.
+  rpc UndoMarkAllRead(UndoMarkAllReadRequest) returns (UndoMarkAllReadResponse);
+
   // MarkAllRead marks a whole feed or the whole megafeed read.
   rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
 
@@ -222,7 +232,16 @@ message MarkAllReadRequest {
   string idempotency_key = 4;
 }
 
-message MarkAllReadResponse { int32 marked = 1; }
+message UndoMarkAllReadRequest { string undo_token = 1; }
+message UndoMarkAllReadResponse { int32 restored = 1; }
+
+message MarkAllReadResponse {
+  int32 marked = 1;
+  // undo_token identifies exactly the rows this call marked, so the client can
+  // offer to put them back. It is the batch's read_at stamp, which every row it
+  // wrote shares — no journal table, and no server-side session state to expire.
+  string undo_token = 2;
+}
 
 message SubscribeRequest {
   string url = 1;  // feed URL, or a site URL to run discovery against
