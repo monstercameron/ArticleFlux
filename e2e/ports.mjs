@@ -42,3 +42,8 @@ if (!process.env.AF_E2E_FEED_PORT) process.env.AF_E2E_FEED_PORT = String(9101 + 
 export const APP_PORT = Number(process.env.AF_E2E_APP_PORT);
 export const FEED_PORT = Number(process.env.AF_E2E_FEED_PORT);
 export const BASE_URL = process.env.ARTICLEFLUX_URL || `http://127.0.0.1:${APP_PORT}`;
+
+// Where the fixture feeds are served. Exported because SPECS need it too: a
+// test that subscribes to a fixture page has to name it, and a literal 9011 in
+// a spec is a test pointing at nothing the moment the ports move.
+export const FEED_ORIGIN = `http://127.0.0.1:${FEED_PORT}`;

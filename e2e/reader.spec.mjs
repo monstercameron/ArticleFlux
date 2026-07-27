@@ -1,4 +1,5 @@
-import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed } from './fixtures.mjs';
+import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed, currentArticle, openStream } from './fixtures.mjs';
+import { FEED_ORIGIN } from './ports.mjs';
 
 /**
  * The reading loop, end to end.
@@ -38,8 +39,8 @@ test.describe('reading', () => {
 
     // The body arrives from GetItem, not from the list payload — list responses
     // deliberately omit content so a 50-item page is not megabytes of unread text.
-    await expect(page.locator('.article h1')).toHaveText(/Speculative decoding/);
-    await expect(page.locator('.article-body')).toContainText('n-gram table');
+    await expect(currentArticle(page).locator('h1')).toHaveText(/Speculative decoding/);
+    await expect(currentArticle(page).locator('.article-body')).toContainText('n-gram table');
 
     // Marking read is optimistic; it must also survive a reload, which is what
     // proves the write actually reached SQLite.
@@ -52,26 +53,32 @@ test.describe('reading', () => {
   test('feed HTML is rendered, not escaped, and not executed', async ({ page }) => {
     await boot(page);
     await page.locator('.item-row').first().click();
-    await expect(page.locator('.article-body strong')).toHaveText('proposals');
+    await expect(currentArticle(page).locator('.article-body strong')).toHaveText('proposals');
 
     // The sanitizer is the highest-stakes thing in the app: this is third-party
     // markup rendered inside our origin.
-    await expect(page.locator('.article-body script')).toHaveCount(0);
+    await expect(currentArticle(page).locator('.article-body script')).toHaveCount(0);
   });
 
   test('starring persists across a reload', async ({ page }) => {
     await boot(page);
     await page.locator('.item-row').first().click();
 
-    // Scoped to the article pane. A bare /Star/ also matches the sidebar's
-    // "Starred" stream, which is ambiguous the moment the rail exists.
+    // "Star" is not a thing this reader does any more (8b.24): the control is
+    // "Read later", backed by the same stored flag. The test follows the app's
+    // vocabulary rather than asserting the one it used to have — a test that
+    // keeps the old name passes only until somebody reads it and believes it.
+    //
+    // Scoped to the article pane, because the sidebar has a Read later stream
+    // and a bare name matches both.
     const article = page.locator('.pane-article');
-    await article.locator('[data-action="star"]').click();
-    await expect(article.locator('[data-action="star"]')).toHaveText('★ Starred');
+    const later = article.locator('[data-action="read-later"]').first();
+    await later.click();
+    await expect(later).toHaveAttribute('aria-pressed', 'true');
 
     await page.reload();
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
-    await openFeed(page, 'Starred');
+    await openStream(page, /Read later/);
     await expect(page.locator('.item-row')).toHaveCount(1);
   });
 
@@ -262,7 +269,12 @@ test.describe('reading', () => {
     await page.locator('[data-action="mark-all"]').click();
 
     await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);
-    await expect(page.locator('.feed-count')).toHaveCount(0);
+    // Scoped to FEED rows. Categories carry counts now too, so a bare
+    // `.feed-count` counts the rail's category totals as well and can never
+    // reach zero — the click works, and the assertion was measuring something
+    // else. The banner above is the evidence that it worked; this is the
+    // evidence that nothing is left unread.
+    await expect(page.locator('.feed-row .feed-count')).toHaveCount(0);
   });
 });
 
@@ -311,7 +323,7 @@ test.describe('notes and tags', () => {
 
     // And it is discoverable as a note, not just as text in a field. Anchored,
     // because "Beta Notes" is one of the fixture feeds.
-    await openFeed(page, /^Notes$/);
+    await openStream(page, /^Notes$/);
     await expect(page.locator('.item-row')).toHaveCount(1);
   });
 
@@ -359,9 +371,12 @@ test.describe('notes and tags', () => {
 });
 
 test.describe('finding the feed', () => {
-  // The fixture server's port is pinned in global-setup.mjs.
-  const DECLARES = 'http://127.0.0.1:9011/declares.html';
-  const NOFEED = 'http://127.0.0.1:9011/nofeed.html';
+  // From ports.mjs, not a literal. The fixture server's port is derived per run
+  // so two agents' suites cannot kill each other (see that file), which means a
+  // hardcoded 9011 points at nothing — and the symptom is the add-feed dialog
+  // "not appearing", because the subscribe never resolves.
+  const DECLARES = `${FEED_ORIGIN}/declares.html`;
+  const NOFEED = `${FEED_ORIGIN}/nofeed.html`;
 
   test('a page that is not a feed offers the feed it points at', async ({ page }) => {
     await boot(page);
@@ -420,7 +435,7 @@ test.describe('categories', () => {
   // The fixture feed server's port is pinned in global-setup.mjs, and this is
   // the one spec that needs a feed URL rather than a feed row: adding an address
   // is what the dialog is for.
-  const ALPHA = 'http://127.0.0.1:9011/alpha.xml';
+  const ALPHA = `${FEED_ORIGIN}/alpha.xml`;
 
   test('a feed is filed on the way in, and the rail groups it', async ({ page }, testInfo) => {
     // Named per project: the two projects share one server, so a fixed name
@@ -475,34 +490,53 @@ test.describe('categories', () => {
 });
 
 test.describe('keyboard', () => {
-  // Google Reader's map, unchanged. Muscle memory transfers on day one and
-  // renaming these would throw that away for nothing.
-  test('j and k move through the list, s stars', async ({ page }) => {
+  // Google Reader's map for MOVEMENT — j and k — because muscle memory transfers
+  // on day one and renaming those would throw it away for nothing.
+  //
+  // Not for the actions. `s` is gone: the reader has no "star", it has read
+  // later, like and dislike, so the shortcuts are `t`, `l` and `d` — each named
+  // after the thing it does rather than after what the thing used to be called
+  // somewhere else. A test asserting `s` passes only until somebody reads it.
+  test('j and k move through the list, t saves for later', async ({ page }) => {
     await boot(page);
 
     await page.locator('body').press('j');
-    await expect(page.locator('.article h1')).toBeVisible();
-    const first = await page.locator('.article h1').textContent();
+    await expect(currentArticle(page).locator('h1')).toBeVisible();
+    const first = await currentArticle(page).locator('h1').textContent();
 
+    // Waited for, not read. `press` returns as soon as the key is delivered,
+    // and the pane re-renders asynchronously — reading the title straight after
+    // reads the OLD one and the comparison fails on a race rather than on
+    // behaviour.
     await page.locator('body').press('j');
-    const second = await page.locator('.article h1').textContent();
+    await expect(currentArticle(page).locator('h1')).not.toHaveText(first);
+    const second = await currentArticle(page).locator('h1').textContent();
     expect(second).not.toBe(first);
 
     await page.locator('body').press('k');
-    await expect(page.locator('.article h1')).toHaveText(first);
+    await expect(currentArticle(page).locator('h1')).toHaveText(first);
 
-    await page.locator('body').press('s');
-    await expect(page.locator('.pane-article [data-action="star"]')).toHaveText('★ Starred');
+    await page.locator('body').press('t');
+    await expect(page.locator('.pane-article [data-action="read-later"]').first())
+      .toHaveAttribute('aria-pressed', 'true');
   });
 
   test('shortcuts do not fire while typing', async ({ page }) => {
     await boot(page);
-    const search = page.locator('[data-role="search"]');
-    await search.fill('jjjkkkss');
+    // What the shortcuts would have DONE, rather than whether anything is on
+    // screen. The pane is a stream: an article is current from the moment the
+    // list loads, so "no article is open" was never going to be true again and
+    // asserting it tested the stream rather than the keyboard.
+    const before = await currentArticle(page).locator('h1').textContent();
 
-    // If the handler had fired, an article would have opened.
-    await expect(search).toHaveValue('jjjkkkss');
-    await expect(page.locator('.article h1')).toHaveCount(0);
+    const search = page.locator('[data-role="search"]');
+    await search.fill('jjjkkktt');
+
+    await expect(search).toHaveValue('jjjkkktt');
+    // j and k would have moved it; t would have saved it for later.
+    await expect(currentArticle(page).locator('h1')).toHaveText(before);
+    await expect(page.locator('.pane-article [data-action="read-later"]').first())
+      .toHaveAttribute('aria-pressed', 'false');
   });
 });
 

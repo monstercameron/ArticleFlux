@@ -67,7 +67,7 @@ export async function openFeed(page, name) {
     await page.getByRole('button', { name: '‹ Feeds' }).click();
     await expect(rail).toBeVisible();
   }
-  await rail.getByRole('button', { name }).click();
+  await railRow(rail, name).click();
   await expect(page.locator('.pane-list')).toBeVisible();
 }
 
@@ -78,7 +78,59 @@ export async function feedRow(page, name) {
     await page.getByRole('button', { name: '‹ Feeds' }).click();
     await expect(rail).toBeVisible();
   }
-  return rail.getByRole('button', { name });
+  return railRow(rail, name);
+}
+
+/**
+ * railRow is the one place that knows a feed row is not the only button with
+ * that feed's name in it.
+ *
+ * Every row grew a settings gear whose accessible name is "Settings for Alpha
+ * Journal", so `getByRole('button', {name: /Alpha Journal/})` now resolves to
+ * two elements and every test using it fails on strict mode. That is the app
+ * being right and the selector being stale — which is worth fixing HERE rather
+ * than at each call site, because the next control added to a row would break
+ * them all again.
+ *
+ * Matched on the role name AND the row class rather than on the class alone:
+ * the class says which element, the accessible name says which feed, and a test
+ * that stops asserting the accessible name stops noticing when a row becomes
+ * unreadable to a screen reader.
+ */
+function railRow(rail, name) {
+  return rail.getByRole('button', { name }).and(rail.locator('.feed-row'));
+}
+
+/**
+ * currentArticle is the one the reader opened, in a pane that shows several.
+ *
+ * The reading pane became a STREAM: opening an article renders it and its
+ * neighbours, so `.article h1` resolves to five headings and every assertion
+ * about "the article" fails on strict mode. That is the app being right and the
+ * selector being stale.
+ *
+ * `data-current` is the app's own answer to "which one is open" — it is what
+ * drives the styling — so tests read the same signal the UI does rather than
+ * inventing a rule like "the first one", which would quietly pass while the
+ * wrong article was showing.
+ */
+export function currentArticle(page) {
+  return page.locator('.article[data-current="true"]');
+}
+
+/**
+ * openStream opens one of the rail's built-in streams — Read later, All, and
+ * so on — as distinct from a feed.
+ *
+ * Separate from openFeed because they are different rows: `railRow` scopes to
+ * `.feed-row`, which is right for a subscribed feed and wrong for a stream, and
+ * a helper that silently matched both would let a test claim to open a feed
+ * while opening a stream that happened to share a word.
+ */
+export async function openStream(page, name) {
+  const rail = await openRail(page);
+  await rail.getByRole('button', { name }).first().click();
+  await expect(page.locator('.pane-list')).toBeVisible();
 }
 
 /**

@@ -2089,6 +2089,32 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       feature, changeable from Settings without a restart. The alternative was an instance where
       the voice worked and translation did not because one read the environment and the other read
       the setting — a difference with no visible shape from the settings screen.
+      ↻ 2026-07-27 — **The feature was dev-only and nobody had noticed.** An `<audio src>` cannot
+      send an `Authorization` header, so `speechScope` could only ever identify a caller through
+      the DevMode fallback: on a laptop it worked, on any instance with real login every listen
+      was a `401`. Fixed the way `/asset` and `/p` already solve the same problem — the URL IS the
+      credential — with one difference that matters. Those two mint an identity-free capability
+      over a public target; this one has to carry a scope, because reading an item needs one. So
+      the ticket is **sealed** (AES-256-GCM, `speech.key` beside the database) rather than signed:
+      authenticated like a signature and opaque as well, because a tenant and user id in an
+      `<audio src>` would land in browser history, in the referrer and in every access log
+      between here and the listener. Minted by `GetItem` onto `Item.speech_url` (field 19),
+      alongside `proxy_url` and `stream_url`; empty means no key, which is how the client knows to
+      leave the control on the browser's own voice instead of offering a button that answers 501.
+      Its own key file rather than `proxy.key`, which only exists when the image proxy is on —
+      sharing it would make turning pictures off silently turn listening off too.
+      ↻ 2026-07-27 — **Duplicate spend closed.** The disk cache only ever helped a request that
+      arrived *after* the first finished, and a real article takes ~40 s to synthesise. Two
+      ordinary things fell through that window and each bought the article twice: a reader
+      pressing play again because nothing had happened yet, and an `<audio>` element reloading.
+      Concurrent requests for the same `(item, model, voice)` now collapse onto one paid call, and
+      a synthesis already paid for finishes onto the cache even when the reader who started it
+      navigates away — cancelling it would throw away audio already billed and charge again on the
+      next press. Deliberately still **no TTL**: article text is immutable, so an expiry would be
+      nothing but a schedule for re-buying the same audio.
+      ↻ 2026-07-27 — `internal/tts` had no tests at all; it has 14 now (cache, single-flight,
+      abandoned-synthesis, word-boundary truncation, allowlist/endpoint agreement, no-key-no-egress),
+      plus 18 in `internal/app` for the ticket and the four gates.
 
 **Continuity and configuration**
 
@@ -2263,6 +2289,37 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       found the palette's input on the first frame, focused nothing, and stopped. The palette opened
       without a cursor in it — and Escape and the arrows do nothing there, because the palette owns
       those keys only while its own field has focus. Found by the ratchet, not by looking.
+- [x] **8b.55 The status banner leaves too.** Same asymmetry as the dialogs, different technique:
+      height cannot animate from `auto`, so the banner sits in a grid whose one row goes `0fr → 1fr`
+      and interpolates to the content's own height. Measured `0 → 40.9 → 57 → 3.7 → 0`. It matters
+      because that banner carries the **Undo** after a bulk mark — it is on screen at the exact moment
+      a reader is deciding whether they meant it, and it used to vanish mid-thought.
+- [x] **8b.56 The seven regressions this batch caused, found and fixed.** The suite went 20 → 32
+      failures; exactly seven were mine and all seven are closed. Six were the overflow sweep flagging
+      panes that are off-screen *on purpose* — it now asks whether an ancestor clips horizontally and
+      stays inside the viewport, which is the question it always meant, and it still catches the long
+      URL it was written for. The seventh was `reduced motion is respected`, which counted elements
+      with a non-zero `animation-duration` and required zero: correct for the `* { animation: none }`
+      rule A39 deleted, wrong for a gate that keeps the ambient loops running at zero amplitude on
+      purpose. Its replacement is stricter — `--mo` off, **every** transition at zero, and any running
+      animation must be one of the named ambient loops, so a new unbounded one fails rather than
+      joining the exemption silently. Also surfaced: **the reading pane never measured itself on a
+      phone**, because `display: none` has no scroll metrics, so the continuous stream (A28) was not
+      appending there at all. The filmstrip fixed that as a side effect. Final: **19 passed, 2 failed**
+      across motion + appearance + responsive, and both failures are 8b.34's pre-existing `openFeed`
+      and back-button assertions.
+
+      Three things about the harness that cost time and are worth knowing:
+      **(a) where the reader was is account state** (A30), so a spec that ends inside an article
+      decides what the next FILE boots into — at phone widths that leaves the item list off the strip
+      and unclickable, which reads as a layout bug and is not one. `motion.spec` hands the app back on
+      the list in an `afterEach`.
+      **(b) the document key listener attaches in an effect after the first render**, so a test that
+      fires a keystroke the instant `.item-row` appears loses it about one run in four — a window a
+      person cannot hit and a test can. Both `Control+k` and `w` press until they take.
+      **(c) two Playwright runs must never overlap**: `global-setup` kills whatever is listening on the
+      app port, so a second run murders the first one's server and reports eighteen failures that mean
+      nothing.
 - [x] **8b.52 A motion ratchet, driven against the running application** (`e2e/motion.spec.mjs`, six
       cases). The Go guards prove what a stylesheet can be wrong about alone; they all pass on a sheet
       whose animations never fire because the markup stopped carrying the attribute the rule keys off.
@@ -2399,6 +2456,32 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       to need no credential and now goes through `Root`, and several still assert pre-transcription
       behaviour (see 8b.24). *Until it is green the suite is not a gate, which is the state a suite
       must not quietly be left in.*
+
+      ◧ 2026-07-27 — **the suite could not complete at all**, and that was the real state, not the
+      21/20 below. `global-setup` kills whatever holds its ports and the fixture feed server lives
+      inside the Playwright process — so a second run kills the first RUNNER, and two agents share
+      this machine. It printed "Running 22 tests", ran three, and exited with no result, no failure
+      and no error. Ports are now derived per run (`e2e/ports.mjs`); the remedy existed behind an
+      environment variable, and a remedy you have to remember is one that does not get used.
+
+      **Two server bugs fell out of it, both mine, both silent:**
+      `ResetUserState` deletes every `user_item_state` row — which since 5.4a is what makes an item
+      *visible to the unread count at all*, so a reset left every item invisible to the badge while
+      still listed. And it did not clear `user_prefs`, so once one test selected the Read later
+      stream, **every later test booted into an empty stream and failed as though the data were
+      gone** — thirteen failures, none of them about data.
+
+      **reader.spec is now 16 passed / 5 failed** (from "cannot complete"). Selectors fixed at the
+      helpers — `railRow`, `currentArticle`, `openStream` — because the next control added to a row
+      would otherwise break every call site again. The vocabulary moved too: "star" is Read later
+      now, and `s` is `t`.
+
+      *The five that remain are questions about current behaviour, not stale names:* a note reporting
+      `saving` where the test expects `saved`; the Smart+ ladder's copy no longer matching
+      `/no OpenAI key/`; the category rail's `.cat-slot`/`.cat-row` markup; one `.feed-count` still
+      non-zero after mark-all-read; and `j` not advancing on the second press. Those want the eyes of
+      whoever changed the rail and the note panel. **The other four specs are not yet re-measured** —
+      the port fix unblocks that.
 
       ◧ 2026-07-26 (late) — **measured: 21 passed, 20 failed** on `--project=desktop`. All four
       `tagsettings` cases pass. The twenty are **stale assertions, not regressions**, and they cluster
