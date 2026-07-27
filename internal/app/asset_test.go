@@ -290,3 +290,71 @@ func TestSigningKeyPersists(t *testing.T) {
 		t.Errorf("key is %d bytes", len(first))
 	}
 }
+
+// 6.15a: a stylesheet comes back as CSS, and its OWN references come back
+// proxied.
+//
+// Serving the CSS untouched would fix the 415 and not the page: every `url(...)`
+// in it still points at the publisher, so the browser fetches their fonts and
+// background images directly from the reading pane — which is the tracking this
+// proxy exists to stop, arriving one level down.
+func TestAStylesheetComesBackWithItsOwnURLsProxied(t *testing.T) {
+	a := assetApp(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".css") {
+			w.Header().Set("Content-Type", "text/css")
+			// A relative url(), an absolute one, and an @import — the three
+			// shapes a real stylesheet uses, and @import is what makes the
+			// recursion matter.
+			_, _ = io.WriteString(w, `@import "more.css";
+			body{background:url(bg.png)}
+			h1{background:url("https://cdn.example.test/hero.jpg")}`)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	t.Cleanup(srv.Close)
+
+	rec := get(t, a, a.AssetURL(srv.URL+"/site.css"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s — a stylesheet must not be refused, or a page "+
+			"whose CSS is external comes back unstyled", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/css" {
+		t.Errorf("content type %q, want text/css — a browser with nosniff will "+
+			"refuse to apply anything else", ct)
+	}
+
+	body := rec.Body.String()
+	// Nothing may still point at the publisher.
+	for _, leaked := range []string{"bg.png\"", "cdn.example.test", "\"more.css\""} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("the stylesheet still references %s directly:\n%s", leaked, body)
+		}
+	}
+	// And every reference has been turned into one of ours, which is also what
+	// makes the recursion work: the next fetch comes back through here.
+	if n := strings.Count(body, "/asset?u="); n != 3 {
+		t.Errorf("%d proxied references, want 3 (@import, a relative url, an absolute one):\n%s",
+			n, body)
+	}
+}
+
+// The same endpoint, unchanged for images: adding a content kind must not widen
+// what else gets through.
+func TestAddingCSSDidNotWidenTheAllowlist(t *testing.T) {
+	a := assetApp(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<h1>not yours to serve</h1>")
+	}))
+	t.Cleanup(srv.Close)
+
+	rec := get(t, a, a.AssetURL(srv.URL+"/page.html"))
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status %d for HTML, want 415 — this endpoint serving a document "+
+			"is the thing D20's origin split exists to contain", rec.Code)
+	}
+}

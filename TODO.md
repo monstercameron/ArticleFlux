@@ -1460,13 +1460,36 @@ Business logic over repositories. Still headless.
       honest, plus its own tests for the useful half — a snapshot sanitizer that passes every security
       test and strips the stylesheet has failed at its job.
 
-- [ ] **6.15a Stylesheets do not survive the round trip yet.** `<link rel=stylesheet>` is rewritten to
+- [x] **6.15a Stylesheets do not survive the round trip yet.** `<link rel=stylesheet>` is rewritten to
       `/asset?u=…`, and `/asset` allowlists **images**, so it answers 415 and the page renders with
       inline `<style>` only. Most sites keep their CSS in external files, so most sites currently come
       back mostly unstyled. Fixing it means teaching the asset endpoint a second content kind: fetch
       `text/css`, run `rewrite.CSS` over it so the images and fonts *it* references are proxied too
       (recursively — one level is not enough), and serve it as `text/css`. `rewrite.CSS` already exists
       and is tested; this is the endpoint half. **Until then tier 2 is legible rather than faithful.**
+      ✅ 2026-07-27 — the endpoint half, 4 tests. `text/css` joins the allowlist and the stylesheet's
+      own references are rewritten before it is served.
+
+      **Serving the CSS untouched would have fixed the 415 and not the page.** Every `url(...)` in it
+      still points at the publisher, so the browser would fetch their fonts and background images
+      directly from the reading pane — the tracking this proxy exists to stop, arriving one level
+      down. `rewrite.CSS` over the body closes that.
+
+      **Recursive by construction rather than by depth counting.** What it rewrites to is
+      `/asset?u=…`, so a font referenced by a stylesheet referenced by a stylesheet comes back
+      through the same endpoint, and each pass only handles one level. `@import` is a URL like any
+      other, which is what makes that true — and `AssetURL` already no-ops on its own prefix, so the
+      recursion cannot nest the proxy inside itself.
+
+      **CSS is not SNIFFED, and images still are.** `http.DetectContentType` reports `text/plain` for
+      a stylesheet, so sniffing it would mean accepting `text/plain` — which is most of the internet,
+      including HTML that failed to declare itself. An image can be recognised from its bytes; a
+      stylesheet has to say what it is. A test pins that HTML still gets 415: adding a content kind
+      must not widen what else gets through.
+
+      A base URL that will not parse is a 502 rather than a pass-through, because serving CSS with
+      unrewritten relative references leaks exactly what the rewrite prevents. The page renders
+      unstyled instead of un-proxied, which is the smaller loss.
 
 - [ ] **6.16 `render`** — the headless browser pool (§10.1c). `chromedp` attached to the installed
       Chromium · a **disposable profile with no access to the data directory** · exactly one render at

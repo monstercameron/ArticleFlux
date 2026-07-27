@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
+	"github.com/monstercameron/ArticleFlux/internal/rewrite"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 )
 
@@ -101,7 +103,7 @@ func (a *App) serveAsset(w http.ResponseWriter, r *http.Request) {
 		a.log.Debug("asset proxy fetch failed", "err", err)
 		switch {
 		case errors.Is(err, assetproxy.ErrNotAnImage):
-			http.Error(w, "not an image", http.StatusUnsupportedMediaType)
+			http.Error(w, "not an image or a stylesheet", http.StatusUnsupportedMediaType)
 		case errors.Is(err, assetproxy.ErrTooLarge):
 			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 		default:
@@ -110,6 +112,36 @@ func (a *App) serveAsset(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not fetch that image", http.StatusBadGateway)
 		}
 		return
+	}
+
+	body := asset.Bytes
+	if asset.IsCSS() {
+		// A stylesheet's OWN references are rewritten before it is served
+		// (6.15a).
+		//
+		// Serving the CSS untouched would fix the 415 and not the page: every
+		// `url(...)` in it still points at the origin, so the browser fetches
+		// the publisher's fonts and background images directly from the reading
+		// pane — which is the tracking this proxy exists to stop, arriving one
+		// level down.
+		//
+		// Recursive by construction rather than by depth counting: what is
+		// rewritten is `/asset?u=…`, so a font referenced by a stylesheet
+		// referenced by a stylesheet comes back through here too, and each pass
+		// only has to handle one level. `@import` is a URL like any other, which
+		// is what makes that true.
+		base, berr := url.Parse(string(raw))
+		if berr == nil {
+			body = []byte(rewrite.CSS(string(body), a.AssetURL, base))
+		} else {
+			// A URL that will not parse cannot resolve relative references, and
+			// serving the CSS with them unrewritten would leak exactly what the
+			// rewrite prevents. Refusing is the smaller loss: the page renders
+			// unstyled rather than un-proxied.
+			a.log.Debug("asset proxy: stylesheet base will not parse", "err", berr)
+			http.Error(w, "could not rewrite that stylesheet", http.StatusBadGateway)
+			return
+		}
 	}
 
 	h := w.Header()
@@ -131,11 +163,11 @@ func (a *App) serveAsset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	h.Set("Content-Length", strconv.Itoa(len(asset.Bytes)))
+	h.Set("Content-Length", strconv.Itoa(len(body)))
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(asset.Bytes)
+	_, _ = w.Write(body)
 }
 
 // AssetURL mints a capability for one absolute URL.

@@ -43,6 +43,10 @@ var (
 	// ErrTooLarge is returned when a response exceeds the cap.
 	ErrTooLarge = errors.New("assetproxy: asset is too large")
 	// ErrNotAnImage is returned for a content type outside the allowlist.
+	//
+	// The name predates CSS being allowed (6.15a) and is kept: it is what every
+	// caller matches on, and "not an image" is still what it means to a caller
+	// that asked for one. See KindOf for the two kinds this now serves.
 	ErrNotAnImage = errors.New("assetproxy: not an image")
 	// ErrUpstream is returned for a non-200 from the origin.
 	ErrUpstream = errors.New("assetproxy: upstream refused")
@@ -188,7 +192,7 @@ func (f *Fetcher) fetch(ctx context.Context, rawURL string) (Asset, error) {
 		return Asset{}, ErrTooLarge
 	}
 
-	ct, ok := imageType(resp.Header.Get("Content-Type"), body)
+	ct, ok := assetType(resp.Header.Get("Content-Type"), body)
 	if !ok {
 		return Asset{}, fmt.Errorf("%w: %q", ErrNotAnImage, resp.Header.Get("Content-Type"))
 	}
@@ -197,7 +201,30 @@ func (f *Fetcher) fetch(ctx context.Context, rawURL string) (Asset, error) {
 	return Asset{Bytes: body, ContentType: ct, ETag: `"` + hex.EncodeToString(sum[:16]) + `"`}, nil
 }
 
-// imageType decides what this is, and refuses anything that is not an image.
+// IsCSS reports whether an asset is a stylesheet, so a caller can rewrite the
+// URLs inside it before serving.
+//
+// A method on the answer rather than a second return value: every existing
+// caller keeps working, and one that does not care about CSS does not have to
+// say so.
+func (a Asset) IsCSS() bool {
+	return strings.HasPrefix(strings.ToLower(a.ContentType), "text/css")
+}
+
+// assetType decides what this is, and refuses anything that is neither an image
+// nor a stylesheet.
+//
+// CSS was added for 6.15a. `<link rel=stylesheet>` is rewritten through this
+// endpoint, and while the allowlist was images-only it answered 415 — so every
+// page whose CSS lives in an external file, which is nearly all of them, came
+// back with inline `<style>` and nothing else. Tier 2 was legible rather than
+// faithful for exactly that reason.
+//
+// CSS is NOT sniffed, and that asymmetry is deliberate. `http.DetectContentType`
+// reports `text/plain` for a stylesheet, so sniffing would have to accept
+// text/plain — which is most of the internet, including HTML that failed to
+// declare itself. An image can be recognised from its bytes; a stylesheet
+// cannot, so it has to say what it is.
 //
 // The declared type is preferred and the sniffed type is the fallback, because
 // a surprising number of CDNs serve perfectly good JPEGs as
@@ -206,9 +233,13 @@ func (f *Fetcher) fetch(ctx context.Context, rawURL string) (Asset, error) {
 // refuse to render it — passing the origin's vagueness through would turn a
 // working image into a broken one. Sniffing here, once, and then declaring the
 // answer confidently is the whole reason the two can be combined safely.
-func imageType(declared string, body []byte) (string, bool) {
-	if mt := strings.ToLower(strings.TrimSpace(strings.SplitN(declared, ";", 2)[0])); strings.HasPrefix(mt, "image/") {
+func assetType(declared string, body []byte) (string, bool) {
+	mt := strings.ToLower(strings.TrimSpace(strings.SplitN(declared, ";", 2)[0]))
+	if strings.HasPrefix(mt, "image/") {
 		return mt, true
+	}
+	if mt == "text/css" {
+		return "text/css", true
 	}
 	sniffed := strings.SplitN(http.DetectContentType(body), ";", 2)[0]
 	if strings.HasPrefix(sniffed, "image/") {

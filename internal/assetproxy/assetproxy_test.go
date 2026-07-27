@@ -247,3 +247,54 @@ func TestNoCacheDirStillWorks(t *testing.T) {
 		t.Fatalf("a fetcher with no cache dir must still fetch: %v", err)
 	}
 }
+
+// 6.15a: a stylesheet has to get through, or tier 2 is legible rather than
+// faithful.
+//
+// `<link rel=stylesheet>` is rewritten through this endpoint, and while the
+// allowlist was images-only it answered 415 — so every page whose CSS lives in
+// an external file, which is nearly all of them, came back with inline
+// `<style>` and nothing else.
+func TestCSSIsFetchedAndImagesStillAre(t *testing.T) {
+	cases := []struct {
+		name    string
+		ct      string
+		body    string
+		want    string
+		allowed bool
+	}{
+		{"a stylesheet", "text/css", "body{color:red}", "text/css", true},
+		{"a stylesheet with a charset", "text/css; charset=utf-8", "body{color:red}", "text/css", true},
+		{"a png", "image/png", "\x89PNG\r\n\x1a\n", "image/png", true},
+		// Not sniffed, and that asymmetry is deliberate: DetectContentType
+		// reports text/plain for a stylesheet, so accepting a sniffed CSS would
+		// mean accepting text/plain — which is most of the internet, including
+		// HTML that failed to declare itself.
+		{"css served as text/plain", "text/plain", "body{color:red}", "", false},
+		{"html", "text/html", "<h1>no</h1>", "", false},
+		{"javascript", "application/javascript", "alert(1)", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := assetType(c.ct, []byte(c.body))
+			if ok != c.allowed {
+				t.Fatalf("allowed = %v, want %v (type %q)", ok, c.allowed, got)
+			}
+			if ok && got != c.want {
+				t.Errorf("type = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsCSSNamesTheKind(t *testing.T) {
+	if !(Asset{ContentType: "text/css"}).IsCSS() {
+		t.Error("a text/css asset does not report as CSS")
+	}
+	if !(Asset{ContentType: "TEXT/CSS"}).IsCSS() {
+		t.Error("the check is case-sensitive; a header is not")
+	}
+	if (Asset{ContentType: "image/png"}).IsCSS() {
+		t.Error("a png reports as CSS, so it would be run through the CSS rewriter")
+	}
+}
