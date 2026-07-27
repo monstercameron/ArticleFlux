@@ -108,6 +108,37 @@ const (
 // skew refusal ever sent lands on clients that cannot understand it.
 const SkewSentinel = "articleflux:client-too-old"
 
+// The two sentinels a caller has to tell apart, and they mean opposite things.
+//
+// Both are returned INSTEAD of attempting an RPC, so both are instant — which is
+// the point. A reader on a dead connection should learn what happened in the
+// same frame as the click, not after a twenty-second wait that ends in a
+// rollback.
+var (
+	// ErrQueued — the write is kept and will be replayed on the next recovery.
+	// **Not a failure.** A caller that rolls its optimistic value back on this
+	// is discarding a write the application has in fact retained, which is worse
+	// than the bug it replaces because it looks deliberate. Keep what you drew,
+	// and say it is waiting.
+	ErrQueued = errors.New("queued until the connection returns")
+
+	// ErrOffline — this one genuinely cannot happen while disconnected, and
+	// queueing it would be wrong rather than merely unimplemented. Three
+	// operations qualify, each for its own reason:
+	//
+	//   Refresh     fetches from the public internet, on the server. There is
+	//               no server to ask and nothing to fetch with.
+	//   Subscribe   same, plus it needs the server to validate the feed before
+	//               anything can be stored about it.
+	//   MarkAllRead mints an undo batch per call, so replaying it would create
+	//               two batches and leave the undo offering to reverse half its
+	//               own work (§20.19.8).
+	//
+	// The caller's job is to say so in one plain line and leave the button
+	// pressable, because the remedy is "wait", not "try harder".
+	ErrOffline = errors.New("offline: this needs the server")
+)
+
 // Verdict is Classify's whole answer.
 type Verdict struct {
 	Class  Class

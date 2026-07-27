@@ -4,7 +4,6 @@ package data
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -19,15 +18,6 @@ import (
 // clock — a phone that has been offline for a week with drifted time must not be
 // able to overwrite genuinely newer state by claiming to be from the future.
 func nowMS() int64 { return time.Now().UnixMilli() }
-
-// ErrQueued means the write is kept, not lost.
-//
-// It is not a failure and callers must not treat it as one: the optimistic value
-// on screen is now the truth as far as the reader is concerned, and rolling it
-// back would be the application discarding a write it has in fact retained. The
-// rule for a caller is the opposite of an error's: **keep what you drew, and say
-// it is waiting.**
-var ErrQueued = errors.New("queued until the connection returns")
 
 // outboxKey is where the queue lives between page loads.
 //

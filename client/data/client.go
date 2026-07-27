@@ -67,6 +67,10 @@ type Client struct {
 	// it is touched by click handlers and by the drain, and neither has anything
 	// to say about the connection state mu guards.
 	pending *outbox.Queue
+	// cache holds the last answer to each read, so an outage degrades the app
+	// instead of emptying it. The read half of the same idea, and it carries its
+	// own lock for the same reason.
+	cache *Cache
 
 	// mu guards everything below it. The connection is written from three
 	// places that do not coordinate — the Watch goroutine, every RPC's
@@ -201,6 +205,10 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 	// next morning has their marks replayed by the first recovery rather than
 	// discovering they were never saved.
 	c.loadOutbox()
+	// And the reads, for the same reason in the other direction: a tab reopened
+	// with no network shows what it last showed, rather than an empty rail that
+	// reads as data loss.
+	c.loadCache()
 	// Not Live: the socket is not up yet, and saying it is would make the
 	// indicator's one job — never let "silently disconnected" look like "quiet
 	// news day" — a lie in the other direction. Watch reports what is true.
@@ -508,7 +516,29 @@ func (c *Client) Close() error {
 // a working refresh into a permanent error.
 const callTimeout = 20 * time.Second
 
+// downTimeout bounds a call STARTED while the connection is already known to be
+// down, and it is the difference between riding out a blip and looking broken.
+//
+// `WaitForReady(true)` is right and stays: a call made during a half-second
+// reconnect should wait for it rather than erroring at something that fixed
+// itself. But the same option applied to a genuine outage means every click
+// hangs for the full twenty seconds and *then* fails — a reader gets a skeleton
+// for twenty seconds and bad news at the end of it, which is the worst possible
+// ordering of those two events.
+//
+// Four seconds is chosen against the backoff schedule rather than as a round
+// number: retries land at roughly 0.5s, 1.3s, 2.6s and 4.6s, so this window
+// contains three or four complete attempts. Anything that was going to come
+// back has come back; anything that has not is an outage, and the reader is
+// better served by being told now.
+const downTimeout = 4 * time.Second
+
+// ctx bounds one RPC, tightening the deadline when the connection is already
+// known to be down.
 func (c *Client) ctx(parent context.Context) (context.Context, context.CancelFunc) {
+	if c.State() != Live {
+		return context.WithTimeout(parent, downTimeout)
+	}
 	return context.WithTimeout(parent, callTimeout)
 }
 
@@ -580,6 +610,11 @@ func (c *Client) SetItemState(parent context.Context, itemID string, read, starr
 		Key: key, Kind: outbox.KindItemState, ItemID: itemID,
 		Read: read, Star: starred, Rating: rating, At: nowMS(),
 	}
+	// The cached copy is now wrong, however this call goes. Dropped before the
+	// attempt rather than after a success, because the queued path never has a
+	// success to hang it on — and a confidently-served cached article showing a
+	// reader the rating they just changed looks like the app forgot.
+	c.InvalidateItem(itemID)
 	if s := c.State(); s != Live {
 		return nil, c.queue(op)
 	}
@@ -601,7 +636,17 @@ func (c *Client) SetItemState(parent context.Context, itemID string, read, starr
 }
 
 // MarkAllRead marks a feed or everything read.
+//
+// Refused outright while disconnected rather than queued (ErrOffline). This is
+// the one mutation that is not idempotent: each call mints a NEW undo batch, so
+// a replayed one would leave two batches and an undo offer that reverses half
+// its own work. Refusing in the same frame as the click is also strictly better
+// than what queueing would buy — there is no optimistic state to preserve here,
+// only a count the reader is waiting to see.
 func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, string, error) {
+	if c.State() != Live {
+		return 0, "", ErrOffline
+	}
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
 	scope := pb.ListScope_LIST_SCOPE_ALL
@@ -625,6 +670,13 @@ func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, st
 // publisher's own title, and no category. The add-a-feed form sends whatever the
 // reader filled in and nothing more.
 func (c *Client) Subscribe(parent context.Context, url, title, folderID string) (*pb.SubscribeResponse, error) {
+	// Refused rather than queued, and the reason is stronger than Refresh's: the
+	// server VALIDATES the feed before anything is stored, so a queued subscribe
+	// would have to show a feed in the rail that might turn out not to be one.
+	// Optimism is only honest when the outcome is not in doubt.
+	if c.State() != Live {
+		return nil, ErrOffline
+	}
 	// Subscribing polls the feed synchronously on the server, so it gets the
 	// full budget rather than the shared one.
 	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
@@ -640,6 +692,36 @@ func (c *Client) Subscribe(parent context.Context, url, title, folderID string) 
 	return res, c.track(err)
 }
 
+// AnalyzeSite asks what can be followed at an address (§11).
+//
+// It gets the long budget for the same reason Subscribe does: the server is
+// fetching a page and then up to half a dozen candidate feeds over the public
+// internet, and when smart is set it is also waiting on a model. Fail-fast,
+// again for the same reason — a stalled tunnel and a slow site are
+// indistinguishable to someone watching a spinner.
+func (c *Client) AnalyzeSite(parent context.Context, url string, smart bool) (
+	*pb.AnalyzeSiteResponse, error) {
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+	defer cancel()
+	res, err := c.reader.AnalyzeSite(ctx,
+		&pb.AnalyzeSiteRequest{Url: url, Smart: smart},
+		grpc.WaitForReady(false))
+	return res, c.track(err)
+}
+
+// SubscribeScrape follows a page using a rule the reader accepted.
+func (c *Client) SubscribeScrape(parent context.Context, indexURL, title, folderID string,
+	rule *pb.ScrapeRule) (*pb.SubscribeScrapeResponse, error) {
+	// It re-runs the rule against the live page and then fetches the full text
+	// of what it finds, so it is the slowest call in the client.
+	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
+	defer cancel()
+	res, err := c.reader.SubscribeScrape(ctx, &pb.SubscribeScrapeRequest{
+		IndexUrl: indexURL, Title: title, FolderId: folderID, Rule: rule,
+	}, grpc.WaitForReady(false))
+	return res, c.track(err)
+}
+
 // Unsubscribe removes a subscription.
 func (c *Client) Unsubscribe(parent context.Context, sourceID string) error {
 	ctx, cancel := c.ctx(parent)
@@ -650,6 +732,13 @@ func (c *Client) Unsubscribe(parent context.Context, sourceID string) error {
 
 // Refresh polls now.
 func (c *Client) Refresh(parent context.Context, sourceIDs []string) (*pb.RefreshResponse, error) {
+	// Nothing to fetch with. The fetching happens on the SERVER, over the public
+	// internet, so a disconnected client is not merely unable to hear the answer
+	// — it cannot cause the work to happen at all. Said in the same frame as the
+	// press rather than after a wait that could only ever end this way.
+	if c.State() != Live {
+		return nil, ErrOffline
+	}
 	// A full refresh fans out over every subscribed feed on the server, six at a
 	// time, each over the public internet. This is the one call that legitimately
 	// takes a while.
