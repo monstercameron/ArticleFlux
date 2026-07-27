@@ -3846,6 +3846,36 @@ why 6.1 was built ahead of its milestone rather than after it.
       > change is a flag is invisible, which is most "finished loading", "saved", and "failed" states
       > in the application.
 
+      ◧ 2026-07-27 — **dug there, and it is NOT the inbox.** Written up rather than left as a
+      hypothesis, because the next person would otherwise spend the same afternoon.
+
+      A reproduction against GWC's runtime (`newInboxRuntime` + the mock DOM) posts an async write
+      whose only change is a boolean the tree does not read, and **it repaints**. So `PostAsync` →
+      `PostAsyncGlobal` → `Runtime.PostAsync` → `DrainAsyncInbox` is not where this is lost: the
+      drain runs entries inside `enterFrameLoop`, precisely so their setters behave like an event
+      handler's, and they do.
+
+      **The mechanism is one line up, in the setter.** `internal/runtime/hooks.go`:
+
+      ```go
+      if fastEqual(parseCurrentValue, parseNewValue) { return }
+      ```
+
+      The setter compares against the **live stored value** and returns without scheduling anything.
+      That is right in isolation and is the whole hazard here: the moment the live value gets ahead
+      of what was last RENDERED, every later write of that value is invisible — no error, no log,
+      and the state reads back correct, which is exactly the evidence this ticket recorded ("read
+      back as 3 while the last render was rev=2").
+
+      It also explains why `listRev` works and why the three rejected fixes did not: a counter that
+      always differs can never dedupe. `listRev` is therefore not padding — it is the only one of the
+      four that addresses the mechanism, and the "nothing reads it, do not remove" marker should
+      stay.
+
+      *Still owed:* how the live value gets ahead of the render in the first place. The dedupe is the
+      amplifier, not the origin, and finding the origin means instrumenting which scheduled update
+      was dropped — in GWC, and as a GWC change rather than an ArticleFlux one.
+
 ### Owed from this batch
 
 - **H2's Makefile has never been executed.** There is no `make` on this box (1.4), so every recipe was
