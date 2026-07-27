@@ -56,6 +56,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The rules engine matcher** (`internal/rules`, TODO 4.9) — pure: `(item, []Rule, now) -> []Action`,
+  no database, no clock, no side effects. That is what lets §13.4's dry-run preview be *the same
+  code* as the apply; a preview implemented separately eventually lies about what the rule will do,
+  which is worse than having none. All ten fields, all seven operators, ordering, and
+  `stop_processing` in both its rule-flag and action forms. Three decisions worth arguing with: an
+  empty condition set matches **nothing** (empty-AND is conventionally true, and true here means a
+  half-finished rule silently mutes the entire feed); the **earlier** rule wins on conflict, because
+  otherwise moving a rule up the list would stop changing its precedence; and `not_contains` over the
+  tag list means "no tag matches" rather than "some tag doesn't", which would be true of nearly every
+  tagged item. An uncompilable regex is refused at authoring time and matches nothing at evaluation
+  time — both halves matter, since a pattern that somehow got saved must not take the feed down.
+  ~2µs per item per subscriber, so a 50-item fan-out to 200 subscribers is ~20ms.
+
 - **The cross-tenant leak harness** (`internal/store/leak_test.go`, TODO 3.7 / G2 / T1) — the test
   the plan calls the highest-value one in the project. It does not test methods, it **enumerates**
   them: 38 scoped repository methods swept automatically, each called under tenant A's `Scope` while
