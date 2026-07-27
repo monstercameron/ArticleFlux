@@ -56,6 +56,16 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Idempotent mutations** (`internal/store/idem.go`, TODO 7.3c, §12.4) — `(user, key)` → the response
+  that was sent, replayed **verbatim** for 24 hours. This has to exist *before* the offline outbox,
+  not after: a phone draining its queue and losing the connection halfway cannot know which writes
+  landed, so it resends — and without a replay the second attempt applies again. A star toggles back
+  off, a note is appended twice, an unread count moves by two, and every one of those is silent. The
+  stored bytes are replayed rather than recomputed, because a client receiving a *different* answer
+  to the same request cannot tell a replay from a second effect. A key reused for a genuinely
+  different request (method or body) is a **conflict**, since returning the first request's answer
+  for the second one's write drops the write *and* reports success — worse than no idempotency at all.
+
 - **Page cursors are bound to their query** (TODO 7.3b, §20.7). A keyset cursor is a *position* —
   "resume after (published, id)" — and carries no record of what it was a position *in*. Replay one
   from the unread list against the starred list and every row is a plausible article at a plausible

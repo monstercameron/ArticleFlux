@@ -69,6 +69,7 @@ var unscopedByDesign = map[string]string{
 	"RevokeAllSessions":    "admin and break-glass; keyed by user id",
 	"SetPasswordHash":      "break-glass reset (7.10), run from the CLI",
 	"PurgeExpiredSessions": "housekeeping over expiry alone; touches no tenant data",
+	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
 
 	// Global rows (A14). sources, items and favicons belong to no tenant, which
 	// is the entire point of the source/subscription split — a Scope here would

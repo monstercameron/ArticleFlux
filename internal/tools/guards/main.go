@@ -227,6 +227,7 @@ var unscopedByDesign = map[string]string{
 	"CreateSession":        "creates the credential a Scope is resolved from",
 	"RevokeSession":        "the token hash IS the authorisation to revoke it",
 	"PurgeExpiredSessions": "maintenance over every tenant's dead rows",
+	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
 	"CountUsers":           "asked at boot, before any Scope can exist",
 	"RevokeAllSessions":    "the CLI break-glass reset has no session of its own",
 	"SetPasswordHash":      "the CLI break-glass reset has no session",
