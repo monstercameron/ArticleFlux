@@ -56,6 +56,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Item tags, note and bookmark search, saved views, and the audit log** (TODO 5.5, 5.8, 5.10).
+  `item_tags` is A21's, and it is not `feed_tags`: "this article is about rust" and "everything from
+  this feed is rust" are different statements, and a feed about systems programming carries the
+  occasional piece about hiring. Both share one `tags` table, because a reader who labels a feed and
+  an article "rust" means the same tag. Notes and bookmarks get their own searches rather than a
+  federated one — "is this article about X" and "did I write anything about X" are not comparable
+  relevance-wise, and a blended list quietly buries the notes, which are the rarer and more valuable
+  hit. Bookmark search covers the **archived text**, which is most of the value and the only search
+  that keeps working after the origin dies. Saved-view specs are validated on the way in, since a
+  malformed one otherwise fails at render time, on a screen, long after the save reported success.
+  `Audit` takes no `Scope` on purpose — the actor may be tombstoned and the tenant may be one being
+  deleted — while `AuditTrail`, which reads it, does.
+
 - **Idempotent mutations** (`internal/store/idem.go`, TODO 7.3c, §12.4) — `(user, key)` → the response
   that was sent, replayed **verbatim** for 24 hours. This has to exist *before* the offline outbox,
   not after: a phone draining its queue and losing the connection halfway cannot know which writes

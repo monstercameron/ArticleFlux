@@ -194,10 +194,11 @@ var unscopedByDesign = map[string]string{
 	// selectors, not anybody's preference, and the poller that reads it has no
 	// user. The WRITE path (PutScrapeRule) does take a Scope and checks the
 	// subscription, which is where the isolation actually belongs.
-	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
-	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
-	"KnownGUIDs":          "reads global item guids for one global source (A14)",
-	"PollerLag":           "instance-wide polling health over global sources (A14)",
+	"ScrapeRuleFor":        "a global source's extraction rule; the poller has no tenant (A14)",
+	"RecordScrapeOutcome":  "rule health on a global source, written by the poller (A14)",
+	"KnownGUIDs":           "reads global item guids for one global source (A14)",
+	"RetireUnusableSource": "deactivates a global source nobody subscribes to (A14/A22)",
+	"PollerLag":            "instance-wide polling health over global sources (A14)",
 	// Archives (6.12). Of GLOBAL items (A14): one copy serves every subscriber,
 	// and two tenants on the same feed must not cause the same article to be
 	// fetched and stored twice. Nothing per-user is stored or returned.
@@ -228,6 +229,7 @@ var unscopedByDesign = map[string]string{
 	"RevokeSession":        "the token hash IS the authorisation to revoke it",
 	"PurgeExpiredSessions": "maintenance over every tenant's dead rows",
 	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
+	"Audit":                "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
 	"CountUsers":           "asked at boot, before any Scope can exist",
 	"RevokeAllSessions":    "the CLI break-glass reset has no session of its own",
 	"SetPasswordHash":      "the CLI break-glass reset has no session",

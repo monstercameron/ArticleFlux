@@ -70,6 +70,7 @@ var unscopedByDesign = map[string]string{
 	"SetPasswordHash":      "break-glass reset (7.10), run from the CLI",
 	"PurgeExpiredSessions": "housekeeping over expiry alone; touches no tenant data",
 	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
+	"Audit":                "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
 
 	// Global rows (A14). sources, items and favicons belong to no tenant, which
 	// is the entire point of the source/subscription split — a Scope here would
@@ -92,9 +93,10 @@ var unscopedByDesign = map[string]string{
 	// Scraped sources (4.7/6.8), added alongside this work. Reasons mirrored
 	// from internal/tools/guards so the two lists cannot say different things
 	// about the same method.
-	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
-	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
-	"KnownGUIDs":          "reads global item guids for one global source (A14)",
+	"ScrapeRuleFor":        "a global source's extraction rule; the poller has no tenant (A14)",
+	"RecordScrapeOutcome":  "rule health on a global source, written by the poller (A14)",
+	"KnownGUIDs":           "reads global item guids for one global source (A14)",
+	"RetireUnusableSource": "deactivates a global source nobody subscribes to (A14/A22)",
 
 	"SourceHosts": "global; feeds the favicon fetcher",
 	"GetFavicon":  "global cache keyed by host",
