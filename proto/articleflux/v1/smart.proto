@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package articleflux.v1;
+
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1";
+
+// SmartService is the Smart+ tier's control surface: the one API key every
+// Smart+ feature spends, and the features that are configuration rather than
+// per-article actions.
+//
+// It is a separate service from ReaderService on purpose. Everything here
+// EGRESSES — it sends the reader's content, or the server's configuration, to a
+// third party — and keeping that on its own service means the capability map
+// (§7) can gate the whole surface with one entry rather than remembering to
+// mark individual reader RPCs.
+//
+// **Every RPC here is owner-only.** The API key is instance configuration, and
+// a translation is a spend against the instance's bill.
+service SmartService {
+  // GetSmartConfig reports whether Smart+ can run at all, and what it has spent.
+  //
+  // It NEVER returns the API key. `key_hint` is the last four characters, which
+  // is enough to answer "is that the key I pasted" and useless to anyone who
+  // intercepts it.
+  rpc GetSmartConfig(GetSmartConfigRequest) returns (GetSmartConfigResponse);
+
+  // SetSmartConfig stores the OpenAI API key and the model.
+  //
+  // The key is encrypted at rest. An empty `openai_api_key` with
+  // `clear_api_key` set removes it, which is how an instance is switched back
+  // to being unable to egress at all.
+  rpc SetSmartConfig(SetSmartConfigRequest) returns (SetSmartConfigResponse);
+
+  // ListLanguages returns the offered UI translation targets and which of them
+  // are already cached for the running build's English.
+  rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
+
+  // TranslateUI returns the whole UI catalog in one language.
+  //
+  // Cached per locale against a hash of the English catalog, so a build that
+  // changes a string re-translates and one that does not is free. `force`
+  // bypasses the cache — the only lever a reader has when a translation came
+  // back wrong.
+  rpc TranslateUI(TranslateUIRequest) returns (TranslateUIResponse);
+}
+
+message GetSmartConfigRequest {}
+
+message GetSmartConfigResponse {
+  // Whether a key is stored AND usable. False means every Smart+ feature is
+  // unavailable, which is the correct state for an instance nobody configured.
+  bool configured = 1;
+  // Last four characters of the stored key, or empty. Never the key.
+  string key_hint = 2;
+  // Whether the server can encrypt secrets at all. False means it has no
+  // encryption key on disk, and SetSmartConfig will refuse rather than store a
+  // credential in the clear.
+  bool can_store_secrets = 3;
+  // The model every Smart+ feature uses, and the built-in default when unset.
+  string model = 4;
+  string default_model = 5;
+  // Tokens spent since this server process started. Not a bill — a signal.
+  // Restart-scoped on purpose: a persisted counter that nobody resets becomes a
+  // number people stop reading.
+  int64 input_tokens = 10;
+  int64 output_tokens = 11;
+  int64 requests = 12;
+  // True when the key came from OPENAI_API_KEY rather than from this screen.
+  // The screen says so, because "I deleted the key and it still works" is
+  // otherwise unexplainable.
+  bool from_environment = 20;
+}
+
+message SetSmartConfigRequest {
+  // Empty leaves the stored key untouched, so the model can be changed without
+  // re-pasting a credential.
+  string openai_api_key = 1;
+  // Removes the stored key. Explicit rather than inferred from an empty string,
+  // because "leave it alone" and "delete it" are different intentions and a
+  // form that confuses them deletes credentials by accident.
+  bool clear_api_key = 2;
+  // Empty leaves the model untouched.
+  string model = 3;
+}
+
+message SetSmartConfigResponse { GetSmartConfigResponse config = 1; }
+
+message ListLanguagesRequest {}
+
+message ListLanguagesResponse {
+  repeated SmartLanguage languages = 1;
+  // The locale the catalog is authored in — always available, never translated,
+  // never billed.
+  string source_locale = 2;
+}
+
+message SmartLanguage {
+  string code = 1;
+  // The language's name in English, and in itself. Both, because a picker with
+  // only endonyms cannot be navigated by someone who chose the wrong one.
+  string english_name = 2;
+  string native_name = 3;
+  // Already translated for this build: selecting it costs nothing.
+  bool cached = 4;
+}
+
+message TranslateUIRequest {
+  string locale = 1;
+  // Re-translate even if a cached catalog exists.
+  bool force = 2;
+}
+
+message TranslateUIResponse {
+  string locale = 1;
+  repeated UIMessage messages = 2;
+  // True when this came from cache, so the UI can say the switch was free.
+  bool cached = 3;
+}
+
+// UIMessage is one entry of the catalog, in the flat "namespace.key" form the
+// client's i18n.T takes.
+message UIMessage {
+  string key = 1;
+  // The message. Empty when this is a pluralised message, in which case forms
+  // carries it instead.
+  string text = 2;
+  // Plural forms, keyed by CLDR category: zero, one, two, few, many, other.
+  map<string, string> forms = 3;
+}
