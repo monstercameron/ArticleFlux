@@ -116,14 +116,24 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 		cfg.ServiceName = "articleflux"
 	}
 
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL,
+	// NewSchemaless, not NewWithAttributes(semconv.SchemaURL, …).
+	//
+	// resource.Merge refuses to merge two resources carrying DIFFERENT schema
+	// URLs, and resource.Default() carries whichever version the SDK was built
+	// against. Pinning our own semconv import therefore fails the merge the day
+	// the SDK moves — which is exactly what happened here: the merge errored,
+	// the code fell back to the default resource, and the service name and
+	// version were silently dropped from every metric and span. The warning said
+	// so, and a warning at boot is not where anyone looks for a missing label.
+	//
+	// A schemaless resource has no version to disagree about. The attribute KEYS
+	// are still the semantic-convention ones, which is what a backend actually
+	// matches on.
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(cfg.Version),
 	))
 	if err != nil {
-		// A schema-URL mismatch between the SDK default and ours. Losing the
-		// custom attributes beats losing the process.
 		cfg.Log.Warn("telemetry: falling back to the default resource", "err", err)
 		res = resource.Default()
 	}

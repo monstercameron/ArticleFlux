@@ -16,6 +16,11 @@
 /speech-cache/
 *.mp3
 
+# The spoken digests those are made from (§10.7). A model's summary of an
+# article the reader opened is the same class of thing as the audio: derived
+# from their reading, regenerable, and nobody's business but theirs.
+/digest-cache/
+
 # Cached site icons, if a future build ever spills them to disk rather than to
 # the database.
 /favicon-cache/

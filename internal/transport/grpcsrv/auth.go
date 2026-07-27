@@ -43,6 +43,9 @@ type AuthServer struct {
 	log     *slog.Logger
 	devMode bool
 
+	// onOutcome counts login results. Nil disables it; see WithLoginMetrics.
+	onOutcome func(context.Context, store.LoginOutcome)
+
 	// decoy is a real Argon2id hash of a random string, verified against when the
 	// username does not exist.
 	//
@@ -352,6 +355,24 @@ func (s *AuthServer) record(ctx context.Context, username, addr string, outcome 
 	}); err != nil {
 		s.log.Error("recording a login attempt", "err", err, "outcome", string(outcome))
 	}
+	// Every login outcome passes through here, which is why the counter hangs off
+	// this rather than off the four call sites in Login.
+	//
+	// The OUTCOME only — never the username or the address. A metric series per
+	// username on an unauthenticated /metrics endpoint would publish the account
+	// list, and one per IP would publish who is connecting from where. A rising
+	// `bad_password` rate is what an operator needs; the ledger already holds the
+	// detail, behind authentication, where it belongs.
+	if s.onOutcome != nil {
+		s.onOutcome(ctx, outcome)
+	}
+}
+
+// WithLoginMetrics installs a counter for login outcomes and returns the server,
+// so it composes with the other With… builders at the registration site.
+func (s *AuthServer) WithLoginMetrics(fn func(context.Context, store.LoginOutcome)) *AuthServer {
+	s.onOutcome = fn
+	return s
 }
 
 // Logout revokes the calling session.

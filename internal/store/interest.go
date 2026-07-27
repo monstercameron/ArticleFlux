@@ -633,6 +633,140 @@ func (r *ReaderRepo) HalfLifeFor(ctx context.Context, s Scope, sourceID string) 
 	return ages[len(ages)/2], nil
 }
 
+// MegafeedSources returns the sources eligible for the ranked homepage.
+//
+// Two per-subscription facts decide it, and the ranking ignored both until this
+// existed: `in_megafeed`, which is the reader saying "not on my front page", and
+// `muted_until`, which is them saying "not for now". A feed excluded by either is
+// still perfectly readable in its own list — that is the whole point of the setting,
+// and it is why this filters the megafeed rather than the item query.
+//
+// A separate method rather than fields on ListFeeds, deliberately: ListFeeds is the
+// single most-rendered query in the application and carries a comment explaining the
+// 447ms it already cost to get right. This runs once per derivation in a background
+// job, so it has no business making that one wider.
+//
+// Returns a set rather than a slice because the caller's question is per item — "may
+// this source's items appear?" — asked once for each of several hundred candidates.
+func (r *ReaderRepo) MegafeedSources(ctx context.Context, s Scope) (map[string]bool, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	now := stamp(time.Now().UTC())
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT sub.source_id
+		  FROM subscriptions sub
+		  JOIN sources src ON src.id = sub.source_id
+		 WHERE sub.user_id = ? AND sub.tenant_id = ?
+		   AND src.deactivated_at IS NULL
+		   AND sub.in_megafeed = 1
+		   AND (sub.muted_until IS NULL OR sub.muted_until = '' OR sub.muted_until <= ?)`,
+		s.UserID, s.TenantID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// RankedItems returns the materialised homepage as items, in rank order.
+//
+// # Why this is a join rather than two calls
+//
+// HomeRanking returns item ids and the caller could fetch them with ItemsByID, and
+// that is what an obvious implementation does. It is wrong in one specific way:
+// ItemsByID has no order, so the ranking — the entire product of the interest layer —
+// would be lost and have to be reimposed by the caller from a map. Every caller would
+// have to remember to do that, and one that forgot would ship a homepage that looks
+// personalised and is in an arbitrary order.
+//
+// The join also drops items that have since been read or deleted, which a two-step
+// version has to handle separately. A ranking is computed against the world as it was
+// minutes ago; the reader may have read three of them on their phone since.
+//
+// `after` is the rank to resume from, so paging is `WHERE rank > ?` on an indexed
+// column (home_ranking_rank). Zero starts at the top.
+func (r *ReaderRepo) RankedItems(ctx context.Context, s Scope, after, limit int) ([]RankedItem, []Item, error) {
+	if !s.Valid() {
+		return nil, nil, ErrNoScope
+	}
+	if limit <= 0 || limit > MaxRankedPage {
+		limit = MaxRankedPage
+	}
+
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT hr.item_id, hr.score, hr.rank, hr.slot, ifnull(hr.topic_id,''),
+		       hr.reasons_json, hr.tier,
+		       i.source_id, COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
+		       i.title, COALESCE(i.author,''), COALESCE(i.url,''),
+		       COALESCE(i.summary,''), i.published_at, i.word_count,
+		       COALESCE(i.image_url,''),
+		       COALESCE(uis.starred,0), COALESCE(uis.rating,0)
+		  FROM home_ranking hr
+		  JOIN items i ON i.id = hr.item_id
+		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = hr.user_id
+		  JOIN sources src ON src.id = i.source_id
+		  JOIN user_item_state uis
+		    ON uis.item_id = hr.item_id AND uis.user_id = hr.user_id
+		 WHERE hr.user_id = ? AND hr.rank > ?
+		   AND i.deactivated_at IS NULL
+		   AND src.deactivated_at IS NULL
+		   -- Read items leave the ranked page. The homepage is a set of suggestions,
+		   -- and one that keeps offering what you have already read is broken in a way
+		   -- that is obvious to everyone except the code. It also means the page
+		   -- shortens as you work through it instead of going stale between
+		   -- derivations.
+		   AND uis.read_at IS NULL
+		   -- The join to subscriptions is a filter as well as a title lookup:
+		   -- unsubscribing must remove a feed's items from the ranked page at once,
+		   -- without waiting for the next derivation.
+		 ORDER BY hr.rank
+		 LIMIT ?`, s.UserID, after, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ranked []RankedItem
+	var items []Item
+	for rows.Next() {
+		var (
+			rk      RankedItem
+			it      Item
+			reasons string
+		)
+		if err := rows.Scan(&rk.ItemID, &rk.Score, &rk.Rank, &rk.Slot, &rk.TopicID,
+			&reasons, &rk.Tier,
+			&it.SourceID, &it.SourceTitle, &it.Title, &it.Author, &it.URL,
+			&it.Summary, &it.PublishedAt, &it.WordCount, &it.ImageURL,
+			&it.Starred, &it.Rating); err != nil {
+			return nil, nil, err
+		}
+		it.ID = rk.ItemID
+		if reasons != "" {
+			// A malformed reason list costs an explanation, not the item: the ranking
+			// is still correct and only the prose is lost.
+			_ = json.Unmarshal([]byte(reasons), &rk.Reasons)
+		}
+		ranked = append(ranked, rk)
+		items = append(items, it)
+	}
+	return ranked, items, rows.Err()
+}
+
+// MaxRankedPage bounds one page of the ranked homepage, matching the item list's own
+// ceiling so the two surfaces cannot disagree about what "a page" is.
+const MaxRankedPage = 200
+
 // ScopesToDerive returns the users whose interest layer is worth recomputing:
 // those with at least one AFFINITY-BEARING engagement newer than `since`.
 //

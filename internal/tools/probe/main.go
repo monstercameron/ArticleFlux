@@ -32,7 +32,7 @@ func main() {
 			fmt.Println("run:", err)
 			continue
 		}
-		hist(ctx, repo, sc)
+		terms(ctx, repo, sc)
 		ranked, _ := repo.HomeRanking(ctx, sc, 200)
 		fmt.Printf("home_ranking: %d rows\n", len(ranked))
 
