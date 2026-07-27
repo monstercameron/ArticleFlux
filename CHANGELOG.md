@@ -56,6 +56,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Identity repositories and the capability model** (`internal/store/identityrepo.go`,
+  `internal/authz`, TODO 5.1 & 6.2). D12's shape, so there is an invites table and no registration
+  one: a code is returned **once** and only its hash is stored, because an invite is a bearer
+  credential for its whole life and a database dump should not be a pile of usable ones. Redemption
+  is one transaction, so two people racing a code cannot both get an account. §7.5's map **fails
+  closed on an unmapped method** — the alternative makes forgetting an entry a silent grant of a new
+  RPC to everyone — and `Unmapped()` turns that from a runtime 403 on a shipped feature into a boot
+  check. An API token's scope **intersects** the owner's role rather than uniting with it, so a
+  viewer's read-write token gains nothing and minting one can never be an escalation. Refresh reuse
+  revokes the whole **family**: which of the two holders is the thief is unknowable, so both are
+  logged out, which is an inconvenience for the owner and the end of the session for the other one.
+
 - **Recommendations actually run** (`internal/recommendjob` + `internal/store/outlinks.go`, TODO
   6.10) — harvest → validate → gate → score → store, rungs 1–3, no LLM. Outlinks are §18.7's rung 1
   and the best signal in the system: the links inside articles the reader engaged with, costing a URL

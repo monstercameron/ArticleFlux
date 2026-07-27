@@ -93,10 +93,17 @@ var unscopedByDesign = map[string]string{
 	// Scraped sources (4.7/6.8), added alongside this work. Reasons mirrored
 	// from internal/tools/guards so the two lists cannot say different things
 	// about the same method.
-	"ScrapeRuleFor":        "a global source's extraction rule; the poller has no tenant (A14)",
-	"RecordScrapeOutcome":  "rule health on a global source, written by the poller (A14)",
-	"KnownGUIDs":           "reads global item guids for one global source (A14)",
-	"RecordOutlinks":       "outlinks are a property of a global item (A14); one extraction serves every subscriber",
+	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
+	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
+	"KnownGUIDs":          "reads global item guids for one global source (A14)",
+	"RecordOutlinks":      "outlinks are a property of a global item (A14); one extraction serves every subscriber",
+	// Identity (5.1). Each of these either PRODUCES a Scope or runs before one
+	// can exist — the same category as ScopeForSession, and the reason that one
+	// is exempt too.
+	"SeedSystemRoles":      "seeds the four built-in roles at boot, before any tenant exists",
+	"RedeemInvite":         "the code IS the authorisation, and it names the tenant the account joins",
+	"ScopeForAPIToken":     "produces a Scope from a token; requiring one would be circular",
+	"RotateRefresh":        "the presented refresh token is the authorisation, and reuse revokes the family",
 	"RetireUnusableSource": "deactivates a global source nobody subscribes to (A14/A22)",
 
 	"SourceHosts": "global; feeds the favicon fetcher",
