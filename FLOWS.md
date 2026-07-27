@@ -1,4 +1,4 @@
-# Tidings — flows
+# ArticleFlux — flows
 
 *Companion to `plan.md` (rev 8) and `TODO.md`. Mermaid — renders in VS Code preview, GitHub, and most
 markdown viewers.*
@@ -169,7 +169,7 @@ flowchart TD
     WHO -- "a user with codes" --> R1["Rung 1: recovery code<br/>10 issued once at signup<br/>Argon2id hashed at rest"]
     WHO -- "a user, no codes" --> R2["Rung 2: ask an admin<br/>admin mints a single-use<br/>15-minute token"]
     WHO -- "SMTP configured" --> R3["Rung 3: emailed link<br/>optional, off by default"]
-    WHO -- "the superadmin,<br/>nobody above them" --> CLI["Break-glass:<br/>tidings admin reset-password<br/>from the host filesystem.<br/>Filesystem access IS the proof"]
+    WHO -- "the superadmin,<br/>nobody above them" --> CLI["Break-glass:<br/>ArticleFlux admin reset-password<br/>from the host filesystem.<br/>Filesystem access IS the proof"]
 
     R1 --> SET
     R2 --> SET

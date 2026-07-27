@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"github.com/monstercameron/Tidings/internal/urlnorm"
+	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
 )
 
 // Link is one outbound link with the context needed to judge it.

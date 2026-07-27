@@ -1,4 +1,4 @@
-// Package design holds the visual tokens for Tidings: the palette, the type
+// Package design holds the visual tokens for ArticleFlux: the palette, the type
 // stacks, and HueFor.
 //
 // It is deliberately **pure** — no syscall/js, no DOM, no GWC runtime — so both

@@ -12,10 +12,10 @@ import (
 // 3,500, and the e2e suite's fixtures are deliberately tiny.
 func openDev(t *testing.T) *DB {
 	t.Helper()
-	if _, err := os.Stat("../../tidings.db"); err != nil {
+	if _, err := os.Stat("../../ArticleFlux.db"); err != nil {
 		t.Skip("no development database")
 	}
-	db, err := Open(Options{Path: "../../tidings.db"})
+	db, err := Open(Options{Path: "../../ArticleFlux.db"})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

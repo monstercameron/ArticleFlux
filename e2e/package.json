@@ -1,5 +1,5 @@
 {
-  "name": "tidings-e2e",
+  "name": "ArticleFlux-e2e",
   "private": true,
   "type": "module",
   "scripts": {

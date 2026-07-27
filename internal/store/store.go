@@ -1,4 +1,4 @@
-// Package store owns the database. Every SQL statement in Tidings lives here or
+// Package store owns the database. Every SQL statement in ArticleFlux lives here or
 // in a package under it — enforced by a structural guard in CI, for the same
 // reason syscall/js is quarantined: one place to audit, one place to fix.
 package store
@@ -18,7 +18,7 @@ import (
 	"github.com/ncruces/go-sqlite3/driver"
 	"github.com/ncruces/go-sqlite3/ext/fts5"
 
-	"github.com/monstercameron/Tidings/migrations"
+	"github.com/monstercameron/ArticleFlux/migrations"
 )
 
 // DB holds the two pools A24 requires.

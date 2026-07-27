@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/feed"
-	"github.com/monstercameron/Tidings/internal/signals"
-	"github.com/monstercameron/Tidings/internal/store"
-	"github.com/monstercameron/Tidings/internal/urlnorm"
+	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
+	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
 )
 
 // Service is the reading surface.

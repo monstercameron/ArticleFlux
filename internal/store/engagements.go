@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/signals"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
 // MaxEngagementBatch bounds one RecordEngagements call.

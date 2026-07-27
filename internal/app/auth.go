@@ -7,9 +7,9 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	"github.com/monstercameron/Tidings/internal/idgen"
-	"github.com/monstercameron/Tidings/internal/secret"
-	"github.com/monstercameron/Tidings/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/secret"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // scopeFromContext resolves the caller into a store.Scope.
@@ -55,7 +55,7 @@ func (a *App) scopeForToken(ctx context.Context, token string) (store.Scope, err
 // authentication.
 //
 // This exists so the dev server is usable before the login UI lands (M2). It is
-// gated on DevMode, which cmd/tidings only sets for a loopback bind — an
+// gated on DevMode, which cmd/ArticleFlux only sets for a loopback bind — an
 // internet-facing instance with no auth would be an open reader.
 func (a *App) devScope(ctx context.Context) (store.Scope, error) {
 	if !a.cfg.DevMode {

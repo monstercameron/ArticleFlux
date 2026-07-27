@@ -1,4 +1,4 @@
-// Package signals is the observation vocabulary: what Tidings can notice about
+// Package signals is the observation vocabulary: what ArticleFlux can notice about
 // a reader, what each observation means, and how to turn a raw measurement into
 // something comparable across articles.
 //

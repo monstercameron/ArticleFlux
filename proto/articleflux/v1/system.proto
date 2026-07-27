@@ -1,13 +1,13 @@
 syntax = "proto3";
 
-// Package tidings.v1 is the single contract behind all three transports (§20.7):
+// Package ArticleFlux.v1 is the single contract behind all three transports (§20.7):
 // the gRPC tunnel, the plain-HTTPS pack channel, and the Google Reader-compatible
 // REST sync API. Additive changes only within v1 — `buf breaking` in CI enforces
 // that rather than discipline, because the sync API and SW-cached wasm both
 // guarantee old clients in the wild (§22.10).
-package tidings.v1;
+package ArticleFlux.v1;
 
-option go_package = "github.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1";
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1;ArticleFluxv1";
 
 // SystemService is the unauthenticated surface: enough to answer "is this thing
 // running, and which build am I talking to" before any credential exists.

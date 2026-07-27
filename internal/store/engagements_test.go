@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/signals"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
 // firstItem returns one seeded item and the source it belongs to.

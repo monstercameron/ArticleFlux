@@ -24,7 +24,7 @@ let app;
  *   1. a static server for the fixture feeds  (so ingestion is deterministic —
  *      a suite that polls the real Hacker News fails whenever the news changes)
  *   2. a fresh database seeded against those fixtures
- *   3. the real tidings binary, serving the real wasm client
+ *   3. the real ArticleFlux binary, serving the real wasm client
  *
  * Nothing is mocked. The whole point of e2e here is the seam unit tests cannot
  * reach: wasm ↔ gRPC-over-WebSocket ↔ SQLite ↔ FTS5.
@@ -32,7 +32,7 @@ let app;
 export default async function globalSetup() {
   mkdirSync(join(here, '.tmp'), { recursive: true });
 
-  // A previous run that was killed rather than closed leaves a tidings.exe
+  // A previous run that was killed rather than closed leaves a ArticleFlux.exe
   // holding the database open, and Windows refuses to delete a locked file —
   // so the next run dies at rmSync with EPERM and blames the filesystem.
   //
@@ -65,7 +65,7 @@ export default async function globalSetup() {
   await new Promise((ok) => feedServer.listen(FEED_PORT, '127.0.0.1', ok));
 
   // --- 2. build + seed ----------------------------------------------------
-  const bin = join(repo, 'bin', 'tidings.exe');
+  const bin = join(repo, 'bin', 'ArticleFlux.exe');
   if (!existsSync(bin)) throw new Error(`build the server first: ${bin} is missing`);
   if (!existsSync(join(repo, 'bin', 'web', 'app.wasm'))) {
     throw new Error('build the client first: bin/web/app.wasm is missing (./scripts/make.ps1 wasm)');
@@ -105,8 +105,8 @@ export default async function globalSetup() {
   app = spawn(bin, ['serve', '-db', DB, '-addr', `127.0.0.1:${APP_PORT}`, '-poll', '0'], {
     cwd: repo, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  app.stdout.on('data', (d) => process.stdout.write(`[tidings] ${d}`));
-  app.stderr.on('data', (d) => process.stdout.write(`[tidings] ${d}`));
+  app.stdout.on('data', (d) => process.stdout.write(`[ArticleFlux] ${d}`));
+  app.stderr.on('data', (d) => process.stdout.write(`[ArticleFlux] ${d}`));
 
   await waitForHealthy(`http://127.0.0.1:${APP_PORT}/healthz`);
 
@@ -117,7 +117,7 @@ export default async function globalSetup() {
 }
 
 // killListener terminates whatever holds a TCP port, identified by PID from
-// netstat. Deliberately NOT `taskkill /IM tidings.exe`: an image-name kill would
+// netstat. Deliberately NOT `taskkill /IM ArticleFlux.exe`: an image-name kill would
 // also take out the dev server on :9000 that someone is watching.
 async function killListener(port) {
   const netstat = await run('netstat', ['-ano'], here);

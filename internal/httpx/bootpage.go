@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/monstercameron/GoWebComponents/v5/css"
-	"github.com/monstercameron/Tidings/client/design"
-	"github.com/monstercameron/Tidings/internal/buildstatus"
+	"github.com/monstercameron/ArticleFlux/client/design"
+	"github.com/monstercameron/ArticleFlux/internal/buildstatus"
 )
 
 // Build identifies the running binary. Set from main.
@@ -70,7 +70,7 @@ func (p *BootPage) render(st buildstatus.Status) string {
 	// Ten seconds: fast enough to watch a build land, slow enough not to yank the
 	// page out from under someone reading it.
 	b.WriteString(`<meta http-equiv="refresh" content="10">`)
-	b.WriteString(`<title>Tidings — build status</title>`)
+	b.WriteString(`<title>ArticleFlux — build status</title>`)
 	// Progressive enhancement only. The stacks in client/design are chosen so an
 	// offline box degrades to something in the same family, and this page must
 	// work on a machine with no network — that is half of what it is proving.
@@ -87,7 +87,7 @@ func (p *BootPage) render(st buildstatus.Status) string {
 	// server's own status line first.
 	pending := st.Pending()
 	b.WriteString(`<header class="bar">`)
-	b.WriteString(`<span class="mark">Tidings</span>`)
+	b.WriteString(`<span class="mark">ArticleFlux</span>`)
 	b.WriteString(`<span class="state"><i class="dot" aria-hidden="true"></i>server up · client not built</span>`)
 	if st.Err == nil {
 		b.WriteString(`<span class="count"><b>` + strconv.Itoa(pending) + `</b> tiers to go</span>`)

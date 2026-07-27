@@ -2,7 +2,7 @@
 # verified: protoc is not installed on this box and does not need to be).
 #
 # Note what is NOT here: CashFlux hand-rolls a JSON codec over grpc.ServiceDesc
-# rather than generating protobuf. Tidings generates properly, because the
+# rather than generating protobuf. ArticleFlux generates properly, because the
 # Google Reader-compatible REST surface (§15) and the tunnel must both be driven
 # from one contract or "marked read in Reeder" silently diverges from the web UI.
 version: v2

@@ -2,7 +2,7 @@
 // polling, favicon fetch, article extraction, OPML import by URL, WebSub
 // verification, image proxying, and feed discovery.
 //
-// The threat is specific. Tidings fetches URLs that users supply, from a server
+// The threat is specific. ArticleFlux fetches URLs that users supply, from a server
 // that sits inside a network the user cannot otherwise reach. "Subscribe to
 // http://169.254.169.254/latest/meta-data/iam/security-credentials/" is a
 // complete cloud-credential exfiltration attack delivered through a feature

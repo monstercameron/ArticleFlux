@@ -1,4 +1,4 @@
-module github.com/monstercameron/Tidings
+module github.com/monstercameron/ArticleFlux
 
 go 1.26.3
 

@@ -17,10 +17,10 @@ import (
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/monstercameron/Tidings/client/data"
-	"github.com/monstercameron/Tidings/client/design"
-	"github.com/monstercameron/Tidings/client/platform"
-	pb "github.com/monstercameron/Tidings/internal/pb/tidings/v1"
+	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/design"
+	"github.com/monstercameron/ArticleFlux/client/platform"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
 )
 
 // view names which pane is on screen on a phone. On a wide screen all three are
@@ -687,7 +687,7 @@ func Reader() ui.Node {
 			if focus {
 				pane.Set(viewArticle)
 			}
-			platform.SetTitle(it.GetTitle() + " · Tidings")
+			platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 			savePrefs(map[string]string{"read.item": it.GetId()})
 			expectFocus.Set(it.GetId())
 			platform.ScrollChildToTop(".pane-article",
@@ -722,7 +722,7 @@ func Reader() ui.Node {
 		if focus {
 			pane.Set(viewArticle)
 		}
-		platform.SetTitle(it.GetTitle() + " · Tidings")
+		platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 		savePrefs(map[string]string{"read.item": it.GetId()})
 		expectFocus.Set(it.GetId())
 		// The clicked article goes to the top of the pane, not the seeded one
@@ -1139,7 +1139,7 @@ func Reader() ui.Node {
 			}
 			if c := current.Get(); c == nil || c.GetId() != id {
 				current.Set(it)
-				platform.SetTitle(it.GetTitle() + " · Tidings")
+				platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 				markRead(it)
 				// Where they got to, saved as they scroll. Once per ARTICLE rather
 				// than once per scroll event: this fires only when a different
@@ -2223,7 +2223,7 @@ func Reader() ui.Node {
 
 	if msg := fatal.Get(); msg != "" {
 		return html.Div(html.Props{Class: "empty"},
-			html.Strong(html.Props{}, html.Text("Tidings can't reach its server")),
+			html.Strong(html.Props{}, html.Text("ArticleFlux can't reach its server")),
 			html.Div(html.Props{}, html.Text(msg)),
 			html.Div(html.Props{}, html.Text("Check that it's running, then reload.")),
 		)

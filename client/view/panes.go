@@ -11,9 +11,9 @@ import (
 	"github.com/monstercameron/GoWebComponents/v5/sanitize"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
-	"github.com/monstercameron/Tidings/client/data"
-	"github.com/monstercameron/Tidings/client/design"
-	pb "github.com/monstercameron/Tidings/internal/pb/tidings/v1"
+	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/design"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
 )
 
 // actionButton renders a button whose click is handled by the shell's delegated
@@ -290,7 +290,7 @@ func railPane(p railProps) ui.Node {
 	// where the feeds start.
 	rows = append(rows,
 		html.Div(html.Props{Class: "masthead"},
-			html.Span(html.Props{Class: "masthead-mark"}, html.Text("Tidings")),
+			html.Span(html.Props{Class: "masthead-mark"}, html.Text("ArticleFlux")),
 			html.Span(html.Props{Class: "masthead-sub"},
 				html.Text(strconv.Itoa(len(p.feeds))+" · "+quiet)),
 		),

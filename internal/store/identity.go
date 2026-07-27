@@ -68,7 +68,7 @@ func (r *ReaderRepo) ScopeForSession(ctx context.Context, tokenHash string) (Sco
 // login UI exists.
 //
 // Unscoped by design — it is how the dev scope is discovered. It is only ever
-// reached when Config.DevMode is set, which cmd/tidings restricts to a loopback
+// reached when Config.DevMode is set, which cmd/ArticleFlux restricts to a loopback
 // bind.
 func (r *ReaderRepo) FirstUserScope(ctx context.Context) (Scope, error) {
 	var s Scope

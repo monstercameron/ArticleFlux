@@ -37,7 +37,7 @@ body:
     id: expected
     attributes:
       label: What it should have been
-      description: For one concrete item — the title as published, next to what Tidings shows.
+      description: For one concrete item — the title as published, next to what ArticleFlux shows.
     validations:
       required: true
 

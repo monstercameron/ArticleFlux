@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// Command app is the Tidings client.
+// Command app is the ArticleFlux client.
 //
 // It is the entire application: the reader, its styles, and its state, compiled
 // to wasm. The only JavaScript that ships is web/index.html's bootstrap and Go's
@@ -10,8 +10,8 @@ package main
 import (
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
-	"github.com/monstercameron/Tidings/client/design"
-	"github.com/monstercameron/Tidings/client/view"
+	"github.com/monstercameron/ArticleFlux/client/design"
+	"github.com/monstercameron/ArticleFlux/client/view"
 )
 
 func main() {

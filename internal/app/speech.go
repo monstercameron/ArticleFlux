@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/Tidings/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // ttsPrefKey is the per-user opt-in. Absent or anything but "true" means off.

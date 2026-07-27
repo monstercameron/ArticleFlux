@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/idgen"
 )
 
 // Scope is who is asking. Every repository method takes one, and CI enforces

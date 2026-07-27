@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/Tidings/internal/buildstatus"
+	"github.com/monstercameron/ArticleFlux/internal/buildstatus"
 )
 
 func TestInlineMD(t *testing.T) {
@@ -49,7 +49,7 @@ func TestBootPageRenders(t *testing.T) {
 	}
 
 	p := &BootPage{
-		Build:    Build{Version: "tidings test", Commit: "abc123", Addr: "127.0.0.1:9000"},
+		Build:    Build{Version: "ArticleFlux test", Commit: "abc123", Addr: "127.0.0.1:9000"},
 		TODOPath: todo,
 	}
 	rr := httptest.NewRecorder()

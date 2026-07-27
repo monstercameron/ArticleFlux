@@ -10,7 +10,7 @@ body:
         stale state that a reload would have answered in a second.
 
         If this is a security issue, do not file it here — see
-        [SECURITY.md](https://github.com/monstercameron/Tidings/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/monstercameron/ArticleFlux/blob/main/SECURITY.md).
 
   - type: textarea
     id: what
@@ -62,7 +62,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: "`./bin/tidings.exe version`, or the commit hash you built."
+      description: "`./bin/ArticleFlux.exe version`, or the commit hash you built."
     validations:
       required: true
 

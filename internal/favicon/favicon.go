@@ -19,7 +19,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"github.com/monstercameron/Tidings/internal/netguard"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 )
 
 // TTL is how long a cached icon stays fresh.
@@ -56,7 +56,7 @@ func New(allowPrivate bool) *Fetcher {
 	return &Fetcher{client: netguard.Client(netguard.Options{
 		Timeout:      10 * time.Second,
 		DialTimeout:  5 * time.Second,
-		UserAgent:    "Tidings/0.1 (favicon)",
+		UserAgent:    "ArticleFlux/0.1 (favicon)",
 		AllowPrivate: allowPrivate,
 	})}
 }

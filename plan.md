@@ -1,4 +1,4 @@
-# Tidings — a multi-tenant feed reader, bookmark manager, and ranking engine
+# ArticleFlux — a multi-tenant feed reader, bookmark manager, and ranking engine
 
 *GoWebComponents v5 + GoGRPCBridge. Working name. Started 2026-07-26.*
 
@@ -207,7 +207,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 └──────────────────────────┬──────────────────────────────────┘              │
                            │ authenticated wss:// (+ HTTPS for packs)        │
 ┌──────────────────────────▼─────────────────────────────────────────────────▼───────────┐
-│  tidings                                                                               │
+│  ArticleFlux                                                                               │
 │   http:   static · /grpc · /img · /websub · /pack/:id · /reader/api/0/* · /pub/:slug   │
 │           /healthz · /readyz  (unauthenticated, §22.4)                                 │
 │   authz:  interceptor → Scope{tenant, user, caps} on every call              (§7)      │
@@ -869,7 +869,7 @@ sends only a 5-char SHA-1 prefix). Sessions are device-scoped refresh-token fami
 | **2** | **Admin-minted reset** — single-use, 15-min token from the console | $0 |
 | **3** | **Emailed reset link** — *optional*, only if SMTP is configured | ~$0, external dep |
 
-**Break-glass:** `tidings admin reset-password --user X` from the host filesystem — filesystem access
+**Break-glass:** `ArticleFlux admin reset-password --user X` from the host filesystem — filesystem access
 *is* proof of ownership, it's what Gitea and Grafana do, and it's audited like any other reset.
 *(Distinct from first-run bootstrap, which is §22.3 — that's the case where no user exists at all.)*
 
@@ -1137,7 +1137,7 @@ zstd compression on `archived_html`.
 and it lets a parser fix be re-applied to the last known state without re-fetching a feed that may no
 longer answer.
 
-**The promise stays modest and true:** Tidings keeps what it fetched. It is not archiving the web, and
+**The promise stays modest and true:** ArticleFlux keeps what it fetched. It is not archiving the web, and
 the UI should never imply it is.
 
 ---
@@ -1249,7 +1249,7 @@ ordering.
 ### 12.5 Multiple tabs and devices
 
 **Two tabs of the same app share one IndexedDB.** This exact pattern produced a whole-dataset
-last-writer-wins clobber in CashFlux — same stack, same persistence layer — and Tidings' outbox is
+last-writer-wins clobber in CashFlux — same stack, same persistence layer — and ArticleFlux' outbox is
 strictly more complex.
 
 Mitigation, in the design rather than discovered later: **`BroadcastChannel` leader election** — one
@@ -1992,7 +1992,7 @@ reconnects mid-flight must not double-apply.
 | LLM-backed RPCs | bounded by the §22.8 breaker + budget, not a count | Cost, not throughput, is the constraint |
 | Everything else | 600/min per user | A backstop, not a policy |
 
-**Versioning.** The proto is `tidings.v1`. **Additive changes only** within v1 — new fields, new RPCs,
+**Versioning.** The proto is `ArticleFlux.v1`. **Additive changes only** within v1 — new fields, new RPCs,
 new enum values. A client must tolerate unknown enum values by falling back to a documented default,
 because the sync API and the SW-cached wasm both guarantee old clients in the wild (§22.10). Removing
 or renumbering a field means `v2`, and `buf breaking` in CI is what enforces that rather than
@@ -2270,7 +2270,7 @@ background jobs. Rev 7 never said how they coexist, which means `SQLITE_BUSY` on
 Rev 7 had **no way to create the first user.** Invites require an admin (§9); recovery rung 2 requires
 an admin; break-glass reset requires an existing user. Day zero had no path in.
 
-`tidings init` — or first-boot detection of an empty `users` table — creates tenant 1 and the first
+`ArticleFlux init` — or first-boot detection of an empty `users` table — creates tenant 1 and the first
 superadmin, either interactively or by printing a **one-time enrollment token** valid for 15 minutes,
 logged loudly. The server **refuses to serve the app** while no superadmin exists rather than starting
 in a state where anyone who finds it can claim it.
@@ -2404,7 +2404,7 @@ effort for nobody.
 **Two platform facts that change features, not just styling:**
 
 - **iOS Safari only delivers Web Push to a home-screen-installed PWA.** §17.1's notifications simply do
-  not exist on iPhone until the user adds Tidings to their home screen. The UI must say that rather
+  not exist on iPhone until the user adds ArticleFlux to their home screen. The UI must say that rather
   than offering a toggle that silently does nothing — and it's an argument for the manifest and install
   prompt landing with M12, not later.
 - **`navigator.wakeLock` is absent on some Safari versions.** §19's screensaver degrades to "the screen
@@ -2508,7 +2508,7 @@ Highest-value first:
 **T19 · Auth and recovery** — lockout triggers and releases · replayed refresh token revokes the family ·
     login and reset-initiate timing indistinguishable · recovery code and reset token single-use ·
     reset kills every session · sudo mode gates role changes · CLI break-glass audited ·
-    **`tidings init` creates exactly one superadmin and can't be re-run**.
+    **`ArticleFlux init` creates exactly one superadmin and can't be re-run**.
 **T20 · Webhook SSRF**, **public feed safety** (excerpt-only, rotation invalidates), **newsletter
     sanitization** corpus, **301 handling** (URL updates, chain capped, guard re-run per hop).
 
@@ -2530,7 +2530,7 @@ backup, `/healthz`**; repository `Scope` layer + leak test; poller with backoff 
 **revision write path active from day one**. No UI.
 **M2** Identity + **tier-1 extraction**: tenants, users, roles, capabilities, invites, devices;
 password auth with breach-check, rate limiting, refresh rotation + reuse detection; recovery rungs 1–2
-+ CLI break-glass; **`tidings init` bootstrap**; sudo mode; fail-closed capability map; TLS; bind
++ CLI break-glass; **`ArticleFlux init` bootstrap**; sudo mode; fail-closed capability map; TLS; bind
 check. **Plus `internal/extract`**, moved up from M13 because M9/M10 depend on it.
 **M3** Settings registry + three-layer resolution + **job queue** — before the UI, so every later
 feature has somewhere to put its knobs and its background work.
@@ -2593,7 +2593,7 @@ sentence. **Until signed off these remain open**; nothing here is settled by hav
 
 | D | Proposed | Why | What it costs to accept |
 |---|---|---|---|
-| **D5** name | **Keep `Tidings`** | It means *news brought from afar*, it's short, and the alternative is an afternoon of bikeshedding. It undersells the bookmark half — nobody will care | Module path locks to `github.com/monstercameron/Tidings`. **Cheapest to change now, churn across every import later** |
+| **D5** name | **Keep `ArticleFlux`** | It means *news brought from afar*, it's short, and the alternative is an afternoon of bikeshedding. It undersells the bookmark half — nobody will care | Module path locks to `github.com/monstercameron/ArticleFlux`. **Cheapest to change now, churn across every import later** |
 | **D8** hosting | **Home box + Cloudflare Tunnel** | Real hostname, free TLS, **no inbound port** — which shrinks §21's threat surface more than any code | ⚠️ **Cloudflare terminates TLS, so it sees plaintext** — your notes and reading history. If that's unacceptable, a €5 VPS with Caddy + Let's Encrypt is the only option where nobody else holds the cert. Tailscale Funnel has the same property as CF |
 | **D9** bookmarklet vs extension | **Bookmarklet only in v1** | Zero install, no store review, no per-browser build, and it works on a locked-down work machine — the case that motivated it | No "already saved" indicator, no tag autocomplete at save time |
 | **D10** two LLM providers | **Keep the interface; ship OpenAI first** | `llm.Provider` lands at 6.11 regardless. Smart+ (OpenAI) is M17; Claude for rules and discovery is M25–26 — so it's sequencing, not duplication | Two keys, two dashboards eventually. Revisit consolidation once both are real, not before |
@@ -2789,8 +2789,8 @@ the deliverable, not decoration.
 
 ## 26. Immediate next step
 
-M0: `go.mod` + replace + buf config; minimal `tidings.proto` with one unary and one streaming RPC;
-`buf generate`; `cmd/tidings` serving `web/` and `/grpc`; build `gwc.exe` from the GoWebComponents
+M0: `go.mod` + replace + buf config; minimal `ArticleFlux.proto` with one unary and one streaming RPC;
+`buf generate`; `cmd/ArticleFlux` serving `web/` and `/grpc`; build `gwc.exe` from the GoWebComponents
 checkout; `client/main.go` dialing the tunnel, calling the unary RPC, rendering a streamed tick through
 `ui.PostAsync`. Then weigh `app.wasm`.
 

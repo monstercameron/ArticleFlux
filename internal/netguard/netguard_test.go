@@ -197,14 +197,14 @@ func TestUserAgentIsSet(t *testing.T) {
 
 	// Reach the test server through a client with the guard's transport but a
 	// permissive dialer, since the whole point here is the header, not the guard.
-	c := &http.Client{Transport: &uaTransport{next: http.DefaultTransport, ua: "Tidings/0.1"}}
+	c := &http.Client{Transport: &uaTransport{next: http.DefaultTransport, ua: "ArticleFlux/0.1"}}
 	resp, err := c.Get(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if got != "Tidings/0.1" {
-		t.Errorf("User-Agent = %q, want Tidings/0.1 — publishers can only respond to an anonymous fetcher by blocking it", got)
+	if got != "ArticleFlux/0.1" {
+		t.Errorf("User-Agent = %q, want ArticleFlux/0.1 — publishers can only respond to an anonymous fetcher by blocking it", got)
 	}
 }
 

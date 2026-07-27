@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package tidings.v1;
+package ArticleFlux.v1;
 
-option go_package = "github.com/monstercameron/Tidings/internal/pb/tidings/v1;tidingsv1";
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1;ArticleFluxv1";
 
 // ReaderService is the reading surface: the sidebar, the list, the article, and
 // the four state changes a reader can make.

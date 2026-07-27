@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/reader-desktop.png" alt="Tidings — three-pane reader with per-source hues" width="900">
+  <img src="docs/assets/reader-desktop.png" alt="ArticleFlux — three-pane reader with per-source hues" width="900">
 </p>
 
-<h1 align="center">Tidings</h1>
+<h1 align="center">ArticleFlux</h1>
 
 <p align="center">
   <strong>A self-hosted feed reader that is Go all the way down.</strong><br>
@@ -28,7 +28,7 @@ Google Reader died in 2013 and nothing replaced it. What replaced it was a choic
 else's server holding your reading history, or a self-hosted PHP app from 2011 with a mobile site
 that does not work.
 
-Tidings is the third option. **One binary, one SQLite file, no runtime dependencies, and a client
+ArticleFlux is the third option. **One binary, one SQLite file, no runtime dependencies, and a client
 that is a real application rather than a page** — virtualised lists at firehose scale, a keyboard
 map your fingers already know, full-text search, tags, notes, offline-capable delivery, and text to
 speech.
@@ -66,7 +66,7 @@ same deal.
 
 </td>
 <td width="38%" valign="top">
-<img src="docs/assets/reader-phone.png" alt="Tidings on a phone" width="100%">
+<img src="docs/assets/reader-phone.png" alt="ArticleFlux on a phone" width="100%">
 <p align="center"><em>The same binary, on a phone. Not a separate app,<br>not a scaled-down mode — one responsive client.</em></p>
 </td>
 </tr>
@@ -78,7 +78,7 @@ same deal.
 
 ```powershell
 ./scripts/make.ps1 build
-./bin/tidings.exe seed    # subscribe to a starter set and fetch it
+./bin/ArticleFlux.exe seed    # subscribe to a starter set and fetch it
 ./scripts/make.ps1 dev    # http://127.0.0.1:9000
 ```
 
@@ -96,7 +96,7 @@ Playwright drives a real browser.
 
 ## Built on two libraries worth stealing
 
-Tidings is the proof that these two work together on something real, and it is small enough to read.
+ArticleFlux is the proof that these two work together on something real, and it is small enough to read.
 If you only take one thing from this repository, take one of these.
 
 ### GoWebComponents — the UI is Go
@@ -125,7 +125,7 @@ and a designer's change lands in `client/design/sheet.go` next to the component 
 
 > **What it costs, honestly:** the wasm bundle is 23.8 MB, 5.2 MB gzipped, and CI fails the build if
 > it grows more than 5% without someone bumping the baseline on purpose. That is the trade: a large
-> first load, cached thereafter, in exchange for deleting an entire toolchain. Tidings decided the
+> first load, cached thereafter, in exchange for deleting an entire toolchain. ArticleFlux decided the
 > trade was worth it and made the Service Worker load-bearing. Decide it yourself before adopting —
 > the framework's README says the same thing.
 
@@ -153,8 +153,8 @@ server-streaming, client-streaming, bidirectional — plus deadlines, metadata a
 ships origin allowlists, pre-upgrade authorization, connection caps, keepalive with transparent
 reconnection, OpenTelemetry spans, and a native-transport mode that is 47% lighter on memory per RPC.
 
-In Tidings this is what the `connected` dot in the toolbar reports, and it is why the client and the
-server cannot disagree about a field name: **`proto/tidings/v1` is the only contract, and both ends
+In ArticleFlux this is what the `connected` dot in the toolbar reports, and it is why the client and the
+server cannot disagree about a field name: **`proto/ArticleFlux/v1` is the only contract, and both ends
 are generated from it.** Twenty-four RPCs across two services, all unary today; the tunnel is ready
 for streaming when the ranking layer needs it.
 
@@ -163,7 +163,7 @@ for streaming when the ranking layer needs it.
 ## How it is put together
 
 ```
-cmd/tidings        the binary: serve · seed · poll · version
+cmd/ArticleFlux        the binary: serve · seed · poll · version
 internal/store     ALL SQL lives here. Two pools: many readers, one writer
 internal/feed      fetch + normalise. Every fetch goes through the SSRF guard
 internal/reader    the service layer — one place that knows what "mark read" means

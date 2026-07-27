@@ -10,7 +10,7 @@ import (
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
-	pb "github.com/monstercameron/Tidings/internal/pb/tidings/v1"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
 )
 
 // The command palette: Ctrl-K (Cmd-K on a Mac).

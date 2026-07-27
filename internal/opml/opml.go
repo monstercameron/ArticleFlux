@@ -122,7 +122,7 @@ func Parse(r io.Reader) (*Document, error) {
 				out.Folders = append(out.Folders, name)
 			}
 			// Nested folders are flattened to their immediate parent's name.
-			// Tidings caps folder depth, and a two-level path is what every
+			// ArticleFlux caps folder depth, and a two-level path is what every
 			// reader shows anyway.
 			walk(o.Outlines, name)
 		}
@@ -152,7 +152,7 @@ func Write(w io.Writer, doc *Document) error {
 	var b strings.Builder
 	b.WriteString(xml.Header)
 	b.WriteString("<opml version=\"2.0\">\n  <head>\n    <title>")
-	b.WriteString(escape(orDefault(doc.Title, "Tidings")))
+	b.WriteString(escape(orDefault(doc.Title, "ArticleFlux")))
 	b.WriteString("</title>\n  </head>\n  <body>\n")
 
 	// Top-level feeds first, then folders — the order a person expects to read.

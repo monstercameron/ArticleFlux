@@ -3,8 +3,8 @@ package grpcsrv
 import (
 	"context"
 
-	pb "github.com/monstercameron/Tidings/internal/pb/tidings/v1"
-	"github.com/monstercameron/Tidings/internal/store"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // SystemServer answers "is this running, and which build am I talking to"

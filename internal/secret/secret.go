@@ -1,4 +1,4 @@
-// Package secret holds every cryptographic primitive Tidings uses, so there is
+// Package secret holds every cryptographic primitive ArticleFlux uses, so there is
 // one place to audit and one place to change.
 //
 // Four jobs, deliberately distinct:

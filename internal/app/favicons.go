@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/favicon"
-	"github.com/monstercameron/Tidings/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/favicon"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // faviconMaxAge is what the browser is told. Thirty days, matching the server's

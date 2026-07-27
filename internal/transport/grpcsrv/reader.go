@@ -14,9 +14,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/monstercameron/Tidings/internal/pb/tidings/v1"
-	"github.com/monstercameron/Tidings/internal/reader"
-	"github.com/monstercameron/Tidings/internal/store"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // ReaderServer implements pb.ReaderServiceServer.

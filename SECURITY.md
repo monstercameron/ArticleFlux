@@ -1,6 +1,6 @@
 # Security
 
-Tidings is a self-hosted, multi-tenant reader. Two properties matter more than anything else in it,
+ArticleFlux is a self-hosted, multi-tenant reader. Two properties matter more than anything else in it,
 because both fail *silently*: **one tenant must never see another's reading history**, and **nothing
 a user reads leaves the machine unless they turned that on.** Everything below is downstream of those.
 
@@ -70,7 +70,7 @@ security boundary. It gets asked about, written into the plan, and tested.
 
 ## Operating an instance
 
-- **The database is the sensitive artefact.** `tidings.db` is somebody's complete reading history —
+- **The database is the sensitive artefact.** `ArticleFlux.db` is somebody's complete reading history —
   the most personal file a feed reader has. `.gitignore` excludes `*.db`, `*.opml`, and the speech
   cache for exactly this reason. Back it up the way you would back up mail.
 - **Secrets live in `.env`**, which is ignored; `.env.example` documents the shape. API keys, TLS

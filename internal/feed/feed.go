@@ -26,11 +26,11 @@ import (
 
 	"github.com/mmcdole/gofeed"
 
-	"github.com/monstercameron/Tidings/internal/charsetdec"
-	"github.com/monstercameron/Tidings/internal/feeddate"
-	"github.com/monstercameron/Tidings/internal/netguard"
-	"github.com/monstercameron/Tidings/internal/timeutil"
-	"github.com/monstercameron/Tidings/internal/urlnorm"
+	"github.com/monstercameron/ArticleFlux/internal/charsetdec"
+	"github.com/monstercameron/ArticleFlux/internal/feeddate"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
+	"github.com/monstercameron/ArticleFlux/internal/timeutil"
+	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
 )
 
 // MaxBodyBytes bounds a feed download.
@@ -48,7 +48,7 @@ const MaxBodyBytes = 32 << 20
 
 // UserAgent identifies us. A reader that fetches anonymously is one a publisher
 // can only respond to by blocking.
-const UserAgent = "Tidings/0.1 (+https://github.com/monstercameron/Tidings)"
+const UserAgent = "ArticleFlux/0.1 (+https://github.com/monstercameron/ArticleFlux)"
 
 // Parsed is a fetched and normalised feed.
 type Parsed struct {

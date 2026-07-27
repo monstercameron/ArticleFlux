@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/idgen"
 )
 
 // IngestItem is one parsed entry ready to be written. It mirrors feed.Item

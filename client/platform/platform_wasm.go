@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// Package platform is the only package in Tidings permitted to import
+// Package platform is the only package in ArticleFlux permitted to import
 // syscall/js, and CI enforces that (A26, guard 2).
 //
 // The reason is the same one that keeps all SQL in internal/store: one place to

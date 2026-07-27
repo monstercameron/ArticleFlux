@@ -1,9 +1,9 @@
-// Command tidings is the server.
+// Command ArticleFlux is the server.
 //
-//	tidings serve      run the reader (default)
-//	tidings seed       subscribe the local account to a starter set of feeds
-//	tidings poll       fetch every due source once and exit
-//	tidings version    print the build and exit
+//	ArticleFlux serve      run the reader (default)
+//	ArticleFlux seed       subscribe the local account to a starter set of feeds
+//	ArticleFlux poll       fetch every due source once and exit
+//	ArticleFlux version    print the build and exit
 package main
 
 import (
@@ -24,8 +24,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/monstercameron/Tidings/internal/app"
-	"github.com/monstercameron/Tidings/internal/opml"
+	"github.com/monstercameron/ArticleFlux/internal/app"
+	"github.com/monstercameron/ArticleFlux/internal/opml"
 )
 
 const version = "0.1.0-dev"
@@ -42,7 +42,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "version":
-		fmt.Printf("tidings %s (%s)\n", version, commit())
+		fmt.Printf("ArticleFlux %s (%s)\n", version, commit())
 		return
 	case "serve":
 		err = serve(log, args)
@@ -58,7 +58,7 @@ func main() {
 		usage()
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "tidings: unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "ArticleFlux: unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
 	}
@@ -69,14 +69,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tidings — a self-hosted feed reader
+	fmt.Fprint(os.Stderr, `ArticleFlux — a self-hosted feed reader
 
-  tidings serve [-addr host:port] [-db path] [-web dir]
-  tidings seed  [-db path] [-feeds url,url,...]
-  tidings poll   [-db path]
-  tidings import -file feeds.opml [-db path] [-fetch]
-  tidings export [-file feeds.opml] [-db path]
-  tidings version
+  ArticleFlux serve [-addr host:port] [-db path] [-web dir]
+  ArticleFlux seed  [-db path] [-feeds url,url,...]
+  ArticleFlux poll   [-db path]
+  ArticleFlux import -file feeds.opml [-db path] [-fetch]
+  ArticleFlux export [-file feeds.opml] [-db path]
+  ArticleFlux version
 
 serve defaults to 127.0.0.1:9000.
 `)
@@ -84,7 +84,7 @@ serve defaults to 127.0.0.1:9000.
 
 // commonFlags are shared by every subcommand that touches storage.
 func commonFlags(fs *flag.FlagSet) *string {
-	return fs.String("db", "tidings.db", "path to the SQLite database")
+	return fs.String("db", "ArticleFlux.db", "path to the SQLite database")
 }
 
 func serve(log *slog.Logger, args []string) error {
@@ -97,7 +97,7 @@ func serve(log *slog.Logger, args []string) error {
 	webRoot := fs.String("web", filepath.Join("bin", "web"), "assembled web root (see ./make.ps1 wasm)")
 	poll := fs.Duration("poll", 15*time.Minute, "how often to poll feeds in the background; 0 disables")
 	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "tidings", "password for the local account, on first run only")
+	pass := fs.String("password", "ArticleFlux", "password for the local account, on first run only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func serve(log *slog.Logger, args []string) error {
 	}
 }
 
-// starterFeeds are subscribed by `tidings seed`.
+// starterFeeds are subscribed by `ArticleFlux seed`.
 //
 // Chosen to exercise the parser rather than to recommend reading: an Atom feed,
 // two RSS 2.0 feeds with content:encoded, one with no per-item guid, and one
@@ -188,7 +188,7 @@ func seed(log *slog.Logger, args []string) error {
 	dbPath := commonFlags(fs)
 	list := fs.String("feeds", "", "comma-separated feed URLs; empty uses the starter set")
 	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "tidings", "password, on first run only")
+	pass := fs.String("password", "ArticleFlux", "password, on first run only")
 	// Seeding is an operator action with explicit URLs, not user-supplied input
 	// from a tenant — but it still defaults to off. Allowing loopback and RFC1918
 	// by default would quietly weaken the SSRF guard for every future caller of
@@ -377,7 +377,7 @@ func importOPML(log *slog.Logger, args []string) error {
 	file := fs.String("file", "", "path to an OPML file (required)")
 	fetch := fs.Bool("fetch", false, "fetch every feed before returning, instead of leaving it to the poller")
 	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "tidings", "password, on first run only")
+	pass := fs.String("password", "ArticleFlux", "password, on first run only")
 	allowPrivate := fs.Bool("allow-private", false, "permit feeds on loopback/LAN addresses")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -462,7 +462,7 @@ func exportOPML(log *slog.Logger, args []string) error {
 	}
 	defer a.Close()
 
-	sc, err := a.EnsureDevUser(ctx, "cam", "tidings")
+	sc, err := a.EnsureDevUser(ctx, "cam", "ArticleFlux")
 	if err != nil {
 		return err
 	}
@@ -471,7 +471,7 @@ func exportOPML(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	doc := &opml.Document{Title: "Tidings"}
+	doc := &opml.Document{Title: "ArticleFlux"}
 	for _, f := range feeds {
 		doc.Feeds = append(doc.Feeds, opml.Feed{
 			Title: f.Title, FeedURL: f.FeedURL, SiteURL: f.SiteURL,

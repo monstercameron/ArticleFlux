@@ -1,10 +1,10 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/monstercameron/Tidings/security/advisories/new
+    url: https://github.com/monstercameron/ArticleFlux/security/advisories/new
     about: Report privately. Please do not open a public issue for anything affecting a running instance.
   - name: Read the spec first
-    url: https://github.com/monstercameron/Tidings/blob/main/plan.md
+    url: https://github.com/monstercameron/ArticleFlux/blob/main/plan.md
     about: plan.md is the spec of record — decisions, open questions, risks, schema and milestones.
   - name: GoWebComponents — the UI framework
     url: https://github.com/monstercameron/GoWebComponents

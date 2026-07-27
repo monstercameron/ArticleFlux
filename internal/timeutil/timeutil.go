@@ -1,4 +1,4 @@
-// Package timeutil holds the time rules the rest of Tidings depends on.
+// Package timeutil holds the time rules the rest of ArticleFlux depends on.
 //
 // Three of them, and each exists because getting it wrong is silent:
 //

@@ -1,4 +1,4 @@
-# Tidings — build order
+# ArticleFlux — build order
 
 *Companion to `plan.md` (rev 8). The plan is organised by **feature**; this is organised by
 **dependency** — atoms first, then composites, then systems. Nothing here should be startable before
@@ -29,7 +29,7 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 | **G1** | Tier 0 | Does `ncruces/go-sqlite3` FTS5 work in *our* build? | D2 |
 | **G2** | 3.7 | Can a repository method leak across tenants? | T1 |
 | **G3** | 5.4 | What do the three hot-query shapes actually cost at 50k × 3? | §6.5, R2 |
-| **G4** | 7.9 | Does `tidings init` produce exactly one superadmin, once? | §22.3 |
+| **G4** | 7.9 | Does `ArticleFlux init` produce exactly one superadmin, once? | §22.3 |
 | **G5** | 8.2 | How big is `app.wasm`? | R4 — this decides whether A5 stays affordable |
 
 ---
@@ -62,7 +62,7 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 ## Tier 1 — Repo skeleton
 
 - [x] **1.1** Directory skeleton per plan §5: `cmd/ internal/ client/ proto/ web/ migrations/ e2e/`
-- [x] **1.2** `go.mod` (`github.com/monstercameron/Tidings`), Go 1.26, `replace` for GWC ← D0
+- [x] **1.2** `go.mod` (`github.com/monstercameron/ArticleFlux`), Go 1.26, `replace` for GWC ← D0
 - [x] **1.3** `buf.yaml` + `buf.gen.yaml` — CashFlux's shape (remote plugins, `paths=source_relative`,
       out `internal/pb`)
 - [x] **1.4** **`make.ps1`**, not a `Makefile`: `gen build test wasm run lint migrate` (+ `tools`,
@@ -72,7 +72,7 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       kept identical so a Makefile stays cheap to add if it ever earns its place.
 - [x] **1.5** Build `gwc.exe` from the GWC checkout; pin the command in the Makefile
 - [x] **1.6** `.gitignore` — `bin/ web/bin/ *.db *.db-wal *.db-shm backups/`
-- [x] **1.7** `cmd/tidings/main.go` — `version` prints and exits; **`serve` is the default and runs
+- [x] **1.7** `cmd/ArticleFlux/main.go` — `version` prints and exits; **`serve` is the default and runs
       the boot page on :9000** so there is something to watch while the rest gets built.
       **`go build ./...` green.** Grew past the ticket on purpose: a binary that only prints a
       version gives no feedback loop, and the loop is the point of Tier 1.
@@ -410,7 +410,7 @@ without holding one. **No remote, and none is to be added.**
 
 ## Tier 2 — Pure atoms
 
-Leaf packages. No Tidings imports, no DB, no network, table-driven tests. Everything above is made of
+Leaf packages. No ArticleFlux imports, no DB, no network, table-driven tests. Everything above is made of
 these, and each one is genuinely small.
 
 - [x] **2.1 `timeutil`** — UTC helpers · **wall-clock + IANA window resolution** (quiet hours, digests,
@@ -653,8 +653,8 @@ Business logic over repositories. Still headless.
 
 ## Tier 7 — Transport and the binary
 
-- [x] **7.1** `proto/tidings/v1/` — start with `Auth`, `Feed`, `Item`, `Event`. Grow per milestone.
-      ✅ 2026-07-26 — `proto/tidings/v1/{reader,system}.proto` — ReaderService now carries feeds, items, state, search, prefs, tags, notes, and per-feed settings. Additive-only within v1, which `buf breaking` enforces in CI.
+- [x] **7.1** `proto/ArticleFlux/v1/` — start with `Auth`, `Feed`, `Item`, `Event`. Grow per milestone.
+      ✅ 2026-07-26 — `proto/ArticleFlux/v1/{reader,system}.proto` — ReaderService now carries feeds, items, state, search, prefs, tags, notes, and per-feed settings. Additive-only within v1, which `buf breaking` enforces in CI.
 
 - [x] **7.2** `buf generate` wired into `make gen`; commit `internal/pb`
       ✅ 2026-07-26 — `./make.ps1 gen` runs `buf generate`; `internal/pb` is committed.
@@ -690,19 +690,19 @@ Business logic over repositories. Still headless.
 - [x] **7.6** Static serving + `web/` layout
       ✅ 2026-07-26 — Static serving from the assembled `bin/web`, with precompressed `.gz` siblings preferred and the `application/wasm` content type `instantiateStreaming` requires.
 
-- [ ] **7.7** `cmd/tidings` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
+- [ ] **7.7** `cmd/ArticleFlux` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
       credentials, storage writable, LLM keys well-formed, IMAP reachable), graceful shutdown
 - [ ] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
       version, refusal below it. The SW-cached wasm makes this inevitable, not hypothetical. §22.10
-- [ ] **7.9 G4 · `tidings init`** — create tenant 1 + the first superadmin, or print a one-time
+- [ ] **7.9 G4 · `ArticleFlux init`** — create tenant 1 + the first superadmin, or print a one-time
       15-minute enrolment token. **The server refuses to serve while no superadmin exists.**
       *Done when: it runs once, is audited, and cannot be re-run.* §22.3
-- [ ] **7.10** `tidings admin reset-password` break-glass §7.2
+- [ ] **7.10** `ArticleFlux admin reset-password` break-glass §7.2
 - [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
       ◧ 2026-07-26 — `slog` is wired through the app and leveled, and §22.11's never-log rule is observed — the OpenAI TTS error path logs the provider message and returns a safe string, because provider errors can echo the user's article. Request-id threading is not done.
 
-> *Done when:* `tidings init` → login over the tunnel → one unary RPC → one streamed event, driven from
+> *Done when:* `ArticleFlux init` → login over the tunnel → one unary RPC → one streamed event, driven from
 > a Go test client. **That is plan M0's exit criteria, reached properly.**
 
 ---
@@ -1047,7 +1047,7 @@ leaderboard, queue depth, storage by table, LLM spend + circuit state, ring dept
 ### Unauthenticated and system — M2, M10
 
 `/login` · `/recover` (begin · redeem code · redeem token) · `/enroll/:token` (invite or first-run) ·
-`/setup` (first-run wizard after `tidings init`) · `/404` · **the version-skew screen** (client below
+`/setup` (first-run wizard after `ArticleFlux init`) · `/404` · **the version-skew screen** (client below
 minimum: purge SW cache and hard reload, §22.10) · **the offline screen** (tunnel down, mirror empty).
 
 ---
@@ -1165,7 +1165,7 @@ tested — modelling these surfaced four screens nobody had planned, marked **�
 
 | Flow | Path |
 |---|---|
-| **First run** | `tidings init` → one-time token printed → `/enroll/:token` → tenant 1 + superadmin → `/setup` wizard → OPML import or starter feeds |
+| **First run** | `ArticleFlux init` → one-time token printed → `/enroll/:token` → tenant 1 + superadmin → `/setup` wizard → OPML import or starter feeds |
 | **Onboard a tenant** | `/admin/tenants` → create → set quotas → mint invite → hand the code over **out of band** |
 | **"It feels broken"** | `/admin/health` → error leaderboard → failing source → open it → last error verbatim |
 | **Investigate a user's bug** | `/admin/users` → impersonate → **banner stays up** → exit → audit records both ends |
