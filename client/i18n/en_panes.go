@@ -90,9 +90,13 @@ func init() {
 		"unreadOnly":        "Unread only",
 		"showingUnread":     "Showing unread",
 		"markAllRead":       "Mark all read",
-		"settings":          "Settings",
-		"shortcuts":         "Keyboard shortcuts",
-		"undo":              "Undo",
+		// The slideshow's entry point, named for what it makes rather than for
+		// what it does to the window: "Fullscreen" would describe the mechanism
+		// and leave the reader to guess that the stories advance by themselves.
+		"slideshow": "Slideshow",
+		"settings":  "Settings",
+		"shortcuts": "Keyboard shortcuts",
+		"undo":      "Undo",
 
 		// Connection states. Words as well as a coloured dot, because a dot
 		// alone does not survive being colour-blind or being glanced at.
@@ -334,6 +338,7 @@ func init() {
 		"groupAnywhere": "Anywhere",
 		"groupRail":     "In the feed list",
 		"groupList":     "In the article list",
+		"groupSlides":   "In the slideshow",
 		"groupArticle":  "On an article",
 
 		"palette":     "Open the command palette",
@@ -351,6 +356,14 @@ func init() {
 		"moveAndOpen": "Move and open",
 		"nextPrev":    "Next and previous article",
 
+		// The slideshow. "Start" rather than "open", because it begins running
+		// the moment it appears — and while it runs it owns every key, which the
+		// group's five entries say by being the only five.
+		"slidesStart":  "Start the slideshow on this feed",
+		"slidesPause":  "Pause, or carry on",
+		"slidesStep":   "Previous and next story",
+		"slidesVoice":  "Turn Read to me on or off",
+		"slidesLeave":  "Leave the slideshow",
 		"focusMode":    "Read full width, or bring the columns back",
 		"openOriginal": "Open the original in a new tab",
 		"like":         "Like",

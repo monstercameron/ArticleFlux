@@ -180,8 +180,12 @@ func acquireWake() {
 		}
 		return nil
 	})
-	p.Call("then", then)
-	catchPromise(p)
+	// CHAINED, not attached to `p` separately. `p.then(f)` returns a NEW promise
+	// which rejects when p does, and a derived promise with no handler is an
+	// unhandled rejection — so catching on `p` alone still put "Wake Lock
+	// permission request denied" in the console of every browser that refuses it,
+	// which is exactly the case this whole path is written to survive quietly.
+	catchPromise(p.Call("then", then))
 }
 
 // releaseWake drops the lock if there is one. The sentinel is cleared first, so
@@ -276,6 +280,35 @@ func finite(v js.Value) float64 {
 }
 
 // --- measuring and painting one element ---------------------------------------
+
+// FocusElement moves keyboard focus onto one element, found by selector.
+//
+// FocusFirst's counterpart for a container that IS the target rather than one
+// holding it, and the slideshow needs exactly that: it takes over the keyboard,
+// so focus has to leave whatever opened it.
+//
+// **That is not a nicety, it is a correctness fix.** A `<button>` keeps focus
+// after it is clicked, and Space activates a focused button — so with focus left
+// on the control that started the slideshow, pressing Space to pause it pressed
+// that button again instead, silently restarting the mode. Occlusion does not
+// help: keyboard activation does not care what is on top.
+//
+// preventScroll, because focusing an element the browser considers off-screen
+// scrolls its nearest scrollable ancestor — which here is the reading pane
+// underneath, and the reader would come back to a list that had jumped.
+func FocusElement(selector string) {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	el := doc.Call("querySelector", selector)
+	if !el.Truthy() || !el.Get("focus").Truthy() {
+		return
+	}
+	opts := js.Global().Get("Object").New()
+	opts.Set("preventScroll", true)
+	el.Call("focus", opts)
+}
 
 // SetVar sets a CSS custom property on ONE element, found by selector.
 //

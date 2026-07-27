@@ -29,6 +29,8 @@ func KeepAwake(on bool) {}
 
 func OnAudioProgress(fn func(pos, dur float64)) Listener { return Listener{} }
 
+func FocusElement(selector string) {}
+
 func SetVar(selector, name, value string) {}
 
 // ScrollOverflow answers 0: nothing is laid out, so nothing overflows. That is

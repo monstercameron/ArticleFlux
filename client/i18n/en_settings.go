@@ -33,6 +33,26 @@ func init() {
 		"markOnOpen":       "Only when you open",
 		"bulkMarkDisclaim": "Marking everything read in bulk never counts against a feed's ranking — giving up on a backlog is not a verdict on the publisher.",
 
+		// --- the slideshow (§19)
+		//
+		// The group hint says what the mode is FOR, because that is the part
+		// nobody guesses from a name: it is not a presentation feature, it is a
+		// way of leaving the news on.
+		"slidesGroup":     "Slideshow",
+		"slidesGroupHint": "One story at a time, filling the screen, advancing by itself. Press s, or use the button beside Mark all read.",
+		"slidesPace":      "How long each story stays up",
+		// The default explains itself here, because "auto" on a chip cannot. The
+		// two numbers are the real bounds, not a rounded description of them.
+		"slidesPaceHint": "Automatic gives each story the time it takes to read — between 20 seconds and a minute, depending on its length.",
+		"slidesAuto":     "Automatic",
+		// A duration, assembled here rather than by sticking "s" on a number: the
+		// abbreviation for a second is not universal and a bare number is not a
+		// duration in any language.
+		"slidesSeconds": "{n} sec",
+		"slidesRead":    "Read to me",
+		"slidesReadHint": "The voice sets the pace instead of the clock: each story stays up until it has been read out, and the page scrolls in step with it. " +
+			"Uses the same voice and the same Keep playing behaviour as listening does.",
+
 		// --- listening
 		"voiceGroup":       "Voice",
 		"browserVoice":     "Read articles aloud",
@@ -46,6 +66,12 @@ func init() {
 		// reading" says what you get; "LLM summarisation" says what we built.
 		"digest":     "Summarise before reading",
 		"digestHint": "Turns a long article into about a minute of spoken summary instead of reading the whole thing. A second request to OpenAI, charged once per article and then cached forever.",
+		// Named for what you get. "Podcast mode" would promise a show; what this
+		// actually does is join the articles up, and saying so is both accurate
+		// and the reason someone would want it.
+		"podcast": "Join the stories up",
+		"podcastHint": "Rewrites each article as one segment of a continuous broadcast that hands over from the story before it, so a queue sounds like a programme rather than a playlist. " +
+			"Replaces the summary above when both are on. Charged once per pair of articles and then cached.",
 		// The queue is its own group because it is a different KIND of decision:
 		// the two above change what one article sounds like, this changes what
 		// happens when it ends.

@@ -29,14 +29,18 @@ func init() {
 		"cmd.mark-all":           "Mark all read",
 		"cmd.toggle-unread":      "Toggle unread only",
 		"cmd.toggle-feed-filter": "Toggle feeds with unread",
-		"cmd.listen":             "Listen to this article",
-		"cmd.read-later":         "Save this article for later",
-		"cmd.mark-unread":        "Mark this article unread",
-		"cmd.like":               "Like this article",
-		"cmd.dislike":            "Dislike this article",
-		"cmd.open-original":      "Open the original",
-		"cmd.toggle-motion":      "Reduce motion",
-		"cmd.appearance":         "Change the theme",
+		// Names the feed rather than the screen: "Start the slideshow" would leave
+		// a reader wondering which stories are in it, and the answer — the ones
+		// they are looking at — is the whole point of the entry.
+		"cmd.slide-open":    "Play this feed as a slideshow",
+		"cmd.listen":        "Listen to this article",
+		"cmd.read-later":    "Save this article for later",
+		"cmd.mark-unread":   "Mark this article unread",
+		"cmd.like":          "Like this article",
+		"cmd.dislike":       "Dislike this article",
+		"cmd.open-original": "Open the original",
+		"cmd.toggle-motion": "Reduce motion",
+		"cmd.appearance":    "Change the theme",
 		// {theme} is the theme's own translated label. The prefix is separate
 		// so "Theme: Daylight" can become "Thème : Lumière du jour" — and, more
 		// to the point, so a language that puts the qualifier last can.

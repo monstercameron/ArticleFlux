@@ -75,8 +75,13 @@ func slideshowCSS(r func(string, string) css.Rule) {
 	// The overlay. Fixed to the viewport and above everything, including the
 	// floating transport and the modal scrim — this is a mode, not a dialog, and
 	// nothing else on the screen is addressable while it runs.
+	// 70 rather than the 60 the modal scrim uses, and it has to be higher rather
+	// than equal: elements at the same z-index are stacked in document order, and
+	// this one is rendered before the palette. It is a MODE, not a dialog —
+	// nothing behind it is addressable while it runs — so a dialog appearing over
+	// it would be a control the reader cannot get back to.
 	css.Global(".slides",
-		r("position", "fixed"), r("inset", "0"), r("z-index", "60"),
+		r("position", "fixed"), r("inset", "0"), r("z-index", "70"),
 		r("display", "grid"), r("grid-template-rows", "1fr auto"),
 		r("background", "var(--bg)"),
 		r("overflow", "hidden"),
@@ -93,11 +98,20 @@ func slideshowCSS(r func(string, string) css.Rule) {
 		// What a pause settles over. Shorter and eased rather than linear,
 		// because stopping is a gesture and gliding is not.
 		css.Custom("t-catch", "calc(var(--mo) * 180ms)"),
-		// The two values Go writes on every tick. Declared with defaults so the
+		// The three values Go writes on every tick. Declared with defaults so the
 		// first frame — before any tick has run — is a slide at rest rather than
-		// one whose transform is `translateY(calc(var(--shift) * var(--fill)))`
+		// one whose transform is `translateY(calc(var(--shift) * var(--scan)))`
 		// with both terms invalid, which drops the declaration entirely.
+		//
+		// --fill and --scan are two numbers rather than one because they measure
+		// different things. --fill is how far through the SLIDE we are and drives
+		// the rule; --scan is how far through the SCROLL, which does not start
+		// until the title card has gone and finishes before the slide leaves, so
+		// the last paragraph is still on screen during the cross-fade. Deriving
+		// one from the other in CSS would need two clamps and a division; Go does
+		// it in slideScan, where it can be read and tested.
 		css.Custom("fill", "0"),
+		css.Custom("scan", "0"),
 		css.Custom("shift", "0px"),
 		// The gutter. One value, used by the slug, the headline and the body, so
 		// the three share a left edge — the single strongest thing holding this
@@ -112,6 +126,13 @@ func slideshowCSS(r func(string, string) css.Rule) {
 	css.Global(".slides",
 		r("background-image", `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E")`),
 	)
+
+	// The surface takes focus when it opens (see platform.FocusElement) and must
+	// not draw a ring the width of the screen for it. This is not the usual
+	// "designers dislike outlines" removal: the element is a region rather than a
+	// control, nothing about it is activated by pressing Enter, and every control
+	// inside it keeps its own ring.
+	css.Global(".slides:focus, .slides:focus-visible", r("outline", "none"))
 
 	slidesEnter(r)
 	slideWash(r)
@@ -212,6 +233,16 @@ func slideCard(r func(string, string) css.Rule) {
 		r("display", "grid"),
 		r("grid-template-rows", "1.55fr auto minmax(0, .95fr)"),
 		r("min-height", "0"), r("overflow", "hidden"),
+		// The margin the top track stops providing.
+		//
+		// While the card is up, the 1.55fr above it is all the air anyone could
+		// want. When the story opens that track goes to ZERO — that is the whole
+		// gesture — and without this the slug line ends up ten pixels from the
+		// edge of the screen, which reads as the layout having broken rather than
+		// as a header. Padding rather than a minimum track height because it must
+		// not interpolate: the rise should end against a fixed margin, not slow
+		// down into one.
+		r("padding-block", "clamp(26px, 5vh, 66px) 0"),
 		r("transition", "grid-template-rows var(--t-slide) var(--e-io)"),
 		// The whole slide arrives and leaves as one thing. The exit is a drift
 		// UPWARD — the same direction the card travelled — so a story leaves the
@@ -270,10 +301,11 @@ func slideCard(r func(string, string) css.Rule) {
 		r("color", "var(--ink, var(--c, var(--cream)))"),
 		r("font-weight", "500"),
 	)
-	css.Global(".slide-dot",
-		r("width", "10px"), r("height", "10px"), r("border-radius", "50%"),
-		r("background", "var(--c, var(--mute))"), r("flex", "none"),
-	)
+	// .slide-dot's own geometry is declared with the other two source marks in
+	// sheet.go, because it is the same three-element shape and the wrapper's
+	// sizing is the part that silently breaks. Only its fallback colour is here:
+	// sourceMark writes the hue inline, and this is what shows when it cannot.
+	css.Global(".slide-dot", r("background", "var(--c, var(--mute))"))
 	// The running-order counter goes to the far end of the line, where a page
 	// number lives, rather than sitting in the run of the slug.
 	css.Global(".slide-order",
@@ -367,7 +399,7 @@ func slideStage(r func(string, string) css.Rule) {
 	css.Global(".slides[data-phase='read'] .slide-stage", r("opacity", "1"))
 
 	css.Global(".slide-flow",
-		r("transform", "translateY(calc(var(--shift, 0px) * var(--fill, 0)))"),
+		r("transform", "translateY(calc(var(--shift, 0px) * var(--scan, 0)))"),
 		// Linear, and linear is the whole point: an eased scroll accelerates and
 		// decelerates between every pair of ticks, which reads as the text being
 		// tugged rather than travelling.
@@ -388,7 +420,15 @@ func slideStage(r func(string, string) css.Rule) {
 		r("line-height", "1.72"),
 		r("color", "var(--read)"),
 		r("max-width", "62ch"),
-		r("padding-block", "clamp(18px, 2.2vw, 40px) 22vh"),
+		// The top figure is the gap between the headline and the first line of
+		// prose, and it wants to be generous: the header and the body are the same
+		// column of text at two sizes, and too little space between them reads as
+		// one run-on rather than as a title and a story.
+		//
+		// The bottom is 22vh of nothing, which is not a mistake. It is what lets
+		// the last paragraph scroll up to a comfortable READING position rather
+		// than stopping with its final line pinned to the bottom edge.
+		r("padding-block", "clamp(26px, 3vw, 52px) 22vh"),
 		r("overflow-wrap", "anywhere"),
 	)
 	// The lede gets the same promotion it gets in the reader, one notch up and

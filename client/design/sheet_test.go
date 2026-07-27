@@ -125,7 +125,7 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// second: how far this article has to travel, and how far through it we
 		// are. Per-element state, like --i and --cursor, and the one pair here
 		// that would be actively wrong for a theme to be able to reach.
-		"--shift": true, "--fill": true,
+		"--shift": true, "--fill": true, "--scan": true,
 	}
 
 	sheet := sheetText(t)

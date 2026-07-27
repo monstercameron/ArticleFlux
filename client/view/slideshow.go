@@ -5,6 +5,7 @@ package view
 import (
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
@@ -97,6 +98,30 @@ const (
 // slideAuto is the stored value that means "work it out from the story".
 const slideAuto = "auto"
 
+// Where the slideshow's two preferences live.
+//
+// Server-side like every other preference here, and that is worth stating for
+// this one in particular: someone who set a thirty-second pace on the laptop in
+// the kitchen has decided how they like the news, not how this browser behaves.
+const (
+	slidesDwellPref = "slides.dwell"
+	slidesAudioPref = "slides.readToMe"
+)
+
+// dwellPrefFrom reads the stored pace, defaulting to auto.
+//
+// A stored value that is not one of the offered choices is kept rather than
+// discarded — it is a number of seconds and dwellFor will honour it — because a
+// preference set through the API or hand-edited is still a preference, and
+// silently replacing it with the default is the behaviour that makes people
+// think a setting did not save.
+func dwellPrefFrom(prefs map[string]string) string {
+	if v := strings.TrimSpace(prefs[slidesDwellPref]); v != "" {
+		return v
+	}
+	return slideAuto
+}
+
 // slideDwellChoices are what the settings screen offers, in the order it offers
 // them. Strings because that is what a preference is; "auto" is not a number and
 // making the others numbers would mean two types for one setting.
@@ -179,14 +204,20 @@ func slideFill(elapsed, dwell time.Duration) float64 {
 // in CSS keeps both ends adjustable by one number each and keeps the stylesheet
 // to one multiplication.
 //
-// A dwell shorter than the card and the tail together cannot scroll at all, and
-// says so by answering 0 rather than by dividing by a negative.
-func slideScan(elapsed, dwell time.Duration) float64 {
-	span := dwell - slideCardHold - slideExit - slideSettle
+// `opened` is when the story actually appeared, which is usually slideCardHold
+// and is not always: a body that arrives late opens late. Passing it rather than
+// assuming it is what stops a slow fetch from dropping the reader into the
+// middle of the first paragraph — the scroll starts from where the text started,
+// not from where the clock had got to.
+//
+// A dwell too short to hold the card and the tail cannot scroll at all, and says
+// so by answering 0 rather than by dividing by a negative.
+func slideScan(elapsed, opened, dwell time.Duration) float64 {
+	span := slideScanSpan(dwell, opened)
 	if span <= 0 {
 		return 0
 	}
-	return clamp01(float64(elapsed-slideCardHold) / float64(span))
+	return clamp01(float64(elapsed-opened) / float64(span))
 }
 
 // slideShift is how far the story travels, in CSS pixels, as a NEGATIVE offset
@@ -205,11 +236,22 @@ func slideShift(overflow float64, scanSecs float64) float64 {
 	return -math.Min(overflow, scanSecs*slideScrollRate)
 }
 
-// slideScanSeconds is how long the scroll has in silent mode. Named rather than
-// inlined because slideShift and slideScan have to agree about it, and two
-// copies of `dwell - card - exit - settle` is how they would stop agreeing.
-func slideScanSeconds(dwell time.Duration) float64 {
-	span := dwell - slideCardHold - slideExit - slideSettle
+// slideScanSpan is how long the scroll has: the dwell, less the title card at
+// the front and the settle and cross-fade at the back.
+//
+// One function rather than the same subtraction in three places, because
+// slideScan and slideShift have to agree about it exactly — the first decides
+// how far through the travel we are and the second decides how long the travel
+// is, and a disagreement between them is a story that either stops short or runs
+// off the end.
+func slideScanSpan(dwell, opened time.Duration) time.Duration {
+	return dwell - opened - slideExit - slideSettle
+}
+
+// slideScanSeconds is the same span in the units slideShift wants. Zero when
+// there is no room to scroll at all.
+func slideScanSeconds(dwell, opened time.Duration) float64 {
+	span := slideScanSpan(dwell, opened)
 	if span <= 0 {
 		return 0
 	}
@@ -227,17 +269,48 @@ func clamp01(v float64) float64 {
 	}
 }
 
+// speechFrom names the story a broadcast segment hands over from.
+//
+// The listening ticket is minted by GetItem, long before anyone knows what the
+// reader will play this article AFTER — so the predecessor cannot be inside the
+// sealed URL and travels beside it instead. The server resolves it through the
+// same scope as the item being spoken, so this is a hint about ORDER rather than
+// a credential (see internal/app/speech.go, prevItemParam).
+//
+// `&` unconditionally, because a listening ticket always already carries `?t=`.
+// That is worth stating rather than assuming: this would be silently wrong for a
+// bare path, and the failure — a URL with two query strings — 404s rather than
+// falling back, so it would look like the voice breaking.
+//
+// Returns the URL untouched unless broadcast mode is on and there is something
+// to hand over from. Untouched matters: the browser caches audio by URL, so
+// appending an empty or pointless parameter would re-download every segment a
+// reader has already heard.
+func speechFrom(src, prevID string, podcast bool) string {
+	if !podcast || src == "" || prevID == "" {
+		return src
+	}
+	return src + "&p=" + prevID
+}
+
 // --- the surface ---------------------------------------------------------------
 
 // The slideshow's own data-action ids. Declared as constants because each is
 // written in three places — the button, the click dispatcher and the keyboard
 // map — and a typo in any one of them is a control that silently does nothing.
 const (
+	// The way IN, which lives in the list header rather than in the slideshow —
+	// it is an action on the feed you are looking at, and that is where the other
+	// actions on the feed are.
+	actSlideOpen   = "slide-open"
 	actSlideLeave  = "slide-leave"
 	actSlidePause  = "slide-pause"
 	actSlideNext   = "slide-next"
 	actSlidePrev   = "slide-prev"
 	actSlideListen = "slide-listen"
+	// The pace, from the settings screen. Carries its value in data-value like
+	// every other segmented control here.
+	actSlideDwell = "slide-dwell"
 )
 
 // The transport glyphs. ‹ and › rather than ◀ and ▶, because ▶ is already the
@@ -291,6 +364,11 @@ func slideshow(tr i18n.Runtime, p slideProps) ui.Node {
 				hue = h
 			}
 		}
+		// tabindex -1 makes the surface focusable without putting it in the Tab
+		// order, the same trick the reading pane uses. Focus has to be able to
+		// LEAVE whatever opened the mode — see platform.FocusElement for the bug
+		// that comes of it not doing so.
+		hue["tabindex"] = "-1"
 		return html.Div(html.Props{
 			Class: "slides",
 			Role:  "region",
@@ -309,12 +387,15 @@ func slideshow(tr i18n.Runtime, p slideProps) ui.Node {
 			html.Div(html.Props{Class: "slide-vignette",
 				Aria: map[string]string{"hidden": "true"}}),
 			slideBody(tr, p),
-			// The rule is INSIDE the surface rather than inside the slide, because
-			// it is the one element that must not be replaced between stories: it
-			// is the playhead, and remounting it would make it jump back to zero
-			// and re-glide from there at every seam.
+			// The rule's TRACK is outside the slide, so the bottom edge of the
+			// picture does not blink at every seam. Its FILL is keyed on the
+			// story, and that is load-bearing rather than tidy: the fill carries a
+			// 420ms transition, so an element that survived the seam would glide
+			// visibly BACKWARDS from full to empty as the next story reset it.
+			// Keyed, it is a new element that starts at zero, which is what a
+			// playhead reaching the end of one track and starting another does.
 			html.Div(html.Props{Class: "slide-rule", Aria: map[string]string{"hidden": "true"}},
-				html.I(html.Props{})),
+				html.I(html.Props{Key: "fill-" + currentID(p.it)})),
 			slideHud(tr, p),
 		)
 	})

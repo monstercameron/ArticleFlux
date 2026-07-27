@@ -1430,6 +1430,13 @@ func nowPlayingCSS(r func(string, string) css.Rule) {
 	for _, m := range []struct{ cls, size, radius string }{
 		{"item-mark", "13px", "3px"},
 		{"article-dot", "16px", "4px"},
+		// The slideshow's slug line (§19). Here rather than in
+		// design/slideshow.go despite belonging to that surface, because THIS is
+		// the shape: sourceMark emits a three-element mark whose wrapper needs
+		// display and size or the favicon collapses to nothing, and a second copy
+		// of that fact is a second place for it to be got wrong. The comment
+		// above already says "one shape"; this is the third size.
+		{"slide-dot", "12px", "3px"},
 	} {
 		css.Global("."+m.cls,
 			r("width", m.size), r("height", m.size),
@@ -2029,6 +2036,15 @@ func mobile(r func(string, string) css.Rule) {
 	css.Global(".set-counts",
 		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
 		r("padding", "10px 0 2px"),
+	)
+	// A row of chips sitting in a setting's VALUE column, where every other row
+	// holds one control. Wrapping in reverse so that when the column is too
+	// narrow the options break onto a second line still aligned to the right,
+	// which keeps the row reading as one control rather than as a paragraph of
+	// buttons.
+	css.Global(".set-picks",
+		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
+		r("justify-content", "flex-end"),
 	)
 	css.Global(".set-note",
 		r("margin-top", "12px"), r("max-width", "62ch"),

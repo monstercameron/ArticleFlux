@@ -89,8 +89,19 @@ func init() {
 		"noSmartVoice": "The Smart+ voice isn't available — this server has no OpenAI key. Reading with the browser's voice instead.",
 		"digestOn":     "Summarising first — articles are sent to OpenAI to be condensed, then read aloud.",
 		"autoplayOn":   "Keep playing on — each article will be marked read and the next one started.",
+		// Says where the money goes and what changes about the listening, in that
+		// order, like the two switches above it.
+		"podcastOn": "Broadcast mode on — each article is rewritten as one segment of a continuous programme, which sends it to OpenAI.",
 		// Not an error. Reaching the end of the queue is the queue working.
 		"queueFinished": "That's the end of the list.",
+
+		// --- the slideshow (§19)
+		//
+		// Said rather than shown as a disabled control: the slideshow chip is
+		// absent when there is nothing to show, so the only way to reach this is
+		// the keyboard, and a key that does nothing silently is a key people
+		// decide is broken.
+		"slidesEmpty": "Nothing to show yet — this feed has no articles loaded.",
 
 		// --- the fatal overlay, when the socket will not come back
 		"fatalTitle": "ArticleFlux can't reach its server",
