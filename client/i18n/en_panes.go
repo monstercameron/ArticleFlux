@@ -131,18 +131,39 @@ func init() {
 		// The empty states. Each names the situation and then says what to do
 		// about it — the second line is the point, and a translation that drops
 		// it turns direction back into a shrug.
-		"emptySearch":         "Nothing matched",
-		"emptySearchHint":     "Try fewer words, or clear the search box.",
-		"emptyUnread":         "All caught up",
-		"emptyUnreadHint":     "Press u to show everything again.",
-		"emptyLater":          "Nothing saved for later",
-		"emptyLaterHint":      "Press t on an article to put it here.",
-		"emptyLiked":          "Nothing liked yet",
-		"emptyLikedHint":      "Press l on an article, or use ▲ Like.",
-		"emptyDisliked":       "Nothing disliked yet",
-		"emptyDislikedHint":   "Press d on an article you'd rather not have read.",
-		"emptyNoArticles":     "No articles yet",
-		"emptyNoArticlesHint": "Add a feed URL in the bar above, then hit Refresh.",
+		"emptySearch":       "Nothing matched",
+		"emptySearchHint":   "Try fewer words, or clear the search box.",
+		"emptyUnread":       "All caught up",
+		"emptyUnreadHint":   "Press u to show everything again.",
+		"emptyLater":        "Nothing saved for later",
+		"emptyLaterHint":    "Press t on an article to put it here.",
+		"emptyLiked":        "Nothing liked yet",
+		"emptyLikedHint":    "Press l on an article, or use ▲ Like.",
+		"emptyDisliked":     "Nothing disliked yet",
+		"emptyDislikedHint": "Press d on an article you'd rather not have read.",
+		"emptyNoArticles":   "No articles yet",
+		// The pinned URL box this used to point at is gone — the chosen design has
+		// no top bar at all (see railPane's head comment in panes.go). Adding a
+		// feed now opens a dialog from the button at the foot of the rail, so the
+		// hint sends the reader there instead of to a control that no longer exists.
+		"emptyNoArticlesHint": "Add a feed — the button sits at the bottom of the sidebar.",
+		// My Feed empty is its own case, and the hint is the reason why: the other
+		// empty lists are empty because of a filter the reader chose, so the direction
+		// is "undo that". This one is empty because the ranking has not run yet or has
+		// been worked through — nothing is wrong, and nothing needs undoing. Saying
+		// "nothing here" without that would read as a broken feature on a new account.
+		"emptyMyFeed":     "Nothing ranked yet",
+		"emptyMyFeedHint": "New items are ranked as they arrive. Read a few and this fills in.",
+		// Notes, a tag, and a category are three more real reasons a list can be
+		// empty, and each got silently routed to the generic "no articles at all"
+		// default until now — advice to add a feed on a stream that is about
+		// writing, or a scope that is about filing, fits none of them.
+		"emptyNotes":        "No notes yet",
+		"emptyNotesHint":    "Open Note under an article and write one — it shows up here.",
+		"emptyTag":          "Nothing tagged here yet",
+		"emptyTagHint":      "Add this tag to a feed from an article's note panel.",
+		"emptyCategory":     "Nothing filed here yet",
+		"emptyCategoryHint": "Move a feed into this category from its settings ⚙.",
 
 		// Row furniture.
 		"ageNew":   "new",

@@ -1109,7 +1109,20 @@ func SetScrollTop(selector string, top float64) {
 //
 // Two nested frames for the same reason as KeepScrollAnchored: the element being
 // scrolled to may not exist yet when the caller asks.
-func ScrollChildToTop(containerSelector, childSelector string, smooth bool) {
+// ScrollChildToTop brings a child to the top of its scrolling container.
+//
+// `done` fires when the travel has ENDED — not when the scroll was issued, and
+// not when the child arrived, because it may never arrive. A container scrolled
+// to its maximum cannot bring its last child to the top, so a caller waiting for
+// "the target is now at the top" waits forever, and any state it armed for the
+// duration of the trip stays armed for the rest of the session. That was a real
+// bug (8b.52): the reading pane's topmost-article tracking is gated on exactly
+// that signal, so after the first click on a last article the title, the
+// highlighted row and the saved reading position all stopped following a scroll.
+//
+// So this reports the end of the MOVEMENT, which always happens, rather than the
+// achievement of the goal, which does not. `done` may be nil.
+func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done func()) {
 	// Polled across frames rather than assumed after a fixed number of them.
 	//
 	// The child does not exist until GWC has committed the render, and how many
@@ -1143,13 +1156,66 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool) {
 				opts.Set("top", child.Get("offsetTop"))
 				opts.Set("behavior", "smooth")
 				el.Call("scrollTo", opts)
+				whenScrollSettles(el, done)
 				return nil
 			}
 			el.Set("scrollTop", child.Get("offsetTop"))
+			// Instant: the position is final the moment it is assigned, so there
+			// is nothing to wait for.
+			if done != nil {
+				done()
+			}
 			return nil
 		}
 		if tries >= maxFrames {
 			frame.Release()
+			// The child never appeared. The travel is over all the same — it
+			// never started — and a caller that armed something for the duration
+			// has to be released, or a mistyped selector becomes a permanently
+			// stuck UI rather than a scroll that did not happen.
+			if done != nil {
+				done()
+			}
+			return nil
+		}
+		js.Global().Call("requestAnimationFrame", frame)
+		return nil
+	})
+	js.Global().Call("requestAnimationFrame", frame)
+}
+
+// whenScrollSettles calls fn once a smooth scroll has stopped moving.
+//
+// Polled rather than listened for: `scrollend` is not available everywhere this
+// runs, and the alternative — a fixed delay matched to the browser's animation —
+// is a guess that is wrong on a slow machine in the one direction that matters.
+// Two consecutive frames at the same offset is the definition of stopped.
+//
+// Capped, because a scroll can be interrupted by another one and then this would
+// watch a position that keeps moving for as long as the reader keeps scrolling.
+// Reaching the cap still calls fn: the caller is waiting to be released, and a
+// release that is late is survivable where one that never comes is not.
+func whenScrollSettles(el js.Value, fn func()) {
+	if fn == nil {
+		return
+	}
+	const maxFrames = 90 // ~1.5s at 60fps, well past any smooth scroll
+	last := -1.0
+	same := 0
+	tries := 0
+	var frame js.Func
+	frame = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		tries++
+		now := el.Get("scrollTop").Float()
+		if now == last {
+			same++
+		} else {
+			same = 0
+			last = now
+		}
+		if same >= 2 || tries >= maxFrames {
+			frame.Release()
+			fn()
 			return nil
 		}
 		js.Global().Call("requestAnimationFrame", frame)

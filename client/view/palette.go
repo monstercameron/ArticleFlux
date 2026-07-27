@@ -129,6 +129,7 @@ func themeCommands(tr i18n.Runtime) []paletteEntry {
 // palette does not teach a second mental model of the same app.
 func paletteStreams(tr i18n.Runtime) []paletteEntry {
 	return []paletteEntry{
+		{Kind: paletteStream, ID: streamMyFeed, Label: tr.T("stream", "myFeed")},
 		{Kind: paletteStream, ID: streamAll, Label: tr.T("stream", "all")},
 		{Kind: paletteStream, ID: streamUnread, Label: tr.T("stream", "unread")},
 		{Kind: paletteStream, ID: streamLater, Label: tr.T("stream", "later")},

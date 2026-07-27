@@ -262,6 +262,30 @@ type actions struct {
 	focusArticle func(id string)
 	readArticle  func(id string)
 
+	// navStep answers "what does j/k, or the list arrows, open next" — the
+	// item `delta` positions from whichever one is current in the loaded list.
+	//
+	// It has to be read through here rather than as `items.Get()` /
+	// `current.Get()` inline in the keyboard listener below: that listener is
+	// registered ONCE, in a fixed-deps UseLayoutEffect (see its own comment
+	// for why it has to be a layout effect at all), so a ui.State read inside
+	// its closure returns the value as of the render that MOUNTED it, not the
+	// render that is live when a key is actually pressed — the same hazard
+	// `pageLanded`, `fill`, `speakSeen` and the signals `tracker` above are
+	// all routed around for the identical reason (see each of their
+	// comments, and plan.md §20.10). Reached through this Ref, `navStep`
+	// closes over whichever render's `items`/`current` is newest, because
+	// this field is reassigned fresh on every render (see its assignment
+	// next to advance/retreat).
+	//
+	// This was the actual bug behind "j not advancing on the second press":
+	// idx was computed from the article that was current when the document
+	// listener first mounted, forever — so the second j recomputed the same
+	// idx as the first and reopened the same article, and k, computed
+	// against that same frozen article, opened whatever sat next to IT
+	// rather than next to what was on screen.
+	navStep func(delta int) *pb.Item
+
 	// fill loads whatever the reader has scrolled the item list to.
 	//
 	// It lives on this struct for the same reason everything else here does: the
@@ -675,6 +699,23 @@ func Reader(p readerProps) ui.Node {
 	// saved place walked backwards by one article on every boot, marking an
 	// article read each time it did.
 	expectFocus := ui.UseRef("")
+	// releaseFocus disarms the guard when the travel ENDS, however it ended.
+	//
+	// The guard used to be disarmed only by its target reporting as topmost, and
+	// that report is not guaranteed to happen: a container scrolled to its
+	// maximum cannot bring its LAST child to the top, so opening the last article
+	// left the guard armed for the rest of the session. Every scroll after that
+	// was ignored — the title, the highlighted row and the saved reading position
+	// all stopped following the reader, and A28's rule was in force for exactly
+	// one article at a time (8b.52).
+	//
+	// A scroll always stops. That is the signal, and `ScrollChildToTop` reports
+	// it. Anything the handler sees after the movement has ended is the reader's
+	// own scrolling, which is precisely what the guard was never meant to hide.
+	releaseFocus := func() {
+		println("PROBE releaseFocus fired")
+		ui.PostAsync(func() { expectFocus.Set("") })
+	}
 
 	// skipPast holds the articles a JUMP scrolled over, which the reader did not.
 	//
@@ -925,14 +966,27 @@ func Reader(p readerProps) ui.Node {
 	// loadFolders refreshes the categories. Called on boot and after anything
 	// that changes the taxonomy — never on a navigation, because categories do
 	// not change when you click a feed.
+	//
+	// foldersGen is the same discipline as feedsGen below: a re-file (create a
+	// category, then subscribe with its id) fires its own loadFolders(), and
+	// there is nothing stopping an EARLIER call — boot's, or a reconnect's — from
+	// answering later and overwriting the just-created category with a list that
+	// does not have it yet. Only the most recently issued request's answer is
+	// allowed to land.
+	foldersGen := ui.UseRef(0)
 	loadFolders := func() {
 		c := client.Get()
 		if c == nil {
 			return
 		}
+		gen := foldersGen.Get() + 1
+		foldersGen.Set(gen)
 		go func() {
 			res, err := c.ListFolders(context.Background())
 			ui.PostAsync(func() {
+				if foldersGen.Get() != gen {
+					return
+				}
 				if err == nil {
 					folders.Set(res)
 				}
@@ -940,18 +994,37 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	// feedsGen guards against exactly the race that hit mark-all-read: it fires
+	// its OWN loadFeeds() right after a bulk write, but boot's initial loadFeeds()
+	// call (started when the connection first came up, and NOT waited on by
+	// anything the reader can see) may still be in flight. Two requests racing
+	// with no ordering guarantee over the tunnel means the loaded-first one can
+	// simply ANSWER last — and a bare `feeds.Set` from that stale reply overwrites
+	// the freshly-zeroed counts with the numbers from before the mark. The mutation
+	// had genuinely committed; the sidebar just repainted an older answer over it.
+	// Same discipline as `loadGen` below for the item list: only the response to
+	// the MOST RECENT request is allowed to land.
+	feedsGen := ui.UseRef(0)
 	loadFeeds := func() {
 		c := client.Get()
 		if c == nil {
 			return
 		}
 		feedsLoading.Set(true)
+		gen := feedsGen.Get() + 1
+		feedsGen.Set(gen)
 		go func() {
 			// The rail matters more than the list during an outage: a reader who
 			// can still see their feeds knows the app is working and one thing
 			// is missing, where an empty rail reads as data loss.
 			res, _, err := c.ListFeedsCached(context.Background())
 			ui.PostAsync(func() {
+				// Superseded by a request started after this one — whatever it
+				// answers with is older news than what that later call will
+				// bring back, so it is dropped rather than applied.
+				if feedsGen.Get() != gen {
+					return
+				}
 				feedsLoading.Set(false)
 				if err != nil {
 					notice.Set(tr.T("reader", "errLoadFeeds", i18n.Args{"err": err.Error()}))
@@ -1460,7 +1533,7 @@ func Reader(p readerProps) ui.Node {
 			}
 			delete(skipPast.Get(), it.GetId())
 			platform.ScrollChildToTop(".pane-article",
-				`[data-article-id="`+it.GetId()+`"]`, true)
+				`[data-article-id="`+it.GetId()+`"]`, true, releaseFocus)
 			if focus {
 				markRead(it)
 			}
@@ -1512,7 +1585,7 @@ func Reader(p readerProps) ui.Node {
 		// the previous story. Instantly, not smoothly: there is nothing to
 		// animate between two unrelated documents.
 		platform.ScrollChildToTop(".pane-article",
-			`[data-article-id="`+it.GetId()+`"]`, false)
+			`[data-article-id="`+it.GetId()+`"]`, false, releaseFocus)
 
 		for _, s := range seed {
 			fetchBody(s)
@@ -1645,6 +1718,24 @@ func Reader(p readerProps) ui.Node {
 		}
 		go func() {
 			res, err := c.Refresh(context.Background(), only)
+
+			// Same discipline as markAllRead: the sidebar counts are fetched
+			// HERE, in this same goroutine, before the single PostAsync below —
+			// not via loadFeeds(), which spawns its OWN goroutine and PostAsyncs
+			// a second time, later, on its own response. That second, nested
+			// PostAsync is the one that never painted: this handler's own
+			// PostAsync had already run to completion (which is what got the
+			// "Checked N feeds" banner on screen), leaving the rail's unread
+			// counts frozen at their pre-refresh values indefinitely.
+			var feedList []*pb.Feed
+			var total int32
+			okFeeds := false
+			if err == nil {
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				busy.Set("")
 				// Offline is not a failure of the refresh, it is a reason it
@@ -1673,7 +1764,12 @@ func Reader(p readerProps) ui.Node {
 					msg += tr.T("reader", "refreshJoin") + tr.T("reader", "refreshFailed", i18n.Count(len(e)))
 				}
 				notice.Set(msg)
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -1731,6 +1827,37 @@ func Reader(p readerProps) ui.Node {
 				folderID = f.GetId()
 			}
 			res, err := c.Subscribe(context.Background(), url, title, folderID)
+
+			// Same discipline as markAllRead (~line 1816): folders/feeds are
+			// fetched HERE, in this same goroutine, right after the subscribe
+			// and before the single PostAsync below — not via
+			// loadFolders()/loadFeeds(), which each spawn their OWN goroutine
+			// that PostAsyncs a second time, later, on its own response. That
+			// second, nested PostAsync is the one that never painted: this
+			// handler's own PostAsync had already run to completion by the time
+			// it landed, so the rail kept its pre-subscribe contents — a feed
+			// filed under a brand-new category silently never showing it, with
+			// nothing wrong in the data itself, only in when the reader ever
+			// saw it. Fetching both up front and applying everything in one
+			// PostAsync sidesteps that gap rather than explaining it away.
+			var folderList []*pb.Folder
+			var feedList []*pb.Feed
+			var total int32
+			okFolders, okFeeds := false, false
+			if !errors.Is(err, data.ErrOffline) {
+				// A category created a moment ago survives a failed subscribe,
+				// so it is pulled in on every non-offline outcome: without this
+				// a retry would name it again and the chips would not show it.
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+				if err == nil {
+					if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+						feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+					}
+				}
+			}
+
 			ui.PostAsync(func() {
 				addBusy.Set(false)
 				// Refused rather than queued, and for a stronger reason than
@@ -1741,12 +1868,18 @@ func Reader(p readerProps) ui.Node {
 					addErr.Set(tr.T("reader", "offlineSubscribe"))
 					return
 				}
+				// Bumping the generation here too, not just inside
+				// loadFolders(): an EARLIER loadFolders() dispatched before this
+				// subscribe (boot's, a reconnect's) can still be in flight, and
+				// its answer landing after this one would be the exact same
+				// staleness this whole approach exists to avoid — just arriving
+				// from the other direction.
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
 				if err != nil {
 					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": err.Error()}))
-					// A category created a moment ago survives the failed
-					// subscribe, so it is pulled in now: without this the retry
-					// would name it again and the chips would not show it.
-					loadFolders()
 					// The address is not a feed. That is not the end of the
 					// answer — most addresses people paste are pages, and the
 					// free rungs of the ladder find the feed for four sites in
@@ -1767,8 +1900,12 @@ func Reader(p readerProps) ui.Node {
 				} else {
 					notice.Set(tr.T("reader", "addedFeed", i18n.Args{"feed": res.GetFeed().GetTitle()}))
 				}
-				loadFolders()
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -1783,6 +1920,33 @@ func Reader(p readerProps) ui.Node {
 		}
 		go func() {
 			n, undo, err := c.MarkAllRead(context.Background(), sel.Get().SourceID)
+			// The refreshed sidebar is fetched HERE, in the same goroutine, right
+			// after the mark and before the single PostAsync below — not by
+			// calling loadFolders()/loadFeeds() from inside that PostAsync.
+			//
+			// Those two each spawn their OWN goroutine that calls PostAsync a
+			// second time, later, on its own response. That second, nested
+			// PostAsync is the one that never painted: this handler's own
+			// PostAsync had already run to completion (which is what got the
+			// "Marked N read" banner on screen), and the render it produced
+			// captured `feeds`/`totalUnread` as they stood BEFORE the nested
+			// call's response could land — so the rail kept the pre-mark counts
+			// indefinitely, with nothing wrong in the numbers themselves, only
+			// in when the reader ever saw them. Fetching both up front and
+			// applying everything in the one PostAsync this handler already
+			// makes sidesteps that gap rather than explaining it away.
+			var folderList []*pb.Folder
+			var feedList []*pb.Feed
+			var total int32
+			okFolders, okFeeds := false, false
+			if err == nil {
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+				if res, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = res.GetFeeds(), res.GetTotalUnread(), true
+				}
+			}
 			ui.PostAsync(func() {
 				// The one mutation that is deliberately NOT queued: each call
 				// mints a fresh undo batch, so replaying it would leave two and
@@ -1811,7 +1975,27 @@ func Reader(p readerProps) ui.Node {
 				// happened twice in this repository's own testing.
 				undoToken.Set(undo)
 				notice.Set(tr.T("reader", "markedRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
-				loadFeeds()
+				// Same trio subscribeURL uses (~line 1770): the categories rail
+				// derives its aggregate from `folders` as well as `feeds`. Applied
+				// directly from what was fetched above, in this same PostAsync,
+				// rather than through loadFolders()/loadFeeds() — see the comment
+				// by the fetch.
+				// Bumping the generations here too, not just inside
+				// loadFolders()/loadFeeds(): an EARLIER loadFeeds() dispatched
+				// before the mark (boot's, a reconnect's) can still be in flight,
+				// and its answer landing after this one would be the exact same
+				// staleness this whole approach exists to avoid — just arriving
+				// from the other direction.
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -2395,6 +2579,14 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 
+	// navStep is assigned fresh every render (like advance and retreat above
+	// it), so whichever render's closure the keyboard listener calls through
+	// act.Get() always reads THIS render's items/current, never a mount-time
+	// snapshot of them.
+	act.Get().navStep = func(delta int) *pb.Item {
+		return navItem(items.Get(), current.Get(), delta)
+	}
+
 	// focusArticle is called by the scroll handler when a different article
 	// reaches the top of the viewport. Reaching it IS reading it, so it marks
 	// read — which is what makes "scroll through everything and it's all read"
@@ -2429,6 +2621,7 @@ func Reader(p readerProps) ui.Node {
 	act.Get().focusArticle = func(id string) {
 		// Still travelling to a deliberate target: anything else the scroll passes
 		// over on the way is not something the reader chose to read.
+		println("PROBE topmost:", id, "want:", expectFocus.Get())
 		if want := expectFocus.Get(); want != "" {
 			if id != want {
 				return
@@ -2624,12 +2817,38 @@ func Reader(p readerProps) ui.Node {
 		tagDrafts.Set(withEntry(tagDrafts.Get(), src, ""))
 		go func() {
 			err := c.SetFeedTag(context.Background(), src, name, true)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadTags(), whose own nested PostAsync is the one that never
+			// paints. That gap mattered more here than almost anywhere else in
+			// this file: the optimistic write below only ever set the PENDING
+			// flag, never the real association, so a nested loadTags() that
+			// silently failed to render made a tag the server had just
+			// confirmed VANISH from the chip instead of merely staying stale.
+			var tagList []*pb.Tag
+			var tagBy map[string][]string
+			okTags := false
+			if err == nil {
+				if res, terr := c.ListTags(context.Background()); terr == nil {
+					tagBy = map[string][]string{}
+					for src2, ids := range res.GetBySource() {
+						tagBy[src2] = ids.GetIds()
+					}
+					tagList, okTags = res.GetTags(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				// Cleared on both paths. A pending chip left behind by a failed
 				// request is a tag that never existed sitting on the article
 				// forever, which is worse than the error it is hiding.
-				setTagData(tags.Get(), tagFeeds.Get(),
-					withoutPending(tagPending.Get(), src, name))
+				if okTags {
+					setTagData(tagList, tagBy, withoutPending(tagPending.Get(), src, name))
+				} else {
+					setTagData(tags.Get(), tagFeeds.Get(),
+						withoutPending(tagPending.Get(), src, name))
+				}
 				if err != nil {
 					// The draft goes back, so the word they typed is not lost to
 					// a failure they did not cause.
@@ -2638,7 +2857,6 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				notice.Set(tr.T("reader", "tagged", i18n.Args{"source": it.GetSourceTitle(), "tag": name}))
-				loadTags()
 			})
 		}()
 	}
@@ -2691,6 +2909,25 @@ func Reader(p readerProps) ui.Node {
 
 		go func() {
 			err := c.SetFeedTag(context.Background(), src, name, false)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadTags(), whose own nested PostAsync is the one that never
+			// paints, leaving a stale disagreement with another device
+			// uncorrected.
+			var tagList []*pb.Tag
+			var tagBy map[string][]string
+			okTags := false
+			if err == nil {
+				if res, terr := c.ListTags(context.Background()); terr == nil {
+					tagBy = map[string][]string{}
+					for src2, ids := range res.GetBySource() {
+						tagBy[src2] = ids.GetIds()
+					}
+					tagList, okTags = res.GetTags(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				if err != nil {
 					// Put it back exactly as it was. The reader is told, because
@@ -2704,7 +2941,9 @@ func Reader(p readerProps) ui.Node {
 				// Reconciling, not revealing. The screen is already right; this
 				// is what corrects it if another device disagreed, and it costs
 				// the reader no waiting because they are not watching it.
-				loadTags()
+				if okTags {
+					setTagData(tagList, tagBy, tagPending.Get())
+				}
 			})
 		}()
 	}
@@ -2908,11 +3147,32 @@ func Reader(p readerProps) ui.Node {
 				folderID = f.GetId()
 			}
 			res, err := c.SubscribeScrape(context.Background(), url, title, folderID, prop.GetRule())
+
+			// Same discipline as subscribeURL (~line 1730): folders/feeds are
+			// fetched HERE, in this same goroutine, before the single PostAsync
+			// below — not via loadFolders()/loadFeeds(), whose own nested
+			// PostAsync is the one that never paints.
+			var folderList []*pb.Folder
+			var feedList []*pb.Feed
+			var total int32
+			okFolders, okFeeds := false, false
+			if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+				folderList, okFolders = fl, true
+			}
+			if err == nil {
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				addBusy.Set(false)
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
 				if err != nil {
 					addErr.Set(tr.T("reader", "errFollowPage", i18n.Args{"err": err.Error()}))
-					loadFolders()
 					return
 				}
 				addOpen.Set(false)
@@ -2924,8 +3184,12 @@ func Reader(p readerProps) ui.Node {
 				clearLadder()
 				notice.Set(tr.T("addFeed", "followed", i18n.CountWith(int(res.GetItems()),
 					i18n.Args{"name": res.GetFeed().GetTitle()})))
-				loadFolders()
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -2947,12 +3211,29 @@ func Reader(p readerProps) ui.Node {
 		}
 		go func() {
 			f, err := c.CreateFolder(context.Background(), tr.T("reader", "newCategoryName"))
+
+			// Same discipline as subscribeURL: the rail's category list is
+			// fetched HERE, in this same goroutine, before the single PostAsync
+			// below — not via loadFolders(), whose own nested PostAsync is the
+			// one that never paints. Without this the editor opened on a
+			// category the rail never showed.
+			var folderList []*pb.Folder
+			okFolders := false
+			if err == nil {
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+			}
+
 			ui.PostAsync(func() {
 				if err != nil {
 					notice.Set(tr.T("reader", "errAddCategory", i18n.Args{"err": err.Error()}))
 					return
 				}
-				loadFolders()
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
 				catID.Set(f.GetId())
 				catDraft.Set(f.GetName())
 				catErr.Set("")
@@ -2991,6 +3272,20 @@ func Reader(p readerProps) ui.Node {
 		catBusy.Set(true)
 		go func() {
 			_, err := c.RenameFolder(context.Background(), id, name)
+
+			// Same discipline as subscribeURL: the rail's category list is
+			// fetched HERE, in this same goroutine, before the single PostAsync
+			// below — not via loadFolders(), whose own nested PostAsync is the
+			// one that never paints. Without this the list header picked up the
+			// new name (set directly below) while the rail chip kept the old one.
+			var folderList []*pb.Folder
+			okFolders := false
+			if err == nil {
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+			}
+
 			ui.PostAsync(func() {
 				catBusy.Set(false)
 				if err != nil {
@@ -2998,7 +3293,10 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				catID.Set("")
-				loadFolders()
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
 				// The list header carries the category's name when one is
 				// selected, so a rename has to reach the scope too — otherwise
 				// the rail says one thing and the pane beside it says the old one.
@@ -3027,6 +3325,26 @@ func Reader(p readerProps) ui.Node {
 		catBusy.Set(true)
 		go func() {
 			err := c.DeleteFolder(context.Background(), id)
+
+			// Same discipline as subscribeURL: folders and feeds are fetched
+			// HERE, in this same goroutine, before the single PostAsync below —
+			// not via loadFolders()/loadFeeds(), whose own nested PostAsync is
+			// the one that never paints. Without this the deleted category (and
+			// its feeds regrouped into Unfiled) could stay on screen indefinitely
+			// even though the delete had genuinely gone through.
+			var folderList []*pb.Folder
+			var feedList []*pb.Feed
+			var total int32
+			okFolders, okFeeds := false, false
+			if err == nil {
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				catBusy.Set(false)
 				if err != nil {
@@ -3035,9 +3353,17 @@ func Reader(p readerProps) ui.Node {
 				}
 				catID.Set("")
 				catConfirm.Set(false)
-				loadFolders()
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
 				// The feeds moved to Unfiled, so the sidebar's grouping is stale.
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				// And so is the list, if the reader was looking at the category
 				// that no longer exists.
 				if s := sel.Get(); s.FolderID == id {
@@ -3057,11 +3383,30 @@ func Reader(p readerProps) ui.Node {
 		feeds.Set(withFolder(feeds.Get(), sourceID, folderID))
 		go func() {
 			err := c.SetFeedFolder(context.Background(), sourceID, folderID)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadFeeds(), whose own nested PostAsync is the one that never
+			// paints. Without this a server disagreement (the reconciling case
+			// this reload exists for) could leave the optimistic move on screen
+			// uncorrected.
+			var feedList []*pb.Feed
+			var total int32
+			okFeeds := false
+			if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+				feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+			}
+
 			ui.PostAsync(func() {
 				if err != nil {
 					notice.Set(tr.T("reader", "errMoveFeed", i18n.Args{"err": err.Error()}))
 				}
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 			})
 		}()
 	}
@@ -3273,7 +3618,7 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		pane.Set(viewArticle)
-		platform.ScrollChildToTop(".pane-article", `[data-article-id="`+id+`"]`, true)
+		platform.ScrollChildToTop(".pane-article", `[data-article-id="`+id+`"]`, true, releaseFocus)
 	}
 
 	act.Get().listenPause = func() {
@@ -3378,13 +3723,31 @@ func Reader(p readerProps) ui.Node {
 		fsSaving.Set(true)
 		go func() {
 			res, err := c.UpdateFeedSettings(context.Background(), req)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadFeeds(), whose own nested PostAsync is the one that never
+			// paints, leaving the sidebar's name/count stale after a save that
+			// genuinely landed.
+			var feedList []*pb.Feed
+			var total int32
+			okFeeds := false
+			if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+				feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+			}
+
 			ui.PostAsync(func() {
 				act.Get().feedSettingsLanded(res, err)
 				// The sidebar shows the name and the unread count, both of which
 				// this can change, so it is refetched rather than patched
 				// locally — one cheap request beats two representations that can
 				// disagree.
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 			})
 		}()
 	}
@@ -3418,6 +3781,25 @@ func Reader(p readerProps) ui.Node {
 		tsSaving.Set(true)
 		go func() {
 			t, err := c.UpdateTag(context.Background(), req)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadTags(), whose own nested PostAsync is the one that never
+			// paints, leaving the rail's tag order stale after a rename that
+			// genuinely landed.
+			var tagList []*pb.Tag
+			var tagBy map[string][]string
+			okTags := false
+			if err == nil {
+				if res, terr := c.ListTags(context.Background()); terr == nil {
+					tagBy = map[string][]string{}
+					for src, ids := range res.GetBySource() {
+						tagBy[src] = ids.GetIds()
+					}
+					tagList, okTags = res.GetTags(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				tsSaving.Set(false)
 				if err != nil {
@@ -3428,7 +3810,9 @@ func Reader(p readerProps) ui.Node {
 				// The label is what the list is SORTED by, so a rename moves the
 				// row — and a locally patched row would keep its old position
 				// until something else happened to reload.
-				loadTags()
+				if okTags {
+					setTagData(tagList, tagBy, tagPending.Get())
+				}
 				if t != nil {
 					tsLabel.Set(t.GetLabel())
 				}
@@ -3453,13 +3837,33 @@ func Reader(p readerProps) ui.Node {
 		act.Get().closeFeedSettings()
 		go func() {
 			err := c.Unsubscribe(context.Background(), id)
+
+			// Same discipline as subscribeURL: fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadFeeds(), whose own nested PostAsync is the one that never
+			// paints, leaving an unsubscribed feed sitting in the rail as if
+			// nothing had happened.
+			var feedList []*pb.Feed
+			var total int32
+			okFeeds := false
+			if err == nil {
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				if err != nil {
 					notice.Set(tr.T("reader", "errUnsubscribe", i18n.Args{"err": err.Error()}))
 					return
 				}
 				notice.Set(tr.T("reader", "unsubscribed", i18n.Args{"feed": name}))
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				// If they were reading it, that scope no longer exists.
 				if sel.Get().SourceID == id {
 					act.Get().pick(scope{Title: tr.T("stream", "all")})
@@ -3763,13 +4167,34 @@ func Reader(p readerProps) ui.Node {
 		undoToken.Set("")
 		go func() {
 			n, err := c.UndoMarkAllRead(context.Background(), token)
+
+			// Same discipline as markAllRead itself (this is its undo
+			// counterpart): the sidebar counts are fetched HERE, in this same
+			// goroutine, before the single PostAsync below — not via
+			// loadFeeds(), whose own nested PostAsync is the one that never
+			// paints, leaving the rail showing zero unread even though the
+			// undo genuinely restored the backlog.
+			var feedList []*pb.Feed
+			var total int32
+			okFeeds := false
+			if err == nil {
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
 			ui.PostAsync(func() {
 				if err != nil {
 					notice.Set(tr.T("reader", "errUndo"))
 					return
 				}
 				notice.Set(tr.T("reader", "undoneRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
-				loadFeeds()
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -3813,6 +4238,8 @@ func Reader(p readerProps) ui.Node {
 			switch id {
 			case streamAll:
 				a.pick(scope{Title: tr.T("stream", "all")})
+			case streamMyFeed:
+				a.pick(scope{Title: tr.T("stream", "myFeed"), MyFeed: true})
 			case streamUnread:
 				a.pick(scope{Title: tr.T("stream", "unread"), Unread: true})
 			case streamLater:
@@ -4339,6 +4766,8 @@ func Reader(p readerProps) ui.Node {
 				switch id {
 				case streamAll:
 					a.pick(scope{Title: tr.T("stream", "all")})
+				case streamMyFeed:
+					a.pick(scope{Title: tr.T("stream", "myFeed"), MyFeed: true})
 				case streamUnread:
 					a.pick(scope{Title: tr.T("stream", "unread"), Unread: true})
 				case streamLiked:
@@ -4830,7 +5259,15 @@ func Reader(p readerProps) ui.Node {
 	// Google Reader's map, unchanged. j/k/o/s/m transfer on day one, and
 	// renaming them to something more "modern" would throw that away for nothing.
 
-	ui.UseEffect(func() func() {
+	// UseLayoutEffect, not UseEffect: a passive effect runs after the browser
+	// paints, which leaves a real window — a few tens of milliseconds after the
+	// list first paints — where the document has no key listener at all. A person
+	// cannot type that fast, but a scripted `press()` fired the instant `.item-row`
+	// is visible can and does land in it (motion.spec.mjs's Ctrl+K case measured
+	// about one run in four). The layout effect runs synchronously right after
+	// this commit, before paint, so the listener exists before the reader — or a
+	// test — can ever see a frame to react to.
+	ui.UseLayoutEffect(func() func() {
 		l := platform.OnKeyDown(func(k platform.Key) {
 			// Enter inside a field submits that field. This lives here rather
 			// than on an OnKeyDown prop because GWC adapts a func(string)
@@ -4950,8 +5387,6 @@ func Reader(p readerProps) ui.Node {
 				}
 				return
 			}
-			list := items.Get()
-			idx := indexOf(list, current.Get())
 
 			// --- moving between panes ---------------------------------------
 			//
@@ -5030,9 +5465,13 @@ func Reader(p readerProps) ui.Node {
 					// j/k idiom, and having arrows merely move focus while j/k
 					// opens would be two behaviours for one gesture.
 					platform.MoveFocus(".list-scroll", ".item-row", delta)
-					if i := idx + delta; i >= 0 && i < len(list) {
-						ui.PostAsync(func() { openItem(list[i]) })
-					}
+					// Through act.Get(), not items.Get()/current.Get() directly: see
+					// the actions struct's navStep field for why.
+					ui.PostAsync(func() {
+						if next := act.Get().navStep(delta); next != nil {
+							openItem(next)
+						}
+					})
 					return
 				}
 				// Anywhere else the arrows belong to the browser: scrolling the
@@ -5041,16 +5480,24 @@ func Reader(p readerProps) ui.Node {
 			}
 
 			switch k.Name {
+			// j and k read the article to open through act.Get().navStep, not
+			// items.Get()/current.Get() inline here — see the actions struct's
+			// navStep field for why: this listener is registered once, and a
+			// ui.State read directly inside its closure would forever answer
+			// with whichever article was current at the render that mounted
+			// it, not the one on screen when the key is actually pressed.
 			case "j":
-				if len(list) > 0 && idx+1 < len(list) {
-					ui.PostAsync(func() { openItem(list[idx+1]) })
-				} else if len(list) > 0 && idx < 0 {
-					ui.PostAsync(func() { openItem(list[0]) })
-				}
+				ui.PostAsync(func() {
+					if next := act.Get().navStep(1); next != nil {
+						openItem(next)
+					}
+				})
 			case "k":
-				if idx > 0 {
-					ui.PostAsync(func() { openItem(list[idx-1]) })
-				}
+				ui.PostAsync(func() {
+					if next := act.Get().navStep(-1); next != nil {
+						openItem(next)
+					}
+				})
 			case "o", "Enter":
 				ui.PostAsync(func() { act.Get().openExtern("") })
 			// l and d rather than s: the shortcut names the thing it does, and
@@ -5873,6 +6320,28 @@ func indexOf(list []*pb.Item, it *pb.Item) int {
 		}
 	}
 	return -1
+}
+
+// navItem is the pure math behind j/k and the list's up/down arrows: the item
+// `delta` positions from current in list, or nil when there is nowhere to go.
+//
+// current not found in list (including current == nil, e.g. nothing opened
+// yet) is treated as "one before the first item" — indexOf already returns
+// -1 for that — so advancing (delta > 0) from it lands on list[0], which is
+// what lets j open the first article before anything has been read, and
+// retreating (delta < 0) from it goes nowhere, since there is no "before the
+// first item, and nothing current either" to retreat from.
+//
+// This is deliberately free of ui.State: it is called through the actions
+// Ref's navStep field (see the actions struct) precisely so the keyboard
+// listener — registered once, well before this function is ever reached —
+// never reads a State handle itself.
+func navItem(list []*pb.Item, current *pb.Item, delta int) *pb.Item {
+	i := indexOf(list, current) + delta
+	if i < 0 || i >= len(list) {
+		return nil
+	}
+	return list[i]
 }
 
 // relTime renders a timestamp the way a reader wants it: how long ago, not when.

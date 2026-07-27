@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/sanitize"
@@ -114,12 +115,21 @@ func ageOf(publishedAt string, read bool) string {
 // readable and "the argument about compi…" is a typo with an ellipsis. Newlines
 // collapse to spaces because the row is one line high and a note is prose that
 // may well start with a line break.
+//
+// max counts RUNES, not bytes — it is a display budget ("how many characters to
+// show"), and a budget in characters is what that phrase actually means for a
+// line of CJK text as much as a line of English. This used to slice s[:max] by
+// raw byte offset, which for a multi-byte rune straddling that offset produced
+// a cut mid-rune and an invalid UTF-8 result — corrupted text on every Notes-row
+// preview written in a non-Latin script. Every existing call site (90, 12, 220)
+// was tuned against effectively-ASCII copy, where rune count and byte count are
+// the same number, so this is not a behaviour change for them.
 func firstWords(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= max {
+	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
-	cut := s[:max]
+	cut := string([]rune(s)[:max])
 	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
 		cut = cut[:i]
 	}
@@ -158,7 +168,7 @@ const (
 	// items ARE — everything, unread, saved — and this is a judgement ABOUT them. A
 	// third circle or another list glyph would file the ranked stream alongside the
 	// containers and lose exactly the distinction that makes it worth a row.
-	glyphMyFeed = "✦"
+	glyphMyFeed   = "✦"
 	glyphAll      = "\u25c8" // all feeds — everything, one object
 	glyphUnread   = "\u25cf" // unread — a thing waiting
 	glyphLater    = "\u23f1" // read later — time set aside
@@ -1103,6 +1113,17 @@ func hostOf(raw string) string {
 	if k := strings.IndexByte(h, '@'); k >= 0 {
 		h = h[k+1:]
 	}
+	// A bracketed IPv6 literal, e.g. "[::1]:8080", carries ':' inside the
+	// brackets — IndexByte would find one of THOSE first and truncate to "[".
+	// The brackets are kept in the return value: the caller (iconHost) uses
+	// this as a favicon lookup host, and "[::1]" is what belongs in that
+	// lookup's host position, the same way it belongs in a URL's authority —
+	// bare "::1" there is ambiguous with a port separator.
+	if strings.HasPrefix(h, "[") {
+		if end := strings.IndexByte(h, ']'); end >= 0 {
+			return strings.ToLower(h[:end+1])
+		}
+	}
 	if k := strings.IndexByte(h, ':'); k >= 0 {
 		h = h[:k]
 	}
@@ -1613,58 +1634,81 @@ func chip(action, label string, pressed bool) ui.Node {
 	}, html.Text(label))
 }
 
-// MaxReasonChips is how many reason chips fit a list row.
+// topRankReason is the strongest reason a My Feed pick was chosen, for the meta line.
 //
-// Two. The row is a fixed 96px (see ItemRowHeight) and the reasons occupy the third
-// line, so this is a width budget rather than a taste: a third chip wraps, the line
-// grows, and every row below it is mispositioned because VirtualList is placing them
-// by arithmetic. The reasons arrive sorted by contribution, so the two kept are the
-// two that actually decided the placement.
-const MaxReasonChips = 2
-
-// rankReasonRow explains a My Feed pick as chips rather than a sentence.
+// Nil for anything that is not a ranked pick, which is how the caller decides between
+// this and the reading-time estimate it displaces.
 //
-// # Why chips and not the prose line
+// # One reason, not a row of them
 //
-// The single-line version reads as one run-on clause — "published today from a feed
-// you read closely points at engadget.com, which you keep opening" — because it is
-// four independent judgements concatenated. Separating them is not decoration: §18.9
-// makes explainability the product, and the reader can only act on a judgement they
-// can pick out. "This feed is not one I read closely" and "I do not care that other
-// feeds carried it" are different corrections to different terms, and a sentence
-// offers nowhere to aim.
+// The reasons arrive sorted by absolute contribution to the score, so the first is the
+// one that actually decided the placement. Showing only that is a WIDTH decision, and
+// the same fixed-96px constraint that pushed this into the meta line in the first
+// place: the line already carries a source name that can run to forty characters, an
+// age, and a NEW badge. A second chip pushes the first off the row on a narrow pane,
+// and a reason that is invisible is worse than a reason that is short.
 //
-// # Why it replaces the summary rather than joining it
+// The full set rides along in the title attribute, so nothing is lost — the rest is
+// one hover away rather than gone. §18.9 wants the ranking explainable, and "the
+// biggest factor, with the others on hover" is explainable; a clipped list is not.
 //
-// The row height is fixed and already spoken for. The existing rank_reason case made
-// the same trade for the same reason, with the same justification: a reason is
-// actionable and a publisher's summary is not. This only changes the shape of what
-// occupies that slot, not which slot it occupies.
-//
-// The full set rides along in a title attribute, so nothing is actually lost when
-// there were more than two — it is one hover away rather than gone.
-func rankReasonRow(it *pb.Item) ui.Node {
+// The tier and slot go on the element rather than into the text. They are facts about
+// the whole pick rather than judgements the reader can act on, so they belong where
+// the stylesheet can mark them without spending any of the reason's width.
+func topRankReason(tr i18n.Runtime, it *pb.Item) ui.Node {
 	reasons := it.GetRankReasons()
-	shown := reasons
-	if len(shown) > MaxReasonChips {
-		shown = shown[:MaxReasonChips]
+	if len(reasons) == 0 {
+		return nil
 	}
-	chips := make([]ui.Node, 0, len(shown))
-	for _, r := range shown {
-		chips = append(chips, staticChip(r))
-	}
-	return html.Div(html.Props{
-		Class: "item-summary item-reasons",
-		// The tier is on the row rather than in a chip: it is a fact about the whole
-		// pick, not one of the judgements, and spending one of two chip slots on
-		// "smart" would push out something the reader could act on. The stylesheet can
-		// mark a Smart+ pick from here without costing any width.
+	return html.Span(html.Props{
+		Class: "chip chip-static item-reason",
 		Raw: map[string]any{
 			"data-rank-tier": it.GetRankTier(),
 			"data-rank-slot": it.GetRankSlot(),
-			"title":          strings.Join(reasons, " · "),
+			// The full prose, all of it, on hover. The chip is a label; this is the
+			// explanation, and §18.9 wants the explanation reachable.
+			"title": strings.Join(reasons, " · "),
 		},
-	}, chips...)
+	}, html.Text(rankReasonLabel(tr, it, 0)))
+}
+
+// rankReasonLabel is the short, localised label for one reason.
+//
+// Keyed on the scoring TERM rather than on the server's prose, for two reasons that
+// arrive from different directions and both matter.
+//
+// The prose is built in Go, in English, and shipping it to the screen is the one path in
+// this UI that walks past the message catalogue. The hardcoded-copy lint cannot see it,
+// because the literal is not in this package — it comes over the wire. Keying on the
+// term puts the words back under i18n where every other string in the client already is.
+//
+// The prose is also a clause from a longer sentence, so at list width it becomes "from a
+// feed you rea…" and the reader learns nothing at all. A term lets the catalogue hold a
+// label sized for the space that exists.
+//
+// Falls back to the server's prose for an unrecognised term, which is what makes adding
+// a scoring factor a one-sided change: a newer server can send a term this build has
+// never heard of and the row still says something true, just longer.
+func rankReasonLabel(tr i18n.Runtime, it *pb.Item, i int) string {
+	reasons, terms := it.GetRankReasons(), it.GetRankReasonTerms()
+	if i >= len(reasons) {
+		return ""
+	}
+	if i < len(terms) {
+		// A miss renders as "namespace.key" (see i18n.bundle's OnMissing), so that
+		// exact string is the miss test.
+		//
+		// The obvious test — label != term — is WRONG, and wrong in a way that hides
+		// itself: several labels are legitimately the same word as their term, so
+		// `fresh` resolving correctly to "fresh" looked like a failed lookup and fell
+		// back to the server's prose. Every reason then rendered as a truncated English
+		// clause with the i18n path silently unused, and it took a screenshot of the
+		// running app to notice.
+		if label := tr.T("reason", terms[i]); label != "" && label != "reason."+terms[i] {
+			return label
+		}
+	}
+	return reasons[i]
 }
 
 // staticChip reports a fact rather than offering an action.
@@ -1723,6 +1767,12 @@ func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 		return emptyState(tr, "emptyLiked", "emptyLikedHint")
 	case p.sel.Rating < 0:
 		return emptyState(tr, "emptyDisliked", "emptyDislikedHint")
+	case p.sel.Notes:
+		return emptyState(tr, "emptyNotes", "emptyNotesHint")
+	case p.sel.TagID != "":
+		return emptyState(tr, "emptyTag", "emptyTagHint")
+	case p.sel.FolderID != "":
+		return emptyState(tr, "emptyCategory", "emptyCategoryHint")
 	default:
 		return emptyState(tr, "emptyNoArticles", "emptyNoArticlesHint")
 	}
@@ -1781,7 +1831,19 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 		meta = append(meta, html.Span(html.Props{Class: "age-tag age-stale"},
 			html.Text(tr.T("list", "ageStale"))))
 	}
-	if it.GetWordCount() >= 50 {
+	// Reading time yields its place to the reason on a ranked row.
+	//
+	// Both cannot fit. The row is a fixed 96px and a two-line headline — which is most
+	// of them — leaves no third line at all, so the first version of this put the reason
+	// chips on a line that was clipped away entirely: thirty chips in the DOM, none of
+	// them visible on screen. That only showed up in a screenshot of the running app.
+	//
+	// So the reason goes in the meta line, and on My Feed it is worth more than "5 min
+	// read": the reader picked a stream that promises to explain itself, and an estimate
+	// they can infer from the headline is the cheapest thing on the row to give up.
+	if reason := topRankReason(tr, it); reason != nil {
+		meta = append(meta, html.I(html.Props{Class: "item-sep"}), reason)
+	} else if it.GetWordCount() >= 50 {
 		meta = append(meta,
 			html.I(html.Props{Class: "item-sep"}),
 			html.Span(html.Props{}, html.Text(readingTime(tr, it.GetWordCount()))))
@@ -1817,8 +1879,10 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 			html.Strong(html.Props{Class: "note-flag"}, html.Text(tr.T("list", "noteFlag"))),
 			html.Text(firstWords(it.GetNote(), 90)),
 		))
-	case len(it.GetRankReasons()) > 0:
-		children = append(children, rankReasonRow(it))
+	// No case for the ranked reasons here any more: they are in the meta line, where
+	// there is actually room for them (see topRankReason). A ranked row keeps its
+	// summary, which is the better outcome — the reason and the article's own gist are
+	// not competing for one slot now.
 	case it.GetRankReason() != "":
 		children = append(children,
 			html.Div(html.Props{Class: "item-summary"}, html.Text(it.GetRankReason())))

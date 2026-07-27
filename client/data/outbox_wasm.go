@@ -116,6 +116,7 @@ func (c *Client) sendOp(parent context.Context, op outbox.Op) error {
 //     every write behind it forever — one dead op turning a queue into a wall.
 //   - **Acked by key, not by position**, so a write the reader has changed again
 //     mid-drain keeps its newer intent (see outbox.Queue.Done).
+//
 // The rules themselves live in drain.go, which carries no build tag so they can
 // be asserted without a browser — the failure cases here are all "what does a
 // refusal halfway through a replay mean", which is precisely the state that is

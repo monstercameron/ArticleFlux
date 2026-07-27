@@ -593,6 +593,13 @@ func list(r func(string, string) css.Rule) {
 		// has to come down to where a word set in it is readable. See Sheet().
 		r("color", "var(--ink, var(--soft))"), r("font-weight", "500"),
 		r("overflow", "hidden"), r("text-overflow", "ellipsis"),
+		// The one element on this line that yields, and it is the right one: a source
+		// name is still identifiable from its coloured mark and its first few
+		// characters, so "BGR: The Three Bigg…" costs nothing. Everything else here is
+		// short and becomes meaningless when clipped — a reason truncated to "fr…"
+		// tells the reader nothing at all, which is what happened before this had an
+		// explicit shrink and the flex line divided the loss evenly.
+		r("flex", "0 1 auto"), r("min-width", "3ch"),
 	)
 	// A 3px dot at half opacity as the field separator. A middot sits on the
 	// baseline and reads as punctuation; this reads as structure.
@@ -629,6 +636,54 @@ func list(r func(string, string) css.Rule) {
 		r("text-transform", "uppercase"), r("color", "var(--cc)"),
 		r("margin-right", "7px"), r("font-weight", "600"),
 	)
+
+	// The My Feed reason (§18.9), inline in the meta line.
+	//
+	// It shares the row with a source name, an age and sometimes a NEW badge, so it is
+	// sized to be legible and to yield: min-width 0 plus ellipsis means a long reason
+	// shortens rather than pushing the age off the row, and shrink lets the flex line
+	// give it up last. Smaller and quieter than an interactive chip on purpose — the
+	// article is the thing, the reason is why it is here, and a reason that competes
+	// with the headline has inverted the row.
+	css.Global(".item-reason",
+		r("padding", "0 7px"), r("font-size", "10.5px"),
+		r("color", "var(--mute)"), r("border-color", "var(--line)"),
+		r("white-space", "nowrap"),
+		// Does NOT shrink. The labels in en_reasons.go are written to fit — the longest
+		// is "already have this" — so there is nothing useful to gain by clipping one,
+		// and a great deal to lose: "fr…" is not an explanation. The source name beside
+		// it yields instead.
+		r("flex", "0 0 auto"),
+	)
+	// A Smart+ pick is marked in the accent, because the reader paid for it and is
+	// entitled to see which picks it actually touched. A border colour rather than a
+	// badge: a badge costs width the reason needs, and this distinction is not worth
+	// shortening the explanation for.
+	css.Global(".item-reason[data-rank-tier='smart_plus']",
+		r("border-color", "color-mix(in srgb, var(--cc) 45%, var(--line))"),
+		r("color", "var(--soft)"),
+	)
+	// An Explore pick is deliberately NOT the highest-scoring thing available — it is
+	// there to stop the page converging on one topic (§18.4). Marking it keeps that
+	// honest: it looks different because it was chosen on a different basis.
+	css.Global(".item-reason[data-rank-slot='explore']", r("border-style", "dashed"))
+	// A cluster head stands for a story several feeds carried, so it reads as the one
+	// card for a group rather than one item among many.
+	css.Global(".item-reason[data-rank-slot='cluster_head']",
+		r("border-color", "color-mix(in srgb, var(--cream) 22%, var(--line))"),
+	)
+
+	// The cold-start band. Quiet on purpose: it is an admission, not an announcement,
+	// and a bright banner telling someone the app does not know them yet is worse
+	// than the silence it replaced.
+	css.Global(".list-learning",
+		r("display", "flex"), r("gap", "8px"), r("align-items", "baseline"),
+		r("padding", "9px 24px"), r("font-size", "12px"),
+		r("color", "var(--mute)"),
+		r("border-bottom", "1px solid var(--line)"),
+		r("background", "color-mix(in srgb, var(--cc) 5%, transparent)"),
+	)
+	css.Global(".learning-mark", r("color", "var(--cc)"), r("flex", "0 0 auto"))
 
 	css.Global(".list-more",
 		r("display", "block"), r("width", "calc(100% - 48px)"),

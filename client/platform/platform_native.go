@@ -103,7 +103,16 @@ func FocusedAttr(attr string) string { return "" }
 
 func SetScrollTop(selector string, top float64) {}
 
-func ScrollChildToTop(containerSelector, childSelector string, smooth bool) {}
+func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done func()) {
+	// The callback still fires. A native build has no DOM and therefore no
+	// travel, but a caller that arms something for the duration of one and is
+	// never released would be stuck here in exactly the way it is stuck in a
+	// browser — and a no-op that silently changes the contract is worse than one
+	// that keeps it.
+	if done != nil {
+		done()
+	}
+}
 
 func SpeechAvailable() bool { return false }
 

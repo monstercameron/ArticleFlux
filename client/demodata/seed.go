@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/monstercameron/ArticleFlux/client/design"
 )
 
 // The sample instance.
@@ -22,8 +24,8 @@ import (
 //     and the rail's identity colours are most of what it does.
 //   - Three categories and three tags, so the difference between them — where a
 //     feed LIVES versus what you SAY about it — is visible rather than described.
-//   - Articles from twenty minutes to eleven days old, so relative time renders
-//     at every scale it has a format for.
+//   - Articles from twenty-two minutes to eleven days old, so relative time
+//     renders at every scale it has a format for.
 //   - A mix of read, unread, starred, rated and annotated, so no screen in the
 //     application is empty on arrival.
 //   - One feed that has been failing for two days, so the dormant-feed nudge has
@@ -462,10 +464,29 @@ func seed(now func() time.Time) *Instance {
 		folderIDs[f.folder] = fo.id
 	}
 
-	for _, sf := range seedFeeds {
+	// The seven feeds exist to show the seven hand-picked hues (see the package
+	// comment above), so their source ids are chosen — not taken from the plain
+	// nextID sequence — to land on all seven distinct named colours. See
+	// namedSourceIDs for why this is a search against design.HueFor rather than
+	// a list of literal ids.
+	sourceIDs := namedSourceIDs("src", design.ToneDark)
+
+	for i, sf := range seedFeeds {
+		subID := in.nextID("sub")
+		srcID := ""
+		if i < len(sourceIDs) {
+			srcID = sourceIDs[i]
+		} else {
+			// Only reached if seedFeeds ever grows past the size of the named
+			// palette; falls back to the plain sequence rather than indexing out
+			// of range. TestFixtureSevenSourcesEachGetADistinctNamedHue already
+			// pins the feed count to 7, so this is a safety net, not a path
+			// meant to run.
+			srcID = in.nextID("src")
+		}
 		f := &feed{
-			id:            in.nextID("sub"),
-			sourceID:      in.nextID("src"),
+			id:            subID,
+			sourceID:      srcID,
 			pubTitle:      sf.title,
 			feedURL:       "https://" + sf.host + "/feed.xml",
 			siteURL:       "https://" + sf.host + "/",
@@ -537,7 +558,88 @@ func seed(now func() time.Time) *Instance {
 	if f := in.feeds[len(in.feeds)-1]; f.failures > 0 {
 		in.logf("ERROR", "fetch failed", "source", f.title(), "error", f.lastError)
 	}
+
+	// namedSourceIDs claimed ids directly, bypassing nextID, so nextID's own
+	// counter has no idea those numbers are taken. Fast-forward it past the
+	// highest one used, so a feed subscribed later in the running demo (via
+	// addFeed, which does call nextID("src")) can never mint a source id that
+	// collides with one of the seven seeded here.
+	if mx := maxNumericSuffix(sourceIDs, "src-"); mx > in.seq {
+		in.seq = mx
+	}
+
 	return in
+}
+
+// namedSourceIDs returns one demo source id per hand-picked hue in design's
+// palette (client/design/theme.go's darkAccents / lightAccents), in palette
+// order — so the fixture's seven feeds land on all seven named colours, which
+// is seedFeeds' own stated reason for there being exactly seven of them.
+//
+// It searches design.HueFor's actual output rather than pinning a literal id
+// list. HueFor is a stateless hash keyed only on the id string
+// (client/design/tokens.go): it has no notion of "the first N ids", so the
+// only way a fixture can guarantee seven ids land on seven distinct named
+// hues is to find ids that happen to. A literal list of ids that works today
+// would silently start missing colours the next time anyone tunes the hash —
+// nobody touching HueFor would think to check a list of magic strings in an
+// unrelated package — whereas a search re-derives working ids against
+// whatever HueFor currently does. What still has to hold, and does not get
+// papered over here, is the actual invariant seed.go depends on: seven feeds,
+// seven distinct named hues, no collisions, none falling through to a
+// generated colour. That is exactly what
+// TestFixtureSevenSourcesEachGetADistinctNamedHue (fixture_shape_test.go)
+// checks, and it is still the thing that fails — loudly, in CI, not silently
+// in a screenshot — if the named palette itself ever shrinks below seven
+// colours, which is the one way this search could stop finding a match.
+func namedSourceIDs(prefix string, tone design.Tone) []string {
+	swatches := design.AccentsFor(tone)
+	ids := make([]string, 0, len(swatches))
+	used := map[string]bool{}
+	for _, sw := range swatches {
+		id := findIDForHue(prefix, sw.Hex, used)
+		ids = append(ids, id)
+		used[id] = true
+	}
+	return ids
+}
+
+// findIDForHue is namedSourceIDs' search: the smallest prefix-N (N starting
+// at 1) not already claimed whose design.HueFor lands exactly on hex.
+//
+// 2000 candidates is generous headroom — the current hash finds all seven
+// named colours within the first 48 — chosen so a future tweak to HueFor's
+// hash or its slot count has room to still work without this needing to
+// change. If the search is ever exhausted, the sentinel id returned is
+// deliberately NOT of the form prefix-N, so design.HueFor resolving it to
+// something other than hex shows up as a real test failure (an unnamed or
+// duplicate hue) instead of a silent wrong colour, and so it can never
+// collide with a numeric id minted later by nextID.
+func findIDForHue(prefix, hex string, used map[string]bool) string {
+	for n := 1; n <= 2000; n++ {
+		id := prefix + "-" + strconv.Itoa(n)
+		if used[id] {
+			continue
+		}
+		if design.HueFor(id) == hex {
+			return id
+		}
+	}
+	return prefix + "-unmatched-" + hex
+}
+
+// maxNumericSuffix returns the largest N across ids of the form prefix+N,
+// ignoring any that do not parse — namedSourceIDs' exhausted-search sentinel
+// is deliberately not of that shape, and is intentionally excluded here too.
+func maxNumericSuffix(ids []string, prefix string) int64 {
+	var mx int64
+	for _, id := range ids {
+		n, err := strconv.ParseInt(strings.TrimPrefix(id, prefix), 10, 64)
+		if err == nil && n > mx {
+			mx = n
+		}
+	}
+	return mx
 }
 
 // --- feeds added while the demo is running -------------------------------------

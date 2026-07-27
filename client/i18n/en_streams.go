@@ -10,10 +10,26 @@ package i18n
 // language's feed readers already use rather than for a fresh translation.
 func init() {
 	text(DefaultLocale, "stream", map[string]string{
-		"all":    "All feeds",
-		"unread": "Unread",
-		"later":  "Read later",
-		"liked":  "Liked",
+		"all": "All feeds",
+		// "My Feed", not "Recommended" or "For You".
+		//
+		// The vocabulary note above says to use the words readers already know, and
+		// the words this vocabulary has for a ranked stream all come from somewhere
+		// else: "For You" is an advertising surface and "Recommended" is a stranger's
+		// suggestion. This page is assembled from the reader's own subscriptions and
+		// their own reading, and the possessive is the honest description of that. It
+		// also sets up the empty state — "still learning what you read" is a sentence
+		// about them, which is exactly what the ranking is.
+		"myFeed": "My Feed",
+		// The cold-start state (§18.4). Topics need roughly 50–100 engaged items, so a
+		// new reader sees an ordering that is mostly freshness and feed affinity for a
+		// while, and saying so is better than presenting a confident wrong answer. It
+		// names what would fix it, because reading things IS the remedy and the reader
+		// is the only one who can apply it.
+		"myFeedLearning": "Still learning what you read — ranking on freshness and the feeds you open most for now.",
+		"unread":         "Unread",
+		"later":          "Read later",
+		"liked":          "Liked",
 		// No "disliked": a list of things you decided were not worth your time is
 		// not somewhere anyone goes, so it is deliberately not a stream (see
 		// specialRow in panes.go). The list header still names the scope —
