@@ -80,37 +80,27 @@ func drain(ctx context.Context, repo *store.ReaderRepo) {
 }
 
 func report(ctx context.Context, db *store.DB) {
-	var items, analysed int
-	must(db.Read.QueryRowContext(ctx, `SELECT count(*) FROM items`).Scan(&items))
-	must(db.Read.QueryRowContext(ctx, `SELECT count(*) FROM item_analysis`).Scan(&analysed))
-	fmt.Printf("items in database : %d\n", items)
-	fmt.Printf("analysis rows     : %d  (%.1f%%)\n\n", analysed, 100*float64(analysed)/float64(items))
-
-	rows, err := db.Read.QueryContext(ctx, `
-		SELECT genre, count(*) FROM item_analysis WHERE genre IS NOT NULL
-		 GROUP BY genre ORDER BY count(*) DESC LIMIT 6`)
+	proof, err := db.LoadAnalysisProof(ctx, 14)
 	must(err)
-	defer rows.Close()
+	fmt.Printf("items in database : %d\n", proof.Items)
+	percent := 0.0
+	if proof.Items > 0 {
+		percent = 100 * float64(proof.Analysed) / float64(proof.Items)
+	}
+	fmt.Printf("analysis rows     : %d  (%.1f%%)\n\n", proof.Analysed, percent)
 	fmt.Print("genres stored     : ")
-	for rows.Next() {
-		var g string
-		var n int
-		must(rows.Scan(&g, &n))
+	for _, genre := range proof.Genres {
+		g := genre.Name
+		n := genre.Count
 		fmt.Printf("%s %d · ", g, n)
 	}
 	fmt.Println()
 
 	// A real sample: the newest analysed articles and what they were filed as.
-	sample, err := db.Read.QueryContext(ctx, `
-		SELECT i.title, a.category_scores
-		  FROM item_analysis a JOIN items i ON i.id = a.item_id
-		 ORDER BY i.published_at DESC LIMIT 14`)
-	must(err)
-	defer sample.Close()
 	fmt.Println("newest analysed articles:")
-	for sample.Next() {
-		var title, scores string
-		must(sample.Scan(&title, &scores))
+	for _, item := range proof.Recent {
+		title := item.Title
+		scores := item.CategoryScores
 		fmt.Printf("  %-12s %s\n", top(scores), trunc(title, 68))
 	}
 }
