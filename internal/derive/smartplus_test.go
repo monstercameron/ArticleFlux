@@ -63,6 +63,97 @@ func (f *fakePlus) LabelTopic(_ context.Context, _ []string, fallback string) (s
 	return f.label, nil
 }
 
+// withSmartPlus wires the enhancer AND records the reader's consent.
+//
+// Both, because they are deliberately separate: WithSmartPlus is capability and
+// SmartPlusPrefKey is permission. Every one of these tests failed the moment the
+// preference gate landed — wired but not opted in, so no call was made — which is the gate
+// working. Doing it in one helper keeps the tests honest without letting anyone forget that
+// an instance which merely CAN call a paid API is not one that may.
+func (f *fixture) withSmartPlus(t *testing.T, plus Enhancer) {
+	t.Helper()
+	f.svc.WithSmartPlus(plus)
+	if err := f.repo.SetPrefs(f.ctx, f.scope, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatalf("SetPrefs: %v", err)
+	}
+}
+
+// A wired enhancer with no opt-in must make ZERO calls.
+//
+// This is the test that matters most in this file, because what it protects is not
+// correctness — it is the reader's money. The first version of Smart+ attached the enhancer
+// in internal/app and called it on every derivation, which fires after every poll and every
+// batch of engagements: an instance with a key in its environment was buying model calls on
+// a schedule nobody agreed to.
+//
+// Capability and consent are separate on purpose. WithSmartPlus says the instance CAN;
+// SmartPlusPrefKey says this reader said yes.
+func TestSmartPlusMakesNoCallsWithoutConsent(t *testing.T) {
+	f := setup(t)
+	f.engage(t)
+
+	// Wired, deliberately WITHOUT the preference — note this is svc.WithSmartPlus and not
+	// the withSmartPlus helper, which grants consent as well.
+	plus := &fakePlus{rerank: []int{3, 2}, entities: []NamedEntity{{Name: "npm", Label: "npm"}}}
+	f.svc.WithSmartPlus(plus)
+
+	res, err := f.svc.RunReporting(f.ctx, f.scope, now)
+	if err != nil {
+		t.Fatalf("RunReporting: %v", err)
+	}
+	if res.SmartPlus {
+		t.Error("the derivation reported Smart+ active without an opt-in")
+	}
+	if plus.rerankCalls != 0 || plus.entityCalls != 0 || plus.labelCalls != 0 {
+		t.Errorf("a paid API was called without consent: rerank=%d entities=%d labels=%d",
+			plus.rerankCalls, plus.entityCalls, plus.labelCalls)
+	}
+	// And nothing is labelled as paid-for, because nothing was.
+	for i, r := range mustRanked(t, f) {
+		if r.Tier != store.TierSmart {
+			t.Errorf("row %d is tiered %q with Smart+ off, want %q", i, r.Tier, store.TierSmart)
+		}
+	}
+
+	// Turning it on takes effect on the NEXT derivation, with no restart. A reader who
+	// switches it off because of the bill must be believed immediately, and the same
+	// mechanism has to work in both directions.
+	if err := f.repo.SetPrefs(f.ctx, f.scope, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatalf("SetPrefs: %v", err)
+	}
+	res, err = f.svc.RunReporting(f.ctx, f.scope, now)
+	if err != nil {
+		t.Fatalf("RunReporting after opt-in: %v", err)
+	}
+	if !res.SmartPlus {
+		t.Fatal("the derivation did not report Smart+ active after an opt-in")
+	}
+	if plus.rerankCalls == 0 {
+		t.Error("opting in did not reach the enhancer")
+	}
+
+	// And off again, in the same process, without a restart.
+	if err := f.repo.SetPrefs(f.ctx, f.scope, store.Prefs{SmartPlusPrefKey: "false"}); err != nil {
+		t.Fatalf("SetPrefs: %v", err)
+	}
+	before := plus.rerankCalls
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatalf("RunReporting after opt-out: %v", err)
+	}
+	if plus.rerankCalls != before {
+		t.Errorf("opting out did not stop the calls: %d then %d", before, plus.rerankCalls)
+	}
+}
+
+func mustRanked(t *testing.T, f *fixture) []store.RankedItem {
+	t.Helper()
+	got, err := f.repo.HomeRanking(f.ctx, f.scope, 200)
+	if err != nil {
+		t.Fatalf("HomeRanking: %v", err)
+	}
+	return got
+}
+
 // The property everything else here depends on: Smart+ failing must not degrade the page.
 //
 // A missing key, a timeout, a rate limit and a malformed reply are ORDINARY on a
@@ -98,7 +189,7 @@ func TestSmartPlusFailureLeavesTheFreeRankingIntact(t *testing.T) {
 				t.Fatal("the free tier produced no ranking, so this test proves nothing")
 			}
 
-			f.svc.WithSmartPlus(plus)
+			f.withSmartPlus(t, plus)
 			if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 				t.Fatalf("run with Smart+: %v", err)
 			}
@@ -135,7 +226,7 @@ func TestSmartPlusPromotesItsPicks(t *testing.T) {
 	// rather than the code. See TestSmartPlusAgreementIsNotMarkedPaid for why that
 	// distinction is deliberate.
 	plus := &fakePlus{rerank: []int{3, 2}}
-	f.svc.WithSmartPlus(plus)
+	f.withSmartPlus(t, plus)
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatalf("RunReporting: %v", err)
 	}
@@ -184,7 +275,7 @@ func TestSmartPlusAgreementIsNotMarkedPaid(t *testing.T) {
 	f.engage(t)
 
 	// The identity permutation: exactly the free-tier order.
-	f.svc.WithSmartPlus(&fakePlus{rerank: []int{0, 1, 2, 3}})
+	f.withSmartPlus(t, &fakePlus{rerank: []int{0, 1, 2, 3}})
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatalf("RunReporting: %v", err)
 	}
@@ -210,7 +301,7 @@ func TestSmartPlusReceivesOnlyWhatTheBoundaryPermits(t *testing.T) {
 	f.engage(t)
 
 	plus := &fakePlus{rerank: []int{0}}
-	f.svc.WithSmartPlus(plus)
+	f.withSmartPlus(t, plus)
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatalf("RunReporting: %v", err)
 	}
@@ -248,7 +339,7 @@ func TestSmartPlusFindsLowercaseBrands(t *testing.T) {
 	f.record(t, signals.Completed, ids, now.Add(-time.Hour))
 
 	// The heuristic cannot produce "npm": it is one lowercase token.
-	f.svc.WithSmartPlus(&fakePlus{entities: []NamedEntity{{Name: "npm", Label: "npm"}}})
+	f.withSmartPlus(t, &fakePlus{entities: []NamedEntity{{Name: "npm", Label: "npm"}}})
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatalf("RunReporting: %v", err)
 	}

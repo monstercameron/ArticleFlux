@@ -39,7 +39,9 @@ import (
 // and a hard-coded weight is a weight nobody can correct when the homepage is
 // visibly wrong.
 type Weights struct {
-	Topic         float64
+	Topic float64
+	// Entity weights a followed brand or product named in the headline.
+	Entity        float64
 	Feed          float64
 	Fresh         float64
 	Corroboration float64
@@ -60,7 +62,15 @@ type Weights struct {
 // personalised and is useless.
 func DefaultWeights() Weights {
 	return Weights{
-		Topic:         1.0,
+		Topic: 1.0,
+		// Just under Topic, and above Feed.
+		//
+		// A named thing is nearly as strong a content signal as a topic match and it is
+		// far more legible — "mentions Android Auto" is checkable by looking at the row,
+		// where "close to a topic you read" asks the reader to trust a centroid. It sits
+		// above Feed deliberately: what an article is ABOUT should outweigh where it
+		// arrived from, or the page becomes a ranking of feeds rather than of articles.
+		Entity:        0.9,
 		Feed:          0.8,
 		Fresh:         1.2,
 		Corroboration: 0.6,
@@ -104,6 +114,16 @@ type Item struct {
 	// TopicScore is the cosine similarity to the reader's nearest topic
 	// centroid, 0..1. Computed by 4.10, not here.
 	TopicScore float64
+	// Entities are the reader's followed brands, products or organisations that this
+	// item's headline names — display labels, for the reason line.
+	//
+	// A second content-level match alongside TopicScore, and the one that works at
+	// realistic reading volume. Topics need roughly 50–100 engaged items before a cluster
+	// reaches MinMembers; entities appear at a few dozen, because naming a thing twice is
+	// a much lower bar than forming a cluster. Without this the only content-level signal
+	// arrives weeks in, and until then a ranked page can offer nothing better than
+	// freshness — which reads, correctly, as the unread list reordered.
+	Entities []string
 	// TargetDomain is where the article points, which for an aggregator item is
 	// almost never the aggregator (§18.6).
 	TargetDomain string
@@ -217,6 +237,18 @@ func Score(item Item, sig Signals, w Weights, now time.Time) Result {
 			d += w.Feed * 0.5 * item.TopicScore
 		}
 		add("topic", "close to a topic you read", d)
+	}
+
+	// A named thing the reader follows, in the headline. The most specific and most
+	// checkable statement the ranker can make — "mentions Android Auto" is something the
+	// reader can agree or disagree with by looking at the row, which is what §18.9 means
+	// by explainability being the product.
+	//
+	// Sublinear in the count: an item naming three followed brands is more relevant than
+	// one naming a single brand, but not three times as relevant, and a linear sum would
+	// let a headline that lists products outrank an article about one of them.
+	if n := len(item.Entities); n > 0 {
+		add("entity", entityText(item.Entities), w.Entity*math.Log1p(float64(n)))
 	}
 
 	if !highlights && sig.FeedAffinity > 0 {
@@ -431,6 +463,28 @@ func volumeText(perDay float64) string {
 // screen before and is still unread — rather than the inference. A reader who has
 // been saving it for the weekend reads that and understands the demotion instead of
 // being told they are not interested in something they fully intend to read.
+// entityText names the followed things this headline mentions.
+//
+// It NAMES them rather than counting them, and that is the whole value of the term: "about
+// Android Auto, which you follow" is a claim the reader can check against the row in front
+// of them, where "matches 2 of your interests" is a number they have to take on trust.
+// §18.9 — explainability is the product, and a reason that cannot be verified is not one.
+//
+// Two at most, then "and more". The reason goes in a list row beside a source and an age,
+// and three long brand names is a sentence nobody finishes reading.
+func entityText(names []string) string {
+	switch len(names) {
+	case 0:
+		return "about something you follow"
+	case 1:
+		return "about " + names[0] + ", which you follow"
+	case 2:
+		return "about " + names[0] + " and " + names[1] + ", which you follow"
+	default:
+		return "about " + names[0] + ", " + names[1] + " and more that you follow"
+	}
+}
+
 func skipText(n int) string {
 	if n >= 5 {
 		return "on screen several times and still unread"

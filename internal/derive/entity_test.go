@@ -190,19 +190,32 @@ func (f *fixture) ingestEntityItems(t *testing.T, texts map[string]string) []str
 		t.Fatalf("IngestItems: %v", err)
 	}
 
-	items, _, err := f.repo.ListItems(f.ctx, f.scope, store.ListQuery{SourceID: sourceID, Limit: 200})
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
+	// Paginated: store.MaxLimit caps a single ListItems page at 200, well below
+	// what a truncation-boundary test needs (see
+	// TestEntityTruncationIsStableAcrossRederivation), so one page is not
+	// enough once a caller ingests more than that many items at once.
 	want := map[string]bool{}
 	for _, guid := range guids {
 		want[texts[guid]] = true
 	}
 	var ids []string
-	for _, it := range items {
-		if want[it.Title] {
-			ids = append(ids, it.ID)
+	cursor := ""
+	for {
+		items, next, err := f.repo.ListItems(f.ctx, f.scope, store.ListQuery{
+			SourceID: sourceID, Limit: 200, Cursor: cursor,
+		})
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
 		}
+		for _, it := range items {
+			if want[it.Title] {
+				ids = append(ids, it.ID)
+			}
+		}
+		if next == "" || len(items) == 0 {
+			break
+		}
+		cursor = next
 	}
 	if len(ids) != len(texts) {
 		t.Fatalf("ingested %d items but found %d back", len(texts), len(ids))

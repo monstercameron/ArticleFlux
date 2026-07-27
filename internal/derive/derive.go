@@ -190,9 +190,66 @@ func New(repo *store.ReaderRepo, log *slog.Logger) *Service {
 // Separate from New so the free path is the DEFAULT rather than a nil case someone
 // remembered to handle: every test, every instance without a key, and every code path that
 // does not opt in gets a Service that cannot make a network call at all.
+//
+// Being wired is NOT consent — see SmartPlusPrefKey. Every call is additionally gated on a
+// per-user preference that defaults to off.
 func (s *Service) WithSmartPlus(e Enhancer) *Service {
 	s.plus = e
 	return s
+}
+
+// SmartPlusPrefKey is the per-user opt-in for Smart+ ranking. Absent or anything but
+// "true" means off.
+//
+// # Default-off, and why this needed fixing rather than shipping
+//
+// The first version attached the enhancer in internal/app and called it on every
+// derivation. It worked, and it was wrong for a reason that has nothing to do with
+// correctness: this spends the reader's money. A derivation fires after every poll and
+// after every batch of engagements, so an instance with a key in its environment was
+// making paid API calls on a schedule nobody agreed to, for a feature nobody asked for.
+//
+// It follows the precedent `tts.smartPlus` set for exactly this shape of decision: a
+// feature that egresses data AND bills someone must never become active because of a
+// default. Wiring is capability; the preference is consent, and they are deliberately two
+// different things.
+//
+// A THIRD opt-in rather than a mode of the voice ones, and for their stated reason: the
+// voice sends the article you are reading, and this sends forty titles plus a description
+// of your interests. Someone who consented to one has not consented to the other, and a
+// reader watching their bill should be able to tell them apart on the settings screen.
+const SmartPlusPrefKey = "feed.smartPlus"
+
+// plusFor returns the enhancer this derivation may use: the wired one when this reader has
+// opted in, and nil otherwise.
+//
+// # Resolved once per run and threaded down, rather than checked at each call site
+//
+// Service is shared by every user on the instance, so the answer cannot be cached on the
+// struct — that would be both a data race and a consent leak, with one reader's opt-in
+// deciding another's. And checking at each of the three call sites would read the
+// preference three times per derivation and, worse, allow the three to DISAGREE if the
+// reader toggled it mid-run: entities extracted under consent, the ranking not.
+//
+// So it is a value: nil means every downstream nil-check already written does the right
+// thing, which is why the three helpers take an Enhancer rather than a bool.
+//
+// Read fresh every derivation rather than at boot, so switching it off takes effect on the
+// next run instead of at the next restart. That matters most in the direction that costs
+// money: a reader who turns it off because of the bill must not have to restart a server to
+// be believed.
+//
+// A read error is OFF. The safe direction for a consent flag that cannot be read is to
+// spend nothing.
+func (s *Service) plusFor(ctx context.Context, sc store.Scope) Enhancer {
+	if s.plus == nil {
+		return nil
+	}
+	prefs, err := s.repo.GetPrefs(ctx, sc)
+	if err != nil || prefs[SmartPlusPrefKey] != "true" {
+		return nil
+	}
+	return s.plus
 }
 
 // Enqueue schedules a derivation for one user.
@@ -246,6 +303,13 @@ type Result struct {
 	// anything. §18.4 wants the UI to say so rather than present a confident
 	// wrong answer.
 	ColdStart bool
+	// SmartPlus reports whether the paid tier was permitted on this run.
+	//
+	// Logged, because "why did my ranking not change" and "why am I being billed" are both
+	// questions an operator answers from the log, and the answer to both is this flag. It
+	// reflects CONSENT, not availability: a wired enhancer with the preference off reads
+	// false, which is the distinction that matters.
+	SmartPlus bool
 }
 
 // Run derives everything for one user.
@@ -261,6 +325,11 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) error 
 func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Time) (Result, error) {
 	var res Result
 	sinceMS := now.Add(-Window).UnixMilli()
+
+	// Consent, resolved once for the whole run. Nil unless this reader has explicitly
+	// turned Smart+ on — being WIRED is a capability, not permission to spend their money.
+	plus := s.plusFor(ctx, sc)
+	res.SmartPlus = plus != nil
 
 	// ---- Stage 1: recall -------------------------------------------------
 
@@ -290,13 +359,13 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	// Recall, not precision: entities describe what the reader follows, which is a
 	// candidate-generation fact. It reads `engaged` and nothing that stage 2 writes, so
 	// its position here is a real ordering constraint rather than a convenience.
-	entities, err := s.deriveEntities(ctx, sc, engaged)
+	entities, err := s.deriveEntities(ctx, sc, plus, engaged)
 	if err != nil {
 		return res, fmt.Errorf("derive: entities: %w", err)
 	}
 	res.Entities = entities
 
-	topicSet, suppressed, cold, err := s.deriveTopics(ctx, sc, engaged, vectors, now)
+	topicSet, suppressed, cold, err := s.deriveTopics(ctx, sc, plus, engaged, vectors, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: topics: %w", err)
 	}
@@ -307,7 +376,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	//
 	// Only now, and only reading what stage 1 wrote plus the deliberate acts.
 
-	ranked, err := s.deriveHomeRanking(ctx, sc, feeds, topicSet, suppressed, corpus, now)
+	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, suppressed, corpus, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: home ranking: %w", err)
 	}
@@ -318,7 +387,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 			"user", sc.UserID, "feeds", res.Feeds, "terms", res.Terms,
 			"entities", res.Entities,
 			"domains", res.Domains, "topics", res.Topics, "ranked", res.Ranked,
-			"cold_start", res.ColdStart)
+			"cold_start", res.ColdStart, "smart_plus", res.SmartPlus)
 	}
 	return res, nil
 }
@@ -707,7 +776,7 @@ func (s *Service) deriveDomainAffinity(ctx context.Context, sc store.Scope, enga
 // derivation by design (see ReplaceTopics), and the only place it exists is the
 // database. Reading it back after the write is what lets THIS pass honour it
 // rather than the next one.
-func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, engaged []engagedItem,
+func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhancer, engaged []engagedItem,
 	vectors map[string]textvec.Vector, now time.Time) ([]topics.Topic, []bool, bool, error) {
 
 	docs := make([]topics.Doc, 0, len(engaged))
@@ -732,8 +801,8 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, engaged []en
 	// Before ReplaceTopics, so the label the reader's own rename is compared against is
 	// the final one. Reversing the two would let a Smart+ label overwrite a rename on
 	// every derivation, which is the one thing §18.2 is explicit about not doing.
-	if s.plus != nil {
-		s.labelTopics(ctx, res.Topics)
+	if plus != nil {
+		s.labelTopics(ctx, plus, res.Topics)
 	}
 
 	if err := s.repo.ReplaceTopics(ctx, sc, res.Topics); err != nil {
@@ -770,7 +839,7 @@ const MaxLabelledTopics = 12
 //
 // A failure on one topic leaves that topic's label alone and continues to the next. There
 // is no reason a single unlucky cluster should cost the other eleven their labels.
-func (s *Service) labelTopics(ctx context.Context, ts []topics.Topic) {
+func (s *Service) labelTopics(ctx context.Context, plus Enhancer, ts []topics.Topic) {
 	n := 0
 	for i := range ts {
 		if n >= MaxLabelledTopics {
@@ -780,7 +849,7 @@ func (s *Service) labelTopics(ctx context.Context, ts []topics.Topic) {
 			continue
 		}
 		n++
-		label, err := s.plus.LabelTopic(ctx, ts[i].TopTerms, ts[i].Label)
+		label, err := plus.LabelTopic(ctx, ts[i].TopTerms, ts[i].Label)
 		if err != nil {
 			if s.log != nil {
 				s.log.Info("smart+ topic label declined; keeping the term-based one",
@@ -805,7 +874,7 @@ func topicKey(terms []string) string {
 }
 
 // deriveHomeRanking is the precision stage.
-func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
+func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus Enhancer,
 	feeds []store.FeedAffinity, topicSet []topics.Topic, suppressed []bool,
 	corpus *textvec.Corpus, now time.Time) (int, error) {
 
@@ -844,6 +913,12 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 		return 0, err
 	}
 
+	// The named things the reader follows, for the entity term and the content-match gate.
+	followed, err := s.repo.EntityAffinity(ctx, sc, MaxEntities)
+	if err != nil {
+		return 0, err
+	}
+
 	// The deliberate acts, read separately — this is the half that makes it a
 	// re-rank rather than another weighted term.
 	ids := make([]string, 0, len(candidates))
@@ -874,6 +949,21 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 
 		vec := corpus.TFIDF(itemText(it.Title, it.ContentHTML, it.Summary))
 		topicIdx, topicScore := topics.Nearest(vec, topicSet)
+		// Below the clustering cut, "nearest topic" is not a match.
+		//
+		// topics.Nearest returns the closest centroid and its cosine, and that cosine is
+		// non-zero for almost any item sharing any vocabulary with anything the reader has
+		// read. rank emits its topic reason on `TopicScore > 0`, so without this floor
+		// nearly every candidate claimed a topic match — measured: 197 of 200 passed the
+		// content gate, which made the gate decorative and My Feed the unread list again.
+		//
+		// The floor is topics.DefaultThreshold, the same 0.18 that decides whether two
+		// items belong in one cluster. That equivalence is the argument: an item called
+		// "close to a topic you read" should be at least as close to it as its own members
+		// are to each other. Anything looser is a coincidence of shared words.
+		if topicScore < topics.DefaultThreshold {
+			topicIdx, topicScore = -1, 0
+		}
 
 		published, _ := time.Parse(time.RFC3339Nano, it.PublishedAt)
 		st := stories[it.ID]
@@ -882,6 +972,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 			SourceID:        it.SourceID,
 			PublishedAt:     published,
 			TopicScore:      topicScore,
+			Entities:        namedIn(it.Title, followed),
 			TargetDomain:    host,
 			ManualWeight:    1,
 			Corroboration:   st.otherSources,
@@ -904,6 +995,12 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 
 		r := rank.Score(rankItem, sig, rank.DefaultWeights(), now)
 		if !r.Eligible {
+			continue
+		}
+		// A recommendation has to be ABOUT something. This is the gate that makes My Feed
+		// a recommendation list rather than the unread list reordered — see
+		// hasContentMatch.
+		if !hasContentMatch(r) {
 			continue
 		}
 		r = applyDeliberate(r, itemSignals[it.ID])
@@ -932,8 +1029,8 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 	// candidate set, an instance without a key would be running a different and worse
 	// product rather than the same product without a garnish.
 	plusTier := map[string]bool{}
-	if s.plus != nil {
-		plusTier = s.applySmartPlus(ctx, out, topicSet, feeds)
+	if plus != nil {
+		plusTier = s.applySmartPlus(ctx, plus, out, topicSet, feeds)
 	}
 
 	rows := make([]store.RankedItem, 0, len(out))
@@ -963,6 +1060,92 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 		return 0, err
 	}
 	return len(rows), nil
+}
+
+// contentTerms are the scoring factors that say what an item is ABOUT.
+//
+// Everything else in the formula describes its CIRCUMSTANCES: how new it is, which feed
+// carried it, how much that feed publishes. Those are real signals and they are not reasons
+// to recommend something.
+var contentTerms = map[string]bool{
+	// The item matches a cluster of things the reader has read.
+	"topic": true,
+	// Its headline names a brand, product or organisation they follow.
+	"entity": true,
+	// Several of their feeds carried the same story, which is a fact about the story
+	// rather than about any one feed.
+	"corroboration": true,
+	// The reader wrote a rule that weights this. Their own instruction outranks any
+	// inference, so it counts.
+	"manual": true,
+	// `domain` is deliberately ABSENT, and it is the one that looks like it belongs.
+	//
+	// §18.6's argument for domain affinity is that an aggregator item almost never points
+	// at the aggregator, so where an item POINTS is a different signal from which feed
+	// mentioned it. True — for aggregators. For a publisher's own feed the target domain is
+	// that publisher's domain, so "points at engadget.com, which you keep opening" is the
+	// same fact as "from a feed you read closely", stated twice.
+	//
+	// That is most feeds, and it showed in the numbers: on a real database `domain`
+	// appeared on 138 of 200 rows and `feed` on 149, largely the same rows. Admitting it
+	// here would let the gate pass nearly everything on what is really feed affinity
+	// wearing a second name — which is precisely the "defaults from all feeds" this gate
+	// exists to stop. It still CONTRIBUTES to the score; it just cannot be the sole reason
+	// an item is called a recommendation.
+}
+
+// hasContentMatch reports whether a scored item earned its place on something other than
+// being new and arriving from a feed the reader opens.
+//
+// # Why My Feed refuses to fill itself
+//
+// Without this gate every unread item is ranked, which on a real database meant 200 rows
+// whose reasons were `fresh` on all 200, `feed` on 149 and `domain` on 138. That is a
+// correctly-ordered list and it is not a recommendation list: the reader sees their unread
+// items in a different order and no statement about why any of them is there. The
+// complaint it produced was exact — "filled with defaults from all feeds".
+//
+// So an item needs at least one CONTENT reason. If none of the candidates has one, the
+// ranked page is empty and the UI says the interest layer is still learning, which is true
+// and is better than a confident wrong answer (§18.4). Empty and honest beats full and
+// meaningless — and the empty state names what fixes it, which the reader is the only one
+// who can do.
+//
+// # Why the negative terms cannot qualify
+//
+// Only positive contributions count. `duplicate` and `skipped` are content-level
+// observations, and an item held up as a recommendation BECAUSE it is a near-duplicate of
+// something already shown would be the gate working backwards.
+func hasContentMatch(r rank.Result) bool {
+	for _, why := range r.Reasons {
+		if why.Delta > 0 && contentTerms[why.Term] {
+			return true
+		}
+	}
+	return false
+}
+
+// namedIn returns the followed entities whose names appear in a headline.
+//
+// Title only, matching where the entities were found in the first place (see
+// deriveEntities): bodies carry feed furniture and headlines carry names. Comparing against
+// the body would also match an entity mentioned once in passing, which is not what the
+// article is about.
+//
+// Labels are returned, not keys, because the caller puts them in a sentence a reader will
+// read: "about Android Auto, which you follow" — not "android auto".
+func namedIn(title string, followed []store.Entity) []string {
+	if title == "" || len(followed) == 0 {
+		return nil
+	}
+	lower := strings.ToLower(title)
+	var out []string
+	for _, e := range followed {
+		if strings.Contains(lower, e.Name) {
+			out = append(out, e.Label)
+		}
+	}
+	return out
 }
 
 // SmartPlusHead is how many of the top candidates Smart+ is asked about.
@@ -1003,7 +1186,7 @@ const SmartPlusWant = 12
 // future explanation read. So the scores stay exactly as free Smart computed them and only
 // the ORDER changes; the reasons stay attached to their items, which is what keeps every
 // row's explanation true after the move.
-func (s *Service) applySmartPlus(ctx context.Context, out []scoredItem,
+func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []scoredItem,
 	topicSet []topics.Topic, feeds []store.FeedAffinity) map[string]bool {
 
 	head := len(out)
@@ -1061,7 +1244,7 @@ func (s *Service) applySmartPlus(ctx context.Context, out []scoredItem,
 		}
 	}
 
-	picks, err := s.plus.RerankCandidates(ctx, cands, prof, SmartPlusWant)
+	picks, err := plus.RerankCandidates(ctx, cands, prof, SmartPlusWant)
 	if err != nil {
 		if s.log != nil {
 			// Info, not Warn. A Smart+ call that did not happen is not a fault in this
@@ -1377,7 +1560,7 @@ const EntityMinMentions = 2
 // It is not recoverable by rule — a deterministic title-case turns "iphone" into "Iphone"
 // and "tcl" into "Tcl" — so the label is recovered from the item text that produced the
 // phrase, and only stored casing is trustworthy afterwards.
-func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []engagedItem) (int, error) {
+func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, plus Enhancer, engaged []engagedItem) (int, error) {
 	byName := map[string]*entityAcc{}
 
 	for _, e := range engaged {
@@ -1410,8 +1593,8 @@ func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []
 	// produce no capitalised phrase at all, and a three-word name arrives as two
 	// overlapping pairs. Its answers are merged rather than replacing the heuristic's, so
 	// removing the API key narrows the list instead of emptying it.
-	if s.plus != nil {
-		s.mergeLLMEntities(ctx, engaged, byName)
+	if plus != nil {
+		s.mergeLLMEntities(ctx, plus, engaged, byName)
 	}
 
 	out := make([]store.Entity, 0, len(byName))
@@ -1436,7 +1619,7 @@ func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []
 		if out[i].Weight != out[j].Weight {
 			return out[i].Weight > out[j].Weight
 		}
-		return false
+		return out[i].Name < out[j].Name
 	})
 	if len(out) > MaxEntities {
 		out = out[:MaxEntities]
@@ -1461,7 +1644,7 @@ func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []
 // opinion about the reader.
 //
 // Failure is silent and total: on any error the heuristic's entities stand unchanged.
-func (s *Service) mergeLLMEntities(ctx context.Context, engaged []engagedItem, byName map[string]*entityAcc) {
+func (s *Service) mergeLLMEntities(ctx context.Context, plus Enhancer, engaged []engagedItem, byName map[string]*entityAcc) {
 	titles := make([]string, 0, len(engaged))
 	for _, e := range engaged {
 		if t := strings.TrimSpace(e.Title); t != "" {
@@ -1472,7 +1655,7 @@ func (s *Service) mergeLLMEntities(ctx context.Context, engaged []engagedItem, b
 		return
 	}
 
-	found, err := s.plus.ExtractEntities(ctx, titles)
+	found, err := plus.ExtractEntities(ctx, titles)
 	if err != nil {
 		if s.log != nil {
 			// Info, not Warn: no key, no network and a provider outage are all ordinary,

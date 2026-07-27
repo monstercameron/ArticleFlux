@@ -256,20 +256,40 @@ func Normalize(f *gofeed.Feed, feedURL string, now time.Time) *Parsed {
 
 func normalizeItem(it *gofeed.Item, feedURL, feedAuthor string, now time.Time) Item {
 	content := firstNonEmpty(it.Content, it.Description)
-	summary := summarize(firstNonEmpty(it.Description, it.Content))
+	summarySrc := firstNonEmpty(it.Description, it.Content)
+
+	// Strip the body once and use it for both the word count and — when the
+	// summary comes from the same field — the summary.
+	//
+	// The two lines this replaces read `summarize(firstNonEmpty(Description,
+	// Content))` and `countWords(content)`, and both begin with stripTags. When
+	// an entry carries only ONE of the two fields, which is most of the corpus,
+	// those two expressions resolve to the same string and it was stripped
+	// twice: two passes over the whole body, two builders, two entity replaces,
+	// for one document.
+	//
+	// The equality test is a string comparison in the source and a pointer
+	// comparison at run time — firstNonEmpty returns one of its arguments
+	// unchanged, so when both resolve to the same field the two headers are
+	// identical and == answers without looking at the bytes.
+	strippedContent := stripTags(content)
+	strippedSummary := strippedContent
+	if summarySrc != content {
+		strippedSummary = stripTags(summarySrc)
+	}
 
 	out := Item{
 		GUID:        stableGUID(it, feedURL),
 		URL:         strings.TrimSpace(it.Link),
 		Title:       strings.TrimSpace(it.Title),
-		Summary:     summary,
+		Summary:     summarizeText(strippedSummary),
 		ContentHTML: content,
-		WordCount:   countWords(content),
+		WordCount:   countWordsText(strippedContent),
 	}
 	if out.Title == "" {
 		// Untitled entries are legal in Atom and common in microblog feeds. The
 		// summary is what a person would read anyway.
-		out.Title = truncate(stripTags(summary), 80)
+		out.Title = truncate(stripTags(out.Summary), 80)
 	}
 	if len(it.Authors) > 0 && it.Authors[0] != nil {
 		out.Author = strings.TrimSpace(it.Authors[0].Name)
@@ -343,9 +363,56 @@ func firstNonEmpty(vals ...string) string {
 
 // summarize produces list-row text: tags stripped, whitespace collapsed, cut at
 // a sentence-ish boundary.
-func summarize(html string) string {
-	text := strings.Join(strings.Fields(stripTags(html)), " ")
-	return truncate(text, 280)
+// summaryLen is how much of an entry a list row shows.
+const summaryLen = 280
+
+func summarize(html string) string { return summarizeText(stripTags(html)) }
+
+// summarizeText is summarize's second half, taking text that has already had its
+// markup stripped.
+//
+// Split out so normalizeItem — which needs the stripped body anyway, for the
+// word count — does not strip the same string twice.
+//
+// # Why it stops early
+//
+// This was `strings.Join(strings.Fields(text), " ")` followed by truncate, which
+// is correct and does an amount of work proportional to the WHOLE article to
+// produce 280 characters. On a full-content feed that is a 50KB body turned into
+// a slice of nine thousand string headers, joined into a second 50KB string, and
+// then discarded except for its first paragraph. Across the 27-feed corpus,
+// strings.FieldsFunc alone accounted for 224MB of the 162MB-per-parse
+// allocation profile's largest single entry.
+//
+// Collapsing incrementally and stopping once there is more text than truncate
+// can use produces a byte-identical result, because truncate reads at most
+// s[:summaryLen] and otherwise only asks whether s is longer than that. One byte
+// past the limit answers both questions.
+func summarizeText(text string) string {
+	return truncate(collapseSpace(text, summaryLen+1), summaryLen)
+}
+
+// collapseSpace joins the whitespace-separated fields of s with single spaces,
+// stopping once the result exceeds max bytes.
+//
+// It may return slightly more than max — the field that crosses the line is
+// appended whole rather than cut, because cutting it would mean deciding where,
+// and no caller wants that decision made here. What it guarantees is the part
+// that matters: the bytes it returns are the same bytes strings.Join(
+// strings.Fields(s), " ") would have produced in those positions.
+func collapseSpace(s string, max int) string {
+	var b strings.Builder
+	b.Grow(min(len(s), max+64))
+	for f := range strings.FieldsSeq(s) {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(f)
+		if b.Len() > max {
+			break
+		}
+	}
+	return b.String()
 }
 
 func truncate(s string, n int) string {
@@ -366,6 +433,11 @@ func truncate(s string, n int) string {
 // instead.
 func stripTags(s string) string {
 	var b strings.Builder
+	// The output is the input minus its markup, so the input's length is an
+	// upper bound and never a wild one — feed HTML is mostly text. Without this
+	// the builder doubles from 8 bytes, which for a 50KB body is a dozen
+	// reallocations and copies of everything written so far.
+	b.Grow(len(s))
 	depth := 0
 	for _, r := range s {
 		switch {
@@ -390,10 +462,34 @@ var basicEntities = strings.NewReplacer(
 	"&mdash;", "—", "&ndash;", "–", "&hellip;", "…", "&rsquo;", "'",
 )
 
-func unescapeBasic(s string) string { return basicEntities.Replace(s) }
+// unescapeBasic resolves those entities, and returns s untouched when there are
+// none to resolve.
+//
+// strings.Replacer.Replace allocates a working buffer and a result string on
+// every call, whether or not it changed anything — it does not have a
+// "nothing matched" fast path. Every entity above starts with '&', so one
+// IndexByte answers whether the call can possibly do anything, and most stripped
+// feed text contains no ampersand at all.
+func unescapeBasic(s string) string {
+	if !strings.ContainsRune(s, '&') {
+		return s
+	}
+	return basicEntities.Replace(s)
+}
 
-func countWords(html string) int {
-	return len(strings.Fields(stripTags(html)))
+func countWords(html string) int { return countWordsText(stripTags(html)) }
+
+// countWordsText counts the fields of already-stripped text.
+//
+// FieldsSeq rather than len(strings.Fields(...)): the slice version allocates
+// one string header per word — nine thousand of them for a long article — and
+// every one of them is thrown away by the len() around it.
+func countWordsText(text string) int {
+	n := 0
+	for range strings.FieldsSeq(text) {
+		n++
+	}
+	return n
 }
 
 // NaturalKey is the deduplication key for a source (A14): two tenants adding the

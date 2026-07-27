@@ -273,6 +273,32 @@ func listFilter(q ListQuery, withCursor bool) ([]string, []any, error) {
 	return where, args, nil
 }
 
+// The two halves of the list statement, split where the index hint goes.
+//
+// Constants rather than a fmt.Sprintf or a concatenation at the call site: this
+// is the most-issued query in the application, and the parts of it that never
+// change should not be rebuilt per request. The split point is the one place
+// driveIndex is allowed to speak, which also makes it obvious that nothing else
+// in the statement is dynamic.
+const (
+	listSelectHead = `
+		SELECT i.id, i.source_id,
+		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
+		       i.title, COALESCE(i.author,''), COALESCE(i.summary,''),
+		       COALESCE(i.url,''), i.published_at,
+		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
+		       COALESCE(uis.rating,0),
+		       i.word_count, COALESCE(i.image_url,'')
+		  FROM items i `
+	listSelectTail = `
+		  JOIN sources src ON src.id = i.source_id
+		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
+		  LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?
+		 WHERE sub.tenant_id = ?
+		   AND i.deactivated_at IS NULL
+		   AND src.deactivated_at IS NULL`
+)
+
 // ListItems returns one page plus the cursor for the next.
 //
 // Keyset, never OFFSET. OFFSET degrades exactly when a list gets long enough for
@@ -295,22 +321,16 @@ func (r *ReaderRepo) ListItems(ctx context.Context, s Scope, q ListQuery) ([]Ite
 	}
 	args := append([]any{s.UserID, s.UserID, s.TenantID}, filterArgs...)
 
+	// Three WriteStrings around the index hint, not one WriteString of a
+	// concatenation. `a + driveIndex(q) + b` builds the whole 700-byte statement
+	// as a new string on every list request just to hand it to a builder that is
+	// about to copy it again; writing the constant halves straight through costs
+	// nothing and copies once.
 	sb := strings.Builder{}
-	sb.WriteString(`
-		SELECT i.id, i.source_id,
-		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
-		       i.title, COALESCE(i.author,''), COALESCE(i.summary,''),
-		       COALESCE(i.url,''), i.published_at,
-		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
-		       COALESCE(uis.rating,0),
-		       i.word_count, COALESCE(i.image_url,'')
-		  FROM items i ` + driveIndex(q) + `
-		  JOIN sources src ON src.id = i.source_id
-		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
-		  LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?
-		 WHERE sub.tenant_id = ?
-		   AND i.deactivated_at IS NULL
-		   AND src.deactivated_at IS NULL`)
+	sb.Grow(len(listSelectHead) + len(listSelectTail) + 128)
+	sb.WriteString(listSelectHead)
+	sb.WriteString(driveIndex(q))
+	sb.WriteString(listSelectTail)
 	for _, w := range where {
 		sb.WriteString(" AND ")
 		sb.WriteString(w)
@@ -621,9 +641,57 @@ func (r *ReaderRepo) UndoMarkAllRead(ctx context.Context, s Scope, batch string)
 
 // Search runs an FTS5 query scoped to what the user subscribes to.
 //
-// The MATCH runs first and the join filters it, so the index does the selective
-// work. Filtering by subscription first would mean scoring every item the user
-// can see before discarding almost all of them.
+// The MATCH runs first and the filter narrows it, so the index does the
+// selective work. Filtering by subscription first would mean scoring every item
+// the user can see before discarding almost all of them.
+//
+// # Why it is two phases (and what that was worth)
+//
+// This was one statement — the four joins and the thirteen output columns
+// hanging directly off `items_fts MATCH ?`, with ORDER BY bm25 and LIMIT at the
+// bottom. That reads correctly and performs terribly for exactly one reason:
+// LIMIT is the LAST thing that happens. A term matching 50,000 documents is
+// joined to items, sources, subscriptions and user_item_state fifty thousand
+// times, and 49,950 of those rows are then thrown away by the sorter.
+//
+// Measured on the G3 fixture (50,000 items x 3 users), searching a term that
+// matches every document:
+//
+//	one statement, four joins over every match   146ms
+//	rank and cut to 50 first, then hydrate        77ms
+//
+// The rows returned are identical, in the same order. The only thing that
+// changed is how many of them the joins ever see.
+//
+// # Why the snippet is produced in the ranked phase
+//
+// snippet() needs the FTS cursor for its row, so the obvious phase-2 spelling —
+// re-join items_fts on the surviving rowids — has to state `items_fts MATCH ?`
+// a second time, and that re-runs the whole match. Measured, that version was
+// 169ms: SLOWER than the single statement it replaced.
+//
+// It does not need to be in phase 2 at all. SQLite evaluates the output columns
+// of a sorted, limited query after the sort, so bm25() and snippet() are already
+// only computed for the fifty rows that survive — a measurement worth stating
+// because it is the whole reason this shape works: adding snippet() to a ranked,
+// limited FTS query cost nothing (49.0ms against 49.6ms without it). So both are
+// produced inside the CTE, where the cursor is open, and carried out as ordinary
+// columns.
+//
+// The score is carried out with them because a CTE's ORDER BY does not survive
+// into the enclosing query — without `ORDER BY hits.score` on the outer select,
+// this returns the right fifty articles in whatever order the join produced.
+//
+// # Why the subscription test became a semi-join
+//
+// `JOIN subscriptions ... WHERE sub.tenant_id = ?` and `source_id IN (SELECT
+// ...)` select the same rows — subscriptions is unique per (user, source), so
+// the join could never duplicate one — but the second is a membership test
+// SQLite serves from an index without producing a row to carry through the
+// sorter. On the same fixture that was 72ms against 86ms for the join form.
+//
+// Phase 2 still joins subscriptions, because the feed's display title comes from
+// it. Fifty rows, not fifty thousand.
 func (r *ReaderRepo) Search(ctx context.Context, s Scope, query, sourceID string, limit int) ([]Item, []string, error) {
 	if !s.Valid() {
 		return nil, nil, ErrNoScope
@@ -636,8 +704,30 @@ func (r *ReaderRepo) Search(ctx context.Context, s Scope, query, sourceID string
 		return nil, nil, nil
 	}
 
-	args := []any{s.UserID, s.UserID, match, s.TenantID}
-	q := `
+	// Phase 1: rank the matches, cut to a page, and carry the two FTS-derived
+	// columns out with the rowids.
+	var hits strings.Builder
+	hits.WriteString(`
+		WITH hits AS (
+		  SELECT items_fts.rowid AS rid,
+		         bm25(items_fts) AS score,
+		         snippet(items_fts, -1, '<mark>', '</mark>', '…', 12) AS snip
+		    FROM items_fts
+		    JOIN items i ON i.rowid = items_fts.rowid
+		   WHERE items_fts MATCH ?
+		     AND i.deactivated_at IS NULL
+		     AND i.source_id IN (SELECT source_id FROM subscriptions
+		                          WHERE user_id = ? AND tenant_id = ?)`)
+	args := []any{match, s.UserID, s.TenantID}
+	if sourceID != "" {
+		hits.WriteString(` AND i.source_id = ?`)
+		args = append(args, sourceID)
+	}
+	hits.WriteString(` ORDER BY bm25(items_fts) LIMIT ?)`)
+	args = append(args, limit)
+
+	// Phase 2: hydrate those rows. Every join below runs at most `limit` times.
+	hits.WriteString(`
 		SELECT i.id, i.source_id,
 		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
 		       i.title, COALESCE(i.author,''), COALESCE(i.summary,''),
@@ -645,21 +735,16 @@ func (r *ReaderRepo) Search(ctx context.Context, s Scope, query, sourceID string
 		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 		       COALESCE(uis.rating,0),
 		       i.word_count, COALESCE(i.image_url,''),
-		       snippet(items_fts, -1, '<mark>', '</mark>', '…', 12)
-		  FROM items_fts
-		  JOIN items i ON i.rowid = items_fts.rowid
+		       hits.snip
+		  FROM hits
+		  JOIN items i ON i.rowid = hits.rid
 		  JOIN sources src ON src.id = i.source_id
 		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
 		  LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?
-		 WHERE items_fts MATCH ? AND sub.tenant_id = ? AND i.deactivated_at IS NULL`
-	if sourceID != "" {
-		q += ` AND i.source_id = ?`
-		args = append(args, sourceID)
-	}
-	q += ` ORDER BY bm25(items_fts) LIMIT ?`
-	args = append(args, limit)
+		 ORDER BY hits.score`)
+	args = append(args, s.UserID, s.UserID)
 
-	rows, err := r.db.Read.QueryContext(ctx, q, args...)
+	rows, err := r.db.Read.QueryContext(ctx, hits.String(), args...)
 	if err != nil {
 		return nil, nil, err
 	}

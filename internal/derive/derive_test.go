@@ -136,8 +136,20 @@ func (f *fixture) record(t *testing.T, kind signals.Kind, itemIDs []string, at t
 			At:      at.UnixMilli(),
 		})
 	}
-	if _, err := f.repo.RecordEngagements(f.ctx, f.scope, evs); err != nil {
-		t.Fatal(err)
+	// RecordEngagements caps a single batch at 200 (store.MaxEngagementBatch or
+	// similar); chunked here so a caller recording engagement over a large
+	// fixture (e.g. TestEntityTruncationIsStableAcrossRederivation) does not
+	// need to know that limit exists.
+	const batch = 200
+	for len(evs) > 0 {
+		n := batch
+		if n > len(evs) {
+			n = len(evs)
+		}
+		if _, err := f.repo.RecordEngagements(f.ctx, f.scope, evs[:n]); err != nil {
+			t.Fatal(err)
+		}
+		evs = evs[n:]
 	}
 }
 
@@ -617,6 +629,83 @@ func TestDwellClassifiesIntoEngagementWeight(t *testing.T) {
 	}
 }
 
+// deriveEntities' sort breaks ties by Name specifically so a re-derivation over
+// unchanged input keeps the SAME MaxEntities-sized set, not merely the same
+// entities in a different order. That distinction is what TestDerivedState-
+// RebuildsIdentically's snapshotEntities cannot exercise: reading back through
+// repo.EntityAffinity applies its own `ORDER BY weight DESC, name`, which
+// re-imposes name order on every read regardless of what order the rows were
+// written in — a pure reordering is invisible through it by construction. Every
+// other fixture in this package also has far fewer than MaxEntities distinct
+// entities, so truncation (`out = out[:MaxEntities]`) never engages there
+// either, and a broken tie-break has nothing to disagree about — which is
+// exactly why the mutation audit found this invisible to the whole suite.
+//
+// This constructs more entities than MaxEntities, every one tied at the same
+// weight (one Completed engagement each and nothing else), so which
+// MaxEntities of them survive truncation is EXACTLY what the tie-break decides.
+// On tied weights the SET that gets kept is order-INDEPENDENT information —
+// no read-time re-sort can launder a truncation boundary the way it launders
+// display order — so reading the result back through the ordinary repo call is
+// fine here.
+func TestEntityTruncationIsStableAcrossRederivation(t *testing.T) {
+	f := setup(t)
+
+	const n = MaxEntities + 5
+	texts := make(map[string]string, n)
+	for i := 0; i < n; i++ {
+		title := fmt.Sprintf("ProductX%03d GadgetX%03d", i, i)
+		texts[fmt.Sprintf("tie-%03d-a", i)] = title + " unboxing"
+		texts[fmt.Sprintf("tie-%03d-b", i)] = title + " teardown"
+	}
+	ids := f.ingestEntityItems(t, texts)
+	f.record(t, signals.Completed, ids, now.Add(-time.Hour))
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	before, err := f.repo.EntityAffinity(f.ctx, f.scope, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != MaxEntities {
+		t.Fatalf("got %d entities, want exactly MaxEntities (%d); the tied-weight construction "+
+			"did not engage truncation and the rest of this test proves nothing", len(before), MaxEntities)
+	}
+	beforeNames := entityNameSet(before)
+
+	if err := f.repo.ClearDerived(f.ctx, f.scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.repo.EntityAffinity(f.ctx, f.scope, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterNames := entityNameSet(after)
+
+	if len(afterNames) != len(beforeNames) {
+		t.Fatalf("entity count changed across an identical rebuild: %d vs %d", len(beforeNames), len(afterNames))
+	}
+	for name := range beforeNames {
+		if !afterNames[name] {
+			t.Fatalf("truncation kept a different set of tied-weight entities across an identical "+
+				"rebuild — %q survived the first derivation and not the second — "+
+				"the Name tie-break in deriveEntities' sort is not doing its job", name)
+		}
+	}
+}
+
+func entityNameSet(es []store.Entity) map[string]bool {
+	out := make(map[string]bool, len(es))
+	for _, e := range es {
+		out[e.Name] = true
+	}
+	return out
+}
+
 // A reader with no engagement at all must not produce a confident wrong answer.
 func TestColdStartIsReported(t *testing.T) {
 	f := setup(t)
@@ -717,10 +806,20 @@ func snapshotDomains(t *testing.T, f *fixture) string {
 }
 
 // snapshotEntities captures name, weight and mentions in the order the reader
-// screen actually gets them (repo.EntityAffinity orders by weight DESC, name —
-// the same weight-then-name rule deriveEntities' own sort uses, so a dropped
-// Name tie-break shows up here as an order that stops matching itself between
-// two derivations of the same input.
+// screen actually gets them.
+//
+// Worth being honest about what this snapshot cannot catch: repo.EntityAffinity
+// reads with `ORDER BY weight DESC, name`, which is the exact tie-break
+// deriveEntities' own Go-side sort applies, so on tied weights storage always
+// hands rows back name-sorted regardless of what order they were written in. A
+// dropped Name tie-break cannot show up as a REORDERING here — see
+// TestEntityTruncationIsStableAcrossRederivation for the construction that
+// proves that specific regression, by making the tie-break decide MaxEntities
+// truncation's boundary (a SET difference, which no read-time sort can
+// launder) rather than merely display order. This snapshot still earns its
+// place in the rebuild test: it catches a weight or mention-count computation
+// that stops being reproducible, which is a real and separate way this could
+// break.
 func snapshotEntities(t *testing.T, f *fixture) string {
 	t.Helper()
 	rows, err := f.repo.EntityAffinity(f.ctx, f.scope, 500)
@@ -756,7 +855,9 @@ func snapshotTopics(t *testing.T, f *fixture) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	topicSet, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, engaged, vectors, now)
+	// nil enhancer: this asserts the free tier's clustering, and a model relabelling the
+	// clusters would be testing something else.
+	topicSet, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, nil, engaged, vectors, now)
 	if err != nil {
 		t.Fatal(err)
 	}
