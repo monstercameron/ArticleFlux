@@ -90,6 +90,12 @@ type Client struct {
 	// paid synthesis. See Speak.
 	mu       sync.Mutex
 	inflight map[string]*synthesis
+
+	// bound caps how many DIFFERENT artifacts are being synthesised at once,
+	// and meters what they cost. inflight above is deduplication and this is a
+	// ceiling — a hundred readers listening to a hundred different articles
+	// collapse to nothing under the first and are held to MaxInFlight by this.
+	bound bound
 }
 
 // synthesis is one in-progress paid call that several callers are waiting on.
@@ -174,6 +180,7 @@ func (c *Client) Speak(ctx context.Context, key, text, model, voice string) ([]b
 	path := c.cachePath(key, model, voice)
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+			c.bound.hit()
 			return b, nil
 		}
 	}
@@ -242,6 +249,19 @@ func (c *Client) once(ctx context.Context, id string,
 
 // synthesise is the billed call itself.
 func (c *Client) synthesise(ctx context.Context, apiKey, path, text, model, voice string) ([]byte, error) {
+	// The ceiling on paid calls, taken here rather than in Speak because only
+	// the leader of a `once` group reaches this line: the others are waiting on
+	// its result and are not holding a provider connection. A slot taken in
+	// Speak would be a slot spent on somebody else's work.
+	if err := c.bound.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer c.bound.release()
+	// Charged before the call rather than after it. A request that times out or
+	// is refused mid-stream has still been made, and a meter that only counts
+	// the successes is one that reads lowest exactly when something is wrong.
+	c.bound.charge(len(text))
+
 	body, _ := json.Marshal(map[string]any{
 		"model":           model,
 		"voice":           voice,
