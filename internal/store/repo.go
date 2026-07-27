@@ -247,10 +247,21 @@ func listFilter(q ListQuery, withCursor bool) ([]string, []any, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		// The tuple comparison is what makes the cursor exact: it resumes after
-		// (published, id) rather than after a timestamp that several rows share.
-		where = append(where, "(i.published_at < ? OR (i.published_at = ? AND i.id < ?))")
-		args = append(args, published, published, id)
+		// A ROW VALUE comparison, not the equivalent OR expression.
+		//
+		// Both are exact — they resume after (published, id) rather than after a
+		// timestamp several rows share — but only this one is seekable. SQLite
+		// cannot turn `a < ? OR (a = ? AND b < ?)` into an index range, so with
+		// the driving index pinned it walks the whole index from the newest end
+		// evaluating the predicate per row. On the real development database that
+		// took page 2 from 13ms to 1.3 SECONDS: page 1 got faster and page 2
+		// collapsed, which is the shape of regression a page-1 benchmark never
+		// sees.
+		//
+		// Row values have been available since SQLite 3.15 and the DESC index
+		// matches the comparison direction, so this becomes a seek.
+		where = append(where, "(i.published_at, i.id) < (?, ?)")
+		args = append(args, published, id)
 	}
 	return where, args, nil
 }

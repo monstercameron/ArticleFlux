@@ -56,6 +56,24 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **G3 passed, and the answer was not the one the plan expected** (`internal/store/hotquery_test.go`,
+  TODO 5.4, §6.5, R2). At 50,000 items × 3 users: **unread by newest 478ms → 0.5ms, unread by folder
+  178ms → 0.5ms, keyset page 40 408ms → 0.3ms.** §6.5 prescribed denormalising `source_id` and
+  `published_at` onto `user_item_state` — that was **never built** (5.3 recorded it as done and the
+  columns do not exist) and turned out **not to be needed**. `EXPLAIN QUERY PLAN` showed SQLite
+  driving from `subscriptions`, joining all ~16,700 unread rows, and sorting every one in a `TEMP
+  B-TREE` to take 50; pinning `items_published`, an index present since `0001_init`, fixed it with no
+  migration.
+- **A 1.3-second paging regression, found by the fix and then fixed.** With the index pinned, page 2
+  on the real database went 13ms → 1.3s: the keyset cursor's `a < ? OR (a = ? AND b < ?)` is not
+  seekable, so SQLite scanned the index evaluating it per row. As the row-value `(a, b) < (?, ?)` it
+  seeks — 0.5ms, and both pages ended up 20× faster than before any of this. Page 1 had got *faster*
+  while page 2 collapsed, which is the regression shape a page-1 benchmark never sees.
+- **Still over budget and now specified**: the two *counting* shapes — flat unread count 556ms,
+  sidebar with per-feed counts 447ms — must visit every unread row, so no index helps. R2's
+  materialised counter is justified by measurement rather than assumed (TODO 5.4a), and the current
+  numbers are recorded as a ratchet so a regression fails and the entry must be deleted when it lands.
+
 - **Preservation and the degrade ladder** (`internal/preserve`, `internal/store/archive.go`,
   `internal/degrade`, TODO 6.12 & 6.13). §10.6's tiered archival, including the trigger worth having:
   **a distress sweep when a source starts failing**, because a feed erroring is the best early

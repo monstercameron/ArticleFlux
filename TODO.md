@@ -858,10 +858,40 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       `published_at` and **all three §6.5 indexes**
       ✅ 2026-07-26 — `items` + `user_item_state` with the denormalised `source_id`, keyset paging that never skips or repeats (`TestKeysetPaginationCoversEveryRowOnce`), and `CountQuery` sharing its filter builder with `ListItems` so the two cannot describe different result sets. *`item_revisions` is not written yet.*
 
-- [ ] **5.4 G3 · Hot-query benchmark** — 50k items × 3 users, **all three shapes**: flat unread count,
+- [x] **5.4 G3 · Hot-query benchmark** — 50k items × 3 users, **all three shapes**: flat unread count,
       unread-by-newest, **unread-by-folder**. *Do not proceed without numbers.* R2
       ◧ 2026-07-26 — `internal/store/bigdb_test.go` runs the three shapes against the REAL dev database (3,621 items): paging 9ms, mark-all-read 16ms, search prompt. It is not the 50k × 3-user synthetic fixture the plan asks for, and it skips when no dev database is present — so it proves the queries are fine today and guards nothing in CI.
 
+      ✅ **PASSED 2026-07-26 — and the answer was not the one the plan expected.**
+      `internal/store/hotquery_test.go`, `HOTQUERY=1`: 50,000 items × 3 users × 150 feeds, all four
+      shapes, median of seven runs after a warm-up.
+
+      **unread by newest 478ms → 0.5ms. unread by folder 178ms → 0.5ms. Keyset page 40 408ms →
+      0.3ms.** §6.5's prescribed fix — denormalise `source_id`/`published_at` onto
+      `user_item_state` — was **never built** (5.3 recorded it as done; the columns do not exist),
+      and it turned out **not to be needed**. `EXPLAIN QUERY PLAN` showed the planner driving from
+      `subscriptions`, joining all ~16,700 unread rows and sorting every one in a `TEMP B-TREE` to
+      take 50. Pinning `items_published` — an index present since `0001_init` — fixed it with no
+      migration.
+
+      **A second bug fell out of the fix**: with the index pinned, page 2 on the real database went
+      13ms → **1.3 seconds**, because the cursor's `a < ? OR (a = ? AND b < ?)` is not seekable.
+      Rewritten as the row-value `(a, b) < (?, ?)` it became 0.5ms. Page 1 had got *faster* while
+      page 2 collapsed — the regression shape a page-1 benchmark never sees.
+
+      **Still over budget: the two counting shapes** — flat unread count 556ms, sidebar with
+      per-feed counts 447ms. They cannot stop at 50. R2's materialised counter is now justified by
+      measurement rather than assumed; see 5.4a. Recorded in `knownSlow` as a ratchet, so a
+      regression past them fails and the entry must be deleted when the counter lands.
+
+- [ ] **5.4a · The materialised per-user unread counter** — R2's fallback, now measured and
+      required. The sidebar renders per-feed unread counts on **every screen** and takes 447ms at
+      50k items; the flat total takes 556ms. Both must visit every unread row, so no index helps.
+      Maintain a count per `(user_id, source_id)`, written by ingest/fan-out, `SetItemState`,
+      `MarkAllRead` and `UndoMarkAllRead`. *Done when: both shapes are inside the 150ms budget, their
+      `knownSlow` entries are deleted, and a reconcile function proves the maintained counter equals
+      a recomputed one after a randomised sequence of reads, unreads and mark-all-reads — drift is
+      the whole risk of a denormalised counter and it is silent.*
 - [ ] **5.5** `tags` · `item_tags` — A21, prerequisite for both rules and the sync API
       ◧ 2026-07-26 — Tags exist and are per-user, but they attach to a **subscription**, not an item. `item_tags` — which is what A21 actually specifies and what the sync API needs — is not built.
 
