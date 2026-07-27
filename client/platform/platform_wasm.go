@@ -262,6 +262,21 @@ func FieldValue(role string) string {
 // does not exist until GWC has committed the render that opened it, and focusing
 // an element that is not there yet fails silently — which reads as a palette
 // that opens and then ignores your typing.
+// FocusField moves focus to the input carrying data-role=role, retrying across
+// frames until the focus actually LANDS.
+//
+// "Until it exists" was not enough, and the failure it caused is worth keeping
+// written down. The dialogs are rendered at all times now so that they can
+// animate closed, which means their fields exist long before they are
+// focusable: `.focus()` on anything inside `visibility: hidden` is a silent
+// no-op. The old loop found the element on the first frame, called focus, saw no
+// error, and stopped — and the command palette opened without a cursor in it, so
+// Escape and the arrow keys (which the palette owns only while its own field has
+// focus) did nothing at all.
+//
+// Checking activeElement closes that whole class: an element that is present but
+// not yet focusable is now indistinguishable, to this function, from one that is
+// not present.
 func FocusField(role string) {
 	doc := js.Global().Get("document")
 	const maxFrames = 20
@@ -271,12 +286,15 @@ func FocusField(role string) {
 		tries++
 		el := doc.Call("querySelector", `[data-role="`+role+`"]`)
 		if el.Truthy() {
-			frame.Release()
 			el.Call("focus")
-			if sel := el.Get("select"); sel.Truthy() {
-				el.Call("select")
+			// The focus is only real if the document agrees.
+			if doc.Get("activeElement").Equal(el) {
+				frame.Release()
+				if sel := el.Get("select"); sel.Truthy() {
+					el.Call("select")
+				}
+				return nil
 			}
-			return nil
 		}
 		if tries >= maxFrames {
 			frame.Release()

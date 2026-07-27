@@ -2150,6 +2150,27 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 	act.Get().bodyLanded = func(full *pb.Item) {
+		// A body landing ABOVE the reader must not move the reader.
+		//
+		// Neighbour prefetch (8b.2) means the article above is usually a
+		// skeleton for a moment and then a thousand pixels of prose. Everything
+		// below it shifts down by that difference, and since `scrollTop` does not
+		// move, the viewport ends up inside the article that just grew — which
+		// the topmost-article handler correctly reports, and correctly marks
+		// read. Correctly, because it cannot tell the difference between the
+		// reader arriving at an article and an article arriving at the reader.
+		//
+		// This is the same insertion problem `retreat` already solves for a
+		// prepend, so it takes the same tool: hold the place, and let the growth
+		// happen above it. Without it, "click row n, then row n+2" could still
+		// mark n+1 read — one round trip later, by a different route than the
+		// jump, which is why it survived the first fix.
+		if c := current.Get(); c != nil && full.GetId() != c.GetId() {
+			st := stream.Get()
+			if li, ci := indexOf(st, full), indexOf(st, c); li >= 0 && ci >= 0 && li < ci {
+				platform.KeepScrollAnchored(".pane-article")
+			}
+		}
 		bodies.Set(withEntry(bodies.Get(), full.GetId(), full))
 		// The saved note travels with the article, so the draft is seeded once —
 		// when the body lands, and never over the top of something the reader has

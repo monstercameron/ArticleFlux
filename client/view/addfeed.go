@@ -296,6 +296,13 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartRefused"))))
 		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+	case "js_rendered":
+		// No lamp, no button, no retry: this one is not a failure to keep
+		// pushing at. Offering "Try again" here would be offering to spend money
+		// on the same answer.
+		kids = append(kids, html.Div(html.Props{Class: "af-note"},
+			html.Text(tr.T("addFeed", "smartJSRendered"))))
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
 	case "failed":
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartFailed"))))
@@ -356,11 +363,24 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 	}
 
 	rule := prop.GetRule()
+	// The two dialects read differently and are labelled differently: CSS
+	// selectors MATCH elements, paths READ fields. A reader checking the rule is
+	// checking a different kind of claim in each case, and one word of
+	// vocabulary is cheaper than explaining that.
+	isJSON := rule.GetKind() == "json"
+	label := tr.T("addFeed", "proposalRule")
+	if isJSON {
+		label = tr.T("addFeed", "proposalPaths")
+	}
 	return html.Div(html.Props{Class: "af-ladder"},
 		html.Div(html.Props{Class: "af-ladder-title"},
 			html.Text(tr.T("addFeed", "proposalTitle"))),
 		html.Div(html.Props{Class: "af-hint"},
 			html.Text(tr.T("addFeed", "proposalFound", i18n.Count(int(prop.GetFound()))))),
+		ui.If(isJSON, func() ui.Node {
+			return html.Div(html.Props{Class: "af-note"},
+				html.Text(tr.T("addFeed", "proposalJSON")))
+		}),
 		ui.If(prop.GetNotes() != "", func() ui.Node {
 			return html.Div(html.Props{Class: "af-note"}, html.Text(prop.GetNotes()))
 		}),
@@ -369,12 +389,21 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 		// suspects the wrong list was picked can see `nav a@href` sitting there
 		// and know immediately.
 		html.Div(html.Props{Class: "af-rule"},
-			html.Span(html.Props{Class: "af-rule-label"},
-				html.Text(tr.T("addFeed", "proposalRule"))),
+			html.Span(html.Props{Class: "af-rule-label"}, html.Text(label)),
 			html.Code(html.Props{Class: "af-rule-code"},
 				html.Text(rule.GetItemSelector()+" › "+rule.GetTitleSelector()+
-					" · "+rule.GetLinkSelector())),
+					" · "+linkOf(rule))),
 		),
+		// Where a json rule fetches from, shown because it is a second address
+		// the reader is agreeing to — the sidebar will say the page, and this is
+		// what gets polled.
+		ui.If(isJSON && rule.GetDataUrl() != "", func() ui.Node {
+			return html.Div(html.Props{Class: "af-rule"},
+				html.Span(html.Props{Class: "af-rule-label"},
+					html.Text(tr.T("addFeed", "proposalData"))),
+				html.Code(html.Props{Class: "af-rule-code"}, html.Text(rule.GetDataUrl())),
+			)
+		}),
 		html.Div(html.Props{Class: "af-actions"},
 			html.Button(html.Props{
 				Class: "btn af-go",
@@ -383,6 +412,15 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 			}, html.Text(tr.T("addFeed", "proposalFollow"))),
 		),
 	)
+}
+
+// linkOf is the rule's link, which a json rule may express as a template rather
+// than as a path.
+func linkOf(r *pb.ScrapeRule) string {
+	if r.GetLinkSelector() != "" {
+		return r.GetLinkSelector()
+	}
+	return r.GetLinkTemplate()
 }
 
 // afField is one labelled control: an eyebrow, the control, and the sentence

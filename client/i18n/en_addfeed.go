@@ -66,6 +66,12 @@ func init() {
 		"smartNoKey": "This server has no OpenAI key. Whoever runs it adds one in " +
 			"Settings → Smart+.",
 		"smartRefused": "This site's robots.txt asks us not to read this page, so we won't.",
+		// The one failure with a remedy that is not "try again". Named plainly:
+		// the reader does not need the words "single-page application", they need
+		// to know that this page has nothing in it yet and where to look instead.
+		"smartJSRendered": "This page builds itself in your browser and does not publish " +
+			"its entries anywhere we can reach — no feed, and no data address that answers. " +
+			"A feed address elsewhere on the site would still work, if it has one.",
 		"smartFailed": "Smart+ couldn't find a list of articles on that page. It works on " +
 			"index pages — a blog's front page, a news section, a changelog.",
 
@@ -74,6 +80,16 @@ func init() {
 		// a reader can check; "here are eleven articles it pulled out" is.
 		"proposalFollow": "Follow this page",
 		"proposalRule":   "Matching",
+		// A json rule is not "matching" anything — it is reading named fields out
+		// of a response. Different verb, because the reader checking it is
+		// checking a different kind of claim.
+		"proposalPaths": "Reading",
+		"proposalData":  "from",
+		// Said when the entries came from the site's own data rather than its
+		// markup. Worth saying plainly: it explains why a page that looked empty
+		// produced a list, and where the articles will keep coming from.
+		"proposalJSON": "This page loads its entries from its own address, and that is what " +
+			"Smart+ follow found. It reads the same one the site does.",
 		"proposalNoDate": "no date",
 	})
 

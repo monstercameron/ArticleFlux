@@ -71,7 +71,7 @@ func Sheet() {
 	// var(--c, …) had before.
 	css.Global(".item-source, .article-link, .article-body a", css.Custom("ink", "var(--c)"))
 	css.Global("html[data-tone='light'] :is(.item-source, .article-link, .article-body a)",
-		css.Custom("ink", "color-mix(in oklab, var(--c, currentColor), var(--cream) 52%)"))
+		css.Custom("ink", "color-mix(in oklab, var(--c, currentColor), var(--cream) 62%)"))
 
 	// The wash used to be overridden here for light themes. It is a THEME TOKEN
 	// now (--wash), because the problem was never light-versus-dark: it is that
