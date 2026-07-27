@@ -255,3 +255,81 @@ func TestPermissiveURLCheck(t *testing.T) {
 		t.Errorf("file:// = %v, want ErrScheme", err)
 	}
 }
+
+// TestWrappedIPv4FormsAreUnwrapped covers the three IPv6 spellings of an IPv4
+// address. Two of them used to slip both deny lists: Go's To4 only unwraps the
+// ::ffff: form, so ::169.254.169.254 and 64:ff9b::a9fe:a9fe reached the cloud
+// metadata endpoint — the first under EVERY policy, the second whenever
+// -allow-private was set, which `-dev` sets automatically.
+func TestWrappedIPv4FormsAreUnwrapped(t *testing.T) {
+	metadata := []struct{ ip, form string }{
+		{"::ffff:169.254.169.254", "IPv4-mapped"},
+		{"::169.254.169.254", "IPv4-compatible (RFC 4291, deprecated)"},
+		{"64:ff9b::a9fe:a9fe", "NAT64 well-known prefix (RFC 6052)"},
+	}
+	for _, c := range metadata {
+		t.Run(c.ip, func(t *testing.T) {
+			if !IsBlockedIP(net.ParseIP(c.ip)) {
+				t.Errorf("%s (%s) must be blocked: it is the metadata endpoint", c.ip, c.form)
+			}
+			// The stronger claim, and the one SECURITY.md makes: the metadata
+			// endpoint is unreachable under EVERY configuration, not merely the
+			// strict one.
+			if !IsNeverAllowed(net.ParseIP(c.ip)) {
+				t.Errorf("%s (%s) must stay blocked even under -allow-private", c.ip, c.form)
+			}
+		})
+	}
+
+	// Wrapped loopback follows the SAME policy as bare loopback rather than a
+	// blanket ban: refused by default, reachable when an operator opted in. A
+	// per-wrapper CIDR could not express this, which is why unwrapping is the
+	// mechanism.
+	loopback := []string{"::ffff:127.0.0.1", "::127.0.0.1", "64:ff9b::7f00:1"}
+	for _, ip := range loopback {
+		if !IsBlockedIP(net.ParseIP(ip)) {
+			t.Errorf("%s must be blocked by default, exactly like 127.0.0.1", ip)
+		}
+		if IsNeverAllowed(net.ParseIP(ip)) {
+			t.Errorf("%s should be reachable under -allow-private, exactly like 127.0.0.1", ip)
+		}
+	}
+}
+
+// TestUnwrappingDoesNotSwallowRealAddresses is the other half of the test the
+// ::ffff:0:0/96 comment asks for. An unwrap rule that is too eager is worse than
+// the hole it closes: it takes the public internet offline and presents as "all
+// my feeds stopped working".
+func TestUnwrappingDoesNotSwallowRealAddresses(t *testing.T) {
+	public := []string{
+		"8.8.8.8", "1.1.1.1", "93.184.216.34",
+		"2606:4700:4700::1111", // public IPv6
+		"2001:4860:4860::8888",
+		"64:ff9b::8080:8080", // NAT64 wrapping a PUBLIC address: 128.128.128.128
+	}
+	for _, ip := range public {
+		if IsNeverAllowed(net.ParseIP(ip)) {
+			t.Errorf("%s must not be caught by the never-allowed list", ip)
+		}
+	}
+	// 64:ff9b:: wrapping a public address is still refused by DEFAULT, because
+	// the prefix itself is a translator we did not choose — but it must not be
+	// in neverAllowed, which the loop above asserts.
+	if !IsBlockedIP(net.ParseIP("64:ff9b::8080:8080")) {
+		t.Error("NAT64 prefix should stay blocked under the strict policy")
+	}
+
+	// The two reserved addresses RFC 4291 carves out of ::/96. Unwrapping ::1 to
+	// 0.0.0.1 would land it in 0.0.0.0/8 — which is in neverAllowed — and break
+	// -allow-private for IPv6 loopback, the most ordinary self-hosted case there
+	// is.
+	if IsNeverAllowed(net.ParseIP("::1")) {
+		t.Error("::1 is IPv6 loopback and must follow the loopback policy, not the 0.0.0.0/8 one")
+	}
+	if !IsBlockedIP(net.ParseIP("::1")) {
+		t.Error("::1 must still be blocked by default")
+	}
+	if !IsBlockedIP(net.ParseIP("::")) || !IsNeverAllowed(net.ParseIP("::")) {
+		t.Error(":: is the unspecified address and must be blocked under every policy")
+	}
+}

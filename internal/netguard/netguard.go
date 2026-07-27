@@ -70,7 +70,13 @@ var blocked = func() []*net.IPNet {
 		"fc00::/7",           // unique local — the IPv6 RFC1918
 		"fe80::/10",          // IPv6 link-local
 		"ff00::/8",           // IPv6 multicast
-		"64:ff9b::/96",       // NAT64: reaches IPv4 space through an IPv6 address
+		// NAT64 (RFC 6052) reaches IPv4 space through an IPv6 address. The whole
+		// prefix is listed for the strict policy, but the rule that actually
+		// decides is unwrapV4, which reduces 64:ff9b::a.b.c.d to a.b.c.d so the
+		// embedded address is judged on its own merits under BOTH policies. This
+		// entry is what catches a NAT64 address whose embedded IPv4 is public —
+		// still a route into a translator we did not choose.
+		"64:ff9b::/96",
 		"2001:db8::/32",      // documentation
 		// NOTE: "::ffff:0:0/96" (IPv4-mapped IPv6) deliberately does NOT appear
 		// here, and adding it back is a severe bug rather than defence in depth.
@@ -121,40 +127,101 @@ var neverAllowed = func() []*net.IPNet {
 	return nets
 }()
 
-// IsNeverAllowed reports whether an address is blocked under every policy.
-func IsNeverAllowed(ip net.IP) bool {
-	if ip == nil {
+// unwrapV4 reduces every IPv6 form that carries an IPv4 address to that
+// address, so one deny list covers all of them.
+//
+// There are THREE such forms, and Go's To4 only knows the first:
+//
+//   - IPv4-mapped, ::ffff:127.0.0.1 — handled by To4.
+//   - IPv4-compatible, ::127.0.0.1 — deprecated by RFC 4291 and NOT handled by
+//     To4, which requires bytes 10 and 11 to be 0xff. So it matched no IPv4 rule
+//     (wrong length after no unwrap) and no IPv6 rule (no CIDR covers ::/96),
+//     and ::169.254.169.254 reached the metadata endpoint under EVERY policy.
+//   - NAT64, 64:ff9b::127.0.0.1 — the well-known prefix from RFC 6052. It was in
+//     `blocked` as a whole /96, which held for the strict policy, but it was
+//     absent from `neverAllowed`, so -allow-private let 64:ff9b::a9fe:a9fe
+//     through — the metadata endpoint again, wearing a different hat.
+//
+// Unwrapping is better than adding two more CIDRs because it makes the embedded
+// address subject to the SAME rules as the bare one, in both directions: a
+// NAT64-wrapped 127.0.0.1 is loopback, so it is refused under the strict policy
+// and permitted under the permissive one, exactly as 127.0.0.1 itself is. A CIDR
+// per wrapper cannot express that — it can only block the whole prefix, which
+// would have made -allow-private inconsistent with itself.
+//
+// :: and ::1 are excluded. RFC 4291 reserves both (the unspecified address and
+// IPv6 loopback), and unwrapping ::1 to 0.0.0.1 would put IPv6 loopback in
+// 0.0.0.0/8 — which is in neverAllowed — and so break -allow-private for the
+// most ordinary self-hosted case there is.
+func unwrapV4(ip net.IP) net.IP {
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	if len(ip) != net.IPv6len {
+		return ip
+	}
+	isZero := func(b []byte) bool {
+		for _, c := range b {
+			if c != 0 {
+				return false
+			}
+		}
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
+	// IPv4-compatible: ::a.b.c.d, excluding :: and ::1.
+	if isZero(ip[0:12]) {
+		if ip[12] == 0 && ip[13] == 0 && ip[14] == 0 && (ip[15] == 0 || ip[15] == 1) {
+			return ip // :: and ::1 are reserved, not embedded addresses
+		}
+		return ip[12:16]
 	}
-	for _, n := range neverAllowed {
-		if n.Contains(ip) {
-			return true
+	// NAT64 well-known prefix 64:ff9b::/96 (RFC 6052).
+	if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && isZero(ip[4:12]) {
+		return ip[12:16]
+	}
+	return ip
+}
+
+// matchesAny reports whether an address falls in any of `nets`, testing both the
+// address as given and its unwrapped form.
+//
+// BOTH, and the order does not matter — what matters is that neither is skipped.
+// Unwrapping alone would make a rule about a wrapper prefix unreachable, since
+// the wrapper is gone by the time the CIDRs are consulted: `64:ff9b::/96` in
+// `blocked` stopped matching anything the moment unwrapV4 landed, and a test
+// caught it. Testing the raw form alone is the original bug. So: a wrapped
+// address is refused if EITHER the wrapper or what it carries is refused.
+func matchesAny(ip net.IP, nets []*net.IPNet) bool {
+	candidates := [2]net.IP{ip, unwrapV4(ip)}
+	for _, c := range candidates {
+		for _, n := range nets {
+			if n.Contains(c) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
+// IsNeverAllowed reports whether an address is blocked under every policy.
+func IsNeverAllowed(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return matchesAny(ip, neverAllowed)
+}
+
 // IsBlockedIP reports whether an address must not be connected to.
 //
-// IPv4-mapped IPv6 addresses (::ffff:127.0.0.1) are unwrapped first. Without
-// that, a mapped loopback misses every IPv4 rule and matches no IPv6 rule — the
-// single most common way an allow/deny list like this gets bypassed.
+// Every IPv6 form that carries an IPv4 address is unwrapped first — see
+// unwrapV4. Without that, a wrapped loopback misses every IPv4 rule and matches
+// no IPv6 rule, which is the single most common way an allow/deny list like this
+// gets bypassed.
 func IsBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true // an address we cannot understand is one we do not dial
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	for _, n := range blocked {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return matchesAny(ip, blocked)
 }
 
 // CheckURL validates scheme and, when the host is a literal address, the address.
