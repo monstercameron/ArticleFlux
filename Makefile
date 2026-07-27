@@ -257,6 +257,12 @@ e2e: build wasm
 # -count because a single sample on a thermally-limited box is a coin flip, and
 # a loop over packages because `go test` refuses -cpuprofile across more than one.
 #
+# Run it on a QUIET machine. A capture taken alongside another `go test` produced
+# a ten-fold spread on one unchanged query, and -count does not rescue that:
+# contention and thermal drift push one direction for as long as they last, so
+# every sample agrees and every sample is wrong. The tell is B/op and allocs/op
+# holding steady while ns/op swings — allocation does not care how hot the box is.
+#
 #	make perf                          -> bin/perf/baseline.txt + profiles
 #	make perf LABEL=after              -> bin/perf/after.txt
 #	make perf-compare FROM=baseline TO=after

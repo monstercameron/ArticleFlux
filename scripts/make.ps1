@@ -206,6 +206,22 @@ function Invoke-WasmTest {
 #   -cpuprofile  `go test` refuses it across multiple packages, which is why
 #                this loops per package rather than running ./... once.
 #
+# # Run it on a QUIET machine, and do not believe a run that was not
+#
+# This is not general advice, it is a recorded failure. The first full capture
+# was taken while `go test` was running in another shell, and it is unusable:
+# `search common term` came back between 251ms and 512ms against the 77ms the
+# same code measures in isolation, and `get item` spread eleven-fold across six
+# samples of one unchanged query. -Count 6 does not rescue that, because thermal
+# drift and contention are not random noise — they push one direction for as
+# long as they last, so the samples agree with each other and are all wrong
+# together.
+#
+# The tell is in the file: the B/op and allocs/op columns are IDENTICAL across
+# samples while ns/op swings by a factor of ten. Allocation does not care how hot
+# the machine is. When those two columns are steady and the timings are not, the
+# timings are measuring the room.
+#
 # # Why benchstat rather than reading the two files
 #
 # Because eyeballing "594µs vs 633µs" is how a 6% thermal drift gets recorded as

@@ -5360,11 +5360,29 @@ The obvious implementation is a `[]*regexp.Regexp` per category, matched against
 categories × ~70 terms that is ~1,800 regex scans per article, and at 6,000 articles a day it is 11
 million scans — for a job that is supposed to be the *cheap* tier.
 
-**Tokenise once, then look things up.** `internal/textvec.Tokenize` and `textvec.Phrases` already
-produce the token and n-gram stream the interest layer uses, with the stopword list, furniture list
-and `MinTermLen` already tuned against real feed text. Reusing them is not only faster — it means a
-term that the interest layer considers noise is noise here too, so a category and a topic cannot
-disagree about what a word is.
+**Tokenise once, then look things up.** `internal/textvec` already scans feed text correctly —
+apostrophes, hyphens, unicode, and where a sentence ends — and that scan is shared rather than
+rewritten, because two scanners diverge silently and the day one of them learns about a new unicode
+dash a term stops matching in half the application with nothing failing.
+
+> **Corrected 2026-07-27, during 10.1.** This first read *"reuse `textvec.Tokenize` and
+> `textvec.Phrases`"*, and both are wrong for this caller. `Tokenize` is two decisions wearing one
+> name — how text is SPLIT, and which words are worth KEEPING — and only the split is right for
+> everybody:
+>
+>   - `MinTermLen` drops everything under three characters, which is `ai`, `ev`, `ui`, `ux`, `os`,
+>     `vr`, `5g` and `f1`. A classifier that cannot see "AI" is not a classifier. They are noise in
+>     a TF-IDF vocabulary and they are the whole point in a lexicon.
+>   - Dropping stopwords breaks phrase adjacency: the term "war on drugs" becomes "war drugs", and
+>     "state of the art" becomes the phrase "state art" — a term nobody wrote.
+>   - `Phrases` only emits *capitalised* bigrams, by design (it is looking for product names). Every
+>     lowercase multi-word term a lexicon is made of — `zero day`, `patch notes`, `clinical trial` —
+>     is invisible to it.
+>
+> So `textvec.Scan` was added: the same scanner, exported, with **no filter**. `internal/classify`
+> applies its own (none at all — it generates 1-, 2- and 3-grams over the raw stream and looks each
+> one up), and the interest layer keeps `Tokenize` unchanged. One split, two filters, and
+> `TestScanAgreesWithTokenizeOnTheSplit` asserts they can only ever disagree about the second.
 
 - **Lexicon match** is a hash lookup of each token and each 2/3-gram against one combined
   `map[string][]weightedLabel`. One pass over the token stream, O(tokens), independent of how many
@@ -5392,20 +5410,42 @@ score(category) = Σ over matched terms:  weight(term) × fieldMultiplier(where 
 | `source.title` + folder | ×1.0, capped | A feed named "Ars Technica" biases every item toward hardware, which is *usually* right and is exactly how a politics piece on Ars gets misfiled. Capped at one contribution total |
 | `body` | ×1.0, first ~2,000 words | Beyond that is comment furniture and related-links |
 
-Saturation matters more than the weights: without it, a 4,000-word article mentioning "kubernetes"
-eleven times outscores a 300-word one that is *about* Kubernetes, and long-form silently wins every
-category. `saturate` is `1 + log(1+n)` over distinct matched terms, so the fifth distinct term is
-worth much less than the second and repetition is worth almost nothing.
+> **Corrected 2026-07-27, during 10.1.** This first specified a `saturate(n) = 1 + log(1+n)` divisor
+> over distinct matched terms, and it was solving the right problem the wrong way round — dividing by
+> a function that *grows* with the number of distinct terms penalises breadth, which is evidence,
+> instead of penalising repetition, which is not. What shipped is simpler and needs no tuning
+> constant: **a term contributes exactly once, at the highest field multiplier it was seen in.** A
+> 4,000-word article saying "kubernetes" eleven times scores what a 300-word one saying it once
+> scores, because repetition stops being counted at all rather than being attenuated.
+>
+> Length normalisation survives, with a narrower job. `score /= 1 + log(1 + bodyWords/400)` is the
+> same divisor for every label, so **it cannot reorder them** — its only effect is to make `MinScore`
+> mean the same thing on a link post and on a feature. Without it the long piece clears any fixed
+> floor on breadth alone and the short one never clears it.
 
 **Assignment:**
 
-- **Primary** requires `score ≥ MinScore` **and** `score ≥ runnerUp × Margin` (defaults `MinScore
-  = 2.5`, `Margin = 1.35`). Both, because either alone fails in a way the other catches: a low bar
-  with no margin files everything in the biggest category, and a high bar with no margin leaves
-  half the feed unfiled while two categories tie at 9.0.
+- **Primary** requires `score ≥ MinScore` (defaults `MinScore = 3.0`, still to be calibrated against
+  the corpus in 10.3, which is why `DefaultStrategy` records them as one constant each rather than
+  inline).
+- **Ambiguous**, not refused, when the runner-up is within `Margin` (default `1.35`).
+
+  > **Corrected 2026-07-27, during 10.1.** The margin was first specified as a second *requirement*
+  > for the primary — `score ≥ runnerUp × Margin` — and that reads more cautious than it is. It meant
+  > a CVE in a game engine, scoring 8.0 `security` against 7.0 `software`, produced **no category at
+  > all**. Two strong signals disagreeing about which section is not the same as no signal, and
+  > collapsing them to Unsorted throws away a confident read of what an article is about in order to
+  > avoid choosing between two correct answers.
+  >
+  > So the margin sets `Result.Ambiguous` and nothing else. That is strictly better because it is
+  > exactly the signal §27.4a already wanted: with escalation on, the model breaks the tie; with it
+  > off, the top scorer wins and a debatable chip is not a wrong one. The margin is now a *routing*
+  > decision, not an assignment one, which is the separation of concerns the first draft was missing.
+
 - **Secondary**, up to two, requires `score ≥ MinScore` and no margin. Secondary categories are what
   make "Software" and "Security" both true of a CVE writeup without pretending one of them is the
-  section it belongs in.
+  section it belongs in. **No primary means no secondary** — an item that cleared nothing is Unsorted
+  entirely, rather than carrying two labels it was not confident enough to lead with.
 - **Otherwise: nothing.** Not "Other", not "General" — **no row**. An item with no category is
   correct and common, and the list UI shows no chip rather than a wrong one. `topics.MinMembers`,
   `topics.ColdStart` and the discovery ladder's `ErrNoRule` all make the same choice: this codebase
