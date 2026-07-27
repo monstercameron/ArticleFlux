@@ -21,6 +21,42 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23221A2E'/%3E%3Cpath d='M16 7l6 9-6 9-6-9z' fill='%23FFCE5C'/%3E%3C/svg%3E">
 
 <!--
+  Installable (§20.24).
+
+  RELATIVE, like every other href on this page and for the same reason: a static
+  host serving the app from a subpath resolves "manifest.webmanifest" correctly
+  and 404s on "/manifest.webmanifest". The manifest's own start_url and scope are
+  "./" for the same reason, so one file describes both deployments.
+
+  The icons are rendered from the design tokens by `go run ./internal/tools/appicon`
+  and checked against them by internal/appicon's test — the same arrangement the
+  splash palette has, and for the same reason: a 512px PNG exported by hand is a
+  copy of the design that nobody will ever open to check.
+-->
+<link rel="manifest" href="manifest.webmanifest">
+
+<!--
+  iOS, which reads none of the manifest.
+
+  It ignores start_url, scope, shortcuts, share_target, the maskable icon and the
+  theme colour, and it applies its own corner mask — so apple-touch-icon is a
+  full-bleed PNG rather than the rounded one, and it must be opaque: iOS
+  composites transparency onto BLACK, which turns a rounded icon's corners into
+  black wedges.
+
+  `black` rather than `black-translucent` for the status bar, deliberately.
+  Translucent puts the page under the status bar, and while `viewport-fit=cover`
+  is set and the tab bar already pads for `safe-area-inset-bottom`, nothing in the
+  sheet pads for the TOP — so the honest setting is the one that does not need a
+  safe area this application has not implemented yet.
+-->
+<link rel="apple-touch-icon" href="icons/apple-touch-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ArticleFlux">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+<!--
   Progressive enhancement only. The font stacks in client/design fall back to
   faces in the same family, so a machine with no network still renders the
   intended shape rather than Times.
@@ -166,8 +202,28 @@
   // Gated on the page origin rather than on anything the server says, for the
   // same reason the login prefill is: no response can talk a deployed instance
   // out of its offline support.
+  // …with one deliberate escape hatch, because the eviction above also makes the
+  // app UNINSTALLABLE on a development box (§20.24).
+  //
+  // A browser will not offer to install a PWA whose Service Worker has been
+  // unregistered on every load, so the one machine where somebody would try the
+  // install flow is the one machine where it cannot happen — and the failure looks
+  // like a broken manifest rather than like a deliberate development trade.
+  //
+  // `?sw=1` turns the worker back on for this browser profile and `?sw=0` turns it
+  // off again; the answer is remembered in localStorage so an installed window,
+  // which launches at start_url with no query of ours, keeps whichever was chosen.
+  // Opt-IN, so nobody gets the stale-cache afternoon by default.
+  let swOnDev = false;
+  try {
+    const ask = new URLSearchParams(location.search).get('sw');
+    if (ask === '1' || ask === '0') localStorage.setItem('af.sw.dev', ask);
+    swOnDev = localStorage.getItem('af.sw.dev') === '1';
+  } catch (e) { /* storage unavailable; the default (off) is already correct */ }
+
   const isLoopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname);
-  if (isLoopback && 'serviceWorker' in navigator) {
+  const evictWorker = isLoopback && !swOnDev;
+  if (evictWorker && 'serviceWorker' in navigator) {
     try {
       const hadController = !!navigator.serviceWorker.controller;
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -362,8 +418,10 @@
     //
     // Not on a loopback origin: a development box evicted the worker at the top
     // of this function, and registering it again here would undo that on every
-    // single load. See the comment there for why dev cannot keep it.
-    if ('serviceWorker' in navigator && location.protocol !== 'file:' && !isLoopback) {
+    // single load. See the comment there for why dev cannot keep it — and for
+    // `?sw=1`, which is how somebody testing the install flow locally opts back
+    // in.
+    if ('serviceWorker' in navigator && location.protocol !== 'file:' && !evictWorker) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
   } catch (err) {

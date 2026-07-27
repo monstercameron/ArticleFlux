@@ -15,9 +15,20 @@
 package platform
 
 import (
+	"strconv"
 	"strings"
 	"syscall/js"
 )
+
+// DBG TEMP: removed before shipping.
+func itoa(n int) string     { return strconv.Itoa(n) }
+func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', 1, 64) }
+func boolStrP(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
 
 // SetRootVar sets a CSS custom property on :root.
 //
@@ -868,6 +879,7 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		if full > view+2 && top+view >= full-2 {
 			found = kids.Index(n-1).Call("getAttribute", attr).String()
 		}
+		println("DBG topmost frame n=" + itoa(n) + " top=" + ftoa(top) + " view=" + ftoa(view) + " full=" + ftoa(full) + " found=" + found + " last=" + last)
 		if found != last {
 			last = found
 			fn(found)
@@ -886,6 +898,7 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		if m := t.Get("matches"); !m.Truthy() || !t.Call("matches", matchSelector).Bool() {
 			return nil
 		}
+		println("DBG topmost real scroll event, el updated, pending=" + boolStrP(pending))
 		el = t
 		if pending {
 			return nil
@@ -910,8 +923,10 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 	// becomes a method on the Listener rather than a package-level hook.
 	topmostRefresh = func() {
 		last = ""
+		println("DBG topmostRefresh el.Truthy=" + boolStrP(el.Truthy()) + " pending=" + boolStrP(pending))
 		if !el.Truthy() {
 			el = resolveTopmostFallback(doc, rootSelector, matchSelector)
+			println("DBG topmostRefresh fallback resolved el.Truthy=" + boolStrP(el.Truthy()))
 		}
 		if pending {
 			return
@@ -2104,4 +2119,59 @@ func Reload() {
 		return
 	}
 	loc.Call("reload")
+}
+
+// --- the launch URL (§20.24) -------------------------------------------------
+
+// LaunchParam reads one query parameter from the address this document was
+// opened at.
+//
+// It exists for exactly one caller: an installed app being launched from a
+// manifest shortcut or as a share target, both of which say what they want in the
+// query string because that is the only channel a manifest has. The application
+// has no client-side routing otherwise (§20.13 resumes from a preference, not
+// from a URL), and this is deliberately not the beginning of one — it reads named
+// parameters, it does not parse a path, and nothing else calls it.
+//
+// An absent parameter and an empty one are both "". The distinction has no
+// meaning here: `?url=` is a share of nothing.
+func LaunchParam(name string) string {
+	defer func() { _ = recover() }()
+	loc := js.Global().Get("location")
+	if !loc.Truthy() {
+		return ""
+	}
+	u := js.Global().Get("URLSearchParams")
+	if !u.Truthy() {
+		return ""
+	}
+	params := u.New(loc.Get("search"))
+	v := params.Call("get", name)
+	if !v.Truthy() {
+		return ""
+	}
+	return v.String()
+}
+
+// DropLaunchParams rewrites the address to the page's own path, keeping the
+// history entry.
+//
+// Called once, immediately after the launch parameters have been consumed, and
+// the reason is that they are an INSTRUCTION rather than a location. Left in the
+// bar, a reload would re-open the add-feed dialog with a URL the reader has
+// already dealt with, and — worse for a share target — the address the reader
+// shared would stay visible in the window title and in any screenshot they take
+// of the app afterwards.
+//
+// replaceState rather than pushState: there is no state to go back to, and a
+// launch that added a history entry would make the back button a no-op that looks
+// broken.
+func DropLaunchParams() {
+	defer func() { _ = recover() }()
+	loc := js.Global().Get("location")
+	hist := js.Global().Get("history")
+	if !loc.Truthy() || !hist.Truthy() || !hist.Get("replaceState").Truthy() {
+		return
+	}
+	hist.Call("replaceState", js.Null(), "", loc.Get("pathname").String())
 }

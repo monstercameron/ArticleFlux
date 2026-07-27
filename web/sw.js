@@ -39,7 +39,19 @@ const CACHE = `articleflux-shell-${VERSION}`;
 // uncached — a Service Worker whose entire job is booting offline, that could
 // not boot the thing that matters. Misses are survivable (see below), so listing
 // both costs a 404 on whichever host lacks one.
-const SHELL = ['./', './index.html', './wasm_exec.js', './app.wasm', './app.wasm.gz'];
+// The manifest and the icons are shell too (§20.24). An installed app whose
+// launcher icon is a broken image the first time it opens on a plane is an
+// installed app that looks broken — and the manifest is what the browser re-reads
+// to decide whether the installation is still valid.
+//
+// The two purpose-"any" icons and the maskable one, not the apple-touch PNG: iOS
+// copies its icon into the home screen at install time and never fetches it
+// again, so caching it would spend bytes on a request that is never made.
+const SHELL = [
+  './', './index.html', './wasm_exec.js', './app.wasm', './app.wasm.gz',
+  './manifest.webmanifest',
+  './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png',
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {

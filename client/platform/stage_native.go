@@ -31,6 +31,11 @@ func OnAudioProgress(fn func(pos, dur float64)) Listener { return Listener{} }
 
 func FocusElement(selector string) {}
 
+// LocalNow answers "no clock to ask". The caller reads that as unknown and omits
+// the hint rather than sending a zero timestamp, which would have the server
+// greeting a listener in 1970.
+func LocalNow() (unixMillis int64, offsetMinutes int) { return 0, 0 }
+
 func SetVar(selector, name, value string) {}
 
 // ScrollOverflow answers 0: nothing is laid out, so nothing overflows. That is

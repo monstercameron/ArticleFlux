@@ -184,3 +184,10 @@ func LocalSet(key, val string) bool { return false }
 func LocalRemove(key string) {}
 
 func Reload() {}
+
+// LaunchParam always reports "": a native build has no address bar, so an
+// installed app's launch parameters (§20.24) have no native equivalent. Absent is
+// the honest answer, for the same reason LocalGet gives.
+func LaunchParam(name string) string { return "" }
+
+func DropLaunchParams() {}

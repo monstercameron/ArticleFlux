@@ -310,6 +310,40 @@ func FocusElement(selector string) {
 	el.Call("focus", opts)
 }
 
+// LocalNow is the LISTENER'S clock: milliseconds since the epoch, and their
+// offset from UTC in minutes (positive east).
+//
+// Go's own `time.Now()` would be simpler and is not sufficient. A wasm build has
+// no timezone database and no TZ environment to read, so `time.Local` is UTC —
+// which is right for a timestamp and wrong for the only thing this is used for,
+// which is deciding whether to say good morning or good evening. The browser
+// knows the answer; nothing else in the process does.
+//
+// Two numbers rather than a formatted string, because formatting is a decision
+// and this package does not make them (see the package comment). The caller
+// composes them; see view.localStamp.
+//
+// (0, 0) when there is no clock to ask, which the caller reads as "unknown" and
+// omits — the server then falls back to its own time, which is usually right and
+// is at worst an hour or two out on a greeting.
+func LocalNow() (unixMillis int64, offsetMinutes int) {
+	d := js.Global().Get("Date")
+	if !d.Truthy() {
+		return 0, 0
+	}
+	now := d.New()
+	if !now.Truthy() {
+		return 0, 0
+	}
+	ms := finite(now.Call("getTime"))
+	// getTimezoneOffset is minutes BEHIND UTC — it reports +300 for New York,
+	// which is five hours west. Negated here so the caller gets the sign every
+	// other timezone API in the world uses, and so nobody has to remember this
+	// twice.
+	off := finite(now.Call("getTimezoneOffset"))
+	return int64(ms), -int(off)
+}
+
 // SetVar sets a CSS custom property on ONE element, found by selector.
 //
 // SetRootVar's per-element counterpart, and it exists for the same reason: the

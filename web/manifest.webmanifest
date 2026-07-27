@@ -1,0 +1,58 @@
+{
+  "id": "./",
+  "name": "ArticleFlux",
+  "short_name": "ArticleFlux",
+  "description": "A feed reader, bookmark manager and ranking engine that runs on your own machine.",
+  "lang": "en",
+  "dir": "ltr",
+
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+
+  "background_color": "#221A2E",
+  "theme_color": "#221A2E",
+
+  "categories": ["news", "productivity"],
+
+  "launch_handler": { "client_mode": "focus-existing" },
+
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+
+  "shortcuts": [
+    {
+      "name": "My Feed",
+      "short_name": "My Feed",
+      "url": "./?view=myfeed",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Unread",
+      "short_name": "Unread",
+      "url": "./?view=unread",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Read later",
+      "short_name": "Later",
+      "url": "./?view=later",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Add a feed",
+      "short_name": "Add feed",
+      "url": "./?add=1",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "params": { "url": "url", "text": "text", "title": "title" }
+  }
+}
