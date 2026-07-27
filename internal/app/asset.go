@@ -192,7 +192,14 @@ func assetMessage(rawURL string, exp int64) string {
 // control, which is the same bet §7.2 already makes about filesystem access
 // being proof of ownership.
 func loadOrCreateAssetKey(dir string) ([]byte, error) {
-	path := filepath.Join(dir, "proxy.key")
+	return loadOrCreateKeyFile(dir, "proxy.key")
+}
+
+// loadOrCreateKeyFile is the shared body. Separate keys live in separate files
+// so that one being absent, unreadable or rotated does not take another feature
+// with it — see App.speechKey for the case that made this worth splitting.
+func loadOrCreateKeyFile(dir, name string) ([]byte, error) {
+	path := filepath.Join(dir, name)
 	b, err := os.ReadFile(path)
 	if err == nil && len(b) >= 32 {
 		return b, nil

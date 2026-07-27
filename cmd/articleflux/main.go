@@ -238,6 +238,7 @@ func serve(log *slog.Logger, args []string) error {
 		AllowPrivateFeeds: dev,
 		PollInterval:      *poll,
 		AllowedOrigins:    splitList(*origin),
+		BehindProxy:       *behindProxy,
 		ProxyImages:       *proxyImages,
 		ProxyPages:        *proxyPages,
 		ProxyStream:       *proxyStream,
@@ -273,6 +274,14 @@ func serve(log *slog.Logger, args []string) error {
 			"expected", filepath.Join(*webRoot, "app.wasm"))
 	}
 
+	// Workers before the poller, and one derivation at boot.
+	//
+	// The boot pass is not cosmetic: without it a restart leaves the ranked
+	// homepage showing whatever the last run produced until a full poll interval
+	// has elapsed, which on the default interval is fifteen minutes of a page that
+	// looks broken rather than stale.
+	a.StartWorkers(ctx)
+	a.DeriveDue(ctx)
 	a.StartPoller(ctx)
 
 	srv := &http.Server{

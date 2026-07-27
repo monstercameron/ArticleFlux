@@ -43,6 +43,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/skew"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/telemetry"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
 	"github.com/monstercameron/ArticleFlux/internal/tts"
 )
@@ -119,6 +120,18 @@ type Config struct {
 	// every URL already minted and cached.
 	ProxyOrigin string
 
+	// OTLPEndpoint enables OpenTelemetry export to a collector, e.g.
+	// "http://localhost:4318". Empty means metrics stay local and are readable at
+	// /metrics; nothing is sent anywhere.
+	//
+	// Default-off is the same position SECURITY.md takes about the model egress
+	// boundary: a reader that ships telemetry to an endpoint nobody configured is
+	// making a network decision on the operator's behalf.
+	OTLPEndpoint string
+	// OTLPInsecure sends to that endpoint over plain HTTP, for a collector on the
+	// same host.
+	OTLPInsecure bool
+
 	// BehindProxy states that something terminates TLS and forwards to this
 	// process.
 	//
@@ -149,6 +162,18 @@ type App struct {
 	// answers 501, which is the correct answer for an instance that never
 	// configured an API key.
 	tts *tts.Client
+	// digest condenses an article into about a minute of spoken summary before
+	// the voice reads it. Nil-safe: absent means the digest preference has
+	// nothing to do and /speech reads the whole article, which is the correct
+	// degradation — longer than asked for, and not silence.
+	digest *smart.Digest
+	// speechKey seals the listening tickets in an <audio src> (see SpeechURL).
+	//
+	// Its own key rather than assetKey, which is the one an obvious edit would
+	// reach for: assetKey only exists when the image proxy is on, and the voice
+	// has nothing to do with the image proxy. Sharing it would make turning
+	// pictures off silently turn listening off too.
+	speechKey []byte
 	// The observability surface (§22.11): a ring of recent log records and
 	// per-RPC latency, both in memory and both bounded. A self-hosted reader has
 	// no operator, so these are how the person running it answers "why did that
@@ -197,7 +222,11 @@ type App struct {
 	// affinity number, topic and ranked homepage row is produced here and nowhere
 	// else, so an unwired pool means `engagements` accumulates forever and
 	// nothing ever reads it. That was the state before this field existed.
-	deriver    *derive.Service
+	deriver *derive.Service
+	// tel is the metric and trace surface (§22.11). Always non-nil — every call
+	// site records unconditionally, so a nil here would be a panic on the first
+	// request rather than a quiet absence of data.
+	tel        *telemetry.Telemetry
 	grpc       *grpc.Server
 	handler    http.Handler
 	stopPo     chan struct{}
@@ -273,8 +302,23 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// because it makes the terminal look authoritative when it is not.
 	cfg.Log = slog.New(reqid.NewHandler(ring))
 
+	// Telemetry before anything that might want to record. New never fails for a
+	// telemetry-only reason — a bad collector address costs traces, not the
+	// reader — so an error here means the instruments themselves could not be
+	// created, which is a programming error rather than a runtime condition.
+	tel, err := telemetry.New(ctx, telemetry.Config{
+		ServiceName:  "articleflux",
+		Version:      cfg.Version,
+		OTLPEndpoint: cfg.OTLPEndpoint,
+		Insecure:     cfg.OTLPInsecure,
+		Log:          cfg.Log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("app: telemetry: %w", err)
+	}
+
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log,
-		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{},
+		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
 		icons:  favicon.New(cfg.AllowPrivateFeeds),
 		stopPo: make(chan struct{})}
 
@@ -354,6 +398,21 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// carries the audio with it and a re-listen after a restore is still free.
 	a.tts = tts.New(filepath.Join(filepath.Dir(cfg.DBPath), "speech-cache"),
 		tts.KeyFunc(smartKey))
+	// Beside the audio it feeds, and cached for the same reason: the digest is
+	// the expensive half of listening to a long article, and re-summarising a
+	// paragraph that cannot have changed is money spent on an identical answer.
+	a.digest = smart.NewDigest(a.llm, a.settings,
+		filepath.Join(filepath.Dir(cfg.DBPath), "digest-cache"))
+	// Unconditionally, unlike the asset key below: listening does not depend on
+	// the image proxy being on, and an instance that turned pictures off must
+	// not lose its voice as a side effect. A failure here is a warning rather
+	// than fatal for the same reason the asset key's is — the reader still has
+	// the browser's own synthesiser, which is the default anyway.
+	if k, kerr := loadOrCreateKeyFile(filepath.Dir(cfg.DBPath), "speech.key"); kerr != nil {
+		cfg.Log.Warn("Smart+ voice disabled: cannot open its ticket key", "err", kerr)
+	} else {
+		a.speechKey = k
+	}
 
 	if cfg.ProxyImages {
 		dataDir := filepath.Dir(cfg.DBPath)
@@ -673,7 +732,8 @@ func (a *App) buildHandler() {
 		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext).
 			WithAssetProxy(a.AssetURL).
 			WithPageProxy(a.PageURL).
-			WithLiveView(a.StreamURL, a.ScrollLive))
+			WithLiveView(a.StreamURL, a.ScrollLive).
+			WithSpeech(a.SpeechURL))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
 			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))
