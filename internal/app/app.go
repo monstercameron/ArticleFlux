@@ -38,6 +38,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/idem"
+	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	"github.com/monstercameron/ArticleFlux/internal/jobs"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
@@ -1151,6 +1152,54 @@ func (a *App) buildHandler() {
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "reset")
+		})
+
+		// One new item, on demand, so a test can assert that something arriving
+		// on the SERVER reaches an open screen (TODO F2).
+		//
+		// Ingest rather than a fabricated event: the point is the whole path —
+		// the item lands, delivery gives every subscriber a state row, the poll
+		// path publishes, the stream carries it, the pump invalidates and the
+		// list refetches. Publishing a bare event would test the transport and
+		// skip the reason it exists.
+		//
+		// DevMode only, beside reset-state and for the same reason: an
+		// unauthenticated "write me an article" endpoint is not something a
+		// production instance should own.
+		mux.HandleFunc("/debug/ingest-one", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			sc, err := a.devScope(r.Context())
+			if err != nil {
+				http.Error(w, "no local account", http.StatusPreconditionFailed)
+				return
+			}
+			feeds, err := a.repo.ListFeeds(r.Context(), sc)
+			if err != nil || len(feeds) == 0 {
+				http.Error(w, "no subscriptions to ingest into", http.StatusPreconditionFailed)
+				return
+			}
+			source := feeds[0].SourceID
+			guid := "debug-" + idgen.New()
+			ing, err := a.repo.IngestItems(r.Context(), source, []store.IngestItem{{
+				GUID: guid, URL: "https://example.invalid/" + guid,
+				Title:       "A new article arrived while you were reading",
+				ContentHTML: "<p>Written by /debug/ingest-one.</p>",
+				PublishedAt: time.Now().UTC(),
+				WordCount:   6,
+			}})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// The same announcement a poll makes, through the same hook — so
+			// what this exercises is the production path rather than a private
+			// one that happens to look like it.
+			a.publishItemsAdded(source, ing.NewIDs)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "ingested", ing.New)
 		})
 	}
 

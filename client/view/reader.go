@@ -10,14 +10,12 @@ package view
 import (
 	"context"
 	"errors"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
@@ -30,471 +28,6 @@ import (
 
 // view names which pane is on screen on a phone. On a wide screen all three are
 // visible and this only decides focus.
-type view string
-
-const (
-	viewRail    view = "rail"
-	viewList    view = "list"
-	viewArticle view = "article"
-	// viewSettings is phone-only: on a wide screen these controls live in the
-	// list header, where there is room for them.
-	viewSettings view = "settings"
-)
-
-// noteDebounce is how long a note field sits still before it saves itself.
-//
-// A note is prose, so the pause that means "I have stopped" is a thinking pause,
-// not a typing gap: 300ms would fire mid-sentence and turn one note into a
-// dozen writes, and anything past a second is long enough for a reader to close
-// the tab believing they lost it. 800ms is one comfortable beat — and every
-// other path (leaving the field, Ctrl+Enter) flushes immediately, so this is the
-// worst case rather than the usual one.
-const noteDebounce = 800 * time.Millisecond
-
-// signalsKey is where the engagement buffer waits out a closed tab.
-//
-// Namespaced and versioned like every other stored key: a schema change here
-// must not make an old browser's leftovers unparseable in a way that costs
-// anything, and the version is what lets the next shape simply ignore this one.
-const signalsKey = "articleflux.signals.v1"
-
-// spawnWindow is how long a just-arrived item stays marked as new.
-//
-// It only has to outlast the animation the mark triggers, which is 300ms plus a
-// capped stagger — 900ms leaves room for a slow frame without leaving the mark
-// standing long enough that scrolling a row out of the window and back replays
-// its entrance. Too long is the visible failure here; too short is invisible,
-// because the animation has already run by then.
-const spawnWindow = 900 * time.Millisecond
-
-// The autosave states, as the sync glyph reports them. Strings rather than an
-// enum because they go out as a data attribute the stylesheet and the e2e suite
-// both read — the state has to be visible from outside Go.
-const (
-	noteSyncPending = "pending"
-	noteSyncSaving  = "saving"
-	noteSyncSaved   = "saved"
-	noteSyncFailed  = "failed"
-)
-
-// scope is what the item list is showing.
-type scope struct {
-	// SourceID empty means every subscribed feed.
-	SourceID string
-	Title    string
-	// Rating selects a verdict stream: +1 liked, -1 disliked, 0 no filter.
-	Rating int
-	// Later is the read-later stream. It is `starred_at` under the covers: the
-	// column already exists, already has a scope, and already syncs — and "put
-	// this aside for later" is what starring always actually meant here.
-	Later  bool
-	Unread bool
-	Notes  bool
-	// MyFeed is the ranked stream — the interest layer's own answer rather than a
-	// filter over the chronological list (§18.4).
-	//
-	// A flag rather than a sentinel SourceID because it is genuinely a different
-	// QUERY, not a different subset: the server reads `home_ranking` instead of
-	// `items`, the order is the deriver's and not publication time, and unread-only
-	// does not apply because everything on it is unread by construction. Every other
-	// field on this struct narrows the same query; this one replaces it.
-	MyFeed bool
-	TagID  string
-	// FolderID is a category: the set of feeds filed under one name. Like TagID
-	// it resolves to a list of source ids on the client, because the sidebar is
-	// already holding what it needs to work that out.
-	FolderID string
-	Search   string
-}
-
-// actions is the current render's callbacks, reached through a Ref.
-//
-// The delegated click listeners are registered once, in an effect with no
-// dependencies, so whatever closures they captured are from the FIRST render.
-// Those closures read state through handles bound to that render, and the values
-// they see drift from what the component is actually rendering — the symptom was
-// a "Load more" button whose handler saw loadingMore=true while the render saw
-// false, so paging never fired and never showed a spinner either.
-//
-// A Ref is the supported way out: its pointer is stable across renders, so the
-// listeners hold one address forever while every render refreshes what is inside
-// it. The listeners stay registered once; the behaviour is always current.
-type actions struct {
-	open             func(*pb.Item)
-	pick             func(scope)
-	more             func()
-	backRail         func()
-	backList         func()
-	refresh          func()
-	markAll          func()
-	toggleUnread     func()
-	addFeed          func()
-	toggleFeedFilter func()
-	// Folds a rail section away. One handler taking the section name rather
-	// than three, because the three do exactly the same thing.
-	toggleRailSection func(string)
-	pickTag           func(id, name string)
-	// The categories: selecting one, folding one open, and the two dialogs that
-	// make and edit them.
-	pickFolder      func(id, name string)
-	toggleCategory  func(id string)
-	openAddFeed     func()
-	closeAddFeed    func()
-	pickAddFolder   func(id string)
-	toggleAddNewCat func()
-	// The ladder (§11): looking for a feed at an address that is not one, and
-	// what happens when there is not one to find.
-	analyzeSite       func(smart bool)
-	toggleSmartFollow func()
-	addCandidate      func(url string)
-	followPage        func()
-	newCategory       func()
-	openCategory      func(id string)
-	closeCategory     func()
-	saveCategory      func()
-	deleteCategory    func()
-	setFeedFolder     func(sourceID, folderID string)
-	itemByID          func(string) *pb.Item
-	feedByID          func(string) *pb.Feed
-	search            func(string)
-
-	// Article-scoped actions carry the id of the article they act on. The
-	// reading pane is a stream, so "the article" is ambiguous in the markup and
-	// has to be named; an empty id means "whichever one is being read", which is
-	// what the keyboard shortcuts pass.
-	rate func(id string, want int)
-	// togglePage shows or hides the proxied publisher page for one article.
-	togglePage func(id string)
-	// setPageMode switches that frame between the proxied HTML and the live
-	// browser stream (§10.1b vs §10.1d).
-	setPageMode func(id string, live bool)
-	// togglePageWide expands that frame to fill the pane, keeping its mode.
-	togglePageWide func(id string)
-	later          func(id string)
-	markUnread     func(id string)
-	openExtern     func(id string)
-	saveNote       func(id string)
-	addTag         func(id string)
-	removeTag      func(id, name string)
-	editNote       func(id, body string)
-	editTag        func(sourceID, name string)
-
-	listen      func(id string)
-	listenPause func()
-	listenStop  func()
-	listenJump  func(id string)
-	smartVoice  func()
-	digestVoice func()
-	autoPlay    func()
-	// podcastVoice rewrites each article as one slot of a continuous broadcast,
-	// handing over from the one before it (§19). A third voice mode rather than a
-	// flavour of the digest, because it is a third egress and a third bill.
-	podcastVoice func()
-	// playLoaded is offered every article body that lands and ignores all but
-	// the one a continuous session is waiting for.
-	playLoaded func(full *pb.Item)
-	// The slideshow (§19). Five verbs rather than one taking a command string,
-	// because they are reached from three places each — a HUD button, a key, and
-	// in two cases the palette — and a string parameter would put the same typo
-	// risk in all three.
-	//
-	// slideStep takes a direction rather than there being a next and a previous,
-	// because the two differ by a sign and by nothing else; slideOpen does not,
-	// because starting and stopping are genuinely different acts with different
-	// side effects (a wake lock, a fullscreen request, a voice).
-	slideStart  func()
-	slideStop   func()
-	slideStep   func(delta int)
-	slidePause  func()
-	slideListen func()
-	// slideListenOn starts the narrator for whatever is on screen. Separate from
-	// slideListen, which TOGGLES: the show starting in read-to-me mode and a
-	// reader switching into it mid-show both need the first half only.
-	slideListenOn func()
-	// slideSetDwell changes the pace from the settings screen.
-	slideSetDwell func(v string)
-	// slideTick is one beat of the slideshow's own clock, reached through this
-	// Ref for the reason everything else here is: the timer that calls it was
-	// armed by an earlier render, and a closure over that render's state would
-	// pace the display by a list and a preference that have since moved on.
-	slideTick func()
-	// slideAudio carries the narrator's playhead in, in seconds. Same reason: the
-	// listener is registered once, and what it has to drive — the current story,
-	// the phase, the scroll — all change underneath it.
-	slideAudio func(pos, dur float64)
-
-	// speakSeen carries the visibility observer's answer back into state.
-	//
-	// It goes through the actions Ref like every other listener callback, and
-	// for the reason stated at the top of this block: a closure created inside
-	// UseEffect captures the state handles of the render that created it, and
-	// calling Set on those is a silent no-op a render later. The symptom is
-	// exactly what it was here — the observer fires, reports correctly, and
-	// nothing on screen changes.
-	speakSeen func(visible bool)
-
-	// The per-feed settings panel.
-	openFeedSettings  func(id string)
-	closeFeedSettings func()
-	patchFeed         func(req *pb.UpdateFeedSettingsRequest)
-	unsubscribe       func(id string)
-
-	// The per-tag settings panel. No open-fetch counterpart, because ListTags
-	// already returned everything it shows.
-	openTagSettings  func(id string)
-	closeTagSettings func()
-	patchTag         func(req *pb.UpdateTagRequest)
-
-	// The settings surface.
-	showSettings   func()
-	settingsTabTo  func(id string)
-	loadStats      func()
-	setLogLevel    func(level string)
-	toggleMarkPast func()
-	// toggleFocus gives the reading pane the whole window, and takes it back.
-	toggleFocus func()
-
-	// Smart+ (§10.5, §18). Every one of these either changes the credential
-	// every Smart+ feature spends, or spends it.
-	loadSmart      func()
-	saveSmartKey   func()
-	clearSmartKey  func()
-	saveSmartModel func()
-	// toggleFeedPlus is the per-user opt-in for Smart+ ranking of My Feed. Its own
-	// action rather than a generic pref setter, because it is a spending decision and
-	// deserves to be findable by name.
-	toggleFeedPlus func()
-	// setLocale translates the interface and reloads. The empty locale is
-	// English, which needs neither.
-	setLocale   func(code string)
-	retranslate func()
-
-	// Appearance. Four verbs rather than one taking a key, because they are not
-	// interchangeable: three set a named value and the fourth CLEARS one, and
-	// collapsing "reduce motion" and "stop having an opinion about motion" into
-	// the same call is how the second one stops being reachable.
-	setTheme     func(name string)
-	setAccent    func(name string)
-	setReading   func(name string)
-	toggleMotion func()
-	motionSystem func()
-
-	undoMarkAll func()
-
-	toggleHelp func()
-	closeHelp  func()
-
-	openPalette  func()
-	closePalette func()
-	movePalette  func(delta int)
-	runPalette   func(spec string)
-
-	expand func(id string)
-	// toggleNote opens and closes one article's note panel.
-	toggleNote func(id string)
-	showTab    func(v view)
-
-	// advance and retreat extend the reading stream downward and upward.
-	advance      func()
-	retreat      func()
-	focusArticle func(id string)
-	readArticle  func(id string)
-
-	// navStep answers "what does j/k, or the list arrows, open next" — the
-	// item `delta` positions from whichever one is current in the loaded list.
-	//
-	// It has to be read through here rather than as `items.Get()` /
-	// `current.Get()` inline in the keyboard listener below: that listener is
-	// registered ONCE, in a fixed-deps UseLayoutEffect (see its own comment
-	// for why it has to be a layout effect at all), so a ui.State read inside
-	// its closure returns the value as of the render that MOUNTED it, not the
-	// render that is live when a key is actually pressed — the same hazard
-	// `pageLanded`, `fill`, `speakSeen` and the signals `tracker` above are
-	// all routed around for the identical reason (see each of their
-	// comments, and plan.md §20.10). Reached through this Ref, `navStep`
-	// closes over whichever render's `items`/`current` is newest, because
-	// this field is reassigned fresh on every render (see its assignment
-	// next to advance/retreat).
-	//
-	// This was the actual bug behind "j not advancing on the second press":
-	// idx was computed from the article that was current when the document
-	// listener first mounted, forever — so the second j recomputed the same
-	// idx as the first and reopened the same article, and k, computed
-	// against that same frozen article, opened whatever sat next to IT
-	// rather than next to what was on screen.
-	navStep func(delta int) *pb.Item
-
-	// fill loads whatever the reader has scrolled the item list to.
-	//
-	// It lives on this struct for the same reason everything else here does: the
-	// scroll listener is registered ONCE, so a closure passed to it directly is
-	// frozen at the first render and reads first-render state. That is not a
-	// theoretical hazard — it is what made dragging the scrollbar into the middle
-	// of a 3,600-item feed sit on placeholders forever, because the frozen
-	// closure saw an empty item list and an empty cursor and declined to fetch.
-	fill func(top float64)
-
-	// pageLanded applies a page of items that arrived from the server.
-	//
-	// It lives here rather than in the request's own callback for the same
-	// reason fill does, and it is the more dangerous case: the callback appends
-	// to the item list, and appending to a stale copy silently discards
-	// everything that arrived while the request was in flight.
-	pageLanded         func(res *pb.ListItemsResponse, err error)
-	feedSettingsLanded func(res *pb.FeedSettings, err error)
-	bodyLanded         func(full *pb.Item)
-}
-
-// Reader is the whole application.
-//
-// One component holding the state rather than a store: the state is small (a
-// selection, a page of items, one article) and every piece of it is read by more
-// than one pane. Splitting it would mean lifting most of it back up anyway.
-// readerProps carries the authenticated connection down from Root.
-//
-// One field, and it is not optional. Reader used to dial for itself, which was
-// right when it was the root component and wrong the moment a login screen had
-// to open a tunnel before it to prove who the reader is.
-type readerProps struct {
-	client *data.Client
-	// prefs is the saved view, already fetched by Root while the splash was up.
-	//
-	// It arrives as a prop rather than being fetched here because a preference
-	// that decides the FIRST FRAME cannot be fetched after the first frame. When
-	// this was the reader's own opening effect, the reader mounted with its
-	// defaults, painted the All stream with an expanded rail, and then snapped
-	// into the saved feed a round trip later.
-	//
-	// nil means Root could not fetch them (a failed call, or a path that has not
-	// been taught to). The reader then falls back to fetching them itself, which
-	// restores the old behaviour — the flash — rather than losing the saved view
-	// entirely. That is the right way round: a flash is a blemish, a reader
-	// dropped back to All every morning is the feature not working.
-	prefs map[string]string
-}
-
-// prefBool reads a stored flag, keeping the caller's default when it is absent.
-//
-// Absent and false are different answers and the difference is load-bearing at
-// boot: `markOnPast` defaults to TRUE, so treating a missing key as false would
-// silently turn it off for every reader who has never touched the setting.
-// searchTextFrom seeds the search box, and only when the saved scope IS a search.
-//
-// `read.value` carries whichever argument the saved scope needed — a source id
-// for a feed, a tag id for a tag — so putting it in the search box unconditionally
-// would greet a reader with a ULID in the field they type into.
-func searchTextFrom(p map[string]string) string {
-	if p["read.kind"] == "search" {
-		return p["read.value"]
-	}
-	return ""
-}
-
-// resumeScope turns the saved place into the scope the list is fetched for.
-//
-// Shared by the mount-time seed and the effect that runs after it, because they
-// have to agree exactly: one deciding the first frame and the other deciding
-// what is fetched is precisely how a reader ends up looking at a header for one
-// feed above the items of another.
-//
-// An unrecognised or absent kind falls through to All, and a feed whose title
-// was never saved takes All's title too — an empty header is worse than a
-// slightly wrong one.
-func resumeScope(p map[string]string, tr i18n.Runtime) scope {
-	var s scope
-	switch p["read.kind"] {
-	case "unread":
-		s = scope{Title: tr.T("stream", "unread"), Unread: true}
-	case "liked":
-		s = scope{Title: tr.T("stream", "liked"), Rating: 1}
-	case "later":
-		s = scope{Title: tr.T("stream", "later"), Later: true}
-	case "notes":
-		s = scope{Title: tr.T("stream", "notes"), Notes: true}
-	case "feed":
-		if v := p["read.value"]; v != "" {
-			s = scope{SourceID: v, Title: p["read.title"]}
-		}
-	case "tag":
-		if v := p["read.value"]; v != "" {
-			s = scope{TagID: v, Title: p["read.title"]}
-		}
-	case "folder":
-		if v := p["read.value"]; v != "" {
-			s = scope{FolderID: v, Title: p["read.title"]}
-		}
-	case "search":
-		if v := p["read.value"]; v != "" {
-			s = scope{Search: v, Title: p["read.title"]}
-		}
-	}
-	if s.Title == "" {
-		s.Title = tr.T("stream", "all")
-	}
-	return s
-}
-
-func prefBool(p map[string]string, key string, def bool) bool {
-	if v, ok := p[key]; ok {
-		return v == "true"
-	}
-	return def
-}
-
-// keptOptimistic reports an error that must NOT undo what is on screen.
-//
-// data.ErrQueued is not a failure: the write is kept and replayed on the next
-// recovery, so the optimistic value the reader is looking at IS the truth.
-// Rolling it back would be the application discarding a write it has in fact
-// retained — worse than the bug it replaces, because it looks deliberate.
-func keptOptimistic(err error) bool { return errors.Is(err, data.ErrQueued) }
-
-// intentKey mints an idempotency key unique to one PRESS rather than to one
-// item.
-//
-// The keys here used to be "unread-<id>" — stable per item, which reads as
-// tidy and is a replay hazard the day the server starts honouring §20.7's
-// idempotency store: mark unread, mark read, mark unread again, and the third
-// call is answered from the first one's cached response and silently applies
-// nothing. Harmless while `idempotency_keys` is an unused table, and reachable
-// the moment it is not — which is exactly the kind of latent bug an outbox
-// turns into a real one, because an outbox is what replays.
-func intentKey(prefix, id string) string {
-	return prefix + "-" + id + "-" + strconv.FormatInt(time.Now().UnixMilli(), 36)
-}
-
-// shortDuration says how long something took in one glance.
-//
-// Rounded hard and deliberately: this reports cumulative downtime, a number
-// nobody needs to the second and everybody reads in relative terms — "about a
-// minute" is the whole message, and "1m13.482s" makes a reader parse before
-// they can conclude.
-// Through the `unit` catalogue rather than concatenating a letter: "5m" is
-// English, and a suffix glued onto a number is exactly the shape that breaks in
-// a language where the unit is a word that agrees with it.
-//
-// Each key is written out in full rather than assembled from a prefix, so the
-// catalogue's coverage test can find it. A key built at runtime is a key nobody
-// can grep for, which is exactly the state that test exists to prevent — and
-// "add its prefix to the dynamic allowlist" buys a shorter function by weakening
-// the check for the whole namespace.
-func shortDuration(tr i18n.Runtime, d time.Duration) string {
-	n := func(v float64) i18n.Args { return i18n.Args{"n": strconv.Itoa(int(v))} }
-	// One Namespace handle: every branch reads from `unit`, and NS is what stops
-	// a positional namespace being typo'd at one of four call sites.
-	unit := tr.NS("unit")
-	switch {
-	case d < time.Second:
-		return unit.T("ms", n(float64(d.Milliseconds())))
-	case d < time.Minute:
-		return unit.T("seconds", n(d.Seconds()))
-	case d < time.Hour:
-		return unit.T("minutes", n(d.Minutes()))
-	default:
-		return unit.T("hours", n(d.Hours()))
-	}
-}
-
 func Reader(p readerProps) ui.Node {
 	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
 	// top, unconditionally — GWC matches hooks positionally. It is threaded
@@ -762,6 +295,18 @@ func Reader(p readerProps) ui.Node {
 	// this is what keeps a four-times-a-second tick from doing it four times a
 	// second.
 	showMeasured := ui.UseRef("")
+	// showNarrating is whether the voice has PROVED it is playing — an actual
+	// timeupdate from the <audio> element, not merely a play() that was issued.
+	//
+	// A Ref, because nothing renders from it, and the distinction it draws is the
+	// one that keeps the mode from freezing: the narrator may only take the clock
+	// away once it is demonstrably running. See slideTick.
+	showNarrating := ui.UseRef(false)
+	// showVoice is why read-to-me is not speaking, or "" when it is. Rendered, so
+	// State — a mode that has silently stopped doing the thing its name promises
+	// has to say so, and inside the slideshow, where the reader is actually
+	// looking. The reader's usual notice banner is underneath the overlay.
+	showVoice := ui.UseState("")
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
@@ -933,6 +478,16 @@ func Reader(p readerProps) ui.Node {
 		feedFilter.Set(v)
 		feedFilterSave.Get()(v)
 	})
+	// Handed to railProps through a Ref rather than by value. See the field's
+	// comment in panes.go: a bare ui.Handler wraps a func, reflect.DeepEqual
+	// descends into it, and two non-nil funcs are never deeply equal — so the
+	// rail's props NEVER compared equal and all 151 rows re-rendered on every
+	// render of Reader, which during a scroll is once per painted frame.
+	//
+	// The ref is created once and refreshed here rather than being recreated,
+	// because a fresh pointer per render is the same bug wearing a Ref.
+	onFilterInputRef := ui.UseRef(onFilterInput)
+	onFilterInputRef.Set(onFilterInput)
 	onSmartKeyInput := ui.UseEvent(func(v string) { smartKeyDraft.Set(v) })
 	onSmartModelInput := ui.UseEvent(func(v string) { smartModelDraft.Set(v) })
 	onFeedTitleInput := ui.UseEvent(func(v string) { fsTitle.Set(v) })
@@ -2151,7 +1706,16 @@ func Reader(p readerProps) ui.Node {
 		loadItems(s, unreadOnly.Get())
 	}
 
-	selectScope := func(s scope) {
+	// selectScopeWithUnread is selectScope's body, parameterized on the
+	// unread-only flag to load with. selectScope below is the common case: it
+	// loads with whatever the persistent "u" toggle currently holds. The one
+	// other caller is toggleUnread's sel.Unread branch, which needs to load
+	// with a value it is setting in this SAME action — reading unreadOnly's
+	// State back out right after Set would race the scheduler that defers the
+	// write (the same reason toggleUnread already threads `next` through
+	// rather than re-reading), so it passes the value through explicitly
+	// instead of going through selectScope.
+	selectScopeWithUnread := func(s scope, unread bool) {
 		// The offer is about the list you were looking at. Carrying it to another
 		// feed would put an undo button next to something it does not undo.
 		undoToken.Set("")
@@ -2183,7 +1747,10 @@ func Reader(p readerProps) ui.Node {
 		// back to a feed should not re-fetch what we still have.
 		clearList()
 		pane.Set(viewList)
-		loadItems(s, unreadOnly.Get())
+		loadItems(s, unread)
+	}
+	selectScope := func(s scope) {
+		selectScopeWithUnread(s, unreadOnly.Get())
 	}
 
 	// --- connect ------------------------------------------------------------
@@ -2317,6 +1884,47 @@ func Reader(p readerProps) ui.Node {
 		// to commit before the tab is gone, which is the same reason the signals
 		// buffer writes the way it does.
 		save := platform.OnPageHide(func() { c.SaveCache() })
+
+		// Live updates (§20.3, TODO F2/8.7). The pump's call site and its
+		// lifetime, which is all it was missing.
+		//
+		// Started here rather than at boot because it needs the connection, and
+		// stopped by the same `ctx` this effect cancels on teardown — a pump that
+		// outlived its component would hold a subscription for a tab that is
+		// gone, and the server's per-caller cap counts those.
+		//
+		// The callback runs ON THE FRAME LOOP: `WatchEvents` posts before calling
+		// it, which is what lets it touch state at all. It has already dropped
+		// the cache entries the batch invalidated, so every refetch below reaches
+		// the server rather than being served the answer the event was about.
+		go c.WatchEvents(ctx, func(eff data.Effect) {
+			switch {
+			case eff.Reload:
+				// Fell out of the server's event buffer: what was missed is
+				// unknown by definition, so the scope is RELOADED rather than
+				// patched. Reloading rather than appending is the whole
+				// distinction — appending a page onto a list whose earlier pages
+				// are stale is how a reader ends up with the same article twice.
+				loadFeeds()
+				loadTags()
+				loadFolders()
+				loadItems(sel.Get(), unreadOnly.Get())
+				return
+			default:
+				if eff.Feeds {
+					loadFeeds()
+				}
+				if eff.Tags {
+					loadTags()
+				}
+				if eff.Lists {
+					loadItems(sel.Get(), unreadOnly.Get())
+				}
+			}
+			// Deliberately NOT the reading stream, for the reason the recovery
+			// refetch gives: the reader may be mid-article, and replacing the
+			// text under them is a worse outcome than a slightly stale list.
+		})
 
 		go func() {
 			// Runs for the life of the page. It is what keeps the indicator
@@ -2630,10 +2238,14 @@ func Reader(p readerProps) ui.Node {
 	act.Get().markAll = markAllRead
 	act.Get().addFeed = subscribe
 	act.Get().toggleUnread = func() {
-		next := !unreadOnly.Get()
+		dest, next, leaving := toggleUnreadResult(tr, sel.Get(), unreadOnly.Get())
 		unreadOnly.Set(next)
 		savePrefs(map[string]string{"list.unreadOnly": strconv.FormatBool(next)})
-		loadItems(sel.Get(), next)
+		if leaving {
+			selectScopeWithUnread(dest, next)
+			return
+		}
+		loadItems(dest, next)
 	}
 	// extendDown appends the next article BELOW the one being read.
 	//
@@ -3085,236 +2697,27 @@ func Reader(p readerProps) ui.Node {
 	}
 
 	// --- the add-a-feed dialog ----------------------------------------------
-
-	// clearLadder throws away everything learned about the previous address.
 	//
-	// Called whenever the URL changes and whenever the dialog opens, because a
-	// result that belongs to a different address is worse than no result at all:
-	// it is indistinguishable from an answer about the one on screen.
-	clearLadder := func() {
-		addLooking.Set(false)
-		addSearched.Set(false)
-		addCands.Set(nil)
-		addProposal.Set(nil)
-		addSmartStatus.Set("")
-		addSmartBusy.Set(false)
-	}
-
-	act.Get().openAddFeed = func() {
-		addErr.Set("")
-		addOpen.Set(true)
-		clearLadder()
-		// The categories may have changed on another device since boot, and this
-		// dialog is where a stale list would be visible.
-		loadFolders()
-		// Focus has to wait for the field to exist: the dialog renders on the
-		// next tick. FocusField retries on the following frame for that reason.
-		platform.FocusField("add-feed")
-	}
-	act.Get().closeAddFeed = func() {
-		addOpen.Set(false)
-		addErr.Set("")
-	}
-	// The picker is single-choice, so choosing an existing category also closes
-	// the new-category field: having both a chip pressed and a name typed would
-	// leave two answers to one question and no rule for which wins.
-	act.Get().pickAddFolder = func(id string) {
-		addFolder.Set(id)
-		addNewOpen.Set(false)
-		addErr.Set("")
-	}
-	act.Get().toggleAddNewCat = func() {
-		next := !addNewOpen.Get()
-		addNewOpen.Set(next)
-		addErr.Set("")
-		if next {
-			platform.FocusField("add-feed-category")
-		}
-	}
+	// In reader_addfeed_wire.go. Self-contained: nothing outside the dialog reads any of the
+	// state threaded in below.
+	addFeedWiring{
+		act: act, addOpen: addOpen, addNewOpen: addNewOpen, addLooking: addLooking,
+		addSearched: addSearched, addErr: addErr, addFolder: addFolder, addCands: addCands,
+		addProposal: addProposal, addSmartBusy: addSmartBusy, addSmartStatus: addSmartStatus,
+		addBusy: addBusy, addNewCat: addNewCat, addTitle: addTitle, addURL: addURL,
+		smartFollow: smartFollow, client: client, feeds: feeds, feedsGen: feedsGen,
+		folders: folders, foldersGen: foldersGen, hostsRef: hostsRef, notice: notice,
+		sel: sel, totalUnread: totalUnread, unreadOnly: unreadOnly, tr: tr,
+		loadFeeds: loadFeeds, loadFolders: loadFolders, loadItems: loadItems,
+		savePrefs: savePrefs, subscribeURL: subscribeURL,
+	}.wire()
 
 	// --- the ladder (§11) --------------------------------------------------
-
-	// analyzeSite climbs the ladder for whatever is in the URL field.
 	//
-	// smart is passed through rather than read from the preference here: the
-	// server checks the preference too, and this flag is what says the reader
-	// pressed the button THIS time. Both have to hold before a page's markup
-	// leaves the machine.
-	act.Get().analyzeSite = func(smart bool) {
-		c := client.Get()
-		url := strings.TrimSpace(addURL.Get())
-		if c == nil || url == "" {
-			return
-		}
-		// A typo is not a site. Climbing the ladder for "not-a-url" spends a
-		// round trip to be told what a two-line check already knows, and — worse
-		// — replaces "that is not a feed address" with a second, vaguer message
-		// about the same mistake.
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			return
-		}
-		if addLooking.Get() || addSmartBusy.Get() {
-			return
-		}
-		if smart {
-			addSmartBusy.Set(true)
-		} else {
-			addLooking.Set(true)
-			// The candidates from the previous attempt go now rather than when
-			// the new ones arrive, so a slow search cannot show a stale list
-			// next to a spinner.
-			addCands.Set(nil)
-			addProposal.Set(nil)
-			addSmartStatus.Set("")
-		}
-		go func() {
-			res, err := c.AnalyzeSite(context.Background(), url, smart)
-			ui.PostAsync(func() {
-				addLooking.Set(false)
-				addSmartBusy.Set(false)
-				addSearched.Set(true)
-				if err != nil {
-					// The subscribe error, when there is one, is the better
-					// message: it is about the thing the reader did. This one
-					// only speaks when nothing else has.
-					if addErr.Get() == "" {
-						addErr.Set(tr.T("reader", "errAnalyzeSite", i18n.Args{"err": err.Error()}))
-					}
-					return
-				}
-				// A result ANSWERS the failed subscribe, so its error goes —
-				// whether the answer is "here are the feeds it points at" or
-				// "no feed here, and here is what else is possible". Leaving a
-				// red line saying "not a recognisable feed" above a block that
-				// says the same thing in plain words is the app talking twice.
-				//
-				// The error survives only when the ladder itself failed, which
-				// is the branch above: then it is the only thing that knows
-				// anything.
-				addErr.Set("")
-				addCands.Set(res.GetFeeds())
-				addSmartStatus.Set(res.GetSmartStatus())
-				if res.GetScrape() != nil {
-					addProposal.Set(res.GetScrape())
-				}
-				// One press, when the lamp is lit.
-				//
-				// The free rungs found nothing and this reader has already
-				// consented — standing consent is what the lamp on the address
-				// row IS — so making them press a second button to spend it
-				// would be asking the same question twice. With the lamp off,
-				// nothing happens here and the block explains what would.
-				if !smart && len(res.GetFeeds()) == 0 && smartFollow.Get() {
-					act.Get().analyzeSite(true)
-				}
-			})
-		}()
-	}
-
-	// toggleSmartFollow is the standing consent, saved server-side like every
-	// other preference so it follows the reader between machines.
-	act.Get().toggleSmartFollow = func() {
-		next := !smartFollow.Get()
-		smartFollow.Set(next)
-		savePrefs(map[string]string{smartFollowPref: strconv.FormatBool(next)})
-	}
-
-	// addCandidate subscribes to a feed the ladder found, keeping the category
-	// and the name the reader had already chosen in the form.
-	act.Get().addCandidate = func(url string) {
-		if strings.TrimSpace(url) == "" {
-			return
-		}
-		// The field is updated too, so a failure leaves the reader looking at the
-		// address that failed rather than the one they typed — but the subscribe
-		// takes the URL directly, because state set in this frame is not readable
-		// until the next one.
-		addURL.Set(url)
-		subscribeURL(url)
-	}
-
-	// followPage accepts the proposal: the rule the reader just looked at is
-	// sent back exactly as it was shown, and the server re-runs it against the
-	// live page before writing anything.
-	act.Get().followPage = func() {
-		c := client.Get()
-		prop := addProposal.Get()
-		if c == nil || prop == nil || addBusy.Get() {
-			return
-		}
-		url := strings.TrimSpace(addURL.Get())
-		title := strings.TrimSpace(addTitle.Get())
-		folderID := addFolder.Get()
-		newCat := ""
-		if addNewOpen.Get() {
-			newCat = strings.TrimSpace(addNewCat.Get())
-			if newCat == "" {
-				addErr.Set(tr.T("reader", "errNeedCategory"))
-				return
-			}
-		}
-		addBusy.Set(true)
-		addErr.Set("")
-		go func() {
-			if newCat != "" {
-				f, err := c.CreateFolder(context.Background(), newCat)
-				if err != nil {
-					ui.PostAsync(func() {
-						addBusy.Set(false)
-						addErr.Set(tr.T("reader", "errNewCategory", i18n.Args{"err": err.Error()}))
-					})
-					return
-				}
-				folderID = f.GetId()
-			}
-			res, err := c.SubscribeScrape(context.Background(), url, title, folderID, prop.GetRule())
-
-			// Same discipline as subscribeURL (~line 1730): folders/feeds are
-			// fetched HERE, in this same goroutine, before the single PostAsync
-			// below — not via loadFolders()/loadFeeds(), whose own nested
-			// PostAsync is the one that never paints.
-			var folderList []*pb.Folder
-			var feedList []*pb.Feed
-			var total int32
-			okFolders, okFeeds := false, false
-			if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
-				folderList, okFolders = fl, true
-			}
-			if err == nil {
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
-			}
-
-			ui.PostAsync(func() {
-				addBusy.Set(false)
-				if okFolders {
-					foldersGen.Set(foldersGen.Get() + 1)
-					folders.Set(folderList)
-				}
-				if err != nil {
-					addErr.Set(tr.T("reader", "errFollowPage", i18n.Args{"err": err.Error()}))
-					return
-				}
-				addOpen.Set(false)
-				addURL.Set("")
-				addTitle.Set("")
-				addNewCat.Set("")
-				addNewOpen.Set(false)
-				addFolder.Set("")
-				clearLadder()
-				notice.Set(tr.T("addFeed", "followed", i18n.CountWith(int(res.GetItems()),
-					i18n.Args{"name": res.GetFeed().GetTitle()})))
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
-				loadItems(sel.Get(), unreadOnly.Get())
-			})
-		}()
-	}
+	// In reader_addfeed_wire.go, together with the dialog that opens it. They share a
+	// closure (clearLadder) and they are one feature — finding a feed for an address the
+	// reader typed — so splitting them across files would have put half of it out of reach
+	// of the other half.
 
 	// --- the category editor -------------------------------------------------
 
@@ -3915,6 +3318,11 @@ func Reader(p readerProps) ui.Node {
 		showHeld.Set(0)
 		showReadAt.Set(-1)
 		showMeasured.Set("")
+		// Per STORY, not per session: the narrator has to prove itself again on
+		// every segment, because a synthesis can fail on the third story after
+		// two that worked, and a flag set once at the start would leave the
+		// display frozen for exactly as long as that lasted.
+		showNarrating.Set(false)
 		showID.Set(it.GetId())
 		showPhase.Set("card")
 
@@ -3997,21 +3405,24 @@ func Reader(p readerProps) ui.Node {
 		case next < 0:
 			next = len(list) - 1
 		}
-		if showAudio.Get() {
-			// Both halves, in this order. The picture cuts to the new title card
-			// straight away; the narrator starts when the server has written the
-			// segment, which can be several seconds later. Waiting for the audio
-			// before moving the picture would leave the finished story on screen
-			// for all of it, which reads as a press that did nothing.
+		// The picture moves either way; the narrator only follows when there is
+		// one. showVoice is non-empty exactly when read-to-me has been told it
+		// cannot speak, and stepping must not quietly try again on every story —
+		// that would be the browser voice starting on story two after being
+		// refused on story one.
+		slideOpen(list[next])
+		if showAudio.Get() && showVoice.Get() == "" {
+			// After slideOpen, in that order. The picture cuts to the new title
+			// card straight away; the narrator starts when the server has written
+			// the segment, which can be several seconds later. Waiting for the
+			// audio before moving the picture would leave the finished story on
+			// screen for all of it, which reads as a press that did nothing.
 			//
 			// Deliberately NOT marked read. A track that finishes marks the
 			// article, because hearing it out is reading it — skipping past one is
 			// the opposite claim.
-			slideOpen(list[next])
 			slideNarrate(list[next])
-			return
 		}
-		slideOpen(list[next])
 	}
 
 	// slideBeat is one look at the clock: where the story has got to, what the
@@ -4021,8 +3432,45 @@ func Reader(p readerProps) ui.Node {
 	// actions Ref, because the timer that calls it was armed by a render that has
 	// since been replaced — see the actions struct.
 	act.Get().slideTick = func() {
-		if !showOpen.Get() || showAudio.Get() {
+		if !showOpen.Get() {
 			return
+		}
+		// The clock is the DEFAULT and the narrator takes it away, rather than
+		// read-to-me switching the clock off.
+		//
+		// That ordering is the whole fix for a bug that presented as the feature
+		// simply not working: with the clock disabled whenever read-to-me was on,
+		// a narrator that never started — no Smart+ voice, no key, a refused
+		// ticket, a failed synthesis — left the display frozen on its first title
+		// card with the headline not animating and the story never opening. There
+		// was no clock to fall back to, because turning the mode on had removed
+		// it.
+		//
+		// Now nothing can freeze: the voice has to prove it is playing (an actual
+		// timeupdate, see slideAudio) before it is allowed to pace anything.
+		if showAudio.Get() && showVoice.Get() == "" {
+			if showNarrating.Get() {
+				// The narrator is driving. slideAudio owns the pacing.
+				return
+			}
+			// Waiting for it. The title card holds rather than the clock running
+			// out behind it — the server can take several seconds to write and
+			// synthesise a segment, and that wait is a legitimate part of the mode.
+			if time.Since(showStart.Get()) < slideVoiceWait {
+				slideVars(0, 0)
+				return
+			}
+			// It never came. Say so, silence whatever did start, and hand the
+			// story back to the clock from this moment rather than from whenever
+			// the slide opened — the reader has not seen any of it yet.
+			showVoice.Set(slideVoiceUnavailable)
+			platform.SpeechStop()
+			platform.AudioStop()
+			speakID.Set("")
+			speakState.Set("")
+			autoWant.Set("")
+			showStart.Set(time.Now())
+			showHeld.Set(0)
 		}
 		it, _ := slideAt(showID.Get())
 		if it == nil {
@@ -4080,6 +3528,17 @@ func Reader(p readerProps) ui.Node {
 		it, _ := slideAt(showID.Get())
 		if it == nil {
 			return
+		}
+		// The narrator has proved it is playing, so it may take the clock. This
+		// is the ONLY place that claim is made, and it is made from a timeupdate
+		// with a known length rather than from a play() having been issued —
+		// which is the difference between "the voice is speaking" and "the voice
+		// was asked to". See slideTick for what the difference costs.
+		if dur > 0 {
+			showNarrating.Set(true)
+			if showVoice.Get() != "" {
+				showVoice.Set("")
+			}
 		}
 		_, ready := bodies.Get()[it.GetId()]
 
@@ -4199,6 +3658,25 @@ func Reader(p readerProps) ui.Node {
 	// happened and it stays on afterwards — which is the behaviour someone who
 	// asked to be read to almost certainly wants anyway.
 	act.Get().slideListenOn = func() {
+		// Read-to-me is a SMART+ feature, and refusing to start without it is the
+		// honest answer rather than a pedantic one.
+		//
+		// The browser's own synthesiser reads what is in the DOM — the article —
+		// so it cannot produce a broadcast segment, cannot hand over between
+		// stories, and reports no position, which is what the display's clock
+		// would have to follow. Starting it anyway gives a voice reading article
+		// one while the picture has moved to article two, which is worse than
+		// silence and much harder to diagnose.
+		//
+		// So it says why instead, and the clock runs the show. Smart+ voice is NOT
+		// turned on here: it is an egress decision, and a switch that sends the
+		// reader's articles to OpenAI because they asked to be read to is exactly
+		// the consent this application does not take.
+		if !speakSmart.Get() {
+			showVoice.Set(slideVoiceOff)
+			return
+		}
+		showVoice.Set("")
 		if !speakAuto.Get() {
 			speakAuto.Set(true)
 			savePrefs(map[string]string{"tts.autoplay": "true"})
@@ -4226,10 +3704,15 @@ func Reader(p readerProps) ui.Node {
 		showMeasured.Set("")
 		slideVars(0, 0)
 		showPhase.Set("card")
+		showNarrating.Set(false)
 		if next {
 			act.Get().slideListenOn()
 			return
 		}
+		// Turning it off clears the explanation with it: the reason read-to-me
+		// was not speaking is not a thing to keep saying to someone who has just
+		// stopped asking for it.
+		showVoice.Set("")
 		act.Get().listenStop()
 	}
 
@@ -4954,438 +4437,14 @@ func Reader(p readerProps) ui.Node {
 
 	// --- delegated clicks ---------------------------------------------------
 	//
-	// Two listeners, total, regardless of how many rows exist. Registered once,
-	// because the container elements outlive every row inside them — which is
-	// also why this survives pagination without re-registering.
-
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-item-id", func(id string) {
-			ui.PostAsync(func() {
-				a := act.Get()
-				if it := a.itemByID(id); it != nil {
-					a.open(it)
-				}
-			})
-		})
-		return l.Release
-	}, []any{})
-
-	// Wheel over a live view scrolls the REMOTE page (§10.1d).
-	//
-	// One listener for every live view there will ever be, registered once, for
-	// the same reason as the clicks above. The deltas arrive already coalesced
-	// to one callback per animation frame; this fires them at the server and
-	// deliberately does not wait for or re-render on the reply.
-	//
-	// Nothing here touches state. A scroll that changed state would re-render
-	// the article, and re-rendering the article rebuilds the <img> — which
-	// restarts the stream, on every notch of the wheel.
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedWheel("#app", "data-live-session", func(session string, dx, dy float64) {
-			if session == "" {
-				return
-			}
-			c := client.Get()
-			if c == nil {
-				return
-			}
-			go func() {
-				// Fire and forget. A dropped scroll is a scroll the reader will
-				// simply do again, and surfacing an error for one would put a
-				// banner on screen for something they have already corrected.
-				_, _ = c.ScrollLiveView(context.Background(), session, dx, dy)
-			}()
-		})
-		return l.Release
-	}, []any{})
-
-	// Everything the panes offer, dispatched by data-action. One listener for the
-	// whole shell, and it keeps working for elements that did not exist when it
-	// was registered — which is what lets the pane helpers stay hook-free.
-	// Article actions carry their subject.
-	//
-	// One listener reports data-for-item, which only the per-article controls
-	// set; it fires alongside the data-action listener below and simply records
-	// which article was named. Splitting it out keeps OnDelegatedClick reporting
-	// exactly one attribute, which is what makes it simple enough to trust.
-	forItem := ui.UseRef("")
-	// forValue is the segmented controls' payload. Same pattern as forItem: one
-	// more attribute listener rather than teaching OnDelegatedClick to report
-	// two attributes, which is what keeps that helper simple enough to trust.
-	forValue := ui.UseRef("")
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-for-item", func(id string) {
-			forItem.Set(id)
-		})
-		return l.Release
-	}, []any{})
-
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-value", func(v string) {
-			forValue.Set(v)
-		})
-		return l.Release
-	}, []any{})
-
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-action", func(action string) {
-			// The click's payload is captured HERE, on the click's own stack, and
-			// not inside the PostAsync below.
-			//
-			// This is the whole reason the two sibling listeners can be trusted.
-			// They fire synchronously, immediately before this one, and write into
-			// refs that every click shares — so the refs are correct for exactly as
-			// long as the current JS task. Reading them one frame later, from
-			// inside the deferred body, is reading them after the next click may
-			// already have overwritten them.
-			//
-			// That is not theoretical. Two clicks inside one frame both queue a
-			// body; the first body reads the SECOND click's id and then clears the
-			// ref, so the second body reads an empty string and its action
-			// silently does nothing — no error, no save, no sign it was dropped.
-			// Frames are not always 16ms either: a throttled or busy tab stretches
-			// the window this races in to seconds.
-			//
-			// Cleared here too, for the original reason: the id belongs to THIS
-			// click, and leaving it set would make the next keyboard shortcut act
-			// on an article the reader has long since scrolled past.
-			id, value := forItem.Get(), forValue.Get()
-			forItem.Set("")
-			forValue.Set("")
-
-			// PostAsync, always. These handlers run outside GWC's own event
-			// dispatch, so calling State.Set directly schedules the update on a
-			// path the reconciler does not coalesce — the visible result was
-			// selection flipping back and forth and a row greying out a beat
-			// after the click instead of with it.
-			ui.PostAsync(func() {
-				a := act.Get()
-				switch action {
-				case "back-rail":
-					a.backRail()
-				case "back-list":
-					a.backList()
-				case "more":
-					a.more()
-				case "like":
-					a.rate(id, 1)
-				case "dislike":
-					a.rate(id, -1)
-				case "open-original":
-					a.openExtern(id)
-				case "refresh":
-					a.refresh()
-				case "mark-all":
-					a.markAll()
-				case "toggle-unread":
-					a.toggleUnread()
-				case actReconnect:
-					// The reader is looking at the countdown and is more
-					// certain than we are. Kick resets the backoff and
-					// re-dials; without it Connect would be a no-op, because
-					// in TRANSIENT_FAILURE the backoff timer owns the redial.
-					if c := client.Get(); c != nil {
-						c.Kick()
-					}
-				case actSignIn, actReload:
-					// Both are a reload, and they are still two actions.
-					//
-					// §7.1b's interceptor has already cleared the token by the
-					// time a session ends, so Root will mount Login rather than
-					// the reader; a client the server will not talk to cannot
-					// fix itself by asking again either (§22.10). What differs
-					// is the LABEL, which is the part the reader acts on, and
-					// what will differ later: skew owes a Service Worker cache
-					// purge before the reload, and there is no Service Worker
-					// yet (§12.3). Collapsing them now would bury that.
-					platform.Reload()
-				case actAddOpen:
-					a.openAddFeed()
-				case actAddClose:
-					a.closeAddFeed()
-				case actAddSubmit:
-					a.addFeed()
-				case actAddFolder:
-					a.pickAddFolder(value)
-				case actAddNewCat:
-					a.toggleAddNewCat()
-				case actAddCandidate:
-					a.addCandidate(value)
-				case actAddSmart:
-					a.toggleSmartFollow()
-				case actAddAnalyze:
-					a.analyzeSite(true)
-				case actAddFollow:
-					a.followPage()
-				case actCatToggle:
-					a.toggleCategory(value)
-				case actCatNew:
-					a.newCategory()
-				case actCatOpen:
-					a.openCategory(value)
-				case actCatClose:
-					a.closeCategory()
-				case actCatSave:
-					a.saveCategory()
-				case actCatDelete, actCatConfirm:
-					a.deleteCategory()
-				case "fs-folder":
-					// The chip names the feed in data-for-item and the category in
-					// data-value; an empty category is "No category", which is a
-					// choice rather than a missing value.
-					a.setFeedFolder(id, value)
-				case "toggle-feed-filter":
-					a.toggleFeedFilter()
-				case actStreams, actFeeds, actTags, actCats:
-					a.toggleRailSection(action)
-				case "add-tag":
-					a.addTag(id)
-				case "remove-tag":
-					// The chip carries the name in data-value; the article it was
-					// clicked in names the feed.
-					a.removeTag(id, value)
-				case "expand":
-					a.expand(id)
-				case "toggle-page":
-					a.togglePage(id)
-				case "toggle-page-wide":
-					a.togglePageWide(id)
-				case "page-mode-doc":
-					a.setPageMode(id, false)
-				case "page-mode-live":
-					a.setPageMode(id, true)
-				case "toggle-note":
-					a.toggleNote(id)
-				case "modal-keep":
-					// A click inside an open dialog. It exists only to stop the
-					// delegated walk reaching the backdrop's close action.
-				case "palette-close":
-					a.closePalette()
-				case "help-close":
-					a.closeHelp()
-				case "help-open":
-					a.toggleHelp()
-				case "undo-mark-all":
-					a.undoMarkAll()
-				case "open-settings":
-					a.showSettings()
-				case "settings-tab":
-					a.settingsTabTo(value)
-				case "settings-refresh":
-					a.loadStats()
-				case "settings-loglevel":
-					a.setLogLevel(value)
-				case actSmartKeySave:
-					a.saveSmartKey()
-				case actSmartKeyClear:
-					a.clearSmartKey()
-				case actSmartModel:
-					a.saveSmartModel()
-				case actSmartFeedPlus:
-					a.toggleFeedPlus()
-				case actSmartLang:
-					// "" is a real value: it is English.
-					a.setLocale(value)
-				case actSmartRetranslate:
-					a.retranslate()
-				case actFocus:
-					a.toggleFocus()
-				case "toggle-mark-past":
-					a.toggleMarkPast()
-				case "set-theme":
-					a.setTheme(value)
-				case "set-accent":
-					// "" is a real value here — it means "the theme's own
-					// accent" — so it is passed through rather than guarded.
-					a.setAccent(value)
-				case "set-reading":
-					a.setReading(value)
-				case "toggle-motion":
-					a.toggleMotion()
-				case "motion-system":
-					a.motionSystem()
-				case "feed-settings":
-					a.openFeedSettings(id)
-				case "feed-settings-close":
-					a.closeFeedSettings()
-				case "fs-rename":
-					// Read from the DOM rather than from state: this is the same
-					// field Enter commits, and both paths must send the same
-					// value. An empty string is meaningful — it clears the
-					// override — so it is sent rather than skipped.
-					v := platform.FieldValue("feed-title")
-					a.patchFeed(&pb.UpdateFeedSettingsRequest{SourceId: id, Title: &v})
-				case "fs-unsubscribe":
-					a.unsubscribe(id)
-				case actTagSettings:
-					a.openTagSettings(id)
-				case actTagSettingsClose:
-					a.closeTagSettings()
-				case actTagRename:
-					// Read from the DOM for the same reason fs-rename does: this
-					// is the field Enter also commits, and both paths have to
-					// send the same value. An empty string is meaningful — it
-					// clears the override — so it is sent rather than skipped.
-					v := platform.FieldValue("tag-label")
-					a.patchTag(&pb.UpdateTagRequest{TagId: id, Label: &v})
-				case actTagGlyph:
-					// The picker's "default" cell carries a sentinel rather than
-					// an empty data-value: an empty attribute is indistinguishable
-					// from a missing one once it has been through closest() and
-					// getAttribute, and "the reader chose the default" must not
-					// arrive as "the reader clicked nothing".
-					g := value
-					if g == glyphNone {
-						g = ""
-					}
-					a.patchTag(&pb.UpdateTagRequest{TagId: id, Glyph: &g})
-				case "fs-refresh":
-					// The same refresh the toolbar runs, scoped to this feed.
-					a.pick(scope{SourceID: id, Title: fsName(a, id)})
-					a.refresh()
-				case "fs-markall":
-					a.pick(scope{SourceID: id, Title: fsName(a, id)})
-					a.markAll()
-				case "fs-megafeed":
-					if s := fsData.Get(); s != nil {
-						v := !s.GetInMegafeed()
-						a.patchFeed(&pb.UpdateFeedSettingsRequest{
-							SourceId: id, InMegafeed: &v})
-					}
-				case "fs-poll":
-					if v, err := strconv.Atoi(value); err == nil {
-						n := int32(v)
-						a.patchFeed(&pb.UpdateFeedSettingsRequest{
-							SourceId: id, FetchIntervalS: &n})
-					}
-				case "fs-cache":
-					if v, err := strconv.Atoi(value); err == nil {
-						n := int32(v)
-						a.patchFeed(&pb.UpdateFeedSettingsRequest{
-							SourceId: id, CacheDepth: &n})
-					}
-				case "fs-mute":
-					if v, err := strconv.Atoi(value); err == nil {
-						until := ""
-						if v > 0 {
-							until = hoursFromNow(v)
-						}
-						a.patchFeed(&pb.UpdateFeedSettingsRequest{
-							SourceId: id, MutedUntil: &until})
-					}
-				case "listen":
-					a.listen(id)
-				case "listen-pause":
-					a.listenPause()
-				case "listen-stop":
-					a.listenStop()
-				case "listen-jump":
-					a.listenJump(id)
-				case "toggle-smart-voice":
-					a.smartVoice()
-				case "toggle-digest":
-					a.digestVoice()
-				case actSlideOpen:
-					a.slideStart()
-				case actSlideLeave:
-					a.slideStop()
-				case actSlidePause:
-					a.slidePause()
-				case actSlideNext:
-					a.slideStep(1)
-				case actSlidePrev:
-					a.slideStep(-1)
-				case actSlideListen:
-					a.slideListen()
-				case actSlideDwell:
-					a.slideSetDwell(value)
-				case "toggle-podcast":
-					a.podcastVoice()
-				case "toggle-autoplay":
-					a.autoPlay()
-				case "read-later":
-					a.later(id)
-				case "mark-unread":
-					a.markUnread(id)
-				case "tab-home":
-					// Home is the reading surface, and on a phone that means the
-					// list — not the article, which would drop you back into
-					// whatever you last read rather than into today.
-					a.pick(scope{Title: tr.T("stream", "all")})
-				case "tab-feeds":
-					a.showTab(viewRail)
-				case "tab-notes":
-					a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
-				case "tab-settings":
-					a.showTab(viewSettings)
-				}
-			})
-		})
-		return l.Release
-	}, []any{})
-
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-tag-id", func(id string) {
-			ui.PostAsync(func() {
-				for _, t := range tags.Get() {
-					if t.GetId() == id {
-						act.Get().pickTag(id, t.GetName())
-						return
-					}
-				}
-			})
-		})
-		return l.Release
-	}, []any{})
-
-	// A category's own row. Its own attribute rather than reusing data-tag-id,
-	// because the two resolve to different scopes and a shared attribute would
-	// make "which kind of thing is this" a guess at the click.
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-folder-id", func(id string) {
-			ui.PostAsync(func() {
-				a := act.Get()
-				if id == unfiledID {
-					a.pickFolder(id, tr.T("stream", "unfiled"))
-					return
-				}
-				for _, f := range folders.Get() {
-					if f.GetId() == id {
-						a.pickFolder(id, f.GetName())
-						return
-					}
-				}
-			})
-		})
-		return l.Release
-	}, []any{})
-
-	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-source-id", func(id string) {
-			ui.PostAsync(func() {
-				a := act.Get()
-				switch id {
-				case streamAll:
-					a.pick(scope{Title: tr.T("stream", "all")})
-				case streamMyFeed:
-					a.pick(scope{Title: tr.T("stream", "myFeed"), MyFeed: true})
-				case streamUnread:
-					a.pick(scope{Title: tr.T("stream", "unread"), Unread: true})
-				case streamLiked:
-					a.pick(scope{Title: tr.T("stream", "liked"), Rating: 1})
-				case streamLater:
-					a.pick(scope{Title: tr.T("stream", "later"), Later: true})
-				case streamNotes:
-					a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
-				default:
-					if f := a.feedByID(id); f != nil {
-						a.pick(scope{SourceID: id, Title: f.GetTitle()})
-					}
-				}
-			})
-		})
-		return l.Release
-	}, []any{})
+	// Two listeners, total, regardless of how many rows exist. Both live in
+	// reader_clicks.go; the call is here, unconditional and in this position, because
+	// that is what keeps the hooks inside it positionally stable.
+	delegatedClicks{
+		tr: tr, act: act, client: client, busy: busy, pane: pane,
+		current: current, stream: stream, feeds: feeds, folders: folders,
+		tags: tags, fsData: fsData,
+	}.wire()
 
 	// --- pane resizing, persisted server-side --------------------------------
 	//
@@ -5867,318 +4926,28 @@ func Reader(p readerProps) ui.Node {
 	}, []any{len(items.Get()) > 0})
 
 	// --- keyboard -----------------------------------------------------------
-	// Google Reader's map, unchanged. j/k/o/s/m transfer on day one, and
-	// renaming them to something more "modern" would throw that away for nothing.
-
-	// UseLayoutEffect, not UseEffect: a passive effect runs after the browser
-	// paints, which leaves a real window — a few tens of milliseconds after the
-	// list first paints — where the document has no key listener at all. A person
-	// cannot type that fast, but a scripted `press()` fired the instant `.item-row`
-	// is visible can and does land in it (motion.spec.mjs's Ctrl+K case measured
-	// about one run in four). The layout effect runs synchronously right after
-	// this commit, before paint, so the listener exists before the reader — or a
-	// test — can ever see a frame to react to.
-	ui.UseLayoutEffect(func() func() {
-		l := platform.OnKeyDown(func(k platform.Key) {
-			// Enter inside a field submits that field. This lives here rather
-			// than on an OnKeyDown prop because GWC adapts a func(string)
-			// handler to event.target.value — an input-level key handler can
-			// never see "Enter" at all.
-			// Ctrl-K / Cmd-K, from anywhere including inside a text field —
-			// that is the point of a global palette, and it is the one binding
-			// people try first.
-			if k.Ctrl && (k.Name == "k" || k.Name == "K") {
-				ui.PostAsync(func() { act.Get().openPalette() })
-				return
-			}
-			// While the palette is open it owns the arrows, Enter and Escape,
-			// even though focus is in a text field.
-			if k.Role == "palette" {
-				switch k.Name {
-				case "ArrowDown":
-					ui.PostAsync(func() { act.Get().movePalette(1) })
-				case "ArrowUp":
-					ui.PostAsync(func() { act.Get().movePalette(-1) })
-				case "Escape":
-					ui.PostAsync(func() { act.Get().closePalette() })
-				case "Enter":
-					// Read from the DOM: keydown fires before the value reaches
-					// state, so state is one character behind and Enter would run
-					// the previous query's top hit.
-					q := platform.FieldValue("palette")
-					ui.PostAsync(func() {
-						a := act.Get()
-						list := filterPalette(buildPalette(tr, feeds.Get(), tags.Get()), q)
-						if len(list) == 0 {
-							return
-						}
-						i := paletteActive.Get()
-						if i < 0 || i >= len(list) {
-							i = 0
-						}
-						a.runPalette(kindClass(list[i].Kind) + ":" + list[i].ID)
-					})
-				}
-				return
-			}
-			// Escape gets out of a text field, and it has to be handled BEFORE
-			// the typing guard below — otherwise the guard swallows it and the
-			// only way out of the search box is the mouse, which in a
-			// keyboard-first app is the same as no way out.
-			if k.Typing && k.Name == "Escape" && k.Role != "palette" {
-				platform.Blur()
-				ui.PostAsync(func() {
-					a := act.Get()
-					a.closeHelp()
-					// A dialog's own fields are text fields, so Escape reaches
-					// here rather than the branch below. Without this, Escape in
-					// the add-a-feed URL box blurs it and leaves the dialog open
-					// — a key that half-works reads as a broken key.
-					a.closeAddFeed()
-					a.closeCategory()
-				})
-				return
-			}
-			if k.Typing {
-				// Notes save themselves on a pause now, so Ctrl+Enter is no
-				// longer the way to keep one — it is "save it this instant",
-				// for the reader who does not want to wait out the debounce and
-				// for the muscle memory of everyone who learned the old rule.
-				// Plain Enter must still insert a newline: a note is prose, and
-				// a textarea that submits on Enter cannot hold a second
-				// sentence.
-				if k.Role == "note" {
-					if k.Name == "Enter" && k.Ctrl {
-						// Which note field: there is one per article in the
-						// stream, and the focused one is the answer.
-						id := platform.FocusedAttr("data-note-id")
-						ui.PostAsync(func() { act.Get().saveNote(id) })
-					}
-					return
-				}
-				if k.Name != "Enter" {
-					return
-				}
-				switch k.Role {
-				case "search":
-					// Read from the DOM, not from state: keydown fires before the
-					// value reaches the component, so state is one character behind.
-					q := strings.TrimSpace(platform.FieldValue("search"))
-					ui.PostAsync(func() { act.Get().search(q) })
-				case "add-feed", "add-feed-title", "add-feed-category":
-					// Enter submits from any of the dialog's three fields. A form
-					// where Enter works in one box and does nothing in the next is
-					// a form people stop pressing Enter in.
-					ui.PostAsync(func() { act.Get().addFeed() })
-				case "category-name":
-					ui.PostAsync(func() { act.Get().saveCategory() })
-				case "feed-title":
-					// Enter commits the rename. An empty value is meaningful —
-					// it clears the override and goes back to the publisher's
-					// title — so it is sent rather than ignored.
-					v := platform.FieldValue("feed-title")
-					ui.PostAsync(func() {
-						if id := fsOpen.Get(); id != "" {
-							act.Get().patchFeed(&pb.UpdateFeedSettingsRequest{
-								SourceId: id, Title: &v})
-						}
-					})
-				case "tag-label":
-					// Enter commits the tag's rename, the same as the button. An
-					// empty value clears the override and restores the tag's own
-					// name, so it is sent rather than ignored.
-					v := platform.FieldValue("tag-label")
-					ui.PostAsync(func() {
-						if id := tsOpen.Get(); id != "" {
-							act.Get().patchTag(&pb.UpdateTagRequest{TagId: id, Label: &v})
-						}
-					})
-				case "tag":
-					ui.PostAsync(func() { act.Get().addTag("") })
-				}
-				return
-			}
-
-			// --- the slideshow owns the keyboard while it is running ---------
-			//
-			// Every key, not just the five it uses, and that is the point of
-			// returning at the end of this block rather than falling through:
-			// this is a MODE, and a reader who has handed the screen over to it
-			// must not be able to open the command palette behind it, mark the
-			// feed read, or navigate a list they cannot see. The five that do
-			// something are the transport, plus the two ways out.
-			//
-			// Escape is here AND in design/slideshow.go's fullscreen listener,
-			// because the two cases are different: the browser swallows Escape
-			// while it owns the screen, so this branch is what serves a reader
-			// whose fullscreen request was refused — which is the ordinary case
-			// on a browser that will not go fullscreen outside a gesture.
-			if showOpen.Get() {
-				switch k.Name {
-				case "Escape":
-					ui.PostAsync(func() { act.Get().slideStop() })
-				case " ", "Spacebar":
-					// The universal key for "hold on a moment", in every player
-					// anyone has ever used. It is the one binding here nobody
-					// needs to be taught.
-					ui.PostAsync(func() { act.Get().slidePause() })
-				case "ArrowRight", "j", "n":
-					ui.PostAsync(func() { act.Get().slideStep(1) })
-				case "ArrowLeft", "k", "p":
-					ui.PostAsync(func() { act.Get().slideStep(-1) })
-				case "v":
-					// v for voice. `l` is Like everywhere else in this
-					// application, and a key that means one thing in the reader
-					// and another in the slideshow is worse than an unbound one.
-					ui.PostAsync(func() { act.Get().slideListen() })
-				}
-				return
-			}
-
-			// --- moving between panes ---------------------------------------
-			//
-			// Tab moves BETWEEN panes, the arrows move WITHIN one. That split is
-			// what makes a 151-row sidebar navigable at all: 151 tab stops
-			// between the rail and the article is not navigation.
-			switch k.Name {
-			case "1":
-				platform.FocusFirst(".pane-rail", ".feed-row")
-				return
-			case "2":
-				platform.FocusFirst(".list-scroll", ".item-row")
-				return
-			case "3":
-				// The pane itself, not a control inside it: what a reader wants
-				// from "go to the article" is to scroll it, and the arrows do
-				// that natively once the scroll container has focus.
-				platform.FocusFirst(".panes", ".pane-article")
-				return
-			case "?":
-				ui.PostAsync(func() { act.Get().toggleHelp() })
-				return
-			case ",":
-				// The convention every desktop app shares. Cheap to learn once
-				// and impossible to discover otherwise, which is why the gear in
-				// the toolbar exists too.
-				ui.PostAsync(func() { act.Get().showSettings() })
-				return
-			case "/":
-				// Focus, do not submit. "/" is the universal jump-to-search and
-				// swallowing it into a search that has not been typed yet would
-				// be worse than not binding it.
-				platform.FocusField("search")
-				return
-			case "f":
-				platform.FocusField("feed-filter")
-				return
-			case "Escape":
-				ui.PostAsync(func() {
-					a := act.Get()
-					a.closeHelp()
-					// Both settings panels, because Escape closing one dialog and
-					// not the one beside it is the kind of inconsistency a reader
-					// reads as a broken key rather than as a rule.
-					a.closeTagSettings()
-					a.closeFeedSettings()
-					a.closeAddFeed()
-					a.closeCategory()
-					a.listenStop()
-					// Escape peels one layer. In focus mode the outermost layer is
-					// focus mode itself — and "back to the list" is meaningless
-					// while the list is closed, so the key would read as dead.
-					if focusMode.Get() {
-						a.toggleFocus()
-						return
-					}
-					pane.Set(viewList)
-				})
-				platform.Blur()
-				return
-			}
-
-			// --- arrows, interpreted by whichever pane has focus -------------
-			if k.Name == "ArrowDown" || k.Name == "ArrowUp" {
-				delta := 1
-				if k.Name == "ArrowUp" {
-					delta = -1
-				}
-				switch {
-				case platform.FocusedIn(".pane-rail"):
-					platform.MoveFocus(".pane-rail", ".feed-row", delta)
-					return
-				case platform.FocusedIn(".list-scroll"):
-					// The list's arrows OPEN as they move, because a reader
-					// moving through a list is reading it — that is the whole
-					// j/k idiom, and having arrows merely move focus while j/k
-					// opens would be two behaviours for one gesture.
-					platform.MoveFocus(".list-scroll", ".item-row", delta)
-					// Through act.Get(), not items.Get()/current.Get() directly: see
-					// the actions struct's navStep field for why.
-					ui.PostAsync(func() {
-						if next := act.Get().navStep(delta); next != nil {
-							openItem(next)
-						}
-					})
-					return
-				}
-				// Anywhere else the arrows belong to the browser: scrolling the
-				// article is what they already do, and better than we would.
-				return
-			}
-
-			switch k.Name {
-			// j and k read the article to open through act.Get().navStep, not
-			// items.Get()/current.Get() inline here — see the actions struct's
-			// navStep field for why: this listener is registered once, and a
-			// ui.State read directly inside its closure would forever answer
-			// with whichever article was current at the render that mounted
-			// it, not the one on screen when the key is actually pressed.
-			case "j":
-				ui.PostAsync(func() {
-					if next := act.Get().navStep(1); next != nil {
-						openItem(next)
-					}
-				})
-			case "k":
-				ui.PostAsync(func() {
-					if next := act.Get().navStep(-1); next != nil {
-						openItem(next)
-					}
-				})
-			case "o", "Enter":
-				ui.PostAsync(func() { act.Get().openExtern("") })
-			// l and d rather than s: the shortcut names the thing it does, and
-			// "star" is no longer a thing this reader does.
-			case "t":
-				ui.PostAsync(func() { act.Get().later("") })
-			case "U":
-				ui.PostAsync(func() { act.Get().markUnread("") })
-			case "l":
-				ui.PostAsync(func() { act.Get().rate("", 1) })
-			case "d":
-				ui.PostAsync(func() { act.Get().rate("", -1) })
-			case "r":
-				ui.PostAsync(refresh)
-			// w for wide. f was taken by the rail's name filter, and a key that
-			// silently does two things is worse than a key that is not the first
-			// letter of the word.
-			case "w":
-				ui.PostAsync(func() { act.Get().toggleFocus() })
-			// s for slideshow. It is the next step past w — w gives the article
-			// the window, this gives it the screen — so the two sitting next to
-			// each other in the help sheet is the whole explanation.
-			case "s":
-				ui.PostAsync(func() { act.Get().slideStart() })
-			case "u":
-				ui.PostAsync(func() { act.Get().toggleUnread() })
-			}
-		})
-		return l.Release
-	}, []any{})
+	//
+	// The map itself is in reader_keyboard.go, where it can be read as one thing. The call
+	// stays here, unconditional and in this position, because that is what keeps the hook
+	// inside it positionally stable.
+	keyboardMap{
+		tr: tr, act: act, pane: pane, current: current,
+		items: items, stream: stream, feeds: feeds, tags: tags,
+		focusMode: focusMode, showOpen: showOpen, fsOpen: fsOpen, tsOpen: tsOpen,
+		paletteActive: paletteActive,
+		openItem:      openItem, refresh: refresh,
+	}.wire()
 
 	// --- the slideshow's lifecycle (§19) --------------------------------------
 
-	// The clock, in silent mode only.
+	// The clock, whenever the show is running.
+	//
+	// **Not "in silent mode only", which is what it used to say and what made the
+	// mode fail.** Read-to-me does not switch the clock off; it lets the narrator
+	// take the pacing away inside slideTick, and only once the narrator has proved
+	// it is playing. The distinction is invisible until the voice does not start —
+	// and then it is the difference between a display that carries on silently and
+	// one frozen on its first title card with nothing left to move it.
 	//
 	// A re-armed timer rather than a ticker, because a ticker that fires while
 	// the tab is throttled queues its missed beats and delivers them in a burst
@@ -6187,11 +4956,11 @@ func Reader(p readerProps) ui.Node {
 	// the elapsed time is read from the clock rather than counted in beats, so
 	// nothing is lost by that.
 	//
-	// Paused is in the dependencies rather than checked inside, so a paused
+	// Paused IS in the dependencies rather than checked inside, so a paused
 	// slideshow has no timer at all — the correct amount of work for a display
 	// that has been told to stop.
 	ui.UseEffect(func() func() {
-		if !showOpen.Get() || showAudio.Get() || showPaused.Get() {
+		if !showOpen.Get() || showPaused.Get() {
 			return nil
 		}
 		stopped := false
@@ -6218,7 +4987,7 @@ func Reader(p readerProps) ui.Node {
 				timer.Stop()
 			}
 		}
-	}, []any{showOpen.Get(), showAudio.Get(), showPaused.Get()})
+	}, []any{showOpen.Get(), showPaused.Get()})
 
 	// The narrator's playhead, in read-to-me mode only.
 	//
@@ -6352,7 +5121,7 @@ func Reader(p readerProps) ui.Node {
 				unreadFeedsOnly: unreadFeedsOnly.Get(),
 				loading:         feedsLoading.Get(),
 				filter:          feedFilter.Get(),
-				onFilterInput:   onFilterInput,
+				onFilterInput:   onFilterInputRef,
 				streamsClosed:   railStreamsClosed.Get(),
 				feedsClosed:     railFeedsClosed.Get(),
 				tagsClosed:      railTagsClosed.Get(),
@@ -6561,6 +5330,7 @@ func Reader(p readerProps) ui.Node {
 				paused:     showPaused.Get(),
 				audio:      showAudio.Get(),
 				speakState: speakState.Get(),
+				voice:      showVoice.Get(),
 				index:      i,
 				total:      len(items.Get()),
 				hosts:      hosts,
@@ -6591,661 +5361,3 @@ func Reader(p readerProps) ui.Node {
 // A copy with a CLONED item, not a mutation: the reconciler compares props, and
 // mutating in place leaves old and new indistinguishable, so the row never
 // repaints and the click looks like it did nothing.
-func withRead(cur []*pb.Item, id string, read bool) []*pb.Item {
-	next := make([]*pb.Item, len(cur))
-	for i, it := range cur {
-		if it.GetId() == id {
-			c := cloneItem(it)
-			c.Read = read
-			next[i] = c
-			continue
-		}
-		next[i] = it
-	}
-	return next
-}
-
-// folderOf is which category a feed is filed under, "" for none.
-func folderOf(feeds []*pb.Feed, sourceID string) string {
-	for _, f := range feeds {
-		if f.GetSourceId() == sourceID {
-			return f.GetFolderId()
-		}
-	}
-	return ""
-}
-
-// folderName resolves a category id to its name for the dialog's heading.
-func folderName(folders []*pb.Folder, id string) string {
-	for _, f := range folders {
-		if f.GetId() == id {
-			return f.GetName()
-		}
-	}
-	return ""
-}
-
-// feedsInFolder is what a category currently holds, which is what makes the
-// delete warning concrete: "moves 4 feeds to Unfiled" is checkable where "this
-// cannot be undone" says nothing about this particular category.
-func feedsInFolder(feeds []*pb.Feed, folderID string) []*pb.Feed {
-	if folderID == "" {
-		return nil
-	}
-	var out []*pb.Feed
-	for _, f := range feeds {
-		if f.GetFolderId() == folderID {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
-// withFolder returns the sidebar's feeds with one of them refiled.
-//
-// A copy with a cloned feed, for the reason withRead documents: the reconciler
-// compares props, and a mutation in place leaves the old and new values
-// indistinguishable, so the row that moved would not repaint.
-func withFolder(cur []*pb.Feed, sourceID, folderID string) []*pb.Feed {
-	next := make([]*pb.Feed, len(cur))
-	for i, f := range cur {
-		if f.GetSourceId() == sourceID {
-			c := cloneFeed(f)
-			c.FolderId = folderID
-			next[i] = c
-			continue
-		}
-		next[i] = f
-	}
-	return next
-}
-
-// setLocalRating applies a verdict to the reading stream and the fetched body.
-// The item LIST is updated by the caller through setItems, because that one has
-// to go through the Ref that survives renders.
-func setLocalRating(stream ui.State[[]*pb.Item], bodies ui.State[map[string]*pb.Item],
-	id string, rating int) {
-	stream.Set(withRating(stream.Get(), id, rating))
-
-	if b, ok := bodies.Get()[id]; ok {
-		c := cloneItem(b)
-		c.Rating = int32(rating)
-		bodies.Set(withEntry(bodies.Get(), id, c))
-	}
-}
-
-// setLocalStarred and setLocalRead mirror setLocalRating: the stream and the
-// fetched body, with the item LIST handled by the caller through setItems.
-func setLocalStarred(stream ui.State[[]*pb.Item], bodies ui.State[map[string]*pb.Item],
-	id string, starred bool) {
-	stream.Set(withStarred(stream.Get(), id, starred))
-	if b, ok := bodies.Get()[id]; ok {
-		c := cloneItem(b)
-		c.Starred = starred
-		bodies.Set(withEntry(bodies.Get(), id, c))
-	}
-}
-
-func setLocalRead(stream ui.State[[]*pb.Item], bodies ui.State[map[string]*pb.Item],
-	id string, read bool) {
-	stream.Set(withRead(stream.Get(), id, read))
-	if b, ok := bodies.Get()[id]; ok {
-		c := cloneItem(b)
-		c.Read = read
-		bodies.Set(withEntry(bodies.Get(), id, c))
-	}
-}
-
-func withStarred(cur []*pb.Item, id string, starred bool) []*pb.Item {
-	next := make([]*pb.Item, len(cur))
-	for i, it := range cur {
-		if it.GetId() == id {
-			c := cloneItem(it)
-			c.Starred = starred
-			next[i] = c
-			continue
-		}
-		next[i] = it
-	}
-	return next
-}
-
-func withRating(cur []*pb.Item, id string, rating int) []*pb.Item {
-	next := make([]*pb.Item, len(cur))
-	for i, it := range cur {
-		if it.GetId() == id {
-			c := cloneItem(it)
-			c.Rating = int32(rating)
-			next[i] = c
-			continue
-		}
-		next[i] = it
-	}
-	return next
-}
-
-// cloneItem copies an item so an optimistic update produces a NEW pointer.
-//
-// proto.Clone rather than `c := *it`: a generated message embeds a
-// protoimpl.MessageState containing a mutex, and copying it by value is a real
-// bug (go vet flags it) that can corrupt the message's internal state the next
-// time the proto runtime touches it.
-//
-// The new pointer is the point. The reconciler compares props by identity, so
-// mutating in place would leave old and new indistinguishable and the row would
-// never repaint.
-func cloneItem(it *pb.Item) *pb.Item {
-	return proto.Clone(it).(*pb.Item)
-}
-
-func cloneFeed(f *pb.Feed) *pb.Feed {
-	return proto.Clone(f).(*pb.Feed)
-}
-
-// adjustRanked moves My Feed's badge optimistically, clamped at zero.
-//
-// Its own tiny function rather than an inline Set, for the reason adjustUnread is one: the
-// clamp is the whole content. A badge that can go negative is a badge that has been
-// double-decremented somewhere, and "-1" on screen is how that bug reports itself — which is
-// better than silently wrapping, and better still if it cannot happen.
-//
-// The authoritative value arrives with the next sidebar fetch (ListFeedsResponse.ranked_count),
-// so drift here is corrected rather than permanent. This exists so the number moves under the
-// reader's hand instead of a round trip later.
-func adjustRanked(ranked ui.State[int], delta int) {
-	if n := ranked.Get() + delta; n >= 0 {
-		ranked.Set(n)
-	}
-}
-
-func adjustUnread(feeds ui.State[[]*pb.Feed], total ui.State[int], sourceID string, delta int) {
-	cur := feeds.Get()
-	next := make([]*pb.Feed, len(cur))
-	for i, f := range cur {
-		if f.GetSourceId() == sourceID {
-			c := cloneFeed(f)
-			n := c.GetUnreadCount() + int32(delta)
-			if n < 0 {
-				n = 0
-			}
-			c.UnreadCount = n
-			next[i] = c
-			continue
-		}
-		next[i] = f
-	}
-	feeds.Set(next)
-	if t := total.Get() + delta; t >= 0 {
-		total.Set(t)
-	}
-}
-
-// withEntry returns a copy of a map with one key set.
-//
-// A copy, not a mutation: the reconciler compares props by identity, and a map
-// mutated in place is indistinguishable from the one it replaced, so the field
-// that was typed into never repaints.
-func withEntry[V any](m map[string]V, k string, v V) map[string]V {
-	next := make(map[string]V, len(m)+1)
-	for kk, vv := range m {
-		next[kk] = vv
-	}
-	next[k] = v
-	return next
-}
-
-// itemOrCurrent resolves an article action to the article it acts on.
-//
-// The fetched body wins over the stream entry when there is one, because that is
-// the copy carrying the authoritative starred flag and URL. An empty id means
-// "whatever is being read", which is what the keyboard shortcuts pass — they
-// have no element to name.
-// itemAfter is the next article in the LIST, which is the order a continuous
-// session plays in.
-//
-// The list and not the reading stream, deliberately. The stream is a window
-// that has been paged around and may not extend past what is loaded; the list
-// is what the reader is looking at and what "until the end of the list" means
-// to them. An id that is not in the list returns nil rather than the first
-// item — silently restarting at the top would turn a finished queue into a loop
-// nobody asked for.
-func itemAfter(list []*pb.Item, id string) *pb.Item {
-	if id == "" {
-		return nil
-	}
-	for i, it := range list {
-		if it.GetId() == id {
-			if i+1 < len(list) {
-				return list[i+1]
-			}
-			return nil
-		}
-	}
-	return nil
-}
-
-func itemOrCurrent(stream ui.State[[]*pb.Item], bodies ui.State[map[string]*pb.Item],
-	current ui.State[*pb.Item], id string) *pb.Item {
-	if id == "" {
-		if c := current.Get(); c != nil {
-			id = c.GetId()
-		}
-	}
-	if id == "" {
-		return nil
-	}
-	if b, ok := bodies.Get()[id]; ok && b != nil {
-		return b
-	}
-	for _, it := range stream.Get() {
-		if it.GetId() == id {
-			return it
-		}
-	}
-	return nil
-}
-
-// iconHostsOf maps source id -> favicon host, derived from the sidebar's feed
-// list. Built on the client because the sidebar already has the site URLs, and
-// repeating them on every item of every page would be bytes on the wire for
-// something already present.
-func iconHostsOf(feeds []*pb.Feed) map[string]string {
-	m := make(map[string]string, len(feeds))
-	for _, f := range feeds {
-		if h := iconHost(f); h != "" {
-			m[f.GetSourceId()] = h
-		}
-	}
-	return m
-}
-
-// paletteEntriesIf builds the palette only when it is open.
-//
-// Assembling and sorting ~170 entries is cheap once and absurd sixty times a
-// second, which is what it was costing while the reader scrolled the item list
-// with the dialog closed.
-func paletteEntriesIf(tr i18n.Runtime, open bool, feeds []*pb.Feed, tags []*pb.Tag, q string) []paletteEntry {
-	if !open {
-		return nil
-	}
-	return filterPalette(buildPalette(tr, feeds, tags), q)
-}
-
-// fsName resolves a source id to its title for the scope the action switches to.
-func fsName(a *actions, id string) string {
-	if f := a.feedByID(id); f != nil {
-		return f.GetTitle()
-	}
-	return "Feed"
-}
-
-// hoursFromNow is the mute expiry, in the RFC3339 the column stores.
-func hoursFromNow(h int) string {
-	return time.Now().UTC().Add(time.Duration(h) * time.Hour).Format(time.RFC3339)
-}
-
-// hoursUntil is its inverse, for showing which mute choice is active.
-func hoursUntil(ts string) int {
-	t, err := time.Parse(time.RFC3339, ts)
-	if err != nil {
-		if t, err = time.Parse(time.RFC3339Nano, ts); err != nil {
-			return 0
-		}
-	}
-	return int(time.Until(t).Hours())
-}
-
-// tagLabelsBySource is tagsForSource for every feed at once, for the reading
-// stream — which shows articles from several feeds at a time and would otherwise
-// resolve the same id→tag table once per article on screen.
-//
-// Both names, not one: the chip DRAWS the label and ACTS on the name. SetFeedTag
-// is keyed by name (a tag is created on first use and removed with its last
-// association, so the name is the handle a reader actually has), while the label
-// is what the same tag reads as everywhere else once it has been renamed for the
-// rail. Collapsing the two into one string would mean either chips that
-// contradict the sidebar or a remove that asks the server to take off a tag it
-// has never heard of.
-func tagLabelsBySource(tags []*pb.Tag, bySource map[string][]string,
-	pending map[string][]string) map[string][]tagRef {
-
-	if len(bySource) == 0 && len(pending) == 0 {
-		return nil
-	}
-	byID := make(map[string]*pb.Tag, len(tags))
-	for _, t := range tags {
-		byID[t.GetId()] = t
-	}
-	out := make(map[string][]tagRef, len(bySource)+len(pending))
-	for src, ids := range bySource {
-		refs := make([]tagRef, 0, len(ids))
-		for _, id := range ids {
-			if t := byID[id]; t != nil {
-				refs = append(refs, tagRef{Label: tagDisplay(t), Name: t.GetName()})
-			}
-		}
-		// Stable order, because these are chips with a destructive control on
-		// them: a row that reshuffles between renders moves the × out from under
-		// the pointer, and the tag that gets removed is the one that slid into
-		// its place. Map iteration above orders the FEEDS, which nothing reads;
-		// this orders what is drawn — so it sorts on the LABEL, which is what is
-		// drawn, rather than on the name, which is not.
-		sort.Slice(refs, func(i, j int) bool { return refs[i].Label < refs[j].Label })
-		if len(refs) > 0 {
-			out[src] = refs
-		}
-	}
-
-	// The in-flight ones go on the END rather than into the sort, so a chip does
-	// not jump position at the moment it stops being pending — which is the
-	// frame the reader is looking at. Appended after the settled ones for the
-	// same reason: the newest thing they did belongs where they left the cursor.
-	for src, names := range pending {
-		for _, n := range names {
-			out[src] = append(out[src], tagRef{Label: n, Name: n, Pending: true})
-		}
-	}
-	return out
-}
-
-// tagsForSource lists the tags on one feed, from the map the sidebar already
-// holds. No round trip for something already in memory.
-//
-// Display names, because these chips are read and not acted on — the feed
-// panel's tag list is a statement of what this feed is filed under. The article
-// chips, which ARE acted on, need the handle as well and go through
-// tagLabelsBySource instead.
-func tagsForSource(tags []*pb.Tag, bySource map[string][]string, sourceID string) []string {
-	if sourceID == "" {
-		return nil
-	}
-	ids := bySource[sourceID]
-	if len(ids) == 0 {
-		return nil
-	}
-	byID := make(map[string]*pb.Tag, len(tags))
-	for _, t := range tags {
-		byID[t.GetId()] = t
-	}
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if t := byID[id]; t != nil {
-			out = append(out, tagDisplay(t))
-		}
-	}
-	return out
-}
-
-// withTagRemoved is the optimistic half of removeTag: the state as it will be
-// once the server agrees.
-//
-// It applies the server's own two rules rather than approximating them, because
-// an optimistic update that guesses differently from the server produces a
-// screen that CORRECTS ITSELF a second later, which is more alarming than the
-// wait it saved:
-//
-//   - the association goes;
-//   - and a tag with no associations left goes with it, since a tag is removed
-//     with its last feed (see store.SetFeedTag).
-//
-// Copies throughout, including a clone of the tag whose count changes. The
-// reconciler compares props, so a tag mutated in place is indistinguishable from
-// the old one and the row never repaints — and the caller is holding the
-// originals as its rollback, which an in-place edit would have destroyed.
-func withTagRemoved(tags []*pb.Tag, bySource map[string][]string, sourceID, name string) ([]*pb.Tag, map[string][]string) {
-	var tagID string
-	for _, t := range tags {
-		if strings.EqualFold(t.GetName(), name) {
-			tagID = t.GetId()
-			break
-		}
-	}
-	if tagID == "" {
-		return tags, bySource
-	}
-
-	next := make(map[string][]string, len(bySource))
-	remaining := 0
-	for src, ids := range bySource {
-		kept := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if id == tagID && src == sourceID {
-				continue
-			}
-			if id == tagID {
-				remaining++
-			}
-			kept = append(kept, id)
-		}
-		if len(kept) > 0 {
-			next[src] = kept
-		}
-	}
-
-	outTags := make([]*pb.Tag, 0, len(tags))
-	for _, t := range tags {
-		if t.GetId() != tagID {
-			outTags = append(outTags, t)
-			continue
-		}
-		if remaining == 0 {
-			continue // its last feed: the tag goes too
-		}
-		outTags = append(outTags, &pb.Tag{
-			Id: t.GetId(), Name: t.GetName(), Label: t.GetLabel(),
-			Glyph: t.GetGlyph(), FeedCount: int32(remaining),
-		})
-	}
-	return outTags, next
-}
-
-// withPending and withoutPending maintain the in-flight tag map. Copy-on-write
-// like every other map in this component, for the reason above: a mutation the
-// reconciler cannot see is a render that does not happen.
-func withPending(m map[string][]string, sourceID, name string) map[string][]string {
-	out := make(map[string][]string, len(m)+1)
-	for k, v := range m {
-		out[k] = v
-	}
-	for _, n := range out[sourceID] {
-		if strings.EqualFold(n, name) {
-			return out // already waiting on this one
-		}
-	}
-	out[sourceID] = append(append([]string{}, out[sourceID]...), name)
-	return out
-}
-
-func withoutPending(m map[string][]string, sourceID, name string) map[string][]string {
-	out := make(map[string][]string, len(m))
-	for k, v := range m {
-		if k != sourceID {
-			out[k] = v
-			continue
-		}
-		kept := make([]string, 0, len(v))
-		for _, n := range v {
-			if !strings.EqualFold(n, name) {
-				kept = append(kept, n)
-			}
-		}
-		if len(kept) > 0 {
-			out[k] = kept
-		}
-	}
-	return out
-}
-
-// feedsForTag names the feeds carrying a tag, for the tag panel's "what is in
-// here" list. The inverse of tagsForSource, over the same association map — the
-// sidebar is already holding both halves, so neither direction costs a request.
-//
-// Sorted, because it is a list a reader reads rather than a list a machine
-// consumes, and map iteration would reorder it on every render.
-func feedsForTag(feeds []*pb.Feed, bySource map[string][]string, tagID string) []string {
-	if tagID == "" || len(bySource) == 0 {
-		return nil
-	}
-	titles := make(map[string]string, len(feeds))
-	for _, f := range feeds {
-		titles[f.GetSourceId()] = f.GetTitle()
-	}
-	var out []string
-	for src, ids := range bySource {
-		for _, id := range ids {
-			if id != tagID {
-				continue
-			}
-			if n := titles[src]; n != "" {
-				out = append(out, n)
-			}
-			break
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func currentID(it *pb.Item) string {
-	if it == nil {
-		return ""
-	}
-	return it.GetId()
-}
-
-// streamAtStart reports whether the reading stream has reached the top of the
-// list — the point at which scrolling up has nothing more to bring in.
-//
-// An id comparison, not an indexOf. Both edge checks run on every render, and a
-// linear scan of a 3,621-item list twice per scroll frame is exactly the kind of
-// cost that does not show up until the list is real.
-func streamAtStart(list, stream []*pb.Item) bool {
-	if len(stream) == 0 || len(list) == 0 {
-		return false
-	}
-	return stream[0].GetId() == list[0].GetId()
-}
-
-// streamAtEnd reports whether the stream has reached the end of the FEED, not
-// merely the end of what has been paged. A cursor that is still live means there
-// is more to come, so "that's everything" would be a lie.
-func streamAtEnd(list, stream []*pb.Item, cursor string) bool {
-	if len(stream) == 0 || len(list) == 0 || cursor != "" {
-		return false
-	}
-	return stream[len(stream)-1].GetId() == list[len(list)-1].GetId()
-}
-
-func indexOf(list []*pb.Item, it *pb.Item) int {
-	if it == nil {
-		return -1
-	}
-	for i, x := range list {
-		if x.GetId() == it.GetId() {
-			return i
-		}
-	}
-	return -1
-}
-
-// navItem is the pure math behind j/k and the list's up/down arrows: the item
-// `delta` positions from current in list, or nil when there is nowhere to go.
-//
-// current not found in list (including current == nil, e.g. nothing opened
-// yet) is treated as "one before the first item" — indexOf already returns
-// -1 for that — so advancing (delta > 0) from it lands on list[0], which is
-// what lets j open the first article before anything has been read, and
-// retreating (delta < 0) from it goes nowhere, since there is no "before the
-// first item, and nothing current either" to retreat from.
-//
-// This is deliberately free of ui.State: it is called through the actions
-// Ref's navStep field (see the actions struct) precisely so the keyboard
-// listener — registered once, well before this function is ever reached —
-// never reads a State handle itself.
-func navItem(list []*pb.Item, current *pb.Item, delta int) *pb.Item {
-	i := indexOf(list, current) + delta
-	if i < 0 || i >= len(list) {
-		return nil
-	}
-	return list[i]
-}
-
-// relTime renders a timestamp the way a reader wants it: how long ago, not when.
-//
-// "3h" answers "is this new?" at a glance; "2026-07-26T15:04:05Z" does not.
-func relTime(tr i18n.Runtime, rfc3339 string) string {
-	t, err := time.Parse(time.RFC3339Nano, rfc3339)
-	if err != nil {
-		if t, err = time.Parse(time.RFC3339, rfc3339); err != nil {
-			return ""
-		}
-	}
-	// The unit abbreviations are the same keys the settings screen uses, so
-	// "5m" here and "5m" there cannot drift into two different translations of
-	// the same idea.
-	unit := tr.NS("unit")
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return tr.T("time", "now")
-	case d < time.Hour:
-		return unit.T("minutes", i18n.Args{"n": strconv.Itoa(int(d.Minutes()))})
-	case d < 24*time.Hour:
-		return unit.T("hours", i18n.Args{"n": strconv.Itoa(int(d.Hours()))})
-	case d < 7*24*time.Hour:
-		return unit.T("days", i18n.Args{"n": strconv.Itoa(int(d.Hours() / 24))})
-	default:
-		// NOT t.Format("2 Jan"). Go's layouts emit English month names in every
-		// locale, and this is the single most-rendered string in the app.
-		return tr.T("time", "dayMonth", i18n.Args{
-			"day":   strconv.Itoa(t.Day()),
-			"month": tr.T("month", strconv.Itoa(int(t.Month()))),
-		})
-	}
-}
-
-// clampPane keeps a pane between a usable minimum and a sensible maximum.
-func clampPane(w, min, max int) int {
-	switch {
-	case w < min:
-		return min
-	case w > max:
-		return max
-	default:
-		return w
-	}
-}
-
-// parsePx reads a "272px" custom property back into a number, falling back when
-// the value is missing or in units we did not write.
-func parsePx(v string, fallback int) int {
-	v = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "px"))
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
-}
-
-// hueVarFor returns the inline style that carries a source's hue into a subtree.
-// One pure function feeds the dot, the row edge, the article wash and the link
-// underline, so all four always agree.
-//
-// It returns a Raw prop holding a style STRING rather than html.Props.Style,
-// and that is not a style preference — it is the only thing that works.
-//
-// GWC's Style map goes through WASMDOMAdapter.SetStyles, which does
-// `element.style[name] = value`. JS property assignment **silently ignores CSS
-// custom properties**: setting style["--c"] is a no-op, because custom
-// properties are only reachable through style.setProperty(). The whole hue
-// system rendered grey until this was traced.
-//
-// A style attribute string takes a different path in the reconciler
-// (propKindStyle with a string value -> setAttribute), and the attribute parser
-// does honour custom properties.
-func hueVarFor(sourceID string) map[string]any {
-	if sourceID == "" {
-		return nil
-	}
-	return map[string]any{"style": "--c:" + design.HueFor(sourceID)}
-}

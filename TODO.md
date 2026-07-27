@@ -4615,14 +4615,48 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       and `classify`'s own determinism test — which had a 1e-12 tolerance and could not see it — now
       compares exactly.
 
-- [ ] **10.14 · The shared read + the `Contributor` registry.** One request **per item** (not per
-      batch — a batch of ten comes back suspiciously uniform, and one truncation loses ten answers).
-      Union schema, one top-level property per contributor, duplicate names panic at `init`,
+- [ ] **10.14 · The shared read + the `Contributor` registry.** ◧ **PARTIAL** — One request **per item**
+      (not per batch — a batch of ten comes back suspiciously uniform, and one truncation loses ten
+      answers). Union schema, one top-level property per contributor, duplicate names panic at `init`,
       per-slice failure isolation, `MaxOutputTokens` = Σ declared + reasoning headroom.
       Ships with four contributors: `classify` · `genre` · `keyphrases` · `abstract`.
       *Done when: `TestUnionIsolation` passes — one contributor returning garbage does not cost the
       others their answers — and a dropped contributor is named in a log line rather than silently
       omitted.* §27.2b, §27.4b
+
+      ◧ 2026-07-27 — the **registry, the union, and the four contributors** are built and tested
+      (`contribute.go` · `contributors.go`, 24 tests). What is NOT here is the send: `Build` produces
+      a request and `Dispatch` consumes a reply, and neither touches `internal/llm`. That seam is
+      deliberate — it keeps `llm`'s payload types the single place a body is assembled (§27.4e), and
+      it means the whole union is testable with no key, no provider, and no fixture pretending to be
+      one. Wiring it to the client lands with the job in 10.6/10.16.
+
+      `TestUnionIsolation` passes: one contributor returning garbage keeps its own failure and the
+      others keep their answers. That isolation is what makes the union defensible at all — without
+      it, one bad slice would cost four good ones and the union would be strictly worse than four
+      separate requests, which is the thing it exists to avoid.
+
+      **Registration is strict because the alternative fails silently.** A schema fragment that is
+      subtly wrong does not error on every provider — it is ignored, and the feature simply never
+      gets an answer. So `NewRegistry` refuses a name that is not `^[a-z][a-z0-9_]*$` (it becomes a
+      JSON key AND part of a schema name the provider validates), a duplicate name (one contributor
+      would silently overwrite the other's slice), a schema that is not a strict object, and — the
+      one that is easy to miss — a `required` list that does not name **every** property, which
+      strict mode demands and which otherwise returns objects with missing keys that `Consume` cannot
+      distinguish from real zero values.
+
+      **Every contributor must have a free-tier answer** (§27.2b rule 6), and it is not a formality:
+      the read frequently will not happen. `classify` refines a category the free tier already chose,
+      `genre` overwrites a heuristic that already ran, `keyphrases` replaces terms already there.
+      Only `abstract` has no free-tier equivalent — which is exactly why it has the lowest priority
+      and is the first thing dropped when the budget is tight.
+
+      Two judgement calls in `classify.Consume` worth naming: **`unsure` is honoured and `confidence`
+      decides nothing.** §11.2's rule holds — a number a model assigns to its own answer is not
+      evidence — so confidence is stored and shown to nobody. `unsure` is different: it is the model
+      declining, which means KEEP the free tier's answer rather than overwrite it with a guess, and
+      it is recorded as `ModelUnsure` so that "looked at it and declined" stays distinguishable from
+      "never saw it". Without that distinction the retry sweep pays for the same article every pass.
 
 - [ ] **10.15 · Per-label prompts.** ≤240 chars each, ≤4,000 for the labels block, attached to the
       label rather than concatenated into the system prompt. Defaults written for all 26 built-ins to
@@ -4811,16 +4845,21 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
 
 ### Band A — capabilities that exist and cannot be reached
 
-- [ ] **F1 · There is no supported way to bring 151 feeds in.** `internal/opml` and `internal/netscape`
-      round-trip OPML both directions (proved against a live 151-feed export), Netscape bookmarks both
-      directions, and Chrome JSON in. There is no RPC and no data tab, so a new reader's first act —
-      migrating from the thing they are leaving — is the one act the product cannot perform. Every
-      competitor in the matrix ships this, including the free self-hosted ones.
+- [ ] **F1 · Bringing feeds in requires shell access to the server.** *Filed first as "there is no
+      supported way", which the CLI audit corrected:* `articleflux import -file feeds.opml [-fetch]`
+      and `articleflux export [-file feeds.opml]` both exist and work (`cmd/articleflux/main.go:101`).
+      Neither appears in `plan.md`, `TODO.md`, `README.md`, or `docs/FEATURES.md` §40's list of
+      commands — see F41.
+      So the gap is narrower and sharper than it looked: **the operator can migrate and nobody else
+      can.** On a single-user instance that is a documentation bug. On the multi-tenant server this is
+      built to be (A13), a member has no path at all, and neither does an operator who would rather
+      not SSH in to add a feed list. There is no RPC and no data tab. Every competitor in the matrix
+      ships this in the UI, including the free self-hosted ones.
       *Done when: Settings has a Data tab; an OPML file dropped on it subscribes what it contains and
       reports what it skipped and why; export returns a file that imports back into itself; and the
       import runs as a job with progress, because 151 feeds is a minute of fetching, not a click.*
 
-- [ ] **F2 · The event pump has no caller.** `EventService.WatchEvents` is on the wire, the server
+- [x] **F2 · The event pump has no caller.** `EventService.WatchEvents` is on the wire, the server
       side is rate-limited and concurrency-capped (P1), and `client/data/stream_wasm.go` implements the
       full pump with coalescing (`client/data/coalesce.go`) — and **nothing in `client/app` calls it**,
       so live updates do not arrive. Every hosted competitor pushes. This is a call site and a
@@ -4828,6 +4867,21 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: an item arriving on the server appears in an open list without a refresh; the pump
       starts on mount, stops on teardown, resumes from its last sequence after a reconnect, and a
       resync signal reloads the scope rather than appending twice.* §12.4, §20.19
+
+      ✅ 2026-07-27 — **the call site and the lifetime**, in the effect that already owns the
+      connection: started with the client, stopped by the same `ctx` that cancels on teardown. A pump
+      that outlived its component would hold a subscription for a tab that is gone, and P1's
+      per-caller cap counts exactly those.
+      **A resync RELOADS the scope; everything else invalidates narrowly.** Appending a page onto a
+      list whose earlier pages are stale is how the same article shows up twice, which is the failure
+      the Done-when names. The reading STREAM is deliberately not touched on either path, for the
+      reason the recovery refetch already gives: the reader may be mid-article, and replacing the text
+      under them is worse than a slightly stale list.
+      **Proved from the outside** by `e2e/liveupdates.spec.mjs`: boot, count the rows, ask the server
+      to ingest one item through `/debug/ingest-one` (DevMode-only, and it drives the REAL path —
+      ingest, delivery, the publish hook — rather than fabricating an event), then assert the list
+      grows **with no reload, no click and no keypress**. Verified the way this repo verifies wiring:
+      disabling the call site makes it fail with `Expected: 6, Received: 5`.
 
 - [ ] **F3 · The rules engine has no screens.** `internal/rules` is the whole matcher — every operator,
       ordering, stop-processing — with per-subscriber fan-out as a queued job, mute as a reversible
@@ -4838,24 +4892,37 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: a rule can be written, previewed against the last N items before saving, applied
       retroactively, undone, and its hits inspected; and a muted item is findable rather than gone.*
 
-- [ ] **F4 · The ranked home does not exist, and the scorer does.** `internal/rank` has the score, the
-      reason list, the volume penalty, the per-source half-life and highlights-mode scoring;
-      `internal/derive` runs it. There is no home service, no ranked stream, no explanation line, no
-      tuning panel, no suppressed view. This is the single thing Feedly Pro+ and NewsBlur Archive are
-      both largely selling, at $99/yr each.
-      *Done when: a ranked scope exists beside the chronological ones; every ranked item can say in one
-      line why it is where it is; a reader can move the weights and see the order change; and anything
-      suppressed is one click from visible, because a ranker you cannot audit is one you stop trusting.*
+- [x] **F4 · ~~The ranked home does not exist~~ — filed wrong, and the correction is the finding.**
+      **My Feed ships, end to end.** `LIST_SCOPE_MEGAFEED`, three slots (`rank_slot`: top · explore ·
+      cluster_head), `rank_tier` so a reader can see which picks Smart+ actually influenced,
+      `rank_reasons` as ordered clauses with `rank_reason_terms` as their machine keys, `rank_topic` as
+      the cold-start signal, the count for the rail badge, chips rendered in `client/view/panes.go`
+      (~1782), and `internal/seedread` so it is observable before it is earned.
+      This was filed because `docs/FEATURES.md` says ranking has "any wire surface at all — there is no
+      home service, no ranked stream, no tuning panel, no explanation line". That is false, and it was
+      compiled the same day. **See F37.**
 
-- [ ] **F5 · Topics are clustered and never shown.** TF-IDF clustering exists in `internal/topics` with
-      no surface and no correction path. A cluster nobody can rename or split is a cluster nobody can
-      fix.
-      *Done when: topics appear as a scope, a wrong topic can be corrected, and the correction survives
-      the next derivation pass.*
+- [ ] **F4a · What My Feed is actually missing.** Not the page — the controls behind it. There is no
+      **tuning panel** (the weights are the server's alone), and no **suppressed view**: the volume
+      penalty and the negative signals demote items with no way to ask what was demoted or say "that
+      one was wrong". §18.9's claim is that explainability is the product, and half of explainability
+      is being able to disagree.
+      *Done when: a reader can see what was held back and why, and can move at least one weight and
+      watch the order change.* §18.4, §18.9
+
+- [ ] **F5 · Topics reach the wire as ids and stop there.** `rank_topic` is deliberately an id rather
+      than a label, on the reasoning that "the client already needs a topic list for Trends" — and
+      Trends does not exist (F32), so nothing resolves the id and there is no correction path. A
+      cluster nobody can rename or split is a cluster nobody can fix.
+      *Done when: a topic list exists to resolve ids against, topics are a scope, a wrong topic can be
+      corrected, and the correction survives the next derivation pass.*
 
 - [ ] **F6 · Recommendations are harvested and discarded.** `internal/recommend` does outlink
-      harvesting, aggregator pass-through, the health gate, evidence strings and scoring. No
-      `/discover`, no dismissal, no trial subscriptions. The evidence string is the interesting part —
+      harvesting, aggregator pass-through, the health gate, evidence strings and scoring — and
+      **nothing imports it**, verified: it has no consumer anywhere outside its own tests. (Not to be
+      confused with My Feed's `explore` slot, which ships and serves under-served topics from feeds you
+      already follow. This one is about sites you do *not*.) No `/discover`, no dismissal, no trial
+      subscriptions. The evidence string is the interesting part —
       "three feeds you read linked to this in a fortnight" is a claim a reader can check, unlike
       "recommended for you".
       *Done when: `/discover` lists candidates with their evidence; a candidate can be dismissed
@@ -4887,13 +4954,11 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       tenant or user.* **Do this before F3/F4 ship their panels**, or they will each hand-build a
       dozen more controls that then have to be unbuilt.
 
-- [ ] **F11 · Roles are stored and not enforced.** The static per-method capability map fails closed and
-      the boot check refuses to start on an unmapped RPC — and the map is **not wired into the
-      interceptor**. On a multi-tenant server that is a security gap, not a polish item, and it is the
-      one row in the whole matrix where we are behind the free self-hosted competition on something
-      that matters.
-      *Done when: a member cannot call an owner's method; the refusal is the same shape as every other
-      refusal; and a test asserts it per role rather than per method.*
+- [x] **F11 · ~~Roles are stored and not enforced~~ — filed wrong.** `internal/app/app.go:906` chains
+      `grpcsrv.AuthzUnary(a.policy, a.scopeFromContext, a.log, a.recordDenial)`, and P1 put
+      `AuthzStream` on the stream chain beside it. Commits `0ecffb9` ("Every RPC declares who may call
+      it, in one table") and `eab6eb5` ("Register the authorization map's refusal") are the work.
+      `docs/FEATURES.md` still says "**Roles are stored and not enforced today**" in bold. **See F37.**
 
 - [ ] **F12 · The job queue is durable, restart-surviving, per-kind capped, and invisible.** Import
       (F1), retroactive rules (F3) and derivation (F4) all queue work a reader will wait on.
@@ -4914,18 +4979,23 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       cached per item+language forever (the text is immutable, exactly as with audio), and the egress
       is named in the copy before it is sent.* §10.6
 
-- [ ] **F15 · The digest engine has no RPC.** `internal/smart/digest.go` is built and tested. NewsBlur's
-      Daily Briefing sits on the $99/yr tier; Folo's daily AI digest is its headline feature.
-      *Done when: a digest can be produced for a scope and a window, on demand rather than on a
-      schedule; it is charged once and cached; and every claim in it links to the item it came from,
-      because an unsourced summary of your own reading is not checkable.*
+- [ ] **F15 · Every summary we produce is spoken, and none of it can be read.** Filed narrower than it
+      started, because the check corrected it: `internal/smart/digest.go` ships as `tts.digest` and
+      `internal/smart/podcast.go` ships as `tts.podcast` — both reachable, both settings, both wired
+      into `/speech` and the slideshow. What does not exist is a **written** briefing across a scope
+      and a window: the thing NewsBlur puts on its $99/yr tier and Folo leads with. Every one of our
+      summaries is rewritten *for the ear* by design (no bullets, no headings), which is exactly the
+      form that cannot be skimmed.
+      *Done when: a scope and a window produce a readable briefing; it is charged once and cached like
+      the spoken ones; and every claim in it links to the item it came from, because an unsourced
+      summary of your own reading is not checkable.*
 
-- [ ] **F16 · Broadcast segments are built and unreachable.** `internal/smart/podcast.go` produces the
-      continuous-broadcast form, hands over from the previous story, and has its own cache. It is a
-      third egress that outranks `tts.digest` rather than combining with it (there is no coherent
-      "summary of a broadcast segment") — all decided in §10.4 and none of it exposed.
-      *Done when: "play this scope as a broadcast" exists beside Keep playing, and the reader can tell
-      which of the three speech modes they are hearing.*
+- [x] **F16 · ~~Broadcast segments are unreachable~~ — filed wrong, and the docs were right.**
+      `tts.podcast` is a shipped opt-in that outranks `tts.digest`, wired through
+      `internal/app/speech.go`, Settings → Listening and the slideshow (commit `4873f4f`), and
+      `docs/FEATURES.md` §22a "Join the stories up" records it as shipped. This was filed off a
+      package listing — `internal/smart/podcast.go` exists, therefore assumed unreachable — without
+      checking who calls it. **See F37.**
 
 - [ ] **F17 · There is no way to ask a question about an article.** Feedly Pro+, Inoreader Pro,
       NewsBlur Archive, Readwise and Folo all ship this; it is the most-cited AI feature in the field
@@ -4939,10 +5009,13 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: candidates the model proposes are fetched and parsed before being offered, exactly as
       rungs 1–2 are, and are labelled as a guess rather than as a discovery.* §11.1
 
-- [ ] **F19 · Classification, automatic tags and article categories — filed already.** M29 / Tier 10
-      above owns these end to end. Recorded here only so the competitive read is complete: this is the
-      cluster Feedly's Leo and Inoreader Intelligence occupy, and Tier 10 is the answer to it.
-      *No new work. If Tier 10 slips, this row is what slipped.*
+- [ ] **F19 · Classification — filed already, and engine-only, which the docs get right.** M29 /
+      Tier 10 owns this. `internal/classify` is a pure scorer with a settled lexicon and
+      `internal/pipeline/analyzers.go` calls it — and **`internal/pipeline` has no importer outside
+      its own tests**, so the analysis pass does not run in the app. `docs/FEATURES.md` §78 marks it
+      planned, correctly. Recorded here only so the competitive read is complete: this is the ground
+      Feedly's Leo and Inoreader Intelligence occupy.
+      *No new work filed. What is owed is Tier 10's own list.*
 
 ### Band C — things we would have to build
 
@@ -5009,8 +5082,10 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       revoked, and an unpublished scope is genuinely unreachable rather than merely unlinked.*
 
 - [ ] **F30 · An installable PWA, and trip packs.** The honest answer to the mobile gap that is ours
-      alone to build: a service worker, an app manifest, and offline packs. The `keep-offline` flag
-      already exists **with no consumer**, which is half a ticket already done.
+      alone to build. `web/sw.js` already exists and already caches the app shell network-first for
+      the page and cache-first for the wasm, retired by `VERSION` — so the hard, easy-to-get-wrong
+      part is done and untracked here. Missing: an app manifest (so it installs at all) and the packs
+      themselves. The `keep-offline` flag exists **with no consumer**, which is the other half.
       *Done when: the reader installs to a home screen; a scope can be packed for offline before a
       flight; and what is packed and how stale it is are both visible.* Pairs with F20 — F20 gives
       good mobile clients, F30 gives *ours*.
@@ -5046,6 +5121,128 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
 - [ ] **F36 · A retention policy, stated.** NewsBlur Archive, Feedbin, Readwise and every self-hosted
       competitor promise items never expire. We evict, correctly (F7's rules), and never say so.
       *Done when: retention is a setting with a stated default, and what was evicted is auditable.*
+
+### Band D — what the code says that no document does
+
+Filed after checking the F-list against the source. **Four tickets above were wrong** — F4, F11, F16
+and F15-as-filed — and two more (F5, F30) were half wrong. All six in the same direction: they
+claimed something was missing that ships. **The two causes are different, and only one of them is the
+documents' fault.**
+
+- **F4 and F11 were the catalogue's error.** `docs/FEATURES.md` states, of the ranked home, that
+  there is no wire surface "at all", and states in bold that roles are "stored and not enforced".
+  Both are false, and that file was compiled the same day. → **F37.**
+- **F15, F16, F19 and F30 were mine.** Each was filed off a *package listing* — `internal/smart/
+  podcast.go` exists, therefore nothing calls it — when the documents had them right (§21, §22a,
+  §78) and one grep would have shown the call site. The rule that falls out is worth more than the
+  four fixes: **the existence of a package is not evidence about its reachability; the import edge
+  is.** `internal/pipeline` is the cleanest example in the tree — analyzers, lexicon, tests, all
+  real, and no importer outside its own tests.
+
+A backlog built from either mistake funds work that already exists.
+
+- [x] **F37 · `docs/FEATURES.md` is wrong about two of the biggest things in the product, and it was
+      compiled today.** It claims ranking has "any wire surface at all" missing — "no home service, no
+      ranked stream, no tuning panel, no explanation line" — when `LIST_SCOPE_MEGAFEED`, `rank_slot`,
+      `rank_tier`, `rank_reasons`, `rank_reason_terms` and `rank_topic` are all on the wire and the
+      chips render in `client/view/panes.go`. And it says in bold that roles are "**stored and not
+      enforced today**" when `AuthzUnary` is in the chain at `internal/app/app.go:906` with
+      `AuthzStream` beside it.
+      Both matter more than a wrong row. It is the file anyone would read to answer "what do we have",
+      including whoever writes the next backlog — which is exactly what happened, and F4 and F11 are
+      the receipts. The second one is worse than a documentation bug: a shipped **security control**
+      recorded as absent is one that gets re-implemented, or worse, worked around.
+      ✅ 2026-07-27 — rows 45 and 51 corrected in place with the evidence, and `docs/COMPETITORS.md`,
+      which inherited both, corrected with them.
+      *Still owed, and it is the part that prevents recurrence:* the compile step must derive the
+      shipped/engine-only distinction from the **proto** and the **import graph** rather than from
+      `plan.md` and `TODO.md`, which are statements of intent. A one-line check — "does anything
+      outside its own tests import this package?" — would have caught both of these and all four of
+      the mistakes on the other side of the ledger.
+
+- [ ] **F38 · Three HTTP surfaces exist that no plan section mentions.** `/metrics` is served
+      **unauthenticated** (its own commit message says so, in passing, while justifying putting pprof
+      behind a flag); `/debug/pprof/*` is behind that flag; and `/debug/reset-state` exists for the e2e
+      harness. §21 does not mention any of them, and §22.15 describes observability as `internal/obs`
+      only, which is no longer true — `internal/telemetry` is a second instrumentation surface with
+      metrics and traces.
+      An unauthenticated metrics endpoint on a **remote, TLS, authenticated** deployment (A9) is a
+      decision, and it has never been made in writing — it is currently a default.
+      *Done when: §21 names all three, says who may reach each on a public bind, and the deployment
+      unit's nginx site reflects that answer rather than leaving it to the default.*
+
+- [ ] **F39 · Ranking prose is generated in Go, in English, and deliberately evades the copy lint.**
+      `reader.proto` states it plainly: the reason clauses are "the only place in the UI that bypasses
+      the message catalogue entirely — and it evades the hardcoded-copy lint precisely because the
+      literal is not in the client, it arrives over the wire." §22.16's guarantee is that the UI layer
+      holds zero hardcoded copy, and the ratchet still reads zero — because the strings moved to the
+      server, not because they stopped existing.
+      The design has an answer built in (`rank_reason_terms` are machine keys, "the term is what a
+      localised label is keyed on"), so this is a gap between two shipped halves, not a mistake.
+      *Done when: §22.16 records the exception and the term-keyed remedy, and the client renders
+      reasons from terms with the prose as the fallback — so a non-English reader sees their own
+      language rather than the one place the app switches to English.*
+
+- [ ] **F40 · Six packages and two binaries have no trace in either document.** Found by grepping every
+      `internal/*` against `plan.md` and `TODO.md`: **`seedread`** (simulates a reading history so My
+      Feed is observable on a fresh instance — a dev-only data-fabrication path, which is exactly the
+      kind of thing that should be written down before it is ever reachable in production),
+      **`telemetry`** (see F38), **`buildstatus`** (the boot page parses `TODO.md` and reports build
+      progress — a *shipped* surface whose contents are a checklist file), **`envfile`**,
+      **`clientaddr`**, and the `benchspread` and `probe` binaries. Each has an excellent package
+      comment; none is in the spec.
+      Every one of these is defensible and most are small. The point is not that they should not
+      exist — it is that `TODO.md`'s Tier 8b ("shipped, but never planned") stopped being maintained
+      while the practice it documents carried on.
+      *Done when: each is either recorded in the plan or deleted; and `seedread`'s reachability in a
+      non-dev build is stated rather than inferred.*
+
+- [ ] **F41 · A third of the operator CLI is undocumented, including two whole features.**
+      `docs/FEATURES.md` §40 lists `init · adduser · passwd · migrate · backup · seed · poll ·
+      version`. The binary also has **`import`**, **`export`**, **`serve`** and **`seed-reading`**.
+      Two of those are capabilities, not conveniences: OPML in and out, which the whole of F1 was
+      filed on the assumption of not having.
+      **`seed-reading` is the one to look at first.** It runs `internal/seedread`, which fabricates a
+      reading history so My Feed has something to rank — legitimate on a dev box, and it ships in the
+      production binary with no flag guard named anywhere. A command that writes invented engagement
+      into a live tenant's signals is a command whose reachability should be a decision.
+      *Done when: §40 lists every subcommand the binary answers to; `import`/`export` are named in
+      §15.7 as the shipped path they are; and `seed-reading` either refuses outside `-dev` or its
+      availability is written down as intentional.*
+
+- [ ] **F42 · The consent key in the spec does not exist in the code.** `plan.md` §11.2 and §27.4 and
+      `docs/FEATURES.md` §9a all name **`smart.subscribe`** as the per-user switch that gates Smart+
+      follow. The code has no such key. It is **`smart.follow`**, and it is declared **twice, as two
+      unrelated constants** — `internal/transport/grpcsrv/subscribe.go:36` and
+      `client/view/addfeed.go:121`.
+      Two distinct problems, and the second is the worse one. *First:* §27.4 cites `smart.subscribe`
+      as **the precedent** its own consent design copies, so a spec is being built on a key name that
+      was never implemented. *Second:* a consent gate whose name is written out separately on each
+      side of the wire can drift on one side and fail **open** — the client stops sending a flag the
+      server no longer checks under that spelling, and nothing fails loudly.
+      *Done when: one constant, shared or generated, is the only spelling of this key in the tree; the
+      plan and FEATURES use whichever name wins; and a test asserts the RPC refuses when the switch is
+      off, keyed on that constant rather than on a literal.* §11.2, §18.8, §27.4
+
+- [ ] **F43 · The preference key set is not written down anywhere, and five keys are in no
+      document.** `smart.enabled`, `smart.follow`, `smart.model`, `tts.model` and `tts.voice` appear
+      in zero of `plan.md`, `TODO.md` and `docs/FEATURES.md`; `rail.closed.*` appears once. Two of
+      those five decide what leaves the machine and one names the model the reader is billed for.
+      This is F10's argument arriving as evidence: at twelve hand-built keys nobody wrote a registry,
+      and the register that would have listed them is the registry itself.
+      *Done when: the keys are enumerated somewhere authoritative — the registry (F10) if it lands,
+      `TODO.md` Appendix B if it does not — with each key's layer, default, and whether it gates
+      egress.*
+
+- [ ] **F44 · `plan.md` §20.14's keyboard map is behind both the code and `FEATURES.md`.**
+      `,` opens settings and `w` toggles focus mode; both are implemented in
+      `client/view/reader_keyboard.go` and both are documented in `FEATURES.md` §5, and **neither is
+      in the spec section that owns the keymap**. `s` (slideshow) and `v` (listen, slideshow-scoped)
+      are also live and unspecced there.
+      A32 is "keyboard-complete, and it says so" — a promise that the map is *knowable*. Three
+      documents disagreeing about what the keys are is the specific failure that promise names.
+      *Done when: §20.14 lists every binding the reader ships, including the scoped ones, and says
+      which scope each belongs to.* A32
 
 ### Deliberately not filed, and why
 
