@@ -126,6 +126,11 @@ func serve(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// From here on, log through the app's logger rather than the one we made:
+	// Open wraps it so every record also lands in the ring the settings screen
+	// reads, and the HTTP middleware below is the noisiest source there is.
+	log = a.Log()
 	defer a.Close()
 
 	if dev {

@@ -24,6 +24,93 @@ service SystemService {
   // probe and by the client's always-visible connection indicator — a reader that
   // has silently stopped receiving looks identical to a quiet news day.
   rpc CheckHealth(CheckHealthRequest) returns (CheckHealthResponse);
+
+  // GetServerStats is what the settings screen shows about the machine: uptime,
+  // storage, how much of everything there is, and per-RPC latency.
+  //
+  // Authenticated, unlike GetVersion. It discloses row counts and database size,
+  // which are tenant state — GetVersion must stay information-free because the
+  // readiness probe calls it without a credential.
+  rpc GetServerStats(GetServerStatsRequest) returns (GetServerStatsResponse);
+
+  // ListLogs returns recent log records from the in-memory ring.
+  //
+  // A self-hosted reader has no operator: nobody is tailing a file, so "why did
+  // that feed stop working" has to be answerable from inside the app.
+  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse);
+}
+
+message GetServerStatsRequest {}
+
+message GetServerStatsResponse {
+  string version = 1;
+  string commit = 2;
+  int64 schema_version = 3;
+  // Seconds since the process started.
+  int64 uptime_s = 4;
+  string started_at = 5;
+
+  // Storage.
+  int64 db_bytes = 10;
+  int64 wal_bytes = 11;
+  string db_path = 12;
+
+  // How much of everything there is. Scoped to the caller, not global.
+  int32 feeds = 20;
+  int32 items = 21;
+  int32 unread = 22;
+  int32 notes = 23;
+  int32 tags = 24;
+  int32 rated = 25;
+  int32 saved = 26;   // read later
+
+  // Runtime. Go's own numbers, because "is it the reader or is it my box" is the
+  // first question and a heap figure answers it.
+  int64 heap_bytes = 30;
+  int32 goroutines = 31;
+  int32 gc_cycles = 32;
+
+  // Polling.
+  string last_poll_at = 40;
+  int32 poll_interval_s = 41;
+  int32 dormant_feeds = 42;
+
+  repeated MethodStat methods = 50;
+  repeated LevelCount log_counts = 51;
+}
+
+// MethodStat is one row of the latency table. Durations are milliseconds:
+// microsecond precision on a screen a person reads is noise.
+message MethodStat {
+  string method = 1;
+  int64 calls = 2;
+  int64 errors = 3;
+  double p50_ms = 4;
+  double p95_ms = 5;
+  double max_ms = 6;
+  double mean_ms = 7;
+}
+
+message LevelCount {
+  string level = 1;
+  int64 count = 2;
+}
+
+message ListLogsRequest {
+  int32 limit = 1;
+  // Minimum level: DEBUG | INFO | WARN | ERROR. Empty means INFO.
+  string min_level = 2;
+}
+
+message ListLogsResponse { repeated LogRecord records = 1; }
+
+message LogRecord {
+  string time = 1;
+  string level = 2;
+  string message = 3;
+  // Attributes pre-rendered as `key=value` pairs. The consumer is a settings
+  // screen, not a query engine.
+  string attrs = 4;
 }
 
 message GetVersionRequest {}

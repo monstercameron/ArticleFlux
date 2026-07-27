@@ -22,6 +22,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/obs"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -59,7 +60,13 @@ type App struct {
 	// tts is the Smart+ voice. Nil-safe: absent means every request to /speech
 	// answers 501, which is the correct answer for an instance that never
 	// configured an API key.
-	tts     *tts.Client
+	tts *tts.Client
+	// The observability surface (§22.11): a ring of recent log records and
+	// per-RPC latency, both in memory and both bounded. A self-hosted reader has
+	// no operator, so these are how the person running it answers "why did that
+	// feed stop working" without a terminal.
+	ring    *obs.Ring
+	lat     *obs.Latency
 	log     *slog.Logger
 	icons   *favicon.Fetcher
 	grpc    *grpc.Server
@@ -88,7 +95,14 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	repo := store.NewReaderRepo(db)
 	svc := reader.New(repo, feed.New(feed.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}))
 
+	// The ring wraps whatever handler the caller configured rather than replacing
+	// it: terminal output is what someone watching the process sees, and losing
+	// it to gain a settings screen is a bad trade.
+	ring := obs.NewRing(cfg.Log.Handler(), obs.DefaultSize)
+	cfg.Log = slog.New(ring)
+
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log,
+		ring: ring, lat: obs.NewLatency(),
 		icons: favicon.New(cfg.AllowPrivateFeeds),
 		// Cached beside the database, so a backup that copies the data directory
 		// carries the audio with it and a re-listen after a restore is still free.
@@ -97,6 +111,15 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	a.buildHandler()
 	return a, nil
 }
+
+// Log returns the logger the app actually uses.
+//
+// Open WRAPS the logger it was given so every record also lands in the in-memory
+// ring the settings screen reads. A caller that keeps logging through its
+// original logger — cmd/articleflux and its HTTP middleware did exactly this —
+// bypasses the ring, and the Activity screen shows a handful of poller lines
+// while claiming to be the server's log.
+func (a *App) Log() *slog.Logger { return a.cfg.Log }
 
 // DB exposes the database, for tests and for the CLI.
 func (a *App) DB() *store.DB { return a.db }
@@ -124,11 +147,28 @@ func (a *App) Close() error {
 func (a *App) Handler() http.Handler { return a.handler }
 
 func (a *App) buildHandler() {
-	a.grpc = grpc.NewServer()
+	// One interceptor, recording every call. It is the only place that sees all
+	// of them, and per-handler timing would drift the first time someone added a
+	// handler and forgot.
+	a.grpc = grpc.NewServer(grpc.UnaryInterceptor(
+		func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler) (any, error) {
+			start := time.Now()
+			res, err := handler(ctx, req)
+			// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
+			// segment is what a person reads.
+			name := info.FullMethod
+			if i := strings.LastIndexByte(name, '/'); i >= 0 {
+				name = name[i+1:]
+			}
+			a.lat.Observe(name, time.Since(start), err != nil)
+			return res, err
+		}))
 	pb.RegisterReaderServiceServer(a.grpc,
 		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext))
 	pb.RegisterSystemServiceServer(a.grpc,
-		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db))
+		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
+			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))
 
 	// The tunnel carries gRPC over one WebSocket, which is what lets a wasm
 	// client speak real gRPC — browsers cannot open the HTTP/2 connection gRPC

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1525,4 +1526,93 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// Stats is the settings screen's view of the database.
+//
+// Scoped like everything else: these are the caller's counts, not the server's.
+// A multi-tenant instance reporting global row counts on a per-user screen would
+// be disclosing other tenants' activity through a status page.
+type Stats struct {
+	Feeds   int
+	Items   int
+	Unread  int
+	Notes   int
+	Tags    int
+	Rated   int
+	Saved   int
+	Dormant int
+}
+
+// Stats returns the counts behind the settings screen.
+//
+// One query with seven scalar subqueries rather than seven round trips: they are
+// all cheap index reads, and issuing them separately would let the screen show a
+// set of numbers that never existed simultaneously.
+func (r *ReaderRepo) Stats(ctx context.Context, s Scope) (Stats, error) {
+	if !s.Valid() {
+		return Stats{}, ErrNoScope
+	}
+	var out Stats
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT
+		  (SELECT count(*) FROM subscriptions sub
+		    JOIN sources src ON src.id = sub.source_id
+		   WHERE sub.user_id = ?1 AND sub.tenant_id = ?2
+		     AND src.deactivated_at IS NULL),
+		  (SELECT count(*) FROM items i
+		    JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?1
+		   WHERE sub.tenant_id = ?2 AND i.deactivated_at IS NULL),
+		  (SELECT count(*) FROM items i
+		    JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?1
+		    LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?1
+		   WHERE sub.tenant_id = ?2 AND i.deactivated_at IS NULL AND uis.read_at IS NULL),
+		  (SELECT count(*) FROM item_notes WHERE user_id = ?1 AND tenant_id = ?2),
+		  (SELECT count(*) FROM tags WHERE user_id = ?1 AND tenant_id = ?2),
+		  (SELECT count(*) FROM user_item_state
+		    WHERE user_id = ?1 AND tenant_id = ?2 AND rating != 0),
+		  (SELECT count(*) FROM user_item_state
+		    WHERE user_id = ?1 AND tenant_id = ?2 AND starred_at IS NOT NULL),
+		  (SELECT count(*) FROM subscriptions sub
+		    JOIN sources src ON src.id = sub.source_id
+		   WHERE sub.user_id = ?1 AND sub.tenant_id = ?2
+		     AND src.consecutive_failures >= 3)`,
+		s.UserID, s.TenantID).
+		Scan(&out.Feeds, &out.Items, &out.Unread, &out.Notes,
+			&out.Tags, &out.Rated, &out.Saved, &out.Dormant)
+	return out, err
+}
+
+// LastPollAt is the most recent successful fetch across everything this user
+// subscribes to. It answers "is the poller alive", which a stale reader cannot
+// distinguish from a quiet day.
+func (r *ReaderRepo) LastPollAt(ctx context.Context, s Scope) (string, error) {
+	if !s.Valid() {
+		return "", ErrNoScope
+	}
+	var at sql.NullString
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT max(src.last_success_at)
+		  FROM subscriptions sub
+		  JOIN sources src ON src.id = sub.source_id
+		 WHERE sub.user_id = ? AND sub.tenant_id = ?`, s.UserID, s.TenantID).Scan(&at)
+	if err != nil {
+		return "", err
+	}
+	return at.String, nil
+}
+
+// FileSizes reports the database and its write-ahead log on disk.
+//
+// The WAL is reported separately because it is the number that surprises people:
+// it grows between checkpoints and a reader watching only the .db file concludes
+// their storage is smaller than it is.
+func (db *DB) FileSizes() (dbBytes, walBytes int64) {
+	if fi, err := os.Stat(db.path); err == nil {
+		dbBytes = fi.Size()
+	}
+	if fi, err := os.Stat(db.path + "-wal"); err == nil {
+		walBytes = fi.Size()
+	}
+	return dbBytes, walBytes
 }
