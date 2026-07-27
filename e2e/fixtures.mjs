@@ -27,10 +27,30 @@ export { expect };
 /** boot waits for the client to be running and connected. */
 export async function boot(page) {
   await page.goto('/');
+  await signIn(page);
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.conn').first())
     .toHaveAttribute('data-state', 'live', { timeout: 30_000 });
   await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+}
+
+/**
+ * signIn gets past the login screen when one is showing.
+ *
+ * The client asks for credentials whenever it holds no token, even against a
+ * `-dev` server that would have served the local account anyway — so a fresh
+ * browser context lands on the sign-in form and every later assertion waits for
+ * a `.shell` that is not there. The account is the one `seed` created.
+ *
+ * Conditional rather than unconditional: a reload inside a test still has its
+ * token, and clicking a form that is not on screen would fail every one of them.
+ */
+export async function signIn(page) {
+  const password = page.locator('input[type="password"]');
+  if (!(await password.count())) return;
+  await page.locator('input').first().fill('cam');
+  await password.fill('articleflux');
+  await page.getByRole('button', { name: /sign in/i }).click();
 }
 
 /**
@@ -74,4 +94,19 @@ export async function openRail(page) {
     await expect(rail).toBeVisible();
   }
   return rail;
+}
+
+/**
+ * openAddFeed opens the add-a-feed dialog from the foot of the rail.
+ *
+ * The rail's foot is a button now, not a URL box: naming a feed and filing it
+ * are decisions made while adding one, and there was nowhere for them to happen
+ * in a single pinned field. Every test that adds a feed goes through here, so
+ * the navigation to the rail on a phone stays in one place.
+ */
+export async function openAddFeed(page) {
+  await openRail(page);
+  await page.locator('[data-action="add-feed-open"]').click();
+  await expect(page.locator('.af')).toBeVisible();
+  return page.locator('.af');
 }

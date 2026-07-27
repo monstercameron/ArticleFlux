@@ -102,7 +102,10 @@ export default async function globalSetup() {
   // Background polling is off: a poll firing mid-assertion would change unread
   // counts underneath the test, which is the classic source of a suite that
   // fails one run in twenty and gets blamed on "flakiness".
-  app = spawn(bin, ['serve', '-db', DB, '-addr', `127.0.0.1:${APP_PORT}`, '-poll', '0'], {
+  // -dev is required now that a login is the default (A36): without it the
+  // suite lands on the sign-in screen and every test fails waiting for .shell.
+  // It is refused off loopback by the server itself, and this binds loopback.
+  app = spawn(bin, ['serve', '-db', DB, '-addr', `127.0.0.1:${APP_PORT}`, '-poll', '0', '-dev'], {
     cwd: repo, stdio: ['ignore', 'pipe', 'pipe'],
   });
   app.stdout.on('data', (d) => process.stdout.write(`[articleflux] ${d}`));

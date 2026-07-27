@@ -1,4 +1,4 @@
-import { test, expect, boot, openFeed, feedRow, openRail } from './fixtures.mjs';
+import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed } from './fixtures.mjs';
 
 /**
  * The reading loop, end to end.
@@ -120,6 +120,156 @@ test.describe('reading', () => {
   });
 });
 
+test.describe('notes and tags', () => {
+  /**
+   * openNote reveals the note editor on the article being read.
+   *
+   * The panel is a disclosure: the summary row (tags, the note preview, the sync
+   * mark) is always on screen and the textarea is behind the toggle. A test that
+   * reaches straight for .note-field waits forever for something that is
+   * deliberately not rendered yet.
+   */
+  async function openNote(page) {
+    const field = page.locator('.note-field').first();
+    if (!(await field.count())) {
+      await page.locator('[data-action="toggle-note"]').first().click();
+    }
+    await expect(field).toBeVisible({ timeout: 15_000 });
+    return field;
+  }
+
+  test('a note saves itself and survives a reload', async ({ page }) => {
+    await boot(page);
+    await page.locator('.item-row').first().click();
+
+    const note = await openNote(page);
+    await note.fill('Worth rereading when the n-gram work lands.');
+
+    // No Ctrl+Enter, no blur, no button: typing and then stopping is the whole
+    // interaction. The glyph is the only feedback there is, so it is what the
+    // test waits on.
+    //
+    // The generous timeout is about the harness, not the debounce, which is 800ms.
+    // Headless Chromium here runs requestAnimationFrame at well under one frame
+    // per second when nothing is being clicked — measured at 5 frames in 12
+    // seconds — and the render loop is driven by rAF, so each state transition
+    // (pending → saving → saved) waits for a frame that is seconds away. A real
+    // tab paints all three inside a second.
+    const mark = page.locator('.article-note .note-sync').first();
+    await expect(mark).toHaveAttribute('data-sync', 'saved', { timeout: 45_000 });
+
+    await page.reload();
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await page.locator('.item-row').first().click();
+    await expect(await openNote(page)).toHaveValue(/Worth rereading/, { timeout: 30_000 });
+
+    // And it is discoverable as a note, not just as text in a field. Anchored,
+    // because "Beta Notes" is one of the fixture feeds.
+    await openFeed(page, /^Notes$/);
+    await expect(page.locator('.item-row')).toHaveCount(1);
+  });
+
+  test('leaving the field saves without waiting for the debounce', async ({ page }) => {
+    await boot(page);
+    await page.locator('.item-row').first().click();
+
+    const note = await openNote(page);
+    await note.fill('Clicked away mid-thought.');
+    // Immediately — well inside the debounce window. The blur flush is what
+    // stops a reader who types and clicks straight into the next article from
+    // losing the sentence they just wrote.
+    await note.blur();
+
+    // Same rAF-throttling allowance as above; the flush itself is immediate.
+    await expect(page.locator('.article-note .note-sync').first())
+      .toHaveAttribute('data-sync', 'saved', { timeout: 45_000 });
+  });
+
+  test('a tag is visible on the article and removable from it', async ({ page }) => {
+    await boot(page);
+    await page.locator('.item-row').first().click();
+
+    await openNote(page);
+    const panel = page.locator('.article-note').first();
+    await panel.locator('[data-role="tag"]').first().fill('mornings');
+    await panel.locator('[data-action="add-tag"]').first().click();
+
+    // It appears where it was added, not only in the feed's settings panel — and
+    // on the summary row, so it is still there when the editor is closed again.
+    const chip = panel.locator('.tag-chip', { hasText: 'mornings' });
+    await expect(chip).toBeVisible({ timeout: 45_000 });
+
+    // And the same chip takes it off again.
+    await chip.click();
+    await expect(panel.locator('.tag-chip')).toHaveCount(0, { timeout: 45_000 });
+
+    // Gone on the server, not just out of the render: the last association
+    // removes the tag, so the sidebar must not still be offering it.
+    await page.reload();
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.pane-rail .feed-name', { hasText: 'mornings' }))
+      .toHaveCount(0);
+  });
+});
+
+test.describe('categories', () => {
+  // The fixture feed server's port is pinned in global-setup.mjs, and this is
+  // the one spec that needs a feed URL rather than a feed row: adding an address
+  // is what the dialog is for.
+  const ALPHA = 'http://127.0.0.1:9011/alpha.xml';
+
+  test('a feed is filed on the way in, and the rail groups it', async ({ page }, testInfo) => {
+    // Named per project: the two projects share one server, so a fixed name
+    // would have the phone run deleting the category the desktop run is
+    // asserting on.
+    const name = `Filed ${testInfo.project.name}`;
+    await boot(page);
+
+    const dialog = await openAddFeed(page);
+    await dialog.locator('[data-role="add-feed"]').fill(ALPHA);
+    await dialog.locator('[data-action="add-feed-new-category"]').click();
+    await dialog.locator('[data-role="add-feed-category"]').fill(name);
+    await dialog.locator('[data-action="add-feed"]').click();
+
+    // Adding an address already subscribed refiles it rather than erroring —
+    // the form showed a category being chosen, so it has to take effect.
+    await expect(dialog).toBeHidden({ timeout: 45_000 });
+    const rail = await openRail(page);
+    // The slot, not the name: a category is three buttons — the disclosure, the
+    // row, and the editor — and all three carry the name for assistive tech.
+    const slot = rail.locator('.cat-slot', { hasText: name });
+    const row = slot.locator('.cat-row');
+    await expect(row).toBeVisible({ timeout: 45_000 });
+
+    // The category is a fold: its feeds appear under it when it is opened, and
+    // the spine is what says they are inside it rather than after it.
+    await slot.locator('[data-action="toggle-category"]').click();
+    await expect(page.locator('.feed-nested .feed-name', { hasText: 'Alpha Journal' }))
+      .toBeVisible({ timeout: 45_000 });
+
+    // And selecting it lists everything filed under it — alpha's three items,
+    // not the five in the megafeed.
+    await row.click();
+    await expect(page.locator('.item-row')).toHaveCount(3, { timeout: 45_000 });
+
+    // Deleting a category unfiles its feeds and unsubscribes nothing. Two
+    // presses: the first arms, the second does it.
+    await slot.hover();
+    await slot.locator('[data-action="category-open"]').click();
+    const editor = page.locator('.af-narrow');
+    await expect(editor).toBeVisible();
+    await editor.locator('[data-action="category-delete"]').click();
+    await editor.locator('[data-action="category-delete-confirm"]').click();
+    await expect(editor).toBeHidden({ timeout: 45_000 });
+
+    // The feed survived, which is the half of this that would be expensive to
+    // get wrong.
+    await expect(rail.locator('.feed-name', { hasText: 'Alpha Journal' }).first())
+      .toBeVisible({ timeout: 45_000 });
+    await expect(rail.getByRole('button', { name: new RegExp(name) })).toHaveCount(0);
+  });
+});
+
 test.describe('keyboard', () => {
   // Google Reader's map, unchanged. Muscle memory transfers on day one and
   // renaming these would throw that away for nothing.
@@ -155,22 +305,25 @@ test.describe('keyboard', () => {
 test.describe('errors and edges', () => {
   test('a bad feed URL reports rather than failing silently', async ({ page }) => {
     await boot(page);
-    await openRail(page);
-    await page.locator('[data-role="add-feed"]').fill('not-a-url');
-    await page.locator('[data-action="add-feed"]').click();
+    const dialog = await openAddFeed(page);
+    await dialog.locator('[data-role="add-feed"]').fill('not-a-url');
+    await dialog.locator('[data-action="add-feed"]').click();
 
-    await expect(page.locator('.banner')).toContainText(/Couldn't add that feed/);
+    // The refusal is in the dialog, beside the field that has to be fixed, and
+    // the dialog stays open — closing it would throw away the URL.
+    await expect(dialog.locator('.af-error')).toContainText(/Couldn't add that feed/);
+    await expect(dialog.locator('[data-role="add-feed"]')).toHaveValue('not-a-url');
   });
 
   test('the SSRF guard refuses an internal address from the UI', async ({ page }) => {
     await boot(page);
     // The one attack the whole netguard package exists for, exercised through
     // the feature that carries it: subscribe-by-URL.
-    await openRail(page);
-    await page.locator('[data-role="add-feed"]').fill('http://169.254.169.254/latest/meta-data/');
-    await page.locator('[data-action="add-feed"]').click();
+    const dialog = await openAddFeed(page);
+    await dialog.locator('[data-role="add-feed"]').fill('http://169.254.169.254/latest/meta-data/');
+    await dialog.locator('[data-action="add-feed"]').click();
 
-    await expect(page.locator('.banner')).toContainText(/Couldn't add that feed/);
+    await expect(dialog.locator('.af-error')).toContainText(/Couldn't add that feed/);
     await expect(page.getByRole('button', { name: /169\.254/ })).toHaveCount(0);
   });
 

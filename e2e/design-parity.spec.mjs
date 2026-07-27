@@ -71,10 +71,15 @@ test('every source owns a hue, and it reaches all four surfaces', async ({ page 
   await boot(page);
 
   // 1. the sidebar dot
-  const dots = await page.evaluate(() =>
+  // Filtered on having a dot rather than sliced by position: the streams have
+  // never had one, and the Categories section adds rows that carry a disclosure
+  // instead. A hue belongs to a SOURCE, so "every row with a dot" is exactly the
+  // set this assertion is about.
+  const feedDots = await page.evaluate(() =>
     [...document.querySelectorAll('.pane-rail .feed-row')]
-      .map((el) => getComputedStyle(el.querySelector('.feed-dot')).backgroundColor));
-  const feedDots = dots.slice(3); // skip All feeds / Unread / Starred: no source
+      .map((el) => el.querySelector('.feed-dot'))
+      .filter(Boolean)
+      .map((el) => getComputedStyle(el).backgroundColor));
   expect(feedDots.length).toBeGreaterThan(1);
   // Distinct: two feeds must not be told apart only by reading their names.
   expect(new Set(feedDots).size).toBe(feedDots.length);
