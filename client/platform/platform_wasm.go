@@ -1486,17 +1486,50 @@ func PrefetchURL(src string) {
 	// fetching a private copy nothing else can see.
 	opts.Set("credentials", "same-origin")
 	p := fetch.Invoke(src, opts)
-	if !p.Truthy() || !p.Get("catch").Truthy() {
+	if !p.Truthy() || !p.Get("then").Truthy() {
 		return
 	}
-	var f js.Func
-	f = js.FuncOf(func(_ js.Value, _ []js.Value) any {
-		f.Release()
+	// The body has to be DRAINED, not just requested. A fetch whose body is
+	// never read leaves the response uncommitted to the HTTP cache, so the
+	// <audio> element that asks for the same URL a minute later downloads the
+	// whole file again — the synthesis was saved, which is the expensive half,
+	// but a megabyte still crosses the network twice. Reading it to completion
+	// is what turns the prefetch into a cache entry.
+	var drain, done js.Func
+	release := func() {
+		drain.Release()
+		done.Release()
+	}
+	drain = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 || !args[0].Truthy() {
+			release()
+			return nil
+		}
+		res := args[0]
+		if !res.Get("ok").Bool() || !res.Get("blob").Truthy() {
+			release()
+			return nil
+		}
+		// blob() rather than arrayBuffer(): the bytes are handed straight back
+		// to the browser rather than copied into the wasm heap, which for a
+		// multi-megabyte MP3 is the difference between a cache warm-up and a
+		// heap spike.
+		b := res.Call("blob")
+		if b.Truthy() && b.Get("then").Truthy() {
+			b.Call("then", done, done)
+			return nil
+		}
+		release()
 		return nil
 	})
-	// An unhandled rejection is a red line in the console for work that was
-	// never guaranteed to succeed.
-	p.Call("catch", f)
+	done = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		release()
+		return nil
+	})
+	// Both arms of then(), so a rejection releases the funcs instead of leaking
+	// them — and so an unhandled rejection is never a red line in the console
+	// for work that was never guaranteed to succeed.
+	p.Call("then", drain, done)
 }
 
 // WatchVisible reports whether one element is on screen, and keeps reporting as

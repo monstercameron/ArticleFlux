@@ -650,6 +650,18 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 		return 0, err
 	}
 
+	// The reader's own exclusions, which the ranking ignored entirely until now.
+	//
+	// `in_megafeed = 0` and an active `muted_until` are both the reader saying "not on
+	// my front page", and a ranked homepage that overrules them is worse than one that
+	// does not exist: the setting is visibly present in feed settings and visibly does
+	// nothing. Items stay fully readable in the feed's own list, which is the whole
+	// distinction the setting draws.
+	eligible, err := s.repo.MegafeedSources(ctx, sc)
+	if err != nil {
+		return 0, err
+	}
+
 	// The deliberate acts, read separately — this is the half that makes it a
 	// re-rank rather than another weighted term.
 	ids := make([]string, 0, len(candidates))
@@ -676,6 +688,9 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 	stories := corroborate(candidates, corpus)
 
 	for _, it := range candidates {
+		if !eligible[it.SourceID] {
+			continue
+		}
 		aff := byFeed[it.SourceID]
 		host := strings.TrimPrefix(urlnorm.Host(it.URL), "www.")
 

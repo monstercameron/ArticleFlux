@@ -61,6 +61,23 @@ func (s *Service) ListItems(ctx context.Context, sc store.Scope, q store.ListQue
 	return s.repo.ListItems(ctx, sc, q)
 }
 
+// ListRanked returns a page of the materialised homepage — My Feed.
+//
+// `after` is the rank to resume from; zero starts at the top. Not a keyset cursor over
+// (published_at, id) like ListItems, because the ordering here is a small dense
+// integer the deriver assigned, and an opaque cursor over it would be ceremony around
+// "the number after this one".
+//
+// Returns the ranking rows alongside the items rather than merging them into Item,
+// because the two have different lifetimes: the item is a fact about the world and the
+// ranking is this reader's current opinion of it. The transport joins them for the
+// wire; the service keeps them distinguishable so a caller that only wants the items
+// is not obliged to care.
+func (s *Service) ListRanked(ctx context.Context, sc store.Scope, after, limit int) (
+	[]store.RankedItem, []store.Item, error) {
+	return s.repo.RankedItems(ctx, sc, after, limit)
+}
+
 // CountItems returns how many items a query matches in all, for the client's
 // scrollbar. Same query object as ListItems, so the two cannot describe
 // different result sets.

@@ -27,6 +27,8 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -163,6 +165,9 @@ func guardNoCSSFiles(root string) *guard {
 			if skipDir(d.Name()) {
 				return fs.SkipDir
 			}
+			return nil
+		}
+		if skipFile(root, path) {
 			return nil
 		}
 		g.checked++
@@ -406,6 +411,9 @@ func walkGo(root string, fn func(path string, f *ast.File, fset *token.FileSet))
 		if strings.HasSuffix(path, ".pb.go") {
 			return nil
 		}
+		if skipFile(root, path) {
+			return nil
+		}
 		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			return nil
@@ -413,6 +421,52 @@ func walkGo(root string, fn func(path string, f *ast.File, fset *token.FileSet))
 		fn(path, f, fset)
 		return nil
 	})
+}
+
+// tracked is the set of files git knows about, or nil when that could not be
+// determined.
+//
+// # Why the guards only look at tracked files
+//
+// A guard exists to protect what is IN the repository. An untracked file is
+// somebody's scratch — a probe script written against whatever bug was in front
+// of them, a half-finished experiment, a database dump — and letting one of
+// those turn CI red means the guard stops being a signal and becomes a thing
+// people learn to skip past. That happened: a throwaway `tq3/main.go` that
+// queried the live database sat in the repo root and failed the SQL guard, on a
+// tree where nothing wrong had been committed.
+//
+// Nothing is lost by this. In CI the tree comes from `actions/checkout`, so
+// every file is tracked and every guard applies to all of it. Locally it means
+// your scratch directory is your business until you `git add` it — at which
+// point it is source, and the guards have an opinion again.
+//
+// A nil set (no git, not a repository, git not on PATH) means scan EVERYTHING.
+// A guard that silently checks nothing because a subprocess failed is worse than
+// one that occasionally complains about a scratch file.
+var tracked = func() map[string]bool {
+	out, err := exec.Command("git", "ls-files", "-z").Output()
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			set[path.Clean(p)] = true
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}()
+
+// skipFile reports whether a path is outside the guards' remit.
+func skipFile(root, p string) bool {
+	if tracked == nil {
+		return false
+	}
+	return !tracked[relSlash(root, p)]
 }
 
 func skipDir(name string) bool {

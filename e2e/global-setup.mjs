@@ -4,7 +4,7 @@ import { readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { APP_PORT, FEED_PORT } from './ports.mjs';
+import { APP_PORT, FEED_PORT, releaseSlot } from './ports.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
@@ -153,6 +153,9 @@ export default async function globalSetup() {
   await waitForHealthy(`http://127.0.0.1:${APP_PORT}/healthz`);
 
   return async () => {
+    // The slot goes back first, so a run that fails to tear the server down
+    // still frees the port for the next one.
+    releaseSlot();
     if (app) app.kill();
     if (feedServer) await new Promise((ok) => feedServer.close(ok));
   };

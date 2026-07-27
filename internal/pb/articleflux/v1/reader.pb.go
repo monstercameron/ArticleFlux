@@ -265,7 +265,33 @@ type Item struct {
 	// SEALED rather than signed, because this capability is per-reader: it
 	// carries who may hear it, and an identity in a query string would land in
 	// history, referrers and access logs in the clear.
-	SpeechUrl     string `protobuf:"bytes,19,opt,name=speech_url,json=speechUrl,proto3" json:"speech_url,omitempty"`
+	SpeechUrl string `protobuf:"bytes,19,opt,name=speech_url,json=speechUrl,proto3" json:"speech_url,omitempty"`
+	// Why this item is on the ranked page, as separate clauses (§18.9).
+	//
+	// rank_reason above carries the strongest single one and predates this; both are
+	// sent, because they are read in different places. A list row shows one line, and
+	// the My Feed row shows a chip per clause — "several feeds carried this",
+	// "matches your camera reading", "on screen several times and still unread" — which
+	// is what makes the ranking correctable rather than merely explained. A reader who
+	// can see WHICH judgement they disagree with can act on that one.
+	//
+	// Ordered strongest first, by absolute contribution to the score, so a client that
+	// has room for two chips shows the two that mattered.
+	RankReasons []string `protobuf:"bytes,20,rep,name=rank_reasons,json=rankReasons,proto3" json:"rank_reasons,omitempty"`
+	// Which slot of §18.4's three this item filled: top | explore | cluster_head.
+	//
+	// On the wire because it is a fact about the RANKING, not about the item, and the
+	// client cannot recompute it — Explore deliberately serves under-served topics, so
+	// an item there is not simply a lower-scoring Top item and must not be presented as
+	// one.
+	RankSlot string `protobuf:"bytes,21,opt,name=rank_slot,json=rankSlot,proto3" json:"rank_slot,omitempty"`
+	// Which tier produced this pick: smart | smart_plus.
+	//
+	// The reader paid for Smart+ or they did not, and when they did they are entitled
+	// to know which picks it actually influenced. It is also the honest way to show
+	// that free Smart did most of the work, rather than implying a key is what makes
+	// the page good.
+	RankTier      string `protobuf:"bytes,22,opt,name=rank_tier,json=rankTier,proto3" json:"rank_tier,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -429,6 +455,27 @@ func (x *Item) GetStreamUrl() string {
 func (x *Item) GetSpeechUrl() string {
 	if x != nil {
 		return x.SpeechUrl
+	}
+	return ""
+}
+
+func (x *Item) GetRankReasons() []string {
+	if x != nil {
+		return x.RankReasons
+	}
+	return nil
+}
+
+func (x *Item) GetRankSlot() string {
+	if x != nil {
+		return x.RankSlot
+	}
+	return ""
+}
+
+func (x *Item) GetRankTier() string {
+	if x != nil {
+		return x.RankTier
 	}
 	return ""
 }
@@ -4249,7 +4296,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\x88\x04\n" +
+	" \x01(\tR\tlastError\"\xe5\x04\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -4274,7 +4321,10 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\n" +
 	"stream_url\x18\x12 \x01(\tR\tstreamUrl\x12\x1d\n" +
 	"\n" +
-	"speech_url\x18\x13 \x01(\tR\tspeechUrl\"h\n" +
+	"speech_url\x18\x13 \x01(\tR\tspeechUrl\x12!\n" +
+	"\frank_reasons\x18\x14 \x03(\tR\vrankReasons\x12\x1b\n" +
+	"\trank_slot\x18\x15 \x01(\tR\brankSlot\x12\x1b\n" +
+	"\trank_tier\x18\x16 \x01(\tR\brankTier\"h\n" +
 	"\x15ScrollLiveViewRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
