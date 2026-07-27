@@ -27,15 +27,24 @@ GWC_SRC  := $(abspath $(ROOT)/../GoWebComponents)
 BIN      := $(ROOT)/bin
 OUT      := $(BIN)/web
 WASM     := $(OUT)/app.wasm
+DEMO     := $(BIN)/demo
 PORT     ?= 9000
 DB       ?= articleflux.db
+# What a `demo` build calls itself. The release workflow passes the tag it was
+# triggered by; a build from a working copy is honestly "dev".
+VERSION  ?= dev
 
 # -trimpath and -ldflags="-s -w" are not decoration: wasm-baseline.txt was
 # measured with exactly these, so building differently would make the CI size
 # ratchet compare two different artifacts.
-WASMFLAGS := -trimpath -ldflags=-s -ldflags=-w
+#
+# ONE -ldflags, carrying both. `go build` parses this flag with StringsFlag,
+# whose Set REPLACES the previous value rather than appending to it — so the
+# earlier `-ldflags=-s -ldflags=-w` spelling passed only `-w`, and this target
+# was quietly measuring a different binary from the one CI and make.ps1 measure.
+WASMFLAGS := -trimpath '-ldflags=-s -w'
 
-.PHONY: help deps gen build test wasm run dev e2e lint migrate tools clean \
+.PHONY: help deps gen build test wasm demo run dev e2e lint migrate tools clean \
         linux install-service backup
 
 help:
@@ -47,6 +56,7 @@ help:
 	@echo '  make build     go build -> bin/articleflux'
 	@echo '  make test      go test ./...'
 	@echo '  make wasm      build the client into bin/web, prints the G5 size'
+	@echo '  make demo      build the GitHub Pages demo into bin/demo (VERSION=v1.0.0)'
 	@echo '  make lint      go vet + buf lint + the A26/tenancy structural guards'
 	@echo '  make migrate   apply migrations'
 	@echo '  make run       build, then serve on 127.0.0.1:$(PORT)'
@@ -133,6 +143,32 @@ wasm: deps
 	@raw=$$(stat -c%s $(WASM)); gz=$$(stat -c%s $(WASM).gz); \
 	 fmt() { echo "$$(( $$1 * 10 / 1048576 ))" | sed 's/\(.\)$$/.\1/;s/^\./0./'; }; \
 	 echo "    app.wasm = $$(fmt $$raw) MB raw / $$(fmt $$gz) MB gzipped  (G5 ratchet — plan.md R4)"
+
+# The GitHub Pages demo (client/demo + client/demodata), built exactly the way
+# .github/workflows/pages.yml builds it — same flags, same three files, same
+# gzip-only module. The deployed demo is the only build of this application that
+# strangers see, so a local one that differed from it would be a rehearsal of a
+# different performance.
+#
+# The raw module is deleted after compressing, and that is the one place this
+# differs from `wasm`: a static host cannot negotiate an encoding, so the boot
+# shim fetches app.wasm.gz and decompresses it itself (web/index.html). Leaving
+# app.wasm beside it would mean that path was never taken locally.
+demo: deps
+	@mkdir -p $(DEMO)
+	cp web/index.html $(DEMO)/index.html
+	GOOS=js GOARCH=wasm go build -trimpath \
+	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
+	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \
+	 [ -f "$$exec_js" ] || exec_js="$$(go env GOROOT)/misc/wasm/wasm_exec.js"; \
+	 [ -f "$$exec_js" ] || { echo "wasm_exec.js not found under $$(go env GOROOT)"; exit 1; }; \
+	 cp "$$exec_js" $(DEMO)/wasm_exec.js
+	@gzip -9 -c $(DEMO)/app.wasm > $(DEMO)/app.wasm.gz.tmp && mv -f $(DEMO)/app.wasm.gz.tmp $(DEMO)/app.wasm.gz
+	@raw=$$(stat -c%s $(DEMO)/app.wasm); gz=$$(stat -c%s $(DEMO)/app.wasm.gz); \
+	 fmt() { echo "$$(( $$1 * 10 / 1048576 ))" | sed 's/\(.\)$$/.\1/;s/^\./0./'; }; \
+	 echo "    demo.wasm = $$(fmt $$raw) MB raw / $$(fmt $$gz) MB shipped (gzipped)"
+	@rm -f $(DEMO)/app.wasm
+	@echo '    serve bin/demo with any static file server to look at it'
 
 migrate: build
 	$(BIN)/articleflux migrate -db $(DB)

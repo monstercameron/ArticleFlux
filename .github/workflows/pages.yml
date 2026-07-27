@@ -1,0 +1,142 @@
+# The public demo — build client/demo and publish it to GitHub Pages.
+#
+# ArticleFlux is self-hosted, which means "try it" otherwise costs a Go
+# toolchain, two clones, a wasm build and a running server. That is a lot to ask
+# of somebody who has not decided whether they care yet. This workflow removes
+# every step: the demo is a static page whose "server" is an in-memory instance
+# compiled into the same module (client/demodata).
+#
+# WHAT IS PUBLISHED, exactly three files:
+#
+#   index.html      web/index.html unmodified — the same splash the server serves
+#   wasm_exec.js    from the toolchain that produced the module
+#   app.wasm.gz     the module, gzipped, and ONLY gzipped
+#
+# The last one is why the boot shim in web/index.html has a compressed path.
+# GitHub Pages cannot negotiate a content encoding for a wasm file, so publishing
+# the raw module would hand a stranger a 30 MB download; the shim fetches
+# app.wasm.gz and decompresses it in the browser, which is 6 MB. Nothing is
+# published uncompressed, so that path is the one this build exercises.
+#
+# BEFORE THE FIRST RUN, one manual step nobody can do from here: the repository's
+# Settings → Pages → Build and deployment → Source must be set to "GitHub
+# Actions". Without it the deploy step fails with a 404 that reads like a
+# permissions problem.
+#
+# HOW TO PUBLISH:
+#
+#   git tag -a v1.0.0 -m 'the first public demo' && git push origin v1.0.0
+#
+# or run this workflow by hand from the Actions tab, which is the same build with
+# a version somebody typed instead of one git remembered.
+
+name: Demo (GitHub Pages)
+
+on:
+  push:
+    tags:
+      - "v*"
+  # A pull request BUILDS the demo and does not deploy it. The demo is the only
+  # build of this application that strangers see, so "did that change break it?"
+  # should be answerable before merging rather than at tag time.
+  pull_request:
+    paths:
+      - "client/**"
+      - "web/index.html"
+      - "internal/pb/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "What the build calls itself on the settings screen"
+        required: false
+        default: "v1.0.0"
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: a cancelled Pages deploy
+# can leave the site on a half-published state, and there is nothing to gain by
+# racing two of them.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.26.3"
+
+jobs:
+  build:
+    name: build the demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # D0: go.mod replaces GoWebComponents/v5 with a SIBLING directory, because
+      # v5.0.0 was never tagged or published. actions/checkout refuses a path
+      # outside the workspace, so the checkout lands inside and is then moved
+      # next door — which is what makes the repository's own replace directive,
+      # the Makefile's `deps` check, and this build agree without editing go.mod
+      # in CI. An edited go.mod is a build that is not the build anybody runs.
+      - name: Check out GoWebComponents (D0 — no published v5 tag)
+        uses: actions/checkout@v4
+        with:
+          repository: monstercameron/GoWebComponents
+          ref: v5
+          path: _gwc
+      - name: Move it next door
+        run: mv _gwc "${GITHUB_WORKSPACE}/../GoWebComponents"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # The version the build reports for itself. A tag names itself; a manual
+      # run is told what to say; anything else is honestly "dev".
+      - name: Decide the version
+        id: v
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version || 'dev' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The demo's backend is ordinary Go with no build tag, so it is testable
+      # without a browser — and it is tested here rather than only in the main
+      # suite, because a demo whose instance is wrong is a demo that argues for
+      # an application that does not work.
+      - name: Test the demo instance
+        run: go test ./client/demodata/...
+
+      # Through `make`, not an inlined `go build`. The verb is the same one a
+      # person runs locally (scripts/make.ps1 demo), so the published artifact
+      # and the one somebody previews are produced by the same recipe rather than
+      # by two that agree until one is edited.
+      - name: Build
+        run: make demo VERSION=${{ steps.v.outputs.version }}
+
+      - name: What is being published
+        run: ls -lh bin/demo
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: bin/demo
+
+  deploy:
+    name: publish
+    # Pull requests build and stop. Only a tag or a deliberate manual run
+    # replaces what is on the public URL.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

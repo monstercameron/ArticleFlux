@@ -27,12 +27,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('gen', 'build', 'test', 'wasm', 'run', 'dev', 'e2e', 'lint', 'migrate', 'tools', 'clean', 'help')]
+    [ValidateSet('gen', 'build', 'test', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'tools', 'clean', 'help')]
     [string]$Target = 'help',
 
     # 9000 is the port Cam watches to follow along; changing the default moves the
     # thing he has open in a tab.
-    [int]$Port = 9000
+    [int]$Port = 9000,
+
+    # What a `demo` build calls itself. The release workflow passes the tag it
+    # was triggered by; a build from a laptop is honestly "dev".
+    [string]$Version = 'dev'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +54,7 @@ $ClientApp = Join-Path $Root 'client\app'
 $WebSrc    = Join-Path $Root 'web'
 $OutDir    = Join-Path $Root 'bin\web'
 $WasmOut   = Join-Path $OutDir 'app.wasm'
+$DemoDir   = Join-Path $Root 'bin\demo'
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Fail($msg) { Write-Host "!!! $msg" -ForegroundColor Red; exit 1 }
@@ -157,6 +162,59 @@ function Invoke-Wasm {
     Write-Host "    app.wasm = $raw MB raw / $gzs MB gzipped  (G5 ratchet - plan.md R4)" -ForegroundColor DarkGray
 }
 
+# The GitHub Pages demo (client/demo + client/demodata), built exactly the way
+# .github/workflows/pages.yml builds it.
+#
+# "Exactly" is the point of having this verb at all: the deployed demo is the
+# only build of this application that strangers see, and a local one that
+# differed from it — by shipping the uncompressed module, say — would be a
+# rehearsal of a different performance. So the output directory here holds the
+# same three files the workflow uploads, and nothing else.
+#
+# The version is a parameter for the same reason it is a linker flag in CI:
+# a build that identifies itself as something it is not is worse than one that
+# says "dev".
+function Invoke-Demo {
+    param([string]$DemoVersion = 'dev')
+
+    Step "building the demo -> bin/demo  ($DemoVersion)"
+    New-Item -ItemType Directory -Force $DemoDir | Out-Null
+    Copy-Item (Join-Path $WebSrc 'index.html') (Join-Path $DemoDir 'index.html') -Force
+
+    $raw = Join-Path $DemoDir 'app.wasm'
+    $env:GOOS = 'js'; $env:GOARCH = 'wasm'
+    try {
+        Invoke-Checked 'go build (demo wasm)' {
+            go build -trimpath -ldflags="-s -w -X main.version=$DemoVersion" -o $raw ./client/demo
+        }
+    } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
+
+    # wasm_exec.js must come from the toolchain that produced the module.
+    $exec = Join-Path (go env GOROOT) 'lib\wasm\wasm_exec.js'
+    if (-not (Test-Path $exec)) { $exec = Join-Path (go env GOROOT) 'misc\wasm\wasm_exec.js' }
+    Copy-Item $exec (Join-Path $DemoDir 'wasm_exec.js') -Force
+
+    # Compressed, and then the raw module is DELETED — which is the one place
+    # this differs from `wasm`, and it is deliberate. A static host cannot
+    # negotiate an encoding, so the boot shim fetches app.wasm.gz and
+    # decompresses it itself (see web/index.html); leaving app.wasm next to it
+    # would mean the shim never took that path locally and the first time anyone
+    # exercised it was on the public demo.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $tmp = "$raw.gz.tmp"
+    $in  = [System.IO.File]::OpenRead($raw)
+    $out = [System.IO.File]::Create($tmp)
+    $gz  = New-Object System.IO.Compression.GZipStream($out, [System.IO.Compression.CompressionLevel]::Optimal)
+    try { $in.CopyTo($gz) } finally { $gz.Dispose(); $out.Dispose(); $in.Dispose() }
+    Move-Item $tmp "$raw.gz" -Force
+    $rawMB = [math]::Round((Get-Item $raw).Length / 1MB, 1)
+    $gzMB  = [math]::Round((Get-Item "$raw.gz").Length / 1MB, 1)
+    Remove-Item $raw -Force
+
+    Write-Host "    demo.wasm = $rawMB MB raw / $gzMB MB shipped (gzipped)" -ForegroundColor DarkGray
+    Write-Host "    serve bin/demo with any static file server to look at it" -ForegroundColor DarkGray
+}
+
 function Invoke-Lint {
     Step 'go vet'
     Invoke-Checked 'go vet' { go vet ./... }
@@ -186,6 +244,7 @@ switch ($Target) {
     'build'   { Invoke-Build }
     'test'    { Invoke-Test }
     'wasm'    { Invoke-Wasm }
+    'demo'    { Invoke-Demo -DemoVersion $Version }
     'lint'    { Invoke-Lint }
     'migrate' { Invoke-Migrate }
     'run'     { Invoke-Run }
@@ -214,6 +273,7 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
+  ./scripts/make.ps1 demo       build the GitHub Pages demo into bin/demo (-Version v1.0.0)
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards
   ./scripts/make.ps1 migrate    apply migrations
   ./scripts/make.ps1 run        build, then serve on :9000
