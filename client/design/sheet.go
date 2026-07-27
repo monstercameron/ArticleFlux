@@ -1128,7 +1128,11 @@ func verdicts(r func(string, string) css.Rule) {
 		// image has a fixed aspect. Letting it scale to the column keeps it
 		// legible on a narrow pane instead of cropping it.
 		r("max-height", "min(78vh, 900px)"), r("object-fit", "contain"),
-		r("background", "#0b0d12"),
+		// The letterbox behind a contained frame. var(--bg) rather than the dark
+		// theme's hex, which is what it used to be: a literal here is a colour no
+		// theme can reach, so a light theme letterboxed its live view in near
+		// black. The guard in sheet_test.go exists for exactly this.
+		r("background", "var(--bg)"),
 	)
 	css.Global(".page-frame-foot",
 		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
