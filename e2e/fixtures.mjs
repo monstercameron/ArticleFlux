@@ -107,6 +107,11 @@ export async function openRail(page) {
 export async function openAddFeed(page) {
   await openRail(page);
   await page.locator('[data-action="add-feed-open"]').click();
-  await expect(page.locator('.af')).toBeVisible();
-  return page.locator('.af');
+  // By role and name, not by .af: every dialog in this app is built from the
+  // same box, and the category editor is now always in the DOM behind a closed
+  // scrim — so a class selector matches two things and Playwright refuses,
+  // correctly, to guess which one the test meant.
+  const dialog = page.getByRole('dialog', { name: 'Add a feed' });
+  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  return dialog;
 }

@@ -13,20 +13,54 @@ import { test, expect, boot, openFeed } from './fixtures.mjs';
 // The single most valuable responsive assertion there is: nothing may make the
 // page scroll sideways. It catches a whole class of layout bugs that are
 // invisible in a screenshot taken at the wrong scroll position.
+/**
+ * Nothing may stick out sideways — where "stick out" means a reader can see or
+ * scroll to it.
+ *
+ * The element sweep is the useful half of this check: `scrollWidth` alone misses
+ * an overflowing child inside a clipping ancestor, which is exactly the shape of
+ * the long-unbroken-URL bug it was written for. But a box whose rect lies past
+ * the viewport is only a defect if something can actually reveal it, and since
+ * the panes became a filmstrip (plan §20.22) that is no longer a safe
+ * assumption: two of the three panes sit a full viewport off to the side ON
+ * PURPOSE, clipped by `.panes`, waiting to slide in.
+ *
+ * So the sweep asks the question it always meant: is this box outside the
+ * viewport AND not clipped by an ancestor that hides it? A clipped box is
+ * furniture; an unclipped one is a bug.
+ */
 async function expectNoHorizontalOverflow(page) {
   const overflow = await page.evaluate(() => {
     const d = document.documentElement;
+
+    // Walk up looking for an ancestor that clips horizontally and whose own box
+    // already excludes this element. That ancestor is why nobody can see it.
+    const isClipped = (el) => {
+      const r = el.getBoundingClientRect();
+      for (let a = el.parentElement; a; a = a.parentElement) {
+        const s = getComputedStyle(a);
+        const clips = s.overflowX === 'hidden' || s.overflowX === 'clip';
+        if (!clips) continue;
+        const ar = a.getBoundingClientRect();
+        if (r.left >= ar.right - 1 || r.right <= ar.left + 1) return true;
+      }
+      return false;
+    };
+
     return {
       scrollW: d.scrollWidth,
       clientW: d.clientWidth,
       offenders: [...document.querySelectorAll('*')]
         .filter((el) => el.getBoundingClientRect().right > d.clientWidth + 1)
+        .filter((el) => !isClipped(el))
         .slice(0, 5)
         .map((el) => el.className || el.tagName),
     };
   });
   expect(overflow.offenders, `elements overflowing the viewport: ${overflow.offenders}`)
     .toEqual([]);
+  // The other half, unchanged and still the one a reader would feel: the page
+  // itself must not scroll sideways.
   expect(overflow.scrollW).toBeLessThanOrEqual(overflow.clientW + 1);
 }
 
@@ -104,15 +138,62 @@ test('long unbroken text wraps instead of overflowing', async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
 
+/**
+ * Reduced motion, asserted against the mechanism that now implements it (A39,
+ * plan §20.16).
+ *
+ * This used to count elements with a non-zero `animation-duration` and require
+ * zero, which was the right check for the `* { animation: none }` rule it was
+ * written against. That rule is gone, and deliberately: it could only ever
+ * answer the machine, so a reader who wanted motion on a system configured to
+ * suppress it had no way to say so, and it was a broom that quietly stopped
+ * covering anything it could not reach.
+ *
+ * The gate is now `--mo`, a multiplier every duration is written through. What
+ * replaces the count is stricter, not looser:
+ *
+ *   - the gate itself is off;
+ *   - EVERY transition in the document takes zero time — no exceptions;
+ *   - the only animations still running are the ambient loops, which keep a real
+ *     duration ON PURPOSE (a zero-second infinite animation is a spec corner
+ *     browsers disagree about) and are gated on amplitude instead, animating to
+ *     the value they started from. They are named here, so a new unbounded
+ *     animation fails this test rather than joining the exemption silently.
+ */
 test('reduced motion is respected', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await boot(page);
-  const animated = await page.evaluate(() =>
-    [...document.querySelectorAll('*')].filter((el) => {
+
+  expect(await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--mo').trim())).toBe('0');
+
+  const moving = await page.evaluate(() => {
+    // The ambient loops, by the class that carries them.
+    const AMBIENT = ['sk', 'sk-row', 'conn-dot', 'sync-gl', 'fs-saving', 'spin-ring',
+      'is-loading', 'banner'];
+    const out = { transitions: [], animations: [] };
+    for (const el of document.querySelectorAll('*')) {
       const s = getComputedStyle(el);
-      return s.animationName !== 'none' && s.animationDuration !== '0s';
-    }).length);
-  expect(animated).toBe(0);
+      if (s.transitionDuration.split(',').some((d) => parseFloat(d) > 0)) {
+        out.transitions.push(el.className || el.tagName);
+      }
+      if (s.animationName !== 'none' && parseFloat(s.animationDuration) > 0) {
+        const cls = (el.className || '').toString().split(/\s+/);
+        if (!cls.some((c) => AMBIENT.includes(c))) {
+          out.animations.push(el.className || el.tagName);
+        }
+      }
+    }
+    out.transitions = out.transitions.slice(0, 5);
+    out.animations = out.animations.slice(0, 5);
+    return out;
+  });
+
+  expect(moving.transitions,
+    `these still transition with motion reduced: ${moving.transitions}`).toEqual([]);
+  expect(moving.animations,
+    `these animate with motion reduced and are not a known ambient loop: ${moving.animations}`)
+    .toEqual([]);
 });
 
 test('keyboard focus is visible', async ({ page }) => {

@@ -190,14 +190,23 @@ test.describe('motion', () => {
     const open = await railWidth();
     expect(open).toBeGreaterThan(0);
 
-    await page.keyboard.press('w');
-    await page.waitForTimeout(120);
-    const mid = await railWidth();
-    // Strictly between: at 0 it snapped, at `open` it has not started. This is
-    // the assertion that grid tracks are interpolating rather than switching.
-    expect(mid).toBeGreaterThan(0);
-    expect(mid).toBeLessThan(open);
+    // Sampled across the whole gesture rather than at one instant. A fixed
+    // sample is a race: the key goes through the client's async dispatch before
+    // the attribute flips, so 120ms is sometimes before the transition has even
+    // started. What is actually being asserted is that the rail passed THROUGH
+    // intermediate widths — which is the difference between a grid track
+    // interpolating and a pane being switched off.
+    const widths = await page.evaluate(async () => {
+      const rail = document.querySelector('.pane-rail');
+      const seen = [];
+      for (let i = 0; i < 60; i++) {
+        seen.push(Math.round(rail.getBoundingClientRect().width));
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      return seen;
+    }, await page.keyboard.press('w'));
 
+    expect(widths.some((v) => v > 0 && v < open)).toBe(true);
     await page.waitForTimeout(600);
     expect(await railWidth()).toBe(0);
 
