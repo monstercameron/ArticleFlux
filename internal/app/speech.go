@@ -58,6 +58,77 @@ const podcastPrefKey = "tts.podcast"
 // indistinguishable from having played it.
 const prevItemParam = "p"
 
+// podcastVibePrefKey is how the narrator sounds: calm, brisk, dry or warm.
+//
+// A preference rather than a mode, because it changes nothing about what is
+// sent, what is spent or what is claimed — only the manner. An unknown value
+// resolves to the default inside smart.VibeFor rather than reaching the prompt.
+const podcastVibePrefKey = "tts.podcastVibe"
+
+// The opening's parameters, sent by the client on the FIRST segment of a session
+// and absent on every other.
+//
+// `now` carries the LISTENER'S clock, with its offset, and that is the point:
+// this server may be three timezones from the person listening to it, and being
+// wished good morning at ten at night is the single most obviously wrong thing
+// this feature could say. `n` is how many stories are queued, which is what
+// turns "here's what's happening" into "eleven stories this morning" — the
+// version that tells someone whether to settle in.
+//
+// Both are hints, not credentials. A forged `now` changes a greeting; a forged
+// `n` changes a number in one sentence. Neither reaches anything but the prompt.
+const (
+	openNowParam     = "now"
+	openStoriesParam = "n"
+)
+
+// openingFrom builds the top-of-broadcast greeting, or nil when this is not the
+// first segment.
+//
+// Nil for anything but a first segment, and that is decided by the CALLER having
+// no previous story — the parameters are only read when there is nothing to hand
+// over from, so a client that sends them on every request still gets one opening
+// per broadcast.
+//
+// A missing or unparseable `now` falls back to the server's own clock rather
+// than dropping the greeting. The greeting is the shape of the thing; being an
+// hour out on "afternoon" is a small wrongness, and having no opening at all is
+// a missing feature.
+func openingFrom(r *http.Request, now time.Time) *smart.Opening {
+	if v := strings.TrimSpace(r.URL.Query().Get(openNowParam)); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			now = t
+		}
+	}
+	o := &smart.Opening{PartOfDay: partOfDay(now.Hour()), Date: now.Format("Monday, 2 January 2006")}
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(openStoriesParam))); err == nil &&
+		n > 0 && n <= 10000 {
+		o.Stories = n
+	}
+	return o
+}
+
+// partOfDay is the word a greeting uses.
+//
+// Three, not four: "good night" is a farewell in English rather than a greeting,
+// so a broadcast starting at one in the morning says "good evening" — which is
+// what a person on air actually says at that hour, and what someone listening at
+// that hour expects to hear.
+//
+// The boundaries are the conventional ones and deliberately not clever: noon and
+// six. A listener at 5:59pm hearing "good afternoon" is not wrong, and a
+// sunset-aware greeting would be a geolocation lookup for a single word.
+func partOfDay(hour int) string {
+	switch {
+	case hour < 12:
+		return "morning"
+	case hour < 18:
+		return "afternoon"
+	default:
+		return "evening"
+	}
+}
+
 // digestFor returns the spoken summary of an item.
 //
 // Split out of the handler so the fallback logic there stays legible: every
@@ -85,7 +156,8 @@ func (a *App) digestFor(ctx context.Context, it store.Item) (string, error) {
 // Split out beside digestFor for the same reason that one is: every error from
 // here is recoverable by reading the article, and the handler says so in one
 // place.
-func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item) (string, error) {
+func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
+	vibe string, open *smart.Opening) (string, error) {
 	if a.podcast == nil {
 		return "", smart.ErrNothingToSummarise
 	}
@@ -93,6 +165,8 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item) (s
 		ItemID: it.ID,
 		Source: it.SourceTitle,
 		Title:  it.Title,
+		Vibe:   vibe,
+		Open:   open,
 		// The article stripped of markup, like the digest gets: the model is
 		// being asked to retell it, not to read our HTML, and the provider bills
 		// per character either way.
@@ -115,8 +189,20 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item) (s
 // A function rather than a concatenation at the call site because it is the
 // half of the contract that lives HERE: smart.Podcast keys its text cache on the
 // same pair, and the two have to agree about what "the same segment" means.
-func podcastKey(itemID, prevID string) string {
-	return itemID + "#podcast:" + prevID
+// The vibe and the opening are in the key for the same reason they are in
+// smart.Podcast's own: they change the words, so they change the recording. A
+// reader who switches from calm to brisk and hears yesterday's calm audio would
+// conclude, reasonably, that the setting does nothing.
+//
+// The opening contributes its DATE rather than its whole shape, because that is
+// what makes it a different broadcast — the same show restarted an hour later
+// should cost nothing, and tomorrow's should be new.
+func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
+	key := itemID + "#podcast:" + prevID + ":" + vibe
+	if open != nil {
+		key += ":open:" + open.PartOfDay + ":" + open.Date + ":" + strconv.Itoa(open.Stories)
+	}
+	return key
 }
 
 // speechScript decides WHAT gets read aloud, and what the audio is cached under.
@@ -142,14 +228,15 @@ func podcastKey(itemID, prevID string) string {
 // more here: a listener whose narrator falls over should hear the article, which
 // is less pleasant than what they asked for and infinitely better than silence.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item) (text, cacheKey string) {
+	it store.Item, prev store.Item, open *smart.Opening) (text, cacheKey string) {
 	text, cacheKey = speechText(it), it.ID
 
 	if prefs[podcastPrefKey] == "true" {
-		seg, err := a.podcastFor(ctx, it, prev)
+		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		seg, err := a.podcastFor(ctx, it, prev, vibe, open)
 		switch {
 		case err == nil:
-			return seg, podcastKey(it.ID, prev.ID)
+			return seg, podcastKey(it.ID, prev.ID, vibe, open)
 		case errors.Is(err, smart.ErrNothingToSummarise):
 			// A two-line link post is its own segment. Read it.
 			a.cfg.Log.Debug("broadcast segment skipped, reading the article", "item", it.ID)
@@ -369,6 +456,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// all when the preference that uses it is on, so the ordinary listen still
 	// costs one query.
 	var prev store.Item
+	var open *smart.Opening
 	if prefs[podcastPrefKey] == "true" {
 		if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != id {
 			// An unreadable or unknown predecessor is simply no predecessor. It
@@ -379,6 +467,14 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 				prev = p
 			}
 		}
+		// The greeting belongs to the segment with nothing before it, and that
+		// test is made HERE rather than trusted to the client: a client that
+		// sends the opening parameters on every request still gets exactly one
+		// opening per broadcast, because from the second story onward there is a
+		// predecessor and the top of the show has already happened.
+		if prev.ID == "" {
+			open = openingFrom(r, time.Now())
+		}
 	}
 
 	// Three things this could be — the article, its digest, or its slot in a
@@ -386,7 +482,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// `cacheKey` carries the difference, because the audio cache is keyed by it:
 	// without that, turning a mode on would serve yesterday's rendering of a
 	// different script, which looks exactly like the toggle not working.
-	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev)
+	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open)
 	if text == "" {
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return

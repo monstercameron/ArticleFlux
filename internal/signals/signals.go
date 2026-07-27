@@ -15,7 +15,7 @@ package signals
 
 import (
 	"errors"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -195,7 +195,7 @@ var specs = map[Kind]Spec{
 	// affinity by design, so emitting 143 of them would add 143 rows of noise to
 	// the hottest table in the layer to record a single act.
 	BulkRead: {BulkRead, 0.0, ValueCount, false, false, "gave up on a backlog: NEUTRAL, never negative"},
-	SyncRead:      {SyncRead, 0.0, ValueNone, true, false, "auto-marked by a third-party client: neutral"},
+	SyncRead: {SyncRead, 0.0, ValueNone, true, false, "auto-marked by a third-party client: neutral"},
 }
 
 // Lookup returns the spec for a kind.
@@ -250,7 +250,11 @@ func AffinityKinds() []Kind {
 			out = append(out, k)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	// slices.Sort, not sort.Slice: Kind is a string type, so the ordering is
+	// its natural one and the comparison closure was only restating that. The
+	// generic version also sorts without the reflect-based element swaps
+	// sort.Slice needs.
+	slices.Sort(out)
 	return out
 }
 
@@ -502,6 +506,18 @@ func Pace(wordsPassed int, ms int64) float64 {
 //
 // Kinds excluded from affinity (BulkRead, SyncRead) contribute nothing, which is
 // the whole point of them being in the taxonomy at all.
+//
+// # Nothing calls this today, and that is not an oversight
+//
+// §18.4's scorer landed and took over, so `deadcode` reports Weigh and logish as
+// unreachable. They are kept on purpose: this is the COLD-START path, for a
+// reader whose topic model has not been derived yet, and the paragraph above is
+// the argument for why a linear sum over priors is the right thing to fall back
+// to. Deleting it would delete that argument along with the code, and the next
+// person to need a cold-start score would have to re-derive both.
+//
+// If it is still uncalled when the cold-start path is genuinely wired up, delete
+// it then — with the knowledge that it was a choice rather than a leftover.
 func Weigh(counts map[Kind]int) float64 {
 	var total float64
 	for k, n := range counts {

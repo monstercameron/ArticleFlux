@@ -27,9 +27,12 @@ import (
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
+	"github.com/monstercameron/ArticleFlux/internal/analyze"
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
+	"github.com/monstercameron/ArticleFlux/internal/classify"
+	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/derive"
 	"github.com/monstercameron/ArticleFlux/internal/discover"
@@ -45,6 +48,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/pipeline"
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/render"
@@ -273,6 +277,15 @@ type App struct {
 	// else, so an unwired pool means `engagements` accumulates forever and
 	// nothing ever reads it. That was the state before this field existed.
 	deriver *derive.Service
+	// analyzer runs the shared per-item pass (§27.2a, M29): one analysis per
+	// ITEM for the whole instance, upstream of anything per-user.
+	//
+	// It is what makes a category exist at all. Before this field the pipeline,
+	// the lexicon and the Smart+ classifier were all built and tested and nothing
+	// called them — `internal/pipeline` had no importer outside its own tests, so
+	// every article in the database was unclassified no matter how good the
+	// classifier was.
+	analyzer *analyze.Service
 	// tel is the metric and trace surface (§22.11). Always non-nil — every call
 	// site records unconditionally, so a nil here would be a panic on the first
 	// request rather than a quiet absence of data.
@@ -494,6 +507,31 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		},
 	})
 	a.pool.Handle(store.JobDerive, a.deriver.Handle)
+
+	// The classification pipeline (§27, M29).
+	//
+	// The lexicon is compiled once at boot and shared by every job: it is
+	// immutable after Compile and safe for concurrent use, and compiling it per
+	// batch would repeat ~1,700 term insertions on every poll for no reason.
+	//
+	// MustCompile rather than a handled error, matching `classify.MustCompile`'s
+	// argument: the shipped taxonomy is a compile-time artefact, so an instance
+	// that cannot build it is misbuilt rather than misconfigured, and failing at
+	// boot puts that in front of whoever broke it instead of in front of a reader
+	// whose chips stopped appearing.
+	lexiconSet := classify.MustCompile(lexicon.Categories())
+	a.analyzer = analyze.New(repo, pipeline.New(lexiconSet, classify.DefaultStrategy(), cfg.Log), cfg.Log).
+		// Wired unconditionally, exactly as the deriver's Smart+ half is, and for
+		// the same reason: the key is a SETTING that can be pasted into the
+		// Settings screen while the process runs. Attaching this only when a key
+		// exists at boot would mean a key added later did nothing until restart.
+		// **Being wired is not consent** — smart.Classifier.Available checks the
+		// owner's `smart.classify` setting on every batch and defaults to off.
+		WithSmartPlus(
+			smart.NewClassifier(a.llm, a.settings, lexiconSet),
+			pipeline.DefaultPolicy,
+		)
+	a.pool.Handle(store.JobAnalyze, a.analyzer.Handle)
 	// Close the interest loop inside the session that produced the signal, rather than
 	// on the next poll. See reader.WithSignalHook for why the callback is a func, and
 	// NudgeDerive for the rate limit that makes it safe to call on every batch.
@@ -506,7 +544,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// reader.New for the reason the signal hook is: the service layer must not
 	// know how anybody is told, or the sync surface and the offline-pack channel
 	// start behaving differently from the web UI.
-	svc.WithIngestHook(a.publishItemsAdded)
+	svc.WithIngestHook(a.onIngested)
 	// The poller's own logger, and it has to be THIS one rather than the
 	// default.
 	//
@@ -1211,7 +1249,7 @@ func (a *App) buildHandler() {
 			// The same announcement a poll makes, through the same hook — so
 			// what this exercises is the production path rather than a private
 			// one that happens to look like it.
-			a.publishItemsAdded(source, ing.NewIDs)
+			a.onIngested(source, ing.NewIDs)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "ingested", ing.New)
 		})
@@ -1250,6 +1288,13 @@ func (a *App) static(root string) http.Handler {
 			w.Header().Set("Content-Type", "application/wasm")
 		case strings.HasSuffix(p, ".js"):
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		case strings.HasSuffix(p, ".webmanifest"):
+			// Not in Go's builtin extension table, so FileServer would sniff it as
+			// text/plain. Browsers are lenient about this and Lighthouse is not,
+			// which makes it exactly the kind of defect that is invisible until
+			// somebody runs an audit and is told the app is not installable
+			// (§20.24).
+			w.Header().Set("Content-Type", "application/manifest+json")
 		}
 
 		// Serve a precompressed sibling when one exists.
@@ -1271,7 +1316,13 @@ func (a *App) static(root string) http.Handler {
 
 		// The wasm binary is rebuilt constantly during development, and a cached
 		// stale binary looks exactly like "my change did nothing".
-		if strings.HasSuffix(p, ".wasm") || strings.HasSuffix(p, ".js") || p == "/" {
+		// The manifest is here for a different reason from the two above it: it is
+		// tiny and it changes rarely, but a browser re-reads it to decide whether an
+		// installed app is still the app it installed — so a cached one is an
+		// install that keeps whatever name, colour or icon it was first shown, and
+		// no amount of rebuilding changes it.
+		if strings.HasSuffix(p, ".wasm") || strings.HasSuffix(p, ".js") ||
+			strings.HasSuffix(p, ".webmanifest") || p == "/" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 
@@ -1446,6 +1497,20 @@ func (a *App) StartWorkers(ctx context.Context) {
 	a.lastDerive = time.Now().UTC().Add(-derive.Window)
 	a.deriveMu.Unlock()
 	a.pool.Start(ctx)
+
+	// The analysis backfill (§27.9).
+	//
+	// Without it the classifier only ever sees articles that arrive after the
+	// upgrade, and every item already in the database stays unlabelled forever —
+	// so the feature ships looking broken to precisely the reader who has the most
+	// data. It is rate-limited and self-limiting (see analyze.Backfill), sweeps
+	// newest-first, and stops on its own once everything is current.
+	//
+	// Its own goroutine because it is a ticker that outlives this call, and it
+	// ends with the context the pool ends with.
+	if a.analyzer != nil {
+		go a.analyzer.RunBackfill(ctx, analyze.BackfillInterval)
+	}
 }
 
 // DeriveDue enqueues an interest-layer rebuild for everyone who has read

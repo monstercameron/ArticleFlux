@@ -25,6 +25,49 @@ import (
 // The cost is one Publish per subscriber of that source, which is bounded by
 // the number of people who follow one feed on one self-hosted box.
 
+// onIngested is everything that happens when a poll produces new items.
+//
+// Two things, in this order, and the order is the point (§27.2a):
+//
+//  1. **Queue the analysis.** This is what makes a category exist. It is queued
+//     rather than run, because a poll must not wait on classification — and it is
+//     queued FIRST so the work is on the durable queue before anything that can
+//     block: `publishItemsAdded` fans out one event per subscriber and takes its
+//     own five-second timeout, and an announcement that ran first would put that
+//     latency between an article arriving and its analysis being recorded.
+//  2. **Announce them.** §20.3's live update, unchanged.
+//
+// Neither can fail the poll. The items are already written and delivered — that
+// happened inside the ingest transaction — so everything here is enrichment of
+// something the reader can already see. A failure to queue analysis costs a
+// chip; a failure to announce costs a refresh. Neither is worth losing a poll
+// over, so both are logged and swallowed.
+func (a *App) onIngested(sourceID string, itemIDs []string) {
+	a.queueAnalysis(sourceID, itemIDs)
+	a.publishItemsAdded(sourceID, itemIDs)
+}
+
+// queueAnalysis puts a poll's new items on the analysis queue (§27.2a, M29).
+func (a *App) queueAnalysis(sourceID string, itemIDs []string) {
+	if a.analyzer == nil || len(itemIDs) == 0 {
+		return
+	}
+	// Its own context, for the reason publishItemsAdded documents: the caller's
+	// belongs to one source's poll and may be cancelled the moment that poll
+	// ends, which would abandon the enqueue half-done.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := a.analyzer.Enqueue(ctx, sourceID, itemIDs); err != nil {
+		// Logged and swallowed. The alternative — failing the poll — would trade
+		// articles the reader wants for labels they can live without, and the
+		// items are already stored and visible either way. The staleness sweep
+		// (§27.9) picks up anything that never got a row.
+		a.log.Warn("could not queue analysis for new items",
+			"source", sourceID, "items", len(itemIDs), "err", err)
+	}
+}
+
 // publishItemsAdded announces new items to the accounts that subscribe.
 //
 // Errors are logged, never returned: this runs on the poll path, and a poll that

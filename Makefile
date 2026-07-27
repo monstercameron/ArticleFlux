@@ -170,6 +170,12 @@ wasm: deps
 # They ship together or the typography silently is not the design.
 	cp web/fonts.css $(OUT)/fonts.css
 	rm -rf $(OUT)/fonts && cp -r web/fonts $(OUT)/fonts
+# The manifest and the icons (§20.24). index.html links the manifest by relative
+# path and the manifest names each icon the same way, so a build that ships one
+# without the other is an app the browser refuses to install — with no error on
+# screen, because nothing on the page is broken.
+	cp web/manifest.webmanifest $(OUT)/manifest.webmanifest
+	rm -rf $(OUT)/icons && cp -r web/icons $(OUT)/icons
 	GOOS=js GOARCH=wasm go build $(WASMFLAGS) -o $(WASM) ./client/app
 	@# wasm_exec.js must come from the toolchain that produced the module. A stale
 	@# copy from an older Go fails at instantiate with an import mismatch that
@@ -222,6 +228,11 @@ demo: deps
 	@grep -q "const VERSION = '$(VERSION)';" $(DEMO)/sw.js || { \
 	  echo "sw.js has no 'const VERSION = ...' line to stamp — the demo would ship a stale cache key"; \
 	  exit 1; }
+	@# The manifest and icons, verbatim (§20.24). They need no stamping: every
+	@# path in the manifest is relative, so the same file describes an app at the
+	@# root and one at /ArticleFlux/ — which is the whole reason they are relative.
+	@cp web/manifest.webmanifest $(DEMO)/manifest.webmanifest
+	@rm -rf $(DEMO)/icons && cp -r web/icons $(DEMO)/icons
 	GOOS=js GOARCH=wasm go build -trimpath \
 	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \

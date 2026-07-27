@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/secret"
+	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/tts"
 )
@@ -480,16 +481,35 @@ func TestSpeechTextEmptyItem(t *testing.T) {
 // story the listener never heard — which sounds completely convincing and is
 // completely wrong, the worst combination available.
 func TestPodcastKeyIsPerOrderedPair(t *testing.T) {
-	base := podcastKey("item-2", "item-1")
+	const calm = "calm"
+	base := podcastKey("item-2", "item-1", calm, nil)
 
-	if other := podcastKey("item-2", "item-9"); other == base {
+	if other := podcastKey("item-2", "item-9", calm, nil); other == base {
 		t.Error("the same story after two different stories shares one audio key")
 	}
-	if opening := podcastKey("item-2", ""); opening == base {
+	if opening := podcastKey("item-2", "", calm, nil); opening == base {
 		t.Error("the opening segment shares an audio key with a mid-broadcast one")
 	}
-	if other := podcastKey("item-3", "item-1"); other == base {
+	if other := podcastKey("item-3", "item-1", calm, nil); other == base {
 		t.Error("two different stories share an audio key")
+	}
+	// The manner changes the words, so it changes the recording. A reader who
+	// switches from calm to brisk and hears the calm audio would conclude,
+	// reasonably, that the setting does nothing.
+	if brisk := podcastKey("item-2", "item-1", "brisk", nil); brisk == base {
+		t.Error("two manners share one audio key")
+	}
+	// So does the greeting, and it carries the DATE — so the same broadcast
+	// restarted an hour later costs nothing and tomorrow's opens fresh.
+	morning := podcastKey("item-2", "", calm,
+		&smart.Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026", Stories: 11})
+	if morning == podcastKey("item-2", "", calm, nil) {
+		t.Error("a greeted opening shares a key with an ungreeted one")
+	}
+	tomorrow := podcastKey("item-2", "", calm,
+		&smart.Opening{PartOfDay: "morning", Date: "Tuesday, 28 July 2026", Stories: 11})
+	if tomorrow == morning {
+		t.Error("two different days share one opening")
 	}
 	// And it must not collide with either of the other two things this item can
 	// be, which are keyed `item` and `item#digest`.
@@ -518,7 +538,7 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 		{digestPrefKey: "true"},
 		{podcastPrefKey: "true", digestPrefKey: "true"},
 	} {
-		text, key := a.speechScript(context.Background(), prefs, it, prev)
+		text, key := a.speechScript(context.Background(), prefs, it, prev, nil)
 		if !strings.Contains(text, "The body.") {
 			t.Errorf("prefs %v: the article was not read aloud: %q", prefs, text)
 		}
@@ -527,6 +547,82 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 		// starts working.
 		if key != it.ID {
 			t.Errorf("prefs %v: cache key = %q, want the plain item id", prefs, key)
+		}
+	}
+}
+
+// --- the greeting (§19) ------------------------------------------------------
+
+// "Good night" is a farewell in English, so a broadcast opened at one in the
+// morning says "good evening" — which is what someone on air actually says at
+// that hour, and what a listener at that hour expects.
+func TestPartOfDayNeverSaysGoodNight(t *testing.T) {
+	for hour := 0; hour < 24; hour++ {
+		got := partOfDay(hour)
+		switch {
+		case hour < 12 && got != "morning",
+			hour >= 12 && hour < 18 && got != "afternoon",
+			hour >= 18 && got != "evening":
+			t.Errorf("%02d:00 greets with %q", hour, got)
+		}
+		if got == "night" {
+			t.Errorf("%02d:00 greets with a farewell", hour)
+		}
+	}
+}
+
+// **The greeting follows the LISTENER'S clock, not the server's.** A self-hosted
+// reader on a VPS three timezones away being wished good morning at ten at night
+// is the single most obviously wrong thing this feature could say.
+func TestOpeningPrefersTheListenersClock(t *testing.T) {
+	// The server thinks it is mid-afternoon UTC; the listener says it is half
+	// past eight in the morning, four hours west.
+	server := time.Date(2026, 7, 27, 15, 0, 0, 0, time.UTC)
+	r := httptest.NewRequest(http.MethodGet,
+		"/speech?item=x&now="+url.QueryEscape("2026-07-27T08:30:00-04:00")+"&n=11", nil)
+
+	got := openingFrom(r, server)
+	if got.PartOfDay != "morning" {
+		t.Errorf("part of day = %q, want morning — the server's clock won", got.PartOfDay)
+	}
+	if !strings.Contains(got.Date, "27 July 2026") {
+		t.Errorf("date = %q, want the listener's day", got.Date)
+	}
+	if got.Stories != 11 {
+		t.Errorf("stories = %d, want 11", got.Stories)
+	}
+}
+
+// A missing or unparseable clock falls back to the server's rather than dropping
+// the greeting. Being an hour out on "afternoon" is a small wrongness; having no
+// opening at all is a missing feature.
+func TestOpeningFallsBackToTheServerClock(t *testing.T) {
+	server := time.Date(2026, 7, 27, 20, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		"/speech?item=x",
+		"/speech?item=x&now=",
+		"/speech?item=x&now=not-a-time",
+		"/speech?item=x&now=1785155400",
+	} {
+		got := openingFrom(httptest.NewRequest(http.MethodGet, q, nil), server)
+		if got == nil {
+			t.Fatalf("%s: no opening at all", q)
+		}
+		if got.PartOfDay != "evening" {
+			t.Errorf("%s: part of day = %q, want the server's evening", q, got.PartOfDay)
+		}
+	}
+}
+
+// A queue size that is absent, zero, negative or absurd is UNKNOWN rather than
+// announced — "zero stories this morning" read aloud is worse than saying
+// nothing, and an unbounded number is somebody's typo in a sentence.
+func TestOpeningIgnoresAnImplausibleQueueSize(t *testing.T) {
+	server := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{"", "0", "-3", "nine", "999999999"} {
+		r := httptest.NewRequest(http.MethodGet, "/speech?item=x&n="+url.QueryEscape(q), nil)
+		if got := openingFrom(r, server).Stories; got != 0 {
+			t.Errorf("n=%q became %d, want 0 (unknown)", q, got)
 		}
 	}
 }

@@ -324,6 +324,15 @@ function Invoke-Wasm {
     if (Test-Path $fontsOut) { Remove-Item $fontsOut -Recurse -Force }
     Copy-Item (Join-Path $WebSrc 'fonts') $fontsOut -Recurse -Force
 
+    # The manifest and the icons (§20.24). index.html links the manifest by
+    # relative path and the manifest names each icon the same way, so a build that
+    # ships one without the other is an app the browser refuses to install — with
+    # nothing on screen to say so, because nothing on the page is broken.
+    Copy-Item (Join-Path $WebSrc 'manifest.webmanifest') (Join-Path $OutDir 'manifest.webmanifest') -Force
+    $iconsOut = Join-Path $OutDir 'icons'
+    if (Test-Path $iconsOut) { Remove-Item $iconsOut -Recurse -Force }
+    Copy-Item (Join-Path $WebSrc 'icons') $iconsOut -Recurse -Force
+
     # `go build` directly rather than `gwc build`: the launcher wraps the same
     # toolchain, and this keeps the exact flags visible — -trimpath and -s -w are
     # what the G5 baseline in wasm-baseline.txt was measured with, so building
@@ -438,6 +447,14 @@ function Invoke-Demo {
     if ($sw -notmatch [regex]::Escape($swStamp)) {
         Fail "sw.js has no 'const VERSION = ...' line to stamp - the demo would ship a stale cache key"
     }
+
+    # The manifest and icons, verbatim (§20.24). They need no stamping: every path
+    # in the manifest is relative, so the same file describes an app at the root
+    # and one at /ArticleFlux/ - which is the whole reason they are relative.
+    Copy-Item (Join-Path $WebSrc 'manifest.webmanifest') (Join-Path $DemoDir 'manifest.webmanifest') -Force
+    $demoIcons = Join-Path $DemoDir 'icons'
+    if (Test-Path $demoIcons) { Remove-Item $demoIcons -Recurse -Force }
+    Copy-Item (Join-Path $WebSrc 'icons') $demoIcons -Recurse -Force
 
     $raw = Join-Path $DemoDir 'app.wasm'
     $env:GOOS = 'js'; $env:GOARCH = 'wasm'

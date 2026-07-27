@@ -395,6 +395,15 @@ var starterFeeds = []string{
 // in a real reader's database would corrupt the one table in the interest layer that cannot
 // be recomputed, and it must take a person typing the command to do that.
 func seedReading(log *slog.Logger, args []string) error {
+	// .env, for the same reason serve reads it: this command ends by running a real
+	// derivation, and if Smart+ is switched on for the account that derivation makes
+	// LLM calls. Only `serve` loaded it, so the key was absent here and every paid
+	// stage declined with "no API key" — a WARN line among several dozen, on a command
+	// whose entire purpose is to show what the interest layer produces. The degradation
+	// is deliberate and correct (§18: free Smart is the product); what was wrong was
+	// showing a developer the free-tier result when they had configured the paid one.
+	loadDotenv(log)
+
 	fs := flag.NewFlagSet("seed-reading", flag.ExitOnError)
 	dbPath := commonFlags(fs)
 	user := fs.String("user", "cam", "username for the local account")
