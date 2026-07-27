@@ -82,21 +82,21 @@ func init() {
 		"voice.nokey":  "This server has no Smart+ key, so read to me can't speak here. Playing silently",
 		"voice.failed": "The voice didn't start, so this is playing silently — see what read to me needs",
 
-		// --- the prerequisites dialog
+		// --- what read-to-me needs
+		//
+		// These moved to Settings → Podcast when the dialog they used to fill was
+		// taken out of the slideshow; the WORDING stays here because it describes
+		// the slideshow's own dependency, and a requirement with two descriptions
+		// in two packages is a requirement whose descriptions drift.
 		//
 		// The title says what the reader ASKED FOR rather than what is wrong,
-		// because they have just pressed something and this is the answer to it.
+		// because they usually arrive having just pressed something.
 		"needsTitle": "Read to me needs a few things on",
-		"needsSub":   "Each of these is a real setting. Turning one on here is the same as turning it on in Settings.",
 		// The two states of something the reader does not control. "Ready" rather
 		// than "on", because a key is not a switch they flipped.
 		"needsPresent": "ready",
 		"needsAbsent":  "not on this server",
 		"needsStart":   "Start reading to me",
-		// "Not now" rather than "Cancel": it turns read to me back off, and the
-		// slideshow carries on silently, which is a real outcome rather than an
-		// abandoned action.
-		"needsNotNow": "Not now",
 
 		// One line per requirement, and one line saying WHY. The why is the part
 		// that stops this reading as a checklist somebody has to satisfy: each one

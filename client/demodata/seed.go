@@ -450,6 +450,10 @@ func seed(now func() time.Time) *Instance {
 		undo:    map[string][]string{},
 		applied: map[string]bool{},
 		calls:   map[string]int64{},
+		// The dial over the interest profile (§18.2). Empty rather than nil: the
+		// screen writes into it the first time somebody disagrees with the model,
+		// which for this demo's fixtures is usually within a minute.
+		interest: newInterest(),
 	}
 
 	// Categories, in the order the fixtures mention them, so the rail order is

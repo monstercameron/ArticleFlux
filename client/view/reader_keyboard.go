@@ -31,20 +31,16 @@ import (
 // features they drive is how two features quietly claim the same key.
 
 type keyboardMap struct {
-	tr        i18n.Runtime
-	act       ui.Ref[*actions]
-	pane      ui.State[view]
-	current   ui.State[*pb.Item]
-	items     ui.State[[]*pb.Item]
-	stream    ui.State[[]*pb.Item]
-	feeds     ui.State[[]*pb.Feed]
-	tags      ui.State[[]*pb.Tag]
-	focusMode ui.State[bool]
-	showOpen  ui.State[bool]
-	// showNeeds is the slideshow's prerequisites dialog. It is here rather than
-	// folded into showOpen because the two are different LAYERS, and Escape has
-	// to peel exactly one of them.
-	showNeeds     ui.State[bool]
+	tr            i18n.Runtime
+	act           ui.Ref[*actions]
+	pane          ui.State[view]
+	current       ui.State[*pb.Item]
+	items         ui.State[[]*pb.Item]
+	stream        ui.State[[]*pb.Item]
+	feeds         ui.State[[]*pb.Feed]
+	tags          ui.State[[]*pb.Tag]
+	focusMode     ui.State[bool]
+	showOpen      ui.State[bool]
 	fsOpen        ui.State[string]
 	tsOpen        ui.State[string]
 	paletteActive ui.State[int]
@@ -212,17 +208,6 @@ func (r keyboardMap) wire() {
 			// whose fullscreen request was refused — which is the ordinary case
 			// on a browser that will not go fullscreen outside a gesture.
 			if r.showOpen.Get() {
-				// The prerequisites dialog is a layer above the mode, so it takes
-				// the keyboard from it the same way the mode took it from the
-				// reader. Escape peels ONE layer — closing the dialog, not ending
-				// the show — because a key that skips a level is a key that
-				// destroys the thing you were three seconds from starting.
-				if r.showNeeds.Get() {
-					if k.Name == "Escape" {
-						ui.PostAsync(func() { r.act.Get().slideNeedsClose() })
-					}
-					return
-				}
 				switch k.Name {
 				case "Escape":
 					ui.PostAsync(func() { r.act.Get().slideStop() })

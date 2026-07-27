@@ -65,6 +65,17 @@ var dynamicPrefixes = map[string]string{
 	"slides.why.":  "the prereq* constants, via view.slideNeedRow",
 	// The narrator's manner, built from slideVibeChoices in client/view.
 	"settings.vibe.": "the vibe* constants, via view.vibePicker",
+	// My Feed's settings tab (§18.2). Three runtime-keyed families, and each
+	// suffix arrives from somewhere the catalog cannot see:
+	//
+	//   factor.  internal/rank's own reason terms, off the wire in
+	//            InterestFactor.term — via view.factorLabel
+	//   trend.   the topics table's trend column — via view.topicEvidence
+	//   level.   the steerLevels table in client/view/myfeedsettings.go, which
+	//            is positional against pb.SteerLevel
+	"myFeed.factor.": "internal/rank reason terms, via view.factorLabel",
+	"myFeed.trend.":  "the topics.trend values, via view.topicEvidence",
+	"myFeed.level.":  "the steerLevels table, via view.mfDial",
 }
 
 func TestEveryReferencedKeyExists(t *testing.T) {

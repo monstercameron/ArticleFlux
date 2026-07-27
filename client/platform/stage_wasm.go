@@ -344,6 +344,107 @@ func LocalNow() (unixMillis int64, offsetMinutes int) {
 	return int64(ms), -int(off)
 }
 
+// OnPointerActivity reports that someone is there: a pointer moved over the
+// element, or a finger touched it.
+//
+// It is what lets a fullscreen display hide its own controls and still have
+// them. `:hover` cannot do this job — a fullscreen element is permanently
+// hovered the moment the pointer is anywhere inside it, so hover-to-reveal
+// degenerates into either always-on or a hunt for one specific corner, and on a
+// touchscreen there is no hover at all.
+//
+// pointermove covers mouse, pen and trackpad; pointerdown and touchstart cover
+// the tap, and touchstart is there because a tap that lands on a button fires
+// pointerdown on the BUTTON rather than on this container in some browsers.
+//
+// Coalesced to one call per animation frame. A pointermove fires per pixel of
+// travel — hundreds a second across a 1440px screen — and every one of them
+// would otherwise cross the wasm boundary to say the same thing.
+func OnPointerActivity(fn func()) Listener {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return Listener{}
+	}
+	// On the DOCUMENT, not on the overlay, and that is a fix rather than a
+	// shortcut. A listener bound to a queried element is bound to the node that
+	// existed when the effect ran — so any re-render that replaces the overlay
+	// orphans it, and the symptom is the controls disappearing FOREVER, with the
+	// cursor gone too, and no gesture that brings either back. Movement anywhere
+	// is the signal; the mode owns the whole screen while it is up.
+	el := doc
+	pending, released := false, false
+	var frame js.Func
+	frame = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		pending = false
+		// Released while this frame was already queued. The browser will call a
+		// js.Func whether or not Go still wants it, and calling a RELEASED one
+		// panics the module — which presents as the whole application dying
+		// mid-gesture, with no error anywhere a reader could see it. So the
+		// callback frees itself here instead, at the one moment it is provably
+		// safe to.
+		if released {
+			frame.Release()
+			return nil
+		}
+		fn()
+		return nil
+	})
+	f := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if pending || released {
+			return nil
+		}
+		pending = true
+		js.Global().Call("requestAnimationFrame", frame)
+		return nil
+	})
+	for _, ev := range []string{"pointermove", "pointerdown", "touchstart"} {
+		el.Call("addEventListener", ev, f)
+	}
+	return Listener{
+		target: el, event: "pointermove", fn: f,
+		extra: func() {
+			el.Call("removeEventListener", "pointerdown", f)
+			el.Call("removeEventListener", "touchstart", f)
+			released = true
+			// Only when nothing is in flight. A queued frame frees itself above.
+			if !pending {
+				frame.Release()
+			}
+		},
+	}
+}
+
+// SetAttr sets an attribute on ONE element, found by selector.
+//
+// SetRootAttr's per-element counterpart, and it exists for one job: bringing the
+// cursor and the transport back the instant a pointer moves, without waiting for
+// a render.
+//
+// That distinction is worth the function. Everything else on this surface can
+// afford a frame or two — a progress bar, a phase change, a status line. A
+// cursor cannot: a pointer that moves and does not immediately produce a cursor
+// reads as a frozen application, and the reader's next move is to reload. Going
+// through state means pointer → callback → PostAsync → reconcile → paint, and
+// every one of those is a place the reveal can be delayed or lost.
+//
+// The render still writes the same attribute from state, and the two converge
+// within a frame: this one only ever turns it ON, and only the clock turns it
+// off.
+//
+// A missing element is a no-op, like SetVar's — these are written from event
+// handlers that can outlive the element by a frame.
+func SetAttr(selector, name, value string) {
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	el := doc.Call("querySelector", selector)
+	if !el.Truthy() {
+		return
+	}
+	el.Call("setAttribute", name, value)
+}
+
 // SetVar sets a CSS custom property on ONE element, found by selector.
 //
 // SetRootVar's per-element counterpart, and it exists for the same reason: the

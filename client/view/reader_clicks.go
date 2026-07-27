@@ -276,6 +276,18 @@ func (d delegatedClicks) wire() {
 					a.settingsTabTo(value)
 				case "settings-refresh":
 					a.loadStats()
+				case actMyFeedTopic:
+					// The chip names the topic in data-for-item and the dial
+					// position in data-value, the same shape every other
+					// segmented control on this surface uses.
+					a.steerTopic(id, value)
+				case actMyFeedEntity:
+					// data-for-item is the NORMALISED name, not the label: it is
+					// the key the derivation stores and the only handle that
+					// survives a rebuild retitling the row.
+					a.steerEntity(id, value)
+				case actMyFeedRefresh:
+					a.loadMyFeed()
 				case "settings-loglevel":
 					a.setLogLevel(value)
 				case actSmartKeySave:
@@ -414,14 +426,18 @@ func (d delegatedClicks) wire() {
 					a.slideSetDwell(value)
 				case actVibe:
 					a.setVibe(value)
+				case actBed:
+					a.toggleBed()
+				case actRate:
+					a.setRate(value)
 				case actSlideNeeds:
 					a.slideNeeds()
 				case actSlideNeedsFix:
 					a.slideNeedsFix(value)
+				case actPodcastStart:
+					a.podcastStart()
 				case actSlideNeedsStart:
 					a.slideNeedsStart()
-				case actSlideNeedsClose:
-					a.slideNeedsClose()
 				case "toggle-podcast":
 					a.podcastVoice()
 				case "toggle-autoplay":

@@ -125,6 +125,8 @@ func SpeechStop()   {}
 
 func PlayAudio(src string, onState func(state string)) {}
 
+func SetSpeechRate(rate float64) {}
+
 func AudioPause()  {}
 func AudioResume() {}
 func AudioStop()   {}

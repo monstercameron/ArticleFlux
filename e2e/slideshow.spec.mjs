@@ -193,30 +193,71 @@ test.describe('slideshow', () => {
     await expect(slides(page)).toBeVisible();
   });
 
-  test('the transport is reachable and hidden until it is wanted', async ({ page, isMobile }) => {
-    // The HUD reveals itself on approach, and there is no approach on a
-    // touchscreen — a tap either presses a button or it does not. Skipped rather
-    // than adapted, because the thing under test here IS the hover reveal.
-    test.skip(isMobile, 'the reveal is a pointer gesture');
+  // The transport used to be revealed by `:hover` on its own corner, which does
+  // not work and could not: a fullscreen element is permanently hovered the
+  // moment the pointer is anywhere inside it, so hover-to-reveal was either
+  // always-on or a hunt for one specific corner — and on a touchscreen there is
+  // no hover at all, which left it unreachable on a phone entirely. It reveals
+  // on MOVEMENT now, which is what every video player does and what someone
+  // reaching to pause a narrator will try.
+  test('the transport shows on the way in, fades, and comes back on movement',
+    async ({ page }) => {
+      await boot(page);
+      await startShow(page);
+      const hud = page.locator('.slide-hud');
+      const shown = () => slides(page).getAttribute('data-hud');
+
+      // Revealed by movement. Deliberately NOT asserting the reveal that happens
+      // when the mode opens: the linger is four seconds and `startShow` waits on
+      // a cold wasm boot, so on a loaded machine it can legitimately have faded
+      // before the first assertion runs. That made this test flaky and told
+      // nobody anything — the mechanism is what matters, and it is below.
+      await page.mouse.move(300, 300);
+      await page.mouse.move(320, 340);
+      await expect.poll(shown, { timeout: 10_000 }).toBe('true');
+
+      // Then out of the way. This is a display meant to be left running.
+      await expect.poll(shown, { timeout: 20_000 }).toBe('false');
+      expect(await hud.evaluate((el) => getComputedStyle(el).opacity)).toBe('0');
+      // And unclickable while invisible, or the strip swallows clicks aimed at
+      // the picture behind it.
+      expect(await hud.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none');
+
+      // Back on movement, anywhere on the surface rather than in one corner —
+      // which is the whole difference from the `:hover` version this replaced.
+      await page.mouse.move(200, 200);
+      await page.mouse.move(240, 260);
+      await expect.poll(shown, { timeout: 10_000 }).toBe('true');
+
+      await page.getByRole('button', { name: 'Next story' }).click();
+      await expect(page.locator('.slide-order')).toHaveText('2 of 5');
+
+      await page.getByRole('button', { name: 'Leave the slideshow' }).click();
+      await expect(slides(page)).toHaveCount(0);
+    });
+
+  // Pausing is the one time the controls must NOT fade: the reader stopped the
+  // show to decide something, and the answer is usually one of the buttons
+  // beside the one they pressed.
+  test('a paused show keeps its controls', async ({ page }) => {
     await boot(page);
     await startShow(page);
 
-    const hud = page.locator('.slide-hud');
-    // Present for the keyboard and for a pointer that comes looking, invisible
-    // to someone watching from across the room.
-    await expect(hud).toHaveCount(1);
-    expect(await hud.evaluate((el) => getComputedStyle(el).opacity)).toBe('0');
+    await page.keyboard.press('Space');
+    await expect(slides(page)).toHaveAttribute('data-paused', 'true');
+    await expect(slides(page)).toHaveAttribute('data-hud', 'true');
 
-    await hud.hover();
-    await expect.poll(
-      () => hud.evaluate((el) => getComputedStyle(el).opacity),
-      { timeout: 10_000 }).toBe('1');
+    // Well past the linger, with nothing moving.
+    await page.waitForTimeout(6000);
+    await expect(slides(page)).toHaveAttribute('data-hud', 'true');
+    expect(await page.locator('.slide-hud').evaluate((el) => getComputedStyle(el).opacity))
+      .toBe('1');
 
-    await page.getByRole('button', { name: 'Next story' }).click();
-    await expect(page.locator('.slide-order')).toHaveText('2 of 5');
-
-    await page.getByRole('button', { name: 'Leave the slideshow' }).click();
-    await expect(slides(page)).toHaveCount(0);
+    // Resuming lets it fade again.
+    await page.keyboard.press('Space');
+    await expect(slides(page)).toHaveAttribute('data-paused', 'false');
+    await expect.poll(() => slides(page).getAttribute('data-hud'),
+      { timeout: 20_000 }).toBe('false');
   });
 
   // The regression this file most needs.
@@ -231,41 +272,23 @@ test.describe('slideshow', () => {
   //
   // This instance has no OpenAI key and the account has not opted in, which is
   // exactly that case.
-  test('read to me without the Smart+ voice keeps running, and says why', async ({ page }) => {
+  test('read to me without the Smart+ voice keeps running, and leads to the settings', async ({ page }) => {
     await boot(page);
     await startShow(page);
 
     await page.keyboard.press('v');
 
-    // It asks, rather than failing quietly. The dialog is the answer to "what
-    // does this need" — four requirements, each with its state.
-    const needs = page.locator('.slide-needs');
-    await expect(needs).toBeVisible();
-    await expect(needs.locator('.slide-need')).toHaveCount(4);
+    // It says why, on the slide, as a BUTTON. The requirements themselves are no
+    // longer a panel over the show — four preference switches inside a
+    // fullscreen mode is the one place they are both most in the way and hardest
+    // to find again afterwards.
+    const line = page.locator('.slide-voice');
+    await expect(line).toBeVisible();
+    await expect(line).toContainText(/read to me/i);
 
-    // This instance has no key, so the one thing the reader cannot fix says so
-    // in words rather than offering a switch that could not work.
-    await expect(needs.locator('.slide-need[data-on="false"]').last())
-      .toContainText(/not on this server/i);
-    // And Start refuses rather than disappearing: a button that vanishes leaves
-    // the reader hunting for it.
-    await expect(page.getByRole('button', { name: /Start reading to me/i }))
-      .toHaveAttribute('aria-disabled', 'true');
-
-    // The switches are real. Flipping one here is the same as flipping it in
-    // Settings — no staged copy, no Apply.
-    const smartRow = needs.locator('.slide-need').first();
-    await smartRow.getByRole('button').click();
-    await expect(smartRow).toHaveAttribute('data-on', 'true');
-
-    // Escape peels ONE layer: the dialog, not the show.
-    await page.keyboard.press('Escape');
-    await expect(needs).not.toBeVisible();
-    await expect(slides(page)).toBeVisible();
-
-    // And the show goes on. Both halves matter: the phase reaching `read` is the
-    // headline having animated into its header and the story having opened, and
-    // the fill moving is the clock still running underneath it.
+    // And the show goes on underneath it. Both halves matter: the phase reaching
+    // `read` is the headline having animated into its header and the story having
+    // opened, and the fill moving is the clock still running.
     await expect(slides(page)).toHaveAttribute('data-phase', 'read', { timeout: 40_000 });
     await expect(page.locator('.slide-body')).toBeVisible();
     await expect.poll(
@@ -273,12 +296,28 @@ test.describe('slideshow', () => {
         (el) => parseFloat(getComputedStyle(el).getPropertyValue('--fill')) || 0),
       { timeout: 30_000 }).toBeGreaterThan(0.25);
 
-    // Declining the dialog turned read-to-me back OFF, which is a decision
-    // rather than a dismissal — so the line explaining it went too. A mode left
-    // nominally on and silent would put the same sentence on every slide.
-    await expect(page.locator('.slide-voice')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Read to me' }))
-      .toHaveAttribute('aria-pressed', 'false');
+    // Pressing the line ends the show and lands on Settings -> Podcast, which is
+    // where every one of those switches lives.
+    await line.click();
+    await expect(slides(page)).toHaveCount(0);
+    const panel = page.locator('.set-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('.pc-need')).toHaveCount(4);
+
+    // This instance has no key, so the one requirement the reader cannot fix
+    // says so in words rather than offering a switch that could not work.
+    await expect(panel.locator('.pc-need[data-on="false"]').last())
+      .toContainText(/not on this server/i);
+    // Start refuses rather than disappearing: a button that vanishes leaves the
+    // reader hunting for it.
+    await expect(page.getByRole('button', { name: /Start reading to me/i }))
+      .toHaveAttribute('aria-disabled', 'true');
+
+    // The switches are real. Flipping one here is flipping it everywhere -- no
+    // staged copy, no Apply.
+    const smartRow = panel.locator('.pc-need').first();
+    await smartRow.getByRole('button').click();
+    await expect(smartRow).toHaveAttribute('data-on', 'true');
   });
 
   test('the pace is a saved preference', async ({ page }) => {

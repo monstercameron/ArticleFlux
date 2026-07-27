@@ -2105,6 +2105,115 @@ func mobile(r func(string, string) css.Rule) {
 		r("font-family", "var(--rd)"), r("font-size", "13px"),
 		r("line-height", "1.6"), r("color", "var(--mute)"),
 	)
+	// The note that answers a press, rather than one explaining a section. It is
+	// brighter and carries a rule, because it is the only thing on screen saying
+	// a write landed — a confirmation in the same grey as the surrounding prose
+	// is one nobody notices arriving.
+	css.Global(".set-note-live",
+		r("color", "var(--soft)"), r("border-left", "2px solid var(--cc)"),
+		r("padding-left", "10px"),
+	)
+	// The same note when the press failed. Colour is never the only carrier
+	// (Part XII, rule 3) — the sentence already says it did not land — so this
+	// is emphasis on a message that stands without it.
+	css.Global(".set-note-live[data-bad='true']", r("border-left-color", "var(--neg)"))
+
+	// --- My Feed: the interest model, shown and corrected (§18.2, §18.9) ---
+	//
+	// A row here carries two lines of EVIDENCE and a four-way dial, which is more
+	// than .fs-row was shaped for: that one assumes a label, a hint and a single
+	// control. The evidence is the argument the reader is judging, so it gets the
+	// width, and the dial sits at the end of the row where every other segmented
+	// control on this surface sits.
+	css.Global(".mf-row",
+		r("display", "flex"), r("align-items", "center"), r("gap", "16px"),
+		r("justify-content", "space-between"), r("padding", "9px 0"),
+		r("border-bottom", "1px solid var(--hair)"),
+	)
+	css.Global(".mf-main",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "2px"),
+		r("min-width", "0"),
+	)
+	css.Global(".mf-name",
+		r("font-size", "13.5px"), r("color", "var(--cream)"),
+		r("overflow-wrap", "anywhere"),
+	)
+	// The evidence line. Reading face rather than the interface face: it is a
+	// sentence about what was observed, and it reads as one.
+	css.Global(".mf-evidence",
+		r("font-family", "var(--rd)"), r("font-size", "12px"),
+		r("line-height", "1.5"), r("color", "var(--mute)"),
+		r("overflow-wrap", "anywhere"),
+	)
+	css.Global(".mf-control",
+		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
+		r("justify-content", "flex-end"), r("flex", "none"),
+		r("align-items", "center"),
+	)
+	// A row the reader has struck out stays legible and stops looking current.
+	// Dimmed rather than hidden, and this is the whole reason AllEntities exists:
+	// a correction you cannot see is one you cannot undo.
+	css.Global(".mf-row[data-level='never'] > .mf-main", r("opacity", "0.45"))
+	css.Global(".mf-row[data-level='never'] .mf-name", r("text-decoration", "line-through"))
+	// While a write is in flight. The whole row, because the answer to "did that
+	// work" is about the row rather than about the chip that was pressed.
+	css.Global(".mf-row[data-pending='true']",
+		r("opacity", "0.55"), r("transition", "opacity var(--t1) var(--e-out)"),
+	)
+	css.Global(".mf-row-static", r("cursor", "default"))
+	css.Global(".mf-score",
+		r("font-size", "12px"), r("color", "var(--mute)"),
+		r("font-variant-numeric", "tabular-nums"), r("min-width", "3ch"),
+		r("text-align", "right"),
+	)
+	css.Global(".chip-off", r("color", "var(--mute)"))
+
+	// A requirement row on the Podcast tab (§19). Same shape as a My Feed row —
+	// a name, a reason under it, one control — because a reader who has read one
+	// of these settings screens should recognise the next rather than learn a
+	// second layout.
+	//
+	// Two marks the plain row does not carry: an OPTIONAL requirement is quieter,
+	// because the difference between "this will not work" and "this is what makes
+	// it a broadcast" is the whole point of listing both; and a MISSING one that
+	// the reader cannot fix wears the negative colour, since it is the only row
+	// on the screen that is not an invitation to press something.
+	css.Global(".pc-need[data-required='false'] .mf-name", r("color", "var(--soft)"))
+	css.Global(".pc-need[data-on='false'] .mf-name", r("color", "var(--cream)"))
+	css.Global(".chip-static.is-missing",
+		r("color", "var(--neg)"),
+		r("border-color", "color-mix(in srgb, var(--neg) 40%, var(--line))"),
+	)
+
+	// The factor mix: a name, a count, and a bar under both.
+	//
+	// The bar is the last row rather than a column, so the names and counts stay
+	// on one baseline and the comparison the reader is making — which factor is
+	// deciding the page — is a single downward glance.
+	css.Global(".mf-factor",
+		r("display", "grid"),
+		r("grid-template-columns", "1fr auto"),
+		r("gap", "2px 12px"), r("align-items", "baseline"),
+		r("padding", "7px 0 5px"), r("border-bottom", "1px solid var(--hair)"),
+	)
+	css.Global(".mf-factor-name", r("font-size", "13px"), r("color", "var(--soft)"))
+	css.Global(".mf-factor-count",
+		r("font-size", "12px"), r("color", "var(--mute)"),
+		r("font-variant-numeric", "tabular-nums"),
+	)
+	css.Global(".mf-bar",
+		r("grid-column", "1 / -1"), r("display", "block"),
+		r("height", "3px"), r("border-radius", "2px"),
+		r("background", "var(--hair)"), r("margin-top", "3px"),
+		r("position", "relative"), r("overflow", "hidden"),
+	)
+	// The fill is a pseudo-element on a width the row sets, so the track keeps
+	// its full width and the bar reads as a proportion rather than as a stub.
+	css.Global(".mf-bar::after",
+		r("content", "''"), r("position", "absolute"),
+		r("inset", "0 auto 0 0"), r("width", "var(--mf-fill, 0%)"),
+		r("background", "var(--cc)"), r("border-radius", "2px"),
+	)
 
 	// --- the log ---
 	//

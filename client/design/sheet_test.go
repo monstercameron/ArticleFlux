@@ -57,9 +57,13 @@ func TestEveryTokenReadIsAlsoDefined(t *testing.T) {
 	//	--thm-accent   one theme card's accent, inline on the card
 	//	--ink          derived from --c; defined by the sheet, listed here because
 	//	               it is legitimately read where --c may be absent
+	//	--mf-fill      how full one factor's bar is, inline on the bar
+	//	               (view.myFeedFactors). Read WITH a fallback, so an absent
+	//	               one draws an empty track rather than dropping the rule.
 	runtime := map[string]bool{
 		"--c": true, "--acc": true, "--thm-accent": true,
 		"--i": true, "--cursor": true, "--pane": true, "--strip": true,
+		"--mf-fill": true,
 	}
 
 	defined := map[string]bool{}
@@ -124,6 +128,11 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// are. Per-element state, like --i and --cursor, and the one pair here
 		// that would be actively wrong for a theme to be able to reach.
 		"--shift": true, "--fill": true, "--scan": true,
+		// How full one factor's bar is on the My Feed settings tab (§18.2).
+		// Per-element, written from Go beside --i and --cursor: it is a
+		// proportion of a measurement, and a theme that could set it would be
+		// choosing the numbers rather than the colours.
+		"--mf-fill": true,
 	}
 
 	sheet := sheetText(t)

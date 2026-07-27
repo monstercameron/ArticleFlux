@@ -214,6 +214,17 @@ func Reader(p readerProps) ui.Node {
 	// resolves anything it does not recognise to the default rather than putting
 	// a stored string into a prompt.
 	speakVibe := ui.UseState(vibePrefFrom(saved))
+	// speakBed is the broadcast's opening sting and the low pad underneath it.
+	//
+	// A switch rather than an unconditional part of broadcast mode, and default
+	// ON. Both halves of that are deliberate: the sound is what makes the mode a
+	// programme rather than a queue read aloud, so it belongs on — and a
+	// background drone under the news that a reader cannot turn off at eleven at
+	// night is the one piece of flavour that would become a complaint.
+	speakBed := ui.UseState(prefBool(saved, podcastBedPref, true))
+	// How fast the narrator reads. Applied to the player rather than asked of the
+	// provider, so it costs nothing and works on audio already cached.
+	speakRate := ui.UseState(speechRateFrom(saved))
 	// speakAuto keeps going down the list when a track ends. Purely a client
 	// behaviour: the server has no idea one listen followed another.
 	speakAuto := ui.UseState(prefBool(saved, "tts.autoplay", false))
@@ -265,6 +276,20 @@ func Reader(p readerProps) ui.Node {
 	smartNotice := ui.UseState("")
 	smartErr := ui.UseState("")
 	smartLoading := ui.UseState(false)
+	// The interest profile (§18.2), fetched when its tab opens for stats' reason.
+	// Refetched after every steer rather than patched in place: a correction
+	// changes the derived picture — the factor mix most of all — and a screen that
+	// showed the old numbers beside the new dial would be the exact thing this
+	// feature exists to stop.
+	myFeedProfile := ui.UseState[*pb.GetInterestProfileResponse](nil)
+	myFeedLoading := ui.UseState(false)
+	myFeedErr := ui.UseState("")
+	myFeedNote := ui.UseState("")
+	myFeedNoteBad := ui.UseState(false)
+	// myFeedPending is the row a write is in flight for — a topic id or an entity
+	// name — so the pressed row can say so. One at a time, because that is how
+	// many buttons a person presses at once.
+	myFeedPending := ui.UseState("")
 	// Theming (§20.16.3). All transient: the prompt being typed, whether a
 	// composition is in flight, and what the readability floor reported about the
 	// last answer. The palette itself is not here — it lands in `look`, which is the
@@ -346,9 +371,19 @@ func Reader(p readerProps) ui.Node {
 	// has to say so, and inside the slideshow, where the reader is actually
 	// looking. The reader's usual notice banner is underneath the overlay.
 	showVoice := ui.UseState("")
-	// showNeeds is whether the prerequisites dialog is up. Opened when read-to-me
-	// is asked for and cannot speak, and from the line on the slide that says so.
-	showNeeds := ui.UseState(false)
+	// showHud is whether the transport is on screen, and showTouched is when
+	// somebody was last known to be there.
+	//
+	// The controls reveal on any movement over the surface and fade again after a
+	// few still seconds — a video player's behaviour, for a video player's reason:
+	// this is a mode you may be watching from across a room, and a transport that
+	// exists only while a pointer sits in one specific corner is a transport that
+	// a listener reaching to pause a narrator cannot find.
+	//
+	// showTouched is a Ref because it is written on every frame a pointer moves
+	// and nothing renders from it; showHud is State because the surface does.
+	showHud := ui.UseState(false)
+	showTouched := ui.UseRef(time.Time{})
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
@@ -3152,6 +3187,9 @@ func Reader(p readerProps) ui.Node {
 					// for whenever the tab was opened.
 					now:     localStamp(platform.LocalNow()),
 					stories: len(itemsRef.Get()),
+					// The headlines the broadcast opens with, starting at this
+					// story: a bulletin lists its own top story first.
+					lineup: slideLineup(itemsRef.Get(), it.GetId(), slideMaxLineup),
 				}), onState)
 				// Warm the NEXT article's audio while this one plays.
 				//
@@ -3408,6 +3446,28 @@ func Reader(p readerProps) ui.Node {
 		return slidePrereqs(speakSmart.Get(), speakPodcast.Get(), speakAuto.Get(), key)
 	}
 
+	// settingsPrereqs is the same list, asked from OUTSIDE the slideshow.
+	//
+	// The difference is the fourth condition. slidePrereqsNow answers "does this
+	// server have a key" from whether the story ON SCREEN came with a listening
+	// ticket, which is the only way to know it inside the show and is unavailable
+	// in Settings — there is no story on screen. Asked from here it would report
+	// "not on this server" on an instance with a perfectly good key, which is the
+	// worst answer available: it names somebody else's deployment as the problem.
+	//
+	// So this one reads the Smart+ config, which is the question stated directly.
+	// It is fetched when the Podcast tab opens; until it lands the answer is the
+	// slideshow's own evidence, which is right whenever the show has been used.
+	settingsPrereqs := func() []slidePrereq {
+		key := false
+		if cfg := smartCfg.Get(); cfg != nil {
+			key = cfg.GetConfigured()
+		} else if b := bodies.Get()[showID.Get()]; b != nil && b.GetSpeechUrl() != "" {
+			key = true
+		}
+		return slidePrereqs(speakSmart.Get(), speakPodcast.Get(), speakAuto.Get(), key)
+	}
+
 	// slideOpen puts one story on screen and starts its clock from zero.
 	//
 	// The custom properties are reset BEFORE the state change, and that ordering
@@ -3469,6 +3529,17 @@ func Reader(p readerProps) ui.Node {
 	slideNarrate := func(it *pb.Item) {
 		if it == nil {
 			return
+		}
+		// The sting opens the broadcast, and it plays NOW rather than when the
+		// audio arrives — which is the whole reason it works. The first segment
+		// takes seconds to write and synthesise, and that wait is the one
+		// genuinely dead moment in the mode; filling it with the programme's
+		// opening bars turns a silence into a beginning.
+		//
+		// Only at the top of a broadcast. A jingle between every story would be a
+		// radio station with nothing to say.
+		if speakBed.Get() && speakID.Get() == "" {
+			platform.Sting()
 		}
 		autoWant.Set(it.GetId())
 		speakState.Set("loading")
@@ -3541,6 +3612,18 @@ func Reader(p readerProps) ui.Node {
 	act.Get().slideTick = func() {
 		if !showOpen.Get() {
 			return
+		}
+		// The transport fades when nobody has moved for a while. Checked BEFORE
+		// the narrator's early return below, so it happens in read-to-me mode too
+		// — where it matters most, because that is the mode someone sits through
+		// rather than glances at.
+		//
+		// Never while paused: a paused display keeps its controls, and there is no
+		// timer running then anyway (see the effect that arms this), so this is
+		// belt and braces rather than the mechanism.
+		if showHud.Get() && !showPaused.Get() &&
+			time.Since(showTouched.Get()) > slideHudLinger {
+			showHud.Set(false)
 		}
 		// The clock is the DEFAULT and the narrator takes it away, rather than
 		// read-to-me switching the clock off.
@@ -3641,6 +3724,16 @@ func Reader(p readerProps) ui.Node {
 		if !showOpen.Get() || !showAudio.Get() {
 			return
 		}
+		// Pause means pause, even when the voice only got going afterwards.
+		//
+		// A segment that was still being SYNTHESISED when the reader pressed pause
+		// cannot be paused — there is nothing playing yet — and it would then
+		// start, seconds later, into a display that says Paused. This is the
+		// moment we first learn it is playing, so it is the moment to stop it.
+		if showPaused.Get() {
+			act.Get().listenPause()
+			return
+		}
 		it, _ := slideAt(showID.Get())
 		if it == nil {
 			return
@@ -3706,6 +3799,12 @@ func Reader(p readerProps) ui.Node {
 		}
 		showPaused.Set(false)
 		showOpen.Set(true)
+		// The transport is up when the mode opens and fades a few seconds later.
+		// The reader has just pressed something, so this is the one moment they
+		// are certainly looking — and seeing the controls once is what tells them
+		// the controls exist at all.
+		showHud.Set(true)
+		showTouched.Set(time.Now())
 		slideOpen(start)
 		// Taking the screen happens HERE rather than in an effect, and the
 		// distinction is load-bearing twice over. Fullscreen is refused outside a
@@ -3735,6 +3834,7 @@ func Reader(p readerProps) ui.Node {
 		showID.Set("")
 		showPhase.Set("card")
 		showPaused.Set(false)
+		showHud.Set(false)
 		// The voice goes with it. Leaving a narrator reading into an empty room
 		// after the picture has gone is the single most startling thing this mode
 		// could do, and "Keep playing" is still there for someone who wanted the
@@ -3749,6 +3849,12 @@ func Reader(p readerProps) ui.Node {
 	act.Get().slidePause = func() {
 		next := !showPaused.Get()
 		showPaused.Set(next)
+		// Pressing pause reveals the rest of the transport, and resuming restarts
+		// the fade rather than leaving it up. Someone who has just stopped the
+		// show is deciding what to do next, and the answer is usually one of the
+		// buttons beside the one they pressed.
+		showHud.Set(true)
+		showTouched.Set(time.Now())
 		if next {
 			// Bank what has run so far. Without this, resuming would restart the
 			// story from wherever `time.Since(start)` had got to, which after a
@@ -3800,8 +3906,12 @@ func Reader(p readerProps) ui.Node {
 			showVoice.Set(slideVoiceNoKey)
 			return
 		default:
+			// The line on the slide says what is missing and leads to Settings →
+			// Podcast, where the switch is. It used to open a panel over the show
+			// instead — four preference controls inside a fullscreen mode, which
+			// is the one place they are both most in the way and hardest to find
+			// again afterwards.
 			showVoice.Set(slideVoiceOff)
-			showNeeds.Set(true)
 			return
 		}
 		if !speakAuto.Get() {
@@ -3813,21 +3923,43 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 
-	// The prerequisites dialog.
+	// The line on the slide is a way OUT to the settings that own this, not a
+	// panel over the show.
 	//
-	// Opening it is also how the line on the slide is answered — that line is a
-	// button, so "Read to me needs the Smart+ voice" and the thing that turns the
-	// Smart+ voice on are one press apart rather than one screen apart.
-	act.Get().slideNeeds = func() { showNeeds.Set(true) }
-	// Closing is a decision, not a dismissal: the reader was asked whether to
-	// turn some switches on and said no, so read-to-me goes back off rather than
-	// staying nominally on and silent. Leaving it on would put the same line back
-	// on the next slide, which is nagging.
-	act.Get().slideNeedsClose = func() {
-		showNeeds.Set(false)
-		if showAudio.Get() && !slidePrereqsMet(slidePrereqsNow()) {
-			act.Get().slideListen()
+	// It used to open a dialog inside the slideshow, which put four preference
+	// switches inside a fullscreen mode somebody had entered to WATCH something —
+	// and left anybody wanting the broadcast without a slideshow with nowhere to
+	// go at all. The show ends and Settings opens on the Podcast tab, which is
+	// where those switches live and where they can be found again.
+	//
+	// Read-to-me is left ON. The reader is on their way to fix the reason it is
+	// silent, and turning it off behind them would mean coming back to a show
+	// that had quietly forgotten what they asked for.
+	// slideTouch is "somebody is there": it brings the transport and the cursor
+	// back and restarts the fade. Reached through this Ref rather than closed
+	// over by the pointer listener — see where that listener is registered for
+	// what closing over it cost.
+	act.Get().slideTouch = func() {
+		showTouched.Set(time.Now())
+		if !showHud.Get() {
+			showHud.Set(true)
 		}
+	}
+
+	act.Get().slideNeeds = func() {
+		act.Get().slideStop()
+		act.Get().showSettings()
+		act.Get().settingsTabTo(string(setPodcast))
+	}
+	// Starting from the Podcast tab: open the show, then start the narrator.
+	// slideNeedsStart assumes it is already inside the slideshow — it was written
+	// for a dialog that could only be reached from there.
+	act.Get().podcastStart = func() {
+		if !slidePrereqsMet(slidePrereqsNow()) {
+			return
+		}
+		act.Get().slideStart()
+		act.Get().slideNeedsStart()
 	}
 	// One switch, flipped for real and at once. Not staged behind an Apply: a
 	// staged copy of four preferences is a second source of truth for them, and
@@ -3854,7 +3986,6 @@ func Reader(p readerProps) ui.Node {
 		if !slidePrereqsMet(slidePrereqsNow()) {
 			return
 		}
-		showNeeds.Set(false)
 		showVoice.Set("")
 		showStart.Set(time.Now())
 		showHeld.Set(0)
@@ -3901,6 +4032,30 @@ func Reader(p readerProps) ui.Node {
 	// written in the old manner and finishing it is not wrong, only slightly
 	// inconsistent — where cutting a reader off mid-sentence to apply a tone
 	// preference would be the more startling of the two.
+	// toggleBed silences the broadcast's own sound, or brings it back. The pad
+	// stops or starts immediately — a switch for something audible that waits for
+	// the next story is a switch the reader presses twice.
+	act.Get().toggleBed = func() {
+		next := !speakBed.Get()
+		speakBed.Set(next)
+		savePrefs(map[string]string{podcastBedPref: strconv.FormatBool(next)})
+		if !next {
+			platform.Bed(false)
+		}
+	}
+
+	// setRate changes how fast the narrator reads, and applies it AT ONCE — to
+	// the segment already playing, not just the next one. A speed control that
+	// waits for the next track is a control people press twice and then distrust.
+	act.Get().setRate = func(v string) {
+		if v == "" {
+			v = speechRateDefault
+		}
+		speakRate.Set(v)
+		platform.SetSpeechRate(speechRateValue(v))
+		savePrefs(map[string]string{speechRatePref: v})
+	}
+
 	act.Get().setVibe = func(v string) {
 		if v == "" {
 			v = vibeCalm
@@ -4143,6 +4298,94 @@ func Reader(p readerProps) ui.Node {
 		pane.Set(viewSettings)
 		act.Get().loadStats()
 	}
+
+	// --- the interest profile (§18.2, §18.9) ----------------------------------
+
+	// loadMyFeed fetches what the ranking believes about this reader.
+	//
+	// It clears nothing on the way in. A refetch after a steer leaves the current
+	// picture on screen while the new one arrives, so the list does not blink to a
+	// skeleton and back for a change that alters two rows — and the pending mark on
+	// the pressed row is what says work is happening.
+	act.Get().loadMyFeed = func() {
+		c := client.Get()
+		if c == nil {
+			return
+		}
+		myFeedLoading.Set(true)
+		myFeedErr.Set("")
+		go func() {
+			p, err := c.InterestProfile(context.Background())
+			ui.PostAsync(func() {
+				myFeedLoading.Set(false)
+				if err != nil {
+					myFeedErr.Set(tr.T("myFeed", "loadError",
+						i18n.Args{"err": serverText(tr, err)}))
+					return
+				}
+				myFeedProfile.Set(p)
+			})
+		}()
+	}
+
+	// steerOne is the shared half of the two verbs: write, then refetch.
+	//
+	// The refetch is the point, and not laziness about patching state. A steer
+	// changes numbers this screen shows that no client can recompute — the factor
+	// mix, whether the page is still cold-started — and a screen that updated one
+	// chip and left the summary saying what it said before would be a report on the
+	// model that the model no longer matches.
+	steerOne := func(target, level string, write func(pb.SteerLevel) (bool, error)) {
+		if client.Get() == nil || target == "" {
+			return
+		}
+		lvl := steerLevelOf(level)
+		if lvl == pb.SteerLevel_STEER_LEVEL_UNSPECIFIED {
+			return
+		}
+		myFeedPending.Set(target)
+		myFeedNote.Set("")
+		myFeedNoteBad.Set(false)
+		go func() {
+			rebuilding, err := write(lvl)
+			ui.PostAsync(func() {
+				myFeedPending.Set("")
+				if err != nil {
+					// A note, NOT myFeedErr. Routing this into the error state
+					// blanked the whole profile on a rejected press — the reader
+					// lost the screen they were reading over one button. The
+					// refetch below then re-states what is actually true, which
+					// is the other half of the same repair.
+					myFeedNote.Set(tr.T("myFeed", "steerFailed",
+						i18n.Args{"err": serverText(tr, err)}))
+					myFeedNoteBad.Set(true)
+					act.Get().loadMyFeed()
+					return
+				}
+				myFeedNoteBad.Set(false)
+				// Two notes, because they promise different things. "Saved" is
+				// true either way; only one of them can also say the ranked page
+				// itself will change, and claiming that on an instance with no
+				// deriver running would be a promise nothing keeps.
+				if rebuilding {
+					myFeedNote.Set(tr.T("myFeed", "rebuilding"))
+				} else {
+					myFeedNote.Set(tr.T("myFeed", "saved"))
+				}
+				act.Get().loadMyFeed()
+			})
+		}()
+	}
+	act.Get().steerTopic = func(topicID, level string) {
+		steerOne(topicID, level, func(l pb.SteerLevel) (bool, error) {
+			return client.Get().SteerTopic(context.Background(), topicID, l)
+		})
+	}
+	act.Get().steerEntity = func(name, level string) {
+		steerOne(name, level, func(l pb.SteerLevel) (bool, error) {
+			return client.Get().SteerEntity(context.Background(), name, l)
+		})
+	}
 	act.Get().settingsTabTo = func(id string) {
 		setTab.Set(id)
 		// The server tabs are the only ones with anything to fetch, and fetching
@@ -4152,7 +4395,17 @@ func Reader(p readerProps) ui.Node {
 			if serverStats.Get() == nil {
 				act.Get().loadStats()
 			}
+		case setMyFeed:
+			if myFeedProfile.Get() == nil {
+				act.Get().loadMyFeed()
+			}
 		case setSmart:
+			if smartCfg.Get() == nil {
+				act.Get().loadSmart()
+			}
+		case setPodcast:
+			// For the server-key row, which is a fact about the deployment rather
+			// than a switch — see settingsPrereqs.
 			if smartCfg.Get() == nil {
 				act.Get().loadSmart()
 			}
@@ -4985,6 +5238,9 @@ func Reader(p readerProps) ui.Node {
 				// manner resolves to the default inside vibePrefFrom, so passing
 				// the whole map keeps that fallback in one place.
 				speakVibe.Set(vibePrefFrom(p))
+				if v, ok := p[podcastBedPref]; ok {
+					speakBed.Set(v == "true")
+				}
 				if v, ok := p[slidesAudioPref]; ok {
 					showAudio.Set(v == "true")
 				}
@@ -5427,7 +5683,7 @@ func Reader(p readerProps) ui.Node {
 	keyboardMap{
 		tr: tr, act: act, pane: pane, current: current,
 		items: items, stream: stream, feeds: feeds, tags: tags,
-		focusMode: focusMode, showOpen: showOpen, showNeeds: showNeeds,
+		focusMode: focusMode, showOpen: showOpen,
 		fsOpen: fsOpen, tsOpen: tsOpen,
 		paletteActive: paletteActive,
 		openItem:      openItem, refresh: refresh,
@@ -5502,6 +5758,31 @@ func Reader(p readerProps) ui.Node {
 		return l.Release
 	}, []any{showOpen.Get(), showAudio.Get()})
 
+	// The bed: a low pad under the whole broadcast.
+	//
+	// An effect rather than a call in each of the five places the show can start
+	// or stop, because that is exactly the list somebody eventually adds a sixth
+	// entry to without noticing — and the failure there is a drone still playing
+	// after the reader has left, which is the worst bug this feature could have.
+	// platform.Bed is idempotent in both directions, so a spurious re-run costs
+	// nothing.
+	//
+	// It follows the SHOW rather than the narrator: it fades in when read-to-me
+	// starts and out when it pauses, stops, or the reader leaves — including when
+	// the voice never arrived, where the pad is the only thing saying the mode is
+	// running at all.
+	ui.UseEffect(func() func() {
+		on := showOpen.Get() && showAudio.Get() && !showPaused.Get() && speakBed.Get()
+		platform.Bed(on)
+		if !on {
+			return nil
+		}
+		// Stopped on the way out as well as by the next run. A cleanup is the only
+		// thing that fires when the whole component goes away — a reload, a
+		// disconnect, a fatal — and silence is what should follow all three.
+		return func() { platform.Bed(false) }
+	}, []any{showOpen.Get(), showAudio.Get(), showPaused.Get(), speakBed.Get()})
+
 	// In read-to-me mode the NARRATOR decides what is showing.
 	//
 	// The picture follows speakID rather than the other way round, and it follows
@@ -5556,6 +5837,33 @@ func Reader(p readerProps) ui.Node {
 		if !platform.FocusedIn(".slides") {
 			platform.FocusElement(".slides")
 		}
+		// Somebody is there: bring the transport back. The Ref is written on
+		// every frame a pointer moves, which is why it is a Ref; the State is set
+		// only on the transition, so a pointer crossing the screen causes one
+		// render rather than sixty.
+		// Through the actions Ref, NOT as a closure over showHud.
+		//
+		// This is the hazard the whole `actions` table exists for, and it produced
+		// exactly the symptom it always produces. The listener is registered ONCE,
+		// in an effect, so a `showHud.Get()` written inline here reads the value as
+		// of the render that MOUNTED it — which is the render where the slideshow
+		// opened, where showHud was true. So `if !showHud.Get()` was false forever:
+		// after the first four-second fade the controls and the cursor never came
+		// back, however much the pointer moved. There is no error and nothing in
+		// the DOM to look at; the reveal simply stops existing.
+		pointer := platform.OnPointerActivity(func() {
+			// The cursor comes back on THIS frame, written straight onto the
+			// element, before anything is scheduled.
+			//
+			// A pointer that moves and does not immediately produce a cursor
+			// reads as a frozen application — and the reader's next move is to
+			// reload, not to keep moving. Everything else on this surface can
+			// afford the round trip through state; this cannot. The render
+			// writes the same attribute from state a moment later and agrees,
+			// because this only ever turns it on and only the clock turns it off.
+			platform.SetAttr(".slides", "data-hud", "true")
+			ui.PostAsync(func() { act.Get().slideTouch() })
+		})
 		l := platform.OnFullscreenChange(func(on bool) {
 			if on {
 				return
@@ -5565,7 +5873,10 @@ func Reader(p readerProps) ui.Node {
 			// idempotent, which is what makes that harmless.
 			ui.PostAsync(func() { act.Get().slideStop() })
 		})
-		return l.Release
+		return func() {
+			l.Release()
+			pointer.Release()
+		}
 	}, []any{showOpen.Get()})
 
 	// --- render -------------------------------------------------------------
@@ -5681,6 +5992,8 @@ func Reader(p readerProps) ui.Node {
 					speakAuto:    speakAuto.Get(),
 					speakPodcast: speakPodcast.Get(),
 					speakVibe:    speakVibe.Get(),
+					speakBed:     speakBed.Get(),
+					speakRate:    speakRate.Get(),
 					slideDwell:   showDwell.Get(),
 					slideAudio:   showAudio.Get(),
 					busy:         busy.Get(),
@@ -5703,6 +6016,19 @@ func Reader(p readerProps) ui.Node {
 						err:         smartErr.Get(),
 						loading:     smartLoading.Get(),
 						feedPlus:    feedPlus.Get(),
+					},
+					// What read-to-me needs, for the Podcast tab. Read here rather
+					// than in the tab, because two of the four conditions are
+					// preferences this component owns and the third is a fact
+					// about the server that only the Smart+ config can answer.
+					needs: settingsPrereqs(),
+					myFeed: myFeedProps{
+						profile: myFeedProfile.Get(),
+						loading: myFeedLoading.Get(),
+						err:     myFeedErr.Get(),
+						note:    myFeedNote.Get(),
+						noteBad: myFeedNoteBad.Get(),
+						pending: myFeedPending.Get(),
 					},
 					classify: classifySettingsProps{
 						hiddenCats: catHidden.Get(),
@@ -5852,7 +6178,7 @@ func Reader(p readerProps) ui.Node {
 				speakState: speakState.Get(),
 				voice:      showVoice.Get(),
 				needs:      slidePrereqsNow(),
-				needsOpen:  showNeeds.Get(),
+				hud:        showHud.Get(),
 				index:      i,
 				total:      len(items.Get()),
 				hosts:      hosts,

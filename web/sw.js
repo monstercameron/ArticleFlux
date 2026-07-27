@@ -30,6 +30,27 @@
 const VERSION = '0.1.0-dev';
 const CACHE = `articleflux-shell-${VERSION}`;
 
+// DEV is the hole in everything the comment above claims.
+//
+// The retirement story — "a new build changes VERSION, the browser installs the
+// new worker, activate deletes the old cache" — is true of a RELEASE and false
+// of every build anybody actually makes. A development version is `0.1.0-dev`
+// and stays `0.1.0-dev` through a hundred rebuilds, so the cache keyed on it is
+// never retired and `app.wasm` is served cache-first from whenever the browser
+// first saw it.
+//
+// The result is the worst class of bug this file can produce, because it does
+// not look like caching. It looks like the feature you just built not working:
+// the client is old, the server is new, and every symptom points at the code
+// that was just written. It cost two false bug reports on the slideshow — one
+// "the podcast stopped playing", one "the cursor never comes back" — both of
+// which were fixed code that the browser was refusing to load.
+//
+// So a dev build revalidates the shell and a tagged build does not. Offline
+// still works either way: the fetch below falls through to the cache when the
+// network is not there, which is the case this worker exists for.
+const DEV = VERSION.endsWith('-dev');
+
 // The shell. Deliberately short: every entry here is something the reader
 // cannot boot without.
 // Both module filenames, because the two deployments publish different ones: a
@@ -95,6 +116,21 @@ self.addEventListener('fetch', (e) => {
   // report a healthy server that is not there, which is worse than no answer.
   if (/^\/(grpc|readyz|healthz|debug|asset|p|pack|pub)(\/|$)/.test(url.pathname)) return;
 
+  // Nor the broadcast's music (§19), and for two separate reasons.
+  //
+  // Size: the beds are twelve megabytes between them, which is twice the whole
+  // shell. They are OPTIONAL — most readers will never turn one on, and one
+  // reader will only ever play one — so putting them in a cache whose job is
+  // "what you cannot boot without" would be spending an offline budget on
+  // background music.
+  //
+  // Range requests: an <audio> element seeks with Range, and a Service Worker
+  // that answers one from a cached 200 hands the browser a whole file where it
+  // asked for a slice. Some browsers cope and some produce a track that will not
+  // play at all. The browser's own HTTP cache handles these correctly and needs
+  // no help from here.
+  if (/^\/audio(\/|$)/.test(url.pathname)) return;
+
   // Navigations and the page itself: network first, cache as the fallback.
   if (req.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('/index.html')) {
     e.respondWith((async () => {
@@ -121,6 +157,20 @@ self.addEventListener('fetch', (e) => {
 
   // Everything else in the shell: cache first, and fill on the way past.
   e.respondWith((async () => {
+    // Except while developing, where cache-first means "never see your own
+    // build again" — see DEV. The cache is still written, and still answers
+    // when the network does not, so the offline path is unchanged.
+    if (DEV) {
+      try {
+        const res = await fetch(req);
+        if (res.ok && res.type === 'basic') {
+          (await caches.open(CACHE)).put(req, res.clone());
+        }
+        return res;
+      } catch (err) {
+        // Offline. Fall through to the cache below, which is the whole point.
+      }
+    }
     const hit = await caches.match(req);
     if (hit) return hit;
     try {

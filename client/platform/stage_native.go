@@ -36,6 +36,10 @@ func FocusElement(selector string) {}
 // greeting a listener in 1970.
 func LocalNow() (unixMillis int64, offsetMinutes int) { return 0, 0 }
 
+func OnPointerActivity(fn func()) Listener { return Listener{} }
+
+func SetAttr(selector, name, value string) {}
+
 func SetVar(selector, name, value string) {}
 
 // ScrollOverflow answers 0: nothing is laid out, so nothing overflows. That is

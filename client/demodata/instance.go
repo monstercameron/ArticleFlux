@@ -46,6 +46,11 @@ type Instance struct {
 	// is what makes the undo offer honest rather than "mark everything unread".
 	undo map[string][]string
 
+	// interest is the dial over the interest profile (§18.2) — the one part of
+	// that screen a demo reader can change. See interest.go for what is fixture
+	// and what is computed.
+	interest *interest
+
 	// applied is the idempotency store §20.7 describes, small enough here to be
 	// a map. The outbox replays writes it could not confirm, so the same key
 	// legitimately arrives twice and the second one must change nothing.

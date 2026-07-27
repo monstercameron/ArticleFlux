@@ -1566,6 +1566,12 @@ func PlayAudio(src string, onState func(state string)) {
 	on("error", "error")
 
 	audioEl.Set("src", src)
+	// Re-applied per track, because setting src resets the element's rate. A
+	// reader who chose a faster narrator would otherwise get it for one segment
+	// and lose it at every seam — which reads as the setting being flaky rather
+	// than as it not being applied.
+	audioEl.Set("preservesPitch", true)
+	audioEl.Set("playbackRate", speechRate)
 	onState("loading")
 	// play() returns a promise that rejects when autoplay policy or a 4xx blocks
 	// it. Unhandled, that is an uncaught rejection in the console and a control
@@ -1581,6 +1587,37 @@ func PlayAudio(src string, onState func(state string)) {
 		p.Call("catch", f)
 	}
 }
+
+// SetSpeechRate sets how fast the Smart+ voice plays.
+//
+// On the ELEMENT rather than in the synthesis request, which matters: the audio
+// is cached on the server by item and voice, so asking OpenAI for a faster
+// reading would make the rate part of what is bought and re-bill every change.
+// playbackRate is free, instant, and applies to audio already on disk.
+//
+// Browsers pitch-correct playbackRate by default (preservesPitch), so a faster
+// narrator sounds like a person reading faster rather than like a chipmunk. Set
+// explicitly anyway: the property defaulted the other way in older Safari, and
+// the failure is comic rather than subtle.
+//
+// Applied to whatever is loaded now AND remembered, because the element is
+// reused across tracks and a rate set before the next src would otherwise be
+// lost at the seam — see PlayAudio.
+func SetSpeechRate(rate float64) {
+	if rate <= 0 {
+		rate = 1
+	}
+	speechRate = rate
+	el := audioElement()
+	if !el.Truthy() {
+		return
+	}
+	el.Set("preservesPitch", true)
+	el.Set("playbackRate", rate)
+}
+
+// speechRate is the rate the next track starts at. 1 until somebody sets one.
+var speechRate = 1.0
 
 func AudioPause() {
 	if audioEl.Truthy() {

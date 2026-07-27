@@ -1147,3 +1147,47 @@ func (c *Client) UndoMarkAllRead(parent context.Context, token string) (int32, e
 	}
 	return res.GetRestored(), nil
 }
+
+// InterestProfile is what the ranking believes about this reader (§18.2, §18.9).
+//
+// Uncached, unlike the feed and item reads. The profile is the answer to "is the
+// model right about me", and a reader who has just corrected it and pressed back
+// into the screen must not be shown the picture they disagreed with — a stale
+// answer here is worse than a slow one, which is the reverse of the trade the
+// list cache makes.
+func (c *Client) InterestProfile(parent context.Context) (*pb.GetInterestProfileResponse, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.GetInterestProfile(ctx, &pb.GetInterestProfileRequest{})
+	if err := c.track(err); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// SteerTopic and SteerEntity turn the reader's dial on one thing.
+//
+// Not queued through the outbox, and that is a deliberate exception to how this
+// client handles writes. The outbox exists so a state change made offline still
+// lands; a steer made offline would land minutes later against a profile the
+// reader can no longer see, and the screen's whole job is to show the corrected
+// picture immediately after. Offline, this fails and says so.
+// SteerTopic takes the topic's KEY, not its id — see InterestTopic.key. An id is
+// this derivation's and the next one will not agree.
+func (c *Client) SteerTopic(parent context.Context, topicKey string, level pb.SteerLevel) (bool, error) {
+	return c.steer(parent, &pb.SteerInterestRequest{TopicKey: topicKey, Level: level})
+}
+
+func (c *Client) SteerEntity(parent context.Context, name string, level pb.SteerLevel) (bool, error) {
+	return c.steer(parent, &pb.SteerInterestRequest{EntityName: name, Level: level})
+}
+
+func (c *Client) steer(parent context.Context, req *pb.SteerInterestRequest) (bool, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.SteerInterest(ctx, req)
+	if err := c.track(err); err != nil {
+		return false, err
+	}
+	return res.GetRebuilding(), nil
+}

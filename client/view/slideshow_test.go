@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // The slideshow's timing is four small pure functions and one string builder,
@@ -488,5 +490,90 @@ func TestPrereqBlockedNamesTheFirstMissingRequirement(t *testing.T) {
 	if got := slidePrereqBlocked(slidePrereqs(false, true, false, false)); got != prereqSmartVoice {
 		t.Errorf("with everything missing the dialog leads with %q, want %q",
 			got, prereqSmartVoice)
+	}
+}
+
+// --- the headline run-through ------------------------------------------------
+
+func item(id, title string) *pb.Item {
+	return &pb.Item{Id: id, Title: title}
+}
+
+// The run-through starts AT the story being spoken, because a bulletin lists its
+// own top story first and then covers it.
+func TestLineupStartsAtTheStoryBeingSpoken(t *testing.T) {
+	list := []*pb.Item{
+		item("a", "First"), item("b", "Second"), item("c", "Third"),
+		item("d", "Fourth"), item("e", "Fifth"), item("f", "Sixth"),
+	}
+
+	got := slideLineup(list, "b", 5)
+	want := []string{"b", "c", "d", "e", "f"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("lineup = %v, want %v", got, want)
+	}
+
+	// Bounded: a bulletin that recites eleven headlines before covering any of
+	// them has told the listener nothing they can keep.
+	if got := slideLineup(list, "a", 3); len(got) != 3 || got[0] != "a" {
+		t.Errorf("lineup = %v, want three starting at a", got)
+	}
+}
+
+// One headline is not a run-through, it is the story about to be told. Better to
+// open with the greeting alone than with "and finally".
+func TestLineupNeedsMoreThanOneStory(t *testing.T) {
+	list := []*pb.Item{item("a", "First"), item("b", "Second")}
+
+	if got := slideLineup(list, "b", 5); got != nil {
+		t.Errorf("the last story produced a run-through of %v", got)
+	}
+	if got := slideLineup(list, "a", 5); len(got) != 2 {
+		t.Errorf("two stories produced %v", got)
+	}
+}
+
+// A story with no headline cannot be run through, and sending it would only
+// spend a server lookup to be told so.
+func TestLineupSkipsUntitledStories(t *testing.T) {
+	list := []*pb.Item{
+		item("a", "First"), item("b", "   "), item("c", "Third"), item("d", "Fourth"),
+	}
+	got := slideLineup(list, "a", 5)
+	for _, id := range got {
+		if id == "b" {
+			t.Errorf("an untitled story reached the run-through: %v", got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("lineup = %v, want three titled stories", got)
+	}
+}
+
+// Nothing to work with is no run-through rather than a panic or a stray comma.
+func TestLineupHandlesNothing(t *testing.T) {
+	if got := slideLineup(nil, "a", 5); got != nil {
+		t.Errorf("an empty list produced %v", got)
+	}
+	if got := slideLineup([]*pb.Item{item("a", "First")}, "", 5); got != nil {
+		t.Errorf("no starting story produced %v", got)
+	}
+	// An id that is not in the list — a story swept away mid-session — yields
+	// nothing rather than the whole list.
+	if got := slideLineup([]*pb.Item{item("a", "First"), item("b", "Second")}, "zz", 5); got != nil {
+		t.Errorf("an unknown starting story produced %v", got)
+	}
+}
+
+// The ids ride in the URL comma-separated, and only at the top of a broadcast.
+func TestSpeechFromCarriesTheLineup(t *testing.T) {
+	const ticket = "/speech?t=abc"
+	top := speechFrom(ticket, speechAsk{podcast: true, lineup: []string{"a", "b", "c"}})
+	if !strings.Contains(top, "&q=a,b,c") {
+		t.Errorf("the run-through did not reach the URL: %q", top)
+	}
+	mid := speechFrom(ticket, speechAsk{prevID: "z", podcast: true, lineup: []string{"a", "b"}})
+	if strings.Contains(mid, "q=") {
+		t.Errorf("a mid-broadcast segment carried a run-through: %q", mid)
 	}
 }

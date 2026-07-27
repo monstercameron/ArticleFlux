@@ -471,6 +471,34 @@ func slideStage(r func(string, string) css.Rule) {
 		r("color", "var(--mute)"),
 		r("margin-top", "clamp(16px, 2vw, 30px)"),
 	)
+	// A wait has to LOOK like a wait.
+	//
+	// Writing and synthesising the first broadcast segment takes longer than any
+	// spinner convention allows for, and a line of static grey text under a
+	// static headline is indistinguishable from a display that has stopped. So
+	// the line breathes — slowly, at low amplitude, never blinking.
+	//
+	// Gated on AMPLITUDE rather than duration, which is the rule motion.go sets
+	// for every looping animation here: `animation-duration: 0s` with an infinite
+	// count is a corner of the spec browsers disagree about, so the keyframe's
+	// opacity is written in terms of --mo instead. At --mo: 0 the first frame and
+	// the last frame are the same value and the loop runs forever changing
+	// nothing.
+	css.Global(".slide-working", css.Keyframes("slide-breathe",
+		css.At("0%", r("opacity", "calc(1 - var(--mo) * 0.55)")),
+		css.At("50%", r("opacity", "1")),
+		css.At("100%", r("opacity", "calc(1 - var(--mo) * 0.55)")),
+	),
+		// 2.6s, which is the connection dot's tempo while it is trying to
+		// reconnect. Shared deliberately rather than by coincidence: they mean the
+		// same thing — something is working and you are waiting for it — and two
+		// things that mean the same thing should breathe at the same rate. It also
+		// means this adds no fourth entry to the sheet's list of looping
+		// durations, which exists so that a NEW tempo has to be argued for.
+		r("animation-duration", "2.6s"),
+		r("animation-timing-function", "var(--e-io)"),
+		r("animation-iteration-count", "infinite"),
+	)
 	// The voice's own line is the same shape, one step brighter and in the
 	// accent. It is not an error state — the display is working and one part of
 	// it is switched off — so it gets the colour that means "look here", not the
@@ -496,110 +524,6 @@ func slideStage(r func(string, string) css.Rule) {
 		r("color", "var(--cream)"), r("text-decoration", "underline"),
 		r("text-underline-offset", ".3em"))
 
-	slideNeedsCSS(r)
-}
-
-// slideNeedsCSS is the prerequisites dialog.
-//
-// A panel rather than the reader's own `.pal-scrim`, and above it: this opens
-// over a fullscreen mode at z-index 70, and the shared scrim sits at 60. It
-// borrows the shape — a bordered well on the raised surface, a backdrop that
-// blurs what is behind — so it reads as the same application, but it centres
-// rather than aligning to the upper third. There is no growing list here; it is
-// a fixed set of four rows, and a fixed panel belongs in the middle of the
-// screen it interrupted.
-func slideNeedsCSS(r func(string, string) css.Rule) {
-	css.Global(".slide-scrim",
-		r("position", "fixed"), r("inset", "0"), r("z-index", "80"),
-		r("background", "color-mix(in srgb, var(--bg) 78%, transparent)"),
-		r("backdrop-filter", "blur(4px)"),
-		r("display", "grid"), r("place-items", "center"),
-		r("padding", "24px"),
-		// Closed is INVISIBLE and unreachable, not merely transparent: visibility
-		// takes it out of the tab order and the accessibility tree, which opacity
-		// alone would not — and this panel is full of buttons.
-		r("opacity", "0"), r("visibility", "hidden"),
-		r("transition", "opacity "+move+", visibility 0s linear var(--t2)"),
-	)
-	css.Global(".slide-scrim[data-open='true']",
-		r("opacity", "1"), r("visibility", "visible"),
-		r("transition", "opacity "+move+", visibility 0s"))
-
-	css.Global(".slide-needs",
-		r("width", "min(680px, 100%)"),
-		r("max-height", "82vh"), r("overflow-y", "auto"),
-		r("background", "var(--sur)"),
-		r("border", "1px solid var(--line)"),
-		r("border-radius", "18px"),
-		r("padding", "26px 28px 22px"),
-		r("box-shadow", "0 24px 60px -20px color-mix(in srgb, var(--bg) 90%, transparent)"),
-		r("transform", "translateY(calc(var(--mo) * 10px))"),
-		r("transition", "transform "+move),
-	)
-	css.Global(".slide-scrim[data-open='true'] .slide-needs", r("transform", "none"))
-
-	css.Global(".slide-needs-head", r("margin-bottom", "20px"))
-	css.Global(".slide-needs-head strong",
-		r("display", "block"),
-		r("font-family", "var(--dsp)"), r("font-size", "22px"),
-		r("font-weight", "600"), r("color", "var(--cream)"),
-	)
-	css.Global(".slide-needs-sub",
-		r("display", "block"), r("margin-top", "6px"),
-		r("font-family", "var(--rd)"), r("font-size", "13.5px"),
-		r("line-height", "1.6"), r("color", "var(--mute)"),
-		r("max-width", "56ch"),
-	)
-
-	css.Global(".slide-needs-rows",
-		r("display", "flex"), r("flex-direction", "column"), r("gap", "2px"))
-	css.Global(".slide-need",
-		r("display", "flex"), r("align-items", "center"), r("gap", "16px"),
-		r("padding", "13px 0"),
-		r("border-top", "1px solid var(--hair)"),
-	)
-	css.Global(".slide-need-text", r("flex", "1 1 auto"), r("min-width", "0"))
-	css.Global(".slide-need-name",
-		r("display", "block"),
-		r("font-size", "14.5px"), r("color", "var(--cream)"),
-	)
-	css.Global(".slide-need-why",
-		r("display", "block"), r("margin-top", "3px"),
-		r("font-family", "var(--rd)"), r("font-size", "12.5px"),
-		r("line-height", "1.55"), r("color", "var(--mute)"),
-	)
-	// An optional requirement is quieter, so the eye lands on the ones that
-	// actually block. It is still legible — "optional" is not "ignorable", and
-	// this is the row that turns a narrated slideshow into the broadcast the
-	// reader probably came for.
-	css.Global(".slide-need[data-required='false'] .slide-need-name",
-		r("color", "var(--soft)"))
-	// A requirement that is met stops asking for attention. The mark is the row
-	// going quiet rather than a tick being added: a column of green ticks is a
-	// checklist, and this is a list of settings.
-	css.Global(".slide-need[data-on='true'] .slide-need-why", r("opacity", ".72"))
-	// The one thing here nobody can fix from this screen, said in the colour that
-	// means it: not an error, but not something to keep pressing either.
-	css.Global(".chip-static.is-missing",
-		r("color", "var(--neg)"), r("border-color", "color-mix(in srgb, var(--neg) 45%, transparent)"))
-
-	css.Global(".slide-needs-foot",
-		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
-		r("margin-top", "22px"), r("padding-top", "18px"),
-		r("border-top", "1px solid var(--hair)"),
-	)
-	css.Global(".slide-needs-go",
-		r("background", "var(--cc)"), r("color", "var(--bg)"),
-		r("border-color", "var(--cc)"), r("font-weight", "500"),
-	)
-	// Refusing rather than absent. aria-disabled rather than the attribute,
-	// because a truly disabled button is not focusable and cannot explain
-	// itself — this one stays reachable, and pressing it does nothing while the
-	// rows above it say what is still missing.
-	css.Global(".slide-needs-go[aria-disabled='true']",
-		r("background", "none"), r("color", "var(--mute)"),
-		r("border-color", "var(--line)"), r("cursor", "default"),
-	)
 }
 
 // slideRule is the signature: one hairline across the foot of the screen.
@@ -655,14 +579,35 @@ func slideHud(r func(string, string) css.Rule) {
 		r("position", "absolute"), r("inset", "auto 0 0 auto"),
 		r("z-index", "3"),
 		r("display", "flex"), r("align-items", "center"), r("gap", "8px"),
-		// The padding is the hover target: a strip along the bottom right, deep
-		// enough that a pointer heading for the corner has already revealed the
-		// buttons by the time it arrives.
 		r("padding", "42px 30px 26px 60px"),
 		r("opacity", "0"),
+		// Not clickable while invisible. Without this the strip along the bottom
+		// right swallows clicks aimed at nothing, which on a touchscreen means a
+		// tap meant to reveal the controls presses one of them instead.
+		r("pointer-events", "none"),
 		r("transition", "opacity "+slow),
 	)
-	css.Global(".slide-hud:hover, .slide-hud:focus-within", r("opacity", "1"))
+	// Revealed by MOVEMENT, not by hover.
+	//
+	// `:hover` cannot do this job and the attempt is what this replaced: a
+	// fullscreen element is permanently hovered the moment the pointer is
+	// anywhere inside it, so hover-to-reveal degenerates into either always-on or
+	// a hunt for one specific corner — and on a touchscreen there is no hover at
+	// all, which left the transport unreachable on a phone. Go watches for
+	// pointer activity and writes `data-hud`; see platform.OnPointerActivity.
+	//
+	// :focus-within stays, and is not redundant: a keyboard user tabbing to a
+	// button moves no pointer, and a control that is focused but invisible is
+	// worse than one that is merely hidden.
+	css.Global(".slides[data-hud='true'] .slide-hud, .slide-hud:focus-within",
+		r("opacity", "1"), r("pointer-events", "auto"))
+
+	// The cursor goes with the controls. A display left running with a mouse
+	// arrow parked in the middle of a headline is the one detail that says
+	// "this is a web page" rather than "this is a broadcast" — and it comes back
+	// the instant anything moves, so it can never be lost.
+	css.Global(".slides", r("cursor", "none"))
+	css.Global(".slides[data-hud='true']", r("cursor", "default"))
 
 	css.Global(".slide-btn",
 		r("width", "40px"), r("height", "40px"),

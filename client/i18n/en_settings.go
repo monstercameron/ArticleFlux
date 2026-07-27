@@ -6,16 +6,24 @@ func init() {
 		"title": "Settings",
 		"sub":   "Everything this reader does, and everything it is doing.",
 
-		"tab.reading":    "Reading",
+		"tab.reading": "Reading",
+		// The tab is named for the thing it edits, which is the ranked stream —
+		// not for the mechanism ("Interests", "Personalisation"). A reader who
+		// wants to argue with a pick goes looking for the name on the pick.
+		"tab.myfeed":     "My Feed",
 		"tab.appearance": "Appearance",
 		"tab.listening":  "Listening",
-		"tab.smart":      "Smart+",
-		"tab.classify":   "Classification",
-		"tab.feeds":      "Feeds",
-		"tab.account":    "Account",
-		"tab.server":     "Server",
-		"tab.activity":   "Activity",
-		"tab.speed":      "Speed",
+		// "Podcast", not "Read to me": the tab is where the broadcast is
+		// configured, and read-to-me is one thing it enables. A reader looking for
+		// why the slideshow will not speak arrives here from the slide itself.
+		"tab.podcast":  "Podcast",
+		"tab.smart":    "Smart+",
+		"tab.classify": "Classification",
+		"tab.feeds":    "Feeds",
+		"tab.account":  "Account",
+		"tab.server":   "Server",
+		"tab.activity": "Activity",
+		"tab.speed":    "Speed",
 
 		// --- reading
 		"listGroup":        "What the list shows",
@@ -90,6 +98,12 @@ func init() {
 		"vibe": "How it sounds",
 		"vibeHint": "The narrator's manner. All four say the same facts — they differ in pace, in sentence length, and in how much they tell you what a story is worth. " +
 			"None of them invents anything: an opinion about how much a result matters is allowed, a fact that is not in the article is not.",
+		// The broadcast's own sound. Named for what it is rather than for
+		// "jingle", which promises something with a tune in it — this is three
+		// notes and a low pad, and the pad is meant to be felt rather than heard.
+		"bed": "Opening sting and background",
+		"bedHint": "Three notes when the broadcast starts — they fill the pause while the first segment is being written — and a low pad underneath it afterwards. " +
+			"Synthesised in the browser, so it costs no download and sends nothing anywhere. Quiet enough to sit under speech; turn it off if you would rather have silence.",
 		"vibe.calm":  "Calm",
 		"vibe.brisk": "Brisk",
 		"vibe.warm":  "Warm",

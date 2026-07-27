@@ -211,12 +211,22 @@ type actions struct {
 	// command, because opening, flipping one switch, starting and declining have
 	// genuinely different consequences — declining, in particular, turns
 	// read-to-me back off, which is a decision rather than a dismissal.
+	// slideTouch reports that somebody is there — a pointer moved, or a finger
+	// landed — which brings the transport and the cursor back.
+	slideTouch      func()
 	slideNeeds      func()
 	slideNeedsFix   func(key string)
 	slideNeedsStart func()
-	slideNeedsClose func()
+	// podcastStart launches the show from the Podcast settings tab, which is
+	// outside the slideshow — so it opens the show as well as starting the
+	// narrator.
+	podcastStart func()
 	// setVibe changes how the narrator sounds — calm, brisk, warm or dry.
 	setVibe func(v string)
+	// toggleBed silences the broadcast's opening sting and background pad.
+	toggleBed func()
+	// setRate changes how fast the narrator reads.
+	setRate func(v string)
 	// slideSetDwell changes the pace from the settings screen.
 	slideSetDwell func(v string)
 	// slideTick is one beat of the slideshow's own clock, reached through this
@@ -259,6 +269,14 @@ type actions struct {
 	toggleMarkPast func()
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
+
+	// The interest profile (§18.2, §18.9): what the ranking believes, and the
+	// reader correcting it. Two verbs rather than one taking a kind, because a
+	// topic is addressed by id and a named thing by its normalised name, and one
+	// call that took either would have to decide which a string was.
+	loadMyFeed  func()
+	steerTopic  func(topicID, level string)
+	steerEntity func(name, level string)
 
 	// Smart+ (§10.5, §18). Every one of these either changes the credential
 	// every Smart+ feature spends, or spends it.

@@ -41,8 +41,10 @@ type settingsTab string
 
 const (
 	setReading    settingsTab = "reading"
+	setMyFeed     settingsTab = "myfeed"
 	setAppearance settingsTab = "appearance"
 	setListening  settingsTab = "listening"
+	setPodcast    settingsTab = "podcast"
 	setSmart      settingsTab = "smart"
 	setClassify   settingsTab = "classify"
 	setFeeds      settingsTab = "feeds"
@@ -61,11 +63,22 @@ var settingsTabs = []struct {
 	glyph string
 }{
 	{setReading, glyphAll},
+	// Straight after Reading, because it answers the same question one level
+	// down: Reading is what you see next, and this is why. It also has to be
+	// findable from the ranked page in one hop — a reader who has just been
+	// shown a pick they disagree with is at the exact moment when the control
+	// for it needs to be one obvious click away, not eight tabs along.
+	{setMyFeed, glyphMyFeed},
 	// Second, not last. It is the tab a reader opens on their first evening and
 	// then rarely again, and burying a first-evening screen behind five
 	// operational ones is how nobody finds out the product has themes.
 	{setAppearance, glyphYours},
 	{setListening, glyphListen},
+	// Directly after Listening, because it is the same subject one commitment
+	// deeper: Listening is "read this aloud", and this is "make it a programme".
+	// It is also where the slideshow's read-to-me requirements now live, so it
+	// has to be findable by somebody who arrived from a line on a slide.
+	{setPodcast, glyphSlideshow},
 	// Directly after Listening, which is the other Smart+ surface — the voice
 	// and the translator spend the same key, and a reader who has just met one
 	// should find the other next to it rather than five tabs away.
@@ -100,6 +113,10 @@ type settingsProps struct {
 	// speakVibe is how the narrator sounds. Only meaningful while speakPodcast is
 	// on, and the row is hidden otherwise.
 	speakVibe string
+	// speakBed is the broadcast's opening sting and background pad.
+	speakBed bool
+	// speakRate is how fast the narrator reads, as the stored multiplier string.
+	speakRate string
 	// The slideshow (§19): how long a story stays up, and whether the narrator
 	// paces it instead of the clock. The pace is the stored string — "auto" or a
 	// number of seconds — rather than a resolved duration, because "auto" is a
@@ -131,6 +148,16 @@ type settingsProps struct {
 	// because none of it is read by any other tab and settingsProps is already
 	// long enough to be scanned rather than read.
 	smart smartProps
+	// needs is what read-to-me depends on, with each condition's current state
+	// (§19). Computed by Reader from the same slidePrereqs the slideshow reads,
+	// so the checklist on the Podcast tab and the slideshow's own line about it
+	// can never disagree.
+	needs []slidePrereq
+	// myFeed is the My Feed tab's state: the interest profile the server sent,
+	// and what has just been written to it. Grouped for `smart`'s reason — no
+	// other tab reads any of it, and settingsProps is already long enough to be
+	// scanned rather than read.
+	myFeed myFeedProps
 	// classify is the Classification tab's state: which category slugs this
 	// reader has hidden. See classifySettingsProps for why there is nothing else
 	// here — no per-category counts and no live Smart+ egress flags, because
@@ -182,10 +209,20 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 
 	var body []ui.Node
 	switch p.tab {
+	case setMyFeed:
+		body = settingsMyFeed(tr, p.myFeed)
 	case setAppearance:
 		body = settingsAppearance(tr, p)
 	case setListening:
 		body = settingsListening(tr, p)
+	case setPodcast:
+		body = settingsPodcast(tr, podcastProps{
+			needs:      p.needs,
+			podcast:    p.speakPodcast,
+			vibe:       p.speakVibe,
+			digest:     p.speakDigest,
+			keyUnknown: p.smart.cfg == nil,
+		})
 	case setSmart:
 		body = settingsSmart(tr, p.smart)
 	case setClassify:
@@ -264,6 +301,28 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 	}
 }
 
+// ratePicker is how fast the narrator reads.
+//
+// Multipliers rather than words, because "faster" and "much faster" are not
+// comparable between two people and "1.4x" is. The default is marked in the
+// copy rather than by position, so a reader can tell which one they have drifted
+// away from.
+func ratePicker(tr i18n.Runtime, current string) ui.Node {
+	if current == "" {
+		current = speechRateDefault
+	}
+	chips := make([]ui.Node, 0, len(speechRateChoices))
+	for _, r := range speechRateChoices {
+		label := tr.T("settings", "rateTimes", i18n.Args{"n": r})
+		if r == speechRateDefault {
+			label = tr.T("settings", "rateTimesDefault", i18n.Args{"n": r})
+		}
+		chips = append(chips, pickChip(actRate, r, label, r == current))
+	}
+	return html.Span(html.Props{Class: "set-picks", Role: "group",
+		Aria: map[string]string{"label": tr.T("settings", "rate")}}, chips...)
+}
+
 // vibePicker is the narrator's manner, as a row of chips.
 //
 // Named for how it sounds rather than for a format — "Calm", not "NPR" — because
@@ -322,6 +381,10 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		setRow(tr.T("settings", "smartVoice"),
 			tr.T("settings", "smartVoiceHint"),
 			glyphChip("toggle-smart-voice", glyphListen, onOff(tr, p.speakSmart), p.speakSmart)),
+		// Beside the voice rather than down with the broadcast settings: it
+		// applies to everything the Smart+ voice reads, not only to a programme.
+		setRow(tr.T("settings", "rate"), tr.T("settings", "rateHint"),
+			ratePicker(tr, p.speakRate)),
 		setRow(tr.T("settings", "digest"),
 			tr.T("settings", "digestHint"),
 			glyphChip("toggle-digest", glyphAction, onOff(tr, p.speakDigest), p.speakDigest)),
@@ -340,6 +403,10 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		ui.If(p.speakPodcast, func() ui.Node {
 			return setRow(tr.T("settings", "vibe"), tr.T("settings", "vibeHint"),
 				vibePicker(tr, p.speakVibe))
+		}),
+		ui.If(p.speakPodcast, func() ui.Node {
+			return setRow(tr.T("settings", "bed"), tr.T("settings", "bedHint"),
+				glyphChip(actBed, glyphListen, onOff(tr, p.speakBed), p.speakBed))
 		}),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
