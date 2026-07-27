@@ -49,11 +49,20 @@ var _ derive.Enhancer = (*Interest)(nil)
 
 // interestTimeout bounds one call.
 //
-// Twenty seconds. This runs inside a background job that a reader is not waiting on, so
-// the limit is not about latency — it is about not holding a worker slot while a provider
-// decides. jobs.Pool caps derive at one concurrent job, so a hung call would stall every
-// subsequent derivation on the instance.
-const interestTimeout = 20 * time.Second
+// Ninety seconds. This runs inside a background job that a reader is not waiting on, so the
+// limit is not about latency — it is about not holding a worker slot indefinitely, because
+// jobs.Pool caps derive at one concurrent job and a hung call would stall every subsequent
+// derivation on the instance.
+//
+// It was twenty, and twenty was wrong: on a real instance the entity pass — a hundred and
+// twenty headlines through a reasoning model — hit the deadline every time and logged
+// "declined; keeping the heuristic's list". The degradation worked perfectly, which is
+// exactly why the wrong number could have survived: the feature simply never contributed and
+// nothing looked broken. A budget too small to complete the work is not a safety margin.
+//
+// Still far below jobs.Options.StaleAfter (fifteen minutes), so a stuck call is reclaimed
+// long before the pool would treat the worker as dead.
+const interestTimeout = 90 * time.Second
 
 // rerankInstructions is the system prompt for the head re-rank.
 //
