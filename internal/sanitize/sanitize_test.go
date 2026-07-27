@@ -324,10 +324,25 @@ func FuzzHTMLNeverEmitsAScriptTag(f *testing.F) {
 			//
 			// What matters is whether the string is REACHABLE as an attribute,
 			// so the check looks only inside tags.
+			// Narrowed twice, by two more fuzz findings, and both narrowings are
+			// about NAME position versus VALUE position:
+			//
+			//   <img onerror=alert(1)>   an event handler        — must fail
+			//   <a src="onerror=">       a value that reads like — must not
+			//
+			// So a handler is only a handler when it is preceded by the
+			// separator that starts an attribute, and a scheme is only a scheme
+			// when it follows the `=` that starts a value.
 			markup := tagsOnly(got)
-			for _, bad := range []string{"onerror=", "onload=", "onclick=", "javascript:"} {
-				if strings.Contains(markup, bad) {
-					t.Fatalf("policy %s emitted %q inside a tag for input %q: %s", p, bad, in, got)
+			for _, h := range []string{"onerror=", "onload=", "onclick=", "onfocus=", "ontoggle="} {
+				if strings.Contains(markup, " "+h) || strings.Contains(markup, "/"+h) {
+					t.Fatalf("policy %s emitted handler %q for input %q: %s", p, h, in, got)
+				}
+			}
+			for _, u := range []string{`="javascript:`, `='javascript:`, `=javascript:`,
+				`="vbscript:`, `='vbscript:`, `=vbscript:`} {
+				if strings.Contains(markup, u) {
+					t.Fatalf("policy %s emitted %q for input %q: %s", p, u, in, got)
 				}
 			}
 		}

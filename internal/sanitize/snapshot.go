@@ -114,14 +114,48 @@ var snapAttrs = map[string]bool{
 	"datetime": true, "cite": true, "role": true, "poster": true,
 	"loading": true, "decoding": true, "start": true, "reversed": true,
 	"value": true, "open": true, "charset": true, "content": true,
-	"http-equiv": true, "name": true, "property": true, "sizes-hint": true,
-	"integrity": false, // listed explicitly: rewritten bytes never match a hash
+	"http-equiv": true, "name": true, "property": true,
+}
+
+// snapAttrOn narrows the attributes that only mean something on one element.
+//
+// The fuzzer wrote this map. `content` is here for `<meta content=...>`, and
+// allowing it globally meant `<a content="jAvAsCript:">` kept an unchecked
+// scheme in an attribute — inert on an anchor today, and exactly the kind of
+// "harmless because nothing reads it" that stops being harmless when something
+// does. An attribute that is meaningless on an element is an attribute that
+// element should not carry.
+var snapAttrOn = map[string]map[string]bool{
+	"content":    {"meta": true},
+	"http-equiv": {"meta": true},
+	"charset":    {"meta": true},
+	"name":       {"meta": true},
+	"property":   {"meta": true},
+	"poster":     {"video": true},
+	"srcset":     {"img": true, "source": true},
+	"sizes":      {"img": true, "source": true, "link": true},
+	"media":      {"source": true, "link": true, "style": true},
+	"rel":        {"a": true, "area": true, "link": true},
+	"target":     {"a": true, "area": true},
+	"start":      {"ol": true},
+	"reversed":   {"ol": true},
+	"span":       {"col": true, "colgroup": true},
+	"open":       {"details": true},
+	"value":      {"li": true, "meter": true, "progress": true, "data": true},
+	"cite":       {"blockquote": true, "q": true, "del": true, "ins": true},
+	"datetime":   {"time": true, "del": true, "ins": true},
 }
 
 // snapURLAttrs are the attributes whose values are fetched or navigated to, and
 // therefore need their scheme checked.
 var snapURLAttrs = map[string]bool{
 	"href": true, "src": true, "srcset": true, "poster": true, "cite": true,
+	// `content` is on this list even though it is usually not a URL at all.
+	// On `<meta>` it holds whatever the name/property says it holds — often a
+	// URL (`og:image`, `og:url`), sometimes a refresh target, sometimes just
+	// `width=device-width`. Scheme-checking it costs the harmless cases nothing:
+	// a value with no scheme passes, and `0;url=javascript:...` does not.
+	"content": true,
 }
 
 // snapSchemes is what a URL in a proxied page may use.
@@ -266,6 +300,9 @@ func snapElement(n *html.Node) snapVerdict {
 		if !snapAttrs[key] {
 			continue
 		}
+		if on, narrow := snapAttrOn[key]; narrow && !on[name] {
+			continue
+		}
 		if snapURLAttrs[key] {
 			if key == "srcset" {
 				if v := snapSrcset(a.Val); v != "" {
@@ -311,6 +348,20 @@ func snapCSS(css string) string {
 	if css == "" {
 		return css
 	}
+	// Every `<` goes, and this one is not a nicety.
+	//
+	// `<style>` is a RAW TEXT element: the parser does not treat its contents as
+	// markup, and `html.Render` writes them back out **without escaping**. So a
+	// `<` that goes in comes out, and a `</style>` in the middle of a stylesheet
+	// would re-open the document in the browser's parser at a point ours never
+	// modelled — the classic mutation-XSS shape, and the fuzzer found it here in
+	// under two seconds (`<stYle>0000000<sCript`).
+	//
+	// CSS has no legitimate use for `<`. There is no selector, property or value
+	// that needs one, so removing every occurrence costs a stylesheet nothing and
+	// closes the whole class rather than the one instance.
+	css = strings.ReplaceAll(css, "<", "")
+
 	low := strings.ToLower(css)
 	// The executable legacy constructs go wholesale rather than surgically.
 	// They have no legitimate use in a page we are re-serving, and a stylesheet
