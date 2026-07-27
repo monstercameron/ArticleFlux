@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -290,33 +289,65 @@ func TestFetch_NonImageContentTypeRefused(t *testing.T) {
 	}
 }
 
-// TestFetch_MissingContentTypeRefused sends a response with NO Content-Type
+// respondNoContentType writes a raw HTTP/1.1 response with NO Content-Type
 // header on the wire at all. This has to be done by hijacking the
 // connection and writing raw bytes: net/http's normal ResponseWriter
 // auto-fills Content-Type via content sniffing on the first Write() when the
 // handler never sets one (confirmed experimentally — a handler that just
 // writes real PNG bytes ends up with a response carrying
 // "Content-Type: image/png" supplied by the Go server itself, not by the
-// handler), which would silently defeat this test.
-func TestFetch_MissingContentTypeRefused(t *testing.T) {
+// handler), which would silently defeat a test of header-absence.
+func respondNoContentType(t *testing.T, w http.ResponseWriter, body []byte) {
+	t.Helper()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("ResponseWriter does not support hijacking")
+	}
+	conn, buf, err := hj.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	defer conn.Close()
+	resp := "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: " +
+		itoa(len(body)) + "\r\n\r\n"
+	_, _ = buf.WriteString(resp)
+	_, _ = buf.Write(body)
+	_ = buf.Flush()
+}
+
+// TestFetch_MissingContentTypeButValidBytesAccepted pins the other half of
+// "decide from the bytes, not the label": a response with NO Content-Type
+// header at all, carrying genuine PNG bytes, must still be accepted. Trusting
+// the header for rejection (as the old code did) is exactly as wrong as
+// trusting it for acceptance — a legitimate icon should not be refused just
+// because a server forgot to label it.
+func TestFetch_MissingContentTypeButValidBytesAccepted(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", http.NotFound)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			t.Fatal("ResponseWriter does not support hijacking")
-		}
-		conn, buf, err := hj.Hijack()
-		if err != nil {
-			t.Fatalf("hijack: %v", err)
-		}
-		defer conn.Close()
-		body := png1x1
-		resp := "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: " +
-			itoa(len(body)) + "\r\n\r\n"
-		_, _ = buf.WriteString(resp)
-		_, _ = buf.Write(body)
-		_ = buf.Flush()
+		respondNoContentType(t, w, png1x1)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Fetch() = err %v; a genuine PNG with no Content-Type header should be accepted", err)
+	}
+	if icon.ContentType != "image/png" {
+		t.Errorf("ContentType = %q, want %q (sniffed, since none was declared)", icon.ContentType, "image/png")
+	}
+}
+
+// TestFetch_MissingContentTypeAndUnrecognizedBytesRefused: no header AND
+// bytes that are not any recognised image format must still be refused —
+// missing a label does not grant a free pass.
+func TestFetch_MissingContentTypeAndUnrecognizedBytesRefused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		respondNoContentType(t, w, []byte("not an image at all"))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -324,7 +355,7 @@ func TestFetch_MissingContentTypeRefused(t *testing.T) {
 	f := newFetcher(true)
 	icon, err := fetch(t, f, srv, 5*time.Second)
 	if err != ErrNoIcon || icon != nil {
-		t.Fatalf("Fetch() = %v, %v; want ErrNoIcon when Content-Type is absent", icon, err)
+		t.Fatalf("Fetch() = %v, %v; want ErrNoIcon for unrecognized bytes with no header", icon, err)
 	}
 }
 
@@ -380,6 +411,145 @@ func TestFetch_ExactlyMaxBytesAccepted(t *testing.T) {
 	}
 	if len(icon.Bytes) != MaxBytes {
 		t.Errorf("len(icon.Bytes) = %d, want %d", len(icon.Bytes), MaxBytes)
+	}
+}
+
+// --- legitimate non-PNG raster formats ---------------------------------------
+
+// icoHeader is a real ICO/CUR-family header: reserved(2)=0, type(2)=1 (icon).
+var icoHeader = []byte{0, 0, 1, 0, 'x', 'x'}
+
+// webpHeader is a real WebP container header: "RIFF" + 4-byte size + "WEBP".
+var webpHeader = []byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'}
+
+func TestFetch_LegitimateICOAccepted(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		_, _ = w.Write(icoHeader)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != nil {
+		t.Fatalf("a genuine .ico icon should be accepted, got err %v", err)
+	}
+	if icon.ContentType != "image/x-icon" {
+		t.Errorf("ContentType = %q, want %q", icon.ContentType, "image/x-icon")
+	}
+}
+
+func TestFetch_LegitimateWebPAccepted(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/webp")
+		_, _ = w.Write(webpHeader)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != nil {
+		t.Fatalf("a genuine WebP icon should be accepted, got err %v", err)
+	}
+	if icon.ContentType != "image/webp" {
+		t.Errorf("ContentType = %q, want %q", icon.ContentType, "image/webp")
+	}
+}
+
+// --- empty / too-short bodies -------------------------------------------------
+
+func TestFetch_EmptyBodyRefused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		// No write at all: a 200 with a zero-length body.
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != ErrNoIcon || icon != nil {
+		t.Fatalf("Fetch() = %v, %v; want ErrNoIcon for an empty body", icon, err)
+	}
+}
+
+// TestFetch_BodyTooShortToSniffRefused makes sure a body shorter than any
+// magic number this package looks for is refused cleanly — no panic from an
+// out-of-range slice — rather than being sniffed as a false positive.
+func TestFetch_BodyTooShortToSniffRefused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte{0x89, 'P'}) // the first two bytes of a PNG, no more
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != ErrNoIcon || icon != nil {
+		t.Fatalf("Fetch() = %v, %v; want ErrNoIcon for a body too short to be any real image", icon, err)
+	}
+}
+
+// --- looksLikeSVG unit coverage ------------------------------------------------
+//
+// These call the unexported detector directly, since Fetch-level tests above
+// already prove it end to end; these pin the specific preamble shapes a real
+// SVG (and a hostile one aping the shapes a permissive check might trust) can
+// take.
+
+func TestLooksLikeSVG(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"bare", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`, true},
+		{"uppercase tag", `<SVG xmlns="http://www.w3.org/2000/svg"></SVG>`, true},
+		{"self-closing", `<svg/>`, true},
+		{"leading whitespace", "   \t\n<svg></svg>", true},
+		{"xml declaration", `<?xml version="1.0" encoding="UTF-8"?><svg></svg>`, true},
+		{"doctype", `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg></svg>`, true},
+		{"leading comment", `<!-- hi --><svg></svg>`, true},
+		{"xmldecl + doctype + comment, combined", "<?xml version=\"1.0\"?>\n<!-- note --><!DOCTYPE svg><svg></svg>", true},
+		{"just the tag name", `<svg`, true},
+		{"not svg at all", `<html><body>hi</body></html>`, false},
+		{"different element with svg prefix", `<svgfoo>not svg</svgfoo>`, false},
+		{"empty", ``, false},
+		{"png bytes", string(png1x1), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := looksLikeSVG([]byte(c.in)); got != c.want {
+				t.Errorf("looksLikeSVG(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+
+	// BOM is a separate case: it is not valid UTF-8 text to embed directly in
+	// a Go string literal comparison above, so it gets its own byte slice.
+	withBOM := append(append([]byte{}, utf8BOM...), []byte("<svg></svg>")...)
+	if !looksLikeSVG(withBOM) {
+		t.Error("looksLikeSVG() = false for a BOM-prefixed SVG, want true")
+	}
+}
+
+func TestSniffAllowedImage_ShortBodiesDoNotPanicOrFalsePositive(t *testing.T) {
+	for _, n := range []int{0, 1, 2, 3, 4, 5, 6, 7} {
+		b := make([]byte, n)
+		if _, ok := sniffAllowedImage(b); ok {
+			t.Errorf("sniffAllowedImage(%d zero bytes) = accepted, want refused", n)
+		}
 	}
 }
 

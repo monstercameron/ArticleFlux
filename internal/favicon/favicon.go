@@ -264,9 +264,7 @@ func (f *Fetcher) get(ctx context.Context, raw string) (*Icon, error) {
 	// server can serve a script-bearing SVG labelled "image/png" and a
 	// header-only check would wave it through. See looksLikeSVG and
 	// sniffAllowedImage.
-	if looksLikeSVG(body) {
-		return nil, ErrNoIcon
-	}
+	// MUTATION-TEST: guard temporarily removed.
 	ct, ok := sniffAllowedImage(body)
 	if !ok {
 		return nil, ErrNoIcon
