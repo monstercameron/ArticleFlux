@@ -135,19 +135,19 @@ type actions struct {
 	toggleAddNewCat func()
 	// The ladder (§11): looking for a feed at an address that is not one, and
 	// what happens when there is not one to find.
-	analyzeSite          func(smart bool)
-	toggleSmartSubscribe func()
-	addCandidate         func(url string)
-	followPage           func()
-	newCategory          func()
-	openCategory         func(id string)
-	closeCategory        func()
-	saveCategory         func()
-	deleteCategory       func()
-	setFeedFolder        func(sourceID, folderID string)
-	itemByID             func(string) *pb.Item
-	feedByID             func(string) *pb.Feed
-	search               func(string)
+	analyzeSite       func(smart bool)
+	toggleSmartFollow func()
+	addCandidate      func(url string)
+	followPage        func()
+	newCategory       func()
+	openCategory      func(id string)
+	closeCategory     func()
+	saveCategory      func()
+	deleteCategory    func()
+	setFeedFolder     func(sourceID, folderID string)
+	itemByID          func(string) *pb.Item
+	feedByID          func(string) *pb.Feed
+	search            func(string)
 
 	// Article-scoped actions carry the id of the article they act on. The
 	// reading pane is a stream, so "the article" is ambiguous in the markup and
@@ -159,14 +159,16 @@ type actions struct {
 	// setPageMode switches that frame between the proxied HTML and the live
 	// browser stream (§10.1b vs §10.1d).
 	setPageMode func(id string, live bool)
-	later      func(id string)
-	markUnread func(id string)
-	openExtern func(id string)
-	saveNote   func(id string)
-	addTag     func(id string)
-	removeTag  func(id, name string)
-	editNote   func(id, body string)
-	editTag    func(sourceID, name string)
+	// togglePageWide expands that frame to fill the pane, keeping its mode.
+	togglePageWide func(id string)
+	later       func(id string)
+	markUnread  func(id string)
+	openExtern  func(id string)
+	saveNote    func(id string)
+	addTag      func(id string)
+	removeTag   func(id, name string)
+	editNote    func(id, body string)
+	editTag     func(sourceID, name string)
 
 	listen      func(id string)
 	listenPause func()
@@ -269,6 +271,88 @@ type actions struct {
 // to open a tunnel before it to prove who the reader is.
 type readerProps struct {
 	client *data.Client
+	// prefs is the saved view, already fetched by Root while the splash was up.
+	//
+	// It arrives as a prop rather than being fetched here because a preference
+	// that decides the FIRST FRAME cannot be fetched after the first frame. When
+	// this was the reader's own opening effect, the reader mounted with its
+	// defaults, painted the All stream with an expanded rail, and then snapped
+	// into the saved feed a round trip later.
+	//
+	// nil means Root could not fetch them (a failed call, or a path that has not
+	// been taught to). The reader then falls back to fetching them itself, which
+	// restores the old behaviour — the flash — rather than losing the saved view
+	// entirely. That is the right way round: a flash is a blemish, a reader
+	// dropped back to All every morning is the feature not working.
+	prefs map[string]string
+}
+
+// prefBool reads a stored flag, keeping the caller's default when it is absent.
+//
+// Absent and false are different answers and the difference is load-bearing at
+// boot: `markOnPast` defaults to TRUE, so treating a missing key as false would
+// silently turn it off for every reader who has never touched the setting.
+// searchTextFrom seeds the search box, and only when the saved scope IS a search.
+//
+// `read.value` carries whichever argument the saved scope needed — a source id
+// for a feed, a tag id for a tag — so putting it in the search box unconditionally
+// would greet a reader with a ULID in the field they type into.
+func searchTextFrom(p map[string]string) string {
+	if p["read.kind"] == "search" {
+		return p["read.value"]
+	}
+	return ""
+}
+
+// resumeScope turns the saved place into the scope the list is fetched for.
+//
+// Shared by the mount-time seed and the effect that runs after it, because they
+// have to agree exactly: one deciding the first frame and the other deciding
+// what is fetched is precisely how a reader ends up looking at a header for one
+// feed above the items of another.
+//
+// An unrecognised or absent kind falls through to All, and a feed whose title
+// was never saved takes All's title too — an empty header is worse than a
+// slightly wrong one.
+func resumeScope(p map[string]string, tr i18n.Runtime) scope {
+	var s scope
+	switch p["read.kind"] {
+	case "unread":
+		s = scope{Title: tr.T("stream", "unread"), Unread: true}
+	case "liked":
+		s = scope{Title: tr.T("stream", "liked"), Rating: 1}
+	case "later":
+		s = scope{Title: tr.T("stream", "later"), Later: true}
+	case "notes":
+		s = scope{Title: tr.T("stream", "notes"), Notes: true}
+	case "feed":
+		if v := p["read.value"]; v != "" {
+			s = scope{SourceID: v, Title: p["read.title"]}
+		}
+	case "tag":
+		if v := p["read.value"]; v != "" {
+			s = scope{TagID: v, Title: p["read.title"]}
+		}
+	case "folder":
+		if v := p["read.value"]; v != "" {
+			s = scope{FolderID: v, Title: p["read.title"]}
+		}
+	case "search":
+		if v := p["read.value"]; v != "" {
+			s = scope{Search: v, Title: p["read.title"]}
+		}
+	}
+	if s.Title == "" {
+		s.Title = tr.T("stream", "all")
+	}
+	return s
+}
+
+func prefBool(p map[string]string, key string, def bool) bool {
+	if v, ok := p[key]; ok {
+		return v == "true"
+	}
+	return def
 }
 
 // keptOptimistic reports an error that must NOT undo what is on screen.
@@ -333,6 +417,15 @@ func Reader(p readerProps) ui.Node {
 	// one compares unequal on every render, which would defeat the memo
 	// bailout this pane depends on.
 	tr := i18n.UseI18n()
+	// The saved view, already on hand. Every UseState below that has a stored
+	// counterpart is INITIALISED from this rather than corrected afterwards —
+	// which is the whole fix for "it opens on the default view and then flashes
+	// into the real one". A hook's initial value is read once, on mount, so this
+	// is the only moment where restoring costs nothing at all.
+	//
+	// Nil is fine and is the first-boot case: every lookup below falls back to
+	// the default it would have had anyway.
+	saved := p.prefs
 	client := ui.UseState[*data.Client](nil)
 	conn := ui.UseState(data.Connecting)
 	fatal := ui.UseState("")
@@ -375,14 +468,14 @@ func Reader(p readerProps) ui.Node {
 	loadingMore := ui.UseState(false)
 	scrollTop := ui.UseState(0.0)
 	viewport := ui.UseState(720.0)
-	unreadFeedsOnly := ui.UseState(false)
+	unreadFeedsOnly := ui.UseState(prefBool(saved, "rail.unreadOnly", false))
 	// Which rail sections the reader has folded away. Closed-is-true, so the
 	// default is the whole rail showing; three separate States rather than a map
 	// because railProps is compared by value to keep 151 rows from re-rendering.
-	railStreamsClosed := ui.UseState(false)
-	railFeedsClosed := ui.UseState(false)
-	railTagsClosed := ui.UseState(false)
-	railCatsClosed := ui.UseState(false)
+	railStreamsClosed := ui.UseState(prefBool(saved, "rail.closed."+actStreams, false))
+	railFeedsClosed := ui.UseState(prefBool(saved, "rail.closed."+actFeeds, false))
+	railTagsClosed := ui.UseState(prefBool(saved, "rail.closed."+actTags, false))
+	railCatsClosed := ui.UseState(prefBool(saved, "rail.closed."+actCats, false))
 	tags := ui.UseState[[]*pb.Tag](nil)
 	tagFeeds := ui.UseState[map[string][]string](nil)
 	// The categories, and which of them are unfolded in the rail.
@@ -415,7 +508,7 @@ func Reader(p readerProps) ui.Node {
 	// let a keystroke in one article cancel the pending save of another.
 	noteTimers := ui.UseRef(map[string]*time.Timer{})
 	tagDrafts := ui.UseState(map[string]string{})
-	feedFilter := ui.UseState("")
+	feedFilter := ui.UseState(saved["rail.filter"])
 
 	// The reading stream: the articles currently rendered in the reading pane, in
 	// list order, and their fetched bodies.
@@ -439,6 +532,9 @@ func Reader(p readerProps) ui.Node {
 	// mode you were last in — switching modes is a preference, not a step in a
 	// flow you have to repeat.
 	pageLive := ui.UseState(map[string]bool{})
+	// Which frames are widened to fill the pane. Independent of the mode, so
+	// widening a live view stays live.
+	pageWide := ui.UseState(map[string]bool{})
 	// Which articles have their note panel opened out. Closed is the default and
 	// the absent value: in a continuous stream this control repeats once per
 	// article, so its resting state has to be the quiet one.
@@ -451,12 +547,12 @@ func Reader(p readerProps) ui.Node {
 	// resumeItem is the article id to reopen once its list arrives, restored from
 	// the server on connect. A Ref because it is consumed exactly once and must
 	// not cause a render of its own.
-	resumeItem := ui.UseRef("")
+	resumeItem := ui.UseRef(saved["read.item"])
 	// Listening state. speakID is which article is being read aloud, speakState
 	// is what the transport is doing, and speakSmart is the egress opt-in.
 	speakID := ui.UseState("")
 	speakState := ui.UseState("")
-	speakSmart := ui.UseState(false)
+	speakSmart := ui.UseState(prefBool(saved, "tts.smartPlus", false))
 	// The command palette. paletteActive is the highlighted row, kept in state
 	// rather than in the DOM so the keyboard and the pointer cannot disagree
 	// about what Enter will do.
@@ -497,20 +593,20 @@ func Reader(p readerProps) ui.Node {
 	// markOnPast is the one reading behaviour that is genuinely contentious:
 	// scrolling past an article marks it read, which is right for a firehose and
 	// wrong for someone who scrolls to look rather than to read.
-	markOnPast := ui.UseState(true)
+	markOnPast := ui.UseState(prefBool(saved, "read.markOnPast", true))
 	// focusMode closes the rail and the list so the article has the window.
 	//
 	// Persisted like every other view preference: a reader who set it deliberately
 	// and then reloaded should not have to set it again. It is safe to persist
 	// precisely because the way out is on screen — the toggle stays pinned to the
 	// top of the pane in focus mode, and Escape leaves as well.
-	focusMode := ui.UseState(false)
+	focusMode := ui.UseState(prefBool(saved, "ui.focus", false))
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
 	// screen renders from it; the PAINT does not go through here at all, and
 	// applyAppearance writes the tokens straight onto <html>.
-	look := ui.UseState(appearance{})
+	look := ui.UseState(appearanceFromPrefs(saved))
 	// The per-feed settings panel. The settings are fetched on open rather than
 	// carried on every sidebar row — the rail asks for 151 feeds many times a
 	// session and wants none of this on any of them.
@@ -575,12 +671,12 @@ func Reader(p readerProps) ui.Node {
 	// different hat.
 	listFrom := ui.UseState(data.Staleness{})
 
-	sel := ui.UseState(scope{Title: tr.T("stream", "all")})
+	sel := ui.UseState(resumeScope(saved, tr))
 	pane := ui.UseState(viewList)
-	unreadOnly := ui.UseState(false)
+	unreadOnly := ui.UseState(prefBool(saved, "list.unreadOnly", false))
 	busy := ui.UseState("")
 	notice := ui.UseState("")
-	searchText := ui.UseState("")
+	searchText := ui.UseState(searchTextFrom(saved))
 
 	// The add-a-feed dialog. Its three drafts live here, with every other piece
 	// of state, so they survive the re-render that typing in any one of them
@@ -603,10 +699,10 @@ func Reader(p readerProps) ui.Node {
 	addProposal := ui.UseState[*pb.ScrapeProposal](nil)
 	addSmartStatus := ui.UseState("")
 	addSmartBusy := ui.UseState(false)
-	// smartSubscribe is the standing consent for the model to read a page,
+	// smartFollow is the standing consent for the model to read a page,
 	// restored from prefs on connect like every other setting. Default off: it
 	// is an egress decision (§18.8) and a default that egresses is not consent.
-	smartSubscribe := ui.UseState(false)
+	smartFollow := ui.UseState(false)
 	// The category editor: which category, the draft name, and whether the
 	// delete button is armed. Arming is per-open, deliberately — a confirm that
 	// survives closing the dialog is a confirm the reader has forgotten giving.
@@ -2668,19 +2764,19 @@ func Reader(p readerProps) ui.Node {
 				// row IS — so making them press a second button to spend it
 				// would be asking the same question twice. With the lamp off,
 				// nothing happens here and the block explains what would.
-				if !smart && len(res.GetFeeds()) == 0 && smartSubscribe.Get() {
+				if !smart && len(res.GetFeeds()) == 0 && smartFollow.Get() {
 					act.Get().analyzeSite(true)
 				}
 			})
 		}()
 	}
 
-	// toggleSmartSubscribe is the standing consent, saved server-side like every
+	// toggleSmartFollow is the standing consent, saved server-side like every
 	// other preference so it follows the reader between machines.
-	act.Get().toggleSmartSubscribe = func() {
-		next := !smartSubscribe.Get()
-		smartSubscribe.Set(next)
-		savePrefs(map[string]string{smartSubscribePref: strconv.FormatBool(next)})
+	act.Get().toggleSmartFollow = func() {
+		next := !smartFollow.Get()
+		smartFollow.Set(next)
+		savePrefs(map[string]string{smartFollowPref: strconv.FormatBool(next)})
 	}
 
 	// addCandidate subscribes to a feed the ladder found, keeping the category
@@ -3554,6 +3650,19 @@ func Reader(p readerProps) ui.Node {
 		}
 		pageOpen.Set(withEntry(cur, id, true))
 	}
+	act.Get().togglePageWide = func(id string) {
+		cur := pageWide.Get()
+		next := map[string]bool{}
+		for k, v := range cur {
+			if k != id {
+				next[k] = v
+			}
+		}
+		if !cur[id] {
+			next[id] = true
+		}
+		pageWide.Set(next)
+	}
 	act.Get().setPageMode = func(id string, live bool) {
 		if pageLive.Get()[id] == live {
 			return // already there; re-rendering would restart the stream
@@ -3605,6 +3714,35 @@ func Reader(p readerProps) ui.Node {
 					a.open(it)
 				}
 			})
+		})
+		return l.Release
+	}, []any{})
+
+	// Wheel over a live view scrolls the REMOTE page (§10.1d).
+	//
+	// One listener for every live view there will ever be, registered once, for
+	// the same reason as the clicks above. The deltas arrive already coalesced
+	// to one callback per animation frame; this fires them at the server and
+	// deliberately does not wait for or re-render on the reply.
+	//
+	// Nothing here touches state. A scroll that changed state would re-render
+	// the article, and re-rendering the article rebuilds the <img> — which
+	// restarts the stream, on every notch of the wheel.
+	ui.UseEffect(func() func() {
+		l := platform.OnDelegatedWheel("#app", "data-live-session", func(session string, dx, dy float64) {
+			if session == "" {
+				return
+			}
+			c := client.Get()
+			if c == nil {
+				return
+			}
+			go func() {
+				// Fire and forget. A dropped scroll is a scroll the reader will
+				// simply do again, and surfacing an error for one would put a
+				// banner on screen for something they have already corrected.
+				_, _ = c.ScrollLiveView(context.Background(), session, dx, dy)
+			}()
 		})
 		return l.Release
 	}, []any{})
@@ -3722,7 +3860,7 @@ func Reader(p readerProps) ui.Node {
 				case actAddCandidate:
 					a.addCandidate(value)
 				case actAddSmart:
-					a.toggleSmartSubscribe()
+					a.toggleSmartFollow()
 				case actAddAnalyze:
 					a.analyzeSite(true)
 				case actAddFollow:
@@ -3758,6 +3896,8 @@ func Reader(p readerProps) ui.Node {
 					a.expand(id)
 				case "toggle-page":
 					a.togglePage(id)
+				case "toggle-page-wide":
+					a.togglePageWide(id)
 				case "page-mode-doc":
 					a.setPageMode(id, false)
 				case "page-mode-live":
@@ -4019,7 +4159,25 @@ func Reader(p readerProps) ui.Node {
 		}
 		prefsOnce.Set(true)
 		go func() {
-			p, err := c.GetPrefs(context.Background())
+			// Root already fetched these while the splash was up, and the state
+			// above is already seeded from them — so this effect exists for the
+			// two things a hook's initial value cannot do: consume the saved
+			// article, and fetch the list.
+			//
+			// It re-applies the rest anyway rather than branching around it. Every
+			// Set here is to the value the state already holds, which is a no-op
+			// the reconciler drops, and one shared apply path is worth more than
+			// the render it does not cost.
+			saved, err := p.prefs, error(nil)
+			if saved == nil {
+				// Root could not fetch them. Doing it here is the old behaviour,
+				// flash included — which beats losing the saved view entirely.
+				saved, err = c.GetPrefs(context.Background())
+			}
+			// Shadows the props parameter deliberately: everything below reads
+			// `p` as the preferences map, and the alternative was renaming forty
+			// lookups to prove a point about scope.
+			p := saved
 			ui.PostAsync(func() {
 				// A failed prefs call must not leave the reader with no list at
 				// all. Losing the saved place is a small regression; losing the
@@ -4049,8 +4207,8 @@ func Reader(p readerProps) ui.Node {
 				if v, ok := p["rail.closed."+actCats]; ok {
 					railCatsClosed.Set(v == "true")
 				}
-				if v, ok := p[smartSubscribePref]; ok {
-					smartSubscribe.Set(v == "true")
+				if v, ok := p[smartFollowPref]; ok {
+					smartFollow.Set(v == "true")
 				}
 				if v, ok := p["tts.smartPlus"]; ok {
 					speakSmart.Set(v == "true")
@@ -4083,38 +4241,9 @@ func Reader(p readerProps) ui.Node {
 					feedFilter.Set(v)
 				}
 
-				resume := sel.Get()
-				switch p["read.kind"] {
-				case "unread":
-					resume = scope{Title: tr.T("stream", "unread"), Unread: true}
-				case "liked":
-					resume = scope{Title: tr.T("stream", "liked"), Rating: 1}
-				case "later":
-					resume = scope{Title: tr.T("stream", "later"), Later: true}
-				case "notes":
-					resume = scope{Title: tr.T("stream", "notes"), Notes: true}
-				case "feed":
-					if v := p["read.value"]; v != "" {
-						resume = scope{SourceID: v, Title: p["read.title"]}
-					}
-				case "tag":
-					if v := p["read.value"]; v != "" {
-						resume = scope{TagID: v, Title: p["read.title"]}
-					}
-				case "folder":
-					if v := p["read.value"]; v != "" {
-						resume = scope{FolderID: v, Title: p["read.title"]}
-					}
-				case "search":
-					if v := p["read.value"]; v != "" {
-						resume = scope{Search: v, Title: p["read.title"]}
-						searchText.Set(v)
-					}
-				}
-				// A feed whose title was never saved would render an empty header;
-				// the pane's own default beats blank.
-				if resume.Title == "" {
-					resume.Title = tr.T("stream", "all")
+				resume := resumeScope(p, tr)
+				if v := p["read.value"]; p["read.kind"] == "search" && v != "" {
+					searchText.Set(v)
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
 				resumeItem.Set(p["read.item"])
@@ -4809,6 +4938,7 @@ func Reader(p readerProps) ui.Node {
 				expanded:     expanded.Get(),
 				pageOpen:     pageOpen.Get(),
 				pageLive:     pageLive.Get(),
+				pageWide:     pageWide.Get(),
 				noteOpen:     noteOpen.Get(),
 			}),
 		),
@@ -4847,7 +4977,7 @@ func Reader(p readerProps) ui.Node {
 			searched:     addSearched.Get(),
 			candidates:   addCands.Get(),
 			proposal:     addProposal.Get(),
-			smartOn:      smartSubscribe.Get(),
+			smartOn:      smartFollow.Get(),
 			smartBusy:    addSmartBusy.Get(),
 			smartStatus:  addSmartStatus.Get(),
 		}),

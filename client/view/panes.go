@@ -194,6 +194,10 @@ const (
 	// internet", and the thing this control actually offers is *the page in a
 	// frame here*, which is the distinction the reader is choosing between.
 	glyphPage = "\u25a3"
+	// Widen. Arrows pointing apart, which is what the control does to the
+	// frame \u2014 not a maximise square, because nothing here goes fullscreen and
+	// promising that would be a lie about where the view ends up.
+	glyphWide = "\u21f9"
 )
 
 // lead renders a leading glyph. Hidden from assistive tech: the label beside it
@@ -1758,6 +1762,11 @@ type articleProps struct {
 	// the cheaper of the two and the one that works without a browser on the
 	// server — so the quiet default is also the safe one.
 	pageLive map[string]bool
+	// pageWide is which frames are expanded to fill the pane. Independent of
+	// the mode, so widening keeps whichever view is showing — the old
+	// "Full width" opened a new tab and always landed on the HTML, which threw
+	// the reader's choice away at exactly the moment they asked for more of it.
+	pageWide map[string]bool
 	// noteOpen is which articles have their note panel opened out, keyed by item
 	// id. Closed is the default and the absent value, which is the point: in a
 	// continuous stream every article carries one of these, and a column of
@@ -1984,23 +1993,35 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 				return glyphItemChip("toggle-page", glyphPage,
 					tr.T("article", "viewPage"), p.pageOpen[it.GetId()], it.GetId())
 			}),
-			ui.If(full.GetProxyUrl() != "", func() ui.Node {
-				// An anchor, not a button: opening a new tab is what a link
-				// does, and routing it through a click handler would break
-				// middle-click, ctrl-click and "open in new window" — three
-				// gestures a reader already knows.
-				return html.A(html.Props{
-					Class: "chip", Href: full.GetProxyUrl(),
-					Target: "_blank", Rel: "noopener noreferrer",
-				}, html.Text(tr.T("article", "viewPageFull")),
-					html.Span(html.Props{Class: "gl-trail",
-						Aria: map[string]string{"hidden": "true"}},
-						html.Text(glyphExternal)))
+			// The mode toggle lives up here with the other article controls
+			// rather than under the frame, so it reads as "how this article is
+			// shown" alongside Like and Read later — a decision about the
+			// article, made in the row where decisions about the article are
+			// made. Under the frame it was a property of the frame, which is
+			// the wrong thing for it to belong to.
+			//
+			// Only while the frame is open: two mode chips for a view nobody
+			// has opened are two controls with nothing to act on.
+			ui.If(p.pageOpen[it.GetId()] && full.GetStreamUrl() != "", func() ui.Node {
+				return pageModeChips(tr, it.GetId(), p.pageLive[it.GetId()])
+			}),
+			ui.If(p.pageOpen[it.GetId()], func() ui.Node {
+				// A button, not a link, and no longer a new tab.
+				//
+				// It was an <a target="_blank"> to the proxied HTML, which
+				// could not carry the live mode with it: a stream URL opened
+				// as a browser tab is a bare image, and a wheel over it scrolls
+				// the tab rather than the remote page. Widening in place keeps
+				// whichever mode is selected, keeps scrolling working, and
+				// re-requests the stream at a resolution that suits the new
+				// width instead of blowing up a 1280px render.
+				return glyphItemChip("toggle-page-wide", glyphWide,
+					tr.T("article", "viewPageFull"), p.pageWide[it.GetId()], it.GetId())
 			}),
 		),
 		ui.If(p.pageOpen[it.GetId()] && full.GetProxyUrl() != "", func() ui.Node {
 			return pageFrame(tr, it.GetId(), full.GetProxyUrl(), full.GetStreamUrl(),
-				p.pageLive[it.GetId()])
+				p.pageLive[it.GetId()], p.pageWide[it.GetId()])
 		}),
 		listenBar(tr, it, p),
 		ui.If(loading, func() ui.Node { return skeletonArticle(tr) }),
@@ -2055,7 +2076,54 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 // An iframe for one and an img for the other is not an inconsistency: they are
 // genuinely different kinds of thing, and the img is why Live needs no
 // JavaScript.
-func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Node {
+// pageModeChips is the Page/Live switch, rendered in the article's control row.
+//
+// Two chips rather than one that flips its label. A single toggle makes you
+// read the label to work out which state you are in; two make the current one
+// visibly pressed, and the choice is between two named things rather than
+// between "on" and "off".
+func pageModeChips(tr i18n.Runtime, id string, live bool) ui.Node {
+	return html.Span(html.Props{Class: "page-modes", Role: "group",
+		Aria: map[string]string{"label": tr.T("article", "viewPageModes")}},
+		html.Button(html.Props{
+			Class: "chip",
+			Aria:  map[string]string{"pressed": boolAttr(!live)},
+			Raw: map[string]any{
+				"data-action": "page-mode-doc", "data-for-item": id,
+			},
+		}, html.Text(tr.T("article", "viewPageModeDoc"))),
+		html.Button(html.Props{
+			Class: "chip",
+			Aria:  map[string]string{"pressed": boolAttr(live)},
+			Raw: map[string]any{
+				"data-action": "page-mode-live", "data-for-item": id,
+			},
+		}, html.Text(tr.T("article", "viewPageModeLive"))),
+	)
+}
+
+// liveSrcFor sizes the stream to the width it is about to be shown at.
+//
+// The viewport travels in the URL rather than in a separate call, which means
+// changing it changes the `src` — and changing the src is what restarts the
+// stream. That is the intended behaviour and not a compromise: a running
+// screencast cannot be resized in place, so a wider view IS a new session, and
+// making that explicit in the URL keeps the client from pretending otherwise.
+//
+// The numbers are deliberate rather than "as big as possible". 1600 is about
+// the widest a reading pane gets on a laptop, and every extra pixel is layout,
+// paint and JPEG encoding on the server several times a second.
+func liveSrcFor(streamSrc string, wide bool) string {
+	if streamSrc == "" {
+		return ""
+	}
+	if wide {
+		return streamSrc + "&w=1600&h=1000"
+	}
+	return streamSrc + "&w=1100&h=760"
+}
+
+func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live, wide bool) ui.Node {
 	// Live is only reachable when the server offered a stream URL. A toggle to
 	// a mode the instance cannot serve would be a button that produces an error
 	// page, which is worse than a button that is not there.
@@ -2066,16 +2134,39 @@ func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Nod
 
 	var view ui.Node
 	if live {
-		view = html.Img(html.Props{
-			Class: "page-frame-live",
-			Raw: map[string]any{
-				"src": streamSrc,
-				"alt": tr.T("article", "viewPageLiveAlt"),
-				// NOT lazy: a lazily-loaded stream does not start until it
-				// scrolls into view, and the reader has already asked for it.
-				"decoding": "sync",
-			},
-		})
+		// The spinner sits BEHIND the image rather than replacing it, so there
+		// is nothing to swap when the first frame lands — the frame simply
+		// covers it. Detecting "loaded" on a stream that never finishes loading
+		// is a question with no good answer; not asking it is better than
+		// asking it badly.
+		view = html.Div(html.Props{Class: "page-frame-stage"},
+			html.Div(html.Props{Class: "page-frame-spin", Aria: map[string]string{"hidden": "true"}},
+				html.Div(html.Props{Class: "spin-ring"}),
+				html.Span(html.Props{Class: "spin-label"},
+					html.Text(tr.T("article", "viewPageLiveLoading"))),
+			),
+			html.Img(html.Props{
+				Class: "page-frame-live",
+				// Keyed by width so switching to wide REPLACES the element
+				// rather than mutating its src. Mutating it leaves the old
+				// frame on screen, stretched, until the new session paints;
+				// a fresh element shows the spinner instead, which is the
+				// honest picture of what is happening.
+				Key: "live-" + id + "-" + modeWidth(wide),
+				Raw: map[string]any{
+					"src": liveSrcFor(streamSrc, wide),
+					"alt": tr.T("article", "viewPageLiveAlt"),
+					// NOT lazy: a lazily-loaded stream does not start until it
+					// scrolls into view, and the reader has already asked for it.
+					"decoding": "sync",
+					// Names the live session for the wheel handler. It is the
+					// capability signature from the stream URL, which is what
+					// the server keys its sessions by — so the element that
+					// shows the view is also the element that identifies it.
+					"data-live-session": sessionOf(streamSrc),
+				},
+			}),
+		)
 	} else {
 		view = html.Iframe(html.Props{
 			Class: "page-frame-doc",
@@ -2094,7 +2185,7 @@ func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Nod
 	}
 
 	return html.Div(html.Props{Class: "page-frame", Key: "pf-" + id,
-		Data: map[string]string{"mode": modeName(live)}},
+		Data: map[string]string{"mode": modeName(live), "wide": boolAttr(wide)}},
 		view,
 		// The way out lives under the frame as well as in it. The strip inside
 		// the proxied page scrolls away with the page; this does not, and a
@@ -2104,26 +2195,11 @@ func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Nod
 			// makes you read the label to find out which state you are in;
 			// two make the current one visibly pressed, and the choice is
 			// between named things rather than between "on" and "off".
-			ui.If(canLive, func() ui.Node {
-				return html.Div(html.Props{Class: "page-frame-modes",
-					Role: "group",
-					Aria: map[string]string{"label": tr.T("article", "viewPageModes")}},
-					html.Button(html.Props{
-						Class: "chip chip-mini",
-						Aria:  map[string]string{"pressed": boolAttr(!live)},
-						Raw: map[string]any{
-							"data-action": "page-mode-doc", "data-for-item": id,
-						},
-					}, html.Text(tr.T("article", "viewPageModeDoc"))),
-					html.Button(html.Props{
-						Class: "chip chip-mini",
-						Aria:  map[string]string{"pressed": boolAttr(live)},
-						Raw: map[string]any{
-							"data-action": "page-mode-live", "data-for-item": id,
-						},
-					}, html.Text(tr.T("article", "viewPageModeLive"))),
-				)
-			}),
+			// The mode chips used to live here. They moved up into the article's
+			// control row, where the rest of the decisions about this article
+			// are made; what is left below the frame is the caveat and the way
+			// out, both of which belong to the frame itself.
+			//
 			// Said once, next to the control it explains, and only in the mode
 			// it applies to. A reader who picks Live and then cannot select a
 			// quote will otherwise conclude the feature is broken.
@@ -2141,11 +2217,39 @@ func pageFrame(tr i18n.Runtime, id, pageSrc, streamSrc string, live bool) ui.Nod
 	)
 }
 
+// sessionOf pulls the session key out of a stream URL.
+//
+// It is the `s` parameter — the capability signature — which the server keys
+// its live sessions by. Parsed rather than passed alongside because the URL is
+// the one thing both ends already agree on, and a second field would be a
+// second thing to keep in step.
+func sessionOf(streamURL string) string {
+	_, query, ok := strings.Cut(streamURL, "?")
+	if !ok {
+		return ""
+	}
+	for part := range strings.SplitSeq(query, "&") {
+		if k, v, found := strings.Cut(part, "="); found && k == "s" {
+			return v
+		}
+	}
+	return ""
+}
+
 func modeName(live bool) string {
 	if live {
 		return "live"
 	}
 	return "doc"
+}
+
+// modeWidth names the size band, for the element key that forces a fresh <img>
+// when the view is widened.
+func modeWidth(wide bool) string {
+	if wide {
+		return "wide"
+	}
+	return "col"
 }
 
 func boolAttr(b bool) string {
@@ -2556,9 +2660,6 @@ func parsedBody(id, raw string) ([]ui.Node, bool) {
 // the question a reader actually has ("I'm in the list, what can I press?").
 // An alphabetical table of thirty bindings is a reference; this is a map.
 func helpSheet(tr i18n.Runtime, open bool) ui.Node {
-	if !open {
-		return nil
-	}
 	type binding struct{ keys, does string }
 	groups := []struct {
 		title string
@@ -2613,10 +2714,7 @@ func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 		cols = append(cols, html.Div(html.Props{Class: "help-group"}, rows...))
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		Raw:   map[string]any{"data-action": "help-close"},
-	},
+	return scrim(open, "help-close",
 		html.Div(html.Props{Class: "help", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
 			Aria: map[string]string{"modal": "true", "label": tr.T("help", "title")}},

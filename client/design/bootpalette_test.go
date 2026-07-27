@@ -100,7 +100,11 @@ func TestSplashKeepsItsBootHandshake(t *testing.T) {
 	page := bootPage(t)
 	// `id="app"` rather than "#app": the selector lives in client/app/main.go's
 	// ui.Render call, and what this page owes it is the element it selects.
-	for _, want := range []string{"af.boot", "/app.wasm", `id="app"`} {
+	// "app.wasm" without a leading slash: the shim fetches it RELATIVELY, so
+	// that one page boots both the server (which serves the app at the root) and
+	// a static host that serves it from a subpath. What this pins is the module's
+	// name, which is the half the compiler cannot see.
+	for _, want := range []string{"af.boot", "app.wasm", `id="app"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("web/index.html no longer references %q", want)
 		}

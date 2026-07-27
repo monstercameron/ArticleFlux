@@ -212,7 +212,8 @@ func init() {
 		// then cannot select a quote will conclude the feature is broken rather
 		// than that it is a picture.
 		"viewPageLiveNote": "A picture of the page — you can't select or search it.",
-		"viewPageLiveAlt":  "Live view of the page, rendered on your server",
+		"viewPageLiveAlt":     "Live view of the page, rendered on your server",
+		"viewPageLiveLoading": "Starting the browser…",
 		// The frame's accessible name. It says where the content is from and
 		// how it got here, because a screen reader lands in it with no other
 		// way to tell it apart from the article above.

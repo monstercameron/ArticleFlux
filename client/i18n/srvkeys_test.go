@@ -33,6 +33,7 @@ import (
 var serverKeyDirs = []string{
 	"../../internal/transport/grpcsrv",
 	"../../internal/apierr",
+	"../../internal/skew",
 }
 
 func TestEveryServerErrorKeyExists(t *testing.T) {

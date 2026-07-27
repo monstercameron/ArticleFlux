@@ -62,7 +62,10 @@ func focusCSS(r func(string, string) css.Rule) {
 	// The closing panes fade as they narrow. Without it the last 40px of the
 	// list is a column of half-words being squeezed, which reads as a layout
 	// breaking rather than as a pane closing.
-	css.Global(".pane-rail, .pane-list", r("transition", "opacity "+move))
+	// The transition itself is declared once, in design/filmstrip.go, and covers
+	// transform, opacity and visibility together. Declaring `transition: opacity`
+	// here is what silently dropped the strip's transform — a shorthand does not
+	// merge.
 	css.Global(".shell[data-focus='true'] :is(.pane-rail, .pane-list)",
 		r("opacity", "0"), r("pointer-events", "none"))
 

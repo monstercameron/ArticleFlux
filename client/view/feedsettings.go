@@ -65,10 +65,6 @@ var cacheChoices = []int32{0, 25, 100, 500}
 var muteChoices = []int{0, 24, 24 * 7, 24 * 30}
 
 func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
-	if !p.open {
-		return nil
-	}
-
 	body := []ui.Node{}
 	switch {
 	case p.err != "":
@@ -90,10 +86,11 @@ func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 		title = p.s.GetResolvedTitle()
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		Raw:   map[string]any{"data-action": "feed-settings-close"},
-	},
+	// No early return: the panel has to survive its own dismissal in order to
+	// animate out (see scrim). Building it closed is safe because every branch
+	// above already answers a nil `p.s` — that IS the loading state, and a
+	// closed panel simply renders it behind visibility:hidden.
+	return scrim(p.open, "feed-settings-close",
 		// data-action on the DIALOG, not just the scrim.
 		//
 		// The delegated listener resolves a click to the nearest ancestor

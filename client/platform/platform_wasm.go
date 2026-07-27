@@ -442,6 +442,90 @@ func OnDelegatedClick(containerSelector, attr string, fn func(value string)) Lis
 	return Listener{target: el, event: "click", fn: f}
 }
 
+// OnDelegatedWheel reports wheel deltas over elements carrying attr, coalesced
+// to one callback per animation frame.
+//
+// Two things here are load-bearing and neither is obvious.
+//
+// **preventDefault, conditionally.** A wheel over the live view must scroll the
+// remote page, not the reading pane behind it — without this the article moves
+// and the view does not, which reads as the view being frozen. It is called
+// only when the event actually landed on a matching element, so the rest of the
+// pane scrolls normally.
+//
+// **Coalescing to a frame.** A trackpad emits wheel events far faster than
+// anything can act on them, and one RPC each would flood the tunnel to move a
+// page a few hundred pixels. Deltas are summed and flushed once per frame, so a
+// fling becomes a handful of messages carrying the same total distance.
+//
+// The listener is passive: false, which is required for preventDefault to work
+// at all — a passive listener is a promise not to call it.
+func OnDelegatedWheel(containerSelector, attr string, fn func(value string, dx, dy float64)) Listener {
+	doc := js.Global().Get("document")
+	el := doc.Call("querySelector", containerSelector)
+	if !el.Truthy() {
+		return Listener{}
+	}
+
+	var pendingX, pendingY float64
+	var pendingID string
+	scheduled := false
+
+	var flush js.Func
+	flush = js.FuncOf(func(js.Value, []js.Value) any {
+		scheduled = false
+		dx, dy, id := pendingX, pendingY, pendingID
+		pendingX, pendingY = 0, 0
+		if id != "" && (dx != 0 || dy != 0) {
+			fn(id, dx, dy)
+		}
+		return nil
+	})
+
+	f := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		ev := args[0]
+		target := ev.Get("target")
+		if !target.Truthy() {
+			return nil
+		}
+		row := target.Call("closest", "["+attr+"]")
+		if !row.Truthy() {
+			return nil
+		}
+		v := row.Call("getAttribute", attr)
+		if !v.Truthy() {
+			return nil
+		}
+		ev.Call("preventDefault")
+
+		// deltaMode 1 is lines and 2 is pages; the remote side wants pixels.
+		// Firefox reports lines for a mouse wheel, so skipping this makes a
+		// real wheel move the page by three pixels.
+		sx, sy := ev.Get("deltaX").Float(), ev.Get("deltaY").Float()
+		switch ev.Get("deltaMode").Int() {
+		case 1:
+			sx, sy = sx*16, sy*16
+		case 2:
+			sx, sy = sx*800, sy*800
+		}
+
+		pendingID = v.String()
+		pendingX += sx
+		pendingY += sy
+		if !scheduled {
+			scheduled = true
+			js.Global().Call("requestAnimationFrame", flush)
+		}
+		return nil
+	})
+
+	el.Call("addEventListener", "wheel", f, map[string]any{"passive": false})
+	return Listener{target: el, event: "wheel", fn: f}
+}
+
 // OnScrollMetrics reports a scroll container's position and height, throttled to
 // one callback per animation frame.
 //

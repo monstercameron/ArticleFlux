@@ -42,20 +42,25 @@ func init() {
 		"useThis":    "Use this",
 
 		"noFeedTitle": "No feed here",
-		"noFeedHint": "This page doesn't publish one. Smart+ can read how the page is " +
-			"built and follow it anyway.",
+		"noFeedHint": "This page doesn't publish one. Smart+ follow reads how the page " +
+			"is built and follows it anyway.",
 		// The egress sentence. It says what is sent and where, in the place the
 		// decision is made rather than in a settings screen somewhere else.
 		// Points at the lamp, which is the only control that unblocks this. It
 		// names what is sent before anything is sent.
-		"smartOffHint": "Turn on Smart+ above and add the address again. It sends the " +
-			"page's structure — its tags and classes, not its text — to OpenAI, which " +
-			"works out the rule for following it.",
-		"smartToggleOn":  "Smart+ on",
-		"smartToggleOff": "Smart+ off",
-		// The lamp's tooltip and its accessible name. It says what the capability
-		// DOES, because the label beside it only says whether it is armed.
-		"smartAria":    "Smart+ · when an address has no feed, read the page and work out how to follow it",
+		"smartOffHint": "Turn on Smart+ follow above, then add the address again. It " +
+			"sends the page's structure — its tags and classes, not its text — to " +
+			"OpenAI, which works out the rule for following it.",
+		// The name of the SETTING, not of the tier. "Smart+" is the brand every
+		// model-backed feature wears — Smart+ voice is the other one — and a control
+		// labelled with the brand alone says which bill it lands on without saying
+		// what it does. The noun is "follow" because that is the verb this path
+		// already uses: the button below says "Follow this page" and the receipt
+		// says "Now following". One word, end to end.
+		"smartName": "Smart+ follow",
+		// The lamp's tooltip and accessible name. The dot carries the state; this
+		// carries the meaning, for anyone who needs it spelled out.
+		"smartAria":    "Smart+ follow — when an address has no feed, read the page and work out how to follow it",
 		"smartAnalyze": "Try again",
 		"smartWorking": "Reading the page…",
 		"smartNoKey": "This server has no OpenAI key. Whoever runs it adds one in " +

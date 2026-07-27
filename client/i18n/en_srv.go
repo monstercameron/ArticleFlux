@@ -64,6 +64,12 @@ func init() {
 		// go looking for a setting to fix.
 		"smartUnavailable": "Smart features are paused while the provider recovers",
 		"noEncryptionKey":  "this server cannot store credentials until an encryption key is configured",
+		// §22.10. Never actually rendered from this key in the normal path —
+		// the client classifies the sentinel in the message and shows its own
+		// Reload prompt — but registered because the fallback path exists and a
+		// reader must never see "srv.clientTooOld". The English is what a curl
+		// and the sync API get.
+		"clientTooOld": "refusing: articleflux:client-too-old",
 
 		// --- Smart+
 		"badApiKeyShape":       "that does not look like an OpenAI API key — they begin with sk-",

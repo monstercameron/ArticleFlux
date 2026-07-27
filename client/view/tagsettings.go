@@ -68,14 +68,16 @@ const (
 const glyphNone = "__none__"
 
 func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
-	if !p.open || p.t == nil {
-		return nil
+	// The one dialog that still guards, and only on the tag: every line below
+	// dereferences it, so there is nothing honest to render without one.
+	// `p.open` is deliberately NOT part of the guard — a closing panel keeps
+	// its tag for the length of the exit, which is what lets it animate out
+	// like the other five.
+	if p.t == nil {
+		return scrim(false, actTagSettingsClose)
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		Raw:   map[string]any{"data-action": actTagSettingsClose},
-	},
+	return scrim(p.open, actTagSettingsClose,
 		// data-action on the dialog itself stops the delegated walk before it
 		// reaches the backdrop's close — the same no-op the feed panel needs,
 		// for the same reason.

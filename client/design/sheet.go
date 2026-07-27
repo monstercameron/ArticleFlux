@@ -96,6 +96,7 @@ func Sheet() {
 	glyphs(r)
 	mobile(r)
 	appearanceCSS(r)
+	filmstrip(r)
 	// After responsive() would be wrong and before it is wrong too: focusCSS
 	// carries its own breakpoints and has to outrank the base layout at each of
 	// them, which specificity gives it (.shell[data-focus] .panes beats .panes)
@@ -663,6 +664,10 @@ func reader(r func(string, string) css.Rule) {
 	css.Global(".article",
 		r("padding", "52px 60px 30px"), r("position", "relative"),
 		r("overflow", "hidden"),
+		// Published as a variable so a child can cancel it and run full-bleed.
+		// The widened page frame is the only thing that does, and hard-coding
+		// 60 in two places is how the two drift the next time this changes.
+		css.Custom("art-pad", "60px"),
 	)
 	css.Global(".article::after",
 		r("content", `""`), r("position", "absolute"),
@@ -1122,7 +1127,57 @@ func verdicts(r func(string, string) css.Rule) {
 	// The live view (§10.1d). An <img> fed by multipart/x-mixed-replace, so the
 	// browser swaps frames for us — which is why this needs geometry and
 	// nothing else.
+	// The stage holds the spinner and the stream in the same box, spinner
+	// underneath. Nothing swaps when the first frame lands — the frame covers
+	// it — which avoids having to answer "when is a stream finished loading",
+	// a question with no good answer on a connection that never closes.
+	css.Global(".page-frame-stage",
+		r("position", "relative"),
+		r("min-height", "240px"),
+		r("display", "grid"),
+		// var(--sur-2), not a near-black literal: this is the well the spinner
+		// sits in before the frame covers it, and a fixed dark box flashes on a
+		// light theme. The spinner is var(--soft), which sheet_test.go already
+		// proves clears AA against --sur-2 in every theme — so the one pairing
+		// this box has to get right is guaranteed rather than assumed.
+		r("background", "var(--sur-2)"),
+	)
+	css.Global(".page-frame-spin",
+		r("position", "absolute"), r("inset", "0"),
+		r("display", "flex"), r("flex-direction", "column"),
+		r("align-items", "center"), r("justify-content", "center"), r("gap", "12px"),
+		r("color", "var(--soft)"), r("font-size", "12px"),
+		r("pointer-events", "none"),
+	)
+	css.Global(".spin-ring",
+		r("width", "26px"), r("height", "26px"),
+		r("border", "2px solid var(--line)"),
+		r("border-top-color", "var(--cc)"),
+		r("border-radius", "50%"),
+		// Amplitude-gated, like every other loop in the app: the rotation is
+		// written in terms of --mo, so at 0 the ring holds still while the
+		// animation runs on. It keeps a real duration on purpose — a
+		// zero-second infinite animation is the spec corner design/motion.go
+		// documents, and the readers who would meet it are exactly the ones who
+		// asked for less movement.
+		//
+		// This replaces a `prefers-reduced-motion` override, which was the
+		// pattern A39 exists to remove: it could only ever answer the machine,
+		// so a reader who turned motion ON in Appearance still got a frozen ring
+		// on a system configured to suppress it. The ring stays either way — it
+		// is still the shape that reads as "waiting", and the label beneath
+		// carries the meaning.
+		css.Keyframes("af-spin",
+			css.At("from", r("transform", "rotate(0deg)")),
+			css.At("to", r("transform", "rotate(calc(var(--mo) * 360deg))")),
+		),
+		r("animation-duration", "0.9s"),
+		r("animation-timing-function", "linear"),
+		r("animation-iteration-count", "infinite"),
+	)
+	css.Global(".spin-label", r("letter-spacing", ".02em"))
 	css.Global(".page-frame-live",
+		r("position", "relative"), r("z-index", "1"),
 		r("display", "block"), r("width", "100%"), r("height", "auto"),
 		// The stream is rendered at a fixed viewport on the server, so the
 		// image has a fixed aspect. Letting it scale to the column keeps it
@@ -1140,7 +1195,24 @@ func verdicts(r func(string, string) css.Rule) {
 		r("border-top", "1px solid var(--line)"),
 		r("background", "var(--bg)"),
 	)
-	css.Global(".page-frame-modes", r("display", "flex"), r("gap", "6px"))
+	css.Global(".page-modes", r("display", "inline-flex"), r("gap", "4px"))
+	// Widened: break out of the reading measure to fill the pane.
+	//
+	// Negative margins rather than a portal or a fixed overlay. The frame stays
+	// exactly where it is in the document — same scroll position, same place in
+	// the article stream, no focus to restore and nothing to unwind when it
+	// closes. A fullscreen overlay would have been more dramatic and would have
+	// had to solve all of that.
+	css.Global(".page-frame[data-wide='true']",
+		r("margin-left", "calc(var(--art-pad, 28px) * -1)"),
+		r("margin-right", "calc(var(--art-pad, 28px) * -1)"),
+		r("border-radius", "0"),
+		r("border-left", "0"), r("border-right", "0"),
+	)
+	css.Global(".page-frame[data-wide='true'] .page-frame-doc",
+		r("height", "min(88vh, 1200px)"))
+	css.Global(".page-frame[data-wide='true'] .page-frame-live",
+		r("max-height", "min(88vh, 1200px)"))
 	// The caveat sits between the modes and the exit, and shrinks away first:
 	// on a narrow pane the controls matter more than the sentence explaining
 	// one of them.
@@ -1890,20 +1962,18 @@ func responsive(r func(string, string) css.Rule) {
 		r("grid-template-columns", "var(--w-rail) "+GripWidth+" 1fr"),
 	)...)
 	css.Global(".grip-list", css.Media(css.MaxW(1220), r("display", "none"))...)
-	css.Global(".shell[data-view='article'] .pane-list",
-		css.Media(css.MaxW(1220), r("display", "none"))...)
-	css.Global(".shell:not([data-view='article']) .pane-article",
-		css.Media(css.MaxW(1220), r("display", "none"))...)
+	// The list and the article no longer hide each other here — they share the
+	// third column and SLIDE between positions. See design/filmstrip.go: a
+	// transform cannot animate an element that is not being laid out, which is
+	// the whole reason `display: none` had to go.
 
 	css.Global(".panes", css.Media(css.MaxW(900),
 		r("grid-template-columns", "1fr"),
 	)...)
 	css.Global(".grip", css.Media(css.MaxW(900), r("display", "none"))...)
-	css.Global(".shell[data-view='rail'] .pane-list", css.Media(css.MaxW(900), r("display", "none"))...)
-	css.Global(".shell[data-view='rail'] .pane-article", css.Media(css.MaxW(900), r("display", "none"))...)
-	css.Global(".shell[data-view='list'] .pane-rail", css.Media(css.MaxW(900), r("display", "none"))...)
-	css.Global(".shell[data-view='list'] .pane-article", css.Media(css.MaxW(900), r("display", "none"))...)
-	css.Global(".shell[data-view='article'] .pane-rail", css.Media(css.MaxW(900), r("display", "none"))...)
+	// Six display:none rules used to live here, and they were a hard cut on the
+	// most-used navigation in the application. The three panes are a strip that
+	// slides now — design/filmstrip.go.
 
 	css.Global(".tabbar", css.Media(css.MaxW(900), r("display", "grid"))...)
 	css.Global(".shell", css.Media(css.MaxW(900), r("grid-template-rows", "1fr auto"))...)
@@ -1922,7 +1992,8 @@ func responsive(r func(string, string) css.Rule) {
 		css.Media(css.MaxW(900), r("display", "none"))...)
 
 	// 60px of gutter on a 390px screen leaves 270px of text.
-	css.Global(".article", css.Media(css.MaxW(900), r("padding", "24px 18px 20px"))...)
+	css.Global(".article", css.Media(css.MaxW(900),
+		r("padding", "24px 18px 20px"), css.Custom("art-pad", "18px"))...)
 	css.Global(".article-body", css.Media(css.MaxW(900), r("font-size", "17px"))...)
 	css.Global(".article-note", css.Media(css.MaxW(900), r("margin", "0 18px 40px"))...)
 	css.Global(".list-head", css.Media(css.MaxW(900), r("padding", "20px 16px 14px"))...)

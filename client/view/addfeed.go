@@ -110,7 +110,7 @@ const (
 // cannot collide with a real id — those are idgen's, not English.
 const unfiledID = "__unfiled__"
 
-// smartSubscribePref is the standing consent for the model to read a page, held
+// smartFollowPref is the standing consent for the model to read a page, held
 // server-side with every other preference.
 //
 // The string is duplicated in internal/transport/grpcsrv because that is where
@@ -118,13 +118,9 @@ const unfiledID = "__unfiled__"
 // server's decides whether anything egresses. A shared constant would be one
 // import of the server package into the client to save nine characters, and the
 // two are different jobs that happen to agree on a key.
-const smartSubscribePref = "smart.subscribe"
+const smartFollowPref = "smart.follow"
 
 func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
-	if !p.open {
-		return nil
-	}
-
 	// The category picker: every category the reader has, plus none, plus a way
 	// to make one. Chips rather than a select, for the same reason the feed
 	// panel uses them — a dropdown hides the range of what is possible behind a
@@ -194,10 +190,7 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 		submit = tr.T("addFeed", "working")
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		Raw:   map[string]any{"data-action": actAddClose},
-	},
+	return scrim(p.open, actAddClose,
 		// data-action on the dialog itself, for the reason feedSettings documents:
 		// the delegated listener walks up to the nearest ancestor carrying one, so
 		// without this a click on a text field resolves to the backdrop's close.
@@ -431,10 +424,12 @@ func afFieldWith(label, hint string, aside, control ui.Node) ui.Node {
 // this is not one of several options — it is a capability that is either armed
 // or not, and arming it changes what the button below does.
 func smartLamp(tr i18n.Runtime, on bool) ui.Node {
-	label := tr.T("addFeed", "smartToggleOff")
-	if on {
-		label = tr.T("addFeed", "smartToggleOn")
-	}
+	// The label is the setting's NAME and does not change with its state —
+	// "Smart+ follow", not "Smart+ on". A control whose label IS its state has to
+	// be read twice: once to learn what it is, once to learn what it is doing.
+	// The dot answers the second question, and answers it by SHAPE — hollow
+	// against filled — as well as by colour, so it survives a glance and it
+	// survives being colour-blind.
 	return html.Button(html.Props{
 		Class: "af-lamp",
 		Raw:   map[string]any{"data-action": actAddSmart},
@@ -445,7 +440,7 @@ func smartLamp(tr i18n.Runtime, on bool) ui.Node {
 		},
 	},
 		html.I(html.Props{Class: "af-lamp-dot", Aria: map[string]string{"hidden": "true"}}),
-		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(label)),
+		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(tr.T("addFeed", "smartName"))),
 	)
 }
 
@@ -489,10 +484,6 @@ const (
 )
 
 func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
-	if !p.open {
-		return nil
-	}
-
 	// What deleting costs, stated in the number that makes it concrete. "4 feeds
 	// move to Unfiled" is checkable; "this cannot be undone" is a formula that
 	// says nothing about this particular category.
@@ -509,10 +500,7 @@ func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
 		danger = actionButton(actCatConfirm, "btn fs-danger", tr.T("category", "confirm"))
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		Raw:   map[string]any{"data-action": actCatClose},
-	},
+	return scrim(p.open, actCatClose,
 		html.Div(html.Props{Class: "af af-narrow", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
 			Aria: map[string]string{"modal": "true", "label": tr.T("category", "title")}},

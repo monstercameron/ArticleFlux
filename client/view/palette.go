@@ -255,10 +255,6 @@ func wordPrefix(s, q string) bool {
 // palette renders the overlay. It returns nil when closed, so the whole subtree
 // costs nothing while it is not in use.
 func palette(tr i18n.Runtime, p paletteProps) ui.Node {
-	if !p.open {
-		return nil
-	}
-
 	rows := make([]ui.Node, 0, len(p.entries)+1)
 	if len(p.entries) == 0 {
 		rows = append(rows, html.Div(html.Props{Class: "pal-empty"},
@@ -287,12 +283,10 @@ func palette(tr i18n.Runtime, p paletteProps) ui.Node {
 		))
 	}
 
-	return html.Div(html.Props{
-		Class: "pal-scrim",
-		// Clicking the backdrop closes it. The overlay itself stops the click, so
-		// choosing a row does not also count as clicking outside.
-		Raw: map[string]any{"data-action": "palette-close"},
-	},
+	// Rendered whether or not it is open, so it can animate OUT as well as in —
+	// see scrim(). The ranked entry list is built upstream and is empty while
+	// this is closed, so a closed palette costs an empty box.
+	return scrim(p.open, "palette-close",
 		// See feedSettings: a click inside the dialog must not resolve to the
 		// backdrop's close action. Rows carry data-pal, which is a different
 		// attribute and a different listener, so this does not swallow them.

@@ -67,6 +67,10 @@ func OnDelegatedClick(containerSelector, attr string, fn func(value string)) Lis
 	return Listener{}
 }
 
+func OnDelegatedWheel(containerSelector, attr string, fn func(value string, dx, dy float64)) Listener {
+	return Listener{}
+}
+
 func OnScrollMetrics(rootSelector, matchSelector string, fn func(scrollTop, viewport, content float64)) Listener {
 	return Listener{}
 }

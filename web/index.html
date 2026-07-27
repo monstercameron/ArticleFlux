@@ -108,7 +108,15 @@
 </div>
 <div id="app"></div>
 
-<script src="/wasm_exec.js"></script>
+<!--
+  Relative, not absolute, and it matters in exactly one place: a static host that
+  serves this page from a subpath (GitHub Pages puts a project site at
+  /<repo>/) would 404 on "/wasm_exec.js" while resolving "wasm_exec.js"
+  correctly. The server serves the application at the root, where the two are the
+  same string — so one page boots both, and the demo does not need a fork of this
+  file that would drift from it.
+-->
+<script src="wasm_exec.js"></script>
 <script>
 // The entire permitted application JavaScript (A26): load the wasm module, say
 // what it is doing while that happens, and say something useful if it fails — a
@@ -188,10 +196,22 @@
   // Streamed through a byte counter, so a six-megabyte module on a cold load
   // reports what it is doing instead of leaving a wordmark on screen for eight
   // seconds while the reader wonders whether it is stuck.
-  const counted = async () => {
-    const res = await fetch('/app.wasm');
-    if (!res.ok) throw new Error('the server answered ' + res.status + ' for /app.wasm');
-    if (!res.body || !self.TransformStream) return res;
+  //
+  // `gz` is the static-host path and is off for the server. The server already
+  // prefers app.wasm.gz when the client accepts gzip, and does it the way HTTP
+  // is supposed to — Content-Encoding, decoded by the browser before we ever see
+  // it. A dumb static host cannot negotiate, so the demo publishes ONLY the
+  // compressed module and this decompresses it here: 30 MB against 6 MB is not a
+  // tuning decision, it is whether a stranger waits or leaves.
+  const counted = async (url, gz) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('the server answered ' + res.status + ' for ' + url);
+    if (!res.body || !self.TransformStream) {
+      // The plain module is still a valid Response as it stands; a compressed
+      // one without a stream to decompress it is not.
+      if (gz) throw new Error('this browser cannot decompress the module');
+      return res;
+    }
 
     // content-length is the length ON THE WIRE, and the server prefers a
     // precompressed .gz — while res.body hands back DECODED bytes. Whenever the
@@ -205,7 +225,7 @@
     const roam = () => { total = 0; bar.classList.add('roam'); };
     if (!total) roam();
 
-    const stream = res.body.pipeThrough(new TransformStream({
+    let stream = res.body.pipeThrough(new TransformStream({
       transform(chunk, ctrl) {
         got += chunk.byteLength;
         if (total && got > total) roam();
@@ -218,6 +238,10 @@
         ctrl.enqueue(chunk);
       },
     }));
+    // Counted first, decompressed second, so the number on screen is bytes off
+    // the wire — which is the number the reader is actually waiting for, and the
+    // only one content-length agrees with.
+    if (gz) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     // instantiateStreaming refuses anything that is not application/wasm, and a
     // Response built from a stream carries no headers of its own.
     return new Response(stream, { headers: { 'Content-Type': 'application/wasm' } });
@@ -227,11 +251,19 @@
     const go = new Go();
     let source;
     try {
-      source = await counted();
+      source = await counted('app.wasm', false);
     } catch (e) {
+      // Two different situations land here and the order between them is the
+      // point. A server always has app.wasm, so it never reaches this at all.
+      // A static host serving the demo has ONLY app.wasm.gz, so the 404 above is
+      // the expected first step rather than a failure — try the compressed
+      // module before giving up.
+      if (self.DecompressionStream) {
+        try { source = await counted('app.wasm.gz', true); } catch (e2) { source = null; }
+      }
       // Progress is a nicety; booting is not. Any failure in the counting path
       // falls straight back to the plain fetch that has always worked.
-      source = fetch('/app.wasm');
+      if (!source) source = fetch('app.wasm');
     }
     const result = await WebAssembly.instantiateStreaming(source, go.importObject);
     clearTimeout(chatter);

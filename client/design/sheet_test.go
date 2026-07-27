@@ -61,7 +61,7 @@ func TestEveryTokenReadIsAlsoDefined(t *testing.T) {
 	//	               it is legitimately read where --c may be absent
 	runtime := map[string]bool{
 		"--c": true, "--acc": true, "--thm-accent": true,
-		"--i": true, "--cursor": true,
+		"--i": true, "--cursor": true, "--pane": true, "--strip": true,
 	}
 
 	defined := map[string]bool{}
@@ -111,6 +111,12 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// Set per element from Go: the spawn stagger index, and the list
 		// cursor's offset down the scroller.
 		"--i": true, "--cursor": true,
+		// The filmstrip's coordinates: a pane's position in the strip, and the
+		// position currently showing. Geometry, not palette.
+		"--pane": true, "--strip": true,
+		// The article's own gutter, so a full-bleed child can reach back out to
+		// the pane edge. A measurement, and one the reader changes by resizing.
+		"--art-pad": true,
 	}
 
 	sheet := sheetText(t)
@@ -216,6 +222,7 @@ func TestEveryDurationIsGated(t *testing.T) {
 	// a fourth loop fails this test rather than quietly joining the exemption.
 	loops := map[string]bool{
 		"1.1s":  true, // the note's save spinner
+		"0.9s":  true, // the page-frame spinner
 		"1.25s": true, // the indeterminate loading rule
 		"1.4s":  true, // the per-feed panel's save mark
 		"1.5s":  true, // the skeleton shimmer

@@ -157,6 +157,7 @@ func motion(r func(string, string) css.Rule) {
 	motionMarks(r)
 	motionSpawn(r)
 	motionLoading(r)
+	motionDialogs(r)
 	motionArrivals(r)
 }
 
@@ -201,14 +202,6 @@ func motionKeyframes(r func(string, string) css.Rule) {
 		css.At("0%", r("opacity", "0"), r("transform", "translateY(7px)")),
 		css.At("100%", r("opacity", "1"), r("transform", "none")),
 	)
-	lift := css.Keyframes("lift",
-		css.At("0%", r("opacity", "0"), r("transform", "translateY(14px) scale(.985)")),
-		css.At("100%", r("opacity", "1"), r("transform", "none")),
-	)
-	veil := css.Keyframes("veil",
-		css.At("0%", r("opacity", "0")),
-		css.At("100%", r("opacity", "1")),
-	)
 	// The focus ring closes IN rather than fading up: a ring that arrives from
 	// outside the element points at the element. On a reader driven by j/k this
 	// fires several times a second, so it is the shortest thing here.
@@ -229,10 +222,8 @@ func motionKeyframes(r func(string, string) css.Rule) {
 		}
 	}
 
-	// Modals lift; the scrim behind them only fades, because a backdrop that
-	// moves is a backdrop the eye tracks instead of ignoring.
-	css.Global(".pal, .help, .fs", enter(lift, "var(--t3)")...)
-	css.Global(".pal-scrim", enter(veil, "var(--t2)")...)
+	// Modals are NOT keyframed. See motionDialogs: they have to animate in both
+	// directions, and a keyframe only fires when an element is created.
 	// One article in the stream. Opacity and transform only — nothing here
 	// changes layout, which is what keeps it safe to run while the reader is
 	// scrolling and while a prepended article is being anchored underneath them.
@@ -247,6 +238,54 @@ func motionKeyframes(r func(string, string) css.Rule) {
 	// The settings body, keyed on its tab for the same reason.
 	css.Global(".set-panel", enter(rise, "var(--t2)")...)
 	css.Global(":focus-visible", enter(ring, "var(--t1)")...)
+}
+
+// --- dialogs: the only gesture in the app that has to run backwards ------------
+
+// motionDialogs drives all six overlays off one attribute, in both directions.
+//
+// Everything else here is either a transition between two states that both
+// exist, or a keyframe on something being born. A dialog is neither: it appears,
+// and then it has to *leave*, and a keyframe cannot do the second half because
+// it only fires when an element is created. That is why the scrim is rendered at
+// all times and carries `data-open` (client/view/modal.go) — with the element
+// alive in both states, a plain transition covers the round trip.
+//
+// **Arriving takes its time; leaving is brisk.** The transition a browser runs
+// is the one belonging to the state being moved TO, so declaring the slow
+// timings on `[data-open='true']` and the quick ones on the base rule gives the
+// two directions different speeds with no JavaScript and no second attribute. It
+// is worth the trick: a dialog that lingers on dismissal feels like the
+// application is reluctant to let go, and Escape is pressed by people in a
+// hurry.
+//
+// visibility rather than opacity alone, and with the delay that keeps the panel
+// on screen for its own exit. `opacity: 0` leaves a closed dialog in the
+// accessibility tree and in the tab order — a reader on a keyboard would tab
+// into a palette that is not there.
+func motionDialogs(r func(string, string) css.Rule) {
+	const panels = ".pal, .help, .fs, .af"
+
+	css.Global(".pal-scrim",
+		r("opacity", "0"), r("visibility", "hidden"),
+		r("transition", "opacity "+warm+", visibility 0s linear var(--t2)"),
+	)
+	css.Global(".pal-scrim[data-open='true']",
+		r("opacity", "1"), r("visibility", "visible"),
+		r("transition", "opacity "+move+", visibility 0s"),
+	)
+
+	// The panel lifts; the backdrop only fades. A backdrop that moves is a
+	// backdrop the eye tracks instead of ignoring.
+	css.Global(panels,
+		r("opacity", "0"),
+		r("transform", "translateY(14px) scale(.985)"),
+		r("transition", "opacity "+warm+", transform "+move),
+	)
+	css.Global(".pal-scrim[data-open='true'] :is("+panels+")",
+		r("opacity", "1"), r("transform", "none"),
+		r("transition", "opacity "+move+", transform "+slow),
+	)
 }
 
 // --- spawn: an item that was not there a moment ago ---------------------------
@@ -304,14 +343,36 @@ func motionSpawn(r func(string, string) css.Rule) {
 
 	// A feed appearing in the rail. No stagger and no diffing: the rail is not
 	// virtualised and its slots are keyed, so a slot only mounts when a feed is
-	// genuinely new to the list — the first load, a subscription, or a filter
-	// that now matches. Every other rail render patches the row in place.
+	// genuinely new to the list — the first load, a subscription, a filter that
+	// now matches, or the Feeds band being unfolded. Every other rail render
+	// patches the row in place.
+	//
+	// A FADE, not the rise the list rows get, and the difference is the count.
+	// Unfolding that band mounts 151 slots in one frame: 151 things rising
+	// together is a whoosh, which says "something swept in" when what happened is
+	// "a group you already knew about came back". A group appearing should
+	// appear. One row arriving in a list of 3,600 is a different event and keeps
+	// its rise.
+	fade := css.Keyframes("fade-in",
+		css.At("0%", r("opacity", "0")),
+		css.At("100%", r("opacity", "1")),
+	)
 	css.Global(".feed-slot",
-		rowIn,
+		fade,
 		r("animation-duration", "var(--t2)"),
 		r("animation-timing-function", "var(--e-out)"),
 		r("animation-fill-mode", "both"),
 	)
+
+	// Folding a band CLOSED is deliberately not animated, and that is a decision
+	// rather than an omission.
+	//
+	// Collapsing a height means keeping the rows laid out for the length of the
+	// collapse — and for the Feeds band that is 151 rows kept alive purely to
+	// animate their own removal, which is precisely the cost the fold exists to
+	// remove. The caret rotation is the feedback, and the rows being gone is the
+	// result. The cheap direction is the one that animates: they fade back in on
+	// open, because arriving needs to be explained and leaving does not.
 }
 
 // --- loading: work that is still happening -------------------------------------

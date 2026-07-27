@@ -85,6 +85,36 @@ func applyAppearance(a appearance) {
 	mirrorToBoot(t)
 }
 
+// applyBootAppearance paints everything the saved view puts on documentElement,
+// before the reader is mounted.
+//
+// It exists because these are the preferences that are NOT component state: the
+// theme, the accent, the reading size, the motion switch and the two pane
+// widths are all custom properties, so applying them costs no render — and
+// applying them a render LATE costs a visible repaint of the entire app. Root
+// calls this while the splash is still up, which is the one moment in the boot
+// where a repaint is free.
+//
+// Deliberately tolerant of a nil or partial map. A first-ever boot has no
+// preferences at all, and every value here has a correct answer already sitting
+// in the sheet — so an absent key means "leave what the sheet painted", never
+// "reset it to something".
+func applyBootAppearance(p map[string]string) {
+	if a := appearanceFromPrefs(p); a != (appearance{}) {
+		applyAppearance(a)
+	}
+	// The widths are set as variables rather than restored into state for the
+	// same reason the drag writes them that way: the panes are sized by CSS, and
+	// a width that lives in a component would re-render three panes to move a
+	// divider.
+	if v := p["pane.rail"]; v != "" {
+		platform.SetRootVar("--w-rail", v)
+	}
+	if v := p["pane.list"]; v != "" {
+		platform.SetRootVar("--w-list", v)
+	}
+}
+
 // bootKey is where the splash reads its colours from. web/index.html is the only
 // other place that knows this name.
 const bootKey = "af.boot"

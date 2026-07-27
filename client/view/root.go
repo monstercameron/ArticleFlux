@@ -63,6 +63,16 @@ func Root() ui.Node {
 	// The connection, once someone is authenticated. Login dials it and hands it
 	// over so the reader does not open a second tunnel.
 	authed := ui.UseRef[*data.Client](nil)
+	// The saved view, fetched during `checking` and handed to the reader as a
+	// prop. A Ref rather than state: it is read once, when Reader mounts, and a
+	// second render of Root is not a reason to re-read it.
+	//
+	// Nil is meaningful and is not the same as empty: nil means "not fetched"
+	// (a fresh login, or a preferences call that failed), and the reader falls
+	// back to its own defaults. An empty non-nil map means the server has no
+	// preferences for this account, which is a first-ever boot and looks
+	// identical from the reader's side — the distinction only matters here.
+	saved := ui.UseRef[map[string]string](nil)
 	// catalogReady exists only to force one re-render after a translated catalog
 	// lands. The locale has not changed at that point — it was already set — so
 	// nothing else would invalidate the tree, and the reader would sit looking
@@ -111,6 +121,38 @@ func Root() ui.Node {
 				return
 			}
 			_, err = c.WhoAmI(context.Background())
+			// The saved view, fetched HERE rather than after the reader mounts.
+			//
+			// It used to be the reader's own first effect, which meant the reader
+			// mounted with its defaults — the All stream, an expanded rail, the
+			// house theme, default pane widths — painted them, and then snapped
+			// into the saved state a round trip later. Cam saw exactly that: "it
+			// is instantly the default view and then flashes to the past state."
+			//
+			// A30 says where you were is account state. State that has to be
+			// fetched cannot be a component's initial value unless something
+			// holds the screen while it arrives, and the splash is already up and
+			// already holding it for WhoAmI. So this rides along inside the same
+			// wait: one more round trip against a check that is already
+			// happening, and the reader's first frame is the right one instead of
+			// the second one.
+			//
+			// Errors are swallowed on purpose. Losing the saved place is a small
+			// regression; refusing to show the reader because a preferences call
+			// failed is the app not working. A nil map reads as "no preferences",
+			// which is exactly what a first-ever boot looks like.
+			var prefs map[string]string
+			if err == nil {
+				if p, perr := c.GetPrefs(context.Background()); perr == nil {
+					prefs = p
+					// Applied before the phase flips, so the very first painted
+					// frame of the reader is already themed and already the right
+					// width. These are custom properties on documentElement, not
+					// component state — applying them costs no render, and doing
+					// it a render later is a visible repaint of the whole app.
+					applyBootAppearance(p)
+				}
+			}
 			ui.PostAsync(func() {
 				if err != nil {
 					// Two different failures land here and they are deliberately
@@ -127,6 +169,7 @@ func Root() ui.Node {
 					return
 				}
 				authed.Set(c)
+				saved.Set(prefs)
 				phase.Set(phaseReader)
 			})
 		}()
@@ -204,13 +247,28 @@ func Root() ui.Node {
 	var child ui.Node
 	switch phase.Get() {
 	case phaseReader:
-		child = ui.CreateElement(Reader, readerProps{client: authed.Get()})
+		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get()})
 	case phaseLogin:
 		child = ui.CreateElement(Login, loginProps{
 			tunnel: tunnel,
 			onSuccess: func(c *data.Client) {
 				authed.Set(c)
-				phase.Set(phaseReader)
+				// The same wait as the boot path, for the same reason — a reader
+				// who signs in on a second machine should land in the view they
+				// left, not watch it assemble itself. The login card stays up for
+				// one more round trip, which is the cheapest place in the whole
+				// session to spend one: they are already watching a button they
+				// just pressed.
+				go func() {
+					p, err := c.GetPrefs(context.Background())
+					if err == nil {
+						applyBootAppearance(p)
+					}
+					ui.PostAsync(func() {
+						saved.Set(p)
+						phase.Set(phaseReader)
+					})
+				}()
 			},
 		})
 	default:

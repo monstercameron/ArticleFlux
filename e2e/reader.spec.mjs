@@ -111,25 +111,50 @@ test.describe('reading', () => {
     await expect(page.locator('.item-row')).toHaveCount(before - 1);
   });
 
+  /**
+   * Both tests below are scoped to ONE feed, and every index is an index within
+   * it. The suite's reset clears read state but not subscriptions, so any test
+   * that subscribes to something shifts the positions in the all-feeds list
+   * permanently — an index-based assertion there passes or fails according to
+   * what ran before it. Alpha Journal is always exactly its three fixture items.
+   */
+  const ALPHA = 'Alpha Journal';
+
+  /**
+   * openAlpha selects the fixture feed, by the row itself rather than by name.
+   *
+   * Deliberately not the `openFeed` helper: a feed row now has a settings gear
+   * beside it whose accessible name also contains the feed's, so a name-based
+   * lookup matches two elements and Playwright refuses in strict mode. That is
+   * the suite's stale-helper problem rather than this test's, and it is filed —
+   * but a test cannot wait for it, so this asks for the row class directly.
+   */
+  async function openAlpha(page) {
+    await page.locator('.pane-rail .feed-row', { hasText: ALPHA }).first().click();
+    await expect(page.locator('.pane-list')).toBeVisible();
+  }
+
   test('jumping down the list does not read what it jumped over', async ({ page }) => {
     await boot(page);
+    await openAlpha(page);
     const rows = page.locator('.item-row');
+    await expect(rows).toHaveCount(3);
 
-    // Row 3 is the long fixture article, which is what makes this reproducible:
-    // the pane can only scroll far enough to carry an article clean past the
-    // fold when there is something taller than the viewport below it.
+    // Row 1 is the long fixture article, and its length is what makes this
+    // reproducible at all: the pane can only carry an article clean past the
+    // fold when there is enough below it to scroll.
     //
-    // Both waits below are load-bearing, and an earlier version of this test
-    // passed against the unfixed client without them. The bug needs the seeded
-    // article to have its BODY — a skeleton is short enough that the jump cannot
-    // push it clear of the fold, so a test that clicks before the bodies land
-    // asserts against a stream too short to reproduce anything.
+    // The wait on the body is load-bearing. An earlier version of this test
+    // passed against the UNFIXED client without it, because a skeleton is short
+    // enough that the jump cannot push it clear of the fold — a test that clicks
+    // before the bodies land is asserting against a stream too short to
+    // reproduce anything.
     await rows.nth(0).click();
     await expect(rows.nth(0)).toHaveAttribute('data-read', 'true');
     await expect(page.locator('.article-body').first()).toBeVisible();
 
-    await rows.nth(3).click();
-    await expect(rows.nth(3)).toHaveAttribute('data-read', 'true');
+    await rows.nth(2).click();
+    await expect(rows.nth(2)).toHaveAttribute('data-read', 'true');
     // The jump itself, waited on directly: the pane has travelled off the top,
     // which is the exact condition that used to mark the seeded article read.
     await expect
@@ -137,41 +162,88 @@ test.describe('reading', () => {
         .evaluate((el) => el.scrollTop), { timeout: 20_000 })
       .toBeGreaterThan(0);
 
-    // The two in between. Opening row 3 seeds the article above it into the
+    // The one in between. Opening row 2 seeds the article above it into the
     // stream and then scrolls the target to the top, which drags the seeded one
     // past the bottom edge — and "scrolled past" is one of the two ways this app
     // marks an article read. It must not count here: the app moved the article,
-    // the reader did not, and nothing was ever on screen to be read.
+    // the reader did not, and not a word of it was ever on screen.
     //
     // Asserted after a reload as well as before it. Optimistic state is local
-    // and could simply not have been applied yet; a reload proves no SetItemState
-    // was sent, which is the thing that actually went wrong.
+    // and could simply not have been applied yet; the reload is what proves no
+    // SetItemState was sent, which is the thing that actually went wrong.
     await expect(rows.nth(1)).toHaveAttribute('data-read', 'false');
-    await expect(rows.nth(2)).toHaveAttribute('data-read', 'false');
 
     await page.reload();
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('.item-row').nth(1)).toHaveAttribute('data-read', 'false');
-    await expect(page.locator('.item-row').nth(2)).toHaveAttribute('data-read', 'false');
+    await openAlpha(page);
+    await expect(page.locator('.item-row').nth(1))
+      .toHaveAttribute('data-read', 'false');
   });
 
-  test('scrolling through the stream still marks what it passes', async ({ page }) => {
+  test('scrolling back into a skipped article does mark it read', async ({ page }) => {
     await boot(page);
+    await openAlpha(page);
     const rows = page.locator('.item-row');
 
-    // The other half of the same behaviour, and the reason the fix is a
-    // suppression list rather than switching scroll-past marking off: a reader
-    // who scrolls to the end of an article HAS read it, and the previous test
-    // passing by breaking this one would be a regression wearing a fix's hat.
-    await rows.nth(3).click();
-    await expect(rows.nth(3)).toHaveAttribute('data-read', 'true');
+    // The other half of the same behaviour, and the reason the fix suppresses
+    // rather than switches scroll-past marking off. The article the jump passed
+    // over is still sitting in the stream above the reader; scrolling up into it
+    // is reading it, and it has to count. A fix that made the first test pass by
+    // making this one fail would be a regression wearing a fix's hat.
+    await rows.nth(0).click();
+    await expect(page.locator('.article-body').first()).toBeVisible();
+    await rows.nth(2).click();
+    await expect
+      .poll(async () => page.locator('.pane-article')
+        .evaluate((el) => el.scrollTop), { timeout: 20_000 })
+      .toBeGreaterThan(0);
+    await expect(rows.nth(1)).toHaveAttribute('data-read', 'false');
 
-    const pane = page.locator('.pane-article');
-    await pane.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    // Scrolled by the reader this time, which is the whole distinction the fix
+    // rests on. The event is dispatched explicitly because setting scrollTop
+    // from script does not always produce one, and the handler is a scroll
+    // listener.
+    await page.locator('.pane-article').evaluate((el) => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
 
-    // Row 4 follows row 3 in the list, so scrolling to the bottom of the stream
-    // arrives in it.
-    await expect(rows.nth(4)).toHaveAttribute('data-read', 'true', { timeout: 30_000 });
+    await expect(rows.nth(1))
+      .toHaveAttribute('data-read', 'true', { timeout: 30_000 });
+  });
+
+  test('a reload paints the saved view, never the default one first', async ({ page }) => {
+    await boot(page);
+    await openAlpha(page);
+    await expect(page.locator('.list-title')).toHaveText(ALPHA);
+
+    // The flash this guards against lasted one round trip, so polling for it
+    // after the fact is a race the test would usually lose. Instead the page
+    // records the FIRST list title it ever paints, from an observer installed
+    // before the app boots — an assertion about the first frame has to be made
+    // by something that was watching for it.
+    await page.addInitScript(() => {
+      window.__firstTitle = null;
+      new MutationObserver(() => {
+        if (window.__firstTitle !== null) return;
+        const el = document.querySelector('.list-title');
+        if (el && el.textContent.trim()) window.__firstTitle = el.textContent.trim();
+      // `document`, NOT `document.documentElement`. The boot shim replaces the
+      // root element, so an observer bound to the one that exists at
+      // document-start is watching a detached node by the time the app renders
+      // — it reported nothing at all, which reads exactly like a passing test.
+      }).observe(document, { subtree: true, childList: true });
+    });
+
+    await page.reload();
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.list-title')).toHaveText(ALPHA);
+
+    // Not "ends up right" — that was already true before the fix, and is what
+    // made it look like a rendering glitch rather than a bug. The saved view is
+    // fetched while the splash is still up, so the reader's first painted frame
+    // is the restored one and "All feeds" is never on screen at all.
+    expect(await page.evaluate(() => window.__firstTitle)).toBe(ALPHA);
   });
 
   test('mark all read empties the unread view and zeroes the counts', async ({ page }) => {
