@@ -2484,13 +2484,36 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 
 **Owed**
 
-- [ ] **8b.44 Decide Fanciful's `--mute`** — **D22**. 8b.39 measured the house theme's tertiary text at
+- [x] **8b.44 Decide Fanciful's `--mute`** — **D22**. 8b.39 measured the house theme's tertiary text at
       **4.42:1 on a hovered row and 3.94:1 on the selected one** — below AA at the 11.5px it is used
       at, for datelines and counts. The value is transcribed verbatim from `design/03-fanciful.html`,
       and the mockup is the specification, so this is not a value to nudge in `theme.go`. About
       `#A093AC` clears 4.5:1 on all three grounds and is the smallest change that does. *Done when:
       the mockup and `tokens.go` agree on a value that passes, and the exception is deleted from
       `sheet_test.go` rather than re-ratcheted.*
+
+      ✅ **DECIDED 2026-07-27 — `#A093AC`,** in the mockup and in `tokens.go`, with the `known` map
+      now **empty** rather than re-ratcheted.
+
+      Measured before changing anything, against all three grounds:
+
+      | | page `#221A2E` | hovered `#2B2239` | selected `#342A44` | |
+      |---|---|---|---|---|
+      | `#93869F` (was) | 4.90 | 4.42 | **3.94** | fails |
+      | `#9A8CA8` | 5.33 | 4.81 | **4.29** | fails |
+      | **`#A093AC`** | 5.79 | 5.22 | **4.65** | passes |
+
+      So the proposal was right and it is also the SMALLEST step that works — one notch lighter than
+      the old value still fails the selected row, which is the worst case precisely because it is the
+      row the reader is sitting on.
+
+      **Changed in the mockup first.** `design/03-fanciful.html` and `04-fanciful-mobile.html` carry
+      this value and the mockup is the specification here, so nudging `tokens.go` alone would have
+      made the built app right and the specification wrong — and the next person to transcribe from
+      the mockup would have put the failing value back.
+
+      `web/index.html`'s boot fallback carries it too and moved with them, or the splash would have
+      spent one frame in the old colour.
 - [x] **8b.46 Focus mode and the list cursor, driven in the running app.** Both had only ever been
       verified against the emitted stylesheet in a harness. Measured for real: the cursor steps
       `0px → 384px` over four presses of `j` — exactly four rows of 96 — with the 0.18s/0.11s

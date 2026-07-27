@@ -434,17 +434,15 @@ type key struct{ theme, token, ground string }
 // known records the pairs that do NOT clear AA today, with the ratio they
 // currently measure.
 //
-// **This is a finding, not a standard.** Every entry is Fanciful's --mute, which
-// is transcribed verbatim from design/03-fanciful.html — and in this project the
-// mockup is the specification, so the fix is a decision about the mockup rather
-// than a value to quietly nudge here. #93869F is a 4.90:1 dateline on the page
-// and a 3.94:1 one on the row you are sitting on; taking it to about #A093AC
-// would clear AA on all three surfaces and is the smallest change that does.
+// **It is EMPTY, and the emptying is the record worth keeping.** It held
+// Fanciful's --mute at 4.42 on a hovered row and 3.94 on the selected one — the
+// row you are sitting on, at the 11.5px datelines and counts are set in. D22
+// resolved it (2026-07-27) by raising the token in the MOCKUP, which is the
+// specification, rather than nudging it here: #93869F became #A093AC, which
+// measures 5.79 / 5.22 / 4.65.
 //
-// Recorded rather than exempted: the test still fails if any of these gets
-// WORSE, and it still fails at 4.5 for every pair not listed — so a new theme
-// cannot inherit the exception.
-var known = map[key]float64{
-	{"fanciful", "mute", "a hovered row"}:    4.42,
-	{"fanciful", "mute", "the selected row"}: 3.94,
-}
+// Recorded rather than exempted was the right shape while it lasted: the test
+// still failed if a listed pair got worse, and still failed at 4.5 for every
+// pair not listed, so a new theme could not inherit the exception. An entry that
+// comes back has to be argued for again.
+var known = map[key]float64{}

@@ -80,7 +80,7 @@
     font-variation-settings:"SOFT" 80,"WONK" 1,"opsz" 48}
 
   .boot-rule{position:relative;height:2px;border-radius:2px;overflow:hidden;
-    background:color-mix(in srgb,var(--boot-mute,#93869F) 26%,transparent)}
+    background:color-mix(in srgb,var(--boot-mute,#A093AC) 26%,transparent)}
   /* The seven hand-picked source hues, in order, as the fill. */
   .boot-rule i{position:absolute;inset:0;border-radius:2px;transform-origin:0 50%;
     transform:scaleX(0);transition:transform .2s linear;
@@ -91,7 +91,7 @@
     animation:boot-roam 1.15s ease-in-out infinite}
   #boot.failed .boot-rule i{animation:none;width:100%;transform:none;background:#FF8A6B}
 
-  #boot p{margin:0;font-size:.82rem;line-height:1.5;color:var(--boot-mute,#93869F);
+  #boot p{margin:0;font-size:.82rem;line-height:1.5;color:var(--boot-mute,#A093AC);
     font-variant-numeric:tabular-nums}
   #boot.failed #boot-msg{color:#FF8A6B}
   #boot-help[hidden]{display:none}
@@ -141,6 +141,53 @@
   const msg  = document.getElementById('boot-msg');
   const help = document.getElementById('boot-help');
   const bar  = document.getElementById('boot-bar');
+
+  // On a development box, evict the Service Worker before doing anything else.
+  //
+  // The worker precaches app.wasm CACHE-FIRST and retires the cache by VERSION,
+  // which is pinned to the build version — a release changes it and `dev` never
+  // does. So the first load on a development machine wins forever: every
+  // rebuild after it is served out of a cache nothing will ever invalidate. The
+  // browser runs code from hours ago and everything keeps working, which is
+  // what makes this cost an afternoon instead of a minute.
+  //
+  // This runs FIRST, ahead of the module fetch, and that ordering is the whole
+  // point. Sitting after boot — where the registration below sits, correctly —
+  // it never runs on the one machine that needs it most: the one whose cached
+  // module is broken enough to fail instantiation, where boot throws and takes
+  // the cleanup with it.
+  //
+  // Unregistering does not un-control the page that is already loaded, so the
+  // module for THIS load still comes from the worker. Hence the single reload:
+  // guarded by sessionStorage so a browser that cannot unregister cannot be put
+  // into a loop, and conditional on a controller existing so a clean profile
+  // never reloads at all.
+  //
+  // Gated on the page origin rather than on anything the server says, for the
+  // same reason the login prefill is: no response can talk a deployed instance
+  // out of its offline support.
+  const isLoopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname);
+  if (isLoopback && 'serviceWorker' in navigator) {
+    try {
+      const hadController = !!navigator.serviceWorker.controller;
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+      if (self.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys
+          .filter((k) => k.startsWith('articleflux-shell-'))
+          .map((k) => caches.delete(k).catch(() => {})));
+      }
+      if (hadController && !sessionStorage.getItem('af-sw-evicted')) {
+        sessionStorage.setItem('af-sw-evicted', '1');
+        location.reload();
+        return;
+      }
+    } catch (e) {
+      // Best effort. A browser that refuses storage or workers is a browser
+      // that never had the stale-cache problem in the first place.
+    }
+  }
 
   // The splash wears the theme the reader last chose.
   //
@@ -312,7 +359,11 @@
     // booting is not. It is absent entirely on `file://` and in browsers that
     // do not offer it, which is why the capability is tested rather than
     // assumed.
-    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    //
+    // Not on a loopback origin: a development box evicted the worker at the top
+    // of this function, and registering it again here would undo that on every
+    // single load. See the comment there for why dev cannot keep it.
+    if ('serviceWorker' in navigator && location.protocol !== 'file:' && !isLoopback) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
   } catch (err) {

@@ -25,7 +25,19 @@ const (
 	Hair   = "#312741" // --hair  — row separators, a shade under Line
 	Cream  = "#F8F1E7" // --cream — primary text
 	Soft   = "#C9BDD6" // --soft  — secondary text; NOT the same as Dim
-	Dim    = "#93869F" // --mute  — tertiary text, counts, datelines
+	// D22, decided 2026-07-27: raised from #93869F, which failed AA.
+	//
+	// The mockup is the specification here, so this was a decision about the
+	// mockup rather than a value to nudge in Go — design/03-fanciful.html and
+	// 04-fanciful-mobile.html carry the same value and were changed with it.
+	//
+	// #93869F measured 4.90 on the page, 4.42 on a hovered row and 3.94 on the
+	// SELECTED one — so the worst case was the row you are sitting on, at the
+	// 11.5px this is used at, for datelines and counts. #A093AC measures
+	// 5.79 / 5.22 / 4.65 and is the smallest step that clears 4.5 on all three:
+	// #9A8CA8, one notch lighter than the old value, still fails the selected
+	// row at 4.29.
+	Dim = "#A093AC" // --mute  — tertiary text, counts, datelines
 )
 
 // Accent is the mockup's --cc, used for focus rings and the active marker. It is
