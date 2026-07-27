@@ -139,6 +139,10 @@ test.describe('motion', () => {
     // quicker than the entrance without a line of JavaScript.
     const enter = await styleOf(page, '.pal', 'transition-duration');
     await page.keyboard.press('Escape');
+    // Wait for the state to actually flip before reading: the client handles the
+    // key through PostAsync, so reading immediately reads the OPEN rule and the
+    // assertion below would compare a duration against itself.
+    await expect(scrim).toHaveAttribute('data-open', 'false');
     const exit = await styleOf(page, '.pal', 'transition-duration');
     const ms = (v) => Math.max(...v.split(',').map((d) => parseFloat(d) * (d.includes('ms') ? 1 : 1000)));
     expect(ms(exit)).toBeLessThan(ms(enter));
@@ -156,7 +160,10 @@ test.describe('motion', () => {
     expect(await offsetX(page, '.pane-list')).toBe(0);
     expect(await offsetX(page, '.pane-rail')).toBe(-w);
 
-    await page.locator(`.tab[data-action='tab-article'], .tab`).nth(2).click();
+    // There is no "article" tab — the tab bar is home/feeds/notes/settings, and
+    // an article is reached by tapping a row, which is the gesture worth
+    // asserting anyway because it is the one a reader performs.
+    await page.locator('.item-row').first().click();
     // Mid-gesture: the outgoing pane has to still be on screen and still moving,
     // which is the half that a `transition: opacity` elsewhere silently ate.
     await page.waitForTimeout(120);

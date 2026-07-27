@@ -7,10 +7,22 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
 
-// Ports are pinned and distinct from the dev server's 9000, so running the
-// suite never disturbs the instance Cam has open in a tab.
-const FEED_PORT = 9011;
-const APP_PORT = 9010;
+// Ports are pinned and distinct from the dev server's 9000, so running the suite
+// never disturbs the instance Cam has open in a tab.
+//
+// Overridable, because `killListener` below kills whatever holds these ports —
+// and the fixture feed server lives inside THIS node process, so a second suite
+// starting on the same ports does not just steal them, it kills the runner that
+// had them. The symptom is a run that prints "Running 1 test" and then exits
+// with no result and no error, which reads as a crashed test rather than as
+// somebody else's setup. Two runs at once is not hypothetical here: two agents
+// share this machine.
+//
+//   AF_E2E_APP_PORT=9020 AF_E2E_FEED_PORT=9021 npx playwright test
+//
+// The base URL follows automatically unless ARTICLEFLUX_URL says otherwise.
+const FEED_PORT = Number(process.env.AF_E2E_FEED_PORT || 9011);
+const APP_PORT = Number(process.env.AF_E2E_APP_PORT || 9010);
 // Unique per run: a lock we could not clear becomes an orphaned file rather
 // than a suite that cannot start.
 const DB = join(here, '.tmp', `e2e-${process.pid}.db`);

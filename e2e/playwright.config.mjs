@@ -16,7 +16,8 @@ export default defineConfig({
   reporter: [['list']],
   globalSetup: './global-setup.mjs',
   use: {
-    baseURL: process.env.ARTICLEFLUX_URL || 'http://127.0.0.1:9010',
+    baseURL: process.env.ARTICLEFLUX_URL ||
+      `http://127.0.0.1:${process.env.AF_E2E_APP_PORT || 9010}`,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

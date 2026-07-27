@@ -199,14 +199,16 @@ test.describe('reading', () => {
       .toBeGreaterThan(0);
     await expect(rows.nth(1)).toHaveAttribute('data-read', 'false');
 
-    // Scrolled by the reader this time, which is the whole distinction the fix
-    // rests on. The event is dispatched explicitly because setting scrollTop
-    // from script does not always produce one, and the handler is a scroll
-    // listener.
-    await page.locator('.pane-article').evaluate((el) => {
-      el.scrollTop = 0;
-      el.dispatchEvent(new Event('scroll', { bubbles: true }));
-    });
+    // Scrolled by the READER this time, which is the whole distinction the fix
+    // rests on — so it is scrolled the way a reader does it. A real wheel over
+    // the pane, not `scrollTop = 0` with a synthetic event: the app listens for
+    // scroll in the capture phase and a hand-dispatched Event is not the same
+    // object the browser produces. (It is also not merely unrealistic: the
+    // synthetic version killed the Playwright worker outright, with no result
+    // and no error, every time it ran.)
+    const box = await page.locator('.pane-article').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < 8; i++) await page.mouse.wheel(0, -600);
 
     await expect(rows.nth(1))
       .toHaveAttribute('data-read', 'true', { timeout: 30_000 });
