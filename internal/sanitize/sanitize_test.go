@@ -102,6 +102,29 @@ var forbidden = []string{
 //     two layers.
 var styling = []string{"<style", "<link", "<meta", "@import"}
 
+// tagsOnly returns everything between < and >, concatenated.
+//
+// Crude on purpose, and still cruder than parsing — the point of the substring
+// checks is not to share a parser with the code under test. This narrows WHERE
+// they look without changing WHAT they look for.
+func tagsOnly(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '<')
+		if i < 0 {
+			return b.String()
+		}
+		s = s[i:]
+		j := strings.IndexByte(s, '>')
+		if j < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:j+1])
+		s = s[j+1:]
+	}
+}
+
 func TestXSSCorpusIsNeutralisedUnderEveryPolicy(t *testing.T) {
 	for _, c := range xssCorpus {
 		for _, p := range allPolicies {
@@ -285,9 +308,26 @@ func FuzzHTMLNeverEmitsAScriptTag(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in string) {
 		for _, p := range allPolicies {
 			got := strings.ToLower(HTML(in, p))
-			for _, bad := range []string{"<script", "javascript:", "onerror=", "<iframe"} {
+			// Tag checks are safe against the raw output: a literal "<script"
+			// occurring in TEXT is escaped to "&lt;script" by the renderer, so
+			// an unescaped one really is an element.
+			for _, bad := range []string{"<script", "<iframe"} {
 				if strings.Contains(got, bad) {
 					t.Fatalf("policy %s emitted %q for input %q: %s", p, bad, in, got)
+				}
+			}
+			// Attribute checks are NOT safe against the raw output, and the
+			// fuzzer proved it twice: the inputs "JAVASCRiPt:0" and "onerror=0"
+			// are prose, and prose containing those characters is not an attack.
+			// Sanitizing text to text is correct; a test that fails on it is one
+			// that gets silenced rather than believed.
+			//
+			// What matters is whether the string is REACHABLE as an attribute,
+			// so the check looks only inside tags.
+			markup := tagsOnly(got)
+			for _, bad := range []string{"onerror=", "onload=", "onclick=", "javascript:"} {
+				if strings.Contains(markup, bad) {
+					t.Fatalf("policy %s emitted %q inside a tag for input %q: %s", p, bad, in, got)
 				}
 			}
 		}
