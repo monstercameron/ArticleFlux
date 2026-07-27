@@ -347,3 +347,77 @@ func TestCacheKeyVariesByVibeAndOpening(t *testing.T) {
 		t.Error("two different days share one opening")
 	}
 }
+
+// --- the headline run-through ------------------------------------------------
+
+// The opening reads the headlines, and they reach the model as source and title
+// — enough to weigh a story heard in one clause, which a bare headline is not.
+func TestOpeningCarriesTheHeadlineRunThrough(t *testing.T) {
+	got := podcastInput(Segment{
+		Source: "LWN", Title: "Fsyncgate",
+		Open: &Opening{
+			PartOfDay: "morning", Date: "Monday, 27 July 2026", Stories: 11,
+			Lineup: []Headline{
+				{Source: "LWN", Title: "Fsyncgate"},
+				{Source: "Hacker News", Title: "Postgres durability"},
+				{Source: "Ars", Title: "A third thing"},
+			},
+		},
+	}, "the body")
+
+	if !strings.Contains(got, "HEADLINES") {
+		t.Errorf("the run-through is not labelled:\n%s", got)
+	}
+	for _, want := range []string{"Postgres durability", "A third thing", "Hacker News"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the run-through is missing %q:\n%s", want, got)
+		}
+	}
+	// Numbered in the INPUT so the order is unambiguous — and the instructions
+	// forbid numbering the OUTPUT, because a model given a numbered list reads
+	// "one, two, three" aloud.
+	if !strings.Contains(got, "1. LWN") {
+		t.Errorf("the run-through is not ordered:\n%s", got)
+	}
+	if !strings.Contains(podcastInstructionsFor(DefaultVibe), "Do not number them") {
+		t.Error("the instructions no longer forbid numbering the headlines aloud")
+	}
+	// The story being covered is FIRST in the run-through: a bulletin lists its
+	// own top story first, and then covers it.
+	if strings.Index(got, "1. LWN") > strings.Index(got, "2. Hacker News") {
+		t.Errorf("the run-through is out of order:\n%s", got)
+	}
+}
+
+// No lineup is a supported opening, not a broken one: a greeting straight into
+// the first story is still a broadcast.
+func TestOpeningWithoutAnyHeadlinesStillGreets(t *testing.T) {
+	got := podcastInput(Segment{
+		Source: "LWN", Title: "Fsyncgate",
+		Open: &Opening{PartOfDay: "evening", Date: "Monday, 27 July 2026"},
+	}, "the body")
+	if strings.Contains(got, "HEADLINES") {
+		t.Errorf("an empty run-through was announced:\n%s", got)
+	}
+	if !strings.Contains(got, "OPENING") {
+		t.Errorf("the greeting went with it:\n%s", got)
+	}
+}
+
+// Two broadcasts of the same first story with different stories behind it open
+// differently, so they are different recordings. Sharing a key would read out
+// headlines that are not coming.
+func TestCacheKeyVariesByLineup(t *testing.T) {
+	p := keylessPodcast(t)
+	base := Segment{ItemID: "item-1", Vibe: VibeCalm,
+		Open: &Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026",
+			Lineup: []Headline{{Source: "LWN", Title: "One"}, {Source: "HN", Title: "Two"}}}}
+
+	other := base
+	other.Open = &Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026",
+		Lineup: []Headline{{Source: "LWN", Title: "One"}, {Source: "HN", Title: "Three"}}}
+
+	if p.cachePath(base, "gpt-5-mini") == p.cachePath(other, "gpt-5-mini") {
+		t.Error("two different run-throughs share one opening")
+	}
+}

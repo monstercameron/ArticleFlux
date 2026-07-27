@@ -56,7 +56,12 @@ import (
 // broadcast. v1's segments were accurate and inert — a competent transcription
 // of a headline and a body, which is exactly what a listener does not need,
 // because they can already read.
-const podcastPromptVersion = "v2"
+// v3: shorter, sharper, and spoken rather than read. v2's segments were correct
+// and slightly wet — they inherited the publisher's setup paragraph, restated
+// the headline, and read the opening headlines out as a list, which a listener
+// hears as a list of nouns going past. This one opens on the fact, cuts the
+// scene-setting, and gives the run-through momentum.
+const podcastPromptVersion = "v3"
 
 // The vibes: how the narrator sounds.
 //
@@ -138,15 +143,48 @@ type Opening struct {
 	// morning, starting with", and the second is a better thing to hear because
 	// it tells the listener whether to settle in.
 	Stories int
+	// Lineup is the first few stories, for the run-through a bulletin opens with
+	// — "the headlines" in the literal sense. Empty is fine and common: a
+	// greeting followed straight by the first story is still a broadcast.
+	//
+	// Bounded at MaxLineup. The point of a run-through is that a listener can
+	// hold it in their head; a bulletin that recites eleven headlines before
+	// covering any of them has told you nothing you can keep.
+	Lineup []Headline
 }
+
+// Headline is one story in the opening run-through: who ran it, and what it
+// said.
+//
+// Source AND title, because a run-through of bare headlines is a list of claims
+// with no way to weigh them — and naming the publication is most of how anyone
+// decides how much attention to give a story they are hearing in one clause.
+type Headline struct {
+	Source string
+	Title  string
+}
+
+// MaxLineup is how many headlines the opening may run through.
+//
+// Five, and the ceiling is about MEMORY rather than tokens: a listener can hold
+// about that many one-clause items before the earlier ones start falling out,
+// and a bulletin that recites eleven headlines before covering any of them has
+// told you nothing you can keep. It is also the point past which the greeting
+// stops being an opening and becomes the programme.
+const MaxLineup = 5
 
 // podcastWords is the length the instructions ask for.
 //
-// Longer than the digest's 180 because the handover is not free — it is a
-// sentence and sometimes two, and taking it out of the same budget would buy the
-// continuity by making every story shorter than the digest a reader already
-// chose. About seventy-five seconds of speech.
-const podcastWords = 210
+// Cut from 210 to 140 in v3, and the cut IS the feature. Length was buying
+// padding rather than substance: given room, a model fills it with the same
+// things a publisher fills a page with — the scene-setting opener, the history
+// nobody asked for, the restatement of the headline, the closing paragraph that
+// says what the piece just said. None of that survives being heard once, and all
+// of it costs the listener attention they were spending on the facts.
+//
+// About fifty seconds at a natural pace, and closer to forty at the 1.2x the
+// player now defaults to. Short enough that the writing has to choose.
+const podcastWords = 140
 
 // podcastMaxTokens covers the model's thinking as well as its answer, like
 // digestMaxTokens. Truncation is worse here than there: a segment that stops
@@ -241,19 +279,30 @@ You will be given the story to cover, and — unless this is the opening segment
 
 Write about ` + strconv.Itoa(podcastWords) + ` words of continuous spoken prose (plus the opening, if there is one), in this order:
 
-1. THE OPENING, only if one was given. Greet the listener for the part of the day, say the date, and say what is coming — for example "Good morning. It's Monday the twenty-seventh of July, and here's what's happening" or "Good evening — eleven stories tonight, starting with this one." Vary the wording; do not use the same construction every time. Two sentences at most, then go straight into the story.
+1. THE OPENING, only if one was given. Greet the listener for the part of the day and say the date — for example "Good morning. It's Monday the twenty-seventh of July" or "Good evening — eleven stories tonight." Vary the wording; do not use the same construction every time.
+
+   Then, if HEADLINES were given, run through what is coming — and this is the part most worth getting right, because a listener hears a plain list of titles as a string of nouns going past and retains none of it.
+
+   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size. And the thing everyone said was vapourware has actually shipped." Three or four like that, building, ending on the one you are about to cover.
+
+   You may lean on them lightly — a raised eyebrow at a claim, a note that something is overdue or surprising. That judgement is what makes a run-through worth hearing rather than worth skipping. Do not number them, do not name the publication for each one, and do not explain any of them yet: you are saying why they matter, not what happened.
+
+   Never read a title verbatim if it was written for the eye. A headline with a colon in it, a bracketed aside, a site name stuck on the end or a number in front of it is not a sentence anybody says out loud — say the thing it is about instead.
 2. THE HANDOVER, only if a previous story was given: one or two sentences carrying the listener from it into this one. If the two are genuinely related — same subject, same industry, same country, cause and effect, agreement or contradiction — say what the relation IS. That connection is the most valuable sentence in the segment. If they are unrelated, make a plain, unhurried change of subject and do not pretend to a link. Never use a stock phrase like "in other news" or "turning now to" as a substitute for saying what is changing.
 3. THE STORY, told for a listener rather than transcribed for a reader.
 
 WHAT "TOLD FOR A LISTENER" MEANS. This is the whole job, so it is spelled out:
 
-- Say what it MEANS, not only what it says. A listener can already read; what they cannot do is skim, re-read a line, or check a chart. Give them the finding, then why it matters, then how much weight to put on it.
-- You may editorialise about SIGNIFICANCE. You may say a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before, or that this mostly matters if you use the thing in question. That judgement is why anyone would listen to a person instead of a feed reader.
-- You may NOT invent. No facts, numbers, quotes, dates, names or attributions that are not in the text you were given. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
-- One idea per sentence. A sentence a listener has to hold in their head to the end is a sentence they have lost.
-- Round numbers and give them scale: "about a third", "roughly nine thousand — a small town's worth". Never read a table, a list of figures, or a version number.
-- Skip what does not survive being heard once: exact percentages to two decimal places, URLs, code, long proper nouns repeated, the names of everyone quoted.
-- Signpost when you change direction: "the catch is", "what is new here is", "worth saying".
+- **Open on the fact.** Not on context, not on the field it belongs to, not on why the topic is interesting. The first sentence is the thing that happened.
+- **Cut the fat the publisher put there.** Articles are padded for a page: the scene-setting opener, the paragraph of history nobody asked for, the restatement of the headline, the "why this matters" section that mostly matters to advertisers, the closing summary of what was just said. None of it survives being spoken. If a sentence would still be true of a different story, it is padding — leave it out.
+- **Say what it MEANS, not only what it says.** A listener can already read; what they cannot do is skim, re-read a line, or check a chart. Give them the finding, then why it matters, then how much weight to put on it.
+- **You may editorialise about SIGNIFICANCE.** You may say a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before, or that this mostly matters if you use the thing in question. That judgement is why anyone would listen to a person instead of a feed reader.
+- **You may NOT invent.** No facts, numbers, quotes, dates, names or attributions that are not in the text you were given. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
+- **Write for the mouth, not the page.** Contractions. Short sentences. One idea in each — a sentence a listener has to hold in their head to the end is a sentence they have lost. Vary the length so it has a rhythm; three of the same length in a row is a metronome.
+- **Be specific rather than clever.** A concrete detail is worth three adjectives, and wordplay that needs a second to land is wordplay a listener has already missed. Where a turn of phrase is genuinely better than the plain version, use it — sparingly, and never at the cost of being understood first time.
+- **Round numbers and give them scale**: "about a third", "roughly nine thousand — a small town's worth". Never read a table, a list of figures, or a version number.
+- **Skip what does not survive being heard once**: percentages to two decimal places, URLs, code, long proper nouns said more than once, the names of everyone quoted.
+- **Signpost when you change direction**: "the catch is", "what's new here is", "worth saying".
 
 ALWAYS:
 
@@ -373,6 +422,24 @@ func podcastInput(seg Segment, body string) string {
 			in.WriteString(strconv.Itoa(o.Stories))
 			in.WriteByte('\n')
 		}
+		// The run-through. Numbered in the INPUT so the order is unambiguous, and
+		// explicitly not numbered in the output — the instructions say so, because
+		// a model given a numbered list will read "one, two, three" aloud.
+		if len(o.Lineup) > 0 {
+			in.WriteString("  HEADLINES to run through, in this order " +
+				"(the first is the story covered below):\n")
+			for i, h := range o.Lineup {
+				in.WriteString("    ")
+				in.WriteString(strconv.Itoa(i + 1))
+				in.WriteString(". ")
+				if s := strings.TrimSpace(h.Source); s != "" {
+					in.WriteString(s)
+					in.WriteString(" — ")
+				}
+				in.WriteString(strings.TrimSpace(h.Title))
+				in.WriteByte('\n')
+			}
+		}
 		in.WriteByte('\n')
 	}
 	prevSource := strings.TrimSpace(seg.PrevSource)
@@ -449,6 +516,13 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	open := ""
 	if o := seg.Open; o != nil {
 		open = o.PartOfDay + "|" + o.Date + "|" + strconv.Itoa(o.Stories)
+		// The run-through is part of the opening's text, so it is part of its
+		// identity. Two broadcasts of the same first story with different stories
+		// behind it open differently, and serving one for the other would read
+		// out headlines that are not coming.
+		for _, h := range o.Lineup {
+			open += "|" + h.Source + "\x01" + h.Title
+		}
 	}
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
 		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(seg.Vibe) +

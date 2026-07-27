@@ -80,6 +80,17 @@ const podcastVibePrefKey = "tts.podcastVibe"
 const (
 	openNowParam     = "now"
 	openStoriesParam = "n"
+	// openLineupParam is the first few story IDs, comma-separated, for the
+	// headline run-through the broadcast opens with.
+	//
+	// IDs rather than the headlines themselves, and that is a privacy decision
+	// rather than a size one. A GET's query string lands in the access log, in
+	// the browser's history and in any referrer; the reader's article titles are
+	// their reading, and §22.11 keeps request content out of shared logs. An
+	// opaque id says nothing to anyone who cannot already resolve it, and the
+	// server resolves it through the SAME SCOPE as everything else here — so
+	// this can only ever name stories the reader was already allowed to read.
+	openLineupParam = "q"
 )
 
 // openingFrom builds the top-of-broadcast greeting, or nil when this is not the
@@ -94,7 +105,8 @@ const (
 // than dropping the greeting. The greeting is the shape of the thing; being an
 // hour out on "afternoon" is a small wrongness, and having no opening at all is
 // a missing feature.
-func openingFrom(r *http.Request, now time.Time) *smart.Opening {
+func (a *App) openingFrom(ctx context.Context, sc store.Scope, r *http.Request,
+	now time.Time) *smart.Opening {
 	if v := strings.TrimSpace(r.URL.Query().Get(openNowParam)); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			now = t
@@ -105,7 +117,49 @@ func openingFrom(r *http.Request, now time.Time) *smart.Opening {
 		n > 0 && n <= 10000 {
 		o.Stories = n
 	}
+	o.Lineup = a.lineupFrom(ctx, sc, r.URL.Query().Get(openLineupParam))
 	return o
+}
+
+// lineupFrom resolves the headline run-through from a list of item ids.
+//
+// Every one goes through the reader's own scope, so this can only ever name
+// stories they were already allowed to read — which is what makes a
+// caller-supplied list safe, and it is the same argument prevItemParam makes.
+//
+// An id that does not resolve is SKIPPED rather than failing the request. A
+// run-through is a nicety on top of a greeting; refusing to speak because one
+// story in a list of five had been swept away would be a silence caused by
+// something that is not the point.
+func (a *App) lineupFrom(ctx context.Context, sc store.Scope, raw string) []smart.Headline {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || a.repo == nil {
+		return nil
+	}
+	out := make([]smart.Headline, 0, smart.MaxLineup)
+	for _, id := range strings.Split(raw, ",") {
+		if len(out) >= smart.MaxLineup {
+			break
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || len(id) > 64 {
+			continue
+		}
+		it, err := a.repo.GetItem(ctx, sc, id)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(it.Title) == "" {
+			// A story with no headline cannot be run through, and "and something
+			// from Hacker News" is not a headline.
+			continue
+		}
+		out = append(out, smart.Headline{Source: it.SourceTitle, Title: it.Title})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // partOfDay is the word a greeting uses.
@@ -127,6 +181,24 @@ func partOfDay(hour int) string {
 	default:
 		return "evening"
 	}
+}
+
+// speaker is everything the listening path needs from the voice.
+//
+// An interface rather than *tts.Client, and the reason is that the interesting
+// half of this file was untestable without it. `/speech` is four gates, three
+// script modes, a fallback chain and a cache key, and every one of those is
+// reached only by a request that ends in a paid call to OpenAI — so the tests
+// stopped at the gates and the part that actually produces sound was covered by
+// nothing. A two-method seam turns "does broadcast mode return audio" into a
+// question a test can ask.
+//
+// Deliberately narrow: it is what serveSpeech calls, not what tts.Client offers.
+// The spend meter still takes the concrete client (see the wiring in app.go),
+// because reporting usage is a different job from making it.
+type speaker interface {
+	Configured(ctx context.Context) bool
+	Speak(ctx context.Context, key, text, model, voice string) ([]byte, error)
 }
 
 // digestFor returns the spoken summary of an item.
@@ -297,14 +369,14 @@ const speechTTL = 6 * time.Hour
 // like a signature, and opaque as well. Tampering fails to open rather than
 // verifying against a different message, which is the property that matters.
 func (a *App) SpeechURL(ctx context.Context, sc store.Scope, itemID string) string {
-	if a.tts == nil || len(a.speechKey) != 32 || itemID == "" || !sc.Valid() {
+	if a.speak == nil || len(a.speechKey) != 32 || itemID == "" || !sc.Valid() {
 		return ""
 	}
 	// Checked against the key that exists NOW. An instance whose key is pasted
 	// in at runtime starts minting tickets from that moment, and one whose key
 	// is cleared stops — without a restart, and without handing out tickets for
 	// a feature that would answer 501.
-	if !a.tts.Configured(ctx) {
+	if !a.speak.Configured(ctx) {
 		return ""
 	}
 	exp := time.Now().Add(speechTTL).Unix()
@@ -427,7 +499,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if a.tts == nil || !a.tts.Configured(r.Context()) {
+	if a.speak == nil || !a.speak.Configured(r.Context()) {
 		// 501 rather than 500: the server is working correctly and simply has no
 		// key. "Not implemented on this instance" is exactly what that means.
 		http.Error(w, "speech is not configured on this server", http.StatusNotImplemented)
@@ -473,7 +545,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		// opening per broadcast, because from the second story onward there is a
 		// predecessor and the top of the show has already happened.
 		if prev.ID == "" {
-			open = openingFrom(r, time.Now())
+			open = a.openingFrom(r.Context(), sc, r, time.Now())
 		}
 	}
 
@@ -489,7 +561,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 
 	voice := strings.TrimSpace(prefs["tts.voice"])
-	audio, err := a.tts.Speak(r.Context(), cacheKey, text, prefs["tts.model"], voice)
+	audio, err := a.speak.Speak(r.Context(), cacheKey, text, prefs["tts.model"], voice)
 	if err != nil {
 		// The provider's own message can echo request content, and request
 		// content here is the user's article — so it goes to the log and never

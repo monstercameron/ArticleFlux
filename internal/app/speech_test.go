@@ -27,7 +27,7 @@ func speechApp(t *testing.T, apiKey string) *App {
 	if err != nil {
 		t.Fatalf("key: %v", err)
 	}
-	return &App{
+	a := &App{
 		cfg:       Config{Log: testLogger()},
 		log:       testLogger(),
 		speechKey: key,
@@ -35,6 +35,10 @@ func speechApp(t *testing.T, apiKey string) *App {
 			return apiKey
 		}),
 	}
+	// The listening path calls the narrow seam, so a fixture that set only the
+	// concrete client would answer 501 to everything past the gates.
+	a.speak = a.tts
+	return a
 }
 
 func testScope() store.Scope {
@@ -190,10 +194,14 @@ func TestMintRefusesIncompleteInput(t *testing.T) {
 		t.Errorf("minted without a ticket key: %q", got)
 	}
 
+	// Both fields, because the listening path reads the `speaker` seam and the
+	// spend meter reads the concrete client. Clearing only one is an instance
+	// that half exists, which is not a state Open can produce — and the test
+	// would then be asserting about a shape nothing builds.
 	noTTS := speechApp(t, "sk-test")
-	noTTS.tts = nil
+	noTTS.tts, noTTS.speak = nil, nil
 	if got := noTTS.SpeechURL(ctx, testScope(), "item-1"); got != "" {
-		t.Errorf("minted without a tts client: %q", got)
+		t.Errorf("minted without a voice: %q", got)
 	}
 }
 
@@ -265,6 +273,7 @@ func speechAppWithUser(t *testing.T) (*App, store.Scope) {
 	}
 	a.speechKey = key
 	a.tts = tts.New(t.TempDir(), func(context.Context) string { return "sk-test" })
+	a.speak = a.tts
 
 	if err := a.repo.CreateTenantAndUser(ctx, store.NewTenant{
 		TenantID: "t1", Name: "T", UserID: "u1", Username: "reader",
@@ -581,7 +590,7 @@ func TestOpeningPrefersTheListenersClock(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet,
 		"/speech?item=x&now="+url.QueryEscape("2026-07-27T08:30:00-04:00")+"&n=11", nil)
 
-	got := openingFrom(r, server)
+	got := speechApp(t, "sk-test").openingFrom(context.Background(), testScope(), r, server)
 	if got.PartOfDay != "morning" {
 		t.Errorf("part of day = %q, want morning — the server's clock won", got.PartOfDay)
 	}
@@ -604,7 +613,7 @@ func TestOpeningFallsBackToTheServerClock(t *testing.T) {
 		"/speech?item=x&now=not-a-time",
 		"/speech?item=x&now=1785155400",
 	} {
-		got := openingFrom(httptest.NewRequest(http.MethodGet, q, nil), server)
+		got := speechApp(t, "sk-test").openingFrom(context.Background(), testScope(), httptest.NewRequest(http.MethodGet, q, nil), server)
 		if got == nil {
 			t.Fatalf("%s: no opening at all", q)
 		}
@@ -621,7 +630,7 @@ func TestOpeningIgnoresAnImplausibleQueueSize(t *testing.T) {
 	server := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	for _, q := range []string{"", "0", "-3", "nine", "999999999"} {
 		r := httptest.NewRequest(http.MethodGet, "/speech?item=x&n="+url.QueryEscape(q), nil)
-		if got := openingFrom(r, server).Stories; got != 0 {
+		if got := speechApp(t, "sk-test").openingFrom(context.Background(), testScope(), r, server).Stories; got != 0 {
 			t.Errorf("n=%q became %d, want 0 (unknown)", q, got)
 		}
 	}

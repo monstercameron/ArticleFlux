@@ -848,6 +848,247 @@ func (x *CheckHealthResponse) GetDetail() string {
 	return ""
 }
 
+type ListAudioTracksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAudioTracksRequest) Reset() {
+	*x = ListAudioTracksRequest{}
+	mi := &file_articleflux_v1_system_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAudioTracksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAudioTracksRequest) ProtoMessage() {}
+
+func (x *ListAudioTracksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_system_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAudioTracksRequest.ProtoReflect.Descriptor instead.
+func (*ListAudioTracksRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_system_proto_rawDescGZIP(), []int{11}
+}
+
+// AudioTrack is one bed, as the settings picker needs it.
+type AudioTrack struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable slug, and the only thing GetAudioTrack accepts. It is matched against
+	// a fixed set on the server rather than joined onto a path, so it cannot name
+	// a file outside the audio directory.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The track's name, as its author wrote it. A proper noun: not translated.
+	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// How big it is. The client shows nothing with this today; it is here because
+	// "the reader is about to pull four megabytes through the tunnel" is a fact
+	// the UI will eventually want to state, and adding it later is a wire change.
+	Bytes         int64 `protobuf:"varint,3,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AudioTrack) Reset() {
+	*x = AudioTrack{}
+	mi := &file_articleflux_v1_system_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AudioTrack) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AudioTrack) ProtoMessage() {}
+
+func (x *AudioTrack) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_system_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AudioTrack.ProtoReflect.Descriptor instead.
+func (*AudioTrack) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_system_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AudioTrack) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AudioTrack) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *AudioTrack) GetBytes() int64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+type ListAudioTracksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tracks        []*AudioTrack          `protobuf:"bytes,1,rep,name=tracks,proto3" json:"tracks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAudioTracksResponse) Reset() {
+	*x = ListAudioTracksResponse{}
+	mi := &file_articleflux_v1_system_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAudioTracksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAudioTracksResponse) ProtoMessage() {}
+
+func (x *ListAudioTracksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_system_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAudioTracksResponse.ProtoReflect.Descriptor instead.
+func (*ListAudioTracksResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_system_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListAudioTracksResponse) GetTracks() []*AudioTrack {
+	if x != nil {
+		return x.Tracks
+	}
+	return nil
+}
+
+type GetAudioTrackRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAudioTrackRequest) Reset() {
+	*x = GetAudioTrackRequest{}
+	mi := &file_articleflux_v1_system_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAudioTrackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAudioTrackRequest) ProtoMessage() {}
+
+func (x *GetAudioTrackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_system_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAudioTrackRequest.ProtoReflect.Descriptor instead.
+func (*GetAudioTrackRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_system_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetAudioTrackRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// GetAudioTrackResponse is a slice of one track, in order.
+//
+// A bare bytes field with no offset or index: gRPC delivers a server stream in
+// order, so a sequence number would be a second source of truth for something
+// the transport already guarantees — and one that could disagree with it.
+type GetAudioTrackResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAudioTrackResponse) Reset() {
+	*x = GetAudioTrackResponse{}
+	mi := &file_articleflux_v1_system_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAudioTrackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAudioTrackResponse) ProtoMessage() {}
+
+func (x *GetAudioTrackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_system_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAudioTrackResponse.ProtoReflect.Descriptor instead.
+func (*GetAudioTrackResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_system_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetAudioTrackResponse) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 var File_articleflux_v1_system_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_system_proto_rawDesc = "" +
@@ -916,18 +1157,32 @@ const file_articleflux_v1_system_proto_rawDesc = "" +
 	"\x12CheckHealthRequest\"d\n" +
 	"\x13CheckHealthResponse\x125\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1d.articleflux.v1.ServingStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x02 \x01(\tR\x06detail*\x88\x01\n" +
+	"\x06detail\x18\x02 \x01(\tR\x06detail\"\x18\n" +
+	"\x16ListAudioTracksRequest\"H\n" +
+	"\n" +
+	"AudioTrack\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
+	"\x05bytes\x18\x03 \x01(\x03R\x05bytes\"M\n" +
+	"\x17ListAudioTracksResponse\x122\n" +
+	"\x06tracks\x18\x01 \x03(\v2\x1a.articleflux.v1.AudioTrackR\x06tracks\"&\n" +
+	"\x14GetAudioTrackRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"+\n" +
+	"\x15GetAudioTrackResponse\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data*\x88\x01\n" +
 	"\rServingStatus\x12\x1e\n" +
 	"\x1aSERVING_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SERVING_STATUS_SERVING\x10\x01\x12\x1b\n" +
 	"\x17SERVING_STATUS_DEGRADED\x10\x02\x12\x1e\n" +
-	"\x1aSERVING_STATUS_NOT_SERVING\x10\x032\xec\x02\n" +
+	"\x1aSERVING_STATUS_NOT_SERVING\x10\x032\xb0\x04\n" +
 	"\rSystemService\x12S\n" +
 	"\n" +
 	"GetVersion\x12!.articleflux.v1.GetVersionRequest\x1a\".articleflux.v1.GetVersionResponse\x12V\n" +
 	"\vCheckHealth\x12\".articleflux.v1.CheckHealthRequest\x1a#.articleflux.v1.CheckHealthResponse\x12_\n" +
 	"\x0eGetServerStats\x12%.articleflux.v1.GetServerStatsRequest\x1a&.articleflux.v1.GetServerStatsResponse\x12M\n" +
-	"\bListLogs\x12\x1f.articleflux.v1.ListLogsRequest\x1a .articleflux.v1.ListLogsResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
+	"\bListLogs\x12\x1f.articleflux.v1.ListLogsRequest\x1a .articleflux.v1.ListLogsResponse\x12b\n" +
+	"\x0fListAudioTracks\x12&.articleflux.v1.ListAudioTracksRequest\x1a'.articleflux.v1.ListAudioTracksResponse\x12^\n" +
+	"\rGetAudioTrack\x12$.articleflux.v1.GetAudioTrackRequest\x1a%.articleflux.v1.GetAudioTrackResponse0\x01BPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
 
 var (
 	file_articleflux_v1_system_proto_rawDescOnce sync.Once
@@ -942,39 +1197,49 @@ func file_articleflux_v1_system_proto_rawDescGZIP() []byte {
 }
 
 var file_articleflux_v1_system_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_articleflux_v1_system_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_articleflux_v1_system_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_articleflux_v1_system_proto_goTypes = []any{
-	(ServingStatus)(0),             // 0: articleflux.v1.ServingStatus
-	(*GetServerStatsRequest)(nil),  // 1: articleflux.v1.GetServerStatsRequest
-	(*GetServerStatsResponse)(nil), // 2: articleflux.v1.GetServerStatsResponse
-	(*MethodStat)(nil),             // 3: articleflux.v1.MethodStat
-	(*LevelCount)(nil),             // 4: articleflux.v1.LevelCount
-	(*ListLogsRequest)(nil),        // 5: articleflux.v1.ListLogsRequest
-	(*ListLogsResponse)(nil),       // 6: articleflux.v1.ListLogsResponse
-	(*LogRecord)(nil),              // 7: articleflux.v1.LogRecord
-	(*GetVersionRequest)(nil),      // 8: articleflux.v1.GetVersionRequest
-	(*GetVersionResponse)(nil),     // 9: articleflux.v1.GetVersionResponse
-	(*CheckHealthRequest)(nil),     // 10: articleflux.v1.CheckHealthRequest
-	(*CheckHealthResponse)(nil),    // 11: articleflux.v1.CheckHealthResponse
+	(ServingStatus)(0),              // 0: articleflux.v1.ServingStatus
+	(*GetServerStatsRequest)(nil),   // 1: articleflux.v1.GetServerStatsRequest
+	(*GetServerStatsResponse)(nil),  // 2: articleflux.v1.GetServerStatsResponse
+	(*MethodStat)(nil),              // 3: articleflux.v1.MethodStat
+	(*LevelCount)(nil),              // 4: articleflux.v1.LevelCount
+	(*ListLogsRequest)(nil),         // 5: articleflux.v1.ListLogsRequest
+	(*ListLogsResponse)(nil),        // 6: articleflux.v1.ListLogsResponse
+	(*LogRecord)(nil),               // 7: articleflux.v1.LogRecord
+	(*GetVersionRequest)(nil),       // 8: articleflux.v1.GetVersionRequest
+	(*GetVersionResponse)(nil),      // 9: articleflux.v1.GetVersionResponse
+	(*CheckHealthRequest)(nil),      // 10: articleflux.v1.CheckHealthRequest
+	(*CheckHealthResponse)(nil),     // 11: articleflux.v1.CheckHealthResponse
+	(*ListAudioTracksRequest)(nil),  // 12: articleflux.v1.ListAudioTracksRequest
+	(*AudioTrack)(nil),              // 13: articleflux.v1.AudioTrack
+	(*ListAudioTracksResponse)(nil), // 14: articleflux.v1.ListAudioTracksResponse
+	(*GetAudioTrackRequest)(nil),    // 15: articleflux.v1.GetAudioTrackRequest
+	(*GetAudioTrackResponse)(nil),   // 16: articleflux.v1.GetAudioTrackResponse
 }
 var file_articleflux_v1_system_proto_depIdxs = []int32{
 	3,  // 0: articleflux.v1.GetServerStatsResponse.methods:type_name -> articleflux.v1.MethodStat
 	4,  // 1: articleflux.v1.GetServerStatsResponse.log_counts:type_name -> articleflux.v1.LevelCount
 	7,  // 2: articleflux.v1.ListLogsResponse.records:type_name -> articleflux.v1.LogRecord
 	0,  // 3: articleflux.v1.CheckHealthResponse.status:type_name -> articleflux.v1.ServingStatus
-	8,  // 4: articleflux.v1.SystemService.GetVersion:input_type -> articleflux.v1.GetVersionRequest
-	10, // 5: articleflux.v1.SystemService.CheckHealth:input_type -> articleflux.v1.CheckHealthRequest
-	1,  // 6: articleflux.v1.SystemService.GetServerStats:input_type -> articleflux.v1.GetServerStatsRequest
-	5,  // 7: articleflux.v1.SystemService.ListLogs:input_type -> articleflux.v1.ListLogsRequest
-	9,  // 8: articleflux.v1.SystemService.GetVersion:output_type -> articleflux.v1.GetVersionResponse
-	11, // 9: articleflux.v1.SystemService.CheckHealth:output_type -> articleflux.v1.CheckHealthResponse
-	2,  // 10: articleflux.v1.SystemService.GetServerStats:output_type -> articleflux.v1.GetServerStatsResponse
-	6,  // 11: articleflux.v1.SystemService.ListLogs:output_type -> articleflux.v1.ListLogsResponse
-	8,  // [8:12] is the sub-list for method output_type
-	4,  // [4:8] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	13, // 4: articleflux.v1.ListAudioTracksResponse.tracks:type_name -> articleflux.v1.AudioTrack
+	8,  // 5: articleflux.v1.SystemService.GetVersion:input_type -> articleflux.v1.GetVersionRequest
+	10, // 6: articleflux.v1.SystemService.CheckHealth:input_type -> articleflux.v1.CheckHealthRequest
+	1,  // 7: articleflux.v1.SystemService.GetServerStats:input_type -> articleflux.v1.GetServerStatsRequest
+	5,  // 8: articleflux.v1.SystemService.ListLogs:input_type -> articleflux.v1.ListLogsRequest
+	12, // 9: articleflux.v1.SystemService.ListAudioTracks:input_type -> articleflux.v1.ListAudioTracksRequest
+	15, // 10: articleflux.v1.SystemService.GetAudioTrack:input_type -> articleflux.v1.GetAudioTrackRequest
+	9,  // 11: articleflux.v1.SystemService.GetVersion:output_type -> articleflux.v1.GetVersionResponse
+	11, // 12: articleflux.v1.SystemService.CheckHealth:output_type -> articleflux.v1.CheckHealthResponse
+	2,  // 13: articleflux.v1.SystemService.GetServerStats:output_type -> articleflux.v1.GetServerStatsResponse
+	6,  // 14: articleflux.v1.SystemService.ListLogs:output_type -> articleflux.v1.ListLogsResponse
+	14, // 15: articleflux.v1.SystemService.ListAudioTracks:output_type -> articleflux.v1.ListAudioTracksResponse
+	16, // 16: articleflux.v1.SystemService.GetAudioTrack:output_type -> articleflux.v1.GetAudioTrackResponse
+	11, // [11:17] is the sub-list for method output_type
+	5,  // [5:11] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_system_proto_init() }
@@ -988,7 +1253,7 @@ func file_articleflux_v1_system_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_system_proto_rawDesc), len(file_articleflux_v1_system_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

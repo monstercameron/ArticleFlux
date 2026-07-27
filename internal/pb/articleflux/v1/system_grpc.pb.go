@@ -25,10 +25,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SystemService_GetVersion_FullMethodName     = "/articleflux.v1.SystemService/GetVersion"
-	SystemService_CheckHealth_FullMethodName    = "/articleflux.v1.SystemService/CheckHealth"
-	SystemService_GetServerStats_FullMethodName = "/articleflux.v1.SystemService/GetServerStats"
-	SystemService_ListLogs_FullMethodName       = "/articleflux.v1.SystemService/ListLogs"
+	SystemService_GetVersion_FullMethodName      = "/articleflux.v1.SystemService/GetVersion"
+	SystemService_CheckHealth_FullMethodName     = "/articleflux.v1.SystemService/CheckHealth"
+	SystemService_GetServerStats_FullMethodName  = "/articleflux.v1.SystemService/GetServerStats"
+	SystemService_ListLogs_FullMethodName        = "/articleflux.v1.SystemService/ListLogs"
+	SystemService_ListAudioTracks_FullMethodName = "/articleflux.v1.SystemService/ListAudioTracks"
+	SystemService_GetAudioTrack_FullMethodName   = "/articleflux.v1.SystemService/GetAudioTrack"
 )
 
 // SystemServiceClient is the client API for SystemService service.
@@ -61,6 +63,31 @@ type SystemServiceClient interface {
 	// A self-hosted reader has no operator: nobody is tailing a file, so "why did
 	// that feed stop working" has to be answerable from inside the app.
 	ListLogs(ctx context.Context, in *ListLogsRequest, opts ...grpc.CallOption) (*ListLogsResponse, error)
+	// ListAudioTracks names the music beds this instance ships (§19).
+	//
+	// On SystemService rather than ReaderService because a bed is a property of
+	// the INSTANCE, not of a reader: the same four files are the same four files
+	// for everybody, and nothing in the answer depends on who is asking.
+	//
+	// An instance that shipped without the audio directory answers with an empty
+	// list, and the settings picker then offers silence and nothing else. That is
+	// the correct degradation for optional background music.
+	ListAudioTracks(ctx context.Context, in *ListAudioTracksRequest, opts ...grpc.CallOption) (*ListAudioTracksResponse, error)
+	// GetAudioTrack streams one bed's bytes down the tunnel.
+	//
+	// Over gRPC rather than as a plain URL, which is the opposite of the choice
+	// /speech makes (§10.7) and is a deliberate one: the beds are part of the
+	// application rather than part of anyone's reading, and keeping them on the
+	// one authenticated connection means a deployment has exactly one door to
+	// reason about instead of a static path beside it.
+	//
+	// The cost is real and worth naming here rather than discovering later: the
+	// client cannot stream, seek or range-request this. It receives the whole
+	// track, holds it in memory, and plays it from a blob — so a four megabyte
+	// bed is four megabytes of wasm heap and a few seconds before the first note.
+	// Chunked so the tunnel stays usable while it arrives; a single message would
+	// park every other RPC behind it.
+	GetAudioTrack(ctx context.Context, in *GetAudioTrackRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetAudioTrackResponse], error)
 }
 
 type systemServiceClient struct {
@@ -111,6 +138,35 @@ func (c *systemServiceClient) ListLogs(ctx context.Context, in *ListLogsRequest,
 	return out, nil
 }
 
+func (c *systemServiceClient) ListAudioTracks(ctx context.Context, in *ListAudioTracksRequest, opts ...grpc.CallOption) (*ListAudioTracksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAudioTracksResponse)
+	err := c.cc.Invoke(ctx, SystemService_ListAudioTracks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *systemServiceClient) GetAudioTrack(ctx context.Context, in *GetAudioTrackRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetAudioTrackResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SystemService_ServiceDesc.Streams[0], SystemService_GetAudioTrack_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetAudioTrackRequest, GetAudioTrackResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SystemService_GetAudioTrackClient = grpc.ServerStreamingClient[GetAudioTrackResponse]
+
 // SystemServiceServer is the server API for SystemService service.
 // All implementations must embed UnimplementedSystemServiceServer
 // for forward compatibility.
@@ -141,6 +197,31 @@ type SystemServiceServer interface {
 	// A self-hosted reader has no operator: nobody is tailing a file, so "why did
 	// that feed stop working" has to be answerable from inside the app.
 	ListLogs(context.Context, *ListLogsRequest) (*ListLogsResponse, error)
+	// ListAudioTracks names the music beds this instance ships (§19).
+	//
+	// On SystemService rather than ReaderService because a bed is a property of
+	// the INSTANCE, not of a reader: the same four files are the same four files
+	// for everybody, and nothing in the answer depends on who is asking.
+	//
+	// An instance that shipped without the audio directory answers with an empty
+	// list, and the settings picker then offers silence and nothing else. That is
+	// the correct degradation for optional background music.
+	ListAudioTracks(context.Context, *ListAudioTracksRequest) (*ListAudioTracksResponse, error)
+	// GetAudioTrack streams one bed's bytes down the tunnel.
+	//
+	// Over gRPC rather than as a plain URL, which is the opposite of the choice
+	// /speech makes (§10.7) and is a deliberate one: the beds are part of the
+	// application rather than part of anyone's reading, and keeping them on the
+	// one authenticated connection means a deployment has exactly one door to
+	// reason about instead of a static path beside it.
+	//
+	// The cost is real and worth naming here rather than discovering later: the
+	// client cannot stream, seek or range-request this. It receives the whole
+	// track, holds it in memory, and plays it from a blob — so a four megabyte
+	// bed is four megabytes of wasm heap and a few seconds before the first note.
+	// Chunked so the tunnel stays usable while it arrives; a single message would
+	// park every other RPC behind it.
+	GetAudioTrack(*GetAudioTrackRequest, grpc.ServerStreamingServer[GetAudioTrackResponse]) error
 	mustEmbedUnimplementedSystemServiceServer()
 }
 
@@ -162,6 +243,12 @@ func (UnimplementedSystemServiceServer) GetServerStats(context.Context, *GetServ
 }
 func (UnimplementedSystemServiceServer) ListLogs(context.Context, *ListLogsRequest) (*ListLogsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListLogs not implemented")
+}
+func (UnimplementedSystemServiceServer) ListAudioTracks(context.Context, *ListAudioTracksRequest) (*ListAudioTracksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAudioTracks not implemented")
+}
+func (UnimplementedSystemServiceServer) GetAudioTrack(*GetAudioTrackRequest, grpc.ServerStreamingServer[GetAudioTrackResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method GetAudioTrack not implemented")
 }
 func (UnimplementedSystemServiceServer) mustEmbedUnimplementedSystemServiceServer() {}
 func (UnimplementedSystemServiceServer) testEmbeddedByValue()                       {}
@@ -256,6 +343,35 @@ func _SystemService_ListLogs_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SystemService_ListAudioTracks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAudioTracksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SystemServiceServer).ListAudioTracks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SystemService_ListAudioTracks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SystemServiceServer).ListAudioTracks(ctx, req.(*ListAudioTracksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SystemService_GetAudioTrack_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetAudioTrackRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(SystemServiceServer).GetAudioTrack(m, &grpc.GenericServerStream[GetAudioTrackRequest, GetAudioTrackResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SystemService_GetAudioTrackServer = grpc.ServerStreamingServer[GetAudioTrackResponse]
+
 // SystemService_ServiceDesc is the grpc.ServiceDesc for SystemService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -279,7 +395,17 @@ var SystemService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListLogs",
 			Handler:    _SystemService_ListLogs_Handler,
 		},
+		{
+			MethodName: "ListAudioTracks",
+			Handler:    _SystemService_ListAudioTracks_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "GetAudioTrack",
+			Handler:       _SystemService_GetAudioTrack_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "articleflux/v1/system.proto",
 }
