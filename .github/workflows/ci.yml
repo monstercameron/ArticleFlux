@@ -56,7 +56,7 @@ jobs:
       # actions/checkout; see .github/actions/gwc.
       - uses: ./.github/actions/gwc
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -193,7 +193,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/gwc
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -291,7 +291,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/gwc
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -349,7 +349,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/gwc
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
