@@ -2,6 +2,7 @@ package design
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"testing"
@@ -656,5 +657,161 @@ func TestDecodeRunsTheFloor(t *testing.T) {
 	}
 	if r := ContrastRatio(got.Dim, got.Ground); r < AAFloor {
 		t.Errorf("a stored theme with an illegible --mute was painted as-is (%.2f:1)", r)
+	}
+}
+
+// --- the source hues as type -------------------------------------------------------
+//
+// `--ink` is the one value in the engine that no Go check could see before oklab.go:
+// the sheet computes it in the browser, from `--c` (a source's hue, assigned at
+// runtime) and `--cream` (a theme token), so all Go ever had was the expression.
+// That was tolerable while five hand-written palettes were the only palettes and
+// e2e/appearance.spec.mjs measured them in a real engine. A palette a model wrote
+// thirty seconds ago has a `--cream` and a ground nobody has looked at.
+
+// TestTheInkMixMatchesTheSheet keeps the Go arithmetic and the CSS it reproduces
+// honest about each other.
+//
+// The 62% is written twice — once in a CSS string in sheet.go, once as
+// inkMixToward — and it has to be, because the CSS value is inside a declaration
+// somebody edits while looking at a screen. This is what makes the duplication safe:
+// it reads the number out of the ACTUALLY EMITTED stylesheet, so changing one
+// without the other fails here rather than silently making the readability floor
+// measure a colour the browser does not paint.
+func TestTheInkMixMatchesTheSheet(t *testing.T) {
+	sheet := sheetText(t)
+	want := fmt.Sprintf("var(--cream) %d%%", int(math.Round(inkMixToward*100)))
+	if !strings.Contains(sheet, want) {
+		t.Errorf("the sheet's --ink mix does not use %q — inkMixToward is %.2f, so "+
+			"the readability floor is measuring a colour the browser does not paint",
+			want, inkMixToward)
+	}
+	// And that it is a color-mix in oklab, which is the space MixOklab reproduces.
+	// In sRGB or in HSL the same two colours give a visibly different third one.
+	if !strings.Contains(sheet, "color-mix(in oklab, var(--c, currentColor), var(--cream)") {
+		t.Error("the sheet's --ink is no longer an oklab mix of --c toward --cream; " +
+			"MixOklab is reproducing the wrong operation")
+	}
+}
+
+// TestOklabRoundTrips. The conversion is used in one direction and then the other
+// inside a single mix, so an error in either matrix would partly cancel and leave a
+// plausible-looking colour that is wrong by a few percent — which is exactly the
+// size of error that moves a 4.5 to a 4.3 and is invisible.
+func TestOklabRoundTrips(t *testing.T) {
+	for _, hex := range append(SourceHues(), "#000000", "#FFFFFF", "#221A2E", "#F7F2E9") {
+		c, ok := parseHex(hex)
+		if !ok {
+			t.Fatalf("%s did not parse", hex)
+		}
+		l, a, b := c.oklab()
+		if got := fromOklab(l, a, b).hex(); got != hex {
+			t.Errorf("%s round-tripped through OKLab as %s", hex, got)
+		}
+	}
+	// The endpoints of a mix are the inputs, which pins the interpolation's
+	// direction — a swapped weight passes every other test in this file.
+	if got := MixOklab("#FFCE5C", "#241C30", 0); got != "#FFCE5C" {
+		t.Errorf("MixOklab at w=0 gave %s, want the first colour", got)
+	}
+	if got := MixOklab("#FFCE5C", "#241C30", 1); got != "#241C30" {
+		t.Errorf("MixOklab at w=1 gave %s, want the second colour", got)
+	}
+}
+
+// TestEveryShippedThemeKeepsItsSourceNamesReadable is the Go half of what
+// e2e/appearance.spec.mjs measures in a browser.
+//
+// Not a replacement for that test — the browser is the authority on what
+// `color-mix(in oklab, …)` resolves to, and the e2e reads the result back as real
+// sRGB bytes off a canvas. This is the cheap version that runs on every commit, and
+// the two agreeing is what says MixOklab reproduces the right operation.
+//
+// The measured ratios are recorded rather than merely floored, because the number
+// that matters is Daylight's: it is the only shipped theme where the mix happens at
+// all, and the e2e's own history is a case that measured 4.45 and was invisible to
+// everything.
+func TestEveryShippedThemeKeepsItsSourceNamesReadable(t *testing.T) {
+	for _, th := range Themes {
+		worst, hue := worstInk(th, th.Ground)
+		if worst < AAFloor {
+			t.Errorf("%s: --ink for %s is %.2f:1 against the page, below AA — every "+
+				"row from that source has an illegible name", th.Name, hue, worst)
+		}
+	}
+	// Daylight, pinned. If a change to its --cream or its ground moves this, the
+	// number in the failure is the one to think about rather than a bare "below AA".
+	if got, _ := worstInk(Daylight, Daylight.Ground); got < 5.0 {
+		t.Errorf("Daylight's worst source name is %.2f:1, down from 5.79 — the light "+
+			"theme is the only one where the mix happens, and it is the one the e2e "+
+			"caught at 4.45 once already", got)
+	}
+}
+
+// TestAGeneratedLightThemeCannotHideAnIllegibleSourceName is the gap this whole
+// pass exists to close.
+//
+// The palette below is not adversarial. It is what a model returns for "old paper
+// under a lamp": a warm off-white ground and a warm dark brown for text, both
+// perfectly legible against each other — and a source name at 4.34:1, because
+// `--ink` is neither of those two colours. Every check in this file passed it before
+// fixInk existed.
+func TestAGeneratedLightThemeCannotHideAnIllegibleSourceName(t *testing.T) {
+	raw := Theme{
+		Name: CustomName, Label: "Lamplight", Blurb: "-", Tone: ToneLight,
+		Ground: "#EDE6D8", Raised: "#E4DBCA", Sunk: "#DACFBA",
+		Line: "#C6B99F", Hair: "#D8CDB8",
+		Cream: "#3A2F1E", Soft: "#584A33", Dim: "#6B5C42", Read: "#42361F",
+		Accent: "#8A5A12", Pos: "#2F6B3A", Neg: "#9A3320",
+		Shadow: GeneratedShadow(ToneLight), Wash: "12%",
+	}
+	// The premise: legible text, illegible source names.
+	if r := ContrastRatio(raw.Cream, raw.Ground); r < AAFloor {
+		t.Fatalf("the fixture's own text is only %.2f:1; it is testing the wrong thing", r)
+	}
+	if before, _ := worstInk(raw, raw.Ground); before >= AAFloor {
+		t.Fatalf("the fixture's source names are already %.2f:1, so it cannot show "+
+			"the defect", before)
+	}
+
+	got, reps, err := Sanitize(raw)
+	if err != nil {
+		t.Fatalf("Sanitize refused a palette it should have repaired: %v", err)
+	}
+	after, hue := worstInk(got, got.Ground)
+	if after < AAFloor {
+		t.Errorf("--ink for %s is still %.2f:1 after repair", hue, after)
+	}
+	if !hasRepair(reps, "cream", ReasonSourceHue) {
+		t.Error("the repair was not reported; a reader whose text came back darker " +
+			"than they asked for is owed the reason")
+	}
+}
+
+// TestADarkThemeTooPaleForTheHuesMovesItsGround.
+//
+// On a dark theme `--ink` IS the hue, unmixed, and the hue belongs to the source
+// rather than to the theme — so the ground is the only lever, and a generated dark
+// theme with a mid-grey ground has every source name at about 2:1 with nothing else
+// able to fix it. That is why the condition lives in groundOK rather than in fixInk.
+func TestADarkThemeTooPaleForTheHuesMovesItsGround(t *testing.T) {
+	raw := Theme{
+		Name: CustomName, Label: "Slate", Blurb: "-", Tone: ToneDark,
+		Ground: "#5A5A62", Raised: "#63636B", Sunk: "#6C6C74",
+		Line: "#7A7A82", Hair: "#6A6A72",
+		Cream: "#FFFFFF", Soft: "#F0F0F4", Dim: "#E4E4EA", Read: "#FAFAFC",
+		Accent: "#FFE9A8", Pos: "#CFF3DF", Neg: "#FFD6CC",
+		Shadow: GeneratedShadow(ToneDark), Wash: "10%",
+	}
+	got, _, err := Sanitize(raw)
+	if err != nil {
+		t.Fatalf("Sanitize refused: %v", err)
+	}
+	if RelativeLuminance(got.Ground) >= RelativeLuminance(raw.Ground) {
+		t.Errorf("the ground stayed at %s; a dark theme that pale cannot carry a "+
+			"source hue as type and has no other lever", got.Ground)
+	}
+	if after, hue := worstInk(got, got.Ground); after < AAFloor {
+		t.Errorf("--ink for %s is %.2f:1 after repair", hue, after)
 	}
 }

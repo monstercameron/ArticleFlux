@@ -180,7 +180,16 @@ const (
 	// A category is a container, where a tag is a label stuck on one \u2014 so it is
 	// a box shape rather than the tag's ticket, and the two sections stay
 	// distinguishable at 12px in a column of 151 rows.
-	glyphCats     = "\u2337"
+	glyphCats = "\u2337"
+	// The Classification settings tab (client/view/classifysettings.go) gets its
+	// own mark rather than reusing glyphCats. docs/FEATURES.md \u00a776 flags that
+	// "category" already names two different things in this app \u2014 the rail's
+	// folders (\u00a710) and the classifier's 26 article sections \u2014 and D23, which of
+	// the two keeps the word, is still open. Sharing a glyph on top of sharing a
+	// name would make that ambiguity visible in the one place a glyph is meant
+	// to remove it. A crosshatched grid rather than glyphCats' solid box: many
+	// small cells, for a taxonomy with 26 members, instead of one container.
+	glyphClassify = "\u25a6"
 	glyphAdd      = "\uff0b"
 	glyphSearch   = "\u2315"
 	glyphRefresh  = "\u21bb"

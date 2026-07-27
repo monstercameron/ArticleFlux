@@ -4,6 +4,7 @@ package view
 
 import (
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -404,12 +405,101 @@ func clamp01(v float64) float64 {
 // to hand over from. Untouched matters: the browser caches audio by URL, so
 // appending an empty or pointless parameter would re-download every segment a
 // reader has already heard.
-func speechFrom(src, prevID string, podcast bool) string {
-	if !podcast || src == "" || prevID == "" {
+func speechFrom(src string, ask speechAsk) string {
+	if src == "" || !ask.podcast {
 		return src
 	}
-	return src + "&p=" + prevID
+	if ask.prevID != "" {
+		// Mid-broadcast: hand over from what was just played, and nothing else.
+		// The opening parameters are deliberately NOT sent here — the server
+		// decides where the top of the show is by whether there is a predecessor,
+		// and sending them anyway would only widen the surface it has to ignore.
+		return src + "&p=" + ask.prevID
+	}
+	// The top of the broadcast. Both of these are hints for the greeting: the
+	// listener's clock, so "good morning" is true where they are rather than
+	// where the server is, and how much is queued, which is the difference
+	// between "here's what's happening" and "eleven stories this morning".
+	out := src
+	if ask.now != "" {
+		out += "&now=" + url.QueryEscape(ask.now)
+	}
+	if ask.stories > 0 {
+		out += "&n=" + strconv.Itoa(ask.stories)
+	}
+	return out
 }
+
+// speechAsk is everything the client adds to a minted listening ticket.
+//
+// A struct rather than four parameters because three of them are optional and
+// two are strings — the positional version is the one where somebody eventually
+// passes the item id where the timestamp goes and nothing complains.
+type speechAsk struct {
+	// prevID is the story just played. Empty means this is the top of the show.
+	prevID string
+	// podcast gates ALL of it: with broadcast mode off none of these parameters
+	// mean anything, and appending them would change the URL, which is the
+	// browser's audio cache key — re-downloading every segment already heard.
+	podcast bool
+	// now is the listener's local time, RFC3339 with offset, or "" when unknown.
+	now string
+	// stories is how many are queued including this one, or 0 when unknown.
+	stories int
+}
+
+// localStamp composes what platform.LocalNow reports into RFC3339.
+//
+// Pure, so the one piece of arithmetic here — that a browser's offset is minutes
+// and a Go zone is seconds — is testable without a browser. Empty for a clock
+// that could not be read, which the caller omits rather than sending: a zero
+// timestamp would have the server greeting a listener in 1970.
+func localStamp(unixMillis int64, offsetMinutes int) string {
+	if unixMillis <= 0 {
+		return ""
+	}
+	return time.UnixMilli(unixMillis).
+		In(time.FixedZone("", offsetMinutes*60)).
+		Format(time.RFC3339)
+}
+
+// The narrator's manner, mirroring smart.Vibe* in internal/smart/podcast.go.
+//
+// DUPLICATED, and it has to be: internal/smart pulls in the LLM client, the
+// store and cgo-linked sqlite, none of which can be compiled to wasm. The server
+// is the authority — smart.VibeFor resolves anything it does not recognise to
+// the default — so a drift here is a picker whose selection silently does
+// nothing, which is why the names are pinned by a test on that side.
+const (
+	vibeCalm  = "calm"
+	vibeBrisk = "brisk"
+	vibeDry   = "dry"
+	vibeWarm  = "warm"
+)
+
+// slideVibeChoices are what the settings screen offers, in the order it offers
+// them: the default first, then loudest to quietest.
+var slideVibeChoices = []string{vibeCalm, vibeBrisk, vibeWarm, vibeDry}
+
+// vibePrefFrom reads the stored manner, defaulting to calm.
+//
+// An unrecognised stored value is REPLACED here rather than passed on, unlike
+// the dwell preference which is kept. The difference is what the value does: a
+// dwell of "17" is a perfectly good number of seconds nobody offered, while a
+// vibe of "17" is nothing at all, and showing no chip as selected would leave
+// the reader unable to tell what they are listening to.
+func vibePrefFrom(prefs map[string]string) string {
+	v := strings.ToLower(strings.TrimSpace(prefs[podcastVibePref]))
+	for _, c := range slideVibeChoices {
+		if v == c {
+			return v
+		}
+	}
+	return vibeCalm
+}
+
+// podcastVibePref is the stored key, matching internal/app/speech.go.
+const podcastVibePref = "tts.podcastVibe"
 
 // --- the surface ---------------------------------------------------------------
 
@@ -429,6 +519,9 @@ const (
 	// The pace, from the settings screen. Carries its value in data-value like
 	// every other segmented control here.
 	actSlideDwell = "slide-dwell"
+	// The narrator's manner, from the Listening tab. Carries its value in
+	// data-value like every other segmented control here.
+	actVibe = "podcast-vibe"
 	// The prerequisites dialog: opening it from the line on the slide, flipping
 	// one of the switches it lists, starting once they are met, and leaving.
 	actSlideNeeds      = "slide-needs"

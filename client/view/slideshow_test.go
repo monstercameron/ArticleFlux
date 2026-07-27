@@ -3,6 +3,7 @@
 package view
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,13 +256,10 @@ func TestSpeechFromOnlyAppendsWhenItMeansSomething(t *testing.T) {
 
 	// The URL is the browser's audio cache key, so an appended parameter that
 	// changes nothing would re-download every segment already heard.
-	if got := speechFrom(ticket, "item-1", false); got != ticket {
+	if got := speechFrom(ticket, speechAsk{prevID: "item-1"}); got != ticket {
 		t.Errorf("broadcast off changed the URL to %q", got)
 	}
-	if got := speechFrom(ticket, "", true); got != ticket {
-		t.Errorf("no previous story changed the URL to %q", got)
-	}
-	if got := speechFrom("", "item-1", true); got != "" {
+	if got := speechFrom("", speechAsk{prevID: "item-1", podcast: true}); got != "" {
 		t.Errorf("an absent ticket produced %q", got)
 	}
 
@@ -269,8 +267,116 @@ func TestSpeechFromOnlyAppendsWhenItMeansSomething(t *testing.T) {
 	// query string 404s rather than degrading — so it would look like the voice
 	// breaking rather than like a handover being dropped.
 	want := ticket + "&p=item-1"
-	if got := speechFrom(ticket, "item-1", true); got != want {
+	if got := speechFrom(ticket, speechAsk{prevID: "item-1", podcast: true}); got != want {
 		t.Errorf("speechFrom = %q, want %q", got, want)
+	}
+}
+
+// The opening's hints ride on the segment with NOTHING before it, and only that
+// one. A greeting on story seven would be the broadcast starting again.
+func TestSpeechFromSendsTheOpeningOnlyAtTheTop(t *testing.T) {
+	const ticket = "/speech?t=abc"
+	const now = "2026-07-27T08:30:00-04:00"
+
+	top := speechFrom(ticket, speechAsk{podcast: true, now: now, stories: 11})
+	if !strings.Contains(top, "&n=11") {
+		t.Errorf("the queue size did not reach the opening: %q", top)
+	}
+	// Escaped, because an RFC3339 offset contains a `+` half the year — and a raw
+	// `+` in a query string decodes to a SPACE, so the server would see a
+	// timestamp it cannot parse and quietly greet the listener in its own
+	// timezone. Exactly the bug the greeting exists to avoid.
+	if !strings.Contains(top, "&now=2026-07-27T08%3A30%3A00-04%3A00") {
+		t.Errorf("the listener's clock is not escaped into the URL: %q", top)
+	}
+
+	// Mid-broadcast: the handover, and nothing else. Sending the opening hints
+	// here would only widen what the server has to ignore.
+	mid := speechFrom(ticket, speechAsk{prevID: "item-1", podcast: true, now: now, stories: 11})
+	if strings.Contains(mid, "now=") || strings.Contains(mid, "n=11") {
+		t.Errorf("a mid-broadcast segment carried the opening hints: %q", mid)
+	}
+
+	// An unknown clock is omitted rather than sent as a zero — the server then
+	// falls back to its own, which is usually right.
+	none := speechFrom(ticket, speechAsk{podcast: true})
+	if none != ticket {
+		t.Errorf("an opening with nothing known changed the URL to %q", none)
+	}
+}
+
+// --- localStamp -------------------------------------------------------------------
+
+// The one piece of arithmetic between a browser's clock and a Go one: the
+// browser reports MINUTES and a Go zone takes SECONDS. Getting it wrong by that
+// factor puts the greeting sixty times further out than the timezone it was
+// meant to correct for.
+func TestLocalStampCarriesTheListenersOffset(t *testing.T) {
+	// 2026-07-27T12:30:00Z, seen from UTC-4 — half past eight in the morning,
+	// which is the difference between "good morning" and "good afternoon".
+	const ms = int64(1785155400000)
+	got := localStamp(ms, -240)
+	if !strings.HasPrefix(got, "2026-07-27T08:30:00") {
+		t.Errorf("localStamp = %q, want a local wall clock of 08:30", got)
+	}
+	if !strings.HasSuffix(got, "-04:00") {
+		t.Errorf("localStamp = %q, want it to carry the -04:00 offset", got)
+	}
+	// UTC is a legitimate offset and must not be mistaken for "unknown".
+	if got := localStamp(ms, 0); !strings.HasSuffix(got, "Z") && !strings.HasSuffix(got, "+00:00") {
+		t.Errorf("a UTC listener stamped %q", got)
+	}
+	// No clock to ask is empty, not 1970.
+	for _, bad := range []int64{0, -1} {
+		if got := localStamp(bad, 60); got != "" {
+			t.Errorf("an unreadable clock stamped %q", got)
+		}
+	}
+}
+
+// --- the narrator's manner ---------------------------------------------------------
+
+// Every offered vibe must be one the SERVER recognises, and the list is
+// duplicated across the wasm boundary because internal/smart cannot be compiled
+// to wasm. This is the client half of that contract; internal/smart pins the
+// other.
+func TestVibeChoicesAreTheOnesTheServerKnows(t *testing.T) {
+	want := map[string]bool{"calm": true, "brisk": true, "warm": true, "dry": true}
+	if len(slideVibeChoices) != len(want) {
+		t.Fatalf("offering %d manners, the server knows %d", len(slideVibeChoices), len(want))
+	}
+	for _, v := range slideVibeChoices {
+		if !want[v] {
+			t.Errorf("offering %q, which smart.VibeFor would resolve to the default — "+
+				"the chip would look selected and change nothing", v)
+		}
+	}
+	if slideVibeChoices[0] != vibeCalm {
+		t.Errorf("the first manner offered is %q, want %q — it is the default",
+			slideVibeChoices[0], vibeCalm)
+	}
+}
+
+// An unrecognised stored manner is REPLACED rather than kept, unlike the pace.
+// A pace of "17" is a perfectly good number of seconds nobody offered; a manner
+// of "17" is nothing at all, and would leave no chip looking selected.
+func TestVibePrefFallsBackToCalm(t *testing.T) {
+	for _, pref := range []string{"", "  ", "nonesuch", "CALM ", "17"} {
+		got := vibePrefFrom(map[string]string{podcastVibePref: pref})
+		if pref == "CALM " {
+			// Case and whitespace are forgiven: this round-trips through a text
+			// field and an API.
+			if got != vibeCalm {
+				t.Errorf("%q resolved to %q, want %q", pref, got, vibeCalm)
+			}
+			continue
+		}
+		if got != vibeCalm {
+			t.Errorf("%q resolved to %q, want the default %q", pref, got, vibeCalm)
+		}
+	}
+	if got := vibePrefFrom(map[string]string{podcastVibePref: "dry"}); got != vibeDry {
+		t.Errorf("a real manner resolved to %q", got)
 	}
 }
 

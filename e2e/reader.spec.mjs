@@ -141,7 +141,21 @@ test.describe('reading', () => {
     await expect(page.locator('.pane-list')).toBeVisible();
   }
 
-  test('jumping down the list does not read what it jumped over', async ({ page }) => {
+  test('jumping down the list does not read what it jumped over', async ({ page }, testInfo) => {
+    const dbgLog = [];
+    page.on('console', (msg) => { if (msg.text().startsWith('DBG')) dbgLog.push(msg.text()); });
+    try {
+      await runJumpingDownBody(page);
+    } catch (e) {
+      const fs = await import('node:fs');
+      const file = `dbg-fail-${Date.now()}.log`;
+      fs.writeFileSync(file, dbgLog.join('\n'));
+      console.log(`DBGLOG written to ${file} (${dbgLog.length} lines)`);
+      throw e;
+    }
+  });
+
+  async function runJumpingDownBody(page) {
     await boot(page);
     await openAlpha(page);
     const rows = page.locator('.item-row');
@@ -185,7 +199,7 @@ test.describe('reading', () => {
     await openAlpha(page);
     await expect(page.locator('.item-row').nth(1))
       .toHaveAttribute('data-read', 'false');
-  });
+  }
 
   // Un-fixme'd 2026-07-27 (8b.52). Two fixes stood between this and green.
   //

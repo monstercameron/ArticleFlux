@@ -52,7 +52,7 @@ const actClassifyCatToggle = "classify-cat-toggle"
 
 func settingsClassify(tr i18n.Runtime, p classifySettingsProps) []ui.Node {
 	out := []ui.Node{
-		fsGroup(glyphCats, tr.T("classify", "catGroup"), tr.T("classify", "catGroupHint")),
+		fsGroup(glyphClassify, tr.T("classify", "catGroup"), tr.T("classify", "catGroupHint")),
 	}
 	for _, c := range design.Categories {
 		out = append(out, catListRow(tr, c, csvHas(p.hiddenCats, c.Slug)))

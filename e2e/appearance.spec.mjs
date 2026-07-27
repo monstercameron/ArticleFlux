@@ -111,6 +111,113 @@ test.describe('appearance', () => {
     await pickTheme(page, 'fanciful');
   });
 
+  /**
+   * The Go floor and the browser have to agree about what `--ink` IS.
+   *
+   * `client/design/oklab.go` reproduces `color-mix(in oklab, var(--c), var(--cream)
+   * 62%)` in Go, so that `design.Sanitize` can refuse a GENERATED light theme whose
+   * source names would be illegible — a check nothing could make while the five
+   * hand-written palettes were the only palettes, and one that matters the moment a
+   * model is choosing `--cream` and the ground.
+   *
+   * A reimplementation of a browser operation is worth exactly as much as the
+   * evidence that it matches. So: four (ground, cream) pairs, the amber source's
+   * `--ink` as Go computes it, and the same value read back out of the shipping
+   * engine as real sRGB bytes. Amber is the worst case on every one of them, which
+   * is why it is the one pinned.
+   *
+   * If this fails, Go is measuring a colour the browser does not paint, and every
+   * ratio the readability floor reports for a light theme is wrong.
+   */
+  const INK_CASES = [
+    { bg: '#F7F2E9', cream: '#241C30', ink: '#6E5B49', ratio: 5.79 }, // Daylight itself
+    { bg: '#EDE6D8', cream: '#3A2F1E', ink: '#7F6736', ratio: 4.34 }, // a plausible "old paper"
+    { bg: '#FFFFFF', cream: '#000000', ink: '#423412', ratio: 12.13 }, // the extreme
+    { bg: '#D8D2C4', cream: '#1A1A1A', ink: '#685836', ratio: 4.59 }, // near the floor
+  ];
+  const AMBER = '#FFCE5C';
+
+  test('the Go ink mix is the mix the browser paints', async ({ page }) => {
+    await boot(page);
+
+    const got = await page.evaluate(
+      ({ cases, hue }) => {
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 1;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        const rgb = (css) => {
+          ctx.clearRect(0, 0, 1, 1);
+          ctx.fillStyle = '#000';
+          ctx.fillStyle = css;
+          ctx.fillRect(0, 0, 1, 1);
+          const d = ctx.getImageData(0, 0, 1, 1).data;
+          return [d[0], d[1], d[2]];
+        };
+        const lum = (c) => {
+          const f = c.map((v) => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+        };
+        const ratio = (a, b) => {
+          const [hi, lo] = [lum(a), lum(b)].sort((p, q) => q - p);
+          return (hi + 0.05) / (lo + 0.05);
+        };
+
+        // The tokens are set exactly where applyAppearance sets them — on
+        // documentElement — and the tone attribute with them, because the light
+        // rule is what selects the mix at all.
+        const root = document.documentElement;
+        const before = {
+          bg: root.style.getPropertyValue('--bg'),
+          cream: root.style.getPropertyValue('--cream'),
+          tone: root.getAttribute('data-tone'),
+        };
+        const out = [];
+        for (const c of cases) {
+          root.style.setProperty('--bg', c.bg);
+          root.style.setProperty('--cream', c.cream);
+          root.setAttribute('data-tone', 'light');
+
+          // The same shape the list paints: --c on the row, .item-source inside it.
+          const row = document.createElement('div');
+          row.style.setProperty('--c', hue);
+          const name = document.createElement('span');
+          name.className = 'item-source';
+          row.appendChild(name);
+          document.body.appendChild(row);
+          const ink = rgb(getComputedStyle(name).color);
+          row.remove();
+          out.push({ ink, ratio: Math.round(ratio(ink, rgb(c.bg)) * 100) / 100 });
+        }
+        // Put the reader back where it was, since these prefs are server-side and
+        // the next test opens on whatever this one left.
+        root.style.setProperty('--bg', before.bg);
+        root.style.setProperty('--cream', before.cream);
+        if (before.tone) root.setAttribute('data-tone', before.tone);
+        return out;
+      },
+      { cases: INK_CASES, hue: AMBER },
+    );
+
+    for (let i = 0; i < INK_CASES.length; i++) {
+      const want = INK_CASES[i];
+      const wantRGB = [1, 3, 5].map((k) => parseInt(want.ink.slice(k, k + 2), 16));
+      for (let ch = 0; ch < 3; ch++) {
+        expect(
+          Math.abs(got[i].ink[ch] - wantRGB[ch]),
+          `--ink for ${AMBER} on (${want.bg}, ${want.cream}): the browser paints ` +
+            `rgb(${got[i].ink}) and client/design/oklab.go computes ${want.ink}. ` +
+            `MixOklab is reproducing a different operation, so every --ink ratio ` +
+            `design.Sanitize reports for a light theme is wrong.`,
+        ).toBeLessThanOrEqual(2);
+      }
+      // And the ratio itself, which is the number the floor actually acts on.
+      expect(Math.abs(got[i].ratio - want.ratio)).toBeLessThanOrEqual(0.1);
+    }
+  });
+
   test('a hue still identifies its source after being made readable', async ({ page }) => {
     await boot(page);
     await pickTheme(page, 'daylight');

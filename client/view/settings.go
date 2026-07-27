@@ -70,7 +70,7 @@ var settingsTabs = []struct {
 	// and the translator spend the same key, and a reader who has just met one
 	// should find the other next to it rather than five tabs away.
 	{setSmart, glyphShared},
-	{setClassify, glyphCats},
+	{setClassify, glyphClassify},
 	{setFeeds, glyphFeeds},
 	{setAccount, "◑"},
 	{setServer, glyphHealth},
