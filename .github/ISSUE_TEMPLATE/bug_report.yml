@@ -62,7 +62,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: "`./bin/ArticleFlux.exe version`, or the commit hash you built."
+      description: "`./bin/articleflux.exe version`, or the commit hash you built."
     validations:
       required: true
 

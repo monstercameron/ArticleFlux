@@ -49,7 +49,7 @@ func TestBootPageRenders(t *testing.T) {
 	}
 
 	p := &BootPage{
-		Build:    Build{Version: "ArticleFlux test", Commit: "abc123", Addr: "127.0.0.1:9000"},
+		Build:    Build{Version: "articleflux test", Commit: "abc123", Addr: "127.0.0.1:9000"},
 		TODOPath: todo,
 	}
 	rr := httptest.NewRecorder()

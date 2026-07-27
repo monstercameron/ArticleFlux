@@ -1,7 +1,7 @@
 // Package app wires the server together: storage, service, transports, and the
 // background poller.
 //
-// It exists so cmd/ArticleFlux stays a flag parser. Everything here is reachable
+// It exists so cmd/articleflux stays a flag parser. Everything here is reachable
 // from a test without starting a process.
 package app
 
@@ -44,7 +44,7 @@ type Config struct {
 	PollInterval time.Duration
 	// DevMode serves the single local account without a login.
 	//
-	// cmd/ArticleFlux only sets this for a loopback bind. An internet-facing
+	// cmd/articleflux only sets this for a loopback bind. An internet-facing
 	// instance with DevMode on would be an open reader — anyone who can reach
 	// the port is the superadmin.
 	DevMode bool
@@ -158,7 +158,7 @@ func (a *App) buildHandler() {
 	})
 
 	// Dev-only reset, gated on exactly the same flag as the no-login mode — which
-	// cmd/ArticleFlux restricts to a loopback bind. It exists for the e2e suite,
+	// cmd/articleflux restricts to a loopback bind. It exists for the e2e suite,
 	// which shares one database across tests; without it a test that marks an
 	// article read changes what every later test sees.
 	//

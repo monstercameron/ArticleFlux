@@ -78,7 +78,7 @@ same deal.
 
 ```powershell
 ./scripts/make.ps1 build
-./bin/ArticleFlux.exe seed    # subscribe to a starter set and fetch it
+./bin/articleflux.exe seed    # subscribe to a starter set and fetch it
 ./scripts/make.ps1 dev    # http://127.0.0.1:9000
 ```
 
@@ -154,7 +154,7 @@ ships origin allowlists, pre-upgrade authorization, connection caps, keepalive w
 reconnection, OpenTelemetry spans, and a native-transport mode that is 47% lighter on memory per RPC.
 
 In ArticleFlux this is what the `connected` dot in the toolbar reports, and it is why the client and the
-server cannot disagree about a field name: **`proto/ArticleFlux/v1` is the only contract, and both ends
+server cannot disagree about a field name: **`proto/articleflux/v1` is the only contract, and both ends
 are generated from it.** Twenty-four RPCs across two services, all unary today; the tunnel is ready
 for streaming when the ranking layer needs it.
 
@@ -163,7 +163,7 @@ for streaming when the ranking layer needs it.
 ## How it is put together
 
 ```
-cmd/ArticleFlux        the binary: serve · seed · poll · version
+cmd/articleflux        the binary: serve · seed · poll · version
 internal/store     ALL SQL lives here. Two pools: many readers, one writer
 internal/feed      fetch + normalise. Every fetch goes through the SSRF guard
 internal/reader    the service layer — one place that knows what "mark read" means

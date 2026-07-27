@@ -20,7 +20,7 @@
     It lives in scripts/ but every path it touches is the REPOSITORY root, which
     is $PSScriptRoot's parent — see $Root below. Nothing in here may use
     $PSScriptRoot directly: that is scripts/, and the difference is silent. A
-    path built from the wrong one produces scripts/bin/ArticleFlux.exe, which is a
+    path built from the wrong one produces scripts/bin/articleflux.exe, which is a
     build that succeeds into a directory nobody serves from.
 #>
 
@@ -87,7 +87,7 @@ function Invoke-Gen {
 
 function Invoke-Build {
     Step 'go build ./...'
-    Invoke-Checked 'go build' { go build -o bin\ArticleFlux.exe ./cmd/ArticleFlux }
+    Invoke-Checked 'go build' { go build -o bin\articleflux.exe ./cmd/articleflux }
     Invoke-Checked 'go vet'   { go build ./... }
 }
 
@@ -168,16 +168,16 @@ function Invoke-Lint {
 
 function Invoke-Migrate {
     Ensure-Build
-    Step 'ArticleFlux migrate'
-    Invoke-Checked 'migrate' { & (Join-Path $Root 'bin\ArticleFlux.exe') migrate }
+    Step 'articleflux migrate'
+    Invoke-Checked 'migrate' { & (Join-Path $Root 'bin\articleflux.exe') migrate }
 }
 
-function Ensure-Build { if (-not (Test-Path 'bin\ArticleFlux.exe')) { Invoke-Build } }
+function Ensure-Build { if (-not (Test-Path 'bin\articleflux.exe')) { Invoke-Build } }
 
 function Invoke-Run {
     Invoke-Build
     Step "serving on http://127.0.0.1:$Port"
-    & (Join-Path $Root 'bin\ArticleFlux.exe') serve -addr "127.0.0.1:$Port"
+    & (Join-Path $Root 'bin\articleflux.exe') serve -addr "127.0.0.1:$Port"
 }
 
 switch ($Target) {
@@ -211,7 +211,7 @@ ArticleFlux task runner (TODO 1.4)
 
   ./scripts/make.ps1 tools      build gwc.exe from ../GoWebComponents  (D0: no published tag)
   ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
-  ./scripts/make.ps1 build      go build -> bin/ArticleFlux.exe
+  ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards

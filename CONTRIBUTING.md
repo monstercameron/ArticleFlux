@@ -8,7 +8,7 @@ written down in `plan.md`; what follows is the part you need before your first c
 ```powershell
 ./scripts/make.ps1 tools     # buf and the protoc plugins
 ./scripts/make.ps1 build
-./bin/ArticleFlux.exe seed
+./bin/articleflux.exe seed
 ./scripts/make.ps1 dev       # http://127.0.0.1:9000
 ```
 
@@ -75,7 +75,7 @@ the conversation is about the decision, not about the guard.
 
 ## Changing the contract
 
-`proto/ArticleFlux/v1` is the only contract, and both ends are generated from it.
+`proto/articleflux/v1` is the only contract, and both ends are generated from it.
 
 ```powershell
 ./scripts/make.ps1 gen       # buf generate
