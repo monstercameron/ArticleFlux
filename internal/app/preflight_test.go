@@ -164,3 +164,33 @@ func TestPreflightReportsEveryProblemAtOnce(t *testing.T) {
 		t.Errorf("the missing module is not reported: %v", err)
 	}
 }
+
+// §10.1b Rule 1, enforced rather than documented (D20).
+//
+// With no `ProxyOrigin`, the page proxy would serve sanitized-but-hostile
+// third-party HTML from the origin that holds the session — one sanitizer
+// bypass away from reading it. The field's own comment said that was "NOT
+// correct" and nothing stopped it, which is a hazard documented into existence
+// rather than out of it.
+func TestThePageProxyRefusesToRunOnTheAppsOwnOrigin(t *testing.T) {
+	a := openFor(t, Config{DevMode: true, ProxyImages: true, ProxyPages: true})
+	if a.pages != nil {
+		t.Error("the page proxy started with no separate origin, so proxied HTML " +
+			"shares an origin with the session")
+	}
+	// Images are deliberately NOT held to this: the asset proxy serves bytes
+	// with nosniff and an image content type, so it cannot execute and the
+	// origin boundary buys correspondingly little.
+	if a.assets == nil {
+		t.Error("the asset proxy was disabled too; only pages need their own origin")
+	}
+
+	// Given an origin, it runs.
+	b := openFor(t, Config{
+		DevMode: true, ProxyImages: true, ProxyPages: true,
+		ProxyOrigin: "https://proxy.example.test",
+	})
+	if b.pages == nil {
+		t.Error("the page proxy refused even with a separate origin configured")
+	}
+}

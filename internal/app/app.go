@@ -262,6 +262,20 @@ type App struct {
 	// read of it skips a window of engagements silently.
 	deriveMu   sync.Mutex
 	lastDerive time.Time
+	// lastNudge rate-limits engagement-triggered derivations (see NudgeDerive). Under
+	// the same mutex as lastDerive because both are the deriver's schedule; two locks
+	// for one concern is how they end up being taken in different orders.
+	lastNudge time.Time
+	// closing stops NudgeDerive from starting work during shutdown, and nudges tracks
+	// the goroutines already started so Close can wait for them.
+	//
+	// Both exist because the first version logged "database is closed" on the way down:
+	// a nudge fired, its goroutine was still reaching for the writer, and Close got to
+	// db.Close() first. Harmless — the work was a recomputable ranking — but a shutdown
+	// that reports a database error is one that gets investigated, and a real fault at
+	// shutdown would then be indistinguishable from this noise.
+	closing bool
+	nudges  sync.WaitGroup
 }
 
 // Open builds the app and applies migrations.
@@ -432,6 +446,10 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		},
 	})
 	a.pool.Handle(store.JobDerive, a.deriver.Handle)
+	// Close the interest loop inside the session that produced the signal, rather than
+	// on the next poll. See reader.WithSignalHook for why the callback is a func, and
+	// NudgeDerive for the rate limit that makes it safe to call on every batch.
+	svc.WithSignalHook(a.NudgeDerive)
 	// Following a page that has no feed (§11, §14.2).
 	//
 	// Three pieces, wired together because they are one ladder: `discover`
@@ -487,7 +505,33 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 				AllowPrivate: cfg.AllowPrivateFeeds,
 				UserAgent:    "ArticleFlux/" + cfg.Version + " (+asset proxy)",
 			})
-			if cfg.ProxyPages {
+			// The page proxy REFUSES to run on the app's own origin (D20).
+			//
+			// §10.1b's Rule 1 is not negotiable and it was not enforced: with
+			// `ProxyOrigin` empty this served sanitized-but-hostile third-party
+			// HTML from the origin that holds the session, one sanitizer bypass
+			// away from reading it. The field's own comment said that was "NOT
+			// correct" and nothing stopped it, which is a hazard documented into
+			// existence rather than out of it.
+			//
+			// The separate hostname is the control that actually holds — the
+			// browser's origin boundary doing the work instead of a CSP string
+			// somebody has to keep correct forever — so its absence disables the
+			// feature rather than downgrading it. There is no same-origin
+			// fallback, because a fallback is the thing the rule forbids.
+			//
+			// IMAGES are deliberately not held to this. The asset proxy serves
+			// bytes with `nosniff` and an image content type; it cannot execute,
+			// and the origin boundary buys correspondingly little. Pages are
+			// HTML, which is the whole difference.
+			switch {
+			case !cfg.ProxyPages:
+				// off; nothing to say
+			case strings.TrimSpace(cfg.ProxyOrigin) == "":
+				cfg.Log.Warn("the page proxy is OFF: it needs its own origin",
+					"why", "proxied HTML must not share an origin with the session (§10.1b)",
+					"fix", "set -proxy-origin https://proxy.<your-host> and point it at this server")
+			default:
 				a.pages = pageproxy.New(pageproxy.Options{
 					Dir:          filepath.Join(dataDir, "page-cache"),
 					AllowPrivate: cfg.AllowPrivateFeeds,
@@ -528,6 +572,8 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	case a.assets != nil:
 		cfg.Log.Info("proxy enabled", "images", true, "pages", false,
 			"note", "the article's View page control will not appear; pass -proxy-pages")
+	case cfg.ProxyPages && strings.TrimSpace(cfg.ProxyOrigin) == "":
+		// Already warned about above, where the decision is made. Nothing here.
 	case cfg.ProxyPages:
 		// The one genuinely inconsistent pair, and it used to fail in silence:
 		// pages are served through the asset proxy, so asking for one without
@@ -605,6 +651,16 @@ func (a *App) Close() error {
 	default:
 		close(a.stopPo)
 	}
+	// Refuse new nudges, then wait for the ones already in flight.
+	//
+	// Order matters and is the whole point: setting the flag first means no goroutine
+	// can be registered after Wait has been entered, so Wait cannot miss one and cannot
+	// block on an arrival that is still coming.
+	a.deriveMu.Lock()
+	a.closing = true
+	a.deriveMu.Unlock()
+	a.nudges.Wait()
+
 	// Before the database closes, and it WAITS — jobs.Pool.Stop blocks until every
 	// worker has finished its current job. Closing the db underneath a running
 	// derivation would surface as "database is closed" errors on a job that then
@@ -1217,6 +1273,65 @@ func (a *App) DeriveDue(ctx context.Context) {
 	if len(scopes) > 0 {
 		a.log.Info("derive enqueued", "users", len(scopes))
 	}
+}
+
+// NudgeInterval is the shortest gap between engagement-triggered derivations.
+//
+// Ninety seconds. The number is a trade between two visible failures rather than a
+// tuning result: much longer and the ranking appears not to react to what you just
+// read, which is the whole reason the hook exists; much shorter and a reading session
+// becomes a continuous TF-IDF pass over ninety days of articles, on a box that is
+// probably also serving the page.
+//
+// It bounds work per user, not per instance, which is the right axis: two readers each
+// deserve a responsive ranking, and they do not contend for the same one.
+const NudgeInterval = 90 * time.Second
+
+// NudgeDerive asks for a derivation because the reader just did something.
+//
+// Rate-limited per user, and the limit is what makes it safe to call from the
+// engagement path — which fires on every batch of twenty-five observations, so
+// several times a minute while someone is reading.
+//
+// # Why the dedupe key is not enough on its own
+//
+// derive.Enqueue already dedupes per user, so a second job cannot QUEUE while the
+// first is waiting. It says nothing about a job that has already started: enqueue
+// during a run and a new row is created, so a busy session would chain derivations
+// back to back with no gap. The dedupe key bounds the queue; this bounds the rate.
+//
+// Never blocks and never reports failure to the caller. This is a background
+// improvement to an ordering, and the caller is in the middle of storing signals that
+// have already been accepted — failing that write because a ranking could not be
+// scheduled would trade the irreplaceable thing for the recomputable one.
+func (a *App) NudgeDerive(sc store.Scope) {
+	if a.pool == nil || !sc.Valid() {
+		return
+	}
+	a.deriveMu.Lock()
+	if a.closing || time.Since(a.lastNudge) < NudgeInterval {
+		a.deriveMu.Unlock()
+		return
+	}
+	a.lastNudge = time.Now().UTC()
+	// Registered under the same lock that checks `closing`, which is what makes the
+	// handshake with Close airtight: either this Add happens before Close sets the flag
+	// and Close waits for it, or the flag is already set and there is nothing to wait
+	// for. Adding outside the lock reintroduces the window it exists to remove.
+	a.nudges.Add(1)
+	a.deriveMu.Unlock()
+
+	// Its own goroutine with its own context: the caller's is an RPC context that is
+	// cancelled the moment the response is written, and inheriting it would cancel the
+	// enqueue roughly whenever it mattered.
+	go func() {
+		defer a.nudges.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := a.deriver.Enqueue(ctx, sc); err != nil {
+			a.log.Warn("nudging derive", "user", sc.UserID, "err", err)
+		}
+	}()
 }
 
 // StartPoller runs the background fetch loop until Close.

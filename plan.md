@@ -1489,6 +1489,15 @@ on the origin that holds the session is one bypass away from reading it. The res
 have to keep correct forever. Same argument as §21's layering everywhere else: the fast rejection is
 the header, the guarantee is the boundary.
 
+> **D20, decided 2026-07-27 — and now enforced.** Rule 1 was true and unenforced: with
+> `ProxyOrigin` empty the page proxy served from the app's own origin, which is what the rule
+> forbids, and the development server ran that way. The page proxy now REFUSES to start without a
+> separate origin and says why. There is no same-origin fallback — a fallback is the thing the rule
+> forbids — so an instance that cannot give the proxy a hostname simply does not get the page proxy.
+> Images are exempt: the asset proxy serves non-executable bytes with `nosniff`, so the origin
+> boundary buys little, and holding them to the same rule would cost every instance its image proxy
+> for nothing.
+
 **Rule 2 — the proxy never accepts a URL the server did not choose.** An authenticated endpoint that
 fetches arbitrary URLs from the instance's IP is an open proxy wearing a login, and the §21 guard stops
 SSRF without stopping *abuse of egress*. Every URL the proxy fetches must be one that already appeared

@@ -83,11 +83,32 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       still has.
       ~~Original ticket:~~ Family, friends, or public signup. Decides self-signup,
       abuse handling, quota enforcement, deletion obligations, uptime promises. *Blocks 6.1.*
-- [ ] **D20 · The proxy origin.** Separate hostname (`proxy.<instance>`) or a sandboxed iframe on the
+- [x] **D20 · The proxy origin.** Separate hostname (`proxy.<instance>`) or a sandboxed iframe on the
       app's own origin? Plan §10.1b argues the hostname, and §25.0 proposes it. **This is the one
       choice here that is expensive to defer**: signed proxy URLs get minted, cached and stored, so
       splitting the origin afterwards is a migration of every artifact rather than a config change.
       *Blocks 7.12.*
+
+      ✅ **DECIDED 2026-07-27 — the separate hostname, with no same-origin fallback.**
+
+      §10.1b already argued it and the argument holds: the control that actually works is the
+      browser's own origin boundary, not a CSP string somebody has to keep correct forever. What was
+      missing was enforcement — `ProxyOrigin` empty meant *same-origin*, and the field's own comment
+      said that was "NOT correct for the tier-2 page proxy". A hazard documented into existence
+      rather than out of it, and the development server was running in exactly that state.
+
+      **So the absence of an origin disables the feature rather than downgrading it.** There is no
+      fallback, because a fallback is the thing the rule forbids: an instance that cannot give the
+      proxy its own hostname does not get the page proxy, and the reader falls back to reader text —
+      which is a worse article view and not a security decision anybody has to remember.
+
+      **Images are deliberately exempt.** The asset proxy serves bytes with `nosniff` and an image
+      content type; it cannot execute, so the origin boundary buys correspondingly little. Pages are
+      HTML, and that is the whole difference — holding images to the same rule would cost every
+      instance its image proxy for no gain.
+
+      *No longer blocks 7.12:* the endpoints can be built against a configured origin, and refuse
+      without one.
 - [ ] **D21 · How does the ladder know which rung it is on?** §10.1-R orders the runtime path
       **real page → (blocked) frame stream → (bandwidth) compressed rendered HTML → reader text**, and
       both arrows are detections. "Blocked" is close to undetectable from the client: a blocked fetch,
