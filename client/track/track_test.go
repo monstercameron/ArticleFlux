@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
@@ -172,7 +173,28 @@ func TestCapDropsOldestAndSaysSo(t *testing.T) {
 	c.sending = false
 	c.mu.Unlock()
 	c.Flush()
-	got := cap.all()
+
+	// Waited for rather than read straight after Flush, and the reason is the
+	// pin above. Emit spawns `go c.Flush()` every time the buffer crosses
+	// BatchSize — twenty times over this loop — and pinning `sending` makes each
+	// of those a no-op only while it HOLDS. A goroutine already blocked on the
+	// mutex when the pin drops proceeds, takes the batch, and is inside
+	// cap.send when this line runs: the events are delivered a moment later and
+	// the test sees zero.
+	//
+	// It passed on a developer machine, where those goroutines had long since
+	// run and exited, and failed on a loaded CI runner, which is the ordering
+	// this test never meant to assert on. Whoever flushes, the survivors are the
+	// same; only the timing is open.
+	deadline := time.Now().Add(2 * time.Second)
+	var got []signals.Event
+	for {
+		got = cap.all()
+		if len(got) == MaxBuffered || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if len(got) != MaxBuffered {
 		t.Fatalf("sent %d events, want %d", len(got), MaxBuffered)
 	}
