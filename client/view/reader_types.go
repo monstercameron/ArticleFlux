@@ -122,6 +122,9 @@ type actions struct {
 	toggleUnread     func()
 	addFeed          func()
 	toggleFeedFilter func()
+	// toggleCategoryVisible hides or shows one Classification-tab category's
+	// chip for this reader — see reader.go's catHidden.
+	toggleCategoryVisible func(slug string)
 	// Folds a rail section away. One handler taking the section name rather
 	// than three, because the three do exactly the same thing.
 	toggleRailSection func(string)
@@ -212,6 +215,8 @@ type actions struct {
 	slideNeedsFix   func(key string)
 	slideNeedsStart func()
 	slideNeedsClose func()
+	// setVibe changes how the narrator sounds — calm, brisk, warm or dry.
+	setVibe func(v string)
 	// slideSetDwell changes the pace from the settings screen.
 	slideSetDwell func(v string)
 	// slideTick is one beat of the slideshow's own clock, reached through this
@@ -308,7 +313,14 @@ type actions struct {
 	expand func(id string)
 	// toggleNote opens and closes one article's note panel.
 	toggleNote func(id string)
-	showTab    func(v view)
+	// toggleRevisions opens and closes what an article used to say, fetching the
+	// history the first time it is opened (TODO F34).
+	toggleRevisions func(id string)
+	// revisionsLanded files a fetched history, or marks it failed. Through the
+	// action Ref rather than closing over the state, because it merges into a
+	// map from a goroutine — see bodyLanded.
+	revisionsLanded func(id string, revs []*pb.ItemRevision, failed bool)
+	showTab         func(v view)
 
 	// advance and retreat extend the reading stream downward and upward.
 	advance      func()

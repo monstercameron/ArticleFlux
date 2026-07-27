@@ -228,6 +228,19 @@ func init() {
 
 	// --- the article stream --------------------------------------------------
 	text(DefaultLocale, "article", map[string]string{
+		// Article revisions (TODO F34). The wording is careful on purpose: we
+		// know when WE saw a change, not when the publisher made it, and a feed
+		// carries no honest signal for the latter. "Edited since we saw it"
+		// claims exactly what is true and no more.
+		"edited":         "Edited since we saw it",
+		"editedAt":       "We saw this change {when}",
+		"showPrevious":   "See the earlier version",
+		"hidePrevious":   "Hide the earlier version",
+		"previousTitle":  "Earlier headline",
+		"previousSeenAt": "As it read {when}",
+		"revisionsEmpty": "The earlier version was not kept — this article changed before we started recording versions.",
+		"revisionsError": "Could not load the earlier version.",
+
 		"pickTitle":  "Pick something to read",
 		"pickHint":   "j and k move through the list, o opens the original.",
 		"backToList": "‹ List",

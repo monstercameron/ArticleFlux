@@ -44,6 +44,7 @@ const (
 	setAppearance settingsTab = "appearance"
 	setListening  settingsTab = "listening"
 	setSmart      settingsTab = "smart"
+	setClassify   settingsTab = "classify"
 	setFeeds      settingsTab = "feeds"
 	setAccount    settingsTab = "account"
 	setServer     settingsTab = "server"
@@ -69,6 +70,7 @@ var settingsTabs = []struct {
 	// and the translator spend the same key, and a reader who has just met one
 	// should find the other next to it rather than five tabs away.
 	{setSmart, glyphShared},
+	{setClassify, glyphCats},
 	{setFeeds, glyphFeeds},
 	{setAccount, "◑"},
 	{setServer, glyphHealth},
@@ -95,6 +97,9 @@ type settingsProps struct {
 	speakDigest  bool
 	speakAuto    bool
 	speakPodcast bool
+	// speakVibe is how the narrator sounds. Only meaningful while speakPodcast is
+	// on, and the row is hidden otherwise.
+	speakVibe string
 	// The slideshow (§19): how long a story stays up, and whether the narrator
 	// paces it instead of the clock. The pace is the stored string — "auto" or a
 	// number of seconds — rather than a resolved duration, because "auto" is a
@@ -126,6 +131,11 @@ type settingsProps struct {
 	// because none of it is read by any other tab and settingsProps is already
 	// long enough to be scanned rather than read.
 	smart smartProps
+	// classify is the Classification tab's state: which category slugs this
+	// reader has hidden. See classifySettingsProps for why there is nothing else
+	// here — no per-category counts and no live Smart+ egress flags, because
+	// neither has an RPC behind it yet.
+	classify classifySettingsProps
 	// theme is the Appearance tab's transient state (§20.16.3): the prompt being
 	// typed, whether a composition is in flight, and what the readability floor
 	// reported about the last one. Grouped for the same reason `smart` is.
@@ -178,6 +188,8 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 		body = settingsListening(tr, p)
 	case setSmart:
 		body = settingsSmart(tr, p.smart)
+	case setClassify:
+		body = settingsClassify(tr, p.classify)
 	case setFeeds:
 		body = settingsFeeds(tr, p)
 	case setAccount:
@@ -252,6 +264,23 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 	}
 }
 
+// vibePicker is the narrator's manner, as a row of chips.
+//
+// Named for how it sounds rather than for a format — "Calm", not "NPR" — because
+// a genre name is a promise about a thing that exists, and this is a way of
+// speaking rather than an impression of anybody.
+func vibePicker(tr i18n.Runtime, current string) ui.Node {
+	if current == "" {
+		current = vibeCalm
+	}
+	chips := make([]ui.Node, 0, len(slideVibeChoices))
+	for _, v := range slideVibeChoices {
+		chips = append(chips, pickChip(actVibe, v, tr.T("settings", "vibe."+v), v == current))
+	}
+	return html.Span(html.Props{Class: "set-picks", Role: "group",
+		Aria: map[string]string{"label": tr.T("settings", "vibe")}}, chips...)
+}
+
 // slideDwellPicker is the pace, as a row of chips.
 //
 // A segmented control rather than a number field, because there is no useful
@@ -304,6 +333,14 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		setRow(tr.T("settings", "podcast"),
 			tr.T("settings", "podcastHint"),
 			glyphChip("toggle-podcast", glyphSlideshow, onOff(tr, p.speakPodcast), p.speakPodcast)),
+		// Only while there is a broadcast to have a manner. A tone picker for a
+		// narrator nobody has switched on is a control with nothing to act on —
+		// and it appears the moment the switch above is pressed, which is also
+		// where a reader is most likely to want it.
+		ui.If(p.speakPodcast, func() ui.Node {
+			return setRow(tr.T("settings", "vibe"), tr.T("settings", "vibeHint"),
+				vibePicker(tr, p.speakVibe))
+		}),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
 

@@ -22,6 +22,10 @@ service ReaderService {
 
   // GetItem returns one item with its full content.
   rpc GetItem(GetItemRequest) returns (GetItemResponse);
+  // What an article used to say (TODO F34). Separate from GetItem because the
+  // history is several full copies of a body and almost nobody asks for it: it
+  // is a click on the "edited" badge, not part of opening an article.
+  rpc GetItemRevisions(GetItemRevisionsRequest) returns (GetItemRevisionsResponse);
   // Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
   // fire dozens per second and one RPC each would flood the tunnel to move a
   // page a few hundred pixels.
@@ -307,6 +311,43 @@ message Item {
   // hottest message on the wire, and a submessage per reason costs a length prefix and
   // a field tag per entry on a list of fifty rows for no gain a client can use.
   repeated string rank_reason_terms = 24;
+  // The article's category, from the classifier (plan.md §27, M29).
+  //
+  // A slug — `security`, `filmtv` — resolved against the shipped taxonomy plus
+  // whatever the reader changed. **Empty is a real and common answer**: roughly
+  // half of a live feed clears no category's floor, and the list renders no chip
+  // rather than a wrong one (R23).
+  string category = 25;
+  // Up to two more that are also true. A CVE in a game engine is security first
+  // and gaming second; an article about one subject is not three categories.
+  repeated string secondary_categories = 26;
+  // The terms that put it there, best first, for the "why" line. A handful, not
+  // the whole match set — this is a reason a reader can act on, not an audit.
+  repeated string category_reason = 27;
+  // The article's FORM: news, analysis, opinion, tutorial, release, review,
+  // interview, roundup, research, announcement. Independent of the subject —
+  // release notes for a database and an essay about that database are the same
+  // category and different genres.
+  string genre = 28;
+  // True when the model read this article rather than the free-tier lexicon.
+  //
+  // Surfaced so the reader can tell the two apart, which matters the moment a
+  // label is wrong: "the model chose this" and "a term list chose this" have
+  // different remedies, and a UI that hides the difference sends people to edit
+  // a lexicon that was never consulted.
+  bool category_by_model = 29;
+
+  // Article revisions (TODO F34). Numbered well clear of the classifier block
+  // above so the two lanes can extend without a renumbering collision.
+  //
+  // How many times the publisher changed this article's text after we first
+  // stored it. Zero — the overwhelming majority — means "as published".
+  int32 revision = 40;
+  // When we NOTICED the most recent change, RFC3339, empty for an unedited
+  // article. A poll timestamp, not the publisher's: a UI built on this must say
+  // "we saw this change", because claiming to know when it was made would be a
+  // fact no feed supplies.
+  string edited_at = 41;
 }
 
 // ScrollLiveViewRequest scrolls a running §10.1d live view.
@@ -390,6 +431,33 @@ message ListItemsResponse {
 
 message GetItemRequest { string id = 1; }
 message GetItemResponse { Item item = 1; }
+
+// One superseded version of an article (TODO F34).
+//
+// The version stored is the one being REPLACED, not the one replacing it: the
+// current text always lives on the Item, so keeping the new copy here would
+// give two copies of the present and none of the past.
+message ItemRevision {
+  string title = 1;
+  string summary = 2;
+  string content_html = 3;
+  // When we saw this version, not when the publisher wrote it — a feed carries
+  // no honest signal for the latter.
+  string seen_at = 4;
+}
+
+message GetItemRevisionsRequest {
+  string item_id = 1;
+  // Zero means the server's default. A handful is the useful answer; nobody
+  // reads the twentieth version of a wire story.
+  int32 limit = 2;
+}
+message GetItemRevisionsResponse {
+  // Newest first. Empty for the overwhelming majority of articles, and for
+  // every article that existed before we started hashing bodies — an empty
+  // history means "no edit seen", never "no edit happened".
+  repeated ItemRevision revisions = 1;
+}
 
 message SetItemStateRequest {
   string item_id = 1;

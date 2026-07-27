@@ -195,6 +195,14 @@ func (s *Service) GetItem(ctx context.Context, sc store.Scope, id string) (store
 	return s.repo.GetItem(ctx, sc, id)
 }
 
+// CategoriesFor resolves each item's category from its stored analysis
+// scores. Thin, like the rest of this layer: the floor, the model-wins rule
+// and the derive-on-read reasoning all live in store.CategoriesFor, where a
+// second caller cannot bypass them by querying item_analysis directly.
+func (s *Service) CategoriesFor(ctx context.Context, sc store.Scope, itemIDs []string) (map[string]store.ItemCategory, error) {
+	return s.repo.CategoriesFor(ctx, sc, itemIDs)
+}
+
 // SetItemState applies a read/star change.
 func (s *Service) SetItemState(ctx context.Context, sc store.Scope, itemID string, c store.StateChange) (store.Item, int64, error) {
 	rev, err := s.repo.SetItemState(ctx, sc, itemID, c)
@@ -687,6 +695,23 @@ func (s *Service) SetNote(ctx context.Context, sc store.Scope, itemID, body stri
 func (s *Service) GetNote(ctx context.Context, sc store.Scope, itemID string) (string, error) {
 	return s.repo.GetNote(ctx, sc, itemID)
 }
+
+// ItemRevisions returns what an article used to say, newest first (TODO F34).
+//
+// The limit is clamped here rather than at the transport, because a revision is
+// several full article bodies and an unbounded request is a memory question
+// before it is a UI one.
+func (s *Service) ItemRevisions(ctx context.Context, sc store.Scope, itemID string, limit int) ([]store.Revision, error) {
+	if limit <= 0 || limit > maxRevisions {
+		limit = maxRevisions
+	}
+	return s.repo.ItemRevisions(ctx, sc, itemID, limit)
+}
+
+// maxRevisions bounds a history request. Ten is far past useful — a wire story
+// gets corrected two or three times — and the point of the ceiling is the
+// response size, not the reader's patience.
+const maxRevisions = 10
 
 // NotedItems returns everything this user has annotated.
 func (s *Service) NotedItems(ctx context.Context, sc store.Scope, limit int) ([]store.Item, []string, error) {

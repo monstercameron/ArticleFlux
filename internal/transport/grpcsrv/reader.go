@@ -220,6 +220,18 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	// One batched lookup for the whole page (§27.2), beside the list rather
+	// than inside toPBItem: ListItems returns up to 200 rows, and a per-item
+	// category query would be 200 round trips against the single-writer
+	// pool's read side for a page a reader waits on.
+	//
+	// A failed lookup is not a failed list, the same trade CountItems makes
+	// below — cats stays nil, every item's category comes back the zero
+	// value, and the reader still gets their articles.
+	cats, cerr := s.svc.CategoriesFor(ctx, sc, itemIDs(items))
+	if cerr != nil {
+		cats = nil
+	}
 	// Sized up front. The page length is already known — it is len(items) — and
 	// growing into it costs six reallocations and six copies for a fifty-row
 	// page, on the request a reader waits on more often than any other.
@@ -228,7 +240,7 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 		Items:      make([]*pb.Item, 0, len(items)),
 	}
 	for _, it := range items {
-		out.Items = append(out.Items, toPBItem(it, false))
+		out.Items = append(out.Items, withCategory(toPBItem(it, false), cats[it.ID]))
 	}
 
 	// Only on the first page. The total does not change while paging, and the
@@ -248,6 +260,48 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 	return out, nil
 }
 
+// GetItemRevisions answers "what did this say before?" (TODO F34).
+//
+// Its own call rather than a field on GetItem: the history is several full
+// article bodies, and almost nobody asks for it — it is a click on the "edited"
+// badge, which most articles never show. Putting it on the article would make
+// every open pay for a thing that is empty in the overwhelming majority of cases.
+//
+// An empty result is a normal answer, not a NotFound. It means "no edit seen",
+// which covers both an article nobody changed and — importantly — every article
+// stored before we started hashing bodies. Those are indistinguishable from
+// here and it would be dishonest to report either as "never edited".
+func (s *ReaderServer) GetItemRevisions(ctx context.Context, req *pb.GetItemRevisionsRequest) (*pb.GetItemRevisionsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	revs, err := s.svc.ItemRevisions(ctx, sc, req.GetItemId(), int(req.GetLimit()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	// Old bodies go through the same image proxy as the current one. Skipping it
+	// would make the one screen where a reader compares two versions the one
+	// screen that fetches pictures straight from the publisher — a privacy hole
+	// opened by a feature about honesty. The lookup is for the article's URL,
+	// which is what relative image paths resolve against; if it fails, the
+	// revisions are still returned unproxied-but-sanitized rather than withheld.
+	base, berr := s.svc.GetItem(ctx, sc, req.GetItemId())
+
+	out := &pb.GetItemRevisionsResponse{Revisions: make([]*pb.ItemRevision, 0, len(revs))}
+	for _, r := range revs {
+		body := r.ContentHTML
+		if berr == nil {
+			body = s.proxyImages(ctx, sc, base, body)
+		}
+		out.Revisions = append(out.Revisions, &pb.ItemRevision{
+			Title: r.Title, Summary: r.Summary, ContentHtml: body,
+			SeenAt: r.SeenAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
 func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb.GetItemResponse, error) {
 	sc, err := s.scopeOf(ctx)
 	if err != nil {
@@ -258,6 +312,12 @@ func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb
 		return nil, toStatus(err)
 	}
 	out := toPBItem(it, true)
+	// A single-item lookup, which is still the batched call — it just has a
+	// batch of one. A failed lookup degrades the same way ListItems does: the
+	// article is more important than its chip.
+	if cats, cerr := s.svc.CategoriesFor(ctx, sc, []string{it.ID}); cerr == nil {
+		withCategory(out, cats[it.ID])
+	}
 	// The note rides along with the article rather than needing its own round
 	// trip: you open an item to read it, and your own note is part of that.
 	if note, nerr := s.svc.GetNote(ctx, sc, req.GetId()); nerr == nil {
@@ -620,10 +680,40 @@ func toPBItem(it store.Item, withContent bool) *pb.Item {
 		Url: it.URL, PublishedAt: it.PublishedAt,
 		Read: it.Read, Starred: it.Starred, Rating: int32(it.Rating),
 		WordCount: int32(it.WordCount), ImageUrl: it.ImageURL,
+		// Free on every row: two scalars already selected with the article, so a
+		// list can render the "edited" badge without a second query (TODO F34).
+		Revision: int32(it.Revision), EditedAt: it.EditedAt,
 	}
 	if withContent {
 		out.ContentHtml = it.ContentHTML
 	}
+	return out
+}
+
+// itemIDs collects a page's ids for the batched CategoriesFor call. A small
+// helper rather than an inline loop at each of ListItems' two call sites
+// (the plain list and would-be future ones), so the "one call per page" shape
+// stays in one place.
+func itemIDs(items []store.Item) []string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+// withCategory fills a converted item's category fields from a resolved
+// lookup and returns it, so a call site can wrap toPBItem in place.
+//
+// Kept separate from toPBItem itself: toPBItem takes one item and must not
+// query anything (see its own comment), while the category lookup is scoped,
+// batched, and belongs beside whatever list it is filling in.
+func withCategory(out *pb.Item, cat store.ItemCategory) *pb.Item {
+	out.Category = cat.Primary
+	out.SecondaryCategories = cat.Secondary
+	out.CategoryReason = cat.Reason
+	out.Genre = cat.Genre
+	out.CategoryByModel = cat.ByModel
 	return out
 }
 

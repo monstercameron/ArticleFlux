@@ -28,6 +28,14 @@ import (
 
 // view names which pane is on screen on a phone. On a wide screen all three are
 // visible and this only decides focus.
+// DBG TEMP: removed before shipping.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func Reader(p readerProps) ui.Node {
 	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
 	// top, unconditionally — GWC matches hooks positionally. It is threaded
@@ -134,6 +142,14 @@ func Reader(p readerProps) ui.Node {
 	noteTimers := ui.UseRef(map[string]*time.Timer{})
 	tagDrafts := ui.UseState(map[string]string{})
 	feedFilter := ui.UseState(saved["rail.filter"])
+	// catHidden is the comma-joined set of category slugs this reader has hidden
+	// from the Classification settings tab (client/view/classifysettings.go).
+	// A client-only display preference, stored the same generic way as every
+	// other view toggle here — there is no RPC to disable a category
+	// server-side, so this only ever suppresses that category's chip; see
+	// classify.go's csvHas/csvToggle for why it is a comma-joined string rather
+	// than a map.
+	catHidden := ui.UseState(saved["classify.hidden"])
 
 	// The reading stream: the articles currently rendered in the reading pane, in
 	// list order, and their fetched bodies.
@@ -169,6 +185,14 @@ func Reader(p readerProps) ui.Node {
 	// the next one, and a remembered "always open" would put the furniture back
 	// between every article in the stream.
 	noteOpen := ui.UseState(map[string]bool{})
+	// What an article used to say (TODO F34). Session state, and not fetched
+	// with the article: most articles are never edited, and of the ones that
+	// are, almost nobody opens the history — so the cost belongs on the click,
+	// not on every open. Three maps rather than one struct because absent,
+	// empty and failed have to stay distinguishable; see articleProps.
+	revisionsOpen := ui.UseState(map[string]bool{})
+	revisions := ui.UseState(map[string][]*pb.ItemRevision{})
+	revisionsErr := ui.UseState(map[string]bool{})
 	// resumeItem is the article id to reopen once its list arrives, restored from
 	// the server on connect. A Ref because it is consumed exactly once and must
 	// not cause a render of its own.
@@ -185,6 +209,11 @@ func Reader(p readerProps) ui.Node {
 	// handing over from the one played before it (§19). Server-side like the
 	// digest — /speech reads it — and default off like every other paid switch.
 	speakPodcast := ui.UseState(prefBool(saved, "tts.podcast", false))
+	// speakVibe is how the narrator sounds — calm, brisk, warm or dry. Server-side
+	// like the switch it belongs to, and validated on both ends: the server
+	// resolves anything it does not recognise to the default rather than putting
+	// a stored string into a prompt.
+	speakVibe := ui.UseState(vibePrefFrom(saved))
 	// speakAuto keeps going down the list when a track ends. Purely a client
 	// behaviour: the server has no idea one listen followed another.
 	speakAuto := ui.UseState(prefBool(saved, "tts.autoplay", false))
@@ -369,7 +398,9 @@ func Reader(p readerProps) ui.Node {
 	// it. Anything the handler sees after the movement has ended is the reader's
 	// own scrolling, which is precisely what the guard was never meant to hide.
 	releaseFocus := func() {
+		println("DBG releaseFocus scheduled, expectFocus was=" + expectFocus.Get())
 		ui.PostAsync(func() {
+			println("DBG releaseFocus running, clearing expectFocus=" + expectFocus.Get())
 			expectFocus.Set("")
 			// And ask what is topmost NOW. The reporter speaks only on change,
 			// so the article that sat at the top for the whole of the travel was
@@ -1264,6 +1295,13 @@ func Reader(p readerProps) ui.Node {
 			}
 		}
 		skipPast.Set(fresh)
+		{
+			keys := ""
+			for k := range fresh {
+				keys += k + ","
+			}
+			println("DBG openAt(fresh-stream) target=" + it.GetId() + " skipPast=[" + keys + "]")
+		}
 		current.Set(it)
 		if focus {
 			pane.Set(viewArticle)
@@ -1271,6 +1309,7 @@ func Reader(p readerProps) ui.Node {
 		platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 		savePrefs(map[string]string{"read.item": it.GetId()})
 		expectFocus.Set(it.GetId())
+		println("DBG openAt(fresh-stream) expectFocus SET to " + it.GetId())
 		// The clicked article goes to the top of the pane, not the seeded one
 		// above it — otherwise clicking a headline drops you into the middle of
 		// the previous story. Instantly, not smoothly: there is nothing to
@@ -2340,6 +2379,7 @@ func Reader(p readerProps) ui.Node {
 	// read — which is what makes "scroll through everything and it's all read"
 	// work without a single click.
 	act.Get().readArticle = func(id string) {
+		println("DBG readArticle id=" + id + " skipPast=" + boolStr(skipPast.Get()[id]))
 		// An article the app scrolled past on its way somewhere else is not one
 		// the reader finished. This has to come before the tracker as well as
 		// before markRead: crediting `Completed` for an article that was never on
@@ -2367,10 +2407,12 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 	act.Get().focusArticle = func(id string) {
+		println("DBG focusArticle id=" + id + " expectFocus=" + expectFocus.Get() + " skipPast=" + boolStr(skipPast.Get()[id]))
 		// Still travelling to a deliberate target: anything else the scroll passes
 		// over on the way is not something the reader chose to read.
 		if want := expectFocus.Get(); want != "" {
 			if id != want {
+				println("DBG focusArticle SUPPRESSED (want=" + want + ")")
 				return
 			}
 			expectFocus.Set("")
@@ -2381,6 +2423,7 @@ func Reader(p readerProps) ui.Node {
 				continue
 			}
 			if c := current.Get(); c == nil || c.GetId() != id {
+				println("DBG focusArticle MARKING id=" + id)
 				current.Set(it)
 				// Arriving here is reading it, whatever a jump did earlier — so
 				// the suppression ends now rather than lasting the stream's life.
@@ -2958,6 +3001,23 @@ func Reader(p readerProps) ui.Node {
 			}()
 		}
 	}
+	// The Classification tab's per-category show/hide. See catHidden's own
+	// comment for why this is a client preference rather than a classification
+	// control: there is no RPC to disable a category server-side, so all this
+	// ever does is keep that category's chip off this reader's rows.
+	act.Get().toggleCategoryVisible = func(slug string) {
+		if slug == "" {
+			return
+		}
+		next := csvToggle(catHidden.Get(), slug)
+		catHidden.Set(next)
+		if c := client.Get(); c != nil {
+			go func() {
+				_ = c.SetPrefs(context.Background(),
+					map[string]string{"classify.hidden": next})
+			}()
+		}
+	}
 	// Folding a rail section is remembered, for the same reason the pane widths
 	// are: a reader who put the feed list away did not mean "until the next
 	// reload". An unknown section name is a no-op rather than a panic — this is
@@ -3083,7 +3143,16 @@ func Reader(p readerProps) ui.Node {
 			if src := it.GetSpeechUrl(); src != "" {
 				platform.SpeechStop()
 				speakState.Set("loading")
-				platform.PlayAudio(speechFrom(src, prev, speakPodcast.Get()), onState)
+				platform.PlayAudio(speechFrom(src, speechAsk{
+					prevID:  prev,
+					podcast: speakPodcast.Get(),
+					// Read here rather than once at mount: a broadcast started
+					// this evening and resumed tomorrow morning should be greeted
+					// for the morning, and a value captured at boot would greet it
+					// for whenever the tab was opened.
+					now:     localStamp(platform.LocalNow()),
+					stories: len(itemsRef.Get()),
+				}), onState)
 				// Warm the NEXT article's audio while this one plays.
 				//
 				// Without this a continuous session is forty seconds of silence
@@ -3103,8 +3172,14 @@ func Reader(p readerProps) ui.Node {
 							// the next story after nothing — which is a different
 							// file, still has to be synthesised when it is wanted,
 							// and has now been paid for twice.
-							platform.PrefetchURL(
-								speechFrom(b.GetSpeechUrl(), it.GetId(), speakPodcast.Get()))
+							// No opening parameters: the story after this one has a
+							// predecessor by construction, so it is never the top
+							// of the broadcast — and sending them would warm a URL
+							// the real request will not ask for.
+							platform.PrefetchURL(speechFrom(b.GetSpeechUrl(), speechAsk{
+								prevID:  it.GetId(),
+								podcast: speakPodcast.Get(),
+							}))
 						}
 					}
 				}
@@ -3819,6 +3894,19 @@ func Reader(p readerProps) ui.Node {
 		// stopped asking for it.
 		showVoice.Set("")
 		act.Get().listenStop()
+	}
+
+	// setVibe changes how the narrator sounds. It does NOT stop playback, unlike
+	// the two switches that change what is spoken: the segment already playing was
+	// written in the old manner and finishing it is not wrong, only slightly
+	// inconsistent — where cutting a reader off mid-sentence to apply a tone
+	// preference would be the more startling of the two.
+	act.Get().setVibe = func(v string) {
+		if v == "" {
+			v = vibeCalm
+		}
+		speakVibe.Set(v)
+		savePrefs(map[string]string{podcastVibePref: v})
 	}
 
 	act.Get().slideSetDwell = func(v string) {
@@ -4704,6 +4792,51 @@ func Reader(p readerProps) ui.Node {
 			platform.FocusField("note")
 		}
 	}
+	// The history is fetched on first open and kept for the session. A reader
+	// comparing two versions looks back and forth; refetching on every toggle
+	// would put a spinner between them each time.
+	act.Get().toggleRevisions = func(id string) {
+		next := !revisionsOpen.Get()[id]
+		revisionsOpen.Set(withEntry(revisionsOpen.Get(), id, next))
+		if !next {
+			return
+		}
+		if _, ok := revisions.Get()[id]; ok {
+			return
+		}
+		c := client.Get()
+		if c == nil {
+			return
+		}
+		go func() {
+			revs, err := c.ItemRevisions(context.Background(), id)
+			// Through PostAsync and the action Ref for the reason fetchBody
+			// documents: these merge into maps, and a merge into a copy captured
+			// before the request would drop whatever landed while it was in
+			// flight.
+			ui.PostAsync(func() { act.Get().revisionsLanded(id, revs, err != nil) })
+		}()
+	}
+	act.Get().revisionsLanded = func(id string, revs []*pb.ItemRevision, failed bool) {
+		if failed {
+			revisionsErr.Set(withEntry(revisionsErr.Get(), id, true))
+			return
+		}
+		// A non-nil empty slice, deliberately: the panel reads a missing key as
+		// "still loading" and a present empty one as "no earlier copy was kept",
+		// and a nil stored under the key would be indistinguishable from the
+		// former on a map read.
+		if revs == nil {
+			revs = []*pb.ItemRevision{}
+		}
+		cur := revisions.Get()
+		next := make(map[string][]*pb.ItemRevision, len(cur)+1)
+		for k, v := range cur {
+			next[k] = v
+		}
+		next[id] = revs
+		revisions.Set(next)
+	}
 	act.Get().showTab = func(v view) { pane.Set(v) }
 	act.Get().backRail = func() { pane.Set(viewRail) }
 	act.Get().backList = func() { pane.Set(viewList) }
@@ -4848,6 +4981,10 @@ func Reader(p readerProps) ui.Node {
 				if v, ok := p["tts.podcast"]; ok {
 					speakPodcast.Set(v == "true")
 				}
+				// Not `if ok`, like the pace below: an unrecognised or missing
+				// manner resolves to the default inside vibePrefFrom, so passing
+				// the whole map keeps that fallback in one place.
+				speakVibe.Set(vibePrefFrom(p))
 				if v, ok := p[slidesAudioPref]; ok {
 					showAudio.Set(v == "true")
 				}
@@ -4912,8 +5049,53 @@ func Reader(p readerProps) ui.Node {
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
 				resumeItem.Set(p["read.item"])
+
+				// What an installed app was opened FOR outranks what it was doing
+				// yesterday (§20.24).
+				//
+				// A manifest shortcut or a share is a request made half a second
+				// ago; the saved view is A30's resume. When both have an opinion
+				// the newer, explicit one wins — and the saved ARTICLE goes with
+				// it, because re-opening yesterday's piece inside the stream
+				// somebody just asked for is neither of the two things they wanted.
+				//
+				// Not written back: a shortcut is a visit, not a decision about
+				// where this reader lives.
+				lch := readLaunch()
+				if s, ok := lch.scope(tr); ok {
+					resume = s
+					resumeItem.Set("")
+				}
 				sel.Set(resume)
 				loadItems(resume, unread)
+
+				// A share, or the "Add a feed" shortcut. After the list is asked
+				// for rather than instead of it: the dialog sits over a reader
+				// that is loading normally, so dismissing it leaves somebody
+				// somewhere rather than on an empty screen.
+				if lch.add {
+					if lch.url != "" {
+						addURL.Set(lch.url)
+					}
+					if lch.title != "" {
+						addTitle.Set(lch.title)
+					}
+					act.Get().openAddFeed()
+					// The ladder runs itself for a SHARE and not for the bare
+					// shortcut. Sharing an address to a feed reader is asking it to
+					// find the feed — the request is unambiguous and the fetch is
+					// the answer — whereas the shortcut opens an empty box, where
+					// there is nothing to look for yet.
+					if lch.url != "" {
+						act.Get().analyzeSite(false)
+					}
+				}
+				// Consumed exactly once. Left in the bar, a reload would re-open
+				// the dialog for an address already dealt with, and the shared URL
+				// would stay in the window title and in every screenshot after it.
+				if !lch.empty() {
+					platform.DropLaunchParams()
+				}
 			})
 		}()
 		return nil
@@ -5445,18 +5627,26 @@ func Reader(p readerProps) ui.Node {
 			// equal, freezing the list at whatever it first rendered. The list is
 			// the thing that changes; memoizing it is all cost and no benefit.
 			listPane(tr, listProps{
-				items:         items.Get(),
-				sel:           sel.Get(),
-				current:       current.Get(),
-				unreadOnly:    unreadOnly.Get(),
-				connected:     client.Get() != nil,
-				hasMore:       nextCursor.Get() != "",
-				loadingMore:   loadingMore.Get(),
-				loading:       itemsLoading.Get(),
-				rev:           listRev.Get(),
-				undo:          undoToken.Get(),
-				total:         totalItems.Get(),
+				items:       items.Get(),
+				sel:         sel.Get(),
+				current:     current.Get(),
+				unreadOnly:  unreadOnly.Get(),
+				connected:   client.Get() != nil,
+				hasMore:     nextCursor.Get() != "",
+				loadingMore: loadingMore.Get(),
+				loading:     itemsLoading.Get(),
+				rev:         listRev.Get(),
+				undo:        undoToken.Get(),
+				total:       totalItems.Get(),
+				// The SAME value the rail badge is given a few lines above, so My
+				// Feed's header and its badge cannot disagree. They are close but
+				// not equal otherwise — `total` is how many rows the list holds and
+				// the badge is how many are unread — and two nearly-identical
+				// numbers side by side read as an off-by-one bug rather than as two
+				// different measurements.
+				ranked:        rankedCount.Get(),
 				iconHosts:     hosts,
+				hiddenCats:    catHidden.Get(),
 				fresh:         freshItems.Get(),
 				scrollTop:     scrollTop.Get(),
 				viewport:      viewport.Get(),
@@ -5490,6 +5680,7 @@ func Reader(p readerProps) ui.Node {
 					speakDigest:  speakDigest.Get(),
 					speakAuto:    speakAuto.Get(),
 					speakPodcast: speakPodcast.Get(),
+					speakVibe:    speakVibe.Get(),
 					slideDwell:   showDwell.Get(),
 					slideAudio:   showAudio.Get(),
 					busy:         busy.Get(),
@@ -5512,6 +5703,9 @@ func Reader(p readerProps) ui.Node {
 						err:         smartErr.Get(),
 						loading:     smartLoading.Get(),
 						feedPlus:    feedPlus.Get(),
+					},
+					classify: classifySettingsProps{
+						hiddenCats: catHidden.Get(),
 					},
 					theme: themeProps{
 						prompt:       themePrompt.Get(),
@@ -5541,6 +5735,7 @@ func Reader(p readerProps) ui.Node {
 				// paged, so "nothing above" means the first loaded item and
 				// "nothing below" means the last item there is.
 				iconHosts:    hosts,
+				hiddenCats:   catHidden.Get(),
 				speakID:      speakID.Get(),
 				speakState:   speakState.Get(),
 				speakSmart:   speakSmart.Get(),
@@ -5556,6 +5751,10 @@ func Reader(p readerProps) ui.Node {
 				pageLive:     pageLive.Get(),
 				pageWide:     pageWide.Get(),
 				noteOpen:     noteOpen.Get(),
+
+				revisionsOpen: revisionsOpen.Get(),
+				revisions:     revisions.Get(),
+				revisionsErr:  revisionsErr.Get(),
 			}),
 		),
 		// Outside `.panes`, because it is fixed to the viewport rather than to

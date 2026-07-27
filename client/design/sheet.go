@@ -890,6 +890,50 @@ func reader(r func(string, string) css.Rule) {
 	css.Global(".article-note[data-open='false']:hover",
 		r("border-color", "var(--line)"),
 	)
+	// The edited mark and the history it opens (TODO F34).
+	//
+	// It sits in the dateline, so it is drawn as part of that line rather than as
+	// a chip: an eyebrow with one control styled like a button in it reads as an
+	// action bar, and this is a fact you can press, not an action. The dotted
+	// underline is the whole affordance — the same convention as a definition,
+	// which is what it is.
+	css.Global(".edited-mark",
+		r("background", "none"), r("border", "0"), r("padding", "0"),
+		r("font", "inherit"), r("color", "var(--mute)"),
+		r("cursor", "pointer"),
+		r("text-decoration", "underline dotted"),
+		r("text-underline-offset", "3px"),
+		r("transition", "color var(--t1) var(--e-out)"),
+	)
+	css.Global(".edited-mark:hover", r("color", "var(--cream)"))
+	// The panel is set apart by a rule down its left edge rather than a box: it
+	// is a quotation of an older version of the text below it, and a quotation
+	// mark is the right visual verb for that.
+	css.Global(".article-revisions",
+		r("margin", "18px 0"), r("padding-inline-start", "16px"),
+		r("border-inline-start", "2px solid var(--hair)"),
+	)
+	css.Global(".rev-entry+.rev-entry",
+		r("margin-top", "14px"), r("padding-top", "14px"),
+		r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".rev-when",
+		r("font-family", "var(--ui)"), r("font-size", "11.5px"),
+		r("letter-spacing", ".1em"), r("text-transform", "uppercase"),
+		r("color", "var(--mute)"),
+	)
+	// Smaller than the headline it is a previous version of. It has to be
+	// readable as a headline and unmistakable as not the current one.
+	css.Global(".rev-title",
+		r("margin", "4px 0 0"), r("font-size", "17px"),
+		r("line-height", "1.3"), r("color", "var(--cream)"),
+	)
+	css.Global(".rev-summary",
+		r("margin", "6px 0 0"), r("color", "var(--mute)"),
+	)
+	css.Global(".rev-empty",
+		r("margin", "0"), r("color", "var(--mute)"),
+	)
 	css.Global(".note-summary",
 		r("display", "flex"), r("align-items", "center"),
 		r("flex-wrap", "wrap"), r("gap", "10px"),

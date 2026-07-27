@@ -10,6 +10,7 @@ func init() {
 		"tab.appearance": "Appearance",
 		"tab.listening":  "Listening",
 		"tab.smart":      "Smart+",
+		"tab.classify":   "Classification",
 		"tab.feeds":      "Feeds",
 		"tab.account":    "Account",
 		"tab.server":     "Server",
@@ -78,6 +79,22 @@ func init() {
 		"podcastHint": "Needs the Smart+ voice above — the segments are written and spoken on the server, so the browser's own voice cannot read them. " +
 			"Rewrites each article as one segment of a continuous broadcast that hands over from the story before it, so a queue sounds like a programme rather than a playlist. " +
 			"Replaces the summary above when both are on. Charged once per pair of articles and then cached.",
+		// The narrator's manner. Named for how it SOUNDS rather than for a format
+		// — "Calm", not "public radio" — because a genre name is a promise about a
+		// programme that exists, and this is a way of speaking rather than an
+		// impression of anybody.
+		//
+		// The hint says what the persona may and may not do, because that is the
+		// part people are right to be wary of: it will tell you a claim looks
+		// thin, and it will not make anything up.
+		"vibe": "How it sounds",
+		"vibeHint": "The narrator's manner. All four say the same facts — they differ in pace, in sentence length, and in how much they tell you what a story is worth. " +
+			"None of them invents anything: an opinion about how much a result matters is allowed, a fact that is not in the article is not.",
+		"vibe.calm":  "Calm",
+		"vibe.brisk": "Brisk",
+		"vibe.warm":  "Warm",
+		"vibe.dry":   "Dry",
+
 		// The queue is its own group because it is a different KIND of decision:
 		// the two above change what one article sounds like, this changes what
 		// happens when it ends.

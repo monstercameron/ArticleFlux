@@ -1197,6 +1197,10 @@ type listProps struct {
 	connected   bool
 	hasMore     bool
 	loadingMore bool
+	// hiddenCats is the comma-joined set of category slugs this reader has hidden
+	// from the Classification settings tab — see classify.go's csvHas. A display
+	// preference only; it never changes what the server classified.
+	hiddenCats string
 	// undo is the token from the last bulk mark, if the offer to reverse it is
 	// still standing.
 	undo string
@@ -1231,6 +1235,14 @@ type listProps struct {
 	// place you can go rather than a place that does not exist. Rows past the
 	// loaded prefix are placeholders, and they resolve in place.
 	total int
+	// ranked is how many items My Feed holds, from the same state the rail badge
+	// reads. Only meaningful when sel.MyFeed; zero everywhere else.
+	//
+	// Not derived from `total` because they count different things: total is the
+	// length of the loaded scope and this is the unread ranked count the server
+	// reports. Both are correct and they differ by whatever has been read, which is
+	// fine until the header and the badge sit six inches apart showing 120 and 119.
+	ranked int
 	// scrollTop and viewport drive virtualisation. They come from a
 	// rAF-throttled scroll listener rather than being read during render, which
 	// would force a layout on every frame.
@@ -1437,7 +1449,7 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 						}
 					}
 					return itemRow(tr, it, p.current != nil && p.current.GetId() == it.GetId(),
-						p.iconHosts, step)
+						p.iconHosts, step, p.hiddenCats)
 				case i < rows:
 					// A row that exists but has not arrived. Same box, same
 					// separator, no hue — because which source it is, is exactly
@@ -1570,13 +1582,13 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		// read 199. Two numbers for one list, and the larger one belonged to a
 		// different stream.
 		//
-		// p.total, not p.unread, for that reason: total is how many items THIS scope
-		// matches, so the sentence under the title and the badge beside it are counting
-		// the same thing. p.unread is a property of the unread stream and belongs to it.
+		// p.ranked, which is literally the value the badge is rendered from — not
+		// p.unread (a different stream's number) and not p.total (this list's length,
+		// which drifts below the badge as items are read). One number, read twice.
 		//
 		// And the ordering claim is the interest layer's, not recency's, which is the
 		// whole point of the stream (§18.9: the ranking explains itself, starting here).
-		sub = tr.T("list", "subMyFeed", i18n.Count(p.total))
+		sub = tr.T("list", "subMyFeed", i18n.Count(p.ranked))
 	case p.sel.Later:
 		sub = tr.T("list", "subLater")
 	case p.sel.Rating > 0:
@@ -2064,7 +2076,7 @@ const spawnStaggerCap = 9
 
 // itemRow builds one list row. spawn is the row's stagger step in an arriving
 // page, or -1 when the item was already in the list — see data-fresh below.
-func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string, spawn int) ui.Node {
+func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string, spawn int, hiddenCats string) ui.Node {
 	// Title first. The mockup leads with the headline because that is what a
 	// reader scans; the dateline is what they check afterwards, so it sits
 	// beneath. Putting the metadata on top made every row start with the same
@@ -2094,6 +2106,13 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 	case "stale":
 		meta = append(meta, html.Span(html.Props{Class: "age-tag age-stale"},
 			html.Text(tr.T("list", "ageStale"))))
+	}
+	// The category, if the classifier placed one. Appended only when there is
+	// one — see categoryChip's doc comment: roughly half a real feed clears no
+	// category, and that is the common case, so an uncategorised row must add
+	// neither a chip nor the gap a chip would otherwise reserve.
+	if chip := categoryChip(tr, it, hiddenCats); chip != nil {
+		meta = append(meta, chip)
 	}
 	// The Smart+ mark rides in the meta line, where it is a fact about the pick rather
 	// than part of its explanation. See smartPlusMark.
@@ -2258,6 +2277,10 @@ type articleProps struct {
 	// not carry their feed's site URL, and adding it to every row of every page
 	// would be bytes on the wire for something the sidebar already knows.
 	iconHosts map[string]string
+	// hiddenCats is listProps.hiddenCats, threaded through so the article pane's
+	// category chips agree with the list's about which categories this reader
+	// has hidden.
+	hiddenCats string
 	// expanded is which long articles have been opened out in full.
 	//
 	// Long pieces are clamped by default so that scrolling through a stream costs
@@ -2288,6 +2311,18 @@ type articleProps struct {
 	// three-row textareas down a reading pane is furniture between you and the
 	// next piece.
 	noteOpen map[string]bool
+	// revisionsOpen is which articles are showing what they used to say (TODO
+	// F34), and revisions is what came back, keyed by item id. Absent from
+	// `revisions` while a fetch is in flight and present-but-empty when the
+	// server has no earlier copy — the two read differently on screen, because
+	// "still loading" and "the earlier version was never kept" are different
+	// answers and collapsing them would invent a fact.
+	revisionsOpen map[string]bool
+	revisions     map[string][]*pb.ItemRevision
+	// revisionsErr marks the articles whose history could not be loaded. Kept
+	// apart from an empty result for the same reason: a failed request must not
+	// be reported as "there was nothing there".
+	revisionsErr map[string]bool
 }
 
 // clampWords is where an article stops being scannable.
@@ -2434,6 +2469,16 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 			ui.If(full.GetWordCount() >= 50, func() ui.Node {
 				return html.Span(html.Props{}, html.Text(readingTime(tr, full.GetWordCount())))
 			}),
+			// The edited mark sits in the dateline because that is where the
+			// reader is already asking "when is this from" — and "this is not
+			// what was published" is an answer to that question, not a separate
+			// fact competing with the actions below.
+			ui.If(full.GetRevision() > 0, func() ui.Node {
+				return html.I(html.Props{Class: "item-sep"})
+			}),
+			ui.If(full.GetRevision() > 0, func() ui.Node {
+				return editedMark(tr, full, p)
+			}),
 		),
 		// The headline is the link. It is the largest thing on screen and the
 		// thing a reader instinctively clicks to "go to the article" — having that
@@ -2458,6 +2503,14 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 				return html.Span(html.Props{Class: "article-byline"},
 					html.Text(tr.T("article", "byline", i18n.Args{"author": full.GetAuthor()})))
 			}),
+			// Category, its up-to-two secondaries, then genre — facts about where
+			// this piece sits before the actions about what to do with it.
+			// classifyChips folds all three into one Fragment because
+			// article-actions' children are a fixed positional list here and the
+			// secondaries are a variable-length slice; categoryChip alone is nil
+			// for the (common) uncategorised case, which is what keeps an
+			// uncategorised article from reserving any of this row.
+			classifyChips(tr, full, p.hiddenCats),
 			ui.If(full.GetWordCount() >= 50, func() ui.Node {
 				return staticChip(tr.T("article", "wordCount", i18n.CountWith(int(full.GetWordCount()), i18n.Args{"count": thousands(tr, int(full.GetWordCount()))})))
 			}),
@@ -2539,6 +2592,13 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 				p.pageLive[it.GetId()], p.pageWide[it.GetId()])
 		}),
 		listenBar(tr, it, p),
+		// Above the body, because it is context for the text you are about to
+		// read rather than a footnote to it — a reader who reaches the bottom
+		// and only then learns the piece was rewritten has read the wrong
+		// version without knowing.
+		ui.If(full.GetRevision() > 0 && p.revisionsOpen[it.GetId()], func() ui.Node {
+			return revisionsPanel(tr, it.GetId(), p)
+		}),
 		ui.If(loading, func() ui.Node { return skeletonArticle(tr) }),
 		ui.If(!loading, func() ui.Node {
 			long := full.GetWordCount() > clampWords && !p.expanded[it.GetId()]
@@ -2554,6 +2614,93 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 			)
 		}),
 		articleNote(tr, it, p),
+	)
+}
+
+// editedMark is the dateline's "this is not what was published" (TODO F34).
+//
+// A button, not a label, because the fact is only half the story: knowing an
+// article was rewritten and being unable to see what it said is worse than not
+// knowing, since it converts a settled reading into a doubt with no way to
+// resolve it.
+//
+// The wording never claims to know WHEN the publisher made the change. We know
+// when we saw it — the difference is a poll interval on a good day and a week
+// on a feed nobody reads, and stating the second as the first would be a
+// fabricated fact in the one feature whose whole purpose is accuracy.
+func editedMark(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
+	id := it.GetId()
+	open := p.revisionsOpen[id]
+	label := tr.T("article", "showPrevious")
+	if open {
+		label = tr.T("article", "hidePrevious")
+	}
+	title := label
+	if at := it.GetEditedAt(); at != "" {
+		title = tr.T("article", "editedAt", i18n.Args{"when": relTime(tr, at)})
+	}
+	return html.Button(html.Props{
+		Class: "edited-mark",
+		Title: title,
+		Aria:  map[string]string{"expanded": boolAttr(open), "label": label},
+		Raw: map[string]any{
+			"data-action": "toggle-revisions", "data-for-item": id,
+		},
+	}, html.Text(tr.T("article", "edited")))
+}
+
+// revisionsPanel shows what the article used to say.
+//
+// Three states, and keeping them apart is the point. A missing entry is a fetch
+// in flight; a present-but-empty one is an article that changed before we
+// started recording versions — which is every article stored before this
+// feature existed, and saying "nothing changed" about those would be false. A
+// failed request is its own third thing, because "we could not load it" and
+// "there is nothing to load" send the reader in opposite directions.
+func revisionsPanel(tr i18n.Runtime, id string, p articleProps) ui.Node {
+	revs, loaded := p.revisions[id]
+
+	var body ui.Node
+	switch {
+	case p.revisionsErr[id]:
+		body = html.P(html.Props{Class: "rev-empty"}, html.Text(tr.T("article", "revisionsError")))
+	case !loaded:
+		body = html.P(html.Props{Class: "rev-empty"}, html.Text(tr.T("article", "loading")))
+	case len(revs) == 0:
+		body = html.P(html.Props{Class: "rev-empty"}, html.Text(tr.T("article", "revisionsEmpty")))
+	default:
+		kids := make([]ui.Node, 0, len(revs))
+		for i, r := range revs {
+			kids = append(kids, revisionEntry(tr, id, i, r))
+		}
+		body = html.Div(html.Props{Class: "rev-list"}, kids...)
+	}
+	return html.Section(html.Props{
+		Class: "article-revisions",
+		Key:   "revs-" + id,
+		Aria:  map[string]string{"label": tr.T("article", "previousTitle")},
+	}, body)
+}
+
+// revisionEntry is one superseded version.
+//
+// The headline is shown as text and the body is NOT rendered as HTML here. It
+// is the same sanitized markup the article itself carries, so rendering it
+// would be safe — but a second full article inline doubles the reading column
+// and buries the current text under a copy of itself. The summary is what
+// answers "what changed" for a correction, which is what these almost always
+// are.
+func revisionEntry(tr i18n.Runtime, id string, i int, r *pb.ItemRevision) ui.Node {
+	return html.Article(html.Props{
+		Class: "rev-entry",
+		Key:   "rev-" + id + "-" + strconv.Itoa(i),
+	},
+		html.Div(html.Props{Class: "rev-when"},
+			html.Text(tr.T("article", "previousSeenAt", i18n.Args{"when": relTime(tr, r.GetSeenAt())}))),
+		html.H2(html.Props{Class: "rev-title"}, html.Text(r.GetTitle())),
+		ui.If(strings.TrimSpace(r.GetSummary()) != "", func() ui.Node {
+			return html.P(html.Props{Class: "rev-summary"}, html.Text(r.GetSummary()))
+		}),
 	)
 }
 

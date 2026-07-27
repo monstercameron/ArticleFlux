@@ -22,6 +22,7 @@ const (
 	ReaderService_ListFeeds_FullMethodName          = "/articleflux.v1.ReaderService/ListFeeds"
 	ReaderService_ListItems_FullMethodName          = "/articleflux.v1.ReaderService/ListItems"
 	ReaderService_GetItem_FullMethodName            = "/articleflux.v1.ReaderService/GetItem"
+	ReaderService_GetItemRevisions_FullMethodName   = "/articleflux.v1.ReaderService/GetItemRevisions"
 	ReaderService_ScrollLiveView_FullMethodName     = "/articleflux.v1.ReaderService/ScrollLiveView"
 	ReaderService_SetItemState_FullMethodName       = "/articleflux.v1.ReaderService/SetItemState"
 	ReaderService_UndoMarkAllRead_FullMethodName    = "/articleflux.v1.ReaderService/UndoMarkAllRead"
@@ -69,6 +70,10 @@ type ReaderServiceClient interface {
 	ListItems(ctx context.Context, in *ListItemsRequest, opts ...grpc.CallOption) (*ListItemsResponse, error)
 	// GetItem returns one item with its full content.
 	GetItem(ctx context.Context, in *GetItemRequest, opts ...grpc.CallOption) (*GetItemResponse, error)
+	// What an article used to say (TODO F34). Separate from GetItem because the
+	// history is several full copies of a body and almost nobody asks for it: it
+	// is a click on the "edited" badge, not part of opening an article.
+	GetItemRevisions(ctx context.Context, in *GetItemRevisionsRequest, opts ...grpc.CallOption) (*GetItemRevisionsResponse, error)
 	// Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
 	// fire dozens per second and one RPC each would flood the tunnel to move a
 	// page a few hundred pixels.
@@ -224,6 +229,16 @@ func (c *readerServiceClient) GetItem(ctx context.Context, in *GetItemRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetItemResponse)
 	err := c.cc.Invoke(ctx, ReaderService_GetItem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) GetItemRevisions(ctx context.Context, in *GetItemRevisionsRequest, opts ...grpc.CallOption) (*GetItemRevisionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetItemRevisionsResponse)
+	err := c.cc.Invoke(ctx, ReaderService_GetItemRevisions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +515,10 @@ type ReaderServiceServer interface {
 	ListItems(context.Context, *ListItemsRequest) (*ListItemsResponse, error)
 	// GetItem returns one item with its full content.
 	GetItem(context.Context, *GetItemRequest) (*GetItemResponse, error)
+	// What an article used to say (TODO F34). Separate from GetItem because the
+	// history is several full copies of a body and almost nobody asks for it: it
+	// is a click on the "edited" badge, not part of opening an article.
+	GetItemRevisions(context.Context, *GetItemRevisionsRequest) (*GetItemRevisionsResponse, error)
 	// Scrolls a live view (§10.1d). Unary and coalesced client-side: wheel events
 	// fire dozens per second and one RPC each would flood the tunnel to move a
 	// page a few hundred pixels.
@@ -639,6 +658,9 @@ func (UnimplementedReaderServiceServer) ListItems(context.Context, *ListItemsReq
 }
 func (UnimplementedReaderServiceServer) GetItem(context.Context, *GetItemRequest) (*GetItemResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetItem not implemented")
+}
+func (UnimplementedReaderServiceServer) GetItemRevisions(context.Context, *GetItemRevisionsRequest) (*GetItemRevisionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetItemRevisions not implemented")
 }
 func (UnimplementedReaderServiceServer) ScrollLiveView(context.Context, *ScrollLiveViewRequest) (*ScrollLiveViewResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ScrollLiveView not implemented")
@@ -786,6 +808,24 @@ func _ReaderService_GetItem_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ReaderServiceServer).GetItem(ctx, req.(*GetItemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_GetItemRevisions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetItemRevisionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).GetItemRevisions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_GetItemRevisions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).GetItemRevisions(ctx, req.(*GetItemRevisionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1258,6 +1298,10 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetItem",
 			Handler:    _ReaderService_GetItem_Handler,
+		},
+		{
+			MethodName: "GetItemRevisions",
+			Handler:    _ReaderService_GetItemRevisions_Handler,
 		},
 		{
 			MethodName: "ScrollLiveView",

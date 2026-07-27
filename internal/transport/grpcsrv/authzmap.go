@@ -94,7 +94,10 @@ func DefaultPolicy() *authz.Map {
 
 	// --- reading --------------------------------------------------------------
 	for _, method := range []string{
-		"ListFeeds", "ListItems", "GetItem", "ScrollLiveView", "Search",
+		// GetItemRevisions is plain reading: it returns older copies of an
+		// article the caller can already read, so it needs no capability the
+		// article itself does not (TODO F34).
+		"ListFeeds", "ListItems", "GetItem", "GetItemRevisions", "ScrollLiveView", "Search",
 		"GetPrefs", "ListTags", "ListFolders", "ListNotes", "GetFeedSettings",
 	} {
 		m.Require(reader+method, authz.CapReadItems)

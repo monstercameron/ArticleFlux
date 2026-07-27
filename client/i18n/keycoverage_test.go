@@ -63,6 +63,8 @@ var dynamicPrefixes = map[string]string{
 	// off slidePrereq.Key — the prereq* constants in client/view.
 	"slides.need.": "the prereq* constants, via view.slideNeedRow",
 	"slides.why.":  "the prereq* constants, via view.slideNeedRow",
+	// The narrator's manner, built from slideVibeChoices in client/view.
+	"settings.vibe.": "the vibe* constants, via view.vibePicker",
 }
 
 func TestEveryReferencedKeyExists(t *testing.T) {

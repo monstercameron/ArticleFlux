@@ -233,6 +233,10 @@ func (d delegatedClicks) wire() {
 					a.setFeedFolder(id, value)
 				case "toggle-feed-filter":
 					a.toggleFeedFilter()
+				case actClassifyCatToggle:
+					// The chip names the category slug in data-for-item, the same
+					// attribute the per-feed and per-tag settings gears use.
+					a.toggleCategoryVisible(id)
 				case actStreams, actFeeds, actTags, actCats:
 					a.toggleRailSection(action)
 				case "add-tag":
@@ -253,6 +257,8 @@ func (d delegatedClicks) wire() {
 					a.setPageMode(id, true)
 				case "toggle-note":
 					a.toggleNote(id)
+				case "toggle-revisions":
+					a.toggleRevisions(id)
 				case "modal-keep":
 					// A click inside an open dialog. It exists only to stop the
 					// delegated walk reaching the backdrop's close action.
@@ -406,6 +412,8 @@ func (d delegatedClicks) wire() {
 					a.slideListen()
 				case actSlideDwell:
 					a.slideSetDwell(value)
+				case actVibe:
+					a.setVibe(value)
 				case actSlideNeeds:
 					a.slideNeeds()
 				case actSlideNeedsFix:
