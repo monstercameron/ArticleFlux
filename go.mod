@@ -10,7 +10,7 @@ require (
 	github.com/mmcdole/gofeed v1.4.0
 	github.com/monstercameron/GoGRPCBridge v1.1.1
 	github.com/monstercameron/GoWebComponents/v5 v5.0.0-00010101000000-000000000000
-	github.com/ncruces/go-sqlite3 v0.35.0
+	github.com/ncruces/go-sqlite3 v0.35.2
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/term v0.45.0
@@ -39,7 +39,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/mmcdole/goxpp/v2 v2.0.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/ncruces/go-sqlite3-wasm/v3 v3.1.35302 // indirect
+	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
