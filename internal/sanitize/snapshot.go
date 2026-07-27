@@ -163,7 +163,28 @@ var snapURLAttrs = map[string]bool{
 // No `mailto:` on purpose — it is harmless but it is also the one scheme that
 // makes a proxied page hand the reader's mail client to a stranger's markup,
 // and a link that does nothing is a smaller surprise than a compose window.
+//
+// `data:` is here but is NOT sufficient on its own; see snapURLOK.
 var snapSchemes = map[string]bool{"http": true, "https": true, "data": true}
+
+// snapURLOK reports whether a URL-bearing attribute value may stay.
+//
+// The scheme allowlist is the first half. The second half is `data:`, which the
+// fuzzer showed is not one scheme but a family: `data:image/png` is an inline
+// picture, and `data:text/html,<script>alert(1)</script>` is a whole document
+// that executes when navigated to. Allowing the family to let the pictures
+// through let the documents through too.
+//
+// So data: is narrowed to images, and SVG is excluded from even that — an SVG
+// is a document that can carry script, and "an image format that is also a
+// program" is not a distinction worth betting a sandbox on.
+func snapURLOK(v string) bool {
+	t := strings.ToLower(strings.TrimSpace(v))
+	if strings.HasPrefix(t, "data:") {
+		return strings.HasPrefix(t, "data:image/") && !strings.HasPrefix(t, "data:image/svg")
+	}
+	return schemeAllowed(t, snapSchemes)
+}
 
 func snapWalk(n *html.Node) {
 	var kids []*html.Node
@@ -310,7 +331,7 @@ func snapElement(n *html.Node) snapVerdict {
 				} else {
 					continue
 				}
-			} else if !schemeAllowed(strings.TrimSpace(a.Val), snapSchemes) {
+			} else if !snapURLOK(a.Val) {
 				continue
 			}
 		}
@@ -415,7 +436,7 @@ func snapSrcset(v string) string {
 		if sp := strings.IndexAny(ref, " \t\n\r\f"); sp >= 0 {
 			u = ref[:sp]
 		}
-		if schemeAllowed(u, snapSchemes) {
+		if snapURLOK(u) {
 			kept = append(kept, ref)
 		}
 	}

@@ -3,6 +3,8 @@ package sanitize
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 // allPolicies is what makes this an acceptance bar rather than a spot check:
@@ -101,6 +103,70 @@ var forbidden = []string{
 //     `script-src 'none'`, in an opaque origin, so this walk is the inner of
 //     two layers.
 var styling = []string{"<style", "<link", "<meta", "@import"}
+
+// badAttr parses sanitized output and reports the first attribute that must not
+// have survived, with the reason.
+//
+// Two properties, and they are the two that decide whether markup can act:
+// no event handler may remain under any name, and nothing the browser fetches
+// or navigates to may carry a script scheme.
+func badAttr(out string) (string, string) {
+	doc, err := html.Parse(strings.NewReader(out))
+	if err != nil {
+		// Sanitized output that will not parse is itself a finding: whatever
+		// the browser does with it, it is not what we intended.
+		return "unparseable output", err.Error()
+	}
+	var found, why string
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if found != "" {
+			return
+		}
+		if n.Type == html.ElementNode {
+			for _, a := range n.Attr {
+				key := strings.ToLower(a.Key)
+				if strings.HasPrefix(key, "on") {
+					found, why = n.Data+"@"+key, "event handler"
+					return
+				}
+				if !urlish[key] {
+					continue
+				}
+				// Whitespace and NULs stripped, entities NOT decoded.
+				//
+				// `java\tscript:` is live in some browsers, so the strip is
+				// needed. Decoding is not, and doing it was wrong: the parser
+				// has already resolved entities in attribute values, and a
+				// second pass turns the inert literal `&#106;avascript:` — which
+				// a URL parser never decodes — into a false report.
+				v := strings.Map(func(r rune) rune {
+					if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f' || r == 0 {
+						return -1
+					}
+					return r
+				}, strings.ToLower(strings.TrimSpace(a.Val)))
+				if strings.HasPrefix(v, "javascript:") || strings.HasPrefix(v, "vbscript:") ||
+					strings.HasPrefix(v, "data:text/html") {
+					found, why = n.Data+"@"+key+"="+a.Val, "script scheme"
+					return
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return found, why
+}
+
+// urlish are the attributes a browser fetches or navigates to.
+var urlish = map[string]bool{
+	"href": true, "src": true, "srcset": true, "poster": true,
+	"cite": true, "action": true, "formaction": true, "data": true,
+	"content": true, "background": true, "longdesc": true,
+}
 
 // tagsOnly returns everything between < and >, concatenated.
 //
@@ -324,26 +390,23 @@ func FuzzHTMLNeverEmitsAScriptTag(f *testing.F) {
 			//
 			// What matters is whether the string is REACHABLE as an attribute,
 			// so the check looks only inside tags.
-			// Narrowed twice, by two more fuzz findings, and both narrowings are
-			// about NAME position versus VALUE position:
+			// Attribute properties are checked against the PARSED output, not
+			// against substrings, and that is a deliberate departure from the
+			// rule at the top of this file.
 			//
-			//   <img onerror=alert(1)>   an event handler        — must fail
-			//   <a src="onerror=">       a value that reads like — must not
+			// The no-shared-parser argument is about smuggling markup past a
+			// tokenizer, and it still governs the `<script` / `<iframe` checks
+			// above. It does not help here, because the question is not "what
+			// does this tokenize to" but "which attribute NAMES survived" — and
+			// substrings cannot tell a name from a value. Three fuzz findings in
+			// a row proved it: `content="javascript:"` was real, `src="onerror="`
+			// and `src=" onerror="` were not, and no amount of narrowing the
+			// prefix separates them.
 			//
-			// So a handler is only a handler when it is preceded by the
-			// separator that starts an attribute, and a scheme is only a scheme
-			// when it follows the `=` that starts a value.
-			markup := tagsOnly(got)
-			for _, h := range []string{"onerror=", "onload=", "onclick=", "onfocus=", "ontoggle="} {
-				if strings.Contains(markup, " "+h) || strings.Contains(markup, "/"+h) {
-					t.Fatalf("policy %s emitted handler %q for input %q: %s", p, h, in, got)
-				}
-			}
-			for _, u := range []string{`="javascript:`, `='javascript:`, `=javascript:`,
-				`="vbscript:`, `='vbscript:`, `=vbscript:`} {
-				if strings.Contains(markup, u) {
-					t.Fatalf("policy %s emitted %q for input %q: %s", p, u, in, got)
-				}
+			// A browser will build a tree from these bytes. Building one here and
+			// asserting on it is the same question the browser asks.
+			if bad, why := badAttr(got); bad != "" {
+				t.Fatalf("policy %s emitted %s (%s) for input %q: %s", p, bad, why, in, got)
 			}
 		}
 	})
