@@ -1,31 +1,42 @@
 // Package i18n is ArticleFlux's UI string catalog (TODO 8.4a, plan.md §22.16).
 //
-// Every user-facing string in client/view goes through T. Only English ships,
-// and that is the point: §22.16's argument is that extraction is cheap done
-// once at the call site and miserable done later across fifty pages, so the
-// catalog exists before there is a second language to put in it.
+// It is a catalog and a thin re-export, NOT a second i18n implementation. The
+// framework does the work:
 //
-// # Why this wraps GWC's i18n rather than using it directly
+//	i18n.UseLocale   the reactive, persisted locale — GWC's own hook
+//	i18n.Provider    puts the Runtime in context
+//	i18n.UseI18n     reads it back out
+//	Runtime.T        looks up, selects the plural form, interpolates {args}
 //
-// GWC's UseI18n() is a context hook. GWC matches hooks positionally, so a
-// component that translates a string inside a `for` over 3,600 list rows, or
-// inside an `if` branch, binds the hook to the wrong slot and the render
-// corrupts — the same failure the pane helpers in panes.go carry a comment
-// about. Translation is the one thing a view does *everywhere*, including
-// inside loops, so the call has to be hook-free.
+// What lives here is the English catalog (the `en_*.go` files), the Bundle they
+// register into, and the Export/Import pair the Smart+ translator needs.
 //
-// So this package holds the Bundle at package scope and T is a plain function.
-// It reads a package-level locale that only changes on an explicit SetLocale,
-// which is a full-page event (see SetLocale) — there is no render-time
-// reactivity to lose. The GWC Bundle still does the real work: locale
-// candidate resolution, plural category selection, {arg} interpolation.
+// # How a component reaches a string
+//
+// Root mounts the Provider. Any component below it calls UseI18n ONCE, at the
+// top with its other hooks, and passes the Runtime down to the plain helper
+// functions that build its tree:
+//
+//	func Login(p loginProps) ui.Node {
+//	    t := i18n.UseI18n()
+//	    ...
+//	    return html.Div(..., html.Text(t.T("login", "lede")))
+//	}
+//
+// The Runtime is threaded as an explicit parameter rather than stashed on a
+// props struct, and that is not style. GWC memoises by comparing props, and
+// Runtime carries func fields — a struct holding one is not comparable, so a
+// props struct with a Runtime in it either fails to compare or compares unequal
+// on every render, which would defeat the bailout that keeps 151 rail rows from
+// re-rendering.
 //
 // # Why it carries no build tag
 //
-// client/view is `js && wasm` and cannot be tested off-browser. This package
-// deliberately is not, so `go test ./...` can assert the catalog is complete
-// and that no view file references a key that does not exist — the two checks
-// that keep an extracted catalog from rotting.
+// client/view is `js && wasm` and cannot be linked into a native test binary.
+// This package deliberately is not, so `go test ./...` can assert the catalog
+// is complete — and so the SERVER can read the English catalog in order to
+// translate it (internal/smart). GWC's own i18n has native counterparts for
+// every wasm file, so the re-exports below build on both.
 package i18n
 
 import (
@@ -35,36 +46,58 @@ import (
 	"time"
 
 	gwc "github.com/monstercameron/GoWebComponents/v5/i18n"
+	"github.com/monstercameron/GoWebComponents/v5/ui"
 )
 
-// Args carries {placeholder} values for a message. Aliased rather than
-// redefined so a caller can pass one straight to the GWC bundle if it ever
-// needs to.
-type Args = gwc.Arguments
-
-// PluralCategory is re-exported so catalog files do not import GWC directly;
-// the catalog should have exactly one dependency and it should be this package.
-type PluralCategory = gwc.PluralCategory
+// The framework's types, re-exported so the view has one import rather than
+// two that must be kept in step.
+type (
+	// Runtime is what UseI18n returns: the thing with T on it.
+	Runtime = gwc.Runtime
+	// Namespace is a Runtime bound to one namespace, for a helper that
+	// translates many keys from the same surface.
+	Namespace = gwc.Namespace
+	// LocaleState is the reactive locale handle UseLocale returns.
+	LocaleState = gwc.LocaleState
+	// LocaleOptions configures UseLocale.
+	LocaleOptions = gwc.LocaleOptions
+	// ProviderProps configures Provider.
+	ProviderProps = gwc.ProviderProps
+	// Args carries {placeholder} values for a message.
+	Args = gwc.Arguments
+	// PluralCategory is a CLDR plural class, for catalog files.
+	PluralCategory = gwc.PluralCategory
+	// Direction is ltr or rtl.
+	Direction = gwc.Direction
+)
 
 const (
 	One   = gwc.PluralOne
 	Other = gwc.PluralOther
 )
 
-// DefaultLocale is the locale the catalog is authored in and the fallback for
-// every other. English, and the only one that ships today.
+// DefaultLocale is the locale the catalog is authored in, and the fallback for
+// every other. English, and the only one that ships without a Smart+ key.
 const DefaultLocale = "en"
 
+// PersistenceKey is where UseLocale remembers the reader's choice. Exported
+// because the language picker and any test that wants to preseed a locale both
+// need to name the same key.
+const PersistenceKey = "articleflux.locale"
+
 // bundle holds every registered catalog. Populated by the init() in each
-// en_*.go before main runs, and never written afterwards — which is what makes
-// T safe to call from a goroutine handling an RPC reply.
+// en_*.go before main runs.
+//
+// Import writes to it at runtime when a Smart+ translation lands, which is the
+// one write after init — and it happens before the locale is switched to that
+// language, so no render is reading the new locale while it is being filled.
 var bundle = gwc.NewBundle(gwc.BundleOptions{
 	DefaultLocale:  DefaultLocale,
 	FallbackLocale: DefaultLocale,
-	// A missing key renders as the key itself rather than as empty text or a
-	// panic. Empty text is a blank button nobody notices in review; the key is
-	// unmistakable on screen and greppable in a screenshot. The keycoverage
-	// test is what stops one reaching a user.
+	// A missing key renders as "namespace.key" rather than as empty text.
+	// Empty text is a blank button nobody notices in review; the key is
+	// unmistakable on screen and greppable in a screenshot. keycoverage_test
+	// is what stops one reaching a reader.
 	OnMissing: func(_ string, ns string, key string) string {
 		if ns == "" {
 			return key
@@ -73,101 +106,50 @@ var bundle = gwc.NewBundle(gwc.BundleOptions{
 	},
 })
 
-// locale is the active locale. Package-level rather than component state
-// because T must not be a hook; see the package comment.
-var locale = DefaultLocale
+// Bundle exposes the catalog, for the Provider and for tests.
+func Bundle() *gwc.Bundle { return bundle }
 
-// Locale returns the active locale tag.
-func Locale() string { return locale }
-
-// SetLocale switches the active locale.
+// UseI18n returns the Runtime from the nearest Provider.
 //
-// It does NOT re-render anything. GWC has no way to invalidate every mounted
-// component from outside the tree, and a partial re-render would leave a page
-// half in each language — visibly worse than not switching at all. A language
-// picker calls this, persists the choice, and reloads the page; a reload costs
-// one wasm instantiation on an action a reader takes approximately never.
-func SetLocale(next string) {
-	next = gwc.NormalizeLocale(next)
-	if next == "" {
-		return
-	}
-	locale = next
-}
+// It is a HOOK: call it once, unconditionally, at the top of a component with
+// the other hooks. GWC matches hooks positionally, so one behind a branch or
+// inside a loop binds to the wrong slot. Pass the Runtime it returns down to
+// helper functions rather than calling this again.
+func UseI18n() Runtime { return gwc.UseI18n() }
 
-// Direction reports whether the active locale reads left-to-right or
-// right-to-left. The design uses logical properties (padding-inline, not
-// padding-left) throughout, so this is the whole of RTL support — §22.16.
-func Direction() gwc.Direction { return gwc.DirectionForLocale(locale) }
+// UseLocale is the reactive, persisted locale state.
+//
+// GWC's own hook, and it does the whole job: reads localStorage under
+// PersistenceKey, optionally detects the browser's language, clamps to the
+// supported set, writes back on every change, and — because it is built on
+// ui.UseState — re-renders the tree when Set is called. That last property is
+// what makes switching language a re-render rather than a page reload.
+func UseLocale(opts LocaleOptions) LocaleState { return gwc.UseLocale(opts) }
+
+// Provider puts a Runtime in context for everything below it.
+func Provider(props ProviderProps) ui.Node { return gwc.Provider(props) }
+
+// DirectionFor reports whether a locale reads left-to-right or right-to-left.
+// The design uses logical properties (padding-inline, not padding-left)
+// throughout, so this is the whole of RTL support — §22.16.
+func DirectionFor(locale string) Direction { return gwc.DirectionForLocale(locale) }
 
 // Locales lists every locale with a registered catalog, sorted.
 func Locales() []string { return bundle.Locales() }
 
-// Bundle exposes the underlying GWC bundle, for tests and for the day an SSR
-// bootstrap needs to serialise it. Callers should use T.
-func Bundle() *gwc.Bundle { return bundle }
-
-// T translates key, which is dot-namespaced as "<surface>.<name>" — the first
-// segment selects the namespace and everything after it is the key, so
-// "reader.toast.markRead" is key "toast.markRead" in namespace "reader".
-//
-// It is a plain function, not a hook: safe inside loops, inside branches, and
-// inside the goroutine that handles an RPC reply.
-func T(key string, args ...Args) string {
-	ns, rest := split(key)
-	var a Args
-	if len(args) > 0 {
-		a = args[0]
-	}
-	return bundle.Translate(locale, ns, rest, a, DefaultLocale)
-}
-
-// N translates a pluralised key by count, and passes count through as {count}
-// so the message can interpolate it. The category is chosen by the active
-// locale's rules, not by `if n == 1` at the call site — which is the entire
-// reason plural forms live in the catalog.
-func N(key string, count int, args ...Args) string {
-	a := Args{}
-	if len(args) > 0 && args[0] != nil {
-		maps.Copy(a, args[0])
-	}
-	a["count"] = count
-	return T(key, a)
-}
-
-// split cuts "ns.rest" at the FIRST dot. Keys may contain further dots, which
-// is how a surface with sub-areas ("reader.toast.saveFailed") stays readable
-// without inventing a second separator.
-func split(key string) (string, string) {
-	if ns, rest, ok := strings.Cut(key, "."); ok {
-		return ns, rest
-	}
-	// A key with no dot is a mistake, but returning ("", key) makes the miss
-	// render as the key rather than silently resolving in some namespace that
-	// happened to have it.
-	return "", key
-}
-
-// --- catalog registration -------------------------------------------------
-//
-// Called from the init() of each en_*.go. Registration is init-only by
-// convention; nothing calls these at render time, which is why bundle needs no
-// lock on the read path.
+// --- the catalog ----------------------------------------------------------
 
 // Entry is one message, flattened to a single "ns.key" and stripped to what a
-// translator (human or otherwise) needs: the text, or the plural forms.
+// translator (human or otherwise) needs.
 //
 // It exists because the GWC Bundle can be read by key but not enumerated, and
-// the Smart+ translation path needs the whole English catalog as data — see
-// Export.
+// the Smart+ translation path needs the whole English catalog as data.
 type Entry struct {
-	// Key is the flat "ns.key" form, the same string T takes.
+	// Key is the flat "ns.key" form.
 	Key string
 	// Text is the message, empty when Plural is set.
 	Text string
-	// Plural maps a category ("one", "other", …) to that form's text. Only the
-	// categories the source locale actually distinguishes are present; a target
-	// language with more of them gets them from the translator, not from here.
+	// Plural maps a category ("one", "other", …) to that form's text.
 	Plural map[string]string
 }
 
@@ -175,17 +157,10 @@ type Entry struct {
 //
 // A second copy of what the Bundle already holds, and worth it: the Bundle is a
 // lookup structure with no enumeration, and both the Smart+ translator and the
-// keycoverage test need to walk the whole thing. Keeping the order stable makes
-// the translated output diffable against the English.
+// keycoverage test need to walk the whole thing.
 var registry = map[string][]Entry{}
 
 // Export returns every message registered for a locale, in registration order.
-//
-// The server imports this package to read the English catalog — client/i18n
-// carries no build tag precisely so it can be. It is a data package: the
-// catalog is the contract between the UI and anything that wants to render or
-// translate it, and a second hand-maintained copy on the server would drift
-// within a week.
 func Export(locale string) []Entry {
 	src := registry[gwc.NormalizeLocale(locale)]
 	out := make([]Entry, len(src))
@@ -195,12 +170,12 @@ func Export(locale string) []Entry {
 
 // Import registers a translated catalog at runtime.
 //
-// This is how the Smart+ translation lands: the server returns entries keyed by
+// This is how a Smart+ translation lands: the server returns entries keyed by
 // the same "ns.key" strings, and they go into the same Bundle the English is
 // in, under the target locale. A key the translator dropped is simply absent,
-// and the Bundle's own fallback chain resolves it back to English — which is
-// the right failure, because a half-translated UI is still usable and a UI full
-// of raw keys is not.
+// and the Bundle's fallback chain resolves it back to English — the right
+// failure, because a half-translated UI is usable and a UI full of raw keys is
+// not.
 func Import(locale string, entries []Entry) {
 	loc := gwc.NormalizeLocale(locale)
 	if loc == "" || loc == DefaultLocale {
@@ -210,8 +185,8 @@ func Import(locale string, entries []Entry) {
 		return
 	}
 	for _, e := range entries {
-		ns, key := split(e.Key)
-		if ns == "" || key == "" {
+		ns, key, ok := strings.Cut(e.Key, ".")
+		if !ok || ns == "" || key == "" {
 			continue
 		}
 		if len(e.Plural) > 0 {
@@ -229,6 +204,10 @@ func Import(locale string, entries []Entry) {
 	}
 }
 
+// --- catalog registration -------------------------------------------------
+//
+// Called from the init() of each en_*.go, and from Import.
+
 // text registers plain messages for one namespace.
 func text(loc string, ns string, entries map[string]string) {
 	catalog := make(gwc.NamespaceCatalog, len(entries))
@@ -237,8 +216,8 @@ func text(loc string, ns string, entries map[string]string) {
 		keys = append(keys, k)
 	}
 	// Sorted, so registration order is deterministic despite Go's randomised
-	// map iteration — Export's output is compared and diffed, and a catalog
-	// that reshuffles every run is one nobody can review.
+	// map iteration — Export's output is diffed, and a catalog that reshuffles
+	// every run is one nobody can review.
 	sort.Strings(keys)
 	loc = gwc.NormalizeLocale(loc)
 	for _, k := range keys {
@@ -248,9 +227,13 @@ func text(loc string, ns string, entries map[string]string) {
 	bundle.RegisterNamespace(loc, ns, catalog)
 }
 
-// plural registers one pluralised message. forms must include Other; English
-// only distinguishes One and Other, but the map is keyed by category so a
-// locale with six forms needs no code change here.
+// plural registers one pluralised message.
+//
+// PluralArg is "count", which is the argument name Runtime.T looks for — so a
+// call site passes Args{"count": n} and the framework selects the form by the
+// locale's own rules. forms must include Other; English distinguishes only One
+// and Other, but the map is keyed by category so a locale with six needs no
+// code change here.
 func plural(loc string, ns string, key string, forms map[PluralCategory]string) {
 	loc = gwc.NormalizeLocale(loc)
 	bundle.RegisterNamespace(loc, ns, gwc.NamespaceCatalog{
@@ -263,12 +246,27 @@ func plural(loc string, ns string, key string, forms map[PluralCategory]string) 
 	registry[loc] = append(registry[loc], Entry{Key: ns + "." + key, Plural: raw})
 }
 
+// Count is the Args for a pluralised message, so a call site reads
+// t.T("list", "readingTime", i18n.Count(mins)) instead of spelling the magic
+// argument name out at 30 sites and getting one of them wrong.
+func Count(n int) Args { return Args{"count": n} }
+
+// CountWith is Count plus extra placeholders, for a message that is both
+// pluralised and interpolated ("{name}, {count} feeds").
+func CountWith(n int, extra Args) Args {
+	out := Args{"count": n}
+	maps.Copy(out, extra)
+	return out
+}
+
 // --- locale-aware formatting ----------------------------------------------
 //
 // §22.16's third strand: formatting applies immediately, even in English,
 // because a reader is nothing but timestamps and counts.
+//
+// Runtime carries FormatDate and FormatNumber of its own; these are the two
+// cases where ArticleFlux wants something different, and each says why.
 
-// DateStyle selects how much of a date to show.
 type DateStyle = gwc.DateStyle
 
 const (
@@ -277,31 +275,24 @@ const (
 	DateLong   = gwc.DateStyleLong
 )
 
-// Date formats t in the active locale's conventions. Pass the reader's
-// timezone (users.timezone, §22.9) as loc; a nil loc means the browser's.
-func Date(t time.Time, style DateStyle, loc *time.Location) string {
-	return gwc.FormatDate(locale, t, gwc.DateOptions{Style: style, Location: loc})
-}
-
 // RelativeTime renders t against base as "3 days ago" / "in 2 hours".
-func RelativeTime(t time.Time, base time.Time) string {
+// Not on Runtime, so it takes the locale.
+func RelativeTime(locale string, t time.Time, base time.Time) string {
 	return gwc.FormatRelativeTime(locale, t, base)
 }
 
-// ListOf joins items with the active locale's list conjunction
-// ("a, b and c"), which is not a comma-join in most languages and is not one
-// in English either.
-func ListOf(items []string) string { return gwc.FormatList(locale, items) }
+// ListOf joins items with the locale's list conjunction ("a, b and c"), which
+// is not a comma-join in most languages and is not one in English either.
+func ListOf(locale string, items []string) string { return gwc.FormatList(locale, items) }
 
 // Number groups an integer for display: "1,420 words" reads and "1420 words"
 // is parsed.
 //
-// It is hand-rolled rather than delegated to GWC's FormatNumber because that
-// one builds an x/text/message printer, and x/text's CLDR tables are megabytes
-// the wasm module (already 27 MB before compression, G5's ratchet) does not
-// need to carry to put commas in a word count. The separator table below is
-// the whole of what an integer needs.
-func Number(n int) string {
+// Hand-rolled rather than Runtime.FormatNumber because that one builds an
+// x/text/message printer, and the CLDR tables behind it are megabytes the wasm
+// module (G5's ratchet, plan.md R4) does not need in order to put commas in a
+// word count. The separator table below is the whole of what an integer needs.
+func Number(locale string, n int) string {
 	sep := groupSeparator(locale)
 	neg := n < 0
 	if neg {
@@ -315,7 +306,6 @@ func Number(n int) string {
 		return digits
 	}
 	var b strings.Builder
-	// Grow for the digits plus one separator per group after the first.
 	b.Grow(len(digits) + len(digits)/3 + 1)
 	if neg {
 		b.WriteByte('-')
@@ -344,9 +334,7 @@ func groupSeparator(loc string) string {
 	case "fr", "sv", "nb", "no", "fi", "cs", "pl", "ru", "uk", "lv", "sk":
 		// A narrow no-break space, per CLDR. A plain space would let a number
 		// wrap across a line break in the middle.
-		return " "
-	case "ch":
-		return "’"
+		return " "
 	default:
 		return ","
 	}
@@ -366,3 +354,39 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// --- translating outside a render ------------------------------------------
+
+// At returns a translator for a locale, for code that runs OUTSIDE a render.
+//
+// UseI18n is a hook and a Runtime only exists inside the tree, but three kinds
+// of caller legitimately need a string without either: a UseEffect body, a
+// goroutine handling an RPC reply, and anything mirroring copy out to a
+// non-Go consumer (the splash shim, via client/view's mirrorBootCopy).
+//
+// It reads the same Bundle through the same fallback chain, so it cannot
+// disagree with what a component would have rendered. Use the Runtime from
+// UseI18n wherever there is one — this exists for where there is not, and a
+// component reaching for it is a component that skipped the hook.
+type At string
+
+// T translates within a namespace, with the same semantics as Runtime.T.
+func (a At) T(ns string, key string, args ...Args) string {
+	var resolved Args
+	if len(args) > 0 {
+		resolved = args[0]
+	}
+	return bundle.Translate(string(a), ns, key, resolved, DefaultLocale)
+}
+
+// NS binds a namespace, mirroring Runtime.NS.
+func (a At) NS(ns string) AtNamespace { return AtNamespace{at: a, ns: ns} }
+
+// AtNamespace is At bound to one namespace.
+type AtNamespace struct {
+	at At
+	ns string
+}
+
+// T translates key within the bound namespace.
+func (n AtNamespace) T(key string, args ...Args) string { return n.at.T(n.ns, key, args...) }

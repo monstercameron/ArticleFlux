@@ -37,12 +37,12 @@ func init() {
 		"sharedGroup": "Shared",
 		// The group note is assembled from a count sentence plus this warning.
 		// Two keys, because the count is plural and the warning never is.
-		"sharedWarn":  "Changing these changes them for everyone.",
-		"sharedNone":  "This is the server's copy of the feed.",
-		"urlLabel":    "Feed URL",
-		"siteLabel":   "Website",
-		"pollLabel":   "Fetch every",
-		"pollHint":    "How often the server polls it.",
+		"sharedWarn": "Changing these changes them for everyone.",
+		"sharedNone": "This is the server's copy of the feed.",
+		"urlLabel":   "Feed URL",
+		"siteLabel":  "Website",
+		"pollLabel":  "Fetch every",
+		"pollHint":   "How often the server polls it.",
 
 		// --- health
 		"healthGroup":  "Health",

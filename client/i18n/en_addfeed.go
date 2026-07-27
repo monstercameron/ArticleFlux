@@ -29,6 +29,61 @@ func init() {
 		"nameHint":        "Your own name for it. Leave this blank to use the publisher's.",
 		"namePlaceholder": "The publisher's title",
 		"nameAria":        "Your name for this feed",
+
+		// --- the ladder (§11): what happens when the address is not a feed ---
+		"looking": "Looking for a feed…",
+		// Said before any candidate is offered, because "we found this at an
+		// address we guessed" and "the page told us" are different claims and the
+		// reader is choosing between them.
+		"foundTitle": "That address isn't a feed, but it leads to one",
+		"foundHint":  "Each of these was fetched and read before being offered.",
+		"declared":   "the page links to it",
+		"probed":     "found by trying a common address",
+		"useThis":    "Use this",
+
+		"noFeedTitle": "No feed here",
+		"noFeedHint": "This page doesn't publish one. Smart+ can read how the page is " +
+			"built and follow it anyway.",
+		// The egress sentence. It says what is sent and where, in the place the
+		// decision is made rather than in a settings screen somewhere else.
+		"smartOffHint": "Turn Smart+ on to send this page's structure — its tags and " +
+			"classes, not its text — to OpenAI, which writes the rule for following it.",
+		"smartToggleOn":  "Smart+ on",
+		"smartToggleOff": "Smart+ off",
+		"smartAnalyze":   "Find the articles",
+		"smartWorking":   "Reading the page…",
+		"smartNoKey": "This server has no OpenAI key. Whoever runs it adds one in " +
+			"Settings → Smart+.",
+		"smartRefused": "This site's robots.txt asks us not to read this page, so we won't.",
+		"smartFailed": "Smart+ couldn't find a list of articles on that page. It works on " +
+			"index pages — a blog's front page, a news section, a changelog.",
+
+		"proposalTitle": "Here's what it found",
+		// The count is the evidence, so it leads. "Trust me" is not an argument
+		// a reader can check; "here are eleven articles it pulled out" is.
+		"proposalFollow": "Follow this page",
+		"proposalRule":   "Matching",
+		"proposalNoDate": "no date",
+	})
+
+	// How many articles the proposed rule pulled off the page, which is the
+	// evidence the reader accepts or rejects it on.
+	plural(DefaultLocale, "addFeed", "proposalFound", map[PluralCategory]string{
+		One:   "1 article on the page right now",
+		Other: "{count} articles on the page right now",
+	})
+
+	// What a candidate feed contains, shown beside it for the same reason.
+	plural(DefaultLocale, "addFeed", "candidateItems", map[PluralCategory]string{
+		One:   "1 item",
+		Other: "{count} items",
+	})
+
+	// The receipt after following a page, so "it worked" is a number rather
+	// than a feeling.
+	plural(DefaultLocale, "addFeed", "followed", map[PluralCategory]string{
+		One:   "Now following {name} · 1 article",
+		Other: "Now following {name} · {count} articles",
 	})
 
 	text(DefaultLocale, "category", map[string]string{

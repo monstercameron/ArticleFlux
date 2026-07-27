@@ -59,12 +59,12 @@ var copyProps = map[string]bool{
 // copyAttrs are Aria/Raw map keys whose value is rendered to a person, either
 // visually or by a screen reader.
 var copyAttrs = map[string]bool{
-	"label":            true,
-	"aria-label":       true,
-	"title":            true,
-	"placeholder":      true,
-	"alt":              true,
-	"aria-description": true,
+	"label":                true,
+	"aria-label":           true,
+	"title":                true,
+	"placeholder":          true,
+	"alt":                  true,
+	"aria-description":     true,
 	"aria-roledescription": true,
 }
 
@@ -74,23 +74,27 @@ var copyAttrs = map[string]bool{
 //
 // A helper with a variable shape is not listed. This is a list of the places
 // copy demonstrably went inline during the port, not an attempt at coverage.
+// The counts include the leading `tr i18n.Runtime` every helper that
+// translates now carries, so they are one higher than the visible label
+// position. That parameter is why the offsets are worth stating rather than
+// guessing: a helper that gains or loses it silently shifts every entry here.
 var labelTakers = map[string]int{
-	"actionButton":   2, // action, class, LABEL
-	"itemChip":       1, // action, LABEL, …
-	"glyphChip":      2, // action, glyph, LABEL, …
-	"glyphItemChip":  2, // action, glyph, LABEL, …
-	"staticChip":     0, // LABEL
-	"fsGroup":        1, // glyph, TITLE, NOTE
-	"fsRow":          0, // LABEL, HINT, …
-	"fsFact":         0, // LABEL, VALUE
-	"setRow":         0, // LABEL, HINT, …
-	"setFact":        0, // LABEL, VALUE
-	"afField":        0, // LABEL, HINT, …
-	"pickChip":       2, // action, value, LABEL, …
-	"specialRow":     1, // glyph, LABEL, …
-	"railBand":       1, // glyph, LABEL
-	"railBandToggle": 1, // glyph, LABEL, …
-	"emptyState":     -1, // both args are catalog KEYS, never text — see below
+	"actionButton":   2,  // action, class, LABEL      (no tr: takes finished text)
+	"itemChip":       1,  // action, LABEL, …          (no tr)
+	"glyphChip":      2,  // action, glyph, LABEL, …   (no tr)
+	"glyphItemChip":  2,  // action, glyph, LABEL, …   (no tr)
+	"staticChip":     0,  // LABEL                     (no tr)
+	"fsGroup":        1,  // glyph, TITLE, NOTE        (no tr)
+	"fsRow":          0,  // LABEL, HINT, …            (no tr)
+	"fsFact":         0,  // LABEL, VALUE              (no tr)
+	"setRow":         0,  // LABEL, HINT, …            (no tr)
+	"setFact":        0,  // LABEL, VALUE              (no tr)
+	"afField":        0,  // LABEL, HINT, …            (no tr)
+	"pickChip":       2,  // action, value, LABEL, …   (no tr)
+	"specialRow":     2,  // tr, glyph, LABEL, …
+	"railBand":       1,  // glyph, LABEL              (no tr)
+	"railBandToggle": 2,  // tr, glyph, LABEL, …
+	"emptyState":     -1, // tr plus two catalog KEYS, never text — see below
 }
 
 func guardNoInlineCopy(root string) *guard {

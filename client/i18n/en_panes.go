@@ -161,9 +161,16 @@ func init() {
 
 	// --- the article stream --------------------------------------------------
 	text(DefaultLocale, "article", map[string]string{
-		"pickTitle": "Pick something to read",
-		"pickHint":  "j and k move through the list, o opens the original.",
+		"pickTitle":  "Pick something to read",
+		"pickHint":   "j and k move through the list, o opens the original.",
 		"backToList": "‹ List",
+
+		// The focus toggle. Two labels, because the control is an icon and its
+		// accessible name has to say what pressing it DOES — which is the
+		// opposite thing in each state. Named for the outcome the reader wants
+		// ("read full width"), not for the mechanism ("collapse panes").
+		"focusOn":  "Read full width",
+		"focusOff": "Show the feeds and the list",
 
 		"loading":     "Loading…",
 		"streamTop":   "The top of this feed.",
@@ -179,6 +186,18 @@ func init() {
 		"readLater":    "Read later",
 		"markUnread":   "Mark unread",
 		"openOriginal": "Open original",
+		// The proxy pair. "View page" rather than "Proxy" or "Snapshot": the
+		// reader is choosing what to look at, not which mechanism fetches it,
+		// and the mechanism is explained inside the page itself where it
+		// matters. "Full width" says what changes, which is the only difference
+		// the reader can act on.
+		"viewPage":      "View page",
+		"viewPageFull":  "Full width",
+		"viewPageClose": "Close page",
+		// The frame's accessible name. It says where the content is from and
+		// how it got here, because a screen reader lands in it with no other
+		// way to tell it apart from the article above.
+		"viewPageFrameTitle": "The publisher's page, fetched by your server",
 		// The clamp's expand control says what the rest costs, not just that
 		// there is a rest.
 		"readTheRest": "Read the rest · {time}",
@@ -258,7 +277,10 @@ func init() {
 		"moveAndOpen": "Move and open",
 		"nextPrev":    "Next and previous article",
 
+		"focusMode":    "Read full width, or bring the columns back",
 		"openOriginal": "Open the original in a new tab",
+		"viewPage":     "Show the page here, fetched by your server",
+		"viewPageFull": "Open the fetched page full width in a new tab",
 		"like":         "Like",
 		"dislike":      "Dislike",
 		"readLater":    "Save to read later",

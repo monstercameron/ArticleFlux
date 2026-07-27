@@ -10,15 +10,15 @@ package i18n
 // language's feed readers already use rather than for a fresh translation.
 func init() {
 	text(DefaultLocale, "stream", map[string]string{
-		"all":      "All feeds",
-		"unread":   "Unread",
-		"later":    "Read later",
-		"liked":    "Liked",
+		"all":    "All feeds",
+		"unread": "Unread",
+		"later":  "Read later",
+		"liked":  "Liked",
 		// No "disliked": a list of things you decided were not worth your time is
 		// not somewhere anyone goes, so it is deliberately not a stream (see
 		// specialRow in panes.go). The list header still names the scope —
 		// list.subDisliked — because the palette can reach it.
-		"notes":    "Notes",
-		"unfiled":  "Unfiled",
+		"notes":   "Notes",
+		"unfiled": "Unfiled",
 	})
 }

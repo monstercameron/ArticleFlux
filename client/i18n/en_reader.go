@@ -16,8 +16,8 @@ func init() {
 	text(DefaultLocale, "reader", map[string]string{
 		// --- failures. One key per thing that can fail, because "something went
 		// wrong" is the message that makes a reader reload the page.
-		"errLoadFeeds":   "Couldn't load feeds: {err}",
-		"errLoadNotes":   "Couldn't load notes: {err}",
+		"errLoadFeeds": "Couldn't load feeds: {err}",
+		"errLoadNotes": "Couldn't load notes: {err}",
 		// Said only when enough writes were replayed to be worth noticing. The
 		// point is not the number, it is the reassurance that the marks made
 		// while disconnected were kept rather than lost — a reader who has been
@@ -39,8 +39,12 @@ func init() {
 		"errAddFeed":     "Couldn't add that feed: {err}",
 		"errAddCategory": "Couldn't add a category: {err}",
 		"errNewCategory": "Couldn't make that category: {err}",
-		"errMoveFeed":    "Couldn't move that feed: {err}",
-		"errUnsubscribe": "Couldn't unsubscribe: {err}",
+		// The ladder (§11). Two failures with different remedies: one is about
+		// the address, the other about the page behind it.
+		"errAnalyzeSite":  "Couldn't read that address: {err}",
+		"errFollowPage":   "Couldn't follow that page: {err}",
+		"errMoveFeed":     "Couldn't move that feed: {err}",
+		"errUnsubscribe":  "Couldn't unsubscribe: {err}",
 		"errFeedSettings": "Couldn't load this feed's settings: {err}",
 		"errRefresh":      "Refresh failed: {err}",
 		"errStats":        "This server does not report statistics: {err}",

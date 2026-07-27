@@ -22,9 +22,14 @@ import (
 // Both parse client/view as SOURCE rather than importing it, because that
 // package is `js && wasm` and cannot be linked into a native test binary. That
 // is a limitation worth naming: these see literal keys only. A key assembled at
-// runtime — i18n.T("theme." + name) — is invisible to both, which is exactly
-// why themeLabel and friends fall back to the design package's own Label
-// instead of trusting the catalog.
+// runtime — tr.T("theme", t.Name) — is invisible to both, which is exactly why
+// themeLabel and friends fall back to the design package's own Label instead of
+// trusting the catalog.
+//
+// Two call shapes are recognised, both of them the framework's:
+//
+//	tr.T("namespace", "key")            the Runtime form
+//	ns := tr.NS("namespace"); ns.T("key")   the bound-Namespace form
 
 // viewDir is where the UI lives, relative to this package.
 const viewDir = "../view"
@@ -34,9 +39,17 @@ const viewDir = "../view"
 // check, and each entry names what supplies the suffix so a future reader can
 // verify it rather than trust it.
 var dynamicPrefixes = map[string]string{
-	"theme.":              "design.Theme.Name, via view.themeLabel/themeBlurb",
-	"accent.":             "design.Swatch.Name, via view.accentLabel",
-	"readingSize.":        "design.ReadingSize.Name",
+	"theme.":       "design.Theme.Name, via view.themeLabel/themeBlurb",
+	"accent.":      "design.Swatch.Name, via view.accentLabel",
+	"readingSize.": "design.ReadingSize.Name",
+	"glyph.":       "tagglyph.Glyph.Char, via view.glyphName",
+	"glyphGroup.":  "the tagglyph group constants, via view.glyphGroupName",
+	"month.":       "time.Month, via view.relTime",
+	// The server names these in an ErrorDetail; the client resolves them in
+	// view.serverText from a key that arrives over the wire, so no literal in
+	// client/view mentions any of them. internal/transport/grpcsrv is the other
+	// half of this contract.
+	"srv.":                "gRPC ErrorDetail keys, via view.serverText",
 	"settings.tab.":       "the settingsTab constants",
 	"palette.cmd.":        "the palette command ids",
 	"feedSettings.poll.":  "the pollChoices values",
@@ -120,6 +133,19 @@ func TestPluralsHaveOther(t *testing.T) {
 	}
 }
 
+// literal unwraps a string literal argument.
+func literal(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	v, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return v, true
+}
+
 func registeredKeys() map[string]bool {
 	out := map[string]bool{}
 	for _, e := range Export(DefaultLocale) {
@@ -161,33 +187,77 @@ func referencedKeys(t *testing.T) map[string]string {
 			t.Fatalf("cannot parse %s: %v", path, perr)
 		}
 		seen++
+
+		// First, every `x := tr.NS("surface")` in this file, so an ns.T("key")
+		// below can be attributed to the right namespace. Package-wide rather
+		// than scope-aware: two handles bound to different namespaces under the
+		// same variable name in one file would confuse it, and the test says so
+		// rather than pretending otherwise.
+		namespaces := map[string]string{}
+		ast.Inspect(f, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+				return true
+			}
+			name, ok := as.Lhs[0].(*ast.Ident)
+			if !ok {
+				return true
+			}
+			call, ok := as.Rhs[0].(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "NS" {
+				return true
+			}
+			if ns, ok := literal(call.Args[0]); ok {
+				namespaces[name.Name] = ns
+			}
+			return true
+		})
+
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok || len(call.Args) == 0 {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "T" {
+				return true
+			}
+			recv, ok := sel.X.(*ast.Ident)
 			if !ok {
 				return true
 			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pkg.Name != "i18n" {
-				return true
+			switch recv.Name {
+			case "tr":
+				// tr.T("namespace", "key") — the Runtime form.
+				if len(call.Args) < 2 {
+					return true
+				}
+				ns, ok1 := literal(call.Args[0])
+				key, ok2 := literal(call.Args[1])
+				if !ok1 || !ok2 {
+					// A computed namespace or key. Invisible here by
+					// construction — see dynamicPrefixes.
+					return true
+				}
+				out[ns+"."+key] = fset.Position(call.Args[1].Pos()).String()
+			default:
+				// A Namespace handle: `ns := tr.NS("feedSettings")` then
+				// ns.T("key"). The namespace is recovered from the NS() call
+				// that produced the variable, collected in the pass below.
+				bound, known := namespaces[recv.Name]
+				if !known || len(call.Args) < 1 {
+					return true
+				}
+				key, okKey := literal(call.Args[0])
+				if !okKey {
+					return true
+				}
+				out[bound+"."+key] = fset.Position(call.Args[0].Pos()).String()
 			}
-			if sel.Sel.Name != "T" && sel.Sel.Name != "N" {
-				return true
-			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				// A computed key. Invisible here by construction — see the
-				// package comment on dynamicPrefixes.
-				return true
-			}
-			key, uerr := strconv.Unquote(lit.Value)
-			if uerr != nil {
-				return true
-			}
-			out[key] = fset.Position(lit.Pos()).String()
 			return true
 		})
 	}
@@ -195,6 +265,14 @@ func referencedKeys(t *testing.T) map[string]string {
 	// quietly stops being one — the same rule internal/tools/guards states.
 	if seen == 0 {
 		t.Fatalf("no .go files found in %s: this test would pass without checking anything", viewDir)
+	}
+	// A guard that inspected nothing passes vacuously. The file count above
+	// catches an empty directory; this catches the subtler version — a call-shape
+	// change that makes the walker stop recognising translations, which would
+	// turn both tests green while checking nothing at all.
+	if len(out) < 300 {
+		t.Fatalf("only %d translation keys found across %d files — the walker has "+
+			"probably stopped recognising the call shape", len(out), seen)
 	}
 	return out
 }

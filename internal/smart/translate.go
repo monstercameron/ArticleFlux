@@ -34,54 +34,19 @@ import (
 // something the server knows. Reading it here keeps the egress surface a
 // compile-time fact.
 
-// Language is one offered target.
+// Language and Languages live in client/i18n, not here.
 //
-// Both names are carried because the picker needs both: the endonym is what a
-// speaker of that language recognises, and the English name is what the person
-// who set the server up can read. A picker showing only endonyms is
-// unnavigable for someone who picked the wrong one by accident.
-type Language struct {
-	Code    string // BCP-47, e.g. "fr", "pt-BR"
-	English string
-	Native  string
-}
+// UseLocale clamps the persisted locale to a supported set at boot, before any
+// translated catalog exists, so the list has to be readable by the client
+// without the server — and one list means the set the picker offers and the set
+// the translator accepts cannot drift apart.
+type Language = i18n.Language
 
-// Languages are the targets offered.
-//
-// A fixed list rather than free text. Not a technical limit — the model would
-// attempt anything — but a cost and quality one: a typo'd locale would spend a
-// full catalog translation producing something nobody can read, and there is no
-// way to tell that from the outside. The list is the thing to grow when someone
-// asks.
-var Languages = []Language{
-	{"ar", "Arabic", "العربية"},
-	{"de", "German", "Deutsch"},
-	{"es", "Spanish", "Español"},
-	{"fr", "French", "Français"},
-	{"hi", "Hindi", "हिन्दी"},
-	{"it", "Italian", "Italiano"},
-	{"ja", "Japanese", "日本語"},
-	{"ko", "Korean", "한국어"},
-	{"nl", "Dutch", "Nederlands"},
-	{"pl", "Polish", "Polski"},
-	{"pt-BR", "Portuguese (Brazil)", "Português (Brasil)"},
-	{"ru", "Russian", "Русский"},
-	{"sv", "Swedish", "Svenska"},
-	{"tr", "Turkish", "Türkçe"},
-	{"uk", "Ukrainian", "Українська"},
-	{"zh-Hans", "Chinese (Simplified)", "简体中文"},
-}
+// Languages are the offered targets. See client/i18n/languages.go.
+var Languages = i18n.Languages
 
 // LanguageByCode resolves an offered target, or reports that it is not one.
-func LanguageByCode(code string) (Language, bool) {
-	code = strings.TrimSpace(code)
-	for _, l := range Languages {
-		if strings.EqualFold(l.Code, code) {
-			return l, true
-		}
-	}
-	return Language{}, false
-}
+func LanguageByCode(code string) (Language, bool) { return i18n.LanguageByCode(code) }
 
 var (
 	// ErrUnsupportedLanguage means the caller asked for a locale not in

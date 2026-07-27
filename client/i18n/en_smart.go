@@ -41,25 +41,25 @@ func init() {
 		"modelSave":    "Save model",
 
 		// --- spend
-		"spendGroup":  "Spent since this server started",
-		"spendReset":  "Not a bill — a signal. It resets when the process restarts.",
-		"spendIn":     "Tokens in",
-		"spendOut":    "Tokens out",
-		"spendCalls":  "Requests",
+		"spendGroup": "Spent since this server started",
+		"spendReset": "Not a bill — a signal. It resets when the process restarts.",
+		"spendIn":    "Tokens in",
+		"spendOut":   "Tokens out",
+		"spendCalls": "Requests",
 
 		// --- language
-		"langGroup": "Interface language",
-		"langHint":  "Translates every button, label and message in ArticleFlux with the model above. A language you have used before is free — it is cached on the server until the English changes.",
-		"langEnglish": "English",
-		"langSourceNote": "English is the language the interface is written in. It is always available and never costs anything.",
-		"langCached":     "ready",
-		"langCosts":      "will translate",
-		"langWorking":    "Translating the interface…",
-		"langDoneFresh":  "Translated into {language}. It is cached now, so switching back is free.",
-		"langRetranslate": "Translate again",
+		"langGroup":           "Interface language",
+		"langHint":            "Translates every button, label and message in ArticleFlux with the model above. A language you have used before is free — it is cached on the server until the English changes.",
+		"langEnglish":         "English",
+		"langSourceNote":      "English is the language the interface is written in. It is always available and never costs anything.",
+		"langCached":          "ready",
+		"langCosts":           "will translate",
+		"langWorking":         "Translating the interface…",
+		"langDoneFresh":       "Translated into {language}. It is cached now, so switching back is free.",
+		"langRetranslate":     "Translate again",
 		"langRetranslateHint": "Fetches a fresh translation for the language in use, replacing the cached one. Use it when something reads wrong.",
-		"langNeedsKey":   "Add an OpenAI API key above to translate the interface.",
-		"langFailed":     "Couldn't translate the interface: {err}",
+		"langNeedsKey":        "Add an OpenAI API key above to translate the interface.",
+		"langFailed":          "Couldn't translate the interface: {err}",
 		// The reload is not hidden. Switching language re-renders the whole app
 		// from a catalog that changed under it, and a reload is both the honest
 		// and the correct way to do that — see i18n.SetLocale.
