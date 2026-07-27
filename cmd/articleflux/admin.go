@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -309,6 +310,32 @@ func backup(log *slog.Logger, args []string) error {
 	}
 	log.Info("backed up", "file", dst, "bytes", n,
 		"seconds", int(time.Since(start).Seconds()))
+
+	// The database is not the whole instance. secrets.key seals the Smart+ key
+	// and every mailbox password, lives beside the database rather than in it,
+	// and a restore without it produces a server that refuses to start — see
+	// app.CopyKeyFiles for the whole account of it.
+	keys, err := app.CopyKeyFiles(filepath.Dir(*dbPath), filepath.Dir(dst))
+	if err != nil {
+		return err
+	}
+	if len(keys.Copied) > 0 {
+		log.Info("kept the key material beside it", "files", strings.Join(keys.Copied, ", "),
+			"dir", filepath.Dir(dst))
+	}
+	for _, w := range keys.Warnings {
+		log.Warn("a key file was not kept; the URLs it signs will not survive a restore", "err", w)
+	}
+	// Said out loud rather than inferred from silence. An instance holding its
+	// key in ARTICLEFLUX_SECRET_KEY has nothing here to copy and is correct;
+	// one that has simply lost the file is not, and the two look identical
+	// from the backup directory.
+	if slices.Contains(keys.Missing, app.SecretKeyFile) {
+		log.Warn("no secrets.key beside the database, so none was backed up. "+
+			"If this instance sets ARTICLEFLUX_SECRET_KEY, back that value up "+
+			"separately — a restore without it cannot read any stored credential",
+			"looked_in", filepath.Dir(*dbPath))
+	}
 
 	if intoDir && *keep > 0 {
 		removed, err := store.PruneBackups(filepath.Dir(dst), "articleflux-", *keep)

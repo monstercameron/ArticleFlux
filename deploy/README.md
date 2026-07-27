@@ -154,13 +154,38 @@ sudo systemctl start articleflux-backup    # run one now
 ls -lh /var/backups/articleflux/
 ```
 
+**What a backup consists of.** `articleflux backup` writes the database *and*
+copies the instance's key files — `secrets.key`, `proxy.key`, `speech.key` —
+into the same directory, because the database is not the whole instance.
+`secrets.key` seals the Smart+ API key and every mailbox password, it lives
+beside the database rather than in it, and it is never regenerated in place.
+**A `.db` restored without it produces a server that refuses to start**, with a
+preflight error telling you to go and find a file the backup had never been
+asked to keep. Keep the whole directory, not the `.db` files out of it.
+
+If this instance sets `ARTICLEFLUX_SECRET_KEY` instead of using the file, the
+backup says so and copies nothing — that value is yours to keep somewhere else,
+and it is as irreplaceable as the file would have been.
+
 **A backup nobody has restored is a belief, not a backup.** Restore once, now,
-while nothing is wrong:
+while nothing is wrong — and restore it the way a real recovery would, into its
+own directory with the keys beside it:
 
 ```bash
-sudo -u articleflux cp /var/backups/articleflux/articleflux-*.db /tmp/restore-test.db
-sudo -u articleflux /opt/articleflux/bin/articleflux migrate -db /tmp/restore-test.db
+sudo -u articleflux mkdir -p /tmp/restore-test
+sudo -u articleflux cp /var/backups/articleflux/articleflux-*.db /tmp/restore-test/articleflux.db
+sudo -u articleflux cp /var/backups/articleflux/*.key           /tmp/restore-test/
+sudo -u articleflux /opt/articleflux/bin/articleflux migrate -db /tmp/restore-test/articleflux.db
+
+# The step that matters. `migrate` never opens a sealed setting, so it passes on
+# a backup that cannot boot; `serve` runs the preflight that does. It should
+# report the port it is listening on — Ctrl-C once it does.
+sudo -u articleflux /opt/articleflux/bin/articleflux serve \
+    -db /tmp/restore-test/articleflux.db -addr 127.0.0.1:9999 -poll 0
 ```
+
+The old version of this drill copied the `.db` alone and ran `migrate` against
+it, which is exactly the rehearsal that passes while the real thing fails.
 
 These files leave the droplet only if you copy them off it. A droplet snapshot
 is not a backup of the database — it is a backup of a *running* WAL, with the

@@ -26,6 +26,16 @@ Group=articleflux
 # -keep 14 is two weeks. Long enough that a problem noticed on a Monday can be
 # rolled back past the weekend it started, short enough that fourteen VACUUMed
 # copies of a feed database are not a storage decision anyone has to think about.
+#
+# The command also copies secrets.key, proxy.key and speech.key into -out, and
+# that is not a convenience: secrets.key seals the Smart+ key and every mailbox
+# password, and a database restored without it produces a server that refuses to
+# start. -keep only prunes the timestamped `articleflux-*` databases, so the keys
+# are never rotated out from under the copies that need them.
+#
+# It follows that /var/backups/articleflux holds key material and must stay
+# chmod 700 to this user, exactly like /var/lib/articleflux. The install steps in
+# deploy/README.md already do that.
 ExecStart=/opt/articleflux/bin/articleflux backup \
     -db /var/lib/articleflux/articleflux.db \
     -out /var/backups/articleflux/ \
