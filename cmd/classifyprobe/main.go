@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -26,13 +25,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ncruces/go-sqlite3/driver"
-	"github.com/ncruces/go-sqlite3/ext/fts5"
-
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 	"github.com/monstercameron/ArticleFlux/internal/pipeline"
 	"github.com/monstercameron/ArticleFlux/internal/sanitize"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/textvec"
 )
 
@@ -67,14 +64,13 @@ func main() {
 
 // runSweep prints the unsorted rate against MinScore over real items.
 func runSweep(dbPath string, sample int, spec string) error {
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=query_only(1)"
-	db, err := driver.Open(dsn, fts5.Register)
+	db, err := store.Open(store.Options{Path: dbPath, ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	items, err := loadItems(db, sample)
+	items, err := loadItems(context.Background(), store.NewReaderRepo(db), sample)
 	if err != nil {
 		return err
 	}
@@ -126,14 +122,13 @@ func run(dbPath string, limit, sample int, showAll bool) error {
 	// Read-only, and immutable so that opening it cannot create or recover a WAL
 	// beside a database another process is writing. A probe that perturbs the
 	// thing it is measuring is not a probe.
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=query_only(1)&immutable=0"
-	db, err := driver.Open(dsn, fts5.Register)
+	db, err := store.Open(store.Options{Path: dbPath, ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("opening read-only: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	items, err := loadItems(db, sample)
+	items, err := loadItems(context.Background(), store.NewReaderRepo(db), sample)
 	if err != nil {
 		return err
 	}
@@ -157,32 +152,42 @@ func run(dbPath string, limit, sample int, showAll bool) error {
 	return nil
 }
 
-func loadItems(db *sql.DB, limit int) ([]pipeline.Item, error) {
-	rows, err := db.Query(`
-		SELECT i.id, i.title, ifnull(i.url,''), ifnull(i.summary,''),
-		       ifnull(i.content_html,''), ifnull(s.title,'')
-		  FROM items i
-		  LEFT JOIN sources s ON s.id = i.source_id
-		 ORDER BY i.published_at DESC
-		 LIMIT ?`, limit)
+// loadItems reads the newest articles through the repository rather than with a
+// query of its own.
+//
+// A probe with its own SELECT is a second place that understands the schema, and
+// it is the place nobody updates when a column moves — which is what the "no SQL
+// outside internal/store" guard is for. store.RecentItemIDs and store.ItemsByID
+// are the same pair internal/analyze uses, so this tool exercises the path the
+// real job takes instead of a private imitation of it.
+func loadItems(ctx context.Context, repo *store.ReaderRepo, limit int) ([]pipeline.Item, error) {
+	ids, err := repo.RecentItemIDs(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []pipeline.Item
-	for rows.Next() {
-		var it pipeline.Item
-		var body string
-		if err := rows.Scan(&it.ID, &it.Title, &it.URL, &it.Summary, &body, &it.SourceTitle); err != nil {
-			return nil, err
-		}
-		// Plain text, as the pipeline requires — converting once here is what the
-		// real job will do too.
-		it.Body = sanitize.Text(body)
-		out = append(out, it)
+	rows, err := repo.ItemsByID(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	out := make([]pipeline.Item, 0, len(rows))
+	for _, r := range rows {
+		body := r.ContentHTML
+		if body == "" {
+			body = r.Summary
+		}
+		out = append(out, pipeline.Item{
+			ID:      r.ID,
+			Title:   r.Title,
+			URL:     r.URL,
+			Summary: r.Summary,
+			// Plain text, as the pipeline requires — converting once here is what
+			// the real job does too.
+			Body:        sanitize.Text(body),
+			WordCount:   r.WordCount,
+			SourceTitle: r.SourceTitle,
+		})
+	}
+	return out, nil
 }
 
 func printItems(items []pipeline.Item, out []pipeline.Analysis, limit int, showAll bool) {
@@ -318,14 +323,13 @@ func bar(n, total int) string {
 // is one article's worth of evidence, and ranking by raw count promotes the
 // vocabulary of whichever single item happened to be longest.
 func runMine(dbPath string, sample, top int) error {
-	dsn := "file:" + dbPath + "?mode=ro&_pragma=query_only(1)"
-	db, err := driver.Open(dsn, fts5.Register)
+	db, err := store.Open(store.Options{Path: dbPath, ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	items, err := loadItems(db, sample)
+	items, err := loadItems(context.Background(), store.NewReaderRepo(db), sample)
 	if err != nil {
 		return err
 	}

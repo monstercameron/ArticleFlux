@@ -199,6 +199,7 @@ var unscopedByDesign = map[string]string{
 	// table carries no tenant_id and no user_id, so there is nothing to scope
 	// to. Reasons mirrored from internal/store/leak_test.go so the two lists
 	// cannot say different things about the same method.
+	"RecentItemIDs":    "the newest global items (A14), for a probe that pairs them with ItemsByID; no per-user slice exists to scope to",
 	"UpsertAnalysis":   "writes global analysis rows; per-user labeling is fanout's job, same split as IngestItems",
 	"AnalysisByIDs":    "reads global analysis rows; nothing per-user is returned, same as ItemsByID",
 	"StaleAnalysis":    "the backfill's queue over global items and their (possibly absent) analysis rows",

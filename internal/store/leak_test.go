@@ -105,6 +105,7 @@ var unscopedByDesign = map[string]string{
 	// a property of the article, not of a reader — so there is nothing for a
 	// Scope to protect and requiring one would only imply an isolation this
 	// table does not have.
+	"RecentItemIDs":    "the newest global items (A14), for a probe that pairs them with ItemsByID; no per-user slice exists to scope to",
 	"UpsertAnalysis":   "writes global analysis rows; per-user labeling is fanout's job, same split as IngestItems/deliver",
 	"AnalysisByIDs":    "reads global analysis rows; nothing per-user is returned, same as ItemsByID",
 	"StaleAnalysis":    "the backfill's queue over global items and their (possibly absent) global analysis rows",

@@ -362,6 +362,42 @@ func scanAnalysis(rows *sql.Rows) (ItemAnalysis, error) {
 // i.published_at, because the item somebody might read this morning matters more
 // than one from March (§27.7's own words for the sibling index). A backfill with
 // a limit therefore always clears today's inbox before it reaches last month's.
+// RecentItemIDs returns the newest item ids, for a caller that wants to run
+// something over real articles rather than over fixtures.
+//
+// It exists so the classifier probe does not have to carry a query of its own.
+// A development tool holding its own SELECT is the drift the "no SQL outside
+// internal/store" guard exists to prevent: the schema then has two places that
+// understand it, and the second one is the one nobody updates.
+//
+// Unscoped like everything else in this file: items are global (A14), and the
+// caller pairs these ids with ItemsByID, which is unscoped for the same reason.
+func (r *ReaderRepo) RecentItemIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT id
+		  FROM items
+		 WHERE deactivated_at IS NULL
+		 ORDER BY published_at DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (r *ReaderRepo) StaleAnalysis(ctx context.Context, version int, lexiconHash string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 500

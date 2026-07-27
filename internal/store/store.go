@@ -44,6 +44,14 @@ type Options struct {
 	ReadPool int
 	// BusyTimeout is how long a statement waits on a lock. Zero means 5s.
 	BusyTimeout time.Duration
+	// ReadOnly opens the database for reading and refuses every write, which is
+	// what a tool that measures a LIVE instance wants: query_only means a probe
+	// cannot alter what it is measuring, and no WAL is created or recovered
+	// beside a database another process is writing.
+	//
+	// The write pool is opened all the same, so *DB stays one type with one
+	// shape; SQLite refuses the writes rather than this package having to.
+	ReadOnly bool
 }
 
 // Open opens (and creates) the database with the A24 pragmas.
@@ -75,6 +83,9 @@ func Open(opt Options) (*DB, error) {
 		// SQLite defaults foreign_keys OFF, which would make every REFERENCES in
 		// 0001_init.sql decorative.
 		"&_pragma=foreign_keys(ON)"
+	if opt.ReadOnly {
+		dsn += "&mode=ro&_pragma=query_only(1)"
+	}
 
 	read, err := driver.Open(dsn, fts5.Register)
 	if err != nil {
