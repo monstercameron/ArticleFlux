@@ -65,6 +65,9 @@ var (
 	ErrNotHTML = errors.New("discover: not an HTML page")
 	// ErrTooLarge means the body exceeded MaxBodyBytes.
 	ErrTooLarge = errors.New("discover: page too large")
+	// ErrNotJSON means an endpoint that used to answer with JSON no longer does
+	// — an error page, a login redirect, an API that moved.
+	ErrNotJSON = errors.New("discover: the response is not JSON")
 )
 
 // Page is a fetched HTML page, kept in every form its consumers need.
