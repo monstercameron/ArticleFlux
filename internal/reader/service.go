@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
@@ -116,9 +117,22 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 	// new source needs the synchronous fetch.
 	if !existed {
 		if _, err := s.pollOne(ctx, store.SourceRow{ID: f.SourceID, FeedURL: rawURL}); err != nil {
-			// The subscription stands even if the first poll fails: the feed may
-			// be briefly down, and unsubscribing the user for that would be
-			// worse than an empty list plus a health warning.
+			// A refused ADDRESS is not a failed fetch, and the two cannot be
+			// treated the same. A feed that is briefly down deserves the
+			// subscription it just got — it will work tomorrow, and unsubscribing
+			// someone over one timeout is worse than an empty list plus a health
+			// warning. An address the guard will never dial (§21: link-local, the
+			// cloud metadata endpoint) has no tomorrow: keeping it would leave a
+			// permanent row in the sidebar, named after a URL, that can never
+			// hold an article — and the dialog would have reported success.
+			//
+			// So this one is rolled back and reported. The reader sees why in the
+			// field they typed it into, which is the only place the mistake can
+			// be fixed.
+			if errors.Is(err, netguard.ErrBlockedIP) || errors.Is(err, netguard.ErrScheme) {
+				_ = s.repo.Unsubscribe(ctx, sc, f.SourceID)
+				return store.Feed{}, false, err
+			}
 			return f, existed, nil
 		}
 		refreshed, ferr := s.repo.ListFeeds(ctx, sc)

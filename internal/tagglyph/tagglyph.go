@@ -132,31 +132,40 @@ var List = []Glyph{
 	{"♫", "Music notes", GroupOdds},
 }
 
-// Groups is the render order. Derived from List rather than declared beside it,
-// so adding an entry in a new group cannot leave the picker silently dropping
-// it — a second hand-maintained list is a second thing to forget.
-func Groups() []string {
-	seen := map[string]bool{}
-	var out []string
+// The grouping, computed once.
+//
+// Derived from List rather than declared beside it, so adding an entry in a new
+// group cannot leave the picker silently dropping it — a second hand-maintained
+// list is a second thing to forget.
+//
+// Computed at init rather than per call because the caller is a RENDER. The
+// picker asks for the group order and then for each group's entries, and doing
+// that by scanning the catalogue meant walking all fifty entries once per group
+// — three hundred and fifty comparisons and eight allocations — every time the
+// panel repainted, to rebuild a value that is a compile-time constant in all but
+// name.
+var (
+	groupOrder []string
+	byGroup    = map[string][]Glyph{}
+)
+
+func init() {
 	for _, g := range List {
-		if !seen[g.Group] {
-			seen[g.Group] = true
-			out = append(out, g.Group)
+		if _, seen := byGroup[g.Group]; !seen {
+			groupOrder = append(groupOrder, g.Group)
 		}
+		byGroup[g.Group] = append(byGroup[g.Group], g)
 	}
-	return out
 }
 
-// In returns the entries of one group, in catalogue order.
-func In(group string) []Glyph {
-	var out []Glyph
-	for _, g := range List {
-		if g.Group == group {
-			out = append(out, g)
-		}
-	}
-	return out
-}
+// Groups is the render order.
+//
+// The returned slice is shared, not copied: it is read-only by contract and
+// copying it per render would reintroduce half of what the index above removed.
+func Groups() []string { return groupOrder }
+
+// In returns the entries of one group, in catalogue order. Shared, as above.
+func In(group string) []Glyph { return byGroup[group] }
 
 // index is built once. Validation runs on every tag write, and a linear scan of
 // fifty strings per write is cheap but pointless when the set never changes.
