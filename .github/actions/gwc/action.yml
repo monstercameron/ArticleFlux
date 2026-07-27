@@ -1,0 +1,70 @@
+# Materialise the GoWebComponents checkout that go.mod's replace points at.
+#
+# D0: `replace github.com/monstercameron/GoWebComponents/v5 => ../GoWebComponents`,
+# because v5.0.0 was never tagged or published. Every job in every workflow needs
+# that directory to exist before it can build anything, and the obvious spelling
+#
+#     uses: actions/checkout@v4
+#     with: { repository: …/GoWebComponents, path: ../GoWebComponents }
+#
+# DOES NOT WORK. actions/checkout refuses any path outside the workspace
+# ("Repository path '…' is not under '…'"), so a workflow written that way fails
+# at its second step, before it has built or tested anything — and it fails the
+# same way in every job, which is a lot of red for one line.
+#
+# So: check out inside the workspace, then move it next door. It is four lines,
+# and it is here rather than repeated in each job because "the four places that
+# do this agree" is not a property worth maintaining by hand.
+name: GoWebComponents (D0)
+description: Check out the sibling GoWebComponents the replace directive needs.
+
+inputs:
+  ref:
+    description: Branch or tag of GoWebComponents to build against.
+    required: false
+    default: v5
+  token:
+    description: >
+      Token for the checkout. Only needed if GoWebComponents is private — the
+      default job token can only read the repository the workflow runs in.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check out GoWebComponents@${{ inputs.ref }}
+      uses: actions/checkout@v4
+      with:
+        repository: monstercameron/GoWebComponents
+        ref: ${{ inputs.ref }}
+        path: _gwc
+        token: ${{ inputs.token || github.token }}
+        # Nothing here pushes, and a credential left in a checkout that is about
+        # to be moved outside the workspace is a credential in a place nothing
+        # cleans up.
+        persist-credentials: false
+
+    - name: Move it next door, and prove it is the module go.mod means
+      shell: bash
+      # Relative paths throughout, deliberately: $GITHUB_WORKSPACE holds
+      # BACKSLASHES on the Windows runner, and bash reads those as escapes. The
+      # working directory of a composite step is the workspace, so `..` is the
+      # same directory on both platforms and needs no quoting gymnastics.
+      run: |
+        set -euo pipefail
+        # Only ever removes a directory this action created on a previous run of
+        # the same job. GitHub-hosted runners are fresh; self-hosted ones are not.
+        rm -rf ../GoWebComponents
+        mv _gwc ../GoWebComponents
+
+        want='module github.com/monstercameron/GoWebComponents/v5'
+        if ! grep -qx "$want" ../GoWebComponents/go.mod; then
+          echo "::error::GoWebComponents@${{ inputs.ref }} is not the v5 module."
+          echo "go.mod replaces …/GoWebComponents/v5, so a checkout of any other"
+          echo "major version fails later with an unresolvable import rather than"
+          echo "here with a reason. Its go.mod says:"
+          head -1 ../GoWebComponents/go.mod
+          exit 1
+        fi
+        echo "GoWebComponents ${{ inputs.ref }} @ $(git -C ../GoWebComponents rev-parse --short HEAD)"

@@ -67,7 +67,16 @@
 /e2e/.playwright-artifacts-*/
 # One-off probe scripts. They are written against whatever bug is in front of
 # you, they hard-code a port and a database, and they are worthless a day later.
+#
+# Three spellings because three were in use and the rule only matched one of
+# them — a probe called `.af-modal.mjs` sat untracked in `git status` for a day
+# while this file claimed to have covered it.
 /e2e/_*.mjs
+/e2e/.af-*.mjs
+/e2e/.demo-*.mjs
+# A probe named *.spec.mjs is worse than untidy: Playwright's glob picks it up,
+# so it runs as part of the suite and fails against whatever it was probing.
+/e2e/zz-*.spec.mjs
 
 # Local configuration and secrets.
 #

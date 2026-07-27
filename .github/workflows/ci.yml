@@ -37,11 +37,9 @@ jobs:
       # D0: GWC v5.0.0 was never tagged, so go.mod carries a replace directive to
       # a sibling checkout. Until that tag is pushed, CI has to materialise the
       # sibling itself — the alternative is a build that only works on one laptop.
-      - name: Check out GoWebComponents (D0 — no published v5 tag)
-        uses: actions/checkout@v4
-        with:
-          repository: monstercameron/GoWebComponents
-          path: ../GoWebComponents
+      # The action exists because `path: ../GoWebComponents` is refused by
+      # actions/checkout; see .github/actions/gwc.
+      - uses: ./.github/actions/gwc
 
       - uses: actions/setup-go@v5
         with:
@@ -113,11 +111,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check out GoWebComponents (D0)
-        uses: actions/checkout@v4
-        with:
-          repository: monstercameron/GoWebComponents
-          path: ../GoWebComponents
+      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -136,11 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check out GoWebComponents (D0)
-        uses: actions/checkout@v4
-        with:
-          repository: monstercameron/GoWebComponents
-          path: ../GoWebComponents
+      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
