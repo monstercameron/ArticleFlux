@@ -4106,9 +4106,40 @@ why 6.1 was built ahead of its milestone rather than after it.
       four that addresses the mechanism, and the "nothing reads it, do not remove" marker should
       stay.
 
-      *Still owed:* how the live value gets ahead of the render in the first place. The dedupe is the
-      amplifier, not the origin, and finding the origin means instrumenting which scheduled update
-      was dropped — in GWC, and as a GWC change rather than an ArticleFlux one.
+      ✅ 2026-07-27 — **the origin is found, measured end to end, and it is not the dedupe.**
+
+      Instrumented in GWC's own setter and scheduler while driving the real app (the note autosave,
+      which is the same bug wearing different clothes — see 8b.34):
+      the write is applied · `fastEqual` does NOT bail (maps compare by identity and each write
+      allocates a new one) · `ScheduleOwnedFiberUpdateWithOrigin` runs · the owned target RESOLVES ·
+      `ScheduleGranularUpdateForFiberWithOrigin` marks the fiber dirty · **and no render follows.**
+
+      **The mark lands while `wipRoot != nil` — a pass is in flight.** That is the whole thing. A
+      pass already past this fiber cannot answer the mark, and it then CONSUMES it: `clearFiberDirty`
+      clears the fiber *and its alternate*, which is exactly the pair the mark landed on. So the
+      state holds the new value, the schedule was requested, and both are erased by a render that was
+      reading the old value before either happened. The window is one frame, which is precisely what
+      an RPC to a server on the same machine fits inside.
+
+      *The dedupe is downstream of this, exactly as this ticket already said:* once the live value is
+      ahead of the rendered one, the next write of the same value bails, and nothing ever corrects it.
+
+      **Attempted and reverted, with the reason:** stamping marks and renders per component instance
+      (on `Hooks`, which is the thing that survives a pass — fibers alternate, hooks do not), keeping
+      a mark whose stamp is newer than its fiber's render, and rescheduling from `commitRoot`. It
+      fixes the app and breaks `TestInbox_ManyPostsProduceOneRenderPass` and
+      `TestReactiveTextCollision_...`, because those encode the batching this same mechanism produces
+      — 20 async writes are *supposed* to be one commit, and under the fix the tail of a drain that
+      overlaps a pass becomes a second one. GWC was restored to exactly its prior state and its suite
+      is green; the diagnosis is the deliverable, not the patch.
+
+      **The fix worth trying next is one level up, in `inbox.go`.** `PostAsync`'s own contract says
+      the write is "queued and applied at the next drain instead of landing at an arbitrary point
+      relative to the in-flight tree" — and the measurement above is that it lands inside a pass
+      anyway. Making `DrainAsyncInbox` defer itself while `wipRoot != nil` would deliver that
+      contract, put every async write between passes where the existing machinery is already correct,
+      and leave the batching properties alone. It is a smaller change than the one that failed, and
+      it fixes the thing the inbox exists to fix.
 
 ### Owed from this batch
 
@@ -4127,3 +4158,179 @@ why 6.1 was built ahead of its milestone rather than after it.
 - **Roles are stored and not enforced** (6.2). `deploy/README.md` says so in its own "what is not here
   yet" section, because handing someone `-role viewer` while believing it restricts anything is the
   kind of mistake a runbook should prevent rather than enable.
+
+---
+
+## Tier 10 — Classification and the item pipeline (M29, plan §27)
+
+*Two features — auto-categories and auto-tags, each free-tier-first with an opt-in model tier — and
+the thing they are the first customers of: **one analysis pass per item that every other per-item
+feature reads instead of re-deriving** (A41).*
+
+**Order is load-bearing here in one place only:** 10.1 → 10.2 → 10.3 must land before anything writes
+a label, because 10.3 is what makes a wrong lexicon a five-minute fix. Everything after 10.7 is
+parallelisable.
+
+**Answer D23 before 10.4.** The word "category" is taken by folders (§27.0a). The recommendation is
+in the plan; the decision is Cam's, and it is one i18n string plus a `docs/FEATURES.md` heading if
+taken — and a rename of a Go package, a proto message and a settings tab if deferred until after
+10.9.
+
+- [ ] **10.1 · `internal/classify` — the scorer, pure.** `(Item, Lexicon, Strategy) → Scores`. No
+      database, no clock, no network, exactly as `internal/rules` is pure and for the same reason:
+      §27.6's live preview must be **the same code** as the apply, or the preview lies. Tokenise via
+      `textvec.Tokenize`/`Phrases` — reused rather than reimplemented so a term the interest layer
+      calls noise is noise here too. **Lexicon match is a hash lookup over the token stream, not a
+      regex per term** (§27.3a): one pass, O(tokens), independent of category count.
+      *Done when: `TestDeterministic` and `TestClassifyThroughput` pass — 10,000 items through the
+      deterministic pass under the wall-clock floor, so the scorer cannot quietly become
+      O(categories × terms).* §27.3a–b
+
+- [ ] **10.2 · The default taxonomy, in Go.** 26 categories, `internal/classify/lexicon/*.go`, one
+      file per category, each term with its weight and its guards. **Code, not SQL** (§27.3f) — it
+      ships with the build, tests without a database, and `git blame` answers "why is this term
+      here", which is the question an unaccountable 900-row lexicon table can never answer.
+      Includes the guards: `apple` · `amazon` · `java` · `rust` · `python` · `meta` · `mercury` ·
+      `tesla` · `patch` (§27.3c).
+      *Done when: `TestGuardTerms` passes on the Apple-picking / burning-Amazon / beach-in-Java /
+      Rust-Belt corpus cases individually.* §27.3c–d
+
+- [ ] **10.3 · The corpus, and the ratchet. ← do not skip, and do not do it last.** A few hundred real
+      feed items, hand-labeled, committed at `internal/classify/testdata/corpus.jsonl`.
+      `TestTaxonomyPrecision` (**T24**) asserts per-category precision and recall floors and the
+      floors only go up. **This is the only thing that stops a lexicon decaying one well-meaning term
+      at a time**, and a term added without a corpus case that motivates it is a guess with a comment
+      on it.
+      *Done when: T24 is green, ratcheting, and named in plan §23's register.* §27.11
+
+- [ ] **10.4 · Migration `0021_classification.sql`.** `item_analysis` (global) · `categories` ·
+      `item_categories` · `label_removals` · `tag_rules` · `item_tags.source` + `.score`. The
+      one-primary-per-item partial unique index is schema, not application logic. `item_analysis`
+      joins `unscopedByDesign` in the leak harness with ingest's justification: it holds nothing
+      per-user.
+      *Done when: T1 (leak harness) is green with the new tables, and `schema_test.go` accepts them.*
+      §27.7
+
+- [ ] **10.5 · `internal/pipeline` — stages, batch, and the `Analyzer` registry.** The deterministic
+      half: tokenise, vector, lang, keyphrases, entities, category scores → one `item_analysis` row.
+      `analyzer_version` + `lexicon_hash` on every row from the first commit, because retrofitting
+      staleness detection means a backfill nobody can scope.
+      *Done when: `TestClearDerivedReproduces` passes — `ClearDerived` then a re-run reproduces
+      `item_analysis` exactly (§27.2c), extending the existing derive test rather than adding a second
+      one.* §27.2a, §27.2c
+
+- [ ] **10.6 · `JobAnalyze`, and fan-out moves downstream of it.** New job kind, cap 2, enqueued by
+      ingest; **it** enqueues `JobFanout` on completion. This is the one behavioural change to an
+      existing path (6.7) and the reason for it is that a rule matching `category = software` must not
+      race the thing that decides the category. `deliver()` **stays inside the ingest transaction** —
+      a stalled analyzer delays labels, never articles, and undoing that would undo the fix 6.7's
+      "80 of 3,806 items had no state row" note records.
+      *Done when: an item is visible and counted the instant the poll finishes, with its labels
+      arriving after; and a rule on `category` sees the category on the first fan-out, not the
+      second.* §27.2a
+
+- [ ] **10.7 · Labeling inside fan-out, plus the removal ledger.** Per subscriber, in one
+      transaction, in order: label → rules → state. Writes `item_categories` and auto-`item_tags`
+      with `source` and `score`. **Consults `label_removals` before every write, forever** — this
+      codebase already paid for this lesson once in `store/fanout.go`, where `ON CONFLICT DO NOTHING`
+      could not tell "never tagged" from "the reader took it off". A removal is a standing
+      instruction, not a state the next run overwrites.
+      *Done when: `TestRemovalIsHonoured` (remove, re-analyse three times, it stays gone) and
+      `TestUserLabelNeverOverwritten` pass.* §27.5
+
+- [ ] **10.8 · Refusing to classify, and the Unsorted view.** `MinScore` **and** `Margin`, both, and
+      **no row** when neither is met — not "Other", not "General". `TestNoCategoryIsAnAnswer` is the
+      guard. The Unsorted view in the rail is where a reader corrects it and the only honest sample
+      anyone will ever get of what the lexicon misses.
+      *Done when: an off-topic item has no `item_categories` row and renders no chip.* §27.3b
+
+- [ ] **10.9 · The reader's delta — `categories` / `tag_rules` overrides.** Overrides, **never copies**
+      (§27.3f): copy-on-first-edit freezes a reader's taxonomy at whatever version they first touched
+      it, permanently and invisibly, and nothing afterwards can tell which of their 26 are frozen.
+      RPCs on `ReaderService` (`ListCategories` · `UpsertCategory` · `DeleteCategory` ·
+      `SetItemCategory` · `SetTagRule` · `PreviewClassification`).
+      *Done when: a lexicon improvement in a later build reaches a reader who renamed two categories
+      in an earlier one — asserted, not assumed.* §27.3f
+
+- [ ] **10.10 · Settings → Classification, with the live count. ← this is the feature.** Four panels
+      (§27.6). The one that matters is the **match count against the last 200 items that updates as
+      you type** — a term list without a live count is a text box you are guessing into, and
+      `PreviewClassification` calls 10.1's pure scorer so the preview cannot diverge from the apply.
+      Auto-tags are **off by default behind a dry run**; categories are **on by default**. Run the
+      `frontend-design` skill before writing the panel.
+      *Done when: editing `security`'s exclude terms changes a visible number before anything is
+      saved.* §27.6, §27.3e
+
+- [ ] **10.11 · Entity suggestions → new tags.** `entity_affinity` (0019) gets its real corpus from
+      10.5 (every item, not just engaged titles). A recurring name surfaces as *"`Ollama` has appeared
+      in 14 of your articles this month — make it a tag?"*; one click creates the tag, seeds its match
+      terms, and backfills the window. **The classifier still never invents a tag** — this is how new
+      vocabulary enters, and it is the difference between a vocabulary that grows with the reader and
+      one that grows at them.
+      *Done when: accepting a suggestion creates exactly one tag and backfills it without touching
+      `label_removals` entries.* §27.3e
+
+- [ ] **10.12 · `llm.ClassifyPayload` + the §18.8 amendment.** ← M17's egress harness. New payload
+      type with fields only for what may leave; `EgressKeys` gains its ten keys; `AuditEgress` runs
+      against the **assembled** body in a test, not the template. Two consent keys — `smart.classify`
+      (owner) and `feed.smartPlusLabels` (per user) — and neither implies the other or `feed.smartPlus`.
+      *Done when: `TestEgressAllowlist`, `TestNoUserVocabularyInGlobalRead` and `TestConsentGates`
+      pass — the last asserting **zero outbound requests** with `smart.classify` off, whatever else is
+      enabled.* §27.4e
+
+- [ ] **10.13 · The ambiguity gate. ← the cost design, and it lands before the read.** `escalate:
+      never | ambiguous | always`, defaulting to **ambiguous**. Build the gate before the thing it
+      gates, so "always" is never the shipped behaviour even briefly. The property worth protecting:
+      **spend falls as the lexicon improves**, because every 10.3 corpus fix permanently removes a
+      class of items from the escalation set.
+      *Done when: on the corpus, `ambiguous` escalates roughly a quarter to a third of items, and the
+      number is recorded in the plan.* §27.4a
+
+- [ ] **10.14 · The shared read + the `Contributor` registry.** One request **per item** (not per
+      batch — a batch of ten comes back suspiciously uniform, and one truncation loses ten answers).
+      Union schema, one top-level property per contributor, duplicate names panic at `init`,
+      per-slice failure isolation, `MaxOutputTokens` = Σ declared + reasoning headroom.
+      Ships with four contributors: `classify` · `genre` · `keyphrases` · `abstract`.
+      *Done when: `TestUnionIsolation` passes — one contributor returning garbage does not cost the
+      others their answers — and a dropped contributor is named in a log line rather than silently
+      omitted.* §27.2b, §27.4b
+
+- [ ] **10.15 · Per-label prompts.** ≤240 chars each, ≤4,000 for the labels block, attached to the
+      label rather than concatenated into the system prompt. Defaults written for all 26 built-ins to
+      the §27.4c standard: **state what the label is not, at least as clearly as what it is.** The
+      failure this cap prevents is silent — a reader tunes ten prompts, the eleventh pushes past the
+      model's attention, and the earlier ones quietly stop working.
+      *Done when: over-cap prompts are refused at the RPC with a message naming the limit, and the
+      drop of a low-priority label is logged.* §27.4c
+
+- [ ] **10.16 · `JobLabelPlus` — the per-user pass.** Batched (≤20 items × unresolved labels), gated
+      on `feed.smartPlusLabels`, per-user daily cap, cap 1 in the pool. Resolves user-defined labels
+      **against `item_analysis` first** — matching a custom label against stored keyphrases, entities
+      and scores beats matching it against raw text, because the analysis already did the hard part —
+      and only escalates what is left.
+      *Done when: a user with forty custom labels produces zero of them in the global read
+      (`TestNoUserVocabularyInGlobalRead`), and `TestBudgetExhaustionFallsBack` shows free-tier labels
+      written with `llm_at` NULL and no error surfaced to the reader.* §27.4d, §27.4f
+
+- [ ] **10.17 · Staleness and the trickle backfill.** Stale-but-valid on version or lexicon-hash
+      change — labels stand until recomputed, because the alternative is a deploy that blanks every
+      chip in the app until a backfill finishes. 500/hour, newest first, below every other kind in
+      `DefaultCaps`, with progress on §9's status screen: a silent multi-day backfill is
+      indistinguishable from a broken one. Plus "Reclassify everything", which **respects
+      `label_removals`** — the case where a reader would otherwise get every label they ever removed
+      handed back at once.
+      *Done when: bumping `analyzer_version` on a populated database leaves every chip in place and
+      drains at the configured rate.* §27.9
+
+- [ ] **10.18 · The consumers — `rules.FieldCategory`, and derive reading the vector.** Nine lines in
+      `rules.go` for `category` + `genre` as fields; and `internal/derive` stops rebuilding a TF-IDF
+      corpus from raw item text on every derivation and reads `item_analysis.vector` instead. The
+      second is the payoff A41 was written for: the most expensive part of the interest layer stops
+      being recomputed after every poll and every engagement batch.
+      *Done when: `category = security AND genre = release → tag "patch"` evaluates in the rules
+      preview, and derive's own tests pass unchanged against vectors it did not build.* §27.8
+
+**Owed by this tier and not in it:** category affinity as a ranking term · the Explore slot serving a
+starved *category* · a category histogram on Trends · search facets · per-category digests · a genre
+UI. All of them are §27.8 rows, all of them are cheap once 10.5 exists, and none of them is a reason
+to widen M29.

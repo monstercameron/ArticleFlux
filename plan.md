@@ -100,11 +100,11 @@ them mechanically:
 
 | Id | Meaning | Defined in |
 |---|---|---|
-| `A1`–`A39` | Settled decisions | §2, and §18.1a for A34–A35 |
-| `D0`–`D18` | Open decisions | §25 |
-| `R0`–`R22` | Risks | §25 |
-| `M0`–`M26` | Milestones | §24 |
-| `T1`–`T20` | Tests that must stay green | §23 |
+| `A1`–`A41` | Settled decisions | §2, §18.1a for A34–A35, §27.14 for A41 |
+| `D0`–`D23` | Open decisions | §25, and §27.14 for D23 |
+| `R0`–`R23` | Risks | §25, and §27.14 for R23 |
+| `M0`–`M29` | Milestones | §24, and §27.14 for M29 |
+| `T1`–`T24` | Tests that must stay green | §23, and §27.11 for T24 |
 | `§N` / `§N.M` | Plan sections | here |
 | `1.1`–`9.x` | Build items | `TODO.md` |
 | `G1`–`G5` | Gates — stop and write down a number | `TODO.md` |
@@ -4690,6 +4690,12 @@ the full-page screenshot fallback, then tiers 3–4: `StreamPage` bidi RPC, scre
 ordering, rung 2 is the primary answer and rungs 3–4 are its fallbacks, so nothing above reader text
 works until this lands. Instance switch stays; the per-reader gate is consent at first use, and an
 un-asked reader defaults to rung 3.
+**M29** **Classification and the item pipeline (§27)** — `internal/classify` (the pure scorer, the
+26-category lexicon, the corpus ratchet **T24**), `internal/pipeline` (`JobAnalyze`, `item_analysis`,
+the `Analyzer` and `Contributor` registries), migration `0021`, fan-out reordered downstream of
+analysis, Settings → Classification with its live preview, and the Unsorted view. **Depends on M17**
+for the egress harness §27.4e amends and on nothing else; the free tier is complete without it.
+**Answer D23 first** — the word "category" is currently the rail's word for a folder.
 
 ---
 
@@ -5130,3 +5136,797 @@ Then **M1 → M2 → M3 before anything visual.** M1 now carries the operations 
 backup, health) alongside the schema — all things that are miserable to retrofit and boring to build,
 which is exactly why they go first. **Answer D12 before M2**, and **confirm FTS5 in M1 before writing
 three FTS tables.**
+
+*(§26 is the M0 brief and is kept as written; it has been true since the first commit and is now
+history. New feature specs append below it rather than displacing it.)*
+
+---
+
+## 27. Classification, and the pipeline that pays for it
+
+> **Specified 2026-07-27. Nothing here is built.** This section is the spec of record for two
+> features — **auto-categories** and **auto-tags**, each with a free deterministic tier and an opt-in
+> model tier — and for the thing they are the first two customers of: **one analysis pass over each
+> new item, whose result every other feature reads instead of re-deriving.**
+>
+> Read §27.2 even if you only care about the classifier. The pipeline is the load-bearing half; the
+> classifier is what proves it works.
+
+### 27.0 The shape of it in one paragraph
+
+A poll lands new items. Ingest writes them, delivers them, and enqueues **one analysis job per
+batch** (§27.2). That job runs the deterministic analyzers once, globally, for all tenants at once —
+tokenise, vector, language, genre, keyphrases, entities, and a **category score for every category in
+the default taxonomy** — and writes a single `item_analysis` row per item. Everything downstream then
+reads that row: fan-out labels the item for each subscriber against *their* taxonomy and *their* tag
+vocabulary (§27.3), the interest layer stops recomputing TF-IDF from raw text on every derivation
+(§27.8), and the trends screen gets a category histogram for free. **Smart+ is an escalation, not a
+stage** (§27.4): the model is asked only about the items the deterministic pass could not confidently
+place, and when it is asked, every feature that wants something from that article contributes to
+**one** request and gets its slice of **one** answer back.
+
+### 27.0a D23 — the word "category" is already taken, and that has to be settled first
+
+`docs/FEATURES.md` §10 is titled **"Categories (folders)"**. The rail calls a `folders` row a
+category. That word is now wanted for a different thing, and shipping both is how a settings screen
+ends up with two controls named Categories that do unrelated jobs.
+
+They *are* unrelated, and `internal/store/folders.go` already says why at length: a folder answers
+**"where does this feed live"** and has exactly one answer; the new axis answers **"what is this
+article about"** and is a property of the article, not of the subscription. Merging them — making a
+folder able to hold articles as well as feeds — is the tempting move and it is the same mistake
+folders.go rejected when tags already existed: you get either a folder that is secretly non-exclusive,
+or a rail that cannot say where a feed belongs because a feed's articles landed in nine places.
+
+**Recommendation: rename the rail's "Categories" back to "Folders"** — its schema name, and an
+accurate description of what it does — **and give "Category" to the article axis**, where the word
+does the most work and where every reader already expects to find it. That is one i18n string, one
+`docs/FEATURES.md` heading, and no schema change. The alternative is naming the new axis **Sections**,
+which is honest (it is a newspaper section) and which nobody will type into a search box.
+
+**This is D23 and it is Cam's call.** Everything below is written with the recommendation taken; if
+the answer is "Sections", it is a find-and-replace over one Go package and one proto message and
+nothing else moves.
+
+### 27.1 Three axes, and what each one is for
+
+| Axis | Schema | Scope | Cardinality | Answers | Set by |
+|---|---|---|---|---|---|
+| **Folder** | `folders` + `subscriptions.folder_id` | per user | exactly one per **feed** | where does this feed live | the reader, by hand |
+| **Category** | `categories` + `item_categories` (new) | per user, over a **global default set** | one primary + up to two secondary per **item** | what section of the paper is this | the classifier, correctable |
+| **Tag** | `tags` + `item_tags` (exists) | per user | many per item, capped | what specifically is this about | the reader, rules, and now the classifier |
+
+The distinction Cam drew is exactly right and it is worth writing down as a rule the taxonomy is
+checked against rather than as an intention:
+
+> **A category is a place. A tag is a claim.**
+>
+> A category is *generic, closed, and mutually comparable* — there are ~26 of them, every item belongs
+> to one of them or to none, and "which is bigger, Software or Politics" is a meaningful question. A
+> tag is *specific, open, and unbounded* — `sqlite`, `rp2350`, `eu-ai-act`, `layoffs` — and asking
+> whether there are more `sqlite` items than `rust` items is a question about the reader's interests,
+> not about the world.
+
+Two consequences that fall straight out of it and that the implementation must obey:
+
+1. **A category must never be created by the classifier.** The taxonomy is a fixed vocabulary the
+   reader may extend deliberately. A classifier that invents categories produces 400 of them in a
+   month and the axis stops being comparable, which was the only reason it exists.
+2. **A tag may be created by the classifier, but only from a vocabulary the reader can see.**
+   Free-form model-invented tags are the same failure one level down: `ai-safety`, `AI safety`,
+   `AI-Safety` and `safety-in-ai` arrive as four tags in six weeks. §27.3e is how new tags actually
+   enter — through a *suggestion* the reader accepts, never through a write nobody authorised.
+
+### 27.1a Genre is a third thing, it is nearly free, and it does not ship a UI in v1
+
+"Release notes for PostgreSQL 19" and "an essay about why PostgreSQL won" are the same category and
+are not the same kind of article. Genre — `news · analysis · opinion · tutorial · release · review ·
+interview · roundup · research · announcement · obituary · sponsored` — is orthogonal to subject and
+is answered by the same read that answers everything else, so `item_analysis.genre` is **populated
+from day one and surfaced by nothing**. It costs one enum column and zero extra requests, and the
+first feature that wants it (a "skip the roundups" filter, a reader-mode hint, a digest that leads
+with analysis) finds three months of history already there instead of starting a backfill.
+
+This is the pipeline's argument in miniature and it is why it is stated here rather than deferred:
+**the expensive part is reading the article, and the read has already happened.**
+
+### 27.2 The pipeline
+
+#### 27.2a Stages, and the global/per-user split that makes it affordable
+
+Items are global (A14). A source with 200 subscribers is fetched once and stored once. Classification
+must inherit that or it is 200× the cost of the thing it is classifying — and the first version of
+this, written per-subscriber because fan-out is per-subscriber, would have made one model request per
+subscriber per article. **That is the mistake this split exists to prevent**, and it is easy to make
+because every other per-item feature in this codebase is correctly per-user.
+
+```
+poll → IngestItems ─┬─ writes items                 (global, A14)
+                    ├─ deliver()  → user_item_state (per user, in the same tx)
+                    └─ enqueue JobAnalyze{item_ids} (global)
+
+JobAnalyze  (global, once per item, cap 2)
+   stage 1  deterministic analyzers, always, no network
+   stage 2  the shared model read — ONLY for items stage 1 could not place (§27.4a)
+   writes   item_analysis (one row per item)
+   then     enqueue JobFanout{source_id, item_ids}   ← unchanged payload, new ordering
+
+JobFanout   (per source batch, loops subscribers, cap 4)
+   per subscriber, in one transaction, in this order:
+     a. label      — match the user's taxonomy + tag vocabulary against item_analysis
+     b. rules      — rules.Evaluate, which can now see category and auto-tags
+     c. state      — upsertState / applyTag / recordHit, exactly as today
+
+JobLabelPlus (per user batch, cap 1, only for users who opted in AND have custom labels
+              the deterministic matcher could not resolve — §27.4d)
+```
+
+**Fan-out is now enqueued by `JobAnalyze` rather than by ingest.** That is the one behavioural change
+to an existing path and it is what makes the ordering a fact rather than a hope: a rule matching
+`category = software` must not race the thing that decides the category. The cost is that delivery of
+an item's *rules* now waits on analysis. Delivery of the **item** does not — `deliver()` stays inside
+the ingest transaction where it already is, so an unread count is still correct the instant the poll
+finishes, and a stalled analyzer delays labels, never articles. That distinction is the whole
+justification for `deliver()` having been moved into ingest in the first place, and it must not be
+undone here.
+
+**Labeling lives inside fan-out rather than in its own job** because it is a token-set intersection
+over a row that is already loaded — tens of microseconds, against the milliseconds fan-out already
+spends on rules. A third job kind would double the queue rows and the transaction count to save
+nothing, and it would reintroduce the ordering problem it was meant to solve.
+
+#### 27.2b The contributor registry — how a feature injects into the shared read
+
+The requirement, in Cam's words: *"so we avoid reading the feed items multiple times, other features
+can inject into the prompting."* Concretely:
+
+```go
+// Analyzer is deterministic work over a batch. No network, no clock beyond
+// what the batch carries, no per-user state.
+type Analyzer interface {
+    Name() string                       // stable; keys its slice of the analysis
+    Version() int                       // bumped when its output would change → backfill
+    Needs() Inputs                      // Title | Summary | Body | Vector | priors
+    Analyze(ctx context.Context, b *Batch) error
+}
+
+// Contributor is a feature's claim on the SHARED model read. Implementing it is
+// the only way to get anything out of the model per-item; there is no second
+// path, for the same reason internal/llm is the only path to the provider.
+type Contributor interface {
+    Name() string
+    Priority() int                      // drop order when over budget
+    // Instructions returns this feature's fragment of the system prompt, and
+    // Schema returns the JSON-schema for its ONE top-level property. The
+    // property name is Name(); collisions panic at registration.
+    Instructions() string
+    Schema() map[string]any
+    EstTokens() int                     // its share of the budget, declared
+    // Consume receives only its own slice, already unmarshalled from the union.
+    Consume(ctx context.Context, b *Batch, raw json.RawMessage) error
+}
+```
+
+The pipeline composes one request whose `instructions` is the concatenation of the enabled
+contributors' fragments and whose `text.format.schema` is an object with one property per
+contributor, then splits the reply and hands each contributor its own slice. Five features, one
+request, one article read once.
+
+Six rules that keep that from becoming the thing that breaks every feature at once:
+
+1. **Registration is compile-time-ish and fails loud.** Duplicate names, a schema fragment that is not
+   a valid strict-mode object, or a fragment whose top-level key is not `Name()` panics at `init`. A
+   registry that accepts a bad fragment at runtime turns one feature's typo into every feature's
+   outage.
+2. **Failure is per-slice.** A slice that fails to unmarshal, or that a `Consume` rejects, fails that
+   contributor only. The others keep their answers. There is exactly one exception: a reply that is
+   not JSON at all, or that `llm.ErrTruncated` fired on, is a failure of the whole read — and it is
+   the reason `MaxOutputTokens` is computed as the **sum of declared `EstTokens` plus a reasoning
+   headroom**, not guessed.
+3. **The union has a hard width.** Above eight enabled contributors, or above the token ceiling, the
+   pipeline drops the lowest-priority ones and **logs what it dropped by name**. A silently narrowed
+   read is a feature that appears to work and quietly stopped.
+4. **A contributor may not see another contributor's slice.** Chaining ("genre first, then let the
+   summariser know it is a review") is a second request, and a second request is a second bill. If two
+   features genuinely need to be sequential they are one contributor.
+5. **Contributors declare their consent key.** A contributor whose feature is off for this instance is
+   not in the union at all — not present-but-ignored. The union that goes out is the union that was
+   consented to, and `AuditEgress` is run against the assembled body, not against the template.
+6. **The deterministic analyzer is always the fallback.** Every contributor must have a free-tier
+   answer for the case where the read did not happen, because the read frequently will not happen:
+   no key, budget spent, breaker open, or — the common case by design — the item was not ambiguous
+   enough to escalate.
+
+#### 27.2c Everything the pipeline writes is derived
+
+`internal/derive`'s one rule extends to cover this: **`ClearDerived` then a re-run must reproduce
+`item_analysis` byte-for-byte**, and a test asserts it. `items` and `engagements` remain the only
+irreplaceable tables. That is what makes a wrong lexicon a five-minute fix instead of a migration, and
+it is the property that lets §27.9's reclassification exist at all.
+
+Two things are therefore explicitly **not** derived and live outside `item_analysis`: a label the
+reader applied by hand, and a label the reader **removed** (§27.5). Both are decisions, not
+derivations, and a recompute that erased either of them would be the application arguing with its
+user.
+
+### 27.3 Smart — the deterministic tier
+
+Free, always on, zero egress, and it is the product. Smart+ re-ranks and refines Smart's answer;
+it never replaces it, and an instance with no API key gets a complete feature.
+
+#### 27.3a A lexicon, not a regex per pattern
+
+The obvious implementation is a `[]*regexp.Regexp` per category, matched against each item. At 26
+categories × ~70 terms that is ~1,800 regex scans per article, and at 6,000 articles a day it is 11
+million scans — for a job that is supposed to be the *cheap* tier.
+
+**Tokenise once, then look things up.** `internal/textvec.Tokenize` and `textvec.Phrases` already
+produce the token and n-gram stream the interest layer uses, with the stopword list, furniture list
+and `MinTermLen` already tuned against real feed text. Reusing them is not only faster — it means a
+term that the interest layer considers noise is noise here too, so a category and a topic cannot
+disagree about what a word is.
+
+- **Lexicon match** is a hash lookup of each token and each 2/3-gram against one combined
+  `map[string][]weightedLabel`. One pass over the token stream, O(tokens), independent of how many
+  categories exist. Adding the 27th category costs nothing per item.
+- **Regex is the escape hatch**, for the small set of user-authored patterns that genuinely need one
+  (`\bCVE-\d{4}-\d+\b`, `\bRFC ?\d{3,5}\b`). Capped per user (**32 patterns**, and each compiled once
+  into the existing `rules` regex cache pattern). Go's RE2 has no catastrophic backtracking, so a
+  hostile pattern costs linear time rather than the ReDoS this would otherwise be — worth stating
+  because "we accept user regex in a per-item hot loop" is a sentence that should come with its
+  reason.
+
+#### 27.3b Scoring, fields, and the right to refuse
+
+```
+score(category) = Σ over matched terms:  weight(term) × fieldMultiplier(where it matched)
+                  ─────────────────────────────────────────────────────────────────────
+                                    saturate(len(matched), k)
+```
+
+| Field | Multiplier | Why |
+|---|---|---|
+| `title` | ×3.0 | A word in a headline was chosen; a word in the body may be an aside |
+| `url` slug | ×2.0 | Publishers put their own section in the path — `/technology/`, `/markets/` — and it is the single highest-precision signal available for free |
+| `summary` | ×2.0 | Written to describe the piece |
+| `source.title` + folder | ×1.0, capped | A feed named "Ars Technica" biases every item toward hardware, which is *usually* right and is exactly how a politics piece on Ars gets misfiled. Capped at one contribution total |
+| `body` | ×1.0, first ~2,000 words | Beyond that is comment furniture and related-links |
+
+Saturation matters more than the weights: without it, a 4,000-word article mentioning "kubernetes"
+eleven times outscores a 300-word one that is *about* Kubernetes, and long-form silently wins every
+category. `saturate` is `1 + log(1+n)` over distinct matched terms, so the fifth distinct term is
+worth much less than the second and repetition is worth almost nothing.
+
+**Assignment:**
+
+- **Primary** requires `score ≥ MinScore` **and** `score ≥ runnerUp × Margin` (defaults `MinScore
+  = 2.5`, `Margin = 1.35`). Both, because either alone fails in a way the other catches: a low bar
+  with no margin files everything in the biggest category, and a high bar with no margin leaves
+  half the feed unfiled while two categories tie at 9.0.
+- **Secondary**, up to two, requires `score ≥ MinScore` and no margin. Secondary categories are what
+  make "Software" and "Security" both true of a CVE writeup without pretending one of them is the
+  section it belongs in.
+- **Otherwise: nothing.** Not "Other", not "General" — **no row**. An item with no category is
+  correct and common, and the list UI shows no chip rather than a wrong one. `topics.MinMembers`,
+  `topics.ColdStart` and the discovery ladder's `ErrNoRule` all make the same choice: this codebase
+  refuses rather than guesses, and the classifier is the feature where guessing is most visible and
+  least forgivable. The Unsorted view (§27.6) is how the reader sees what it declined to place, which
+  is also the best source of lexicon fixes anyone will ever get.
+
+#### 27.3c Negative terms — the part that decides whether anyone trusts it
+
+Every real corpus contains "Apple picking season", "the Amazon is burning", "a beach in Java", "Rust
+Belt manufacturing", "Python at the zoo", "Mercury in retrograde", "Tesla's 1899 patents", "Meta
+questions about the study". A lexicon without anti-signals files all of them under Software and the
+reader stops reading the chips within a week.
+
+Each label carries **`exclude` terms** that subtract, and **`require` guards** — a term that only
+counts when a second term from a small set is also present in the item. `apple` scores for `hardware`
+only alongside one of `iphone · ipad · mac · ios · macos · app store · cupertino · tim cook · vision
+pro · airpods`; alone it scores nothing. This is not clever and it does not need to be: forty guarded
+terms across the whole taxonomy remove the great majority of the embarrassing misfiles, and the ones
+they miss are exactly the ambiguous items §27.4a escalates.
+
+The guard list is **corpus-derived, not imagined** — §27.11's labeled corpus is where a new guard's
+justification comes from, and a guard added without a corpus case that motivates it is a guess with
+a comment on it.
+
+#### 27.3d The default taxonomy
+
+Twenty-six, flat, no hierarchy. Flat because a two-level taxonomy needs the reader to agree with the
+parent split before any of it helps, and twenty-six is the size at which a chip row, a settings
+screen and a trends histogram are all still legible. Sub-division is what tags are for.
+
+| # | slug | Name | Anchor terms (sample of ~60–90 each) | Guards / excludes |
+|---|---|---|---|---|
+| 1 | `software` | Software & Development | compiler, runtime, api, framework, refactor, git, kubernetes, postgres, sqlite, typescript, rust, golang, deploy, latency, open source | `rust` −belt; `python` −snake, −zoo; `go` requires a second software term |
+| 2 | `ai` | AI & Machine Learning | llm, transformer, inference, fine-tune, embedding, prompt, gpu training, diffusion, agent, benchmark, hallucination, rag | `agent` requires an AI term; −real estate agent |
+| 3 | `hardware` | Hardware & Chips | soc, npu, arm64, fab, tsmc, ryzen, snapdragon, motherboard, thermal, teardown, nanometer, benchmark | `apple`/`amazon` guarded |
+| 4 | `security` | Security & Privacy | cve, exploit, ransomware, zero-day, breach, phishing, tls, encryption, malware, patch tuesday, supply chain | `patch` requires security term |
+| 5 | `science` | Science & Research | peer-reviewed, arxiv, study finds, physics, genome, quantum, particle, hypothesis, replication | −"study" alone |
+| 6 | `health` | Health & Medicine | clinical trial, fda, diagnosis, vaccine, insulin, mental health, cdc, therapy, symptom | |
+| 7 | `business` | Business & Companies | acquisition, layoffs, ipo, revenue, quarterly, ceo, startup, funding round, antitrust | |
+| 8 | `finance` | Finance & Markets | interest rate, inflation, bond, equities, nasdaq, crypto, mortgage, fed, earnings | `crypto` also `software` secondary |
+| 9 | `politics` | Politics & Policy | election, senate, parliament, legislation, referendum, coalition, ballot, campaign | |
+| 10 | `world` | World News | ceasefire, border, refugee, summit, sanctions, earthquake, protest, humanitarian | |
+| 11 | `law` | Law & Courts | lawsuit, supreme court, indictment, verdict, appeal, settlement, gdpr fine, injunction | |
+| 12 | `climate` | Climate & Environment | emissions, wildfire, biodiversity, drought, cop30, carbon, glacier, conservation | `amazon` guarded → forest terms |
+| 13 | `space` | Space | orbit, launch, nasa, esa, satellite, mars, telescope, spacex, payload, lunar | |
+| 14 | `energy` | Energy & Industry | grid, solar, nuclear, lithium, refinery, turbine, pipeline, battery plant | |
+| 15 | `transport` | Transport & Mobility | ev, rail, airline, autonomous, freight, cycling infrastructure, faa, transit | |
+| 16 | `gaming` | Gaming | steam, playstation, nintendo, speedrun, patch notes, indie game, esports, mod | `patch notes` beats `security.patch` by weight |
+| 17 | `film-tv` | Film & TV | box office, streaming, season finale, director, trailer, netflix, cast, a24 | |
+| 18 | `music` | Music | album, tour dates, single, vinyl, label, festival, spotify, mixing | |
+| 19 | `culture` | Art & Culture | museum, exhibition, gallery, sculpture, archive, restoration, curator | |
+| 20 | `books` | Books & Writing | novel, memoir, publisher, translation, essay collection, prose, manuscript | |
+| 21 | `sport` | Sport | fixture, transfer, playoff, championship, injury report, formula 1, olympics | |
+| 22 | `food` | Food & Drink | recipe, restaurant, sourdough, espresso, fermentation, michelin, brewing | |
+| 23 | `travel` | Travel & Outdoors | itinerary, visa, trail, national park, hostel, flight route, backpacking | |
+| 24 | `design` | Design & Typography | typeface, kerning, layout, ux, wireframe, colour palette, accessibility, figma | |
+| 25 | `work` | Work & Careers | hiring, remote work, burnout, promotion, union, résumé, interview loop | `interview` guarded (vs genre) |
+| 26 | `education` | Education | curriculum, university, tuition, student, pedagogy, accreditation, mooc | |
+
+The **full lexicon is Go, not SQL** — `internal/classify/lexicon/*.go`, one file per category, each
+term with its weight and its guards. Three reasons, and the third is the real one:
+
+1. It ships and versions with the build, so an instance cannot be running a lexicon nobody can
+   reproduce.
+2. It is testable against the corpus in a normal `go test` with no database.
+3. **`git blame` on a term answers "why is this here".** A lexicon in a table is a lexicon whose 900
+   rows nobody can account for a year from now, and the first thing anyone does with an unaccountable
+   lexicon is stop editing it.
+
+The reader's overrides are data (§27.3f). The default is code.
+
+#### 27.3e Tags — a starter lexicon, and how a new tag is actually born
+
+Same machinery, different vocabulary and a much sharper threshold. The starter set is ~250 focused
+terms whose *names are also their match terms* — `sqlite`, `postgres`, `kubernetes`, `rust`, `ffmpeg`,
+`raspberry-pi`, `llm`, `nvidia`, `openai`, `ransomware`, `gdpr`, `layoffs`, `ipo`, `spacex`,
+`formula-1` — grouped so the settings screen can offer them as a dozen packs (*Systems · Web · AI ·
+Security · Markets · Space · Motorsport …*) rather than as a wall of 250 checkboxes.
+
+Three constraints, each of which exists because of a specific way auto-tagging goes wrong:
+
+- **Auto-tags are capped at 5 per item** against `MaxItemTags`'s 20, and they need a *higher*
+  confidence than categories do (a tag is a claim). An over-tagged row renders as a wall of chips and
+  the reader's own tags become invisible inside it — which is the failure that makes people turn
+  tagging off entirely rather than tune it.
+- **Auto-tagging is off by default**, and the toggle opens a **dry run** first: what the classifier
+  *would* have tagged across the last 200 items, before a single row is written. This is §13.4's rule
+  — *a rule you cannot dry-run is a rule you are afraid to write* — applied to the one feature that
+  writes into the reader's own vocabulary. Categories, by contrast, are **on by default**: they write
+  to their own table, they are one click to clear, and an empty category axis makes the feature
+  invisible rather than optional.
+- **The classifier never invents a tag.** New vocabulary enters through **suggestion**: the entity
+  extractor (which `internal/derive` already runs, and which moves into this pipeline — §27.8) counts
+  names across the reader's own items, and a name that recurs enough surfaces as *"`Ollama` has
+  appeared in 14 of your articles this month — make it a tag?"* One click creates the tag, seeds its
+  match terms from the entity's surface forms, and backfills it over the retained window. That is a
+  vocabulary that grows with the reader instead of at them, and it is a straight reuse of
+  `entity_affinity` (0019) rather than a second entity mechanism.
+
+#### 27.3f The builtin taxonomy is code; the reader's changes are a delta
+
+`user_categories` and `user_tag_rules` store **only differences** from the shipped defaults: disabled,
+renamed, re-coloured, extra include/exclude terms, extra regex, a per-label `MinScore` override, and
+the Smart+ prompt (§27.4c). A user-defined category is the same row with `builtin_slug = NULL`.
+
+Storing overrides rather than copies is what lets a lexicon improvement in v1.4 reach a reader who
+renamed two categories in v1.2. Copy-on-first-edit — the obvious alternative — freezes that reader's
+taxonomy at the version they first touched it, permanently and invisibly, and there is no way to tell
+afterwards which of their 26 categories are frozen.
+
+### 27.4 Smart+ — the model as the escalation path
+
+#### 27.4a It runs on the ambiguous items, not on all of them
+
+**This is the cost design and it is the most important decision in §27.**
+
+The naive version sends every item to the model. At 150 feeds and ~40 items a day that is ~6,000
+requests a day for a self-hosted reader, which is not a feature, it is a subscription. And it spends
+the most on the items the free tier already gets right — a Hacker News post about SQLite does not need
+a language model to be filed under Software.
+
+So the deterministic pass runs first, always, and the model is asked only when the free tier **says it
+is unsure**, which it can already do precisely because §27.3b made refusing an outcome:
+
+| Free-tier outcome | Escalate? |
+|---|---|
+| Primary assigned, clear margin | **No.** Nothing to buy |
+| `MinScore` met but margin thin (two categories within 1.35×) | **Yes** — this is the tie-break case, and it is the one the model is genuinely better at |
+| Nothing met `MinScore` (the item is Unsorted) | **Yes**, subject to budget |
+| The reader has custom categories or custom tags with prompts | **Yes** for those labels specifically (§27.4d) |
+| Body text unavailable and title+summary under 25 words | **No.** There is nothing to read; escalating buys a coin flip at full price |
+
+`escalate: never | ambiguous | always`, defaulting to **ambiguous**. On a real feed set this is
+roughly a quarter to a third of items rather than all of them, and — the property that makes it worth
+building this way — **the spend falls as the lexicon improves**. Every corpus-driven lexicon fix in
+§27.11 permanently removes a class of items from the escalation set. A pipeline that always calls the
+model has no such feedback loop and costs the same forever.
+
+#### 27.4b The shared read
+
+One request per **item** (not per batch of items — see below), carrying:
+
+```json
+{ "article": { "title": "…", "summary": "…", "body": "…", "source": "…" },
+  "labels":  { "categories": [{"slug":"…","name":"…","prompt":"…"}, …],
+               "tags":       [{"slug":"…","name":"…","prompt":"…"}, …] },
+  "want":    { "category": 1, "secondary": 2, "tags": 5 } }
+```
+
+and returning an object with one property per enabled contributor:
+
+```json
+{ "classify": { "primary": "software", "secondary": ["security"], "confidence": 0.82,
+                "tags": ["sqlite","wal"], "unsure": false },
+  "genre":    { "kind": "analysis" },
+  "keyphrases": { "phrases": ["write-ahead log", "checkpoint starvation"] },
+  "abstract": { "text": "…" } }
+```
+
+**Per item, not per batch**, and this is deliberate against the obvious optimisation. Ten articles in
+one request share a context, and a model given ten articles and asked to categorise each one
+demonstrably drifts toward labelling them consistently *with each other* — a batch from one feed comes
+back suspiciously uniform. It also makes one truncation lose ten answers, and it makes `Consume`'s
+error handling ten times more consequential. Batching is reserved for the per-user label pass
+(§27.4d), where the unit of work genuinely is "these items against this vocabulary".
+
+`confidence` and `unsure` are **the model's own**, and they are used for exactly one thing: `unsure:
+true` means fall back to the free-tier answer rather than overwrite it. §11.2's rule holds — a number
+a model assigns to its own answer is not evidence — so confidence is stored, shown to nobody, and
+used only to break a tie between two labels the model itself returned.
+
+#### 27.4c Per-label prompts
+
+Every category and every tag carries an optional one-or-two-line `prompt`, which is what Cam asked
+for and which is the highest-leverage knob in the feature:
+
+> **`security`** — "Assign this when the article is about the security *of* systems: vulnerabilities,
+> breaches, defensive tooling, cryptography. Do **not** assign it for physical security, national
+> security policy, or job security."
+
+The prompts are assembled into the `labels` block of the payload — attached to the label they belong
+to, not concatenated into the system prompt — so a reader who writes forty of them gets forty
+instructions the model can attribute rather than a wall of prose. Each is capped (**240 characters**),
+and the total labels block is capped (**4,000 characters**, lowest-priority labels dropped and the
+drop logged), because the failure here is silent and expensive: a reader tunes ten prompts, the
+eleventh pushes the request past the model's attention, and the earlier ones quietly stop working.
+
+Defaults ship with a prompt for each of the 26 built-ins, written to the same standard as the example
+above: they state what the label is **not** at least as clearly as what it is, because that is where
+the misfiles come from and because `internal/smart`'s existing three prompts already demonstrate the
+pattern works.
+
+#### 27.4d The per-user pass, and why it cannot be folded into the shared read
+
+The shared read is global — one article, all tenants. But a *user-defined* category ("Things To Bring
+Up In Standup") and its prompt are that user's, and putting them in a global request would mean one
+reader's vocabulary shaping every other reader's labels, and one reader's private taxonomy leaving the
+machine on behalf of an instance-wide job. Neither is acceptable, and the second is a privacy defect,
+not a quality one.
+
+So: the shared read answers **the default taxonomy and the vocabulary-free facets** (genre,
+keyphrases, entities, abstract). User-defined labels are resolved in two steps:
+
+1. **Deterministically first, against `item_analysis` rather than against the raw text.** Matching a
+   custom label's terms against the stored keyphrases, entities, category scores and vector is far
+   better than matching them against the article, because the analysis has already done the hard
+   part. Most custom labels resolve here and cost nothing.
+2. **`JobLabelPlus`** for what is left: per user, **batched** (up to 20 items × that user's unresolved
+   labels in one request), gated on the per-user consent key, rate-limited, and hard-capped by a
+   per-user daily budget the settings screen shows. This is the only place a user's own vocabulary
+   leaves the instance.
+
+#### 27.4e Egress — §18.8 is amended here, deliberately and narrowly
+
+§18.8's allowlist permits titles and summaries and forbids **full article text**. This feature needs
+body text to do its job well, so this is a **named amendment to §18.8**, written down rather than
+quietly worked around, with the argument stated so it can be disagreed with:
+
+> **What changes.** `internal/llm` gains one new payload type, `ClassifyPayload`, permitted to carry
+> an article's **title, summary, source title, and up to 2,000 words of body text**, together with a
+> **label vocabulary** (slugs, names, prompts).
+>
+> **Why this is a different question from §18.8's.** §18.8 protects the **reader**. Its subject is the
+> reading history: what you opened, what you dwelt on, what you starred — a per-item log that
+> identifies a person. An article's body is **the publisher's text, fetched from a public URL**, and
+> the fact disclosed by sending it is "some instance subscribes to this feed", which is aggregate and
+> already implied by the fetch itself. The classifier is asking a question **about the article**;
+> §18.8b's re-rank asks a question **about the reader**, and it keeps its allowlist unchanged.
+>
+> **What is still forbidden, and now explicitly.** No user id, tenant id, folder name, or feed URL. No
+> read/starred/dwell state. No notes, ever. No engagement events, no timestamps, no per-item history.
+> The **source title** is permitted (it is the byline a model needs to tell a press release from
+> reporting) and the **feed URL is not** (it is a stable identifier that lets a provider recognise the
+> same instance across requests — §18.8's own reasoning, unchanged).
+>
+> **The user's label vocabulary is reader data, not publisher data**, and it therefore keeps §18.8's
+> treatment: it only leaves under the per-user consent key (§27.4d), never in the global read.
+>
+> **Enforcement is the same mechanism, not a promise.** `ClassifyPayload` has fields only for what may
+> leave; `EgressKeys` gains `article`, `body`, `source`, `labels`, `categories`, `tags`, `slug`,
+> `name`, `prompt`, `kind`; `AuditEgress` runs against the **assembled** body in a test, and the union
+> read from §27.2b is audited as assembled rather than as templated — a contributor cannot add a key
+> the allowlist has not seen.
+
+**Consent is two keys, and neither implies the other** — the precedent `smart.subscribe` set for
+exactly this shape:
+
+| Key | Layer | Default | Governs |
+|---|---|---|---|
+| `smart.classify` | **system / owner** | off | May this instance send fetched article text for classification at all |
+| `feed.smartPlusLabels` | **per user** | off | May *my* category and tag vocabulary be sent, and may per-user labeling run for me |
+
+`feed.smartPlus` (the §18.8b re-rank) is a third and unrelated key and stays that way. Three keys is
+more than a settings screen wants and fewer than the number of distinct decisions a reader is being
+asked to make, which is the ratio that matters.
+
+#### 27.4f Budget, breaker, and failing soft
+
+Every failure path ends in the same place: **the free-tier answer, already computed, already written.**
+No key, key revoked, budget exhausted, breaker open (TODO 6.11), truncated reply, unparseable slice,
+provider 500, context cancelled — all of them leave the item with its deterministic labels and a
+`llm_at` that stays NULL, which is also the marker §27.9's backfill uses to retry later.
+
+Two ceilings, because they fail differently: a **per-instance daily token budget** shared with
+translation and TTS (one bill, one meter), and a **per-user daily request cap** on `JobLabelPlus`, so
+one reader with 300 custom labels cannot spend the instance's budget before anyone else's poll runs.
+Both are visible numbers on the settings screen, and hitting either is a **line in the UI**, not a
+silent degradation — "Smart+ classification is paused until tomorrow; 1,340 items were classified by
+the free tier" is a sentence a person can act on, and an unexplained drop in label quality is not.
+
+### 27.5 Provenance, and never re-applying what the reader removed
+
+This codebase has already paid for this lesson once, in `store/fanout.go`: `ON CONFLICT DO NOTHING`
+cannot tell *"never tagged"* from *"tagged once, and the reader took it off"*, so an at-least-once
+redelivery silently restores a tag someone deliberately removed. A classifier that re-runs on a
+schedule would do this constantly and would be **the** reason people turn it off.
+
+Every label row carries `source ∈ {user, rule, smart, smart_plus}` and `score`, and there is a
+**removal ledger** — `label_removals(user_id, item_id, kind, label_id, at)` — written when a reader
+removes an auto-applied label. The classifier consults it before every write, forever. Removing a
+label is therefore a **standing instruction**, not a state that the next analysis run overwrites, and
+it is the same shape as `rule_hits`'s `alreadyFired`: an audit row that survives the deletion of the
+thing it describes, which is exactly why `item_tags.applied_by_rule_id` could not be the answer there
+and cannot be the answer here.
+
+Three further consequences worth writing down:
+
+- **A hand-applied label is never touched by the classifier**, not even to change its score. `source =
+  user` is terminal.
+- **Removals are per label, not per item.** Removing `security` from a CVE post must not stop
+  `software` from ever being applied to it.
+- **A removal is per (user, item, label), and it is also evidence.** Five removals of the same label
+  in a week is the strongest possible signal that a lexicon entry is wrong, and §27.6's settings
+  screen surfaces exactly that: *"you have removed `gaming` from 7 items — 6 of them matched on `patch
+  notes`. Exclude it?"* This is the feature that makes the taxonomy improve by being used, and it
+  costs one query over a table that has to exist anyway.
+
+### 27.6 The configuration surface
+
+**Settings → Classification**, a new tab in the existing settings shell, four panels:
+
+1. **Categories** — the 26 built-ins plus the reader's own, each row: enabled · name · glyph · colour ·
+   assigned count (30d) · removed count (30d). Expanding one gives include terms, exclude terms,
+   guards, regex, `MinScore` override, and the Smart+ prompt, with a **live match count against the
+   last 200 items that updates as you type**. That last part is the panel — a term list without a
+   live count is a text box you are guessing into.
+2. **Tags** — the starter packs, the reader's own tags with their match terms, the auto-tag toggle
+   behind its dry run, and the pending **entity suggestions** (§27.3e).
+3. **Strategy** — field multipliers, `MinScore`, `Margin`, max secondary categories, max auto-tags,
+   whether body text is used, and `escalate: never | ambiguous | always`. Every knob shows what
+   changing it does to the last 200 items **before** it is saved.
+4. **Smart+** — the two consent keys with plain sentences about what leaves the machine, the model,
+   the budget meter, the per-user cap, and a list of the enabled **contributors** by name with what
+   each one asks the model for. A reader should be able to read that list and know what their article
+   text is being used for; a feature that egresses and cannot produce that list is a feature that has
+   not finished.
+
+Plus, outside settings: an **Unsorted** view in the rail (items the classifier declined to place),
+which is where the reader corrects it, and where a maintainer gets the only honest sample of what the
+lexicon misses.
+
+### 27.7 Schema — migration `0021_classification.sql`
+
+```sql
+-- Global, one row per item. Derived: ClearDerived + re-run reproduces it.
+CREATE TABLE item_analysis (
+  item_id         TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+  analyzer_version INTEGER NOT NULL,   -- code constant; bump forces re-analysis
+  lexicon_hash    TEXT    NOT NULL,    -- hash of the shipped lexicon, same purpose
+  lang            TEXT,
+  genre           TEXT,                -- §27.1a; populated, surfaced by nothing in v1
+  category_scores TEXT NOT NULL,       -- JSON {slug: score} over the DEFAULT taxonomy
+  keyphrases      TEXT,                -- JSON []string
+  entities        TEXT,                -- JSON [{name,label}] — feeds entity_affinity
+  abstract        TEXT,                -- one-line, Smart+ only, NULL otherwise
+  vector          BLOB,                -- the TF-IDF vector derive stops recomputing
+  analyzed_at     TEXT NOT NULL,
+  llm_at          TEXT,                -- NULL = free tier answered; also the retry marker
+  llm_model       TEXT
+);
+CREATE INDEX item_analysis_stale ON item_analysis(analyzer_version, lexicon_hash);
+
+-- The taxonomy. Built-ins are CODE (§27.3f); this table holds the reader's delta.
+CREATE TABLE categories (
+  id           TEXT PRIMARY KEY,
+  tenant_id    TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  builtin_slug TEXT,                   -- NULL = user-defined
+  name         TEXT,                   -- NULL = inherit the built-in's name
+  glyph        TEXT, colour TEXT,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  position     INTEGER NOT NULL DEFAULT 0,
+  min_score    REAL,                   -- NULL = inherit
+  include_json TEXT, exclude_json TEXT, regex_json TEXT,
+  prompt       TEXT,                   -- §27.4c, ≤240 chars
+  created_at   TEXT NOT NULL,
+  UNIQUE(user_id, builtin_slug),
+  UNIQUE(user_id, name)
+);
+
+CREATE TABLE item_categories (
+  tenant_id   TEXT NOT NULL, user_id TEXT NOT NULL,
+  item_id     TEXT NOT NULL, category_id TEXT NOT NULL,
+  kind        TEXT NOT NULL,           -- 'primary' | 'secondary'
+  score       REAL NOT NULL,
+  source      TEXT NOT NULL,           -- 'user' | 'rule' | 'smart' | 'smart_plus'
+  assigned_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, item_id, category_id)
+);
+CREATE INDEX item_categories_browse ON item_categories(user_id, category_id, assigned_at DESC);
+CREATE UNIQUE INDEX item_categories_one_primary
+  ON item_categories(user_id, item_id) WHERE kind = 'primary';
+
+-- §27.5. Survives the deletion of the row it describes. Never garbage-collected
+-- while the item exists; it is an instruction, not a cache.
+CREATE TABLE label_removals (
+  tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  item_id   TEXT NOT NULL,
+  kind      TEXT NOT NULL,             -- 'category' | 'tag'
+  label_id  TEXT NOT NULL,
+  at        TEXT NOT NULL,
+  PRIMARY KEY (user_id, item_id, kind, label_id)
+);
+CREATE INDEX label_removals_label ON label_removals(user_id, kind, label_id, at DESC);
+
+-- Tag matching config. The tag itself stays in `tags` (0004) — one vocabulary.
+CREATE TABLE tag_rules (
+  tag_id       TEXT PRIMARY KEY REFERENCES tags(id) ON DELETE CASCADE,
+  tenant_id    TEXT NOT NULL, user_id TEXT NOT NULL,
+  auto         INTEGER NOT NULL DEFAULT 0,
+  include_json TEXT, exclude_json TEXT, regex_json TEXT,
+  min_score    REAL,
+  prompt       TEXT
+);
+
+ALTER TABLE item_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE item_tags ADD COLUMN score  REAL;
+```
+
+`item_analysis` is the only new **global** table; everything else is per-user and carries `tenant_id`
++ `user_id` for the leak harness (T1). `SubscribersOf`/`ItemsByID`-style unscoped access to
+`item_analysis` is by design and goes on `unscopedByDesign` with the same justification ingest already
+carries: it holds nothing per-user, so there is nothing for a scope to protect.
+
+### 27.8 What else the pipeline pays for
+
+The classifier is the first customer. These are the ones already visible, and they are the reason the
+pipeline is worth building as infrastructure instead of as one feature's internals:
+
+| Consumer | Today | With the pipeline |
+|---|---|---|
+| `internal/derive` | Rebuilds a TF-IDF corpus from raw item text on **every** derivation, and a derivation fires after every poll and every engagement batch | Reads `item_analysis.vector`. The most expensive part of the interest layer stops being recomputed |
+| Entity extraction | Smart+ only, over **engaged titles**, inside `derive` | Runs in the pipeline over **every** item, once, free tier included; `entity_affinity` (0019) gets a real corpus, and §27.3e's tag suggestions fall out of it |
+| `internal/topics` | Clusters over vectors it derives | Same clustering, vectors read rather than built; and category share becomes a second, human-legible axis next to cluster share |
+| Ranking (§18.4) | Feed, term, domain, topic affinity | **Category affinity** as a term, and §18.4's Explore slot can deliberately serve a starved *category* — legible in a way a starved cluster is not (*"you have read no Science in three weeks"*) |
+| Trends (§16) | Topics and volume | A category histogram over time, at no additional cost, which is the single most requested chart in every reader ever shipped |
+| Rules (§13) | `title · author · content · url · source · folder · tag · word_count · age · lang` | **`category`** and **`genre`** as new `rules.Field`s. `category = security AND genre = release → tag "patch"` is a rule people actually want, and it is nine lines in `rules.go` |
+| Search (§15) | FTS over text | Facets: filter results by category, which is the cheapest large improvement search will ever get |
+| Digest / highlights (§18.5) | Picks by score | Picks **per category**, so a daily digest covers the reader's spread instead of five items about one thing |
+| Offline packs (§12) | Items by ranking | Can be built per category |
+
+**None of these are in scope for the first landing** and every one of them is a reason the interfaces
+in §27.2b are worth getting right on the first pass rather than the second.
+
+### 27.9 Versioning, staleness, and reclassification
+
+`analyzer_version` (a Go constant) and `lexicon_hash` (a hash of the shipped lexicon) are on every
+row. Either changing makes existing rows **stale but valid** — the labels stand until they are
+recomputed, because the alternative is a deploy that blanks every chip in the app until a backfill
+finishes.
+
+A **low-priority backfill job** re-analyses stale rows at a trickle (default 500/hour, one worker,
+below every other kind in `DefaultCaps`), newest first, because the item someone might read this
+morning matters more than the one from March. Progress is a line on the admin status screen (§9),
+because a silent multi-day backfill is indistinguishable from a broken one.
+
+Three explicit reclassification triggers, all of which reuse the same machinery:
+
+1. **Lexicon change on deploy** — automatic, trickled, newest first.
+2. **The reader edits a label** — that label only, over the retained window, immediately. Editing
+   `security`'s terms and seeing the count change *now* is the entire feedback loop of §27.6.
+3. **"Reclassify everything"** — a button, with a count and a confirmation, for after a big taxonomy
+   edit. It respects `label_removals` (§27.5), which is precisely the case where a reader would
+   otherwise get every label they have ever removed handed back to them at once.
+
+### 27.10 Failure modes, in the order they will actually happen
+
+1. **The lexicon is wrong and the chips are embarrassing.** The most likely outcome by far, and the
+   only defence is the corpus ratchet (§27.11) plus the removals-as-evidence loop (§27.5). Ship with
+   fewer confident labels rather than more shaky ones — an item with no chip costs nothing and a wrong
+   chip costs trust.
+2. **Auto-tags flood the vocabulary.** Mitigated by the 5-per-item cap, the higher threshold, the
+   off-by-default dry run, and the rule that the classifier never creates a tag.
+3. **Analysis falls behind the poller.** `JobAnalyze` is now upstream of fan-out, so a stalled analyzer
+   delays *rules*, not delivery. Watch the queue depth per kind that §9 already shows; if analysis is
+   chronically behind, the free tier alone still keeps up trivially and `escalate` is the knob.
+4. **A model read costs more than expected.** The ambiguity gate is the structural answer; the budget
+   ceiling is the hard stop; the meter is how anyone notices before the bill does.
+5. **A contributor's schema fragment breaks the union.** Caught at registration for shape, isolated
+   per-slice at runtime, and the whole read still has the free-tier fallback under it.
+6. **`item_analysis` grows.** ~1–3 KB per item; at 50k items in the retained window that is 50–150 MB,
+   the same order as `item_embeddings` (§18.8a's 51 MB) and on the same retention sweep. Vectors are
+   pruned (`Vector.Prune`) before storage, as `textvec` already supports.
+7. **Two writers race on one item's analysis.** `JobAnalyze` is capped at 2 and the write is an upsert
+   keyed on `item_id`, so the loser overwrites with an identical derivation. Harmless by construction —
+   which is only true because it is derived.
+
+### 27.11 Tests, and the corpus ratchet
+
+The one that matters: **`internal/classify/testdata/corpus.jsonl`** — a few hundred real feed items,
+hand-labeled, committed. `TestTaxonomyPrecision` asserts **per-category precision and recall floors**
+and the floors **only go up**. This is the same ratchet discipline the motion spec and the coverage
+manifest already use in this house, and it is the only thing that stops a lexicon from decaying one
+well-meaning term at a time. A term added without a corpus case that motivates it is a guess.
+
+| Test | Asserts |
+|---|---|
+| `TestTaxonomyPrecision` | Per-category precision/recall floors over the corpus. Ratchets |
+| `TestDeterministic` | Same item + same lexicon → identical scores, twice, in either order |
+| `TestClearDerivedReproduces` | `ClearDerived` + re-run reproduces `item_analysis` exactly (extends the existing derive test) |
+| `TestRemovalIsHonoured` | Remove an auto-label, re-run analysis three times, it stays gone |
+| `TestUserLabelNeverOverwritten` | `source='user'` survives every recompute path |
+| `TestNoCategoryIsAnAnswer` | An off-topic item gets no row, not a default one |
+| `TestGuardTerms` | The Apple/Amazon/Java/Rust-Belt corpus cases, individually |
+| `TestEgressAllowlist` | The **assembled** classify body and the **assembled union** pass `AuditEgress`; a contributor adding a key fails the test |
+| `TestNoUserVocabularyInGlobalRead` | The global payload contains no user-defined label, for a user who has forty |
+| `TestConsentGates` | With `smart.classify` off, zero outbound requests, whatever else is enabled |
+| `TestUnionIsolation` | One contributor returning garbage does not cost the others their answers |
+| `TestBudgetExhaustionFallsBack` | Budget spent → free-tier labels written, `llm_at` NULL, no error surfaced to the reader |
+| `TestClassifyThroughput` | 10,000 items through the deterministic pass under a wall-clock floor, so the lexicon cannot quietly become O(categories × terms) |
+| `TestUserRegexBounded` | 32-pattern cap enforced; a pathological pattern is linear (RE2) and does not stall a batch |
+| **T24** | **The corpus ratchet is a named test in the plan's test register**, because a ratchet nobody named is a ratchet somebody will lower |
+
+### 27.12 Cost, in tokens rather than currency
+
+Prices move and a plan that quotes them is wrong within a quarter. Per **escalated** item, with the
+default contributor set: ~1,400–2,200 input tokens (2,000 words of body dominates) and ~150–400
+output. At 150 feeds × ~40 items/day × ~30% escalation ≈ **1,800 reads/day ≈ 3.2M input + 0.5M output
+tokens/day** on the default small model.
+
+Three levers, in the order they should be reached for: **`escalate: never`** (free tier only, and the
+product still works), **body off** (title + summary only — roughly a fifth of the tokens and
+noticeably worse on long-form), and **fewer contributors**. The meter shares §18.8's, so one number
+answers "what is Smart+ costing me" across translation, speech and classification.
+
+### 27.13 Deliberately not in v1
+
+Hierarchical categories · per-source category overrides ("everything from this feed is Gaming" — a
+rule already does it) · cross-user taxonomy sharing · embedding-based category matching (§18.8a's
+vectors will be better than the lexicon and are a second implementation, so they wait until the corpus
+can prove it) · a genre UI (§27.1a) · multi-language lexicons beyond the English default (`lang` is
+recorded, and a non-English item is simply left unsorted rather than mislabeled — refusing is the
+correct behaviour and it is already the behaviour).
+
+### 27.14 Register
+
+| Id | Entry |
+|---|---|
+| **A41** | **One analysis pass per item, globally, and every per-item feature reads it.** No feature may re-derive from raw item text what `item_analysis` already holds, and no feature may make its own per-item model request — it registers a `Contributor` or it does without |
+| **D23** | **The word "category"** (§27.0a). Recommendation: rail's "Categories" → "Folders"; "Category" becomes the article axis. **Open — Cam's call** |
+| **R23** | **A wrong chip is worse than no chip.** Classification is the most visible surface in the app and the only one that is confidently wrong in public. Mitigated by refusing to classify (§27.3b), the corpus ratchet (§27.11), removals-as-evidence (§27.5), and shipping categories on / auto-tags off (§27.3e) |
+| **T24** | **`TestTaxonomyPrecision`** — the corpus ratchet (§27.11) |
+| **M29** | **Classification and the item pipeline.** §27. `internal/classify` · `internal/pipeline` · `0021` · `JobAnalyze` · fan-out reordering · Settings → Classification · the Unsorted view. Depends on M17 (Smart+ egress harness) for §27.4e and on nothing else |

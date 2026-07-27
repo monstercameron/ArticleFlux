@@ -398,6 +398,10 @@ Two consent conditions are checked at the RPC and neither implies the other: the
 | **Status** | ✅ |
 | **Spec** | §6.10, A37 |
 
+> **The name is contested — D23, open.** Entry 76 introduces categories that hold *articles*, and this
+> word cannot mean both. The plan recommends renaming this one to **Folders**, which is its schema
+> name and an accurate description of what it does: a feed lives in exactly one of them.
+
 Per-user, **flat**, one category per subscription. Create · rename · delete · file a feed. Reached
 from the rail's Categories band or from the add-a-feed dialog.
 
@@ -1548,6 +1552,104 @@ the actor anonymised: an audit trail you can erase by deleting the actor is not 
 Deletion is soft first, with a grace period. Accidental deletion of the only person who knows what
 those 400 rules did is not recoverable from a nightly backup without losing everyone else's day.
 
+## 76. Article categories ○
+
+| | |
+|---|---|
+| **Status** | ○ |
+| **Spec** | §27.1, §27.3 · M29 |
+
+**Not the same thing as §10's categories**, which are folders and hold *feeds*. These hold *articles*.
+The plan proposes renaming §10 back to **Folders** so the word "category" can mean the one thing
+readers expect it to mean — **that is D23 and it is open.** Until it is answered this entry and §10
+both use the word and one of them is wrong.
+
+Twenty-six shipped categories — Software, AI, Hardware, Security, Science, Health, Business, Finance,
+Politics, World, Law, Climate, Space, Energy, Transport, Gaming, Film & TV, Music, Culture, Books,
+Sport, Food, Travel, Design, Work, Education — flat, no hierarchy. Every article gets **one primary
+and up to two secondary**, or **none**.
+
+None is the important one. A category is assigned only when its score clears a floor *and* beats the
+runner-up by a margin; when neither holds, the item gets no chip and lands in **Unsorted**, which is
+where a reader corrects it. An unlabelled item costs nothing and a wrong label costs trust, so this
+refuses rather than guesses — the same choice `topics.MinMembers` and the discovery ladder's
+`ErrNoRule` already make.
+
+It is deterministic, free, offline and **on by default**: a lexicon of weighted terms matched against
+the title (×3), the URL slug (×2), the summary (×2) and the body, with guard terms so that
+Apple-picking season, the burning Amazon, a beach in Java and the Rust Belt do not land in Software.
+Every category is editable — terms, exclusions, colour, threshold — with a **live match count against
+your last 200 articles that moves as you type**.
+
+## 77. Automatic tags ○
+
+| | |
+|---|---|
+| **Status** | ○ |
+| **Spec** | §27.3e · M29 |
+
+The same machinery, a sharper threshold, and your vocabulary rather than a shipped one. A category is
+a place; a tag is a claim, so this asks for more evidence and applies at most five per article.
+
+**Off by default, and the toggle opens a dry run first**: what it *would* have tagged across your last
+200 articles, before a single tag is written. It writes into the vocabulary you built by hand, so it
+asks first — §13.4's rule about rules, applied to the one feature that edits your own filing.
+
+**It never invents a tag.** New vocabulary arrives as a suggestion — *"`Ollama` has appeared in 14 of
+your articles this month — make it a tag?"* — and one click creates it, seeds its terms and backfills
+it. And a tag you remove from an article stays removed: a removal is a standing instruction, not a
+state the next run overwrites.
+
+Starter packs — Systems · Web · AI · Security · Markets · Space · Motorsport and more — are ~250
+focused terms you enable a pack at a time rather than 250 checkboxes.
+
+## 78. Smart+ classification ○
+
+| | |
+|---|---|
+| **Status** | ○ |
+| **Spec** | §27.4 · M29 |
+
+**The model is the tie-breaker, not the pipeline.** The free classifier runs on everything; the model
+is asked only about the articles it could not confidently place — roughly a quarter to a third — plus
+any category or tag you defined yourself. As the lexicon improves, the spend goes down.
+
+Every category and every tag takes a prompt of your own: *"Assign `security` for the security **of**
+systems — vulnerabilities, breaches, cryptography. Not physical security, not national security
+policy, not job security."* Twenty-six are shipped pre-written to that standard, and all of them are
+yours to change.
+
+Two switches, and neither implies the other: **the owner** decides whether this instance may send
+article text at all, and **you** decide whether your own category and tag names may be sent. Article
+text is the publisher's; your vocabulary is yours, and it never leaves inside the shared read that
+serves every reader on the instance.
+
+Everything fails soft. No key, no budget, provider down, reply truncated — you get the free
+classifier's answer, which was already computed and already written, and the app says so rather than
+quietly getting worse.
+
+## 79. One read per article ○
+
+| | |
+|---|---|
+| **Status** | ○ |
+| **Spec** | §27.2, A41 · M29 |
+
+Not a screen — the reason the three entries above are affordable, and the reason the next five
+features will be.
+
+New articles go through **one** analysis pass: language, vector, key phrases, named entities, genre
+and category scores, computed once for the whole instance rather than once per reader. Everything
+downstream reads that instead of re-deriving it. The ranked homepage stops rebuilding a term corpus
+from raw text after every poll. Entity extraction, today a Smart+ feature over articles you engaged
+with, becomes free and covers everything. Trends gets a category histogram at no cost. Rules gain
+`category` and `genre` as fields.
+
+And when the model is used, every feature that wants something from that article contributes to **one**
+request and takes its slice of **one** answer. A reader can see the list of what is being asked and
+why — a feature that sends your articles somewhere and cannot produce that list is a feature that has
+not finished.
+
 ---
 
 # Part XII — The rules every screen obeys
@@ -1678,7 +1780,8 @@ hours · trends · the heatmap · feed health · contextual nudges · the ranked
 explainability · the tuning panel · the suppressed view · highlights mode · topic editing · domain
 affinity · recommendations UI · trials · translation · rules UI · the muted view · newsletters ·
 webhooks · revisions UI · the screensaver · folder sharing · public feeds · the admin console ·
-deletion previews.
+deletion previews · **article categories · automatic tags · Smart+ classification · the one-read
+analysis pipeline**.
 
 ---
 

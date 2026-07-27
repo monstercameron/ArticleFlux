@@ -11,6 +11,12 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Security
 
+- **The sanitizer had no fuzz target, and it is the one that needed it most.** Ten packages here
+  carried one — feed parsing, charset decoding, mail headers, the SSRF guard — while `sanitize`, the
+  only thing standing between hostile publisher HTML and the reader's DOM on an origin that holds
+  the session token, had none. Every other parser in this tree fails by returning wrong data; this
+  one fails by executing somebody else's code. The property is that no policy ever emits executable
+  markup, and the crashes the runs found are checked in as seeds.
 - **Sudo mode is enforced** (`AuthService.Reauthenticate` · `ChangePassword` ·
   `RegenerateRecoveryCodes`, TODO 6.1, §7.3). The policy existed — which operations need fresh
   authentication, how long fresh lasts, that an unclassified action fails closed — and nothing
@@ -85,6 +91,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **A ranked row could not cite the topic it matched.** Topic ids are generated inside
+  `ReplaceTopics` and the in-memory `topics.Topic` carries none, so `topic_id` on a ranking reason
+  was always empty: the chip said "a topic you follow" and there was nothing to click through to. It
+  comes from the readback now.
+- **The sanitizer allocated a slice per element to walk safely.** Collecting children before
+  iterating is correct — `harden` can detach a child, and `c = c.NextSibling` on a detached node
+  reads nil and abandons every sibling after it — but it cost one allocation per element, several
+  hundred for an article, against a case that is rare. Taking the next pointer before the mutation
+  is the same guarantee for free.
 - **The HTTP metrics middleware took the tunnel's socket away.** Wrapping the response writer to
   record status and bytes broke the WebSocket upgrade, and the failure was total: every client sat
   in `TRANSIENT_FAILURE`, which reads as "the server is down" and was in fact "a middleware ate the
@@ -219,6 +234,30 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Every RPC declares who may call it, in one table** (`grpcsrv/authzmap.go` + an interceptor).
+  "Who is allowed to do this" is now readable top to bottom instead of being a check inside each
+  handler — the version where the thirty-first handler is the one that forgets. The map is
+  exhaustive against the service descriptor and a test enforces it, so an unclassified RPC fails the
+  build rather than defaulting to open. Denials are counted by method (a closed label set, from the
+  descriptor) and split by reason, because "the policy working" and "something is wrong" are
+  different questions wearing the same status code.
+- **A pure classifier** (`internal/classify`, §27.3) — `(Item, *Lexicon, Strategy) → Result`, no
+  database, clock, network or logging. Same shape as `internal/rules` and for the same reason §13.4
+  gives: the settings screen's live preview must be the same code as the apply, because a preview
+  that is a second implementation lies exactly when it matters.
+- **`internal/seedread`** — a deterministic simulated reading history. My Feed only shows items with
+  a *content-level* reason, so a fresh database has an honestly empty page and stays that way for
+  weeks, which makes the feature unobservable in development: you cannot tell working code from
+  broken code by looking at a blank page. Same items and same seed produce the same history, and
+  every timestamp derives from the item's own publication date rather than `time.Now`, so a database
+  seeded today and next week produce the same shape.
+- **`pprof`, behind a flag.** `/metrics` is unauthenticated on purpose and that is safe because every
+  attribute is a bounded label — counts and durations, no feed URL, title or username. A heap or
+  goroutine dump is the opposite: it carries whatever the process was holding. So profiling is off
+  until an operator says otherwise, and the flag says so.
+- **Benchmarks on the four paths that get slower with a real database** — feed parsing, sanitizing,
+  the store's hot queries, and the vectoriser. Plus `searchplan_test`, which pins the index the
+  search query drives, because a query plan is the thing that regresses silently.
 - **Entity affinity — the interest layer can name a thing, not just a subject** (migration 0019,
   §18.2). It could describe what *subjects* a reader follows and could not name one *thing*: term
   affinity holds a bag of words and topics hold clusters of them, so "cameras" was expressible and
