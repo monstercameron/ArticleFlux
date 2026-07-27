@@ -248,3 +248,87 @@ func loadOrCreateKeyFile(dir, name string) ([]byte, error) {
 	}
 	return key, nil
 }
+
+// limitToProxyHost refuses proxy paths that arrive on the app's hostname (D20,
+// TODO 7.12).
+//
+// # Both sides, or it is not a boundary
+//
+// §10.1b's Rule 1 says proxied content is never served from the app's origin,
+// and D20 decided the separate hostname. Minting URLs that point at
+// `proxy.<host>` is only half of that: if `/asset` and `/p` still answer on the
+// app's own hostname, anyone can hand a reader the app-host version of the same
+// signed URL and the browser will give that response the APP's origin. The split
+// would then be a convention the attacker is free to decline.
+//
+// # A 404, not a 403
+//
+// A 403 says "this path exists here and you may not have it", which tells
+// somebody probing that they have found the right host and need a different
+// credential. On the app host these paths genuinely do not exist, and that is
+// what the response should say.
+//
+// # Unconfigured means unenforced, deliberately
+//
+// With no `ProxyOrigin` there is no second hostname to compare against, so
+// there is nothing to enforce — and the page proxy is already refusing to run
+// at all in that state (see Open). The asset proxy stays available, because an
+// image served with `nosniff` and `default-src 'none'; sandbox` is not a
+// document and cannot reach the session.
+func (a *App) limitToProxyHost() func(http.Handler) http.Handler {
+	want := proxyHostOf(a.cfg.ProxyOrigin)
+	if want == "" {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// `r.Host` rather than `r.URL.Host`: for a server request the URL
+			// carries no authority, and the Host header is what the browser used
+			// — which is the thing the origin is derived from and therefore the
+			// thing to check.
+			if !hostMatches(r.Host, want) {
+				http.NotFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// proxyHostOf pulls the hostname out of a configured proxy origin.
+//
+// Returns "" for anything unusable, which disables the gate rather than
+// refusing everything: a malformed setting should not take the image proxy down
+// on an instance that was working.
+func proxyHostOf(origin string) string {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return ""
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
+// hostMatches compares a request Host against the configured one.
+//
+// The PORT is compared when the configuration names one and ignored when it does
+// not. An operator who wrote `https://proxy.example.com` means that host on
+// whatever port the deployment terminates on — usually 443, which the browser
+// omits from the header — and requiring them to predict the port would make the
+// common case fail with a 404 nobody could explain.
+func hostMatches(got, want string) bool {
+	got = strings.ToLower(strings.TrimSpace(got))
+	want = strings.ToLower(want)
+	if got == want {
+		return true
+	}
+	if !strings.Contains(want, ":") {
+		if i := strings.LastIndex(got, ":"); i > 0 && !strings.Contains(got[i:], "]") {
+			return got[:i] == want
+		}
+	}
+	return false
+}

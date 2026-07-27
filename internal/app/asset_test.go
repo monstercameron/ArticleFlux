@@ -358,3 +358,93 @@ func TestAddingCSSDidNotWidenTheAllowlist(t *testing.T) {
 			"is the thing D20's origin split exists to contain", rec.Code)
 	}
 }
+
+// D20's other side (TODO 7.12): the split is only a control if it is enforced
+// on BOTH hostnames.
+//
+// Minting URLs that point at `proxy.<host>` does nothing on its own — if the
+// same paths still answer on the app's hostname, anyone can hand a reader the
+// app-host version of the same signed URL and the browser gives that response
+// the APP's origin, which is exactly what the split exists to prevent, reached
+// by editing a URL.
+func TestProxyPathsAreRefusedOnTheAppHostname(t *testing.T) {
+	a := assetApp(t)
+	a.cfg.ProxyOrigin = "https://proxy.example.test"
+	// The gate directly rather than through the whole mux: buildHandler also
+	// stands up the gRPC server and cannot be run twice on one App, and what is
+	// under test is the gate, not the routing table.
+	gate := a.limitToProxyHost()
+	served := false
+	handler := gate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = true
+		a.serveAsset(w, r)
+	}))
+
+	srv := origin(t)
+	minted := a.AssetURL(srv.URL + "/pic.png")
+	if !strings.HasPrefix(minted, "https://proxy.example.test/asset") {
+		t.Fatalf("minted %q does not point at the proxy origin", minted)
+	}
+
+	// The same capability, asked for on the app's hostname.
+	req := httptest.NewRequest(http.MethodGet, minted, nil)
+	req.Host = "app.example.test"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status %d on the app hostname, want 404 — a valid capability "+
+			"served here lands in the app's origin", rec.Code)
+	}
+	if served {
+		t.Error("the handler ran at all on the app hostname")
+	}
+
+	// And it works on the proxy hostname, or the gate has broken the feature
+	// rather than secured it.
+	req = httptest.NewRequest(http.MethodGet, minted, nil)
+	req.Host = "proxy.example.test"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d on the proxy hostname: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A configured origin with no port must still match a request that carries one.
+// An operator who wrote `https://proxy.example.com` means that host on whatever
+// port the deployment terminates on, and requiring them to predict it would
+// make the common case fail with a 404 nobody could explain.
+func TestHostMatchingIgnoresAPortTheOperatorDidNotName(t *testing.T) {
+	cases := []struct {
+		got, want string
+		ok        bool
+	}{
+		{"proxy.example.test", "proxy.example.test", true},
+		{"proxy.example.test:8443", "proxy.example.test", true},
+		{"PROXY.example.test", "proxy.example.test", true},
+		{"app.example.test", "proxy.example.test", false},
+		{"evil.test", "proxy.example.test", false},
+		// A named port is a named port: the operator asked for it.
+		{"proxy.example.test", "proxy.example.test:8443", false},
+		{"proxy.example.test:8443", "proxy.example.test:8443", true},
+		// Not a prefix match — `proxy.example.test.evil.com` must not pass.
+		{"proxy.example.test.evil.com", "proxy.example.test", false},
+	}
+	for _, c := range cases {
+		if got := hostMatches(c.got, c.want); got != c.ok {
+			t.Errorf("hostMatches(%q, %q) = %v, want %v", c.got, c.want, got, c.ok)
+		}
+	}
+}
+
+// A malformed setting must not take a working image proxy down.
+func TestAnUnusableProxyOriginDisablesTheGateRatherThanEverything(t *testing.T) {
+	for _, bad := range []string{"", "   ", "not a url", "://"} {
+		if got := proxyHostOf(bad); got != "" {
+			t.Errorf("proxyHostOf(%q) = %q, want \"\" so the gate stays off", bad, got)
+		}
+	}
+	if got := proxyHostOf("https://proxy.example.test/"); got != "proxy.example.test" {
+		t.Errorf("proxyHostOf = %q", got)
+	}
+}

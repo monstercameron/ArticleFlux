@@ -1698,7 +1698,7 @@ Business logic over repositories. Still headless.
 
 - [x] **7.10** `articleflux admin reset-password` break-glass §7.2
       ✅ 2026-07-26 (night) — spelled **`articleflux passwd -user … -password …`**, plus `adduser` for a second account. Both validate the role against the four the column documents (an account created as `"admins"` fails closed on every check with no clue why) and enforce a **12-character minimum with no composition rules** — length is the only property that reliably costs an attacker anything, and "must contain a symbol" reliably costs the user a password they write down somewhere worse. `passwd` revokes **every** session for that user, which is the point of a break-glass reset.
-- [ ] **7.12 Proxy endpoints** — `GET /asset` (6.14) and `GET /p/…` (6.15), both on the **separate
+- [x] **7.12 Proxy endpoints** — `GET /asset` (6.14) and `GET /p/…` (6.15), both on the **separate
       proxy hostname** of D20, never the app's. Each takes a **signed short-TTL capability** over
       `(scope, item, asset, exp)` — `secret.Sign` already exists — minted by an authenticated RPC and
       verified here. **No free-text URL parameter anywhere.** Responses carry a
@@ -1731,6 +1731,30 @@ Business logic over repositories. Still headless.
       fetch a document; `TestAssetCapabilityCannotOpenAPage` pins it. The origin's own
       `X-Frame-Options` is **not** forwarded, which is what lets the reading pane embed a site that
       refuses to be embedded (§10.1's blank-box problem).
+
+      ✅ 2026-07-27 — **the both-sides hostname enforcement**, which was the last owed clause and was
+      waiting on D20. 3 tests.
+
+      Minting URLs that point at `proxy.<host>` is only half the split: while `/asset` and `/p` still
+      answered on the app's own hostname, anyone could hand a reader the app-host version of the same
+      signed capability and the browser would give that response the **app's** origin — the exact
+      thing the split prevents, reached by editing a URL. They now 404 there.
+
+      **A 404, not a 403.** A 403 says "this path exists here and you may not have it", which tells
+      somebody probing they have found the right host and need a different credential. On the app
+      host these paths genuinely do not exist.
+
+      **A port the operator did not name is ignored**, and one they did name is required: somebody
+      who wrote `https://proxy.example.com` means that host on whatever port the deployment
+      terminates on — usually 443, which the browser omits — and making them predict it would fail
+      the common case with a 404 nobody could explain. Matching is not a prefix test, so
+      `proxy.example.test.evil.com` does not pass.
+
+      **An unusable `ProxyOrigin` disables the gate rather than everything**, because a malformed
+      setting should not take a working image proxy down on an instance that was fine yesterday.
+
+      *Still owed and tracked at 7.3d:* per-user rate limits. The limiter here is per-client and
+      these endpoints carry no session, which is what `limitProxy` already explains.
 
 - [ ] **7.13 `StreamPage`** — tiers 3–4 (§10.1d). A **bidi** RPC, which the tunnel already carries:
       screencast frames down, input events up. Server side: `Page.startScreencast` → ack every frame →

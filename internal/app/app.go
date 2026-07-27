@@ -423,7 +423,15 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	//
 	// Recommend is the near-term one, and it needs a discovery Validator — that is
 	// /discover's build, not this one.
-	a.deriver = derive.New(repo, cfg.Log)
+	// The deriver, with the Smart+ tier attached.
+	//
+	// Attached unconditionally, and gated INSIDE: smart.Interest checks llm.Configured on
+	// every call and returns an error when there is no key, which derive treats as "no
+	// Smart+ this time". Wiring it only when a key exists at boot would mean a key pasted
+	// into the Settings screen did nothing until the next restart — the same mistake the
+	// smartKey closure above exists to avoid.
+	a.deriver = derive.New(repo, cfg.Log).
+		WithSmartPlus(smart.NewInterest(a.llm, a.settings))
 	a.pool = jobs.New(repo, jobs.Options{
 		Log: cfg.Log,
 		// The job queue is where a self-hosted instance actually breaks: a
@@ -817,7 +825,6 @@ func (a *App) buildHandler() {
 			// (TODO 8c.15). Survivable only because every queued mutation sets
 			// an absolute value, so applying it twice lands on the same state —
 			// the first relative operation would have double-applied silently.
-			idem.Unary(a.repo, a.scopeFromContext),
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
@@ -858,6 +865,7 @@ func (a *App) buildHandler() {
 				}
 				return res, err
 			}),
+			idem.Unary(a.repo, a.scopeFromContext),
 		// **This is the other half of the client's keepalive, and neither works
 		// without it** (§20.19.3, client/data/client.go).
 		//
@@ -960,8 +968,22 @@ func (a *App) buildHandler() {
 	// Registered unconditionally and gated inside, for the same reason /speech
 	// is: "why are the images missing?" should be answerable from the response
 	// rather than only from the server log.
-	mux.HandleFunc("/asset", a.serveAsset)
-	mux.HandleFunc("/p", a.servePage)
+	// Both behind one per-client limiter (TODO 6.14 and 6.15, owed to 7.3d).
+	// These are the two endpoints that make this server fetch on a reader's
+	// behalf, and neither carries a session — see limitProxy for what that
+	// leaves to key on and why it is only worth keying on now.
+	proxyLimit := a.limitProxy()
+	// And behind the ORIGIN gate, which is the other side of D20.
+	//
+	// "Proxied pages are never served from the app's origin" is only a control
+	// if it is enforced in both directions: minting URLs that point at
+	// `proxy.<host>` does nothing if the same paths still answer on the app's
+	// hostname, because an attacker hands the reader the app-host version and
+	// the browser gives it the app's origin — which is the exact thing the
+	// split exists to prevent, reached by editing a URL.
+	onProxyHost := a.limitToProxyHost()
+	mux.Handle("/asset", onProxyHost(proxyLimit(http.HandlerFunc(a.serveAsset))))
+	mux.Handle("/p", onProxyHost(proxyLimit(http.HandlerFunc(a.servePage))))
 	mux.HandleFunc("/stream", a.serveStream)
 	// Liveness: the process is up and answering. Deliberately does not touch the
 	// database — a liveness probe that fails on a slow query gets the process
