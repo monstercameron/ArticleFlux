@@ -56,6 +56,16 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Rate limits** (`internal/ratelimit`, TODO 7.3d) — §20.7's table as code, with a test asserting the
+  numbers still match the document. Token buckets rather than fixed windows: a fixed window lets a
+  client send 60 at 11:59:59 and 60 more at 12:00:00, twice the limit in one second, and a polling
+  client with a round-minute schedule finds that immediately. Refusals carry `retry_after`, **rounded
+  up** — rounding down tells the client to retry slightly too early, which is one guaranteed wasted
+  request per refusal at exactly the moment the surface is under pressure. Keys are bounded and
+  eviction fails **open**, because a limiter that started denying everyone when it ran out of map
+  space would turn a traffic spike into an outage. A misconfigured rule (zero limit, zero window)
+  permits everything for the same reason: a typo in a constant should not take a surface down.
+
 - **The LLM circuit breaker and the §18.8 egress boundary** (`internal/llm/breaker.go`,
   `egress.go`, TODO 6.11). §22.8's breaker opens after five consecutive failures and **half-opens to
   exactly one probe** — letting them all through would hand a still-broken provider the full load
