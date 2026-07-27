@@ -91,6 +91,12 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The rate limiter sat behind authorization, so a caller who could not authenticate was never
+  limited.** Refusing an unauthorised call first sounds tidier — nothing you cannot do should cost
+  you anything — and it hands exactly the wrong caller an unlimited channel: every request is
+  rejected before reaching the limiter, so the flood is neither counted nor shed. The limiter runs
+  first now; a denied caller consumes their own bucket, which is per-caller and is the point. Caught
+  by the test written for this mistake, on the day the authorization interceptor landed.
 - **A ranked row could not cite the topic it matched.** Topic ids are generated inside
   `ReplaceTopics` and the in-memory `topics.Topic` carries none, so `topic_id` on a ranking reason
   was always empty: the chip said "a topic you follow" and there was nothing to click through to. It
@@ -221,6 +227,55 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Performance
 
+- **Topic derivation was cubic, and nothing capped its input.** `AgglomerativeCluster` recomputed the
+  similarity of every surviving pair after every merge, which is roughly n³/3 cosine comparisons —
+  not as a worst case but as the ordinary one. Measured on 400-word documents: 140ms at n=50, 1.27s
+  at n=100, **10.5s at n=200**, eight times the work for twice the input. `derive` collects every
+  engaged item in a thirty-day window and caps nothing, so a reader who gets through ten articles a
+  day arrives at n=300 and spends over half a minute of a background worker on one derivation — on a
+  single-box deployment, while the person it is for is trying to read. Merging two clusters changes
+  *one* centroid, so the similarities are now kept in a matrix that a merge invalidates one row and
+  one column of, with the centroid norms cached beside it (`Cosine` recomputes both of its arguments'
+  norms on every call, and in this loop the same centroid is an argument to every comparison in its
+  row). **10.5s → 162ms at n=200**, and the curve is quadratic instead of cubic. The merge order is
+  unchanged — same scan, same tie-breaking, which `topics.Build` depends on having sorted its input
+  to make deterministic — and a test compares the new implementation against the old one pair for
+  pair across five sizes and five thresholds.
+- **Search ranked 50,000 rows through four joins to return fifty.** The query was one statement with
+  `ORDER BY bm25()` and `LIMIT` at the bottom, so a term matching every document was joined to
+  `items`, `sources`, `subscriptions` and `user_item_state` fifty thousand times and 49,950 of those
+  rows were then discarded by the sorter. Ranking and cutting first, then hydrating the survivors:
+  **146ms → 77ms** at 50,000 items, same rows in the same order. The obvious spelling of the second
+  phase — re-join `items_fts` on the surviving rowids — is *slower* than what it replaced (169ms),
+  because naming `items_fts MATCH ?` again re-runs the whole match; `bm25()` and `snippet()` are
+  instead produced inside the ranked phase, which costs nothing because SQLite already evaluates
+  output columns after the sort. The subscription test became a semi-join (72ms against 86ms for the
+  join form): same rows, since subscriptions is unique per user and source, but a membership test
+  does not carry a row through the sorter. `searchplan_test` keeps the previous query verbatim and
+  compares the two field for field, because a performance change to a query nobody can diff is a
+  behaviour change waiting to be found by a reader whose results quietly moved.
+- **Feed normalisation built the whole article to keep 280 characters of it.** `summarize` was
+  `strings.Join(strings.Fields(stripTags(text)), " ")` followed by a truncate — correct, and doing
+  work proportional to the whole document to produce one paragraph. On a full-content feed that is a
+  50KB body turned into a slice of nine thousand string headers, joined into a second 50KB string,
+  and discarded. `countWords` allocated the same slice to call `len` on it. Both now stop early or
+  never allocate, and `stripTags` — which ran **twice per entry**, because the summary and the word
+  count both begin with it and most entries carry only one of `content`/`description` — runs once.
+  Measured over the 27-feed corpus, old against new in the same run because this box throttles:
+  `summarize` **62.4ms → 26.9ms** and 42.1MB → 11.8MB; `countWords` **55.2ms → 35.1ms** and 38.8MB →
+  10.5MB. Output is byte-identical on every content and description string in the corpus, which a
+  test asserts — `Summary` is shown to the reader and `WordCount` decides whether a dwell counts as
+  Read, Skim or Bounce, so a drift in either is a silent behaviour change in something nobody would
+  think to look at.
+- **The sanitizer allocated a slice per element to defend against removing three of them.**
+  `sanitize.walk` collected each node's children before descending, because hardening removes
+  tracking pixels and a removed node's `NextSibling` is nil. Reading the successor before descending
+  is the same defence for nothing: `RemoveChild` cannot clear a pointer already held. 84 fewer
+  allocations per article.
+- **The most-issued query in the application rebuilt its own text on every request** — 700 bytes of
+  constant SQL concatenated around the index hint, then copied again into the builder it was handed
+  to. The constant halves are constants now. The gRPC list, feed, search and tag responses size their
+  slices to the page they are about to fill instead of growing into it six times.
 - **The unread counts went from ~500ms to ~3.5ms at 50,000 items** (TODO 5.4a, plan §6.5). The
   sidebar's per-feed counts (447ms) and the flat badge (556ms) were the last two shapes over G3's
   150ms budget: a count must visit every unread row and cannot stop at 50, so the index hint that
