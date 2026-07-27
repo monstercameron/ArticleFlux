@@ -460,9 +460,18 @@ func TestAnOversizeSnapshotSaysSoRatherThanSucceeding(t *testing.T) {
 func TestSnapshotRefusesBlockedAddress(t *testing.T) {
 	r := New(Options{})
 	defer r.Close()
+	start := time.Now()
 	_, err := r.Snapshot(context.Background(), "http://169.254.169.254/latest/meta-data/", Viewport{})
 	if err == nil {
 		t.Fatal("the metadata endpoint must be refused before a browser is started")
+	}
+	// See TestStreamRefusesBlockedAddress in live_test.go for why this bound
+	// matters and how it was verified: without it, a guard that stopped
+	// running still passes as long as browser launch or navigation eventually
+	// errors on its own, which a genuinely unreachable address will.
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("took %v to refuse a blocked address — a browser appears to have been "+
+			"started before the guard ran", elapsed)
 	}
 }
 
