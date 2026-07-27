@@ -2754,6 +2754,23 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       **50% flaky to 5-for-5**, and from 1–3 minutes to 15 seconds — a passing run of that file no
       longer waits out a 150-second recovery timeout.
 
+      **The autosave glyph, traced to the bottom (2026-07-27).** `a note saves itself and survives a
+      reload` was one of the four "questions about current behaviour", and the answer is not the one
+      the failure suggests. Instrumented end to end, the sequence is:
+      the debounce fires · `SetNote` returns **nil** · the completion callback runs · the draft still
+      matches what was sent · `noteSync` is set to `saved` and reads back as `saved` · **the very next
+      render of the article pane sees the map with ZERO entries**, then watches it refill to 2, 3, 4,
+      5 with every value empty, exactly as the five article bodies re-arrive.
+      *So the note is saved — it survives the reload, which the probe confirmed — and the reader is
+      told it is not.* The state is not lost by the save path; the pane's state is **wiped and
+      re-seeded**, which is a remount, and the DOM keeps the last glyph it was given because
+      `noteSyncMark` returns `nil` for an empty state and the stale node is left in place. Two things
+      to fix and they are separable: whatever remounts the article pane a second after a note write,
+      and a `nil` child that does not remove the element it replaced.
+      This belongs to whoever owns the note panel and the reader root — `root.go` is mid-refactor in
+      this tree — so it is written down rather than fixed here. **Nothing is at risk in the meantime
+      except the reader's confidence:** the prose is on the server before the glyph lies about it.
+
       ◧ 2026-07-27 (later) — **49 passed, 4 failed.** The remaining four, each a real question rather
       than a stale name: `jumping down the list does not read what it jumped over` (8b.49's
       suppression is incomplete — see 8b.52), the categories rail's `.cat-slot`/`.cat-row` markup,
