@@ -86,14 +86,15 @@ same deal.
 ./scripts/make.ps1 dev      # build the client and serve it
 ./scripts/make.ps1 e2e      # Playwright, desktop + phone, against a real server
 ./scripts/make.ps1 test     # go test ./...
-./scripts/make.ps1 lint     # go vet, buf lint, and the four structural guards
+./scripts/make.ps1 lint     # go vet, buf lint, and the five structural guards
 ```
 
 `dev` serves the local account with **no login** — the client asks the server at boot and goes
 straight to the reader, no password prompt. It is refused on any bind but loopback, and refused
 alongside `-behind-proxy`. `cp .env.example .env` documents the same switch as `ARTICLEFLUX_DEV=1`,
-along with the dev credentials (`cam` / `articleflux`) for when you want to exercise the login
-screen itself.
+along with the dev credentials (`cam` / `articleflux-dev`) for when you want to exercise the login
+screen itself — and on a loopback origin the login screen prefills both fields with them, so it is
+one click.
 
 On Linux the same verbs exist as a `Makefile` — `make dev`, `make test`, `make lint`. The two are
 kept identical on purpose; two build systems is only a lie if they disagree.

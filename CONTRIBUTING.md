@@ -58,7 +58,7 @@ visible in review; a wrongly-invented table is not.
 isolation** (§6.1) and anything touching the **LLM egress boundary** (§18.8). Both fail silently,
 both are security properties, and both have a test that must be extended alongside any change.
 
-## The four structural guards
+## The five structural guards
 
 `./scripts/make.ps1 lint` runs `internal/tools/guards`, which fails the build on any of:
 
@@ -69,9 +69,49 @@ both are security properties, and both have a test that must be extended alongsi
    schema becomes undocumented.
 4. **`syscall/js` outside `client/platform`.** Everything else in `client/` must compile and be
    testable natively, which is what makes the client testable at all.
+5. **Hardcoded user-facing copy in `client/view`.** Every string a reader sees is a catalog key.
+   The guard flags literals in `html.Text`, in `Title`/`Placeholder`/`Alt`, in
+   `aria-label`/`title`/`placeholder`, and in the view's own label-taking helpers.
 
 Each guard corresponds to a decision that is otherwise only written down. If a guard is in your way,
 the conversation is about the decision, not about the guard.
+
+## Adding user-facing text
+
+**plan.md §22.16b is the rule set. Read it before adding a string.** The short version, and the
+part that actually gets broken:
+
+**A call site and its catalog key land in the same commit.** A key referenced but never registered
+renders its own identifier to a reader — `list.staleNote`, on screen, in a box. Four tests in
+`client/i18n` enforce both directions, plus the server contract:
+
+```powershell
+go test ./client/i18n/
+```
+
+Where the string comes from depends on where you are, and there is always one shape that fits:
+
+| you are in | do this |
+|---|---|
+| a component | `tr := i18n.UseI18n()` **once**, at the top with the other hooks |
+| a plain helper | take `tr i18n.Runtime` as the **first** parameter |
+| many keys, one surface | `ns := tr.NS("feedSettings")`, then `ns.T("key")` |
+| an effect body, a goroutine | `i18n.At(locale)` — `UseI18n` is a hook and cannot be called there |
+
+A **server** refusal carries a key too, because the server cannot translate itself — the language
+is a per-device value it never sees:
+
+```go
+return errKey(codes.PermissionDenied, "srv.adminOnly",
+    "only an administrator can change Smart+ settings", nil)
+```
+
+…and the same English goes in `client/i18n/en_srv.go`. The English on the status is not
+redundant: it is what the Google Reader sync API and curl get, neither of which has a catalog.
+
+Three things that will bite, each of which already has once: never put a `Runtime` on a props
+struct (func fields defeat the memo bailout that keeps 3,600 rows from re-rendering); never mount
+`i18n.Provider` anywhere but `Root`; never branch on translated text.
 
 ## Changing the contract
 

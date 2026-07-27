@@ -2946,6 +2946,16 @@ Two invariants hold it together, and breaking either is how a theming layer star
 - **No literal colour outside a `Theme`.** The hexes that were in the sheet — the verdict green and
   coral, the modal shadow — were precisely the ones that broke on a light ground.
 
+**`Wash` is a token for a reason worth remembering.** The article's radial gradient carried a fixed
+24% of the source hue, which is correct on plum — a ground with colour of its own to dilute the mix.
+Over a *neutral* ground there is nothing to dilute it with, so the identical declaration reads as light
+falling in on Fanciful and as a green panel on Ink, and worst of all on **Contrast**, whose whole claim
+is maximum legibility and which was carrying the heaviest decoration of the five. It is per-theme now
+(24 · 19 · 13 · 11 · 6%), which also collapses the earlier light-tone override into the same knob: the
+problem was never light-versus-dark, it was ornament calibrated against one ground and used on five.
+**Every theme passed §20.16.2's contrast floor throughout** — this is precisely the class of defect a
+ratio cannot see, and it survived because nobody had opened the theme.
+
 `Tone` (`dark` / `light`) is not decoration: a source hue at 78% lightness is a clear mark on plum and
 an illegible smear on cream, so `--ink`, the hue where it carries *text* rather than fills a shape, is
 darkened on a light ground. Tone is what selects that.

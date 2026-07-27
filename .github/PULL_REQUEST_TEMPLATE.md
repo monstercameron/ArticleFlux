@@ -34,7 +34,7 @@ expensive bugs in this project were invisible to every test that did not open on
 -->
 
 - [ ] `./scripts/make.ps1 test`
-- [ ] `./scripts/make.ps1 lint` — vet, buf lint, and the four structural guards
+- [ ] `./scripts/make.ps1 lint` — vet, buf lint, and the five structural guards
 - [ ] `./scripts/make.ps1 e2e` — if this touches the client
 - [ ] Opened it in a browser — if this touches anything visual
 - [ ] Numbers included above, if this claims a performance change
