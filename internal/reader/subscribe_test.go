@@ -14,6 +14,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -393,5 +394,113 @@ func TestSubscribingToAPageIsRefusedTwice(t *testing.T) {
 		if strings.Contains(d.FeedURL, "/blog") {
 			t.Errorf("the retired source is still in the poll queue: %+v", d)
 		}
+	}
+}
+
+// The JSON path, offline: a page that renders itself, an API behind it, and the
+// whole chain from subscription to second poll — without depending on anyone
+// else's server being up. The live counterpart is in json_live_test.go.
+func TestSubscribeJSONAndPollAgain(t *testing.T) {
+	var mu sync.Mutex
+	chapters := 3
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/comics/x":
+			// The shell: a mount point, a loading message, no entries.
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><title>A Series</title></head><body>
+				<div id="app"><nav><a href="/">Home</a></nav><p>Loading</p>
+				<router-view></router-view></div></body></html>`))
+		case "/api/comics/x":
+			mu.Lock()
+			n := chapters
+			mu.Unlock()
+			var b strings.Builder
+			b.WriteString(`{"comic":{"title":"A Series","chapters":[`)
+			for i := n; i >= 1; i-- {
+				if i != n {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, `{"full_title":"Round %d","url":"/read/x/ch/%d",`+
+					`"published_on":"2026-07-%02dT09:00:00Z","slug":"x-%d"}`, i, i, i, i)
+			}
+			b.WriteString(`]}}`)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(b.String()))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	svc, repo, sc := testService(t)
+	ctx := context.Background()
+
+	f, n, err := svc.SubscribeJSON(ctx, sc, srv.URL+"/comics/x", "", "", jsonsel.Rule{
+		DataURL:   srv.URL + "/api/comics/x",
+		ItemsPath: "comic.chapters",
+		TitlePath: "full_title",
+		LinkPath:  "url",
+		DatePath:  "published_on",
+		IDPath:    "slug",
+	})
+	if err != nil {
+		t.Fatalf("SubscribeJSON: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("ingested %d, want 3", n)
+	}
+	// The title came from the page, not the API: the page is what a reader
+	// subscribed to and what the sidebar shows.
+	if f.Title != "A Series" {
+		t.Errorf("title = %q", f.Title)
+	}
+
+	items, _, _ := repo.ListItems(ctx, sc, store.ListQuery{Limit: 10})
+	if len(items) != 3 {
+		t.Fatalf("%d items", len(items))
+	}
+	if !strings.HasSuffix(items[0].URL, "/read/x/ch/3") {
+		t.Errorf("newest item url = %q", items[0].URL)
+	}
+
+	// A poll of an unchanged site adds nothing…
+	res, err := svc.Refresh(ctx, sc, nil)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if res.NewItems != 0 {
+		t.Errorf("a re-poll produced %d new items", res.NewItems)
+	}
+
+	// …and a new chapter is one new item, which is the whole point of the
+	// feature: "title != exist" decided on the stored identity.
+	mu.Lock()
+	chapters = 4
+	mu.Unlock()
+	res, err = svc.Refresh(ctx, sc, nil)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if res.NewItems != 1 {
+		t.Fatalf("new items = %d, want 1", res.NewItems)
+	}
+	after, _, _ := repo.ListItems(ctx, sc, store.ListQuery{Limit: 10})
+	if len(after) != 4 || after[0].Title != "Round 4" {
+		t.Errorf("after the new chapter: %d items, newest %q", len(after), after[0].Title)
+	}
+}
+
+// The RPC must not become an open proxy: a data address on another site would
+// have the server fetching an unrelated URL hourly, forever, on a client's say-so.
+func TestSubscribeJSONRefusesAForeignDataAddress(t *testing.T) {
+	svc, _, sc := testService(t)
+	_, _, err := svc.SubscribeJSON(context.Background(), sc,
+		"https://example.com/comics/x", "", "", jsonsel.Rule{
+			DataURL:   "https://somewhere-else.example/api/everything",
+			ItemsPath: "items", TitlePath: "t", LinkPath: "u",
+		})
+	if err == nil || !strings.Contains(err.Error(), "same site") {
+		t.Fatalf("err = %v, want a refusal naming the site rule", err)
 	}
 }

@@ -1552,8 +1552,29 @@ type ScrapeRule struct {
 	SummarySelector string `protobuf:"bytes,6,opt,name=summary_selector,json=summarySelector,proto3" json:"summary_selector,omitempty"`
 	ImageSelector   string `protobuf:"bytes,7,opt,name=image_selector,json=imageSelector,proto3" json:"image_selector,omitempty"`
 	AuthorSelector  string `protobuf:"bytes,8,opt,name=author_selector,json=authorSelector,proto3" json:"author_selector,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// kind is "html" (the fields above are CSS selectors, the default) or "json"
+	// (they are dotted paths into an API response: "comic.chapters",
+	// "full_title").
+	//
+	// One message, two dialects, rather than a second message with eight parallel
+	// fields. A page that renders itself in the browser has nothing to select but
+	// its entries are one GET away, and everything downstream of extraction —
+	// preview, storage, polling, ingest — wants to treat the two identically.
+	Kind string `protobuf:"bytes,9,opt,name=kind,proto3" json:"kind,omitempty"`
+	// data_url is where a json rule fetches from. Empty for html rules, which read
+	// the page itself. Enforced to be the same site as index_url: without that the
+	// RPC would be an open proxy that fetches any address hourly forever.
+	DataUrl string `protobuf:"bytes,10,opt,name=data_url,json=dataUrl,proto3" json:"data_url,omitempty"`
+	// link_template builds a URL from an entry's fields when a json response
+	// describes an entry without giving its address:
+	// "https://example.com/read/{slug}/ch/{chapter}".
+	LinkTemplate string `protobuf:"bytes,11,opt,name=link_template,json=linkTemplate,proto3" json:"link_template,omitempty"`
+	// id_selector is the entry's stable identity, for responses that carry one.
+	// It is what "have I seen this?" reads, so an API that renumbers its URLs does
+	// not re-deliver its whole archive as new.
+	IdSelector    string `protobuf:"bytes,12,opt,name=id_selector,json=idSelector,proto3" json:"id_selector,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ScrapeRule) Reset() {
@@ -1638,6 +1659,34 @@ func (x *ScrapeRule) GetImageSelector() string {
 func (x *ScrapeRule) GetAuthorSelector() string {
 	if x != nil {
 		return x.AuthorSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetDataUrl() string {
+	if x != nil {
+		return x.DataUrl
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetLinkTemplate() string {
+	if x != nil {
+		return x.LinkTemplate
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetIdSelector() string {
+	if x != nil {
+		return x.IdSelector
 	}
 	return ""
 }
@@ -1801,12 +1850,11 @@ type AnalyzeSiteResponse struct {
 	Scrape    *ScrapeProposal  `protobuf:"bytes,3,opt,name=scrape,proto3" json:"scrape,omitempty"`
 	// smart_status says why there is no proposal, so the dialog can offer the fix
 	// rather than a shrug:
-	//
-	//	"" ...........  a proposal is present, or none was asked for
-	//	"not_asked" ..  rungs 1-3 found nothing and smart was off
-	//	"no_key" ....   this instance has no OpenAI key (an admin adds one)
-	//	"refused" ...   robots.txt asks us not to read this page
-	//	"failed" ....   the model answered and the parser rejected what it said
+	//   "" ...........  a proposal is present, or none was asked for
+	//   "not_asked" ..  rungs 1-3 found nothing and smart was off
+	//   "no_key" ....   this instance has no OpenAI key (an admin adds one)
+	//   "refused" ...   robots.txt asks us not to read this page
+	//   "failed" ....   the model answered and the parser rejected what it said
 	SmartStatus   string `protobuf:"bytes,4,opt,name=smart_status,json=smartStatus,proto3" json:"smart_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4278,7 +4326,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1d\n" +
 	"\n" +
 	"item_count\x18\x03 \x01(\x05R\titemCount\x12\x10\n" +
-	"\x03how\x18\x04 \x01(\tR\x03how\"\xbe\x02\n" +
+	"\x03how\x18\x04 \x01(\tR\x03how\"\xb3\x03\n" +
 	"\n" +
 	"ScrapeRule\x12#\n" +
 	"\ritem_selector\x18\x01 \x01(\tR\fitemSelector\x12%\n" +
@@ -4289,7 +4337,13 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"dateLayout\x12)\n" +
 	"\x10summary_selector\x18\x06 \x01(\tR\x0fsummarySelector\x12%\n" +
 	"\x0eimage_selector\x18\a \x01(\tR\rimageSelector\x12'\n" +
-	"\x0fauthor_selector\x18\b \x01(\tR\x0eauthorSelector\"s\n" +
+	"\x0fauthor_selector\x18\b \x01(\tR\x0eauthorSelector\x12\x12\n" +
+	"\x04kind\x18\t \x01(\tR\x04kind\x12\x19\n" +
+	"\bdata_url\x18\n" +
+	" \x01(\tR\adataUrl\x12#\n" +
+	"\rlink_template\x18\v \x01(\tR\flinkTemplate\x12\x1f\n" +
+	"\vid_selector\x18\f \x01(\tR\n" +
+	"idSelector\"s\n" +
 	"\fScrapeSample\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12!\n" +

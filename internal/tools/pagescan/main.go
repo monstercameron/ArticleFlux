@@ -3,8 +3,8 @@
 // It answers the two questions that come up whenever a site cannot be followed,
 // and that are otherwise answered by guessing:
 //
-//	1. what does the model actually SEE?    — the distilled outline, verbatim
-//	2. does this rule work on that page?    — the extractor, on the live HTML
+//  1. what does the model actually SEE?    — the distilled outline, verbatim
+//  2. does this rule work on that page?    — the extractor, on the live HTML
 //
 // Both matter because they fail differently. A proposal that misses the item
 // list is usually a distillation that dropped the evidence — a page whose posts
@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/discover"
+	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 )
@@ -43,7 +44,9 @@ func main() {
 			"item|title|link|date|summary|image — pipe-separated attrsel selectors to try")
 		layout  = flag.String("layout", "", "Go time layout for a human-readable date selector")
 		private = flag.Bool("allow-private", false, "permit loopback/LAN addresses (local fixtures)")
-		limit   = flag.Int("limit", 6000, "truncate the printed outline to this many bytes; 0 for all")
+		jsonRule = flag.String("json", "",
+			"items|title|link|date|id — dotted paths to try against a discovered JSON endpoint")
+		limit = flag.Int("limit", 6000, "truncate the printed outline to this many bytes; 0 for all")
 	)
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -75,6 +78,27 @@ func main() {
 	}
 	fmt.Printf("== page\n   url    %s\n   title  %s\n   html   %d bytes\n   robots %v\n",
 		page.URL, page.Title, len(page.HTML), f.Allowed(ctx, page.URL))
+
+	// The diagnosis that explains an empty-looking outline. Printed before it,
+	// because someone reading this output who does not know the page is an app
+	// shell will spend the next ten minutes hunting for the list.
+	if smart.ClientRendered(page.HTML) {
+		fmt.Println("== CLIENT-RENDERED: the entries are fetched by JavaScript after load.")
+		fmt.Println("   Nothing in this HTML can be selected — so look for the data instead.")
+		if api := f.JSONEndpoint(ctx, page.URL); api != nil {
+			fmt.Printf("== JSON endpoint\n   url    %s\n   items  %s (%d entries)\n"+
+				"   body   %d bytes\n",
+				api.URL, api.ItemsPath, api.Found, len(api.Body))
+			if *jsonRule != "" {
+				runJSON(api, page.URL, *jsonRule)
+				return
+			}
+			fmt.Println("== shape")
+			fmt.Println(smart.OutlineJSON(api.Body))
+			return
+		}
+		fmt.Println("   No JSON endpoint answered either; this page cannot be followed.")
+	}
 
 	out := smart.Outline(page.HTML)
 	fmt.Printf("== outline: %d bytes (%.1f%% of the page)\n",
@@ -125,6 +149,46 @@ func main() {
 			when = it.PublishedAt.Format("2006-01-02")
 		}
 		fmt.Printf("   %2d  %-10s %-46.46s %s\n", i+1, when, it.Title, it.URL)
+	}
+}
+
+// runJSON tries a JSON rule against a discovered endpoint, the same way -rule
+// tries a CSS rule against a page.
+func runJSON(api *discover.APIEndpoint, pageURL, spec string) {
+	parts := strings.Split(spec, "|")
+	for len(parts) < 5 {
+		parts = append(parts, "")
+	}
+	r := jsonsel.Rule{
+		IndexURL: pageURL, DataURL: api.URL,
+		ItemsPath: strings.TrimSpace(parts[0]),
+		TitlePath: strings.TrimSpace(parts[1]),
+		LinkPath:  strings.TrimSpace(parts[2]),
+		DatePath:  strings.TrimSpace(parts[3]),
+		IDPath:    strings.TrimSpace(parts[4]),
+	}
+	c, err := jsonsel.Compile(r)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "compile:", err)
+		os.Exit(1)
+	}
+	res, err := jsonsel.Extract(c, api.Body, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "extract:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("== json rule: %d found, %d usable, %d skipped\n",
+		res.Found, len(res.Items), res.Skipped)
+	for _, p := range res.Problems {
+		fmt.Println("   !", p)
+	}
+	for i, it := range res.Items {
+		if i >= 8 {
+			fmt.Printf("   … and %d more\n", len(res.Items)-8)
+			break
+		}
+		fmt.Printf("   %2d  %-10s %-42.42s %s\n",
+			i+1, it.PublishedAt.Format("2006-01-02"), it.Title, it.URL)
 	}
 }
 

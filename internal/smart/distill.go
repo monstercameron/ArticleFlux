@@ -240,3 +240,77 @@ func indent(b *strings.Builder, depth int) {
 // to show the same thing. Both need to see EXACTLY what is sent, which is why
 // this is the same function rather than a second one that drifts.
 func Outline(pageHTML string) string { return distill(pageHTML) }
+
+// appShellMarkers are the roots a single-page application mounts into.
+//
+// Presence alone proves nothing — a server-rendered Next.js page has `#__next`
+// around a full document — which is why ClientRendered pairs them with "and
+// there is almost no text".
+var appShellMarkers = map[string]bool{
+	"app": true, "root": true, "__next": true, "__nuxt": true, "q-app": true,
+}
+
+// ClientRendered reports that a page builds itself in the browser, so its HTML
+// holds nothing to write selectors against.
+//
+// This is worth detecting BEFORE the model is asked, and the reason is not only
+// the money. Handed an app shell, a model does what a person would: it finds the
+// most list-shaped thing in the markup — the navigation — and proposes selectors
+// for it. Those selectors compile, they match, and they produce a "feed" of menu
+// items. The validation gate downstream catches most of that, but "we refused
+// its answer" and "there was never an answer to give" are different facts, and
+// only the second one has a remedy the reader can act on.
+//
+// Deliberately conservative: BOTH a mount point and a body with almost no text.
+// A site that server-renders into #root is not flagged, because its text is
+// there; a short static page with no marker is not flagged either.
+func ClientRendered(pageHTML string) bool {
+	doc, err := html.Parse(strings.NewReader(pageHTML))
+	if err != nil {
+		return false
+	}
+	body := findBody(doc)
+	if body == nil {
+		return false
+	}
+
+	var text strings.Builder
+	marker := false
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			text.WriteString(n.Data)
+			return
+		}
+		if n.Type == html.ElementNode {
+			if skipTags[n.Data] {
+				return
+			}
+			// Framework custom elements are their own evidence: <router-view> is
+			// where Vue Router puts the page, and it is empty until JavaScript
+			// runs.
+			if strings.Contains(n.Data, "-view") || strings.HasPrefix(n.Data, "router-") {
+				marker = true
+			}
+			for _, a := range n.Attr {
+				switch strings.ToLower(a.Key) {
+				case "id":
+					if appShellMarkers[strings.ToLower(strings.TrimSpace(a.Val))] {
+						marker = true
+					}
+				case "data-reactroot", "ng-app", "data-server-rendered":
+					marker = true
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(body)
+
+	// 800 characters is about a page of navigation, a logo and a loading
+	// message — the shell — and comfortably under the shortest real index page,
+	// which carries at least a dozen headlines.
+	return marker && len(strings.Join(strings.Fields(text.String()), " ")) < 800
+}

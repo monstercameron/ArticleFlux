@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
@@ -81,6 +82,40 @@ func (s *ReaderServer) AnalyzeSite(ctx context.Context, req *pb.AnalyzeSiteReque
 			Url: c.URL, Title: c.Title, ItemCount: int32(c.Items), How: c.How,
 		})
 	}
+	// A json proposal travels in the SAME message as an html one, with kind set
+	// and the selector fields holding paths. The client shows it and posts it
+	// back without needing to know which dialect it is looking at.
+	if res.JSON != nil {
+		prop := &pb.ScrapeProposal{
+			IndexUrl: req.GetUrl(),
+			Rule: &pb.ScrapeRule{
+				Kind:            "json",
+				DataUrl:         res.JSON.DataURL,
+				ItemSelector:    res.JSON.Rule.ItemsPath,
+				TitleSelector:   res.JSON.Rule.TitlePath,
+				LinkSelector:    res.JSON.Rule.LinkPath,
+				LinkTemplate:    res.JSON.Rule.LinkTemplate,
+				IdSelector:      res.JSON.Rule.IDPath,
+				DateSelector:    res.JSON.Rule.DatePath,
+				SummarySelector: res.JSON.Rule.SummaryPath,
+				ImageSelector:   res.JSON.Rule.ImagePath,
+				AuthorSelector:  res.JSON.Rule.AuthorPath,
+			},
+			Found: int32(res.JSON.Found),
+			Notes: res.JSON.Notes,
+		}
+		for _, it := range res.JSON.Samples() {
+			var published string
+			if !it.PublishedAt.IsZero() {
+				published = it.PublishedAt.UTC().Format(time.RFC3339)
+			}
+			prop.Samples = append(prop.Samples, &pb.ScrapeSample{
+				Title: it.Title, Url: it.URL, PublishedAt: published, Summary: it.Summary,
+			})
+		}
+		out.Scrape = prop
+		return out, nil
+	}
 	if res.Scrape != nil {
 		prop := &pb.ScrapeProposal{
 			IndexUrl: req.GetUrl(),
@@ -109,8 +144,19 @@ func (s *ReaderServer) SubscribeScrape(ctx context.Context, req *pb.SubscribeScr
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	f, n, err := s.svc.SubscribeScrape(ctx, sc, req.GetIndexUrl(), req.GetTitle(),
-		req.GetFolderId(), domainRule(req.GetRule()))
+	// One RPC, two dialects — the alternative was a second RPC whose only
+	// difference is which extractor it names, and a client that has to know.
+	var (
+		f store.Feed
+		n int
+	)
+	if req.GetRule().GetKind() == "json" {
+		f, n, err = s.svc.SubscribeJSON(ctx, sc, req.GetIndexUrl(), req.GetTitle(),
+			req.GetFolderId(), domainJSONRule(req.GetRule()))
+	} else {
+		f, n, err = s.svc.SubscribeScrape(ctx, sc, req.GetIndexUrl(), req.GetTitle(),
+			req.GetFolderId(), domainRule(req.GetRule()))
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, reader.ErrNoAnalyzer):
@@ -144,6 +190,22 @@ func pbRule(r scrapesel.Rule) *pb.ScrapeRule {
 		SummarySelector: r.SummarySelector,
 		ImageSelector:   r.ImageSelector,
 		AuthorSelector:  r.AuthorSelector,
+	}
+}
+
+// domainJSONRule reads the same message as paths rather than selectors.
+func domainJSONRule(r *pb.ScrapeRule) jsonsel.Rule {
+	return jsonsel.Rule{
+		DataURL:      r.GetDataUrl(),
+		ItemsPath:    r.GetItemSelector(),
+		TitlePath:    r.GetTitleSelector(),
+		LinkPath:     r.GetLinkSelector(),
+		LinkTemplate: r.GetLinkTemplate(),
+		IDPath:       r.GetIdSelector(),
+		DatePath:     r.GetDateSelector(),
+		SummaryPath:  r.GetSummarySelector(),
+		ImagePath:    r.GetImageSelector(),
+		AuthorPath:   r.GetAuthorSelector(),
 	}
 }
 

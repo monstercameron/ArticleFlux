@@ -9,6 +9,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
+	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -49,6 +50,10 @@ type Analysis struct {
 	PageTitle string
 	Feeds     []discover.Candidate
 	Scrape    *smart.Proposal
+	// JSON is the same answer for a page that renders itself: paths into the
+	// response its own JavaScript fetches, rather than selectors against markup
+	// that has nothing in it (§11.2b).
+	JSON *smart.JSONProposal
 	// Status explains an absent proposal — see the proto's smart_status.
 	Status string
 }
@@ -59,6 +64,14 @@ const (
 	StatusNoKey    = "no_key"
 	StatusRefused  = "refused"
 	StatusFailed   = "failed"
+	// StatusClientRendered is a page whose entries are fetched by JavaScript
+	// after it loads, so its HTML contains no list to write selectors against.
+	//
+	// Its own status rather than folding into "failed" because the remedy is
+	// different and the reader can act on it: a feed address elsewhere on the
+	// site will still work, and no amount of retrying this page will. It is also
+	// detected BEFORE the model is called, so this one costs nothing.
+	StatusClientRendered = "js_rendered"
 )
 
 // ErrNoAnalyzer means the instance was built without Smart+ wiring. Distinct
@@ -128,13 +141,38 @@ func (s *Service) AnalyzeSite(ctx context.Context, sc store.Scope, rawURL string
 		out.Status = StatusRefused
 		return out, nil
 	}
+	// An application shell has nothing to SELECT — but the entries are one
+	// request away, and that request is a plain GET returning plain JSON. So
+	// the answer for these pages is not "no": it is to follow the data the page
+	// follows (§11.2b).
+	//
+	// The model is never shown the shell. Handed one it does not come back
+	// empty-handed — it comes back with the navigation, which repeats and
+	// compiles and produces a feed of menu items.
+	if smart.ClientRendered(page.HTML) {
+		api := s.pages.JSONEndpoint(ctx, page.URL)
+		if api == nil {
+			out.Status = StatusClientRendered
+			return out, nil
+		}
+		prop, err := s.analyzer.ProposeJSON(ctx, page.URL, api.URL, api.ItemsPath, api.Body)
+		if err != nil {
+			if errors.Is(err, smart.ErrNoRule) || errors.Is(err, smart.ErrNoList) {
+				out.Status = StatusFailed
+				return out, nil
+			}
+			return nil, err
+		}
+		out.JSON = prop
+		return out, nil
+	}
 
 	prop, err := s.analyzer.Propose(ctx, page.URL, page.HTML)
 	if err != nil {
 		// A refusal to propose is a normal outcome — some pages genuinely have
 		// no list on them — so it is reported as a status rather than as an
 		// error. A transport failure is not, and is returned.
-		if errors.Is(err, smart.ErrNoRule) {
+		if errors.Is(err, smart.ErrNoRule) || errors.Is(err, smart.ErrNoList) {
 			out.Status = StatusFailed
 			return out, nil
 		}
@@ -239,6 +277,183 @@ func (s *Service) SubscribeScrape(ctx context.Context, sc store.Scope,
 	return f, n, nil
 }
 
+// SubscribeJSON subscribes to a page whose entries live in an API (§11.2b).
+//
+// The counterpart to SubscribeScrape and, like it, the rule is re-run against
+// the live response before anything is written: the client is not trusted, the
+// preview may be minutes old, and a rule that no longer works must not become a
+// subscription that was born broken.
+func (s *Service) SubscribeJSON(ctx context.Context, sc store.Scope,
+	indexURL, title, folderID string, rule jsonsel.Rule) (store.Feed, int, error) {
+
+	if s.pages == nil {
+		return store.Feed{}, 0, ErrNoAnalyzer
+	}
+	indexURL = strings.TrimSpace(indexURL)
+	dataURL := strings.TrimSpace(rule.DataURL)
+	if indexURL == "" || urlnorm.Host(indexURL) == "" {
+		return store.Feed{}, 0, fmt.Errorf("reader: %q is not a URL", indexURL)
+	}
+	if dataURL == "" || urlnorm.Host(dataURL) == "" {
+		return store.Feed{}, 0, fmt.Errorf("reader: %q is not a URL", dataURL)
+	}
+	// Same origin, enforced rather than assumed. Without this the RPC is an
+	// open proxy: a client could name any page and any unrelated data address,
+	// and the server would fetch the second one hourly forever on its behalf.
+	if !sameHost(indexURL, dataURL) {
+		return store.Feed{}, 0, fmt.Errorf(
+			"reader: the data address must be on the same site as the page")
+	}
+	rule.IndexURL = indexURL
+
+	compiled, err := jsonsel.Compile(rule)
+	if err != nil {
+		return store.Feed{}, 0, err
+	}
+	if !s.pages.Allowed(ctx, dataURL) {
+		return store.Feed{}, 0, fmt.Errorf("reader: robots.txt asks us not to fetch %s", dataURL)
+	}
+	body, err := s.pages.JSON(ctx, dataURL)
+	if err != nil {
+		return store.Feed{}, 0, err
+	}
+	res, err := jsonsel.Extract(compiled, body, timeutil.Now())
+	if err != nil {
+		return store.Feed{}, 0, err
+	}
+	if len(res.Items) == 0 {
+		return store.Feed{}, 0, fmt.Errorf("reader: that rule finds nothing at %s right now", dataURL)
+	}
+
+	if strings.TrimSpace(title) == "" {
+		if page, perr := s.pages.Page(ctx, indexURL); perr == nil {
+			title = page.Title
+		}
+	}
+	f, _, err := s.repo.Subscribe(ctx, sc, store.NewSubscription{
+		NaturalKey:     "scrape:" + urlnorm.DupeKey(indexURL),
+		FeedURL:        indexURL,
+		SiteURL:        indexURL,
+		Title:          strings.TrimSpace(title),
+		FolderID:       folderID,
+		Kind:           "scrape",
+		FetchIntervalS: ScrapeInterval,
+	})
+	if err != nil {
+		return store.Feed{}, 0, err
+	}
+	if err := s.repo.PutScrapeRule(ctx, sc, store.ScrapeRule{
+		SourceID:        f.SourceID,
+		IndexURL:        indexURL,
+		Kind:            "json",
+		DataURL:         dataURL,
+		ItemSelector:    rule.ItemsPath,
+		TitleSelector:   rule.TitlePath,
+		LinkSelector:    rule.LinkPath,
+		LinkTemplate:    rule.LinkTemplate,
+		IDSelector:      rule.IDPath,
+		DateSelector:    rule.DatePath,
+		SummarySelector: rule.SummaryPath,
+		ImageSelector:   rule.ImagePath,
+		AuthorSelector:  rule.AuthorPath,
+		RespectRobots:   true,
+	}); err != nil {
+		return store.Feed{}, 0, err
+	}
+
+	n, err := s.ingestScraped(ctx, f.SourceID, jsonItems(res.Items))
+	if err != nil {
+		return f, 0, err
+	}
+	refreshed, ferr := s.repo.ListFeeds(ctx, sc)
+	if ferr == nil {
+		for _, rf := range refreshed {
+			if rf.SourceID == f.SourceID {
+				return rf, n, nil
+			}
+		}
+	}
+	return f, n, nil
+}
+
+// sameHost keeps a JSON rule pointed at the site the reader subscribed to.
+func sameHost(a, b string) bool {
+	ha, hb := urlnorm.Host(a), urlnorm.Host(b)
+	return ha != "" && strings.EqualFold(ha, hb)
+}
+
+// jsonItems converts to the shape ingestScraped takes, which is scrapesel's.
+//
+// The conversion exists so the two extractors stay independent of each other:
+// neither imports the other, and the pipeline downstream cannot tell which one
+// produced an item — which is the property that keeps ingest, dedup, health,
+// ranking and search working unchanged for both.
+func jsonItems(in []jsonsel.Item) scrapesel.Result {
+	out := scrapesel.Result{Matched: len(in)}
+	for _, it := range in {
+		out.Items = append(out.Items, scrapesel.Item{
+			GUID: it.GUID, URL: it.URL, DupeKey: it.DupeKey, Title: it.Title,
+			Author: it.Author, Summary: it.Summary,
+			PublishedAt: it.PublishedAt, ImageURL: it.ImageURL,
+		})
+	}
+	return out
+}
+
+// pollJSON is the scraped source's poll when its rule is a json one.
+func (s *Service) pollJSON(ctx context.Context, src store.SourceRow, rule store.ScrapeRule) (int, error) {
+	if rule.RespectRobots && !s.pages.Allowed(ctx, rule.DataURL) {
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+			SourceID: src.ID, Err: "robots.txt now disallows this address"})
+		return 0, fmt.Errorf("reader: robots.txt disallows %s", rule.DataURL)
+	}
+	body, err := s.pages.JSON(ctx, rule.DataURL)
+	if err != nil {
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		return 0, err
+	}
+	compiled, err := jsonsel.Compile(jsonsel.Rule{
+		IndexURL:     rule.IndexURL,
+		DataURL:      rule.DataURL,
+		ItemsPath:    rule.ItemSelector,
+		TitlePath:    rule.TitleSelector,
+		LinkPath:     rule.LinkSelector,
+		LinkTemplate: rule.LinkTemplate,
+		IDPath:       rule.IDSelector,
+		DatePath:     rule.DateSelector,
+		SummaryPath:  rule.SummarySelector,
+		ImagePath:    rule.ImageSelector,
+		AuthorPath:   rule.AuthorSelector,
+	})
+	if err != nil {
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		return 0, err
+	}
+	res, err := jsonsel.Extract(compiled, body, timeutil.Now())
+	if err != nil {
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		return 0, err
+	}
+
+	_ = s.repo.RecordScrapeOutcome(ctx, src.ID, len(res.Items))
+	if len(res.Items) == 0 {
+		msg := "the rule matched nothing in this response"
+		if res.Found > 0 {
+			msg = fmt.Sprintf("%d entries found but none produced an item", res.Found)
+		}
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: msg})
+		return 0, errors.New("reader: " + msg)
+	}
+
+	n, err := s.ingestScraped(ctx, src.ID, jsonItems(res.Items))
+	if err != nil {
+		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		return 0, err
+	}
+	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, SiteURL: rule.IndexURL})
+	return n, nil
+}
+
 // pollScrape is the scraped source's poll, in place of a feed fetch.
 func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, error) {
 	if s.pages == nil {
@@ -252,6 +467,11 @@ func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, err
 		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, Err: "no scrape rule for this source"})
 		return 0, err
+	}
+	// Two dialects, one source kind. A json rule reads the address the page's
+	// own JavaScript reads; an html rule reads the page.
+	if rule.Kind == "json" {
+		return s.pollJSON(ctx, src, rule)
 	}
 	if rule.RespectRobots && !s.pages.Allowed(ctx, rule.IndexURL) {
 		// A site that changed its mind is obeyed, and the reason is recorded

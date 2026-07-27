@@ -24,9 +24,28 @@ import (
 // would poll one page N times to extract the same articles N times.
 
 // ScrapeRule is one site's extraction rule, as stored.
+//
+// One shape, two dialects. For Kind "html" the selector fields are CSS with the
+// attrsel `@attr` suffix; for "json" they are dotted paths into the response
+// ("comic.chapters", "full_title"). Doubling the columns rather than adding a
+// parallel set keeps every consumer — preview, editor, poller — on one code path
+// with a switch in it, instead of eight more fields that are null on every row
+// of the other kind.
 type ScrapeRule struct {
 	SourceID string
 	IndexURL string
+	// Kind is "html" (selectors against the page) or "json" (paths into an API
+	// response). Empty means "html", so every row written before 0018 reads back
+	// as what it is.
+	Kind string
+	// DataURL is where a json rule fetches from. Empty for html rules, which
+	// read the page at IndexURL.
+	DataURL string
+	// LinkTemplate builds a URL from an entry's fields when a json response
+	// carries no usable one.
+	LinkTemplate string
+	// IDSelector is the entry's stable identity, for json rules that have one.
+	IDSelector string
 	// URLTemplate is §14.2's forward-probing variant. Stored, unused: the
 	// column exists so the day it is wanted is not a migration, and reading it
 	// back unchanged is cheaper than pretending it is not there.
@@ -81,11 +100,16 @@ func (r *ReaderRepo) PutScrapeRule(ctx context.Context, s Scope, rule ScrapeRule
 			INSERT INTO scrape_rules (
 				source_id, index_url, url_template, item_selector, title_selector,
 				link_selector, date_selector, date_layout, summary_selector,
-				image_selector, author_selector, respect_robots, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				image_selector, author_selector, respect_robots, created_at, updated_at,
+				kind, data_url, link_template, id_selector)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(source_id) DO UPDATE SET
 				index_url=excluded.index_url,
 				url_template=excluded.url_template,
+				kind=excluded.kind,
+				data_url=excluded.data_url,
+				link_template=excluded.link_template,
+				id_selector=excluded.id_selector,
 				item_selector=excluded.item_selector,
 				title_selector=excluded.title_selector,
 				link_selector=excluded.link_selector,
@@ -103,7 +127,9 @@ func (r *ReaderRepo) PutScrapeRule(ctx context.Context, s Scope, rule ScrapeRule
 			rule.SourceID, rule.IndexURL, rule.URLTemplate, rule.ItemSelector,
 			rule.TitleSelector, rule.LinkSelector, rule.DateSelector, rule.DateLayout,
 			rule.SummarySelector, rule.ImageSelector, rule.AuthorSelector,
-			boolInt(rule.RespectRobots), now, now)
+			boolInt(rule.RespectRobots), now, now,
+			kindOf(rule.Kind), nullify(rule.DataURL), nullify(rule.LinkTemplate),
+			nullify(rule.IDSelector))
 		return err
 	})
 }
@@ -123,12 +149,15 @@ func (r *ReaderRepo) ScrapeRuleFor(ctx context.Context, sourceID string) (Scrape
 		       title_selector, link_selector, COALESCE(date_selector,''),
 		       COALESCE(date_layout,''), COALESCE(summary_selector,''),
 		       COALESCE(image_selector,''), COALESCE(author_selector,''),
-		       respect_robots, COALESCE(last_ok_at,''), empty_polls
+		       respect_robots, COALESCE(last_ok_at,''), empty_polls,
+		       COALESCE(kind,'html'), COALESCE(data_url,''),
+		       COALESCE(link_template,''), COALESCE(id_selector,'')
 		  FROM scrape_rules WHERE source_id = ?`, sourceID).
 		Scan(&out.SourceID, &out.IndexURL, &out.URLTemplate, &out.ItemSelector,
 			&out.TitleSelector, &out.LinkSelector, &out.DateSelector, &out.DateLayout,
 			&out.SummarySelector, &out.ImageSelector, &out.AuthorSelector,
-			&robots, &out.LastOKAt, &out.EmptyPolls)
+			&robots, &out.LastOKAt, &out.EmptyPolls,
+			&out.Kind, &out.DataURL, &out.LinkTemplate, &out.IDSelector)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScrapeRule{}, ErrNotFound
 	}
@@ -228,13 +257,29 @@ func validateRule(rule ScrapeRule) error {
 			return fmt.Errorf("store: the %s selector is too long (max %d)", name, MaxSelector)
 		}
 	}
-	switch {
-	case strings.TrimSpace(rule.ItemSelector) == "",
-		strings.TrimSpace(rule.TitleSelector) == "",
-		strings.TrimSpace(rule.LinkSelector) == "":
-		return fmt.Errorf("store: item, title and link selectors are required")
+	if strings.TrimSpace(rule.ItemSelector) == "" || strings.TrimSpace(rule.TitleSelector) == "" {
+		return fmt.Errorf("store: item and title selectors are required")
+	}
+	// A json rule may carry a link TEMPLATE instead of a link path, because some
+	// APIs describe an entry without giving its address. An html rule has no
+	// such escape: a page always has the anchor somewhere.
+	if strings.TrimSpace(rule.LinkSelector) == "" &&
+		(kindOf(rule.Kind) != "json" || strings.TrimSpace(rule.LinkTemplate) == "") {
+		return fmt.Errorf("store: a link selector is required")
+	}
+	if kindOf(rule.Kind) == "json" && strings.TrimSpace(rule.DataURL) == "" {
+		return fmt.Errorf("store: a json rule needs the address its entries come from")
 	}
 	return nil
+}
+
+// kindOf defaults an empty kind to html, which is what every row written before
+// 0018 is.
+func kindOf(k string) string {
+	if strings.TrimSpace(k) == "" {
+		return "html"
+	}
+	return strings.TrimSpace(k)
 }
 
 // RetireUnusableSource deactivates a source that turned out not to be a feed.

@@ -44,6 +44,16 @@ var (
 	// differs: this one is "this page cannot be followed this way", and retrying
 	// it costs money to be told so again.
 	ErrNoRule = errors.New("smart: no working rule for this page")
+
+	// ErrNoList is the model saying there is nothing here to follow — an app
+	// shell, a single article, a landing page.
+	//
+	// A first-class answer rather than a failure, because the alternative is
+	// what a model does when "I cannot" is not an available reply: it finds the
+	// most list-shaped thing in the markup, which on a page like that is the
+	// navigation, and proposes selectors for a feed of menu items. Making the
+	// honest answer expressible is what stops the plausible one.
+	ErrNoList = errors.New("smart: the page has no list of entries on it")
 )
 
 // minItems is the floor for accepting a proposed rule.
@@ -141,6 +151,17 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 		}
 		if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 			return nil, fmt.Errorf("smart: the proposed rule was not readable: %w", err)
+		}
+
+		// "There is no list here" — taken at its word, and NOT retried. The
+		// second attempt exists to give a failed selector another go; asking
+		// again after a considered "nothing to select" is paying twice for the
+		// same sentence.
+		if strings.TrimSpace(answer.ItemSelector) == "" {
+			if n := strings.TrimSpace(answer.Notes); n != "" {
+				return nil, fmt.Errorf("%w: %s", ErrNoList, n)
+			}
+			return nil, ErrNoList
 		}
 
 		rule := scrapesel.Rule{
@@ -275,23 +296,53 @@ func scrapeSchema() map[string]any {
 
 const scrapeInstructions = `You are writing a scraping rule for ArticleFlux, a feed reader, so that a page WITHOUT an RSS or Atom feed can be followed like one.
 
-You are given the URL of an index page (a blog index, a news section, a changelog, an author page) and a distilled outline of its HTML. The outline keeps tags, ids, classes and a few attributes, and collapses repeated siblings as "x N more" — that collapse is your strongest clue: the list of articles is almost always the repeated block.
+You get the URL of an index page and a DISTILLED OUTLINE of its HTML. Return CSS selectors that pull the list of entries out of that page.
 
-Return CSS selectors that pull the list of entries out of that page.
+READING THE OUTLINE
+
+Each line is one element, indented by depth:
+
+    tag#id.class.class[attr=value attr=value]
+    "a short sample of the element's text"
+    … x 11 more li.detail_list_item
+
+Scripts, styles, SVG and most text are gone — the outline is structure, not content. The "… x N more" line is the strongest signal in it: it means N siblings shared that exact tag and classes, and a repeated block of that shape is almost always the list you are looking for.
+
+WHAT COUNTS AS AN ENTRY
+
+Anything a person would want to be told about when a new one appears: an article, a blog post, a chapter, an episode, a release, a changelog entry, a podcast episode, a video, an issue of a newsletter. "Article" below means whichever of those this page publishes.
 
 THE SELECTOR LANGUAGE
 
 - Plain CSS selectors, evaluated by Go's cascadia. Tag, class, id, descendant, child, attribute and :nth-child work. jQuery extensions do NOT: no :has(), no :contains(), no :visible, no :first (use :first-child).
 - Append @attr to read an attribute instead of the text: "h2 a@href" is the anchor's href, "time@datetime" is the machine-readable date, "img@src" is the image address. Without @attr you get the element's text.
-- item_selector selects the CONTAINER of one entry. Every other selector is evaluated INSIDE a container match, so they must be relative to it and must not reach out to the page's header, nav or footer.
+- item_selector selects the CONTAINER of one entry. Every other selector runs INSIDE a container match, so they must be relative to it and must not reach the page header, nav or footer.
 
 RULES
 
-1. item_selector, title_selector and link_selector are required. The others are "" when the page does not carry them. Do not invent a selector for something that is not there — an empty string is a correct answer.
+1. item_selector, title_selector and link_selector are required — UNLESS there is no list on this page at all, in which case see NO LIST below. The rest are "" when the page does not carry them. Do not invent a selector for something that is not there; an empty string is a correct answer.
 2. link_selector MUST end in @href. A link selector that reads text produces an unopenable item.
-3. Prefer stable, meaningful class names ("post", "entry", "article-card") over generated ones ("css-1x7ab2", "sc-fzXfMB"), and prefer semantic elements (article, li, time) over div soup. A rule survives a redesign only if it keys on what the page MEANS.
-4. Choose the selector that matches the WHOLE list, not the featured item at the top. If the outline shows one hero block and then a repeated block, the repeated block is the list.
-5. date_selector: prefer time@datetime or an attribute holding an ISO date. Only set date_layout when the date is human text — it is a Go time layout using the reference "Mon Jan 2 15:04:05 2006", so "January 2, 2006" or "2 Jan 2006". Leave date_layout "" when the value is ISO 8601.
-6. summary_selector is the entry's own excerpt or standfirst, not the article body and not a category label.
-7. Do not select navigation, pagination, related-posts rails, comment counts, tag clouds, newsletter forms or "most popular" sidebars. Those repeat too and they are not the list.
-8. notes: one short sentence naming what you keyed on, for a person deciding whether to trust this. No preamble, no restating the selectors.`
+3. **Never select an id that belongs to ONE entry.** Outlines are full of them — li#episode_309, article#post-4471, div#chapter-88 — and a selector built on one matches exactly one thing today and nothing tomorrow. Use the shared class, or the list container plus a child: "ul#_listUl li" and "ul.chapters > li" are both good; "li#episode_309" is never right. An id is only safe on a CONTAINER of many entries.
+4. Prefer stable, meaningful class names ("post", "entry", "chapter", "episode-item") over generated ones ("css-1x7ab2", "sc-fzXfMB"), and prefer semantic elements (article, li, time) over div soup. A rule survives a redesign only if it keys on what the page MEANS.
+5. Choose the selector that matches the WHOLE list, not the featured item at the top and not the "start reading" button. If the outline shows one hero block and then a repeated block, the repeated block is the list.
+6. DATES ARE THE FIELD MOST OFTEN GOT WRONG, and getting them wrong is silent: an unparseable date becomes "just now", so every old entry sorts to the top of the reader forever.
+   - Prefer an attribute: "time@datetime" or any attribute holding an ISO 8601 value. Then leave date_layout "".
+   - If the date is human text, set BOTH the selector and date_layout, where date_layout is a Go time layout written with the reference date "Mon Jan 2 15:04:05 MST 2006". Read the sample text in the outline and copy its shape:
+       "Jun 1, 2026"      → "Jan 2, 2006"
+       "01/06/2026"       → "02/01/2006"
+       "2026-06-01 14:03" → "2006-01-02 15:04"
+       "1 June 2026"      → "2 January 2006"
+   - A relative date ("3 days ago", "hier") cannot be expressed as a layout. Leave BOTH the selector and the layout empty rather than guessing; the reader will use the time we first saw the entry, which is stable.
+7. summary_selector is the entry's own excerpt or standfirst, not the article body and not a category label. Do not point it at view counts, like counts or comment counts.
+8. Do not select navigation, pagination, related-posts rails, tag clouds, newsletter forms, "most popular" sidebars or a recommendation carousel. Those repeat too, and they are not the list.
+9. notes: one short sentence naming what you keyed on, for a person deciding whether to trust this. No preamble, no restating the selectors.
+
+NO LIST
+
+Some pages have nothing to select, and saying so is a correct and useful answer. Return "" for item_selector, title_selector and link_selector, and say why in notes, when:
+
+- the outline is an application shell — a div#app, div#root, a <router-view>, a "Loading" placeholder — and the entries are fetched by JavaScript after the page loads. There is nothing in this HTML to key on and no selector can find one.
+- the page is a single article, an about page, a search form or a landing page rather than an index of entries.
+- the only repeated blocks are navigation, tags or adverts.
+
+A plausible-looking guess is worse than "no list here": it produces a feed of menu items that looks like it works.`

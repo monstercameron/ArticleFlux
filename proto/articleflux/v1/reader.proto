@@ -403,6 +403,28 @@ message ScrapeRule {
   string summary_selector = 6;
   string image_selector = 7;
   string author_selector = 8;
+
+  // kind is "html" (the fields above are CSS selectors, the default) or "json"
+  // (they are dotted paths into an API response: "comic.chapters",
+  // "full_title").
+  //
+  // One message, two dialects, rather than a second message with eight parallel
+  // fields. A page that renders itself in the browser has nothing to select but
+  // its entries are one GET away, and everything downstream of extraction —
+  // preview, storage, polling, ingest — wants to treat the two identically.
+  string kind = 9;
+  // data_url is where a json rule fetches from. Empty for html rules, which read
+  // the page itself. Enforced to be the same site as index_url: without that the
+  // RPC would be an open proxy that fetches any address hourly forever.
+  string data_url = 10;
+  // link_template builds a URL from an entry's fields when a json response
+  // describes an entry without giving its address:
+  // "https://example.com/read/{slug}/ch/{chapter}".
+  string link_template = 11;
+  // id_selector is the entry's stable identity, for responses that carry one.
+  // It is what "have I seen this?" reads, so an API that renumbers its URLs does
+  // not re-deliver its whole archive as new.
+  string id_selector = 12;
 }
 
 // ScrapeSample is one item the proposed rule actually produced, from the page as

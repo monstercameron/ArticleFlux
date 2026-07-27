@@ -174,3 +174,66 @@ func TestDistillHandlesAPageWithNoList(t *testing.T) {
 		t.Errorf("a 40-paragraph essay produced %d bytes of outline", len(out))
 	}
 }
+
+// An application shell — the shape of a site whose chapter list is fetched by
+// JavaScript after the page loads. There is nothing in this HTML to select, and
+// the point of detecting it is that a model handed one does not say so: it finds
+// the navigation, which repeats, and proposes selectors for a feed of menu
+// items.
+const appShell = `<!doctype html>
+<html><head><title>Some Comic | Reader</title></head><body>
+<div id="app">
+  <nav class="navbar">
+    <a class="navbar-brand" href="/">Home</a>
+    <ul class="navbar-nav">
+      <li class="nav-item"><a class="nav-link" href="/latest">Last Releases</a></li>
+      <li class="nav-item"><a class="nav-link" href="/top">Recommended</a></li>
+      <li class="nav-item"><a class="nav-link" href="/all">All</a></li>
+    </ul>
+  </nav>
+  <main><div><h4>Reader</h4><p>Loading</p></div></main>
+  <router-view></router-view>
+</div>
+<div id="loader" class="lds-ring"><div></div><div></div></div>
+</body></html>`
+
+func TestClientRenderedIsDetected(t *testing.T) {
+	if !ClientRendered(appShell) {
+		t.Error("an app shell with a router-view and a Loading placeholder was not detected")
+	}
+	// The list page from the other test is server-rendered and must not be
+	// flagged — a false positive here refuses a page that works.
+	if ClientRendered(index) {
+		t.Error("a server-rendered index was mistaken for an app shell")
+	}
+}
+
+// The detector must not fire on a page that MOUNTS into #root but ships its
+// content — server-side rendering is the common case for React and Next, and
+// treating it as an app shell would refuse most of the modern web.
+func TestServerRenderedIntoAppRootIsNotFlagged(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<html><body><div id="__next"><main>`)
+	for i := 0; i < 12; i++ {
+		b.WriteString(`<article class="post"><h2><a href="/p">A headline with real words in it` +
+			` that a reader would recognise as an article rather than a menu item</a></h2>` +
+			`<p>An excerpt long enough to be prose rather than a label.</p></article>`)
+	}
+	b.WriteString(`</main></div></body></html>`)
+	if ClientRendered(b.String()) {
+		t.Error("a server-rendered page inside #__next was flagged as an app shell")
+	}
+}
+
+// The outline of an app shell is what makes the failure legible: it shows the
+// navigation repeating and nothing else, which is precisely why a model would
+// key on it.
+func TestOutlineOfAnAppShellShowsOnlyChrome(t *testing.T) {
+	out := Outline(appShell)
+	if !strings.Contains(out, "router-view") {
+		t.Errorf("the outline hides the evidence that this is an app shell:\n%s", out)
+	}
+	if strings.Contains(out, "article") {
+		t.Errorf("the outline invented content that is not in the page:\n%s", out)
+	}
+}
