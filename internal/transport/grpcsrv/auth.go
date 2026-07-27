@@ -13,6 +13,8 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/apierr"
+	"github.com/monstercameron/ArticleFlux/internal/authn"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -59,7 +61,7 @@ type AuthServer struct {
 // timing leak this exists to close, inverted.
 func NewAuthServer(repo *store.ReaderRepo, scopeOf func(context.Context) (store.Scope, error),
 	log *slog.Logger, devMode bool) *AuthServer {
-	decoy, err := secret.HashPassword(idgen.Token(), secret.DefaultParams)
+	decoy, err := secret.HashPassword(idgen.Token(), secret.Active())
 	if err != nil {
 		// Only reachable if the password were empty, which idgen.Token never is.
 		// A server that cannot hash cannot authenticate, so this is fatal-adjacent
@@ -100,11 +102,35 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 			"too many attempts; wait a minute and try again")
 	}
 
+	// The PERSISTENT lockout (§7.3, TODO 6.1), on top of the limiter above.
+	//
+	// The two are not redundant. A limiter blunts a burst and then forgets,
+	// which is its job — and it lives in memory, so a restart clears it. An
+	// attacker who can provoke a restart, or who simply waits for a deploy, gets
+	// an unlimited budget against a counter with amnesia. This one is derived
+	// from `login_attempts` and survives.
+	//
+	// It does not leak whether the account exists. The ledger records attempts
+	// on usernames that do not exist too — that is what `unknown_user` is for —
+	// so a locked answer is equally reachable for a real account and a made-up
+	// one, and learning "this name is locked" teaches an attacker nothing they
+	// did not just cause themselves.
+	lower, addr := strings.ToLower(username), clientKey(ctx)
+	if d, ok := s.lockout(ctx, lower, addr); !ok {
+		s.log.Warn("login locked out", "username", username, "client", addr,
+			"reason", d.Reason, "retry_after", d.RetryAfter)
+		s.record(ctx, lower, addr, store.LoginLocked)
+		return nil, apierr.Status(apierr.RateLimited("login", d.RetryAfter))
+	}
+
 	// Every path that answers errBadCredentials from here on records the failure
-	// against both keys. Success records nothing and clears both.
-	fail := func() {
+	// against both keys AND in the durable ledger. Success clears both windows
+	// and writes an `ok` row, which is what makes the persistent count "since
+	// the last success" rather than "in the last minute".
+	fail := func(outcome store.LoginOutcome) {
 		s.limiter.fail(uKey)
 		s.limiter.fail(cKey)
+		s.record(ctx, lower, addr, outcome)
 	}
 
 	u, lookupErr := s.repo.UserForLogin(ctx, username)
@@ -115,7 +141,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	if lookupErr != nil {
 		stored = s.decoy
 	}
-	ok, rehash, verifyErr := secret.VerifyPassword(req.GetPassword(), stored, secret.DefaultParams)
+	ok, rehash, verifyErr := secret.VerifyPassword(req.GetPassword(), stored, secret.Active())
 
 	if lookupErr != nil {
 		if errors.Is(lookupErr, store.ErrAmbiguousUser) {
@@ -127,11 +153,11 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 			return nil, status.Error(codes.FailedPrecondition,
 				"this username exists in more than one tenant; the server cannot tell them apart")
 		}
-		fail()
+		fail(store.LoginUnknownUser)
 		return nil, errBadCredentials
 	}
 	if verifyErr != nil || !ok {
-		fail()
+		fail(store.LoginBadPassword)
 		s.log.Warn("login failed", "username", username, "client", clientKey(ctx))
 		return nil, errBadCredentials
 	}
@@ -141,6 +167,10 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// history — and neither is anyone else sharing the client key with them.
 	s.limiter.reset(uKey)
 	s.limiter.reset(cKey)
+	// And the durable one. Recorded BEFORE the session is created, so a failure
+	// to write the session does not leave the account counting this attempt as
+	// one of its failures — the password was right, and the ledger should say so.
+	s.record(ctx, lower, addr, store.LoginOK)
 
 	now := time.Now().UTC()
 	token := idgen.Token()
@@ -173,7 +203,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// — the password did not change, so nobody gets logged out, least of all the
 	// session minted three lines above.
 	if rehash {
-		if fresh, err := secret.HashPassword(req.GetPassword(), secret.DefaultParams); err == nil {
+		if fresh, err := secret.HashPassword(req.GetPassword(), secret.Active()); err == nil {
 			if err := s.repo.SetPasswordHash(ctx, u.UserID, fresh); err != nil {
 				s.log.Warn("re-hashing password", "err", err)
 			}
@@ -188,6 +218,36 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		Role:      u.Role,
 		DeviceId:  device,
 	}, nil
+}
+
+// lockout consults the durable ledger. Returns ok=false to refuse.
+//
+// A ledger that cannot be read FAILS OPEN, deliberately. Refusing every login
+// on the instance because a query errored is a self-inflicted outage, and the
+// in-memory limiter is still standing in front of this. The error is logged so
+// it is not silent.
+func (s *AuthServer) lockout(ctx context.Context, username, addr string) (authn.Decision, bool) {
+	userFails, addrFails, err := s.repo.FailureCounts(ctx, username, addr, authn.DefaultLockout.Window)
+	if err != nil {
+		s.log.Error("reading the login ledger; lockout is not being enforced", "err", err)
+		return authn.Decision{Allowed: true}, true
+	}
+	var since time.Duration
+	if last, lerr := s.repo.LastFailureAt(ctx, username); lerr == nil && !last.IsZero() {
+		since = time.Since(last)
+	}
+	d := authn.DefaultLockout.Check(userFails, since, addrFails)
+	return d, d.Allowed
+}
+
+// record appends to the ledger. Non-fatal: a login that succeeded must not be
+// reported as failed because the audit write did not land.
+func (s *AuthServer) record(ctx context.Context, username, addr string, outcome store.LoginOutcome) {
+	if err := s.repo.RecordLoginAttempt(ctx, store.LoginAttempt{
+		Username: username, IP: addr, Outcome: outcome,
+	}); err != nil {
+		s.log.Error("recording a login attempt", "err", err, "outcome", string(outcome))
+	}
 }
 
 // Logout revokes the calling session.

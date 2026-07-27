@@ -11,6 +11,22 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Security
 
+- **The login lockout is enforced, not just designed** (TODO 6.1, §7.3). Failures are counted in the
+  database since the account's last successful login, so a restart no longer hands an attacker a
+  fresh budget, and the correct password is refused *during* a lockout — one that lets it through is
+  one an attacker walks past on the guess that happens to be right. A username that does not exist
+  locks out on identical terms, so the lockout is not an account-existence oracle.
+- **Passwords are checked against a bundled known-password list** (`internal/pwpolicy`). Bundled
+  rather than the HIBP range API: the k-anonymity prefix really does disclose nothing, but a request
+  to a third party at the moment somebody types a password is the wrong default for a reader whose
+  premise is that your reading does not leave the box. Candidates are folded — case, leet
+  substitutions, trailing digits and punctuation — so "P@ssw0rd1!" and "Password123" are refused by
+  the same entry as "password".
+- **Argon2id tunes itself to the machine, and can only raise the cost.** One constant is ~40ms on a
+  server and ~400ms on a small self-hosted box. The benchmark can never lower the parameters below
+  the OWASP baseline: it measures the box as it is, so a restart under load would otherwise settle on
+  weaker settings — a downgrade anyone could trigger with traffic.
+
 - **A reverse-proxied instance no longer served an unauthenticated superadmin session.** `DevMode`
   — which serves the first account with no login and registers an unauthenticated
   `POST /debug/reset-state` — was *derived* from a loopback bind. The reasoning was that loopback

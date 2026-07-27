@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/authn"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -224,22 +225,68 @@ func TestRateLimiterStopsAWordlist(t *testing.T) {
 	}
 }
 
-// A success must clear the counter, or four fumbled attempts followed by a
+// A success must clear the counter, or a few fumbled attempts followed by a
 // correct one would leave the next login pre-limited.
+//
+// Driven at the LOCKOUT's granularity rather than the in-memory limiter's,
+// because the durable lockout (6.1) is now the tighter of the two: it bites at
+// Free+1 failures where the limiter allowed ten. Referencing the policy
+// constant rather than a literal means a change to the curve changes this test
+// with it, instead of leaving it asserting a threshold nobody enforces.
 func TestSuccessResetsTheLimiter(t *testing.T) {
 	s, _ := newAuth(t)
 	ctx := context.Background()
 
-	for i := 0; i < attemptBurst-2; i++ {
+	for i := 0; i < authn.DefaultLockout.Free; i++ {
 		_, _ = s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: "wrong-password-here"})
 	}
 	if _, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword}); err != nil {
-		t.Fatalf("login after %d failures: %v", attemptBurst-2, err)
+		t.Fatalf("login after %d failures, which are meant to be free: %v",
+			authn.DefaultLockout.Free, err)
 	}
-	for i := 0; i < attemptBurst-1; i++ {
-		if _, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword}); codeOf(err) == codes.ResourceExhausted {
-			t.Fatalf("limited on attempt %d after a success reset the window", i+1)
-		}
+
+	// The success cleared the durable count, so the free allowance is whole
+	// again — the point of counting since the last success rather than over a
+	// window.
+	for i := 0; i < authn.DefaultLockout.Free; i++ {
+		_, _ = s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: "wrong-password-here"})
+	}
+	if _, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword}); err != nil {
+		t.Fatalf("the success did not clear the failure count: %v", err)
+	}
+}
+
+// The durable half of §7.3, and the property the in-memory limiter cannot
+// provide: it is still enforced after the process restarts.
+func TestTheLockoutIsEnforcedAndRefusesTheCorrectPasswordToo(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+
+	for i := 0; i <= authn.DefaultLockout.Free; i++ {
+		_, _ = s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: "wrong-password-here"})
+	}
+	// A lockout that lets the right password through is one an attacker walks
+	// straight past on the guess that happens to be right.
+	_, err := s.Login(ctx, &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if codeOf(err) != codes.ResourceExhausted {
+		t.Errorf("the correct password during a lockout returned %v, want ResourceExhausted",
+			codeOf(err))
+	}
+}
+
+// A username that does not exist is locked out on the same terms, which is what
+// stops the lockout from being an account-existence oracle.
+func TestLockoutDoesNotRevealWhetherTheAccountExists(t *testing.T) {
+	s, _ := newAuth(t)
+	ctx := context.Background()
+
+	for i := 0; i <= authn.DefaultLockout.Free; i++ {
+		_, _ = s.Login(ctx, &pb.LoginRequest{Username: "nobody-here", Password: "guess"})
+	}
+	_, err := s.Login(ctx, &pb.LoginRequest{Username: "nobody-here", Password: "guess"})
+	if codeOf(err) != codes.ResourceExhausted {
+		t.Errorf("a nonexistent account was not locked out (%v) — a locked answer "+
+			"would then prove an account exists", codeOf(err))
 	}
 }
 

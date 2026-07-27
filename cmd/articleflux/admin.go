@@ -24,6 +24,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/app"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -41,10 +42,15 @@ var roles = map[string]bool{
 //
 // Twelve, and no composition rules. Length is the only property that reliably
 // costs an attacker anything; "must contain a symbol" reliably costs the user a
-// password they cannot remember and write down somewhere worse. There is no
-// lockout yet (TODO 6.1) — the rate limiter in grpcsrv/auth.go and this minimum
-// are what stand in for it, which makes both load-bearing.
-const minPasswordLen = 12
+// password they cannot remember and writes down somewhere worse.
+//
+// It is now `pwpolicy.MinLength` rather than its own 12, because the check that
+// enforces it moved there (6.1) and a help string promising a floor the check
+// does not apply is worse than no promise. `resolvePassword` runs the whole
+// policy — length, the bundled known-password list, the username, and the
+// keyboard runs — and the durable lockout that used to be missing is now in
+// grpcsrv/auth.go, so this is one of three controls rather than one of two.
+const minPasswordLen = pwpolicy.MinLength
 
 // The local development account: created by `serve -dev`, used by `seed` and
 // `export`, and prefilled on the login screen when the page origin is loopback
@@ -81,7 +87,7 @@ func initInstance(log *slog.Logger, args []string) error {
 	if strings.TrimSpace(*user) == "" {
 		return errors.New("init: -user is required")
 	}
-	password, err := resolvePassword(*pass)
+	password, err := resolvePassword(*pass, *user)
 	if err != nil {
 		return err
 	}
@@ -102,7 +108,7 @@ func initInstance(log *slog.Logger, args []string) error {
 			"use `articleflux adduser` to add another, or `articleflux passwd` to reset one", n)
 	}
 
-	hash, err := secret.HashPassword(password, secret.DefaultParams)
+	hash, err := secret.HashPassword(password, secret.Active())
 	if err != nil {
 		return err
 	}
@@ -138,7 +144,7 @@ func addUser(log *slog.Logger, args []string) error {
 	if !roles[*role] {
 		return fmt.Errorf("adduser: unknown role %q (superadmin, admin, member, viewer)", *role)
 	}
-	password, err := resolvePassword(*pass)
+	password, err := resolvePassword(*pass, *user)
 	if err != nil {
 		return err
 	}
@@ -158,7 +164,7 @@ func addUser(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	hash, err := secret.HashPassword(password, secret.DefaultParams)
+	hash, err := secret.HashPassword(password, secret.Active())
 	if err != nil {
 		return err
 	}
@@ -197,7 +203,7 @@ func passwd(log *slog.Logger, args []string) error {
 	if strings.TrimSpace(*user) == "" {
 		return errors.New("passwd: -user is required")
 	}
-	password, err := resolvePassword(*pass)
+	password, err := resolvePassword(*pass, *user)
 	if err != nil {
 		return err
 	}
@@ -217,7 +223,7 @@ func passwd(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	hash, err := secret.HashPassword(password, secret.DefaultParams)
+	hash, err := secret.HashPassword(password, secret.Active())
 	if err != nil {
 		return err
 	}
@@ -328,7 +334,7 @@ func openAdmin(ctx context.Context, log *slog.Logger, dbPath string) (*app.App, 
 }
 
 // resolvePassword takes the password from the flag, the environment, or a
-// terminal prompt, in that order, and enforces the minimum length.
+// terminal prompt, in that order, and enforces §7.1's policy.
 //
 // The environment is checked before prompting because these commands run from
 // provisioning scripts as often as from a keyboard. The flag is supported
@@ -336,7 +342,7 @@ func openAdmin(ctx context.Context, log *slog.Logger, dbPath string) (*app.App, 
 // command line is in the shell history and in `ps` output for the life of the
 // process. That is what the ARTICLEFLUX_PASSWORD path is for, and why it is
 // mentioned in every flag's help text.
-func resolvePassword(flagValue string) (string, error) {
+func resolvePassword(flagValue, username string) (string, error) {
 	pw := flagValue
 	if pw == "" {
 		pw = os.Getenv("ARTICLEFLUX_PASSWORD")
@@ -355,9 +361,15 @@ func resolvePassword(flagValue string) (string, error) {
 			return "", errors.New("passwords do not match")
 		}
 	}
-	if len(pw) < minPasswordLen {
-		return "", fmt.Errorf("password must be at least %d characters (length is the only "+
-			"property that costs an attacker anything)", minPasswordLen)
+	// The full §7.1 policy, not just a length floor. Length alone accepts
+	// "password1234", which is the first thing an attacker tries and which no
+	// lockout curve helps with: the lockout buys four guesses an hour, and the
+	// first guess is enough. The two controls only work as a pair.
+	//
+	// The USERNAME goes in, because "cameron2026" is the single most guessable
+	// password for an account called cameron and no generic list can contain it.
+	if err := pwpolicy.Check(pw, username); err != nil {
+		return "", fmt.Errorf("password rejected: %w", err)
 	}
 	return pw, nil
 }

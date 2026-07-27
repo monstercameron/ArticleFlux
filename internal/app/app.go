@@ -36,6 +36,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
+	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/skew"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -199,6 +200,30 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 
 	repo := store.NewReaderRepo(db)
 	svc := reader.New(repo, feed.New(feed.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}))
+
+	// Argon2id, tuned to this box (§7.1, TODO 6.1).
+	//
+	// One constant is wrong twice: the OWASP baseline takes ~40ms on a modern
+	// server and ~400ms on the small machine this is likely to be self-hosted
+	// on, so shipping it means either a weak hash on fast hardware or a login
+	// that feels broken on slow hardware.
+	//
+	// It only ever RAISES the cost — see TuneToBox. The benchmark measures the
+	// box as it is at this instant, and a restart during a poll or on a noisy
+	// VPS neighbour measures slow; a boot-time benchmark allowed to lower the
+	// cost would be a downgrade attack anybody could trigger with load.
+	//
+	// Logged either way, because the hashing cost is a security property and a
+	// silent change to one is not something an operator should have to discover
+	// by benchmarking.
+	if p, raised := secret.TuneToBox(secret.TuneTarget); raised {
+		cfg.Log.Info("argon2id tuned to this machine",
+			"memory_kib", p.Memory, "iterations", p.Time, "target", secret.TuneTarget)
+	} else {
+		cfg.Log.Info("argon2id left at the baseline; this machine is not fast "+
+			"enough to raise it without exceeding the login budget",
+			"memory_kib", p.Memory, "iterations", p.Time)
+	}
 
 	// The ring wraps whatever handler the caller configured rather than replacing
 	// it: terminal output is what someone watching the process sees, and losing

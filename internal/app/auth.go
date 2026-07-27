@@ -74,7 +74,7 @@ func (a *App) EnsureDevUser(ctx context.Context, username, password string) (sto
 	if sc, err := a.repo.FirstUserScope(ctx); err == nil {
 		return sc, nil
 	}
-	hash, err := secret.HashPassword(password, secret.DefaultParams)
+	hash, err := secret.HashPassword(password, secret.Active())
 	if err != nil {
 		return store.Scope{}, err
 	}

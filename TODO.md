@@ -1112,6 +1112,52 @@ Business logic over repositories. Still headless.
       refuses a zero timestamp *and* a future one: "no re-authentication recorded" must behave like
       "too long ago" rather than depending on which way a subtraction reads, and a clock that went
       backwards must not mint a permanent sudo session.
+
+      ◧ 2026-07-27 (later) — **the lockout is wired into `Login`, the breached-password check exists,
+      and Argon2id tunes itself.** *Still owed: refresh-family wiring (the repo methods have existed
+      since 5.1) and sudo mode's enforcement at the handlers that need it.*
+
+      **The lockout now bites at 4 failures where the limiter allowed 10**, which changed behaviour
+      and broke a test asserting the old threshold. The test was right about its property — a
+      success clears the count — and wrong about the number, so it now references
+      `authn.DefaultLockout.Free` rather than a literal: a change to the curve changes the test with
+      it instead of leaving it asserting a threshold nobody enforces. Two tests added: the correct
+      password is refused *during* a lockout (one that lets it through is one an attacker walks past
+      on the guess that happens to be right), and a **nonexistent** username locks out on the same
+      terms — which is what stops the lockout being an account-existence oracle.
+
+      A ledger that cannot be read **fails open**, deliberately: refusing every login on the instance
+      because a query errored is a self-inflicted outage, the in-memory limiter is still in front,
+      and the error is logged rather than swallowed.
+
+      **`internal/pwpolicy` is bundled rather than HIBP.** §7.1 offers both, and the k-anonymity API
+      genuinely discloses nothing — but this is a self-hosted reader whose premise is that your
+      reading does not leave the box, behind an egress allowlist that exists so what leaves is a
+      decision. A request to a third party at the moment somebody types a password is the wrong
+      default for that. The cost is stated plainly: a bundled list covers the **head** of the
+      distribution, not the tail.
+
+      **The folding is what makes a few hundred entries work.** Nobody types "password" any more;
+      they type "P@ssw0rd1!" and believe they have solved something. Candidates are folded — case
+      dropped, trailing digits and punctuation stripped, leet substitutions undone — so one entry
+      covers the family. Two bugs found by its own tests: substituting **before** stripping turns a
+      trailing "1!" into letters the strip can no longer remove (every decorated variant sails
+      through a list that looks like it covers them), and an all-digit password folds to nothing and
+      escaped every check, so `123412341234` was accepted as strong.
+
+      **Argon2id tunes to the box and only ever RAISES the cost.** One constant is wrong twice — the
+      OWASP baseline is ~40ms on a server and ~400ms on the small machine this gets self-hosted on.
+      The benchmark measures the box at that instant, so a restart during a poll or a noisy VPS
+      neighbour measures slow and would settle *below* the baseline: a boot-time benchmark allowed
+      to lower the hash cost is a downgrade attack anyone can trigger with load. `stronger()` ranks
+      memory above iterations, because memory is what bounds a GPU attack and a candidate trading
+      memory for iterations is not stronger whatever the product says.
+
+      **`devPassword` now has a test rather than a comment asking people to remember.** It is
+      documented in `.env.example`, prefilled on the login screen, and fed to `init` — which enforces
+      this policy. They disagreed once already on length alone, and following the documentation
+      produced an error and then a server that would not start. The policy is now more than length,
+      so the same disagreement could arrive through a new door.
 - [x] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
       ✅ 2026-07-26 — `internal/authz`. Static per-method map, **fails closed on unmapped**, which
@@ -2138,6 +2184,54 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       and it found it in the two themes nobody had opened. The mobile mockup has never been compared
       against the built app at all. *Done when: all five themes have been seen at 390px beside the
       mockup, and whatever that turns up is either fixed or written down.*
+- [x] **8b.51 The saved view is fetched behind the splash, not after it** — §7.1b, §20.13. Cam: *"after
+      the splash it is instantly the default view and then flashes to the past state."* Exactly what it
+      looked like: the reader mounted with its defaults, painted the All stream with an expanded rail
+      and the house theme, and corrected itself one round trip later when its own first effect
+      answered. **A preference that decides the first frame cannot be fetched after the first frame.**
+      `Root` now fetches prefs inside the same wait it already does for `WhoAmI` — the splash is
+      already up and already holding the screen — applies the documentElement half (theme, accent,
+      reading size, motion, both pane widths) *before* the phase flips, and hands the map to `Reader`
+      as a prop, where every stored `UseState` is **initialised** from it instead of corrected. The
+      login path does the same, so signing in on a second machine lands in the view you left.
+      > The reader keeps its own fetch for when the prop is nil. That is the old behaviour, flash
+      > included, and it is the right fallback: a flash is a blemish, a reader dropped back to All
+      > every morning is the feature not working.
+      > Covered by *a reload paints the saved view, never the default one first*, which asserts on the
+      > **first title ever painted** — recorded by a MutationObserver installed before boot, because an
+      > assertion about the first frame has to be made by something that was watching for it. Verified
+      > both ways: with the prefetch it reads `Alpha Journal`, without it `All feeds`.
+      > **Watch the observer's target.** Bound to `document.documentElement` it reported nothing at all
+      > — the boot shim REPLACES the root element, so it was observing a detached node. `document` is
+      > never replaced. A test that observes the wrong node passes silently, which is the worst way for
+      > a test to be wrong.
+
+- [x] **8b.50 A body landing above the reader no longer moves the reader** — the second half of 8b.49,
+      found by the regression test rather than by reading. Neighbour prefetch means the article above
+      is a skeleton for a moment and then a thousand pixels of prose; everything below shifts down,
+      `scrollTop` does not move, and the viewport ends up inside the article that grew — which the
+      topmost handler correctly reports and correctly marks read, because it cannot tell an arriving
+      reader from an arriving article. `bodyLanded` now calls `KeepScrollAnchored` when the landing
+      article sits above the current one, which is the same tool `retreat` already uses for a prepend.
+
+- [ ] **8b.52 The topmost-article handler is not running.** Found while testing 8b.49, and it is
+      bigger than what it was found by: scrolling through three articles changes **neither
+      `document.title` nor the highlighted row**, so `focusArticle` never fires — A28's central rule
+      (*which article is being read is a scroll position, not a click*) is not in effect. Marking read
+      still works, which is exactly why nobody noticed: that comes from the OTHER scroll handler.
+      *Evidence:* a probe wheeling down the stream logs `TITLES []`, `aria-current` frozen on the
+      opened row, while `data-read` flips to true on the rows it passes. Scroll events do reach `#app`
+      in the capture phase (counted, 6 of them), so the plumbing below the handler is alive.
+      *Leading hypothesis, untested:* the listener is bound to a node that no longer exists. The boot
+      shim replaces `document.documentElement` — proved separately while writing 8b.51's observer — and
+      a GWC effect whose dependency list "re-runs on renders where nothing changed" (the lesson at
+      8b.13) can re-register against a `#app` that is momentarily absent, in which case
+      `OnTopmostChild` returns an empty Listener and tracking is silently dead for the session.
+      **Not fixed here on purpose:** this is inside the reading-pane/wheel/live-view code another
+      session was actively rewriting at the time, and two agents editing one file is how a fix becomes
+      a merge. *Done when: the title and the highlighted row follow a scroll through three articles,
+      and `scrolling back into a skipped article does mark it read` is un-`fixme`d and green.*
+
 - [x] **8b.49 A jump no longer reads what it jumped over** — §20.9. Cam: *"click n then click n+2 and
       n, n+1 and n+2 are all marked read — isn't granular enough."* Both the seeded predecessor on an
       open and the article a prepend inserts are placed above the fold **by the app**, and "scrolled

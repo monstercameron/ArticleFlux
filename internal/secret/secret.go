@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -299,4 +300,83 @@ func (p Params) String() string {
 	return "m=" + strconv.Itoa(int(p.Memory)) +
 		",t=" + strconv.Itoa(int(p.Time)) +
 		",p=" + strconv.Itoa(int(p.Threads))
+}
+
+// ---------------------------------------------------------------------------
+// Tuning to the box (§7.1, TODO 6.1)
+// ---------------------------------------------------------------------------
+
+// TuneTarget is how long a login hash should take.
+//
+// 250ms. Slow enough to be expensive in bulk, fast enough that a person pressing
+// Sign in does not think the button failed — and below the ~400ms at which a
+// self-hosted box on a slow disk starts feeling broken.
+const TuneTarget = 250 * time.Millisecond
+
+var (
+	activeMu     sync.RWMutex
+	activeParams = DefaultParams
+)
+
+// Active returns the parameters new hashes are written with.
+//
+// A function rather than a variable because it changes once, at boot, and every
+// caller must see the change — a package variable copied into a struct at
+// construction time would leave half the program hashing at the old cost.
+func Active() Params {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	return activeParams
+}
+
+// TuneToBox benchmarks this machine and raises the hashing cost to match.
+//
+// §7.1 asks for parameters "tuned to the box", and the reason is that one
+// constant is wrong twice: 19 MiB takes ~40ms on a modern server and ~400ms on
+// the small machine this is likely to be self-hosted on. Shipping the constant
+// means either a weak hash on fast hardware or a login that feels broken on slow
+// hardware.
+//
+// It NEVER LOWERS the cost, and that is the load-bearing part. The benchmark
+// measures whatever the box is doing right now, so tuning on a machine that is
+// busy — a restart during a poll, a cold cache, a noisy VPS neighbour —
+// measures slow, stops doubling early, and would settle on parameters weaker
+// than the OWASP baseline. A boot-time benchmark that can weaken the hash is a
+// self-inflicted downgrade attack triggered by load.
+//
+// Returns the parameters in force and whether they were raised, so the caller
+// can log it: the cost is a security property and a silent change to one is not
+// something an operator should have to discover by benchmarking.
+func TuneToBox(target time.Duration) (Params, bool) {
+	if target <= 0 {
+		target = TuneTarget
+	}
+	tuned := Tune(target, Params{})
+
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	if !stronger(tuned, activeParams) {
+		return activeParams, false
+	}
+	activeParams = tuned
+	return activeParams, true
+}
+
+// stronger reports whether a costs an attacker more than b.
+//
+// Memory first, because memory is what actually bounds a GPU or ASIC attack;
+// iterations only break the tie. A candidate that trades memory away for
+// iterations is NOT stronger, whatever the product of the two says.
+func stronger(a, b Params) bool {
+	if a.Memory != b.Memory {
+		return a.Memory > b.Memory
+	}
+	return a.Time > b.Time
+}
+
+// ResetParamsForTest restores the baseline. Test-only, and named so.
+func ResetParamsForTest() {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	activeParams = DefaultParams
 }

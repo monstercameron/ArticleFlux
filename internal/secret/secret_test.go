@@ -246,3 +246,81 @@ func TestKeyLengthIsEnforced(t *testing.T) {
 		}
 	}
 }
+
+// The load-bearing property of boot-time tuning: it can only ever RAISE the
+// cost.
+//
+// The benchmark measures the box as it is at that instant. A restart during a
+// poll, a cold page cache, a noisy VPS neighbour — all measure slow, stop
+// doubling early, and would settle below the OWASP baseline. A boot-time
+// benchmark allowed to lower the hash cost is a downgrade attack anyone can
+// trigger with load.
+func TestTuningNeverLowersTheCost(t *testing.T) {
+	t.Cleanup(ResetParamsForTest)
+	ResetParamsForTest()
+
+	// A target so small that Tune stops at its weakest setting.
+	got, raised := TuneToBox(time.Nanosecond)
+	if raised {
+		t.Error("a trivially small target RAISED the cost, which means the " +
+			"comparison is backwards")
+	}
+	if got.Memory < DefaultParams.Memory {
+		t.Errorf("tuning left memory at %d KiB, below the %d KiB baseline",
+			got.Memory, DefaultParams.Memory)
+	}
+	if Active().Memory < DefaultParams.Memory {
+		t.Errorf("the ACTIVE params are weaker than the baseline: %+v", Active())
+	}
+}
+
+// Memory first, because memory is what bounds a GPU or ASIC attack. A candidate
+// that trades memory away for iterations is not stronger whatever the product
+// of the two says.
+func TestStrongerRanksMemoryAboveIterations(t *testing.T) {
+	base := Params{Memory: 19 * 1024, Time: 2}
+	cases := []struct {
+		name string
+		p    Params
+		want bool
+	}{
+		{"more memory", Params{Memory: 38 * 1024, Time: 2}, true},
+		{"more memory, fewer iterations", Params{Memory: 38 * 1024, Time: 1}, true},
+		{"same memory, more iterations", Params{Memory: 19 * 1024, Time: 3}, true},
+		{"identical", base, false},
+		{"less memory, many more iterations", Params{Memory: 8 * 1024, Time: 20}, false},
+		{"less memory", Params{Memory: 8 * 1024, Time: 2}, false},
+	}
+	for _, c := range cases {
+		if got := stronger(c.p, base); got != c.want {
+			t.Errorf("%s: stronger(%+v, %+v) = %v, want %v", c.name, c.p, base, got, c.want)
+		}
+	}
+}
+
+// Every hash site reads Active(), so a change at boot has to be visible to all
+// of them — a value copied into a struct at construction would leave half the
+// program hashing at the old cost.
+func TestActiveReflectsTuning(t *testing.T) {
+	t.Cleanup(ResetParamsForTest)
+	ResetParamsForTest()
+
+	if Active() != DefaultParams {
+		t.Fatalf("Active() = %+v before tuning, want the baseline", Active())
+	}
+	before := Active()
+	TuneToBox(TuneTarget)
+	if Active().Memory < before.Memory {
+		t.Errorf("Active() weakened from %+v to %+v", before, Active())
+	}
+
+	// And a hash written now must verify, whatever was chosen.
+	h, err := HashPassword("a-perfectly-fine-passphrase", Active())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := VerifyPassword("a-perfectly-fine-passphrase", h, Active())
+	if err != nil || !ok {
+		t.Errorf("a hash written with the tuned params does not verify: ok=%v err=%v", ok, err)
+	}
+}
