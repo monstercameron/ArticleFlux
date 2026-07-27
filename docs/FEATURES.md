@@ -1009,6 +1009,47 @@ in order, because the idea this whole reader rests on is that every source owns 
 made of the thing it is loading. The plate is delayed 120ms, because a warm cache boots well under
 that and a wordmark that appears and vanishes inside the window is worse than never showing one.
 
+### 27a. Install it like an app
+
+| | |
+|---|---|
+| **Status** | ✅ |
+| **Spec** | §20.24, §12.3 |
+
+ArticleFlux installs from the browser onto a phone home screen, an Android launcher, a Mac dock or a
+Windows start menu, and opens in its own window with no address bar. It is the same reader either
+way — installing changes the frame, not the product.
+
+**It boots without a network.** The shell — the page, the loader, the module, the manifest and the
+icons — is cached the first time you visit, so the reader opens on a plane and tells you what it
+cannot reach rather than showing a browser error page. What it can *show* you offline is a separate
+question and a separate feature (trip packs, §12).
+
+**The window wears your theme.** The title bar or status bar follows whichever theme you chose and
+changes when you change it. Android's launch screen is the same plum you see for the fraction of a
+second before the app paints, so there is no white flash between the launcher and the reader.
+
+**Long-press the icon** for My Feed, Unread, Read later and Add a feed. A shortcut opens what it says
+and beats the view you were last in — you asked for it a second ago and the saved view is from
+yesterday — but it does not *change* your saved view: it is a visit, not a decision.
+
+**Share a page to it to subscribe.** On Android, ArticleFlux appears in the share sheet: sharing an
+address opens Add a feed with the address already in it and already looking for the feed. It works
+whether the sharing app sends a proper URL or the more common *"Headline https://example.com/x"* —
+most apps do the second.
+
+> **On a development machine** the Service Worker is deliberately unregistered on every load, because
+> a cached wasm module would serve yesterday's build forever. That also makes the app uninstallable
+> there, so `?sw=1` turns the worker back on for that browser and `?sw=0` turns it off again.
+
+> **iOS** reads none of the manifest: no shortcuts, no share target, no theme colour. Add to Home
+> Screen works and gets the right icon; everything above it is Android, Chrome, Edge and the desktops.
+
+> **Known gaps:** the install dialog has no screenshots, so it is the compact prompt rather than the
+> rich one; the app's name and description in a launcher are English regardless of the interface
+> language, because the manifest is read once at install; and sharing a *file* — an OPML export —
+> needs a POST share target that does not exist yet.
+
 ## 28. Skeletons, not spinners
 
 | | |

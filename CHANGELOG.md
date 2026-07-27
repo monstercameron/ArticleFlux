@@ -407,11 +407,28 @@ The full reasoning behind any entry lives in the commit message; this file is th
   while the analysis stays global — the assignment is the reader's, the scores are the instance's,
   which is the split §27.2 spent a migration establishing and the easiest thing to undo by accident
   on the read side.
-- **Installable** — a web manifest, a launch surface, and icons *drawn from the design tokens*
-  (`internal/appicon`). A PWA needs four real rasters, and four binaries checked into a repository
-  are four files whose relationship to the design is a claim nobody can verify: the mark drifts, the
-  icons do not, and the first person to notice is a stranger looking at a home screen. They are
-  generated instead, so the tokens stay the single source of what this application looks like.
+- **Installable** (§20.24) — a web manifest, a launch surface, and icons *drawn from the design
+  tokens* (`internal/appicon`). A PWA needs four real rasters, and four binaries checked into a
+  repository are four files whose relationship to the design is a claim nobody can verify: the mark
+  drifts, the icons do not, and the first person to notice is a stranger looking at a home screen.
+  They are generated instead, so the tokens stay the single source of what this application looks
+  like. The Service Worker — which has cached the app shell since 8.4, because it cannot see the
+  WebSocket every RPC rides on (§12.3) — now precaches the manifest and the icons too, so an install
+  boots without a network instead of opening blank. Long-pressing the icon offers My Feed, Unread,
+  Read later and Add a feed; a shortcut outranks the saved view without replacing it, because it is a
+  visit rather than a decision about where this reader lives. Sharing a page to it opens Add a feed
+  with the address in it and the feed search already running.
+
+  Three things only doing it revealed. **The development box could not install at all** — the shell
+  unregisters the worker on a loopback origin, so that a cache-first wasm module cannot outlive a
+  rebuild, which also means the one machine where somebody would test installing is the one where it
+  cannot happen; `?sw=1` opts back in, remembered, off by default. **The share target has to read
+  `text`**, not just `url`: the spec has a `url` field and most of Android sends
+  `Headline https://example.com/x` as text, so a target that reads only `url` works when you test it
+  from the address bar and does nothing everywhere else. And **`theme-color` is the one token a
+  stylesheet cannot reach** — every other value in the theming engine is a custom property, which is
+  why a theme switch is a paint, but an installed window's chrome is a `<meta>`, so Daylight kept a
+  plum title bar for the whole session.
 - **A backfill for the analyzer** (`internal/analyze/backfill`) — an instance that has been running
   for months should not end up with a classifier that only knows what arrived after it shipped. It
   runs at the pipeline's footing: once per item, whoever subscribes.

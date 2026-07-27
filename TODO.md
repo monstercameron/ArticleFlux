@@ -2723,6 +2723,35 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       themes byte-identical, one drift step moves a field by ≤6/255, and every attuned theme needs no
       repair — a repair there would mean the drift moved a **text** token, which is the visible step
       the whole mechanism exists to avoid. ✅ **All five hold.**
+- [x] **8b.58 Installable** — §20.24. §12.3's position has held since 8.4: a Service Worker cannot see
+      WebSocket frames, so with every RPC on a tunnel the worker caches the **app shell and nothing
+      else**. What was missing was everything that makes that shell *installable*, which is a
+      different set of files: a manifest, four real raster icons, the iOS links no manifest supplies,
+      and a worker that precaches all of it.
+
+      **The four files have to agree and no build saw more than one of them**, so every disagreement
+      failed silently — a manifest naming an icon that is not there is an install prompt that does not
+      appear, with nothing in the page's own console. `internal/appicon`'s test checks all four against
+      each other; `e2e/pwa.spec.mjs` checks the half only a browser can answer.
+
+      **The icons are generated from the design tokens** (`go run ./internal/tools/appicon`) rather
+      than exported by hand. Four PNGs in a repository are four files whose relationship to the design
+      is a claim nobody can verify, and nobody opens a 512px PNG to check it is still the right plum —
+      D22's argument, applied to a binary.
+
+      Three things found by doing it rather than by reading:
+
+      | Found | What it was |
+      |---|---|
+      | the dev box could not install | the shell unregisters the worker on loopback (a cache-first wasm module served forever), so the one machine where somebody would test installing is the one where it cannot happen. `?sw=1` opts back in, remembered, off by default |
+      | `text` carries the share | the Web Share Target spec has a `url` field and most of Android does not use it — a target that reads only `url` works when you test it from the address bar and does nothing everywhere else |
+      | `theme-color` is unreachable | every other token is a custom property, so a theme switch is a paint; the window chrome of an installed app is a `<meta>`, and Daylight kept a plum title bar for the whole session |
+
+      *Done when:* the manifest is served as `application/manifest+json`, every URL in it resolves in a
+      real browser, the icons decode at the sizes they claim, the worker installs and its cache holds
+      the manifest and icons, a shortcut opens its stream and outranks A30's resume, and a shared
+      address lands in the add-feed dialog with the ladder already running. ✅ **All six, twelve
+      passing assertions across desktop and mobile.**
 - [x] **8b.46 Focus mode and the list cursor, driven in the running app.** Both had only ever been
       verified against the emitted stylesheet in a harness. Measured for real: the cursor steps
       `0px → 384px` over four presses of `j` — exactly four rows of 96 — with the 0.18s/0.11s

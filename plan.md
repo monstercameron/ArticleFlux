@@ -4331,6 +4331,110 @@ down, because both bit on the way in:
   palette opened without a cursor in it, which killed Escape and the arrow keys,
   because the palette owns those only while its own field has focus.
 
+### 20.24 Installable — the manifest, the icons, and what a launcher can send
+
+§12.3 already stated the position: a Service Worker cannot see WebSocket frames, so with every RPC on
+a tunnel (A5) the standard PWA recipe does not apply, and what the worker caches is **the app shell
+and nothing else**. That has been true since 8.4. What was missing was everything that makes the shell
+*installable*, which is a different set of files and a different failure mode.
+
+**Four files that have to agree, and no build saw more than one of them.**
+
+| | |
+|---|---|
+| `web/manifest.webmanifest` | names the icons, the colours, the start URL, the shortcuts |
+| `web/icons/*.png` | the icons, **generated from the design tokens** |
+| `web/index.html` | links the manifest, and the iOS icon that no manifest supplies |
+| `web/sw.js` | precaches all of it, so an install boots offline |
+
+Every disagreement between them fails the same way: **silently**. A manifest naming an icon that is
+not there is an install prompt that does not appear, with nothing in the page's own console. A shell
+that stopped linking the manifest is the same. A worker that stopped precaching it is an installed app
+that is blank on a plane, which is the one thing installing it was for. So `internal/appicon`'s test
+asserts all four against each other, and `e2e/pwa.spec.mjs` asserts the half only a browser can answer
+— that every URL resolves, that the worker installs and its cache is warm, and that a launch parameter
+does something.
+
+**The icons are a function of the tokens.** Four PNGs checked into a repository are four files whose
+relationship to the design is a claim nobody can verify — and nobody opens a 512px PNG to check it is
+still the right plum. The mark already existed in three places (the inline favicon, the splash's amber
+rule, the rail's `◈`) and its two colours are `design.Ground` and `design.Accent`, so
+`internal/appicon` draws it — one rounded rectangle and one rhombus, supersampled 4×4 — and the test
+fails when what is committed is not what it renders. `go run ./internal/tools/appicon` regenerates.
+This is D22's precedent applied to a binary: a value duplicated without a check is a value that will
+disagree with itself.
+
+**Every path is relative, and that is what lets one manifest describe both deployments.** The server
+serves the app at the root; the published demo is at `/<repo>/` on GitHub Pages. `start_url`, `scope`,
+`id` and every icon `src` are `./`-relative, resolved against the manifest's own address — an absolute
+`/` is correct on the first and installs the second at an origin path that is somebody else's page or
+a 404, reached from a launcher icon with no way to tell what went wrong.
+
+**Two iOS notes, because it reads none of the manifest.** It ignores `start_url`, `scope`, shortcuts,
+the share target, the maskable icon and the theme colour, so `apple-touch-icon` is a `<link>` and is
+the only icon it will ever have. It is full-bleed — iOS applies its own corner mask — and **opaque**,
+because iOS composites transparency onto black, which turns a rounded icon's corners into black
+wedges. The status bar is `black` rather than `black-translucent`: translucent puts the page under the
+status bar, and while `viewport-fit=cover` is set and the tab bar already pads for
+`safe-area-inset-bottom`, nothing in the sheet pads for the top. The honest setting is the one that
+does not need a safe area this application has not implemented.
+
+**`theme-color` is the one token a stylesheet cannot reach.** Every other value in the theming engine
+is a custom property, which is why switching themes costs a paint and not a render (§20.16) — but the
+window chrome of an installed app comes from a `<meta>` element. Left alone, somebody running Daylight
+gets a plum title bar around a page of paper for the whole session, and no CSS can fix it. So
+`applyAppearance` rewrites it, beside the mirror it already writes for the splash.
+
+#### 20.24.1 The development box cannot keep the worker, and that made it uninstallable
+
+The shell **unregisters** the Service Worker on a loopback origin, and the reason is in `index.html`:
+the worker serves the wasm module cache-first and retires the cache by `VERSION`, which is pinned to
+the build version — so a development machine's first load wins forever and every rebuild after it is
+served from a cache nothing will ever invalidate.
+
+The consequence, discovered by trying it: a browser will not offer to install a PWA whose worker has
+just been unregistered, so the one machine where somebody would test the install flow is the one
+machine where it cannot happen — and the failure reads as a broken manifest rather than as a
+deliberate trade. `?sw=1` turns the worker back on for that browser profile and `?sw=0` turns it off;
+the answer is remembered, because an installed window launches at `start_url` with no query of ours.
+**Opt-in**, so nobody inherits the stale-cache afternoon by default.
+
+#### 20.24.2 Shortcuts and the share target, which are the reason to install it
+
+A manifest's only channel to the app is the query string, and this application has **no client-side
+routing**: it resumes from a preference, not from a URL (§20.13, A30), so the same reader lands in the
+same place on a laptop and a phone. `client/view/launch.go` is deliberately not the beginning of
+routing — it reads three named parameters, acts on them once, and removes them from the address, which
+is what keeps them an *instruction* rather than a location.
+
+- **A launch outranks the resume.** Somebody who long-pressed the icon and chose "Unread" asked for it
+  half a second ago; the saved view is what they were doing yesterday. The explicit, more recent
+  request wins, the saved *article* goes with it — re-opening yesterday's piece inside the stream they
+  just asked for is neither of the two things they wanted — and none of it is written back, because a
+  shortcut is a visit rather than a decision about where this reader lives.
+- **A share is the feature worth installing for.** Sharing a page to a feed reader means "subscribe to
+  this", so the dialog opens with the address in it and the ladder (§11) runs itself: the request is
+  unambiguous and the fetch is the answer. The bare "Add a feed" shortcut opens an empty box and runs
+  nothing, because there is nothing to look for yet.
+- **`text` is searched, not just `url`.** The Web Share Target spec has a `url` field and most of
+  Android does not use it — a browser sharing from the address bar sends `url`, and reader apps,
+  social clients and every "share this article" button send `Some Headline https://example.com/x` as
+  `text`. A target that only reads `url` works when you test it and does nothing in the case that
+  actually happens. The first `http(s)` token wins, with trailing sentence punctuation stripped; not a
+  URL parser, because a real parse would accept `mailto:` and `javascript:`, and the second is a
+  scheme that must never reach a subscribe field.
+- **An unknown `view` is ignored** rather than guessed at, so a stale shortcut from an older manifest
+  opens the app normally instead of opening nothing.
+
+`launch_handler: focus-existing` is not decoration either: §12.5 records that two tabs sharing one
+IndexedDB produced a whole-dataset clobber in CashFlux, and a launcher that opened a second window on
+every shortcut press would be manufacturing exactly that.
+
+**Still owed.** The manifest's `name` and `description` are English and cannot be per-reader — it is
+fetched once, at install, before any locale preference is known. `screenshots` (which is what turns
+Chrome's install prompt into the richer one) is not there. Neither is a POST share target, which would
+accept shared *files* — OPML in particular — and needs a Service Worker handler that does not exist.
+
 ---
 
 ## 21. Security
