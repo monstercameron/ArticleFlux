@@ -56,6 +56,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The durable job queue** (`internal/store/jobs.go` + `internal/jobs`, TODO 6.4) — SQLite-backed,
+  so enqueueing and the write that caused it are **one transaction**, which is the property no
+  external broker can give you at any price. `locked_by` + `locked_at` are what make it
+  restart-*survivable* rather than merely durable: without them a crashed worker's jobs sit in
+  `running` forever and the queue loses a slot per crash, silently. Per-kind concurrency caps
+  (§22.7) so pack building cannot starve rule fan-out — **the test for that found a real race in the
+  first cut**, where six workers computed saturation simultaneously, all saw pack at zero and all
+  claimed a pack job before any registered; claiming and booking the slot now share one critical
+  section. A panicking handler fails its job rather than the process, since one malformed feed must
+  not stop every other subscriber's work. Dead jobs are kept with their cause: a dead-letter queue
+  nobody can read is a deleted job with extra steps. CI now runs `-race` on the Linux job, because
+  the Windows box this is developed on is arm64 and **cannot** run the race detector at all.
+
 - **Newsletters parse** (`internal/mailparse`, TODO 4.8) — MIME in, a normalised item out, no IMAP
   and no network. `net/mail` parses headers and stops there, so this adds the three things every real
   newsletter needs: multipart tree walking, quoted-printable and base64 transfer decoding, and RFC

@@ -51,6 +51,18 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
 
+      # The race detector, which the Windows test job CANNOT run: -race is not
+      # supported on windows/arm64, and that is the development box. The
+      # concurrent code here is not incidental — a worker pool with per-kind
+      # caps and a single-writer database — so the one platform that can check
+      # it should.
+      #
+      # Scoped to the packages with real concurrency rather than ./... , because
+      # -race over the whole tree triples an already slow job to re-prove that
+      # pure functions are pure.
+      - name: go test -race (concurrency-carrying packages)
+        run: go test -race ./internal/jobs/... ./internal/store/...
+
       - name: staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
