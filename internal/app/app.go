@@ -855,23 +855,36 @@ func (a *App) buildHandler() {
 			// recognition had to be in the field before the first refusal was
 			// ever sent.
 			skew.Unary(a.skewPolicy()),
+			// The §20.7 limits (TODO 7.3d), and this position is the whole point
+			// of having them.
+			//
+			// BEFORE authorization, which is the ordering a test caught us
+			// getting backwards. Refusing an unauthorised caller first sounds
+			// tidier — nothing they cannot do should cost them anything — but it
+			// hands the one caller who cannot authenticate an UNLIMITED channel:
+			// every call is rejected before it reaches the limiter, so the flood
+			// is never counted and never shed. A limiter that only limits
+			// callers who got past authorization is a limiter that protects the
+			// server from its own users and from nobody else.
+			//
+			// The cost of this order is that a denied caller does consume their
+			// own bucket. That is per-caller and it is the point.
+			//
+			// Before idem for a separate reason: reserving an idempotency key for
+			// a call that is then refused burns it, and the client retries with
+			// the same key and meets its own reservation.
+			a.rateLimitUnary(),
 			// Authorization (§7.5), and its position is the design.
 			//
 			// AFTER skew, because a client too old to understand the answer should
-			// be told to reload rather than told it lacks a permission. BEFORE the
-			// rate limiter and idem, because a call this refuses must cost the
-			// caller nothing they can spend: a denied request that consumed a rate
-			// budget lets an unauthorised caller degrade an authorised one, and a
-			// denied request that reserved an idempotency key lets them burn a key
-			// the legitimate client is about to retry with.
+			// be told to reload rather than told it lacks a permission. AFTER the
+			// limiter, per above. BEFORE idem, because a denied request that
+			// reserved an idempotency key burns one the legitimate client is
+			// about to retry with.
 			//
 			// It is one enforcement point for the whole surface. Before this, the
 			// model was "each handler remembers", and `ListLogs` did not.
 			grpcsrv.AuthzUnary(a.policy, a.scopeFromContext, a.log, a.recordDenial),
-			// The §20.7 limits (TODO 7.3d). Before idem, because reserving an
-			// idempotency key for a call that is then refused burns it — the
-			// client retries with the same key and meets its own reservation.
-			a.rateLimitUnary(),
 			// The missing half of a contract already in use: the client stamps a
 			// key onto every mutating RPC and nothing on the server read one
 			// (TODO 8c.15). Survivable only because every queued mutation sets
