@@ -265,7 +265,7 @@ jobs:
           enablement: true
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
       - name: Where it went
         run: echo "published ${{ steps.deployment.outputs.page_url }}"
