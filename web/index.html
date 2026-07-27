@@ -8,13 +8,28 @@
 <title>ArticleFlux</title>
 
 <!--
+  The icon, inline.
+
+  Without a <link rel="icon"> a browser asks the SITE ROOT for /favicon.ico on
+  every load, which on a project page is a different origin's root and is a 404
+  in the console of anyone who opens the demo. A data URI answers it from the
+  document itself: no request, no 404, and nothing extra to publish.
+
+  The mark is the app's own: the amber ◈ that means "all feeds" in the rail, on
+  the plum ground. `#` is percent-encoded because a raw one starts the fragment.
+-->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23221A2E'/%3E%3Cpath d='M16 7l6 9-6 9-6-9z' fill='%23FFCE5C'/%3E%3C/svg%3E">
+
+<!--
   Progressive enhancement only. The font stacks in client/design fall back to
   faces in the same family, so a machine with no network still renders the
   intended shape rather than Times.
 -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Literata:opsz,wght@7..72,300..600&family=Outfit:wght@300..600&display=swap">
+<!-- Self-hosted (see web/fonts.css). These were three requests to Google on
+     every page load, which told a third party the reader's IP and that they had
+     opened the app, on a product whose whole claim is that what you read stays
+     on your machine. Same typography, no egress, and it works offline. -->
+<link rel="stylesheet" href="fonts.css">
 
 <!--
   The splash, and the ONLY place in this repository where CSS is not authored in
@@ -250,20 +265,28 @@
   try {
     const go = new Go();
     let source;
+    // Which module this deployment publishes, STAMPED AT BUILD TIME.
+    //
+    // A server ships app.wasm and negotiates the gzip itself; the static demo
+    // publishes only app.wasm.gz. The loader used to try the raw module first
+    // and treat the 404 as "expected" — which it was, and which also meant every
+    // visitor to the public demo got a red 404 in their console on every load,
+    // for a file that build deliberately never produces. `make demo` rewrites
+    // the line below, exactly as it rewrites the Service Worker's cache key.
+    const MODULE = 'app.wasm';
     try {
-      source = await counted('app.wasm', false);
+      source = await counted(MODULE, MODULE.endsWith('.gz'));
     } catch (e) {
-      // Two different situations land here and the order between them is the
-      // point. A server always has app.wasm, so it never reaches this at all.
-      // A static host serving the demo has ONLY app.wasm.gz, so the 404 above is
-      // the expected first step rather than a failure — try the compressed
-      // module before giving up.
-      if (self.DecompressionStream) {
-        try { source = await counted('app.wasm.gz', true); } catch (e2) { source = null; }
+      // The other one, for a deployment that turns out not to be what the stamp
+      // said — a demo bundle served by the real server, a mirror that expanded
+      // the gzip. Cheap, and it keeps a wrong stamp from being fatal.
+      const other = MODULE.endsWith('.gz') ? 'app.wasm' : 'app.wasm.gz';
+      if (!other.endsWith('.gz') || self.DecompressionStream) {
+        try { source = await counted(other, other.endsWith('.gz')); } catch (e2) { source = null; }
       }
       // Progress is a nicety; booting is not. Any failure in the counting path
       // falls straight back to the plain fetch that has always worked.
-      if (!source) source = fetch('app.wasm');
+      if (!source) source = fetch(MODULE);
     }
     const result = await WebAssembly.instantiateStreaming(source, go.importObject);
     clearTimeout(chatter);

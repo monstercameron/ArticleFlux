@@ -32,7 +32,14 @@ const CACHE = `articleflux-shell-${VERSION}`;
 
 // The shell. Deliberately short: every entry here is something the reader
 // cannot boot without.
-const SHELL = ['./', './index.html', './wasm_exec.js', './app.wasm'];
+// Both module filenames, because the two deployments publish different ones: a
+// server ships app.wasm and prefers app.wasm.gz by content negotiation, and the
+// static demo publishes ONLY the gzip. Listing one meant the demo's install
+// fetched a file that does not exist, cached nothing, and left the module
+// uncached — a Service Worker whose entire job is booting offline, that could
+// not boot the thing that matters. Misses are survivable (see below), so listing
+// both costs a 404 on whichever host lacks one.
+const SHELL = ['./', './index.html', './wasm_exec.js', './app.wasm', './app.wasm.gz'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -83,8 +90,18 @@ self.addEventListener('fetch', (e) => {
         const res = await fetch(req);
         if (res.ok) (await caches.open(CACHE)).put('./index.html', res.clone());
         return res;
-      } catch (_) {
-        return (await caches.match('./index.html')) || Response.error();
+      } catch (err) {
+        // Same reasoning as below: a cached page if there is one, and otherwise
+        // a response that SAYS something. Response.error() renders as a browser
+        // network-failure page with no clue in it.
+        const cached = await caches.match('./index.html');
+        if (cached) return cached;
+        return new Response(
+          '<!doctype html><meta charset=utf-8><title>ArticleFlux</title>' +
+          '<body style="font:16px system-ui;padding:3rem;max-width:34rem">' +
+          '<h1>ArticleFlux is offline</h1><p>The page could not be fetched and ' +
+          'nothing is cached yet. Reload once you are connected.</p>',
+          { status: 504, statusText: 'Offline', headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
     })());
     return;
@@ -94,13 +111,30 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const hit = await caches.match(req);
     if (hit) return hit;
-    const res = await fetch(req);
-    // Only a real 200 is stored. Caching a 404 for app.wasm bricks the reader
-    // offline, and an opaque response has a status of 0 — indistinguishable
-    // from a success and impossible to validate.
-    if (res.ok && res.type === 'basic') {
-      (await caches.open(CACHE)).put(req, res.clone());
+    try {
+      const res = await fetch(req);
+      // Only a real 200 is stored. Caching a 404 for app.wasm bricks the reader
+      // offline, and an opaque response has a status of 0 — indistinguishable
+      // from a success and impossible to validate.
+      if (res.ok && res.type === 'basic') {
+        (await caches.open(CACHE)).put(req, res.clone());
+      }
+      return res;
+    } catch (err) {
+      // A rejected respondWith is not "the request failed" — the browser turns
+      // it into a synthetic **503**, and that is what a reader sees in the
+      // console: `wasm_exec.js 503`, then `Go is not defined`, on a file the
+      // server is serving perfectly well. One dropped connection during a boot
+      // is enough, and a reload does not fix it while the worker keeps doing it.
+      //
+      // So the failure is answered rather than thrown: the cache if there is
+      // anything, and otherwise a 504 that says which address failed and why.
+      // The page's own error path can then report something true.
+      const stale = await caches.match(req, { ignoreSearch: true });
+      if (stale) return stale;
+      return new Response(
+        'ArticleFlux: could not reach ' + url.pathname + ' — ' + (err && err.message),
+        { status: 504, statusText: 'Offline', headers: { 'Content-Type': 'text/plain' } });
     }
-    return res;
   })());
 });

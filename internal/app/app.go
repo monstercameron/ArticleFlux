@@ -116,6 +116,16 @@ type Config struct {
 	// every URL already minted and cached.
 	ProxyOrigin string
 
+	// BehindProxy states that something terminates TLS and forwards to this
+	// process.
+	//
+	// It is the operator asserting a fact the server cannot observe, and it gates
+	// exactly one thing: whether X-Forwarded-Proto is believed when deciding to
+	// emit HSTS (see overTLS). Trusting that header unconditionally would let any
+	// client pin Strict-Transport-Security for a year against a hostname that was
+	// never served over TLS.
+	BehindProxy bool
+
 	// AllowedOrigins is the exact set of page origins permitted to open the
 	// tunnel, e.g. "https://articleflux.example.com" (TODO 7.4).
 	//
@@ -716,7 +726,7 @@ func (a *App) buildHandler() {
 	}
 
 	if a.cfg.WebRoot != "" {
-		mux.Handle("/", a.static(a.cfg.WebRoot))
+		mux.Handle("/", a.securityHeaders(a.static(a.cfg.WebRoot)))
 	}
 	a.handler = mux
 }

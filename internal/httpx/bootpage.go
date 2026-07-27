@@ -74,9 +74,13 @@ func (p *BootPage) render(st buildstatus.Status) string {
 	// Progressive enhancement only. The stacks in client/design are chosen so an
 	// offline box degrades to something in the same family, and this page must
 	// work on a machine with no network — that is half of what it is proving.
-	b.WriteString(`<link rel="preconnect" href="https://fonts.googleapis.com">`)
-	b.WriteString(`<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>`)
-	b.WriteString(`<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Literata:opsz,wght@7..72,300..600&family=Outfit:wght@300..600&display=swap">`)
+	// Self-hosted, from the same stylesheet the app shell uses. It used to be
+	// three requests to Google, which contradicted the sentence directly above
+	// it: a page that "must work on a machine with no network" cannot depend on
+	// a font CDN, and a build-status page is exactly the thing you are staring at
+	// when the network is the problem. It also leaked the operator's IP to a
+	// third party on every ten-second refresh.
+	b.WriteString(`<link rel="stylesheet" href="/fonts.css">`)
 	b.WriteString(p.style)
 	b.WriteString(`</head><body>`)
 
