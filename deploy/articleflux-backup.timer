@@ -1,0 +1,16 @@
+[Unit]
+Description=Nightly ArticleFlux backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Up to twenty minutes of jitter. Not for load — this is one machine — but so
+# the backup does not land at the same instant as every other 03:30 job on the
+# droplet and turn a quiet minute into a spike of disk contention.
+RandomizedDelaySec=20m
+# A droplet that was suspended or rebooted through 03:30 runs the backup when it
+# comes back, rather than skipping the night entirely and leaving a hole in the
+# retention window that nobody notices until they need it.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

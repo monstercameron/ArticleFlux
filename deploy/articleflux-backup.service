@@ -1,0 +1,38 @@
+# Nightly verified backup. Paired with articleflux-backup.timer.
+#
+# It runs `articleflux backup`, which is VACUUM INTO plus an integrity check on
+# the copy — not a file copy. That distinction is the whole reason this unit
+# exists rather than a cron line with `cp`: the database runs in WAL mode, so at
+# any moment an unknown amount of committed data is in the -wal file and not in
+# the .db. Copying the three files copies them at three different instants, and a
+# writer in between produces a backup that opens cleanly and is missing a
+# transaction. It restores, it passes a smoke test, and it is wrong.
+#
+# Install alongside the timer:
+#   sudo install -m 0644 deploy/articleflux-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now articleflux-backup.timer
+
+[Unit]
+Description=ArticleFlux nightly backup
+# Not After=articleflux.service: the backup opens the database directly and does
+# not need the server up. A backup that silently skips itself because the server
+# happened to be down is a backup missing from exactly the week you needed it.
+
+[Service]
+Type=oneshot
+User=articleflux
+Group=articleflux
+
+# -keep 14 is two weeks. Long enough that a problem noticed on a Monday can be
+# rolled back past the weekend it started, short enough that fourteen VACUUMed
+# copies of a feed database are not a storage decision anyone has to think about.
+ExecStart=/opt/articleflux/bin/articleflux backup \
+    -db /var/lib/articleflux/articleflux.db \
+    -out /var/backups/articleflux/ \
+    -keep 14
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/articleflux /var/backups/articleflux

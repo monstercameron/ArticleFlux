@@ -1,0 +1,110 @@
+# ArticleFlux — systemd unit for an Ubuntu host.
+#
+# Install:  sudo make install-service && sudo systemctl enable --now articleflux
+# Logs:     journalctl -u articleflux -f
+#
+# The bind is 127.0.0.1 and there is NO -dev flag. Both matter:
+#
+#   * 127.0.0.1 means only nginx can reach the process, so the only way in is
+#     through TLS on :443.
+#   * The absence of -dev means a login is required. Those two used to be the
+#     same switch — DevMode was derived from a loopback bind — which made this
+#     exact unit file serve an unauthenticated superadmin session to the whole
+#     internet. If you are reading this while porting an older deployment: that
+#     is the bug, and `-dev` is now refused on any non-loopback bind.
+
+[Unit]
+Description=ArticleFlux feed reader
+Documentation=https://github.com/monstercameron/ArticleFlux
+# network-online, not just network: the poller reaches out to publishers on its
+# first tick, and starting before DNS resolves produces a boot's worth of
+# "no such host" in the log for feeds that are fine.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=articleflux
+Group=articleflux
+
+WorkingDirectory=/opt/articleflux
+ExecStart=/opt/articleflux/bin/articleflux serve \
+    -addr 127.0.0.1:9000 \
+    -db /var/lib/articleflux/articleflux.db \
+    -web /opt/articleflux/bin/web \
+    -origin https://reader.example.com \
+    -behind-proxy \
+    -poll 15m
+
+# Migrations run before the server takes traffic. serve migrates on open anyway,
+# so this is belt and braces — but a schema change that fails here fails the
+# start with one clear line, instead of failing inside Open where it is one
+# message among the boot log.
+ExecStartPre=/opt/articleflux/bin/articleflux migrate -db /var/lib/articleflux/articleflux.db
+
+# The Smart+ voice key, if this instance uses one. Optional: with no key the
+# /speech endpoint answers 501 and the browser's own speech synthesiser reads
+# articles for free. 0600, owned by articleflux — it is an API key that bills.
+EnvironmentFile=-/etc/articleflux/articleflux.env
+
+Restart=on-failure
+RestartSec=5s
+# A crash loop should be loud, not infinite. Five failures in a minute stops the
+# unit, so `systemctl status` shows a failed service rather than a service that
+# has been restarting every five seconds for a week.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# SIGTERM is what cmd/articleflux traps for graceful shutdown: it stops
+# accepting, drains for up to five seconds, and closes the database cleanly. The
+# clean close is the point — a SIGKILL mid-write leaves a WAL to recover on next
+# start, which is survivable and not free.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# --- hardening ---------------------------------------------------------------
+#
+# This process fetches arbitrary URLs off the public internet and parses the
+# bytes that come back. That is the entire threat model in one sentence, and it
+# is why the sandbox below is not ceremony.
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RemoveIPC=yes
+
+# ProtectSystem=strict makes everything read-only, so the two directories that
+# must be writable are named. Note that the database directory is where the WAL
+# and the speech cache live too — SQLite creates siblings next to the file, and
+# a read-only parent fails on the first write rather than at open.
+ReadWritePaths=/var/lib/articleflux
+StateDirectory=articleflux
+StateDirectoryMode=0700
+
+# Outbound HTTP to publishers, inbound from nginx over loopback. Nothing else —
+# no raw sockets for a process whose job is to fetch and parse XML.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# MemoryDenyWriteExecute is deliberately NO above, and that is not an oversight.
+# The SQLite driver is a WebAssembly module executed by wazero, which JIT-compiles
+# to executable pages at runtime. Denying W^X kills the database on first query.
+
+[Install]
+WantedBy=multi-user.target
