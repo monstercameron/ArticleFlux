@@ -1904,6 +1904,40 @@ prompt is mostly prohibitions, and `cleanForSpeech` strips the markdown it was
 told not to emit anyway — a stray asterisk is not a cosmetic problem, it is the
 word "asterisk" in the middle of a sentence, cached as audio.
 
+**Broadcast segments (`internal/smart/podcast.go`)** solve the *other* half of
+listening to a list, and it is the half the digest never touched. Six digests
+played back to back are six essays with a hard cut between each: no handover, no
+sense of an order, nothing at the seam to say one thing ended and another began.
+Every bulletin ever made fixes that with a sentence or two of connective tissue,
+and it is the whole difference between a playlist and a programme.
+
+So a segment is **that article's slot in a running broadcast**: it is given the
+source and headline of the story just played — not its text, which is what keeps
+a two-hour session costing exactly what a two-hour queue of digests costs — and
+opens by handing over from it, naming the real relation where there is one.
+
+Two consequences worth stating because they are what a reader would otherwise
+report as bugs:
+
+- **The unit of caching is the ORDERED PAIR**, not the article, in both the text
+  cache (`podcast-cache/`) and the audio cache (`item#podcast:prev`). The same
+  story after a different story is a different recording. Sharing a key would
+  have the narrator hand over from something the listener never heard — which
+  does not sound like a bug, it sounds like the narrator misremembering.
+- **The predecessor travels as `&p=<item id>` beside the sealed ticket**, not
+  inside it. The ticket is minted by `GetItem`, long before anyone knows what
+  this will be played after; the order is the client's, decided at play time, and
+  it differs between two listens of the same feed. It is safe to be
+  caller-supplied because the server resolves it through the *same scope* as the
+  item being spoken, so the worst a forged value achieves is a handover from an
+  article the reader could already read.
+
+The prompt's prohibitions are the feature, and each names something a model asked
+for "a podcast segment" produces unprompted and audibly: an invented show name, a
+"welcome back" to a listener who has not been anywhere, a sign-off at the end of
+every segment so a forty-minute session ends forty times, and — the damaging one
+— "coming up next", followed by a story the model has never seen.
+
 Audio is keyed by `(item, mode, model, voice)`. The mode is not optional: without
 it, turning the digest on serves yesterday's full-article audio and turning it
 off serves the digest, each looking exactly like the toggle not working.
