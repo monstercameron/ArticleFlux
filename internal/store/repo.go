@@ -1201,6 +1201,18 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 		`DELETE FROM item_notes WHERE user_id = ? AND tenant_id = ?`,
 		`DELETE FROM feed_tags WHERE user_id = ? AND tenant_id = ?`,
 		`DELETE FROM tags WHERE user_id = ? AND tenant_id = ?`,
+		// The saved view, too.
+		//
+		// This endpoint exists because "a test that marks an article read
+		// changes what every later test sees" — and a test that changes which
+		// VIEW is open is the same leak wearing different clothes, with a worse
+		// symptom: the next test boots into a stream that is legitimately empty,
+		// sees no articles, and fails as though the data were gone. That cost an
+		// afternoon of blaming the seed.
+		//
+		// Everything in user_prefs is per-user presentation state, which is
+		// exactly what a reset is for.
+		`DELETE FROM user_prefs WHERE user_id = ? AND tenant_id = ?`,
 	} {
 		if _, err := r.db.Write.ExecContext(ctx, q, s.UserID, s.TenantID); err != nil {
 			return err
