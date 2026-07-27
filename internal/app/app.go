@@ -17,8 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
@@ -226,10 +231,10 @@ type App struct {
 	// tel is the metric and trace surface (§22.11). Always non-nil — every call
 	// site records unconditionally, so a nil here would be a panic on the first
 	// request rather than a quiet absence of data.
-	tel        *telemetry.Telemetry
-	grpc       *grpc.Server
-	handler    http.Handler
-	stopPo     chan struct{}
+	tel     *telemetry.Telemetry
+	grpc    *grpc.Server
+	handler http.Handler
+	stopPo  chan struct{}
 	// lastDerive is the low-water mark for ScopesToDerive, under deriveMu.
 	//
 	// Held in memory rather than persisted: on restart it starts one window back,
@@ -579,6 +584,17 @@ func (a *App) Close() error {
 			<-done
 		}
 	}
+	// Flush telemetry AFTER the server has drained, so the spans and metrics
+	// describing the last requests are included, and on a bounded context of its
+	// own — an unreachable collector must not hold the shutdown open until
+	// systemd loses patience and SIGKILLs a process mid-write to SQLite.
+	if a.tel != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := a.tel.Shutdown(ctx); err != nil {
+			a.log.Warn("telemetry did not flush cleanly", "err", err)
+		}
+		cancel()
+	}
 	return a.db.Close()
 }
 
@@ -693,15 +709,42 @@ func (a *App) buildHandler() {
 			idem.Unary(a.repo, a.scopeFromContext),
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
-				start := time.Now()
-				res, err := handler(ctx, req)
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
 				// segment is what a person reads.
 				name := info.FullMethod
 				if i := strings.LastIndexByte(name, '/'); i >= 0 {
 					name = name[i+1:]
 				}
-				a.lat.Observe(name, time.Since(start), err != nil)
+
+				// A span around the handler, so a slow call can be opened up
+				// rather than merely counted. The method name is bounded — it
+				// comes from the generated service descriptor, not from the
+				// caller — so it is safe as both a span name and an attribute.
+				ctx, span := a.tel.Tracer.Start(ctx, "rpc."+name,
+					trace.WithSpanKind(trace.SpanKindServer),
+					trace.WithAttributes(attribute.String("rpc.method", name)))
+				defer span.End()
+
+				start := time.Now()
+				res, err := handler(ctx, req)
+				elapsed := time.Since(start)
+
+				a.lat.Observe(name, elapsed, err != nil)
+
+				// The gRPC status code, not the error text: `codes.NotFound` is
+				// six possible values, an error string is unbounded and quotes
+				// article titles back at you.
+				attrs := metric.WithAttributes(
+					attribute.String("rpc.method", name),
+					attribute.String("rpc.code", status.Code(err).String()),
+					telemetry.Outcome(err),
+				)
+				a.tel.Instruments.RPCRequests.Add(ctx, 1, attrs)
+				a.tel.Instruments.RPCDuration.Record(ctx, elapsed.Seconds(), attrs)
+				if err != nil {
+					span.RecordError(err)
+					span.SetStatus(otelcodes.Error, status.Code(err).String())
+				}
 				return res, err
 			}),
 		// **This is the other half of the client's keepalive, and neither works
@@ -780,6 +823,19 @@ func (a *App) buildHandler() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/grpc", a.whenReady(tunnel))
+	// The scrape endpoint (§22.11).
+	//
+	// UNAUTHENTICATED, like /healthz and /readyz beside it, and that is a
+	// decision rather than an omission: a scraper is a machine with no session,
+	// and a metrics endpoint behind a login is a metrics endpoint nobody
+	// collects. What makes it safe is the discipline in internal/telemetry —
+	// every attribute is a bounded label, so there is no feed URL, article title
+	// or username to read here. It is counts and durations.
+	//
+	// It is still an information disclosure in the ordinary sense: request rates
+	// say when somebody reads. Bind to loopback and let the reverse proxy decide
+	// who reaches it, exactly as with the rest of the surface.
+	mux.Handle("/metrics", a.tel.Handler)
 	mux.HandleFunc("/favicon", a.serveFavicon)
 	// Registered unconditionally, and gated inside: the handler itself reports
 	// 501 with no key and 403 without the per-user opt-in. Registering it only
@@ -846,7 +902,10 @@ func (a *App) buildHandler() {
 	if a.cfg.WebRoot != "" {
 		mux.Handle("/", a.securityHeaders(a.static(a.cfg.WebRoot)))
 	}
-	a.handler = mux
+	// Metrics for every HTTP response, outermost so it sees the status the client
+	// actually got — including the ones written by middleware that never reaches
+	// a route.
+	a.handler = a.httpMetrics(mux)
 }
 
 // static serves the client with the headers a wasm app needs.

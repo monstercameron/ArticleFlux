@@ -693,6 +693,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope,
 			ManualWeight:    1,
 			Corroboration:   st.otherSources,
 			SimilarToRecent: st.duplicateOf,
+			Skips:           skipCount(itemSignals[it.ID]),
 		}
 		sig := rank.Signals{
 			FeedAffinity:   aff.Score,
@@ -921,6 +922,69 @@ func corroborate(candidates []store.Item, corpus *textvec.Corpus) map[string]sto
 		out[items[i].id] = story{otherSources: others, duplicateOf: sim[i]}
 	}
 	return out
+}
+
+// SkipMinImpressions is how many times an item must have been on screen before
+// passing it over counts as a skip.
+//
+// Three. One impression is the denominator and says nothing (R17). Two is a list
+// that was scrolled and scrolled back — the same glance, twice. Three separate
+// exposures is the point at which "I have seen this and not chosen it" is a fairer
+// reading than "it has not had its turn yet".
+const SkipMinImpressions = 3
+
+// skipCount derives §18.1's never-emitted `skipped` signal from the impression log.
+//
+// # Why this is derived here rather than sent by the client
+//
+// The taxonomy defines Skipped as "visible repeatedly ACROSS SESSIONS and still
+// passed over". A browser tab cannot see across sessions — it sees the one it is —
+// so a client-side emitter would either report every scroll-past as a skip or need
+// its own history of what it had already reported. The engagement log already holds
+// the whole picture, and deriving it keeps the rule that `engagements` is the only
+// irreplaceable table: change this function, re-derive, and the answer changes with
+// no migration and no lost data.
+//
+// # The two guards that keep it from being a blunt impression penalty
+//
+// R17 is the thing at risk here. Impressions are the most numerous rows in the table
+// by a wide margin — 189 of 977 distinct items on a real database — and a scorer
+// that reads them as rejection concludes the reader dislikes everything they
+// subscribe to.
+//
+//  1. ANY affinity-bearing engagement disqualifies a skip. Opened, dwelt on, liked,
+//     even bounced off: all of those are the reader ACTING on the item, and an item
+//     that was acted on was not skipped. Bounced already carries its own negative,
+//     so counting it here as well would penalise one decision twice.
+//
+//  2. The exposures must span more than one sitting. Forty impressions inside one
+//     session is one scroll through a long list, not forty rejections. The span test
+//     uses signals.SessionGapMS, the same thirty-minute boundary SameSession uses, so
+//     "what counts as a separate sitting" has one definition.
+//
+// FirstAt and LastAt are min/max across every kind, not impressions specifically.
+// That is exact rather than approximate for the items this function can return a
+// non-zero count for: guard 1 means such an item has impressions and NOTHING else,
+// so the overall span is the impression span.
+func skipCount(sig store.ItemSignal) int {
+	impressions := sig.Counts[signals.Impression]
+	if impressions < SkipMinImpressions {
+		return 0
+	}
+	for kind, n := range sig.Counts {
+		if n <= 0 || kind == signals.Impression {
+			continue
+		}
+		if signals.MovesAffinity(kind) {
+			return 0
+		}
+	}
+	if sig.LastAt-sig.FirstAt < signals.SessionGapMS {
+		return 0
+	}
+	// The count is exposures BEYOND the threshold, so an item at exactly the
+	// threshold gets the smallest possible penalty rather than a step change.
+	return impressions - SkipMinImpressions + 1
 }
 
 // deliberateKinds are the acts that cost the reader something, and their re-rank
