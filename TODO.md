@@ -892,20 +892,32 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       `knownSlow` entries are deleted, and a reconcile function proves the maintained counter equals
       a recomputed one after a randomised sequence of reads, unreads and mark-all-reads — drift is
       the whole risk of a denormalised counter and it is silent.*
-- [ ] **5.5** `tags` · `item_tags` — A21, prerequisite for both rules and the sync API
+- [x] **5.5** `tags` · `item_tags` — A21, prerequisite for both rules and the sync API
       ◧ 2026-07-26 — Tags exist and are per-user, but they attach to a **subscription**, not an item. `item_tags` — which is what A21 actually specifies and what the sync API needs — is not built.
 
+      ✅ 2026-07-26 — `internal/store/itemtags.go`. `item_tags` is A21's, and it is **not**
+      `feed_tags`: "everything from this feed is rust" and "this article is about rust" are different
+      statements. Both join one `tags` table, since a reader who labels a feed and an article "rust"
+      means the same tag. Tagging an invisible item returns `ErrNotFound` — the write succeeding
+      would itself answer "does this id exist in another tenant". Untagging leaves the tag behind.
+      `UntagItemsByRule` is the counterpart to `UnmuteByRule`.
 - [x] **5.6** `notes` (private by default) · `bookmarks` · `bookmark_tags`
       ✅ 2026-07-26 — `item_notes` (0005) — private, separate from `user_item_state` so a note is not coupled to read state, with `NotedItems` for the Notes stream. *Bookmarks are not built; read-later reuses `starred_at` instead.*
 
 - [ ] **5.7** `rules` · `rule_hits` · `scrape_rules` · `mailboxes`
-- [ ] **5.8** `settings` · `views` · `engagements` (append-only, **with the §18.1 kind taxonomy
+- [x] **5.8** `settings` · `views` · `engagements` (append-only, **with the §18.1 kind taxonomy
       including `impression` and `bulk_read`**) · `audit_log`
       ◧ 2026-07-26 — **`engagements` is DONE**, ahead of its tier because every day of reading
       without it is signal that cannot be reconstructed (R12). `migrations/0007_engagements.sql` +
       `store.RecordEngagements` (batched, one tx, `INSERT OR IGNORE` on a client-generated id so a
       retried batch cannot double-count) + the three reads the interest layer needs: `ItemSignals`,
       `FeedSignals`, `EngagementsSince`. `settings`, `views` and `audit_log` are untouched.
+      ✅ 2026-07-26 — `views` and `audit_log` land in `internal/store/views.go`; `engagements` was
+      already done. A view's spec is opaque JSON (§20.2's vocabulary grows with the UI) but
+      **validated as JSON on the way in**, because a malformed one otherwise fails at render time,
+      on a screen, long after the save reported success. `Audit` takes no `Scope` — §7.9 tombstones
+      actors and the log must survive what it describes — while `AuditTrail`, which reads it, does.
+      *Owed: `settings` is 6.3's, done separately.*
 - [x] **5.9** Interest layer: `topics` · `item_topics` · `domain_affinity` · `outlinks` ·
       `recommendations` · `feed_affinity` · `term_affinity` · `home_ranking`. **All derived — a
       `DELETE` and rebuild from `engagements` must produce the same result**, which is the test.
@@ -916,9 +928,15 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       identical snapshots of all four tables, which is what makes `engagements` the only
       irreplaceable table here. A user's topic rename and suppression survive rederivation, matched
       by the cluster's top three terms rather than by an id that is regenerated each pass.
-- [ ] **5.10** FTS5 triggers for `items_fts`, `notes_fts`, `bookmarks_fts`, and a search repo over them
+- [x] **5.10** FTS5 triggers for `items_fts`, `notes_fts`, `bookmarks_fts`, and a search repo over them
       ◧ 2026-07-26 — `items_fts` with its three triggers and a `Search` repo over it, verified by `TestSearchFindsASeededItem` and `TestSearchIndexTracksUpdates`. `notes_fts` and `bookmarks_fts` are not built.
 
+      ✅ 2026-07-26 — `notes_fts` and `bookmarks_fts` land in 0010 with their triggers, and
+      `internal/store/searchmore.go` adds `SearchNotes` and `SearchBookmarks`. **Separate searches
+      rather than one federated list**: the corpora answer different questions and a merged result
+      would have to invent a ranking between them, which buries the notes — the rarer and more
+      valuable hit. Bookmark search covers the **archived text**, which is most of the value and the
+      only search still answering after the origin dies.
 - [x] **5.11 `folders`** — categories: list · create · rename · delete · file a feed. **Per-user, flat,
       one folder per subscription** (A37, §6.10). *Added to the tier after the fact: the table shipped
       in `0001_init` and the repository is what was missing.*
@@ -1083,7 +1101,7 @@ Business logic over repositories. Still headless.
       `extract` each work around it with the same four-line branch; this is the third copy, and the
       point at which the branch should move into `netguard` rather than being written a fourth time.
 
-- [ ] **6.15 `pageproxy`** — the tier-2 service (§10.1b). item → guarded fetch (4.3's client) →
+- [x] **6.15 `pageproxy`** — the tier-2 service (§10.1b). item → guarded fetch (4.3's client) →
       `charsetdec` → 4.13 rewrite pointing at 6.14 → a new **`sanitize.Snapshot` policy** (2.9: no
       script, no iframe, no form, no event attributes; keeps layout CSS) → disk cache → serve. Carries
       the **escalation hook** 6.16 plugs into: if the fetched body is empty or implausibly short for
@@ -1091,6 +1109,30 @@ Business logic over repositories. Still headless.
       *Done when: a saved fixture page renders with **zero requests leaving our origin** — asserted
       against a request log, not by eye, because "it looked right" is how a `url()` in a background
       shorthand survives for a year.*
+      ✅ 2026-07-26 — `internal/pageproxy` + `/p` + the client's two entry points.
+      **Rewrite runs BEFORE sanitize, and that ordering is the whole correctness of the tier.**
+      `<base href>` is not on any sanitize allowlist, so sanitizing first deletes it before anything
+      can honour it, and every relative URL on the page silently resolves against the wrong host.
+      Pinned by `TestBaseHrefIsHonouredDespiteSanitizeDroppingIt`.
+      **The cache holds the RAW page, not the finished one** (30-minute TTL). The finished HTML
+      carries capabilities with expiries in them; caching that would serve a page whose every image
+      is dead. So the network is cached and the two parses are redone per view with fresh mints — a
+      page view is a deliberate act, not a hot path.
+      *Deviation: `sanitize.Snapshot` does NOT use the GWC engine.* GWC drops `<style>`, `<link>` and
+      every `style` attribute **above** the policy layer — right for prose, fatal here, and no policy
+      table can override it. Snapshot therefore walks the tree itself in
+      `internal/sanitize/snapshot.go`, allowlisting what a *document* needs and dropping what can act.
+      It carries the same 48-vector corpus as every other policy, which is what keeps the exception
+      honest, plus its own tests for the useful half — a snapshot sanitizer that passes every security
+      test and strips the stylesheet has failed at its job.
+
+- [ ] **6.15a Stylesheets do not survive the round trip yet.** `<link rel=stylesheet>` is rewritten to
+      `/asset?u=…`, and `/asset` allowlists **images**, so it answers 415 and the page renders with
+      inline `<style>` only. Most sites keep their CSS in external files, so most sites currently come
+      back mostly unstyled. Fixing it means teaching the asset endpoint a second content kind: fetch
+      `text/css`, run `rewrite.CSS` over it so the images and fonts *it* references are proxied too
+      (recursively — one level is not enough), and serve it as `text/css`. `rewrite.CSS` already exists
+      and is tested; this is the endpoint half. **Until then tier 2 is legible rather than faithful.**
 
 - [ ] **6.16 `render`** — the headless browser pool (§10.1c). `chromedp` attached to the installed
       Chromium · a **disposable profile with no access to the data directory** · exactly one render at
@@ -1185,6 +1227,19 @@ Business logic over repositories. Still headless.
       no body, key survives a restart.
       *Owed:* the `/p/…` half, per-user rate limits (7.3d), and the both-sides hostname enforcement,
       which cannot be written until D20 is answered.
+      ✅ 2026-07-26 — **`/p` shipped too, and D20 turned out not to block it.**
+      `Content-Security-Policy: sandbox` puts the response in an **opaque origin**: the document
+      cannot read this application's localStorage or cookies even while served from the same host.
+      That is a browser-enforced boundary rather than a weaker stand-in for one, and it is paired with
+      `script-src 'none'`, `form-action 'none'`, `frame-ancestors 'self'` and `allow-popups` (so a
+      link that opens in a new tab still works, sandboxed). The separate hostname is still worth
+      having — it moves the guarantee from a header we must keep right forever to a boundary nobody
+      can forget — so `ProxyOrigin` remains wired and D20 remains open, now as hardening rather than
+      as a blocker.
+      Capabilities are prefixed (`"asset\n…"` vs `"page\n…"`), so an image URL cannot be replayed to
+      fetch a document; `TestAssetCapabilityCannotOpenAPage` pins it. The origin's own
+      `X-Frame-Options` is **not** forwarded, which is what lets the reading pane embed a site that
+      refuses to be embedded (§10.1's blank-box problem).
 
 - [ ] **7.13 `StreamPage`** — tiers 3–4 (§10.1d). A **bidi** RPC, which the tunnel already carries:
       screencast frames down, input events up. Server side: `Page.startScreencast` → ack every frame →
@@ -1387,6 +1442,19 @@ hand-written CSS and vanilla JS, and nobody ports them.
       and the user must always have somewhere to go. ← 7.12, M13's switcher §10.1b
       *Done when: every mode degrades to the one below it on failure, and no mode can leave the pane
       empty with no explanation.*
+      ◧ 2026-07-26 — **The two proxy entry points shipped; the switcher did not.** The article's chip
+      row gains **View page** (a sandboxed iframe in the reading column) and **Full width** (the same
+      URL in a new tab, where the browser gives it the whole window — "fullscreen" without building a
+      fullscreen mode). Both are absent rather than disabled when the instance has the page proxy off:
+      `Item.proxy_url` is empty and there is nothing to offer, and a disabled control would advertise
+      a feature the server refuses.
+      **Full width is an `<a target="_blank">`, not a click handler** — middle-click, ctrl-click and
+      "open in new window" are three gestures the reader already knows, and routing a new tab through
+      JavaScript breaks all three.
+      The frame is `sandbox="allow-popups"` with no `allow-scripts` and no `allow-same-origin`,
+      matching the response header exactly — belt at the embedding site, braces in the CSP.
+      *Owed:* the mode switcher proper (auto/feed/reader/page/live), per-feed and global defaults, and
+      the keyboard binding. Right now this is two buttons, not a ladder.
 
 - [ ] **8.21 `RemotePage`** — the tier-3 client (§10.1d). Holds the tile grid, composites 7.13's
       changed 64×64 blocks onto a canvas, forwards pointer/key/scroll events back up the stream, and
@@ -1768,6 +1836,43 @@ be **one commit**.
       is what turned it from theoretical into ordinary. Both guarded now, and the in-flight flag is
       cleared on the discarded path or the filler wedges permanently.
 
+### The read half — because fixing writes alone made the asymmetry worse
+
+- [x] **8c.19 A read on a dead connection waits 4 seconds, not 20.** `WaitForReady(true)` is right for
+      a half-second reconnect and wrong for an outage: every click hung for the full call deadline and
+      *then* failed, which is the worst possible ordering of those two events. The new bound is chosen
+      against the backoff schedule (retries at ~0.5s, 1.3s, 2.6s, 4.6s), so it contains three or four
+      whole attempts — anything that was coming back has come back.
+- [x] **8c.20 A read cache, so an outage degrades the app instead of emptying it.** §20.19.8a,
+      `client/data/cache.go`. The last answer to each read, served when the transport fails, bounded by
+      entries **and** bytes, LRU by *use* rather than by age, persisted on `pagehide` only. Wired into
+      the rail, the list and article bodies — the last of those matters most, because neighbour
+      prefetch (8b.2) has usually already pulled the articles either side of the current one, so
+      losing the connection mid-stream leaves a reader able to keep going in both directions instead
+      of hitting a wall on the next press of `j`. **Explicitly not trip packs:** this is the last
+      answer to a question you already asked, so it makes "go back to what I was reading" work on a
+      plane and does nothing for "read today's news". §12 is still owed and this does not reduce it.
+      *Done when: killing the server and clicking a feed you have already opened shows the list with a
+      badge, not a skeleton and an error.*
+- [x] **8c.21 The staleness badge, and it carries the age.** §12.3 asks for an "unmistakable" badge and
+      is right to: a list that silently shows yesterday's articles during an outage is the
+      "silently disconnected looks like a quiet news day" failure wearing a different hat. "Cached"
+      alone is not actionable — four minutes and yesterday are the same word — so the age is in the
+      line. Styled as a statement, not an alarm: nothing is broken, and an alarm would train readers
+      to dismiss the one row that must not be dismissed.
+- [x] **8c.22 Three operations refused rather than queued, each saying why.** `ErrOffline` from
+      `Refresh` (the fetching happens on the server), `Subscribe` (the server validates the feed before
+      anything is stored) and `MarkAllRead` (mints a new undo batch per call, so a replay leaves two).
+      Returned in the same frame as the press. **The reason this needs saying at all:** by the time a
+      reader meets one of these they have already watched three articles stay marked, and will
+      reasonably assume everything is queued — silence would read as a bug.
+- [x] **8c.23 The drain's rules are testable without a browser.** `Drain` was wasm-only, so its three
+      decisions — stop at a transport failure, hold everything on a terminal refusal, retire an op the
+      server permanently refused — were unassertable. Extracted to an untagged `drain.go` with the
+      sender injected, the same shape as `track.Store` and `conn.go`. Six tests, and the interesting
+      one is the third: without it, one article deleted on another device turns the whole queue into a
+      wall.
+
 ### Owed, and now specified rather than implied
 
 - [ ] **8c.15 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
@@ -1795,7 +1900,7 @@ be **one commit**.
 
 ### ✅ Built 2026-07-26, night — and the three things the build changed
 
-**8c.1–8c.7 and 8c.9–8c.14 done; 8c.8 and 8c.15–8c.17 open and specified above.** `go build ./...`,
+**8c.1–8c.7, 8c.9–8c.14 and 8c.19–8c.23 done; 8c.8 and 8c.15–8c.17 open and specified above.** `go build ./...`,
 `GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./...` green; **`go test ./...` is 38 packages
 passing, zero failures.**
 
