@@ -8,29 +8,35 @@ import (
 	"golang.org/x/net/html"
 )
 
-// Fuzzing the sanitizer (§10.2, the security review of 2026-07-27).
+// Fuzzing the sanitizer, part two (§10.2, the security review of 2026-07-27).
 //
-// # Why this file was missing and should not have been
+// # What was already here
 //
-// Ten packages in this tree carry a fuzz target — feed parsing, charset
-// decoding, mail headers, the SSRF guard. `sanitize` had none, and it is the one
-// that matters most: it is the ONLY thing standing between hostile publisher
-// HTML and the reader's DOM, on an origin that holds the session token. Every
-// other parser here fails by returning wrong data. This one fails by executing
-// somebody else's code.
+// `sanitize_test.go` carries `FuzzHTMLNeverEmitsAScriptTag`, and it is good: it
+// runs an XSS corpus across every policy, checks for `<script` and `<iframe`,
+// and — the part worth copying — checks ATTRIBUTES against the parsed tree
+// rather than against substrings, because three fuzz findings in a row proved
+// that a substring cannot tell an attribute name from an attribute value.
 //
-// # The invariant
+// This file does not replace it. It widens the same idea along three axes that
+// the existing target does not cover:
 //
-// Whatever goes in, the output must not be able to run. Not "should be escaped",
-// not "usually safe" — must not contain a script element, an event-handler
-// attribute, a javascript: or data:text/html URL, or any of the tags whose whole
-// job is to load and execute something else.
+//  1. **More ways to execute than <script> and <iframe>.** `<object>`,
+//     `<embed>`, `<applet>`, `<base>`, `<frame>`, `<meta http-equiv>` and
+//     `srcdoc` all load or navigate, and none were asserted against.
+//  2. **URL schemes normalised the way a browser normalises them.** Browsers
+//     strip whitespace and C0 control characters before reading a scheme, which
+//     is why `jav&#x09;ascript:` and "java\x00script:" are live attacks; a
+//     prefix check on the raw value misses both.
+//  3. **Structural idempotency, fuzzed.** The existing idempotency test runs
+//     three hand-written inputs. Non-idempotency is the signature of mutation
+//     XSS — the browser re-reading the output as different nodes than the
+//     sanitizer believed it wrote — so it is worth a fuzzer rather than a list.
 //
-// Stated as an invariant over ARBITRARY input rather than as a list of payloads,
-// because a payload list only ever proves the payloads on it. The seeds below
-// are the attacks worth naming; the fuzzer is what covers the ones nobody
-// thought of, and mutation XSS in particular is a class where the winning input
-// is one no human writes.
+// The lesson the existing file records the hard way, this one then repeated: the
+// first version of findExecutable used regular expressions and the fuzzer broke
+// it in 2.4 seconds. That comment was already there to be read. It is now
+// demonstrated twice, which is the strongest argument available for parsing.
 
 // findExecutable RE-PARSES sanitized output and reports anything that could run.
 //
@@ -149,6 +155,9 @@ func isExecutableURL(raw string) bool {
 
 // seeds are the attacks worth naming, and each is a real technique rather than a
 // variation on the same one.
+//
+// addSeeds also feeds in `xssCorpus` from sanitize_test.go, so an attack learned
+// by either fuzz target is known to both. One place to add a payload.
 var seeds = []string{
 	`<script>alert(1)</script>`,
 	`<img src=x onerror=alert(1)>`,
@@ -187,9 +196,7 @@ var seeds = []string{
 // by Snapshot would be a hole in the tier that renders WHOLE FETCHED PAGES,
 // which is the most hostile input this application accepts.
 func FuzzHTMLNeverEmitsExecutableMarkup(f *testing.F) {
-	for _, s := range seeds {
-		f.Add(s)
-	}
+	addSeeds(f)
 	policies := []Policy{Feed, Newsletter, Archived, Public, Note, Snapshot}
 
 	f.Fuzz(func(t *testing.T, in string) {
@@ -211,9 +218,7 @@ func FuzzHTMLNeverEmitsExecutableMarkup(f *testing.F) {
 // how the sanitizer wrote it. If f(f(x)) != f(x), some parser somewhere disagrees
 // with this one, and that disagreement is the bug.
 func FuzzHTMLIsIdempotent(f *testing.F) {
-	for _, s := range seeds {
-		f.Add(s)
-	}
+	addSeeds(f)
 	f.Fuzz(func(t *testing.T, in string) {
 		for _, p := range []Policy{Feed, Public, Note, Snapshot} {
 			once := HTML(in, p)
@@ -307,30 +312,31 @@ func structure(s string) string {
 // client/view/panes.go, which builds a DOM text node, and a text node cannot be
 // markup by construction. What this asserts is the part Text() genuinely owns.
 func FuzzTextNeverEmitsMarkup(f *testing.F) {
-	for _, s := range seeds {
-		f.Add(s)
-	}
+	addSeeds(f)
 	f.Fuzz(func(t *testing.T, in string) {
 		out := Text(in)
 
-		// 1. Script and style CONTENT must never surface. A summary that quietly
-		//    contained a publisher's JavaScript would be both nonsense to read
-		//    and, in any consumer that ever interpolates rather than escapes, a
-		//    payload waiting for one.
-		for _, leak := range []string{"alert(1)", "@import", "behavior:url"} {
-			if strings.Contains(out, leak) {
-				t.Errorf("Text leaked script/style content %q\n  in:  %q\n  out: %q",
-					leak, truncate(in), truncate(out))
-			}
+		// Script and style suppression is asserted in
+		// TestTextDropsScriptAndStyleContent rather than here. Checking it over
+		// arbitrary input does not work: the fuzzer immediately produced the
+		// plain string "alert(1)", with no script tag anywhere, and Text
+		// correctly returned it unchanged. The property needs a marker the test
+		// planted inside a script element, which is a deterministic test, not a
+		// fuzz invariant.
+
+		// No NUL bytes. They are stripped by browsers and by some parsers and
+		//    not by others, which is the disagreement that lets `java\x00script:`
+		//    survive one layer and execute at the next. A plain-text field has no
+		//    business carrying one.
+		if strings.ContainsRune(out, 0) {
+			t.Errorf("Text kept a NUL byte\n  in:  %q\n  out: %q", truncate(in), truncate(out))
 		}
 
-		// 2. Stable: extracting twice must not discover new text. A second pass
-		//    finding more than the first would mean the first left markup behind
-		//    that the parser later re-read as content.
-		if again := Text(out); again != out {
-			t.Errorf("Text is not stable\n  in:    %q\n  once:  %q\n  twice: %q",
-				truncate(in), truncate(out), truncate(again))
-		}
+		// Deliberately NOT asserted: that Text(Text(x)) == Text(x). Text consumes
+		// HTML and produces plain text, so feeding its output back in re-parses
+		// text as markup — `<A>` in, empty out. It is not a fixed-point function
+		// and was never meant to be; asserting it was a category error that the
+		// fuzzer caught in seconds.
 	})
 }
 
@@ -358,4 +364,44 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// TestTextDropsScriptAndStyleContent asserts what Text() genuinely owns: the
+// contents of elements that are code rather than prose never appear in the text.
+//
+// A marker planted by the test, so "did this come from a script element?" has a
+// definite answer — which is exactly what the fuzz target could not know, and
+// why this is a separate deterministic test.
+func TestTextDropsScriptAndStyleContent(t *testing.T) {
+	const marker = "ZZQX_SHOULD_NOT_APPEAR_ZZQX"
+	cases := map[string]string{
+		"script":   `<p>keep</p><script>var x = "` + marker + `";</script>`,
+		"style":    `<p>keep</p><style>.a{content:"` + marker + `"}</style>`,
+		"template": `<p>keep</p><template>` + marker + `</template>`,
+		"noscript": `<p>keep</p><noscript>` + marker + `</noscript>`,
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := Text(in)
+			if strings.Contains(out, marker) {
+				t.Errorf("<%s> content reached the text: %q", name, out)
+			}
+			if !strings.Contains(out, "keep") {
+				t.Errorf("<%s> case lost the surrounding prose: %q", name, out)
+			}
+		})
+	}
+}
+
+// addSeeds seeds a target with this file's attacks and the corpus the older
+// target already collected, so neither fuzzer starts blind to what the other
+// knows.
+func addSeeds(f *testing.F) {
+	f.Helper()
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	for _, c := range xssCorpus {
+		f.Add(c.in)
+	}
 }
