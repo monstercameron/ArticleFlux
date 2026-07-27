@@ -365,7 +365,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	}
 	res.Entities = entities
 
-	topicSet, suppressed, cold, err := s.deriveTopics(ctx, sc, plus, engaged, vectors, now)
+	topicSet, topicIDs, suppressed, cold, err := s.deriveTopics(ctx, sc, plus, engaged, vectors, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: topics: %w", err)
 	}
@@ -376,7 +376,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	//
 	// Only now, and only reading what stage 1 wrote plus the deliberate acts.
 
-	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, suppressed, corpus, now)
+	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, topicIDs, suppressed, corpus, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: home ranking: %w", err)
 	}
@@ -777,7 +777,7 @@ func (s *Service) deriveDomainAffinity(ctx context.Context, sc store.Scope, enga
 // database. Reading it back after the write is what lets THIS pass honour it
 // rather than the next one.
 func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhancer, engaged []engagedItem,
-	vectors map[string]textvec.Vector, now time.Time) ([]topics.Topic, []bool, bool, error) {
+	vectors map[string]textvec.Vector, now time.Time) ([]topics.Topic, []string, []bool, bool, error) {
 
 	docs := make([]topics.Doc, 0, len(engaged))
 	for _, e := range engaged {
@@ -806,22 +806,34 @@ func (s *Service) deriveTopics(ctx context.Context, sc store.Scope, plus Enhance
 	}
 
 	if err := s.repo.ReplaceTopics(ctx, sc, res.Topics); err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
 
 	stored, err := s.repo.Topics(ctx, sc)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
 	suppressedBy := map[string]bool{}
+	// Stored ids, keyed the same way suppressions are, so a ranked row can record WHICH
+	// topic it matched.
+	//
+	// It has to come from the readback because ids are generated inside ReplaceTopics —
+	// the in-memory topics.Topic has no id at all. Without this the ranking's topic_id was
+	// never written, `rank_topic` was empty on every row, and the client's cold-start band
+	// showed permanently: fourteen topics existed and the page still said it was learning.
+	idBy := map[string]string{}
 	for _, row := range stored {
 		suppressedBy[topicKey(row.TopTerms)] = row.Suppressed
+		idBy[topicKey(row.TopTerms)] = row.ID
 	}
 	flags := make([]bool, len(res.Topics))
+	ids := make([]string, len(res.Topics))
 	for i, t := range res.Topics {
-		flags[i] = suppressedBy[topicKey(t.TopTerms)]
+		key := topicKey(t.TopTerms)
+		flags[i] = suppressedBy[key]
+		ids[i] = idBy[key]
 	}
-	return res.Topics, flags, res.ColdStart, nil
+	return res.Topics, ids, flags, res.ColdStart, nil
 }
 
 // MaxLabelledTopics bounds how many topics get a Smart+ label per derivation.
@@ -875,7 +887,7 @@ func topicKey(terms []string) string {
 
 // deriveHomeRanking is the precision stage.
 func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus Enhancer,
-	feeds []store.FeedAffinity, topicSet []topics.Topic, suppressed []bool,
+	feeds []store.FeedAffinity, topicSet []topics.Topic, topicIDs []string, suppressed []bool,
 	corpus *textvec.Corpus, now time.Time) (int, error) {
 
 	// The candidate set is what recall produced: unread items from subscribed
@@ -1048,10 +1060,18 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			tier = store.TierSmartPlus
 		}
 		rows = append(rows, store.RankedItem{
-			ItemID:  sc.item.ID,
-			Score:   sc.res.Score,
-			Rank:    i + 1,
-			Slot:    slotFor(i, len(out)),
+			ItemID: sc.item.ID,
+			Score:  sc.res.Score,
+			Rank:   i + 1,
+			Slot:   slotFor(i, len(out)),
+			// Which topic this matched, or empty when none did.
+			//
+			// It is the client's cold-start signal: an empty value on every row means the
+			// topic model contributed nothing, which is the state the "still learning" band
+			// reports. Leaving it unset — as the first version did — made that band
+			// permanent, so a reader with fourteen working topics was still being told the
+			// app did not know them yet.
+			TopicID: sc.topicID,
 			Reasons: reasons,
 			Tier:    tier,
 		})

@@ -150,7 +150,11 @@ func (s *ReaderServer) ListFeeds(ctx context.Context, _ *pb.ListFeedsRequest) (*
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	out := &pb.ListFeedsResponse{TotalUnread: int32(total)}
+	// Sized to the sidebar it is about to fill; see ListItems for why.
+	out := &pb.ListFeedsResponse{
+		TotalUnread: int32(total),
+		Feeds:       make([]*pb.Feed, 0, len(feeds)),
+	}
 	for _, f := range feeds {
 		out.Feeds = append(out.Feeds, &pb.Feed{
 			Id: f.ID, SourceId: f.SourceID, Title: f.Title,
@@ -208,7 +212,13 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	out := &pb.ListItemsResponse{NextCursor: next}
+	// Sized up front. The page length is already known — it is len(items) — and
+	// growing into it costs six reallocations and six copies for a fifty-row
+	// page, on the request a reader waits on more often than any other.
+	out := &pb.ListItemsResponse{
+		NextCursor: next,
+		Items:      make([]*pb.Item, 0, len(items)),
+	}
 	for _, it := range items {
 		out.Items = append(out.Items, toPBItem(it, false))
 	}
@@ -498,7 +508,11 @@ func (s *ReaderServer) Search(ctx context.Context, req *pb.SearchRequest) (*pb.S
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	out := &pb.SearchResponse{Snippets: snippets, Total: int32(len(items))}
+	out := &pb.SearchResponse{
+		Snippets: snippets,
+		Total:    int32(len(items)),
+		Items:    make([]*pb.Item, 0, len(items)),
+	}
 	for _, it := range items {
 		out.Items = append(out.Items, toPBItem(it, false))
 	}
@@ -639,7 +653,10 @@ func (s *ReaderServer) ListTags(ctx context.Context, _ *pb.ListTagsRequest) (*pb
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	out := &pb.ListTagsResponse{BySource: map[string]*pb.TagIDs{}}
+	out := &pb.ListTagsResponse{
+		BySource: make(map[string]*pb.TagIDs, len(bySource)),
+		Tags:     make([]*pb.Tag, 0, len(tags)),
+	}
 	for _, t := range tags {
 		out.Tags = append(out.Tags, toPBTag(t))
 	}
