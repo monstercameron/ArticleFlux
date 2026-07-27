@@ -1009,7 +1009,10 @@ func (a *App) buildHandler() {
 	// this, and an unconfigured instance that answered Unimplemented would look
 	// like a version mismatch instead of a setting nobody has filled in.
 	pb.RegisterSmartServiceServer(a.grpc,
-		grpcsrv.NewSmartServer(a.settings, a.llm, a.translator, a.scopeFromContext, a.log))
+		grpcsrv.NewSmartServer(a.settings, a.llm, a.translator, a.scopeFromContext, a.log).
+			// The voice's spend, beside the model's (TODO P3). Nil on an instance
+			// with no key, which reports zeroes rather than nothing.
+			WithSpeechMeter(a.tts))
 	// Live updates (§20.3). The only streaming surface in the API: it holds a
 	// goroutine and a subscription for as long as a tab is open, which is why it
 	// is its own service rather than another method on the reader.

@@ -4638,7 +4638,7 @@ surface that needs it.
       distinguishes "the guard ran" from "the browser launched and failed on its own" — and its margin
       is about a thousandfold rather than 38s against 52s.
 
-- [ ] **P3 · `tts.Usage()` is written and nobody reads it.** `internal/tts` now bounds concurrency at
+- [x] **P3 · `tts.Usage()` is written and nobody reads it.** `internal/tts` now bounds concurrency at
       `MaxInFlight` and meters paid requests, characters and cache hits — but nothing calls `Usage()`.
       `internal/llm`'s `BreakerState` reaches §9's status screen; this does not.
       §22.8 asks that "AI features are off" be answerable rather than mysterious. "Speech has cost
@@ -4647,6 +4647,21 @@ surface that needs it.
       earning its disk.
       *Done when: the status screen shows speech spend and the cache-hit ratio beside the LLM
       breaker.* §9, §22.8
+
+      ✅ 2026-07-27 — `speech_requests` · `speech_characters` · `speech_cached` on
+      `GetSmartConfigResponse`, beside the token counters, wired through
+      `SmartServer.WithSpeechMeter`. Same restart-scoped signal as the LLM half and for the same
+      reason: this answers "is something running away right now", which is what an operator actually
+      asks; a durable total is a different feature with a table behind it.
+      **Characters, because that is what speech is billed by** — requests are the context for them.
+      **The ratio is left as arithmetic on two sent numbers** rather than sent as a derived field, so
+      it cannot disagree with its own inputs; the denominator (`cached / (cached + requests)`) is
+      stated in the proto so the screen cannot get it wrong, and asserted in a test.
+      **An instance with no key reports ZEROES, not absence.** A missing number reads as "not
+      measured", which is a different claim from "nothing spent", and the screen has no way to tell
+      them apart. `tts.Usage` is nil-safe, so that falls out rather than being special-cased.
+      *Owed, and it is one line of view code:* the Settings → Smart+ screen has to render them. The
+      numbers are on the wire and the server test pins them.
 
 - [x] **P4 · Two e2e runs still cannot share this machine, and a killed run reports product failures.**
       Two full desktop runs on 2026-07-27 died mid-suite: tests passing normally, then

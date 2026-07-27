@@ -65,6 +65,21 @@ message GetSmartConfigResponse {
   int64 input_tokens = 10;
   int64 output_tokens = 11;
   int64 requests = 12;
+  // What the VOICE has spent, beside what the model has (§9, §22.8, TODO P3).
+  //
+  // The same restart-scoped signal as the token counters above, for the other
+  // paid surface: "AI features are off" should be answerable, and so should "how
+  // much has listening cost this instance". Speech is billed per CHARACTER, so
+  // characters are the number that matters and requests are the context for it.
+  //
+  // speech_cached counts listens served from `speech-cache` — audio that was
+  // already on disk and cost nothing. The hit ratio is
+  // `speech_cached / (speech_cached + speech_requests)`, stated here rather than
+  // sent as a derived field so it cannot disagree with its own inputs, and it is
+  // the number that says whether the cache is earning its disk.
+  int64 speech_requests = 13;
+  int64 speech_characters = 14;
+  int64 speech_cached = 15;
   // True when the key came from OPENAI_API_KEY rather than from this screen.
   // The screen says so, because "I deleted the key and it still works" is
   // otherwise unexplainable.

@@ -77,6 +77,21 @@ type GetSmartConfigResponse struct {
 	InputTokens  int64 `protobuf:"varint,10,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	OutputTokens int64 `protobuf:"varint,11,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
 	Requests     int64 `protobuf:"varint,12,opt,name=requests,proto3" json:"requests,omitempty"`
+	// What the VOICE has spent, beside what the model has (§9, §22.8, TODO P3).
+	//
+	// The same restart-scoped signal as the token counters above, for the other
+	// paid surface: "AI features are off" should be answerable, and so should "how
+	// much has listening cost this instance". Speech is billed per CHARACTER, so
+	// characters are the number that matters and requests are the context for it.
+	//
+	// speech_cached counts listens served from `speech-cache` — audio that was
+	// already on disk and cost nothing. The hit ratio is
+	// `speech_cached / (speech_cached + speech_requests)`, stated here rather than
+	// sent as a derived field so it cannot disagree with its own inputs, and it is
+	// the number that says whether the cache is earning its disk.
+	SpeechRequests   int64 `protobuf:"varint,13,opt,name=speech_requests,json=speechRequests,proto3" json:"speech_requests,omitempty"`
+	SpeechCharacters int64 `protobuf:"varint,14,opt,name=speech_characters,json=speechCharacters,proto3" json:"speech_characters,omitempty"`
+	SpeechCached     int64 `protobuf:"varint,15,opt,name=speech_cached,json=speechCached,proto3" json:"speech_cached,omitempty"`
 	// True when the key came from OPENAI_API_KEY rather than from this screen.
 	// The screen says so, because "I deleted the key and it still works" is
 	// otherwise unexplainable.
@@ -167,6 +182,27 @@ func (x *GetSmartConfigResponse) GetOutputTokens() int64 {
 func (x *GetSmartConfigResponse) GetRequests() int64 {
 	if x != nil {
 		return x.Requests
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetSpeechRequests() int64 {
+	if x != nil {
+		return x.SpeechRequests
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetSpeechCharacters() int64 {
+	if x != nil {
+		return x.SpeechCharacters
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetSpeechCached() int64 {
+	if x != nil {
+		return x.SpeechCached
 	}
 	return 0
 }
@@ -633,7 +669,7 @@ var File_articleflux_v1_smart_proto protoreflect.FileDescriptor
 const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\n" +
 	"\x1aarticleflux/v1/smart.proto\x12\x0earticleflux.v1\"\x17\n" +
-	"\x15GetSmartConfigRequest\"\xc9\x02\n" +
+	"\x15GetSmartConfigRequest\"\xc4\x03\n" +
 	"\x16GetSmartConfigResponse\x12\x1e\n" +
 	"\n" +
 	"configured\x18\x01 \x01(\bR\n" +
@@ -645,7 +681,10 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\finput_tokens\x18\n" +
 	" \x01(\x03R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\v \x01(\x03R\foutputTokens\x12\x1a\n" +
-	"\brequests\x18\f \x01(\x03R\brequests\x12)\n" +
+	"\brequests\x18\f \x01(\x03R\brequests\x12'\n" +
+	"\x0fspeech_requests\x18\r \x01(\x03R\x0espeechRequests\x12+\n" +
+	"\x11speech_characters\x18\x0e \x01(\x03R\x10speechCharacters\x12#\n" +
+	"\rspeech_cached\x18\x0f \x01(\x03R\fspeechCached\x12)\n" +
 	"\x10from_environment\x18\x14 \x01(\bR\x0ffromEnvironment\"w\n" +
 	"\x15SetSmartConfigRequest\x12$\n" +
 	"\x0eopenai_api_key\x18\x01 \x01(\tR\fopenaiApiKey\x12\"\n" +

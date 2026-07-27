@@ -16,6 +16,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/tts"
 )
 
 // SmartServer is the Smart+ control surface.
@@ -31,15 +32,30 @@ type SmartServer struct {
 
 	settings *store.SettingsRepo
 	llm      *llm.Client
-	tr       *smart.Translator
-	scopeOf  func(context.Context) (store.Scope, error)
-	log      *slog.Logger
+	// tts meters the voice. Optional — an instance with no key has no client —
+	// and nil-safe, because "speech has cost nothing" is the honest answer for
+	// one that has never spoken.
+	tts     *tts.Client
+	tr      *smart.Translator
+	scopeOf func(context.Context) (store.Scope, error)
+	log     *slog.Logger
 }
 
 // NewSmartServer wires the Smart+ surface.
 func NewSmartServer(settings *store.SettingsRepo, client *llm.Client, tr *smart.Translator,
 	scopeOf func(context.Context) (store.Scope, error), log *slog.Logger) *SmartServer {
 	return &SmartServer{settings: settings, llm: client, tr: tr, scopeOf: scopeOf, log: log}
+}
+
+// WithSpeechMeter installs the voice client whose spend the screen reports.
+//
+// Optional and separate from the constructor, like every other capability on
+// these servers: an instance with no OpenAI key has no speech client, and a
+// constructor that demanded one would make the absence of a paid feature a
+// wiring error.
+func (s *SmartServer) WithSpeechMeter(c *tts.Client) *SmartServer {
+	s.tts = c
+	return s
 }
 
 // ownerRoles are the roles allowed to see or change instance configuration.
@@ -211,6 +227,15 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 
 	u := s.llm.Usage()
 	out.InputTokens, out.OutputTokens, out.Requests = u.InputTokens, u.OutputTokens, u.Requests
+
+	// The voice's half of the same question. `tts.Usage` is nil-safe, so an
+	// instance that never configured speech reports zeroes rather than being
+	// absent from the screen — a missing number reads as "not measured", which
+	// is a different claim from "nothing spent".
+	v := s.tts.Usage()
+	out.SpeechRequests = int64(v.Requests)
+	out.SpeechCharacters = int64(v.Characters)
+	out.SpeechCached = int64(v.Cached)
 	return out
 }
 

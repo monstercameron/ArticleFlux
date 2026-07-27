@@ -124,3 +124,15 @@ func (c *Client) Usage() Usage {
 	defer c.bound.mu.Unlock()
 	return c.bound.usage
 }
+
+// NewForTest builds a Client whose meter already reads as `u`.
+//
+// Exported for tests in other packages: the meter is unexported, and a surface
+// that reports speech spend has to be testable without an API key, a network
+// call and a bill. Nothing else about this client works — it is a meter with a
+// struct around it, which is exactly what a reporting test needs.
+func NewForTest(u Usage) *Client {
+	c := &Client{}
+	c.bound.usage = u
+	return c
+}
