@@ -9,7 +9,7 @@ import (
 // every vector below is run through every policy, so a policy added later
 // inherits the whole corpus automatically and a policy loosened later has to
 // survive it.
-var allPolicies = []Policy{Feed, Newsletter, Archived, Public, Note}
+var allPolicies = []Policy{Feed, Newsletter, Archived, Public, Note, Snapshot}
 
 // The XSS corpus. Each entry is a real technique rather than an invented one:
 // they are the shapes that appear in payload lists, ordered roughly by how often
@@ -75,18 +75,45 @@ var xssCorpus = []struct {
 var forbidden = []string{
 	"<script", "javascript:", "vbscript:", "onerror", "onclick", "onload",
 	"onmouseover", "ontoggle", "onfocus", "onstart", "<iframe", "<object",
-	"<embed", "<style", "<link", "<base", "<meta", "<form", "srcdoc",
-	"formaction", "expression(", "@import", "xlink:href",
+	"<embed", "<base", "<form", "srcdoc",
+	"formaction", "expression(", "xlink:href",
 }
+
+// styling is the subset of `forbidden` that is a POLICY choice rather than a
+// safety property: markup that brings its own presentation.
+//
+// Every prose policy refuses it, and Snapshot cannot, because a whole fetched
+// page whose stylesheet has been removed is not the page — it is Reader mode
+// with worse typography, delivered by a feature that promised a website
+// (§10.1b). Splitting the list is the only honest way to say that; folding
+// Snapshot in would have meant deleting assertions the other five need.
+//
+// What carries the weight for Snapshot instead:
+//
+//   - Everything in `forbidden` above still applies to it. Nothing that can
+//     execute, navigate or collect input is exempted.
+//   - Remote CSS is neutralised *upstream* rather than here:
+//     `internal/pageproxy` rewrites every `url()` and `@import` to our own
+//     proxy before this ever runs, and TestBaseHrefIsHonouredDespiteSanitize
+//     DroppingIt pins that ordering. Sanitizing without rewriting first is not
+//     a supported call, and there is no caller that does it.
+//   - The output is served under `Content-Security-Policy: sandbox` with
+//     `script-src 'none'`, in an opaque origin, so this walk is the inner of
+//     two layers.
+var styling = []string{"<style", "<link", "<meta", "@import"}
 
 func TestXSSCorpusIsNeutralisedUnderEveryPolicy(t *testing.T) {
 	for _, c := range xssCorpus {
 		for _, p := range allPolicies {
 			t.Run(c.name+"/"+p.String(), func(t *testing.T) {
 				got := strings.ToLower(HTML(c.in, p))
-				for _, bad := range forbidden {
-					if strings.Contains(got, bad) {
-						t.Errorf("%q survived\n  in:  %s\n  out: %s", bad, c.in, got)
+				bad := forbidden
+				if p != Snapshot {
+					bad = append(append([]string{}, forbidden...), styling...)
+				}
+				for _, b := range bad {
+					if strings.Contains(got, b) {
+						t.Errorf("%q survived\n  in:  %s\n  out: %s", b, c.in, got)
 					}
 				}
 			})

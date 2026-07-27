@@ -32,6 +32,10 @@ type ReaderServer struct {
 	// mintAsset turns an absolute subresource URL into a proxy URL, or "" to
 	// leave it alone. Nil disables the §10.1a rewrite entirely.
 	mintAsset func(absURL string) string
+	// mintPage turns an article URL into a §10.1b page-proxy URL. Nil means the
+	// instance does not proxy pages, and the client hides the control rather
+	// than offering one that 501s.
+	mintPage func(absURL string) string
 }
 
 // NewReaderServer wires a service to gRPC.
@@ -53,6 +57,12 @@ func (s *ReaderServer) WithAssetProxy(mint func(absURL string) string) *ReaderSe
 	return s
 }
 
+// WithPageProxy lets the client open the publisher's page through us (§10.1b).
+func (s *ReaderServer) WithPageProxy(mint func(absURL string) string) *ReaderServer {
+	s.mintPage = mint
+	return s
+}
+
 // toStatus maps a domain error to the §20.7 taxonomy.
 //
 // The rule that matters: a row belonging to another tenant returns NotFound, not
@@ -63,13 +73,13 @@ func toStatus(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, store.ErrNotFound):
-		return status.Error(codes.NotFound, "not found")
+		return errKey(codes.NotFound, "srv.notFound", "not found", nil)
 	case errors.Is(err, store.ErrNoScope):
-		return status.Error(codes.Unauthenticated, "not authenticated")
+		return errKey(codes.Unauthenticated, "srv.notAuthenticated", "not authenticated", nil)
 	default:
 		// The message is internal and stays internal (§22.11): the client gets a
 		// safe string, the log gets the detail with a request id.
-		return status.Error(codes.Internal, "internal error")
+		return errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 }
 
@@ -167,6 +177,9 @@ func (s *ReaderServer) GetItem(ctx context.Context, req *pb.GetItemRequest) (*pb
 		out.Note = note
 	}
 	out.ContentHtml = s.proxyImages(ctx, sc, it, out.GetContentHtml())
+	if s.mintPage != nil && it.URL != "" {
+		out.ProxyUrl = s.mintPage(it.URL)
+	}
 	return &pb.GetItemResponse{Item: out}, nil
 }
 

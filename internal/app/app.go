@@ -23,10 +23,13 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
+	"github.com/monstercameron/ArticleFlux/internal/discover"
+	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
+	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
@@ -69,6 +72,16 @@ type Config struct {
 	// blocks the publisher the server can reach — looks like a bug in this
 	// application rather than like a missing feature.
 	ProxyImages bool
+
+	// ProxyPages turns the §10.1b page proxy on — the tier-2 "show me the
+	// actual site" view. Requires ProxyImages, which is what its subresources
+	// are served through.
+	//
+	// A separate switch from ProxyImages because it is a materially different
+	// commitment: an image proxy fetches files a page already referenced, while
+	// this fetches whole documents from arbitrary hosts and re-serves them under
+	// our own name. An operator may reasonably want the first and not the second.
+	ProxyPages bool
 
 	// ProxyOrigin is the absolute origin minted proxy URLs point at, e.g.
 	// "https://proxy.articleflux.example.com" (D20).
@@ -114,6 +127,10 @@ type App struct {
 	// on, and every /asset request answers 501 — which is the honest answer for
 	// a server that is working correctly and simply does not do this.
 	assets *assetproxy.Fetcher
+	// pages is the §10.1b page proxy — tier 2. Nil for the same reason and with
+	// the same 501; it shares assetKey, since both capabilities are signed by
+	// the instance and the message prefix keeps them from being interchangeable.
+	pages *pageproxy.Fetcher
 	// assetKey signs proxy capabilities. Persisted beside the database so URLs
 	// on an open page survive a restart.
 	assetKey []byte
@@ -131,8 +148,8 @@ type App struct {
 	llm        *llm.Client
 	translator *smart.Translator
 	grpc       *grpc.Server
-	handler  http.Handler
-	stopPo   chan struct{}
+	handler    http.Handler
+	stopPo     chan struct{}
 }
 
 // Open builds the app and applies migrations.
@@ -200,6 +217,19 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	}
 	a.llm = llm.New(smartKey)
 	a.translator = smart.NewTranslator(a.llm, a.settings)
+	// Following a page that has no feed (§11, §14.2).
+	//
+	// Three pieces, wired together because they are one ladder: `discover`
+	// climbs the free rungs and owns the raw page fetch and robots.txt,
+	// `extract` reads the full text of a scraped item, and the analyser is the
+	// last rung. The analyser is harmless without a key — it reports "no key"
+	// and nothing egresses — so all three are wired unconditionally and the
+	// gating lives at the RPC, where the per-user preference is.
+	svc.WithSiteAnalysis(
+		discover.New(discover.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
+		extract.New(extract.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
+		smart.NewSiteAnalyzer(a.llm, a.settings),
+	)
 	// The voice reads the SAME key function, which is the point: one credential
 	// drives every Smart+ feature. An instance where the voice works and
 	// translation does not — because one read the environment and the other read
@@ -227,6 +257,13 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 				AllowPrivate: cfg.AllowPrivateFeeds,
 				UserAgent:    "ArticleFlux/" + cfg.Version + " (+asset proxy)",
 			})
+			if cfg.ProxyPages {
+				a.pages = pageproxy.New(pageproxy.Options{
+					Dir:          filepath.Join(dataDir, "page-cache"),
+					AllowPrivate: cfg.AllowPrivateFeeds,
+					UserAgent:    "ArticleFlux/" + cfg.Version + " (+page proxy)",
+				})
+			}
 		}
 	}
 
@@ -403,7 +440,9 @@ func (a *App) buildHandler() {
 		}),
 	)
 	pb.RegisterReaderServiceServer(a.grpc,
-		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext).WithAssetProxy(a.AssetURL))
+		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext).
+			WithAssetProxy(a.AssetURL).
+			WithPageProxy(a.PageURL))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
 			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))
@@ -460,6 +499,7 @@ func (a *App) buildHandler() {
 	// is: "why are the images missing?" should be answerable from the response
 	// rather than only from the server log.
 	mux.HandleFunc("/asset", a.serveAsset)
+	mux.HandleFunc("/p", a.servePage)
 	// Liveness: the process is up and answering. Deliberately does not touch the
 	// database — a liveness probe that fails on a slow query gets the process
 	// killed and restarted into the same slow query.

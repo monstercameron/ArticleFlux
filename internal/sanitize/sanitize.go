@@ -54,6 +54,8 @@ const (
 	Public
 	// Note is the user's own text. Still sanitized — the user may paste.
 	Note
+	// Snapshot is a whole fetched page served through the proxy (§10.1b).
+	Snapshot
 )
 
 func (p Policy) String() string {
@@ -68,6 +70,8 @@ func (p Policy) String() string {
 		return "public"
 	case Note:
 		return "note"
+	case Snapshot:
+		return "snapshot"
 	}
 	return "unknown"
 }
@@ -135,6 +139,42 @@ var policies = map[Policy]gwc.Policy{
 		AllowedAttributes: set("href", "title", "rel", "target"),
 		AllowedURLSchemes: set("http", "https", "mailto"),
 	},
+	Snapshot: {
+		// The widest allowlist here, and the one with the most attributes,
+		// because this is a whole page rather than an article fragment: the
+		// question is not "what does prose need" but "what does a layout need
+		// to survive being served from somewhere else".
+		//
+		// So `class` and `id` are allowed, which no other policy permits. They
+		// carry nothing executable and they are what every stylesheet on the
+		// page selects on — strip them and the CSS we went to the trouble of
+		// proxying matches nothing, which is a blank white page with the right
+		// words on it. `style` is allowed for the same reason and is the one
+		// that needs the caveat: it is a script-free attribute in every modern
+		// browser (expression() died with IE), and `internal/rewrite` has
+		// already rewritten the url() references inside it.
+		//
+		// What stays out is the whole point: `script`, `iframe`, `object`,
+		// `embed`, `form`, `input`, `button`, and every `on*` handler — the
+		// GWC walk drops any attribute not on this list, so the event handlers
+		// go without being enumerated. A form is excluded not because it can
+		// execute anything but because a login box that looks like the
+		// publisher's and posts somewhere else is the most convincing phishing
+		// surface we could possibly render, and it would be OUR origin in the
+		// address bar.
+		AllowedTags: set(append(append(append(append(append([]string{},
+			inlineTags...), blockTags...), tableTags...), mediaTags...),
+			"html", "head", "body", "title", "meta", "style", "link",
+			"main", "article", "section", "header", "footer", "nav", "aside",
+			"source", "video", "audio", "track",
+			"details", "summary", "address", "hgroup", "wbr", "col", "colgroup")...),
+		AllowedAttributes: set("href", "src", "srcset", "sizes", "alt", "title",
+			"colspan", "rowspan", "datetime", "cite", "width", "height",
+			"rel", "target", "class", "id", "style", "media", "type",
+			"charset", "content", "name", "lang", "dir", "role", "poster",
+			"controls", "loading", "decoding", "span"),
+		AllowedURLSchemes: set("http", "https", "mailto", "data"),
+	},
 }
 
 // HTML sanitizes s under the named policy.
@@ -143,6 +183,32 @@ var policies = map[Policy]gwc.Policy{
 // execution vector survives — plus this package's additions: link hardening on
 // every policy, and tracking-pixel removal on Newsletter and Feed.
 func HTML(s string, p Policy) string {
+	// Snapshot does not use the GWC engine, and that is a deliberate exception
+	// rather than an oversight.
+	//
+	// GWC's sanitizer is built for fragments of untrusted prose, and for that
+	// job its two hardest rules are exactly right: `<style>` and `<link>` are
+	// dropped with their contents, and the `style` attribute is stripped
+	// "regardless of policy". An article excerpt has no business carrying a
+	// stylesheet.
+	//
+	// A whole fetched page is the opposite problem. Its stylesheet IS the thing
+	// the reader asked to see — strip it and §10.1b delivers a wall of unstyled
+	// text while claiming to show a website, which is a worse version of Reader
+	// mode wearing a more expensive feature's name. No policy table can express
+	// that, because the rules that block it are above the policy table.
+	//
+	// So Snapshot walks the tree itself, allowlisting what a *document* needs
+	// and dropping what can act. It carries the same corpus as every other
+	// policy — `allPolicies` includes it — which is the check that keeps this
+	// exception honest rather than a hole with a comment over it. Its output is
+	// additionally served under `Content-Security-Policy: sandbox` with
+	// `script-src 'none'`, in an opaque origin, so this walk is the inner of two
+	// layers rather than the only one.
+	if p == Snapshot {
+		return snapshotHTML(s)
+	}
+
 	pol, ok := policies[p]
 	if !ok {
 		// An unmapped policy value is a programming error, and the safe way to
@@ -242,8 +308,78 @@ func harden(n *html.Node, p Policy) {
 	case "img":
 		if isTrackingPixel(n) && n.Parent != nil {
 			n.Parent.RemoveChild(n)
+			return
 		}
+		hardenSrcset(n, p)
+	case "source":
+		hardenSrcset(n, p)
 	}
+}
+
+// hardenSrcset scheme-checks every candidate in a srcset.
+//
+// The GWC walk checks the schemes of the URL attributes it knows about — `href`
+// and `src` — and `srcset` is neither: it is a *list* of URLs with size
+// descriptors, so a scheme check written for a single value slides straight off
+// it. Allowlist `srcset` without this and `<img srcset="javascript:alert(1) 1x">`
+// comes out the other side untouched.
+//
+// This was found by adding the Snapshot policy to the corpus, not by reading the
+// code, and only Snapshot allowlists `srcset` today — which is exactly why the
+// corpus enumerates policies rather than testing the ones someone remembered.
+//
+// Candidates with a disallowed scheme are dropped individually; an attribute
+// left with nothing goes entirely, because an empty srcset makes some browsers
+// fall back to `src` and others render nothing, and neither is worth inheriting.
+func hardenSrcset(n *html.Node, p Policy) {
+	pol, ok := policies[p]
+	if !ok {
+		return
+	}
+	for i := range n.Attr {
+		if n.Attr[i].Key != "srcset" {
+			continue
+		}
+		var kept []string
+		for _, cand := range strings.Split(n.Attr[i].Val, ",") {
+			ref := strings.TrimSpace(cand)
+			if ref == "" {
+				continue
+			}
+			// The URL is everything up to the first space; the rest is the
+			// descriptor ("2x", "800w") and carries nothing fetchable.
+			u := ref
+			if sp := strings.IndexAny(ref, " \t\n\r\f"); sp >= 0 {
+				u = ref[:sp]
+			}
+			if schemeAllowed(u, pol.AllowedURLSchemes) {
+				kept = append(kept, ref)
+			}
+		}
+		if len(kept) == 0 {
+			n.Attr = append(n.Attr[:i:i], n.Attr[i+1:]...)
+			return
+		}
+		n.Attr[i].Val = strings.Join(kept, ", ")
+		return
+	}
+}
+
+// schemeAllowed reports whether a reference may be fetched under a policy.
+//
+// A reference with no scheme is relative and inherits the page's, so it is
+// allowed — the same rule the GWC walk applies to `src`.
+func schemeAllowed(ref string, allowed map[string]bool) bool {
+	i := strings.IndexByte(ref, ':')
+	if i < 0 {
+		return true
+	}
+	// A colon after a slash or query marker is inside a path, not a scheme:
+	// "a/b:c" is relative.
+	if j := strings.IndexAny(ref, "/?#"); j >= 0 && j < i {
+		return true
+	}
+	return allowed[strings.ToLower(ref[:i])]
 }
 
 // hardenLink makes every link safe to click and quiet to follow.

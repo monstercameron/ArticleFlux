@@ -145,6 +145,13 @@ func serve(log *slog.Logger, args []string) error {
 	// so it gets a flag rather than being buried.
 	proxyImages := fs.Bool("proxy-images", envBoolDefault("ARTICLEFLUX_PROXY_IMAGES", true),
 		"re-serve article images through this server (see plan.md §10.1a)")
+	// Off by default, unlike -proxy-images, and the asymmetry is the point.
+	// Proxying an image re-serves a file the page already referenced; proxying
+	// a page fetches whole documents from arbitrary hosts and serves them under
+	// this instance's own name. That is a bigger commitment and an operator
+	// should opt into it rather than discover it.
+	proxyPages := fs.Bool("proxy-pages", envBool("ARTICLEFLUX_PROXY_PAGES"),
+		"serve publisher pages through this server (see plan.md §10.1b); requires -proxy-images")
 	proxyOrigin := fs.String("proxy-origin", envOr("ARTICLEFLUX_PROXY_ORIGIN", ""),
 		"absolute origin for proxied content, e.g. https://proxy.example.com; empty means same-origin")
 	if err := fs.Parse(args); err != nil {
@@ -210,6 +217,7 @@ func serve(log *slog.Logger, args []string) error {
 		PollInterval:      *poll,
 		AllowedOrigins:    splitList(*origin),
 		ProxyImages:       *proxyImages,
+		ProxyPages:        *proxyPages,
 		ProxyOrigin:       *proxyOrigin,
 	})
 	if err != nil {
