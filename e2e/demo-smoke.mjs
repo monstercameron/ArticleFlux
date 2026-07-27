@@ -105,7 +105,17 @@ page.on('response', (r) => {
 
 const started = Date.now();
 try {
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  const landed = await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+  // Is this the application at all? Without these two lines a directory with no
+  // index.html in it waits out the full boot timeout and then reports that a
+  // selector never appeared, which is true and says nothing. Both are instant on
+  // a real page.
+  if (!landed || !landed.ok()) {
+    throw new Error(`${url} answered ${landed ? landed.status() : 'nothing'}`);
+  }
+  await page.waitForSelector('#boot', { state: 'attached', timeout: 10_000 })
+    .catch(() => { throw new Error(`${url} served something that is not the reader`); });
 
   // Two ways this ends, and waiting for both is what turns a broken module from
   // a three-minute timeout into a three-second sentence. The shim hides the

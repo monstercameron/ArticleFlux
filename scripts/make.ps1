@@ -127,6 +127,14 @@ function Invoke-Wasm {
     # it 404s on every load and the offline shell silently never exists (8.4).
     Copy-Item (Join-Path $WebSrc 'sw.js') (Join-Path $OutDir 'sw.js') -Force
 
+    # The self-hosted webfonts. index.html links fonts.css by relative path and
+    # fonts.css links each woff2 the same way, so missing either leaves the app
+    # rendering in Georgia and system-ui with nothing in the console to say why.
+    Copy-Item (Join-Path $WebSrc 'fonts.css') (Join-Path $OutDir 'fonts.css') -Force
+    $fontsOut = Join-Path $OutDir 'fonts'
+    if (Test-Path $fontsOut) { Remove-Item $fontsOut -Recurse -Force }
+    Copy-Item (Join-Path $WebSrc 'fonts') $fontsOut -Recurse -Force
+
     # `go build` directly rather than `gwc build`: the launcher wraps the same
     # toolchain, and this keeps the exact flags visible — -trimpath and -s -w are
     # what the G5 baseline in wasm-baseline.txt was measured with, so building
@@ -191,7 +199,26 @@ function Invoke-Demo {
 
     Step "building the demo -> bin/demo  ($DemoVersion)"
     New-Item -ItemType Directory -Force $DemoDir | Out-Null
-    Copy-Item (Join-Path $WebSrc 'index.html') (Join-Path $DemoDir 'index.html') -Force
+    # index.html, with the module name STAMPED — the same idea as the sw.js
+    # stamp below, and for a failure that is just as invisible locally. This
+    # build publishes ONLY app.wasm.gz, so an unstamped loader asks for
+    # app.wasm first and takes a 404 in the console of every visitor, on every
+    # load, for a file it deliberately does not ship.
+    $indexSrc = Get-Content (Join-Path $WebSrc 'index.html') -Raw
+    $stamped = $indexSrc -replace "const MODULE = 'app\.wasm';", "const MODULE = 'app.wasm.gz';"
+    if ($stamped -notmatch "const MODULE = 'app\.wasm\.gz';") {
+        # ASCII only inside these strings. This file has no BOM, Windows
+        # PowerShell reads it as ANSI, and a UTF-8 em dash decodes to a CURLY
+        # QUOTE - which PowerShell accepts as a string delimiter, ends the
+        # string early, and swallows the brace below into the next one. The
+        # error it produces names a function forty lines away.
+        Fail "web/index.html has no ""const MODULE = 'app.wasm';"" line to stamp - the demo would 404 on every boot"
+    }
+    # UTF8 without a BOM: a BOM before <!doctype is bytes the browser has to
+    # sniff past, and Set-Content's default encoding on Windows PowerShell is
+    # the ANSI codepage, which would mangle every em dash in the file.
+    [System.IO.File]::WriteAllText((Join-Path $DemoDir 'index.html'), $stamped,
+        (New-Object System.Text.UTF8Encoding $false))
 
     # sw.js, with its cache identity STAMPED — the one file the demo does not
     # ship verbatim, and the reason is a failure that is invisible for weeks.

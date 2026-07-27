@@ -133,8 +133,19 @@ export default async function globalSetup() {
   // -dev is required now that a login is the default (A36): without it the
   // suite lands on the sign-in screen and every test fails waiting for .shell.
   // It is refused off loopback by the server itself, and this binds loopback.
+  //
+  // The Smart+ key is cleared, and that is a determinism fix rather than a
+  // preference. The server loads `.env`, which on a developer's box has a real
+  // OPENAI_API_KEY in it — so the suite behaved differently depending on
+  // whether the person running it happened to have one, and a test asserting
+  // "this instance has no OpenAI key" passed on CI and failed on the machine
+  // that wrote it. A suite whose result depends on an untracked file is not a
+  // gate. Setting it EMPTY rather than deleting it also beats the `.env` load,
+  // which would otherwise put it back.
   app = spawn(bin, ['serve', '-db', DB, '-addr', `127.0.0.1:${APP_PORT}`, '-poll', '0', '-dev'], {
-    cwd: repo, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: repo,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, OPENAI_API_KEY: '', OPENAI_SDK_KEY: '' },
   });
   app.stdout.on('data', (d) => process.stdout.write(`[articleflux] ${d}`));
   app.stderr.on('data', (d) => process.stdout.write(`[articleflux] ${d}`));

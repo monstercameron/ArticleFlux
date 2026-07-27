@@ -33,16 +33,21 @@ async function expectNoHorizontalOverflow(page) {
   const overflow = await page.evaluate(() => {
     const d = document.documentElement;
 
-    // Walk up looking for an ancestor that clips horizontally and whose own box
-    // already excludes this element. That ancestor is why nobody can see it.
-    const isClipped = (el) => {
-      const r = el.getBoundingClientRect();
+    // Is this box's excess hidden by something?
+    //
+    // The question is not "is the element off-screen" — mid-slide a pane
+    // legitimately straddles the edge — but "can this ever make the PAGE scroll
+    // sideways". It cannot if some ancestor clips horizontally and that ancestor
+    // itself stays inside the viewport: whatever sticks out is cut off there.
+    //
+    // This still catches what the check was written for. `.pane` sets only
+    // `overflow-y`, which computes `overflow-x: auto` — scrollable, not clipping
+    // — so a long unbroken URL widening the article column is still reported.
+    const clippedInsideViewport = (el) => {
       for (let a = el.parentElement; a; a = a.parentElement) {
         const s = getComputedStyle(a);
-        const clips = s.overflowX === 'hidden' || s.overflowX === 'clip';
-        if (!clips) continue;
-        const ar = a.getBoundingClientRect();
-        if (r.left >= ar.right - 1 || r.right <= ar.left + 1) return true;
+        if (s.overflowX !== 'hidden' && s.overflowX !== 'clip') continue;
+        if (a.getBoundingClientRect().right <= d.clientWidth + 1) return true;
       }
       return false;
     };
@@ -52,7 +57,7 @@ async function expectNoHorizontalOverflow(page) {
       clientW: d.clientWidth,
       offenders: [...document.querySelectorAll('*')]
         .filter((el) => el.getBoundingClientRect().right > d.clientWidth + 1)
-        .filter((el) => !isClipped(el))
+        .filter((el) => !clippedInsideViewport(el))
         .slice(0, 5)
         .map((el) => el.className || el.tagName),
     };
@@ -82,7 +87,12 @@ for (const w of widths) {
     // And in the article view, which renders arbitrary publisher HTML — the
     // most likely thing to break out of the column.
     await page.locator('.item-row').first().click();
-    await expect(page.locator('.article h1')).toBeVisible();
+    // .first(): the reading pane is a STREAM (A28), so opening an article can
+    // leave several in it — and on a phone it now reliably does, because the
+    // pane is laid out at every width since the filmstrip landed and can
+    // finally measure whether its own bottom is in view. A bare `.article h1`
+    // is a strict-mode violation; this is TODO 8b.34's failure shape (a).
+    await expect(page.locator('.article h1').first()).toBeVisible();
     await expectNoHorizontalOverflow(page);
   });
 }
@@ -163,6 +173,24 @@ test('long unbroken text wraps instead of overflowing', async ({ page }) => {
 test('reduced motion is respected', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await boot(page);
+
+  // The reader has to ASK to follow the machine, and this test now asks.
+  //
+  // A39 removed the `prefers-reduced-motion` rule from the sheet on purpose: an
+  // unset preference means full motion "on every machine", and only the explicit
+  // `system` choice consults the OS. So emulating the media query alone proves
+  // nothing — and this test was passing only because an earlier test in the file
+  // had left the preference behind, which stopped once `reset-state` began
+  // clearing `user_prefs`.
+  //
+  // Setting it here is the honest version: it is what a reader does, and it
+  // makes the test say what it is actually about — that CHOOSING to follow a
+  // machine which asks for less motion stops everything.
+  await page.locator(`[data-action='open-settings']`).first().click();
+  await page.locator(`[data-action='settings-tab'][data-value='appearance']`).click();
+  await page.locator(`[data-action='motion-system']`).click();
+  await expect(page.locator(`[data-action='motion-system']`)).toHaveCount(0);
+  await page.keyboard.press('Escape');
 
   expect(await page.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue('--mo').trim())).toBe('0');

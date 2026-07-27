@@ -133,6 +133,12 @@ wasm: deps
 # index.html registers sw.js by relative path, so a build that does not ship it
 # 404s on every load and the offline shell silently never exists (8.4).
 	cp web/sw.js $(OUT)/sw.js
+# The self-hosted webfonts. index.html links fonts.css by relative path, and
+# fonts.css links each woff2 the same way, so missing either leaves the app
+# rendering in Georgia and system-ui with nothing in the console to explain it.
+# They ship together or the typography silently is not the design.
+	cp web/fonts.css $(OUT)/fonts.css
+	rm -rf $(OUT)/fonts && cp -r web/fonts $(OUT)/fonts
 	GOOS=js GOARCH=wasm go build $(WASMFLAGS) -o $(WASM) ./client/app
 	@# wasm_exec.js must come from the toolchain that produced the module. A stale
 	@# copy from an older Go fails at instantiate with an import mismatch that
@@ -163,7 +169,12 @@ wasm: deps
 # app.wasm beside it would mean that path was never taken locally.
 demo: deps
 	@mkdir -p $(DEMO)
-	cp web/index.html $(DEMO)/index.html
+	@# index.html, with the module name STAMPED. This build publishes only the
+	@# gzip (see below), and an unstamped loader asks for app.wasm first — a 404
+	@# in the console of every stranger who opens the demo, on every load, for a
+	@# file that is deliberately not here. Same idea as the sw.js stamp under it.
+	@sed "s|const MODULE = 'app.wasm';|const MODULE = 'app.wasm.gz';|" web/index.html > $(DEMO)/index.html
+	@grep -q "const MODULE = 'app.wasm.gz';" $(DEMO)/index.html || { 	  echo "index.html has no 'const MODULE = ...' line to stamp — the demo would 404 on every boot"; 	  exit 1; }
 	@# sw.js, with its cache identity STAMPED — the one file the demo does not
 	@# ship verbatim, and the reason is a failure that is invisible for weeks.
 	@#

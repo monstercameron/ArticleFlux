@@ -79,7 +79,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.5"
 
 jobs:
   build:
@@ -158,6 +158,13 @@ jobs:
           grep -qF "$want" sw.js || {
             echo "::error::sw.js was not stamped with ${{ steps.v.outputs.version }} — returning visitors would keep the previous module"
             grep -n "^const VERSION" sw.js || true
+            exit 1; }
+          # The module name the loader asks for FIRST. This build publishes only
+          # the gzip, so an unstamped index.html takes a 404 on every visit —
+          # visible to strangers, invisible to us, and green in every other check.
+          grep -qF "const MODULE = 'app.wasm.gz';" index.html || {
+            echo "::error::index.html was not stamped to fetch app.wasm.gz — every visitor 404s on app.wasm before the module loads"
+            grep -n "const MODULE" index.html || true
             exit 1; }
           grep -q "register('sw.js')" index.html || {
             echo "::error::index.html does not register sw.js relatively, so it 404s on a project page"

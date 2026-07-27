@@ -43,6 +43,20 @@ async function offsetX(page, sel) {
 }
 
 test.describe('motion', () => {
+  // Where the reader was is ACCOUNT STATE (A30): scope, article and every filter
+  // are server-side prefs, restored on connect. So a test that ends inside an
+  // article decides what the next spec file boots into — and at phone widths
+  // that means the item list is off the strip and unclickable, which is a
+  // confusing way to learn about test isolation. Every case here hands the app
+  // back on the list.
+  test.afterEach(async ({ page }) => {
+    // Twice: the first peels focus mode if it is on, the second returns to the
+    // list. Both are no-ops when there is nothing to undo.
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(300);
+  });
+
   test('the reduce-motion switch reaches the stylesheet, in both directions', async ({ page }) => {
     await boot(page);
 
@@ -97,10 +111,13 @@ test.describe('motion', () => {
     // The list is virtualised. If arrival were a plain mount animation, every
     // row that scrolled past would fire one — a slot machine at any real speed,
     // and the list would twitch under the reader's hand on every press of j.
-    await page.waitForTimeout(1500); // let the first page's spawn window close
-
     const freshCount = () => page.locator(`.item-row[data-fresh='true']`).count();
-    expect(await freshCount()).toBe(0);
+
+    // Waited FOR rather than slept through. The spawn window is 900ms after the
+    // page lands, but when the page lands depends on how long the boot took —
+    // and a fixed sleep that is long enough alone becomes a flake the moment
+    // this file runs after another one.
+    await expect.poll(freshCount, { timeout: 10_000 }).toBe(0);
 
     await page.evaluate(() => { document.querySelector('.list-scroll').scrollTop += 900; });
     await page.waitForTimeout(600);
@@ -129,8 +146,17 @@ test.describe('motion', () => {
     await expect(scrim).toHaveAttribute('data-open', 'false');
     expect((await styleOf(page, '.pal-scrim:has(.pal)', 'visibility')).trim()).toBe('hidden');
 
-    await page.keyboard.press('Control+k');
-    await expect(scrim).toHaveAttribute('data-open', 'true');
+    // Pressed until it takes. The document-level key listener is attached in an
+    // effect that runs after the first render, so there is a window — a few tens
+    // of milliseconds after the list paints — where a keystroke lands on nothing.
+    // A person cannot hit it; a test that fires the instant `.item-row` appears
+    // hits it about one run in four, and only when something slower ran first.
+    await expect.poll(async () => {
+      if ((await scrim.getAttribute('data-open')) !== 'true') {
+        await page.keyboard.press('Control+k');
+      }
+      return scrim.getAttribute('data-open');
+    }, { timeout: 10_000 }).toBe('true');
     await page.waitForTimeout(400);
     expect((await styleOf(page, '.pal-scrim:has(.pal)', 'visibility')).trim()).toBe('visible');
 
@@ -196,17 +222,30 @@ test.describe('motion', () => {
     // started. What is actually being asserted is that the rail passed THROUGH
     // intermediate widths — which is the difference between a grid track
     // interpolating and a pane being switched off.
-    const widths = await page.evaluate(async () => {
+    // The sampler is started BEFORE the key, and runs long enough to cover a
+    // dropped one. Firing the press first and then sampling loses the race two
+    // ways: the transition can begin during the round trip, and the keystroke
+    // itself can land before the document listener is attached (see the palette
+    // above) — in which case nothing ever moves and the sample is all-open.
+    const sampler = page.evaluate(async () => {
       const rail = document.querySelector('.pane-rail');
       const seen = [];
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 150; i++) {
         seen.push(Math.round(rail.getBoundingClientRect().width));
         await new Promise((r) => requestAnimationFrame(r));
       }
       return seen;
-    }, await page.keyboard.press('w'));
+    });
+    await page.keyboard.press('w');
+    await page.waitForTimeout(400);
+    if ((await page.locator('.shell').getAttribute('data-focus')) !== 'true') {
+      await page.keyboard.press('w');
+    }
+    const widths = await sampler;
 
-    expect(widths.some((v) => v > 0 && v < open)).toBe(true);
+    expect(widths.some((v) => v > 0 && v < open),
+      `the rail went ${open} -> 0 without passing through anything between; ` +
+      `grid tracks are switching rather than interpolating`).toBe(true);
     await page.waitForTimeout(600);
     expect(await railWidth()).toBe(0);
 

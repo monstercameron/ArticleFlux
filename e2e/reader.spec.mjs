@@ -269,12 +269,14 @@ test.describe('reading', () => {
     await page.locator('[data-action="mark-all"]').click();
 
     await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);
-    // Scoped to FEED rows. Categories carry counts now too, so a bare
-    // `.feed-count` counts the rail's category totals as well and can never
-    // reach zero — the click works, and the assertion was measuring something
-    // else. The banner above is the evidence that it worked; this is the
-    // evidence that nothing is left unread.
-    await expect(page.locator('.feed-row .feed-count')).toHaveCount(0);
+    // Scoped to SUBSCRIPTION rows: `.feed-row` without `.stream-row`.
+    //
+    // A bare `.feed-count` counts the rail's built-in streams too, and theirs
+    // are not unread counts — Read later shows how many you saved, Notes how
+    // many you wrote. Neither goes to zero when you mark everything read, and
+    // neither should. The click works; the assertion was measuring something
+    // else, and the banner above is the evidence for the click.
+    await expect(page.locator('.feed-row:not(.stream-row) .feed-count')).toHaveCount(0);
   });
 });
 

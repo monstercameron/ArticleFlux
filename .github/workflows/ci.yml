@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.5"
   # Pinned, not @latest. staticcheck gates every merge, so "whatever was released
   # this morning" is a dependency on a third party's schedule: a new release that
   # adds a check, or that has not caught up with a new Go, turns an unrelated
@@ -101,6 +101,23 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }}
           staticcheck ./...
+
+      # Known vulnerabilities in the toolchain and in dependencies.
+      #
+      # This is the check that was missing, and its absence was not theoretical:
+      # a review found four *called* standard-library vulnerabilities sitting in
+      # the pinned toolchain, and nothing in CI had an opinion about them. vet
+      # and staticcheck look at the code that was written; this looks at the code
+      # that was imported, which is most of it.
+      #
+      # `-show verbose` so the non-called findings are visible too. Only the
+      # called ones fail the build — govulncheck's own exit code already draws
+      # that line, and failing on an unreachable vulnerability in a transitive
+      # dependency with no fix available would train everyone to ignore this.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -show verbose ./...
 
       # The four structural guards. Each one corresponds to a decision that is
       # otherwise only written down: A26 twice, schema ownership, and T1.
