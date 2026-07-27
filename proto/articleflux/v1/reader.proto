@@ -247,6 +247,33 @@ message Item {
   // carries who may hear it, and an identity in a query string would land in
   // history, referrers and access logs in the clear.
   string speech_url = 19;
+
+  // Why this item is on the ranked page, as separate clauses (§18.9).
+  //
+  // rank_reason above carries the strongest single one and predates this; both are
+  // sent, because they are read in different places. A list row shows one line, and
+  // the My Feed row shows a chip per clause — "several feeds carried this",
+  // "matches your camera reading", "on screen several times and still unread" — which
+  // is what makes the ranking correctable rather than merely explained. A reader who
+  // can see WHICH judgement they disagree with can act on that one.
+  //
+  // Ordered strongest first, by absolute contribution to the score, so a client that
+  // has room for two chips shows the two that mattered.
+  repeated string rank_reasons = 20;
+  // Which slot of §18.4's three this item filled: top | explore | cluster_head.
+  //
+  // On the wire because it is a fact about the RANKING, not about the item, and the
+  // client cannot recompute it — Explore deliberately serves under-served topics, so
+  // an item there is not simply a lower-scoring Top item and must not be presented as
+  // one.
+  string rank_slot = 21;
+  // Which tier produced this pick: smart | smart_plus.
+  //
+  // The reader paid for Smart+ or they did not, and when they did they are entitled
+  // to know which picks it actually influenced. It is also the honest way to show
+  // that free Smart did most of the work, rather than implying a key is what makes
+  // the page good.
+  string rank_tier = 22;
 }
 
 // ScrollLiveViewRequest scrolls a running §10.1d live view.

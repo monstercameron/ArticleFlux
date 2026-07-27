@@ -90,6 +90,15 @@ type scope struct {
 	Later  bool
 	Unread bool
 	Notes  bool
+	// MyFeed is the ranked stream — the interest layer's own answer rather than a
+	// filter over the chronological list (§18.4).
+	//
+	// A flag rather than a sentinel SourceID because it is genuinely a different
+	// QUERY, not a different subset: the server reads `home_ranking` instead of
+	// `items`, the order is the deriver's and not publication time, and unread-only
+	// does not apply because everything on it is unread by construction. Every other
+	// field on this struct narrows the same query; this one replaces it.
+	MyFeed bool
 	TagID  string
 	// FolderID is a category: the set of feeds filed under one name. Like TagID
 	// it resolves to a list of source ids on the client, because the sidebar is
@@ -1090,6 +1099,13 @@ func Reader(p readerProps) ui.Node {
 					Scope: pb.ListScope_LIST_SCOPE_ALL, UnreadOnly: unread || s.Unread, Limit: 60,
 				}
 				switch {
+				case s.MyFeed:
+					// First, because it is a different table rather than a filter, and
+					// because unread-only is meaningless here: the deriver only ranks
+					// unread items, so passing the flag would be a no-op that implied
+					// the toggle does something on this stream.
+					req.Scope = pb.ListScope_LIST_SCOPE_MEGAFEED
+					req.UnreadOnly = false
 				case s.Later:
 					req.Scope = pb.ListScope_LIST_SCOPE_STARRED
 					req.UnreadOnly = false
@@ -1194,6 +1210,13 @@ func Reader(p readerProps) ui.Node {
 				Limit: int32(limit), Cursor: cur,
 			}
 			switch {
+			case s.MyFeed:
+				// Must mirror the first-page switch above. When these two disagree,
+				// page one comes from the ranking and page two from the chronological
+				// list, and the seam is invisible — the reader just sees the ordering
+				// stop making sense partway down.
+				req.Scope = pb.ListScope_LIST_SCOPE_MEGAFEED
+				req.UnreadOnly = false
 			case s.Later:
 				req.Scope = pb.ListScope_LIST_SCOPE_STARRED
 				req.UnreadOnly = false

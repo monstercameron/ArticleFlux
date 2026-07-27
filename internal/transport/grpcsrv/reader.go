@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -168,6 +169,17 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	// My Feed is not a filter over the item list, it is a different table, so it
+	// returns before the query below is built.
+	//
+	// Until this existed the megafeed scope fell through the switch to "no filter" and
+	// silently served the plain chronological list. That is the worst available
+	// behaviour: the client asked for a ranking, got something that looks like one, and
+	// nothing anywhere reports that the interest layer was not consulted.
+	if req.GetScope() == pb.ListScope_LIST_SCOPE_MEGAFEED {
+		return s.listRanked(ctx, sc, req)
+	}
+
 	q := store.ListQuery{
 		Cursor:     req.GetCursor(),
 		Limit:      int(req.GetLimit()),
@@ -496,6 +508,80 @@ func (s *ReaderServer) Search(ctx context.Context, req *pb.SearchRequest) (*pb.S
 // toPBItem converts a domain item. withContent is false for list responses: a
 // 50-item page carrying full article bodies is megabytes over a tunnel for text
 // nobody has scrolled to yet.
+// listRanked serves LIST_SCOPE_MEGAFEED from the materialised homepage.
+//
+// # The empty page is a real state, not an error
+//
+// A reader whose interest layer has never run, or who has read everything on it, gets
+// zero rows and a nil cursor. That is not a failure and must not be reported as one:
+// the client distinguishes "nothing ranked yet" from "the call failed" by the absence
+// of an error, and turning an honest empty page into a status code would make a new
+// account look broken. §18.4's cold-start state is the client's job to render, and it
+// can only do that if it is told the truth.
+func (s *ReaderServer) listRanked(ctx context.Context, sc store.Scope,
+	req *pb.ListItemsRequest) (*pb.ListItemsResponse, error) {
+
+	// The cursor is the last rank served. Malformed input starts from the top rather
+	// than erroring: a bad cursor costs one repeated page, and refusing to render the
+	// homepage because a query string was wrong is the worse trade.
+	after := 0
+	if c := req.GetCursor(); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 0 {
+			after = n
+		}
+	}
+
+	ranked, items, err := s.svc.ListRanked(ctx, sc, after, int(req.GetLimit()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+
+	out := &pb.ListItemsResponse{}
+	for i, it := range items {
+		m := toPBItem(it, false)
+		r := ranked[i]
+		m.RankReasons = r.Reasons
+		m.RankSlot = r.Slot
+		m.RankTier = r.Tier
+		// The single-line field predates the list and is what the ordinary item row
+		// already renders (see client/view/panes.go). Populating it with the STRONGEST
+		// reason rather than a join of all of them: the reasons are sorted by absolute
+		// contribution, so the first is the one that actually decided the placement,
+		// and a concatenation of four clauses is not a sentence anyone reads.
+		if len(r.Reasons) > 0 {
+			m.RankReason = r.Reasons[0]
+		}
+		out.Items = append(out.Items, m)
+	}
+
+	// A next cursor only when the page was filled. The ranking is at most MaxRanked
+	// rows, so a short page is the end of it — and offering a cursor past the end would
+	// have the client fetch one guaranteed-empty page on every visit.
+	if len(ranked) > 0 && len(ranked) == pageLimit(int(req.GetLimit())) {
+		out.NextCursor = strconv.Itoa(ranked[len(ranked)-1].Rank)
+	}
+
+	// Total is the whole ranked set, not this page, for the same reason ListItems sends
+	// it: the scrollbar has to be the size of the result set before the result set has
+	// been fetched. Only on the first page.
+	if after == 0 {
+		if all, _, cerr := s.svc.ListRanked(ctx, sc, 0, store.MaxRankedPage); cerr == nil {
+			out.Total = int32(len(all))
+		}
+	}
+	return out, nil
+}
+
+// pageLimit mirrors the store's clamp so "was this page full?" is decided by the same
+// number that decided how many rows to read. Two copies of that limit would make the
+// cursor stop one page early or loop forever.
+func pageLimit(requested int) int {
+	if requested <= 0 || requested > store.MaxRankedPage {
+		return store.MaxRankedPage
+	}
+	return requested
+}
+
 func toPBItem(it store.Item, withContent bool) *pb.Item {
 	out := &pb.Item{
 		Id: it.ID, SourceId: it.SourceID, SourceTitle: it.SourceTitle,
