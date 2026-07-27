@@ -134,12 +134,10 @@ func TestBaseHrefIsHonouredDespiteSanitizeDroppingIt(t *testing.T) {
 // Relative URLs resolve against where the fetch LANDED, not where it was aimed.
 func TestRelativeURLsResolveAgainstTheFinalURL(t *testing.T) {
 	dest := serve(t, `<html><body><img src="pic.png"></body></html>`)
-	var redirector *httptest.Server
-	redirector = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, dest.URL+"/deep/page.html", http.StatusFound)
 	}))
 	defer redirector.Close()
-	_ = redirector
 
 	p, err := fetcher(t).Get(context.Background(), redirector.URL+"/start", prox, page)
 	if err != nil {

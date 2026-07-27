@@ -518,7 +518,7 @@ func topicKey(terms []string) string {
 	if len(terms) > 3 {
 		terms = terms[:3]
 	}
-	return strings.ToLower(strings.Join(terms, ""))
+	return strings.ToLower(strings.Join(terms, "\x1f"))
 }
 
 // deriveHomeRanking is the precision stage.

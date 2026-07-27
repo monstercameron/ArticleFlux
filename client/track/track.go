@@ -316,7 +316,7 @@ func (c *Collector) Saw(ids []string, sourceOf func(string) string, surface sign
 		return
 	}
 
-	type pending struct{ id, src string }
+	type pending struct{ id string }
 	var ready []pending
 
 	c.mu.Lock()

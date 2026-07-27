@@ -168,28 +168,6 @@ var urlish = map[string]bool{
 	"content": true, "background": true, "longdesc": true,
 }
 
-// tagsOnly returns everything between < and >, concatenated.
-//
-// Crude on purpose, and still cruder than parsing — the point of the substring
-// checks is not to share a parser with the code under test. This narrows WHERE
-// they look without changing WHAT they look for.
-func tagsOnly(s string) string {
-	var b strings.Builder
-	for {
-		i := strings.IndexByte(s, '<')
-		if i < 0 {
-			return b.String()
-		}
-		s = s[i:]
-		j := strings.IndexByte(s, '>')
-		if j < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:j+1])
-		s = s[j+1:]
-	}
-}
 
 func TestXSSCorpusIsNeutralisedUnderEveryPolicy(t *testing.T) {
 	for _, c := range xssCorpus {
