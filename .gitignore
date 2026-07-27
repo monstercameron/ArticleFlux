@@ -21,6 +21,10 @@
 # from their reading, regenerable, and nobody's business but theirs.
 /digest-cache/
 
+# The broadcast rewrites (§19), same class again: derived from what was read,
+# regenerable, and nobody else's business.
+/podcast-cache/
+
 # Cached site icons, if a future build ever spills them to disk rather than to
 # the database.
 /favicon-cache/

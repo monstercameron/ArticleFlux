@@ -320,6 +320,12 @@ func applyAppearance(a appearance) {
 	// and the OS resolution both end up here, so the DOM says what is actually
 	// in force rather than leaving it to be inferred from a missing attribute.
 	platform.SetRootAttr("data-motion", a.motionAttr())
+	// The one thing an INSTALLED app paints that is not a custom property: the
+	// window chrome (§20.24). A standalone window keeps the shell's static
+	// theme-color for the whole session otherwise, so somebody running Daylight
+	// gets a plum title bar around a page of paper — and no stylesheet can reach
+	// it.
+	platform.SetThemeColor(t.Ground)
 	mirrorToBoot(t)
 }
 

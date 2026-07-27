@@ -191,3 +191,7 @@ func Reload() {}
 func LaunchParam(name string) string { return "" }
 
 func DropLaunchParams() {}
+
+// SetThemeColor does nothing natively: there is no document, and therefore no
+// installed-app window chrome to paint.
+func SetThemeColor(hex string) {}

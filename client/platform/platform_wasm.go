@@ -2175,3 +2175,28 @@ func DropLaunchParams() {
 	}
 	hist.Call("replaceState", js.Null(), "", loc.Get("pathname").String())
 }
+
+// SetThemeColor rewrites the document's <meta name="theme-color">.
+//
+// It is what an INSTALLED app's window chrome is painted with — the title bar on
+// a desktop, the status bar and the task-switcher card on Android — and unlike
+// every other token in the theming engine it is not a CSS custom property, so
+// applyAppearance cannot reach it by writing to documentElement.style.
+//
+// Without this the shell's static value stands for the whole session: somebody
+// running Daylight gets a plum title bar around a page of paper, permanently,
+// which is the one part of a standalone window a stylesheet cannot fix. The boot
+// shim already sets it once from the mirrored palette (web/index.html); this is
+// the other half, for the theme changing while the app is open.
+func SetThemeColor(hex string) {
+	defer func() { _ = recover() }()
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	meta := doc.Call("querySelector", `meta[name="theme-color"]`)
+	if !meta.Truthy() {
+		return
+	}
+	meta.Call("setAttribute", "content", hex)
+}
