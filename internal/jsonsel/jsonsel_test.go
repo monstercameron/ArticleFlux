@@ -134,6 +134,143 @@ func TestItemsPathThatIsNotAnArraySaysSo(t *testing.T) {
 	}
 }
 
+// A body that is not JSON at all is a different fact from "0 items": the
+// endpoint changed, or something is answering with an error page, and Extract
+// is documented to return an error for exactly that reason.
+func TestNonJSONBodyIsAnError(t *testing.T) {
+	c, _ := Compile(good())
+	for _, body := range []string{"", "not json", "<html>error</html>", "{"} {
+		if _, err := Extract(c, []byte(body), now); err == nil {
+			t.Errorf("Extract(%q) should have failed: not JSON", body)
+		}
+	}
+}
+
+// The items path resolving to nothing at all (vs. resolving to something that
+// is not an array) is a different authoring mistake and gets a different
+// message — "found nothing" points at a typo'd path, "is not an array"
+// points at the wrong node.
+func TestItemsPathThatFindsNothingSaysSo(t *testing.T) {
+	c, _ := Compile(good())
+	res, err := Extract(c, []byte(`{"comic":{"title":"x"}}`), now)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Problems) == 0 || !strings.Contains(res.Problems[0], "found nothing") {
+		t.Errorf("problems = %v, want a message about finding nothing", res.Problems)
+	}
+}
+
+// An entry in the items array that is not a JSON object — a bare string or
+// number, which some APIs do emit — must be skipped and explained rather than
+// panicking on the failed type assertion.
+func TestNonObjectEntryIsSkipped(t *testing.T) {
+	c, _ := Compile(good())
+	res, err := Extract(c, []byte(`{"comic":{"chapters":["just a string", 42, null,
+		{"full_title":"Real","url":"/b"}]}}`), now)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Items) != 1 {
+		t.Fatalf("got %d items, want the one real entry: %+v", len(res.Items), res.Items)
+	}
+	if res.Skipped != 3 {
+		t.Errorf("skipped = %d, want 3 (string, number, null)", res.Skipped)
+	}
+	if len(res.Problems) == 0 || !strings.Contains(res.Problems[0], "not an object") {
+		t.Errorf("problems = %v, want a message about a non-object entry", res.Problems)
+	}
+}
+
+// A numeric path segment indexes an array — the doc comment's own example is
+// "teams.0.name" — and this is the only test that exercises it. Without it, a
+// response shaped as an array of objects with a nested array field (common in
+// "the entry's tags/authors/teams are a list" APIs) has no coverage at all.
+func TestNumericPathSegmentIndexesAnArray(t *testing.T) {
+	r := Rule{
+		ItemsPath: "items",
+		TitlePath: "title",
+		LinkPath:  "url",
+		// The author's name is the second element of a "people" array.
+		AuthorPath: "people.1.name",
+	}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	body := `{"items":[{"title":"A","url":"https://x.tld/a",
+		"people":[{"name":"First"},{"name":"Second"}]}]}`
+	res, err := Extract(c, []byte(body), now)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Items) != 1 {
+		t.Fatalf("got %d items", len(res.Items))
+	}
+	if res.Items[0].Author != "Second" {
+		t.Errorf("author = %q, want the second element indexed by path", res.Items[0].Author)
+	}
+}
+
+// An out-of-range or negative array index must resolve to nothing rather than
+// panicking — the same discipline walk() already applies to a missing map key.
+func TestOutOfRangeArrayIndexIsHandled(t *testing.T) {
+	r := Rule{ItemsPath: "items", TitlePath: "title", LinkPath: "url", AuthorPath: "people.5.name"}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	body := `{"items":[{"title":"A","url":"https://x.tld/a","people":[{"name":"Only"}]}]}`
+	res, err := Extract(c, []byte(body), now)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Items) != 1 {
+		t.Fatalf("got %d items", len(res.Items))
+	}
+	if res.Items[0].Author != "" {
+		t.Errorf("author = %q, want empty for an out-of-range index", res.Items[0].Author)
+	}
+}
+
+// A path pointing at the wrong array can produce thousands of "items", for
+// the reason scrapesel's equivalent bound exists — the cost lands on ingest
+// and the unread count, not on this package.
+func TestExtractionIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"items":[`)
+	for i := 0; i < MaxItems+50; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmtEntry(&b, i)
+	}
+	b.WriteString(`]}`)
+
+	r := Rule{ItemsPath: "items", TitlePath: "title", LinkPath: "url"}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	res, err := Extract(c, []byte(b.String()), now)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(res.Items) > MaxItems {
+		t.Errorf("produced %d items, over the %d cap", len(res.Items), MaxItems)
+	}
+	// The count must still be honest, or a rule this wrong looks fine.
+	if res.Found != MaxItems+50 {
+		t.Errorf("found reported %d, want the true %d", res.Found, MaxItems+50)
+	}
+}
+
+func fmtEntry(b *strings.Builder, i int) {
+	b.WriteString(`{"title":"T","url":"https://x.tld/`)
+	b.WriteString(strings.Repeat("a", i%5+1))
+	b.WriteString(`"}`)
+}
+
 func TestCompileRefusesRulesThatCannotWork(t *testing.T) {
 	for name, mutate := range map[string]func(*Rule){
 		"no items path": func(r *Rule) { r.ItemsPath = "" },

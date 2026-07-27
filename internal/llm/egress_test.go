@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +108,92 @@ func TestAuditEgressCatchesAnAddedField(t *testing.T) {
 		t.Error("a non-JSON body was audited as clean")
 	}
 }
+
+// §18.8 says the test must assert "the outbound body matches an allowlist, not
+// a comment expressing intent." TestNothingLeavesThatSection188DoesNotPermit
+// above marshals a RankPayload directly and audits THAT — it never goes near
+// Client.Do, so it proves the TYPE is safe but not that what internal/smart
+// actually hands to the transport is the same bytes.
+//
+// This closes that gap: it builds the payload exactly the way
+// internal/smart/interest.go does (RankPayload.Trim, json.Marshal, and that
+// string becomes Request.Input), drives it through the real Client.Do — the
+// same envelope-building code every Smart+ feature uses — and audits the bytes
+// actually captured at the transport. If a future change to Do() ever wrapped,
+// re-encoded, or added a sibling field to the payload before it left, this is
+// what would notice; the standalone test above cannot, because it never calls
+// Do() at all.
+func TestAuditEgressAppliesToTheRealOutboundRequest(t *testing.T) {
+	payload := RankPayload{
+		Candidates: []Candidate{
+			{ID: 1, Title: "Rust ownership explained", Summary: "A long piece about lifetimes."},
+			{ID: 2, Title: "Something else"},
+		},
+		Profile: Profile{
+			Topics:  []Topic{{Label: "Systems", Terms: []string{"sqlite", "btree", "wal"}}},
+			Sources: []string{"Dan Luu"},
+		},
+		Want: 5,
+	}.Trim()
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var captured []byte
+	c := New(func(context.Context) string { return "sk-test" })
+	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("reading the real outbound request: %v", err)
+		}
+		captured = b
+		return jsonResponse(http.StatusOK, responsesReply{
+			Status: "completed", OutputText: `{"ids":[1]}`,
+		}), nil
+	})}
+
+	if _, err := c.Do(context.Background(), Request{
+		Instructions: rerankStyleInstructions,
+		Input:        string(payloadJSON),
+		SchemaName:   "rerank",
+		Schema:       map[string]any{"type": "object"},
+	}); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("the transport was never reached")
+	}
+
+	// Pull `input` back out of the REAL envelope that was captured — this is
+	// the reader-derived content; `model`, `instructions`, `store` and friends
+	// are static config, not candidate data, and are not what the allowlist is
+	// protecting.
+	var envelope struct {
+		Input string `json:"input"`
+	}
+	if err := json.Unmarshal(captured, &envelope); err != nil {
+		t.Fatalf("captured body is not the wire envelope: %v\n%s", err, captured)
+	}
+	if envelope.Input == "" {
+		t.Fatal("the envelope's input field is empty")
+	}
+
+	bad, err := AuditEgress([]byte(envelope.Input))
+	if err != nil {
+		t.Fatalf("AuditEgress: %v", err)
+	}
+	if len(bad) != 0 {
+		t.Errorf("keys not on the §18.8 allowlist reached the wire via the real Do() path: %v\n%s",
+			bad, envelope.Input)
+	}
+	if envelope.Input != string(payloadJSON) {
+		t.Errorf("the outbound input diverged from the audited payload:\n got  %s\n want %s",
+			envelope.Input, payloadJSON)
+	}
+}
+
+const rerankStyleInstructions = "You are helping a person triage their own reading list."
 
 // A candidate's id is a per-request ordinal. Sending the database id would let a
 // provider correlate across requests and rebuild the per-item history the

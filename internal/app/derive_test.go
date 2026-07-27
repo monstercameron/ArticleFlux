@@ -196,6 +196,101 @@ func TestMyFeedHonoursTheMegafeedOptOut(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
+// Recording engagements must move the ranking without waiting for the poller.
+//
+// The feature was complete and still wrong from the reader's side: like three articles,
+// open My Feed, and it looks exactly as it did — for up to fifteen minutes, with
+// nothing on screen to explain why. A ranking nobody can see reacting is one nobody
+// believes reacts, and the natural response is to stop feeding it signals.
+func TestEngagementNudgesADerivation(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "nudge.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	sc := seedReader(t, a)
+	a.StartWorkers(ctx)
+
+	// No boot derivation: the whole point is that the ENGAGEMENT causes one.
+	a.deriveMu.Lock()
+	a.lastDerive = time.Now().UTC().Add(-24 * time.Hour)
+	a.deriveMu.Unlock()
+	if n := countRanked(t, a, sc); n != 0 {
+		t.Fatalf("home_ranking had %d rows before any engagement", n)
+	}
+
+	// Through the service, so the hook is exercised where it is actually wired rather
+	// than by calling NudgeDerive directly.
+	items := allItems(t, a, sc)
+	evs := make([]signals.Event, 0, len(items))
+	for _, id := range items {
+		evs = append(evs, signals.Event{
+			ID: idgen.New(), ItemID: id, Kind: signals.Completed,
+			Surface: "reader", At: time.Now().UTC().UnixMilli(),
+		})
+	}
+	if _, _, err := a.svc.RecordEngagements(ctx, sc, evs); err != nil {
+		t.Fatalf("RecordEngagements: %v", err)
+	}
+
+	waitUntil(t, 30*time.Second, func() bool { return countRanked(t, a, sc) > 0 })
+}
+
+// The nudge must be rate-limited, or a reading session is a continuous TF-IDF pass.
+//
+// The per-user dedupe key bounds the QUEUE — a second job cannot wait behind the
+// first — and says nothing about a job that has already started. Without this limit a
+// busy session chains derivations back to back with no gap.
+func TestNudgeIsRateLimited(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "ratelimit.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	sc := seedReader(t, a)
+
+	// Deliberately NOT starting the pool: with no workers draining the queue, the rows
+	// stay put and can be counted. This measures how many derivations were ASKED for,
+	// which is the thing being limited.
+	for i := 0; i < 5; i++ {
+		a.NudgeDerive(sc)
+	}
+	waitUntil(t, 5*time.Second, func() bool { return pendingDerives(t, a) > 0 })
+
+	if n := pendingDerives(t, a); n != 1 {
+		t.Errorf("five nudges queued %d derivations, want 1", n)
+	}
+
+	// And the limit is a rate, not a one-shot: once the interval has passed, the next
+	// signal is honoured. A hook that fires once per process would be worse than none.
+	a.deriveMu.Lock()
+	a.lastNudge = time.Now().UTC().Add(-NudgeInterval - time.Second)
+	a.deriveMu.Unlock()
+	a.NudgeDerive(sc)
+	// Still one row, because Enqueue dedupes per user while the first is pending —
+	// which is the correct combined behaviour and worth pinning: the rate limit and the
+	// dedupe key each bound a different thing and together they bound both.
+	waitUntil(t, 5*time.Second, func() bool { return pendingDerives(t, a) >= 1 })
+	if n := pendingDerives(t, a); n != 1 {
+		t.Errorf("after the interval elapsed there were %d queued derivations, want 1", n)
+	}
+}
+
+// pendingDerives counts queued derive jobs, which is how many were asked for when no
+// worker is draining them.
+func pendingDerives(t *testing.T, a *App) int {
+	t.Helper()
+	depth, err := a.repo.QueueDepth(t.Context())
+	if err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	}
+	return depth[store.JobDerive].Queued
+}
+
 // A reader with no affinity-bearing engagement must not schedule a derivation.
 //
 // This is not tidiness: derive is a TF-IDF pass over ninety days of engaged

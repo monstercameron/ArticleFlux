@@ -127,18 +127,57 @@ func TestEngagementClockIsClamped(t *testing.T) {
 }
 
 // The row that would quietly destroy weeks of signal.
+//
+// This has to construct the fixture so the exclusion is actually load-bearing,
+// not merely present. A bulk_read or sync_read sharing an item_id with a real
+// `opened`/`impression` row proves nothing: that item_id is already in
+// count(DISTINCT item_id) because of the row that was never meant to be
+// excluded, so the SAME assertions pass whether or not the `kind NOT IN
+// (...)` clause does anything at all. Two more items are seeded that carry
+// ONLY a bulk_read or ONLY a sync_read row and nothing else — a real shape,
+// since both are single events a mark-all-read or a syncing client can emit
+// for an item nobody individually opened — and Items/LastEngagedAt are
+// checked precisely because those two are the aggregates a leaked row would
+// move: DISTINCT item_id would gain an id that should never have entered the
+// count, and max(at) would jump to whichever excluded row's timestamp is
+// latest.
 func TestFeedSignalsExcludeBulkReads(t *testing.T) {
 	db := openTest(t)
 	repo, sc := seedReader(t, db)
 	ctx := context.Background()
 	it := firstItem(t, repo, sc)
+
+	all, _, err := repo.ListItems(ctx, sc, ListQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sibling1, sibling2 string
+	for _, other := range all {
+		if other.SourceID != it.SourceID || other.ID == it.ID {
+			continue
+		}
+		if sibling1 == "" {
+			sibling1 = other.ID
+		} else if sibling2 == "" {
+			sibling2 = other.ID
+			break
+		}
+	}
+	if sibling1 == "" || sibling2 == "" {
+		t.Fatal("fixture's first source needs at least 3 items for this test")
+	}
+
 	now := time.Now().UnixMilli()
 
 	evs := []signals.Event{
+		// The only real engagement: it.ID, at now/now+1.
 		{ID: "i1", ItemID: it.ID, Kind: signals.Impression, Surface: signals.SurfaceList, At: now},
 		{ID: "o1", ItemID: it.ID, Kind: signals.Opened, Surface: signals.SurfaceList, At: now + 1},
-		{ID: "b1", ItemID: it.ID, Kind: signals.BulkRead, Surface: signals.SurfaceList, At: now + 2},
-		{ID: "s1", ItemID: it.ID, Kind: signals.SyncRead, Surface: signals.SurfaceSyncAPI, At: now + 3},
+		// A backlog item swept by mark-all-read, never individually opened.
+		// Far later timestamp: if this leaks past the exclusion, max(at) moves.
+		{ID: "b1", ItemID: sibling1, Kind: signals.BulkRead, Surface: signals.SurfaceList, At: now + 1000},
+		// A third-party client auto-marking a different backlog item, same idea.
+		{ID: "s1", ItemID: sibling2, Kind: signals.SyncRead, Surface: signals.SurfaceSyncAPI, At: now + 2000},
 	}
 	if _, err := repo.RecordEngagements(ctx, sc, evs); err != nil {
 		t.Fatal(err)
@@ -156,6 +195,14 @@ func TestFeedSignalsExcludeBulkReads(t *testing.T) {
 		found = true
 		if f.Impressions != 1 || f.Opens != 1 {
 			t.Errorf("impressions=%d opens=%d, want 1/1", f.Impressions, f.Opens)
+		}
+		if f.Items != 1 {
+			t.Errorf("items=%d, want 1 — the bulk_read/sync_read-only items must not "+
+				"enter count(DISTINCT item_id)", f.Items)
+		}
+		if f.LastEngagedAt != now+1 {
+			t.Errorf("last_engaged_at=%d, want %d (the `opened` row) — a bulk_read or "+
+				"sync_read timestamp leaked into max(at)", f.LastEngagedAt, now+1)
 		}
 		if f.OpenRate() != 1 {
 			t.Errorf("open rate = %v, want 1", f.OpenRate())

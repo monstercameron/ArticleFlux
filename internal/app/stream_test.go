@@ -158,6 +158,23 @@ func TestStreamServesMultipartFrames(t *testing.T) {
 		t.Skip("CI: set ARTICLEFLUX_BROWSER_TESTS=1 to run the browser stream test")
 	}
 
+	// Timeout sizing (2026-07-27 flake hunt): isolated with no competing load
+	// this test passes in ~3s, 20/20 reps. Under deliberate concurrent CPU
+	// load — this package's own siblings, another agent's Playwright fleet,
+	// anything else scheduled on the same box — a cold browser start needs far
+	// longer than 3s, and the OLD 60s ceiling here was the exact ceiling that
+	// got hit: 2 failures in ~15 contended reps, both timing out at 60s on the
+	// nose. That is not the product being slow; it is the test's own patience
+	// being shorter than a cold start under load ever needed to be.
+	//
+	// 90s matches the convention this same package already settled on for
+	// every other full-render-and-wait browser test (internal/render's
+	// snapshot_test.go), which is a real, already-defensible number rather
+	// than a fresh guess — and it is a 30x margin over the measured warm-path
+	// time, not a 20x one, so it should absorb realistic contention without
+	// papering over an actual regression (a real hang still fails; it just
+	// won't be mistaken for one anymore).
+
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body style="background:#fff">
@@ -176,7 +193,7 @@ func TestStreamServesMultipartFrames(t *testing.T) {
 	defer srv.Close()
 
 	minted := a.StreamURL(origin.URL + "/")
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+minted, nil)
 

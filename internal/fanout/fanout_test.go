@@ -346,4 +346,126 @@ func TestMalformedPayloadIsRejected(t *testing.T) {
 	}
 }
 
+// The coalesce in upsertState exists so a re-run cannot un-star what the
+// reader starred (TestReRunningDoesNotUndoTheReadersWork, above). This is the
+// mirror image: the reader explicitly UN-stars an item a rule had starred,
+// and the queue — which is at-least-once — redelivers the same fan-out job
+// afterwards. If the still-enabled rule reapplies its star, the reader's
+// explicit undo was itself undone by a duplicate delivery of work that had
+// already run, which is exactly the failure category the coalesce logic is
+// there to prevent, just approached from the other direction.
+func TestUnstarringSurvivesARepeatFanout(t *testing.T) {
+	f := setup(t)
+	if _, err := f.repo.CreateRule(f.ctx, f.alice, rules.Rule{
+		Name: "star rust", Enabled: true,
+		Match:   rules.Match{Conditions: []rules.Condition{{Field: rules.FieldTitle, Op: rules.OpContains, Value: "rust"}}},
+		Actions: []rules.Action{{Kind: rules.ActionStar}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+
+	items, _, err := f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rustID string
+	for _, it := range items {
+		if it.Title == "Rust 2.0 is here" {
+			rustID = it.ID
+			if !it.Starred {
+				t.Fatal("setup: the star rule did not star the rust item on the first run")
+			}
+		}
+	}
+	if rustID == "" {
+		t.Fatal("setup: could not find the rust item")
+	}
+
+	// The reader changes their mind.
+	if _, err := f.repo.SetItemState(f.ctx, f.alice, rustID,
+		store.StateChange{Starred: boolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same fan-out job is redelivered — a reclaim, a retry, a rule edit
+	// with retroactive apply. The rule still matches and still says "star".
+	f.run(t)
+
+	items, _, err = f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.ID == rustID && it.Starred {
+			t.Error("a repeat fan-out re-starred an item the reader had explicitly un-starred")
+		}
+	}
+}
+
+// Same category of bug as TestUnstarringSurvivesARepeatFanout, different
+// table: item_tags' ON CONFLICT DO NOTHING means a redelivery of an
+// at-least-once fan-out job re-adds a tag the reader had deliberately
+// removed, because DO NOTHING only protects against a duplicate row — it
+// has no way to tell "never tagged" from "tagged, then the reader untagged
+// it" once the row is gone.
+func TestUntaggingSurvivesARepeatFanout(t *testing.T) {
+	f := setup(t)
+	if _, err := f.repo.CreateRule(f.ctx, f.alice, rules.Rule{
+		Name: "tag rust", Enabled: true,
+		Match:   rules.Match{Conditions: []rules.Condition{{Field: rules.FieldTitle, Op: rules.OpContains, Value: "rust"}}},
+		Actions: []rules.Action{{Kind: rules.ActionTag, Value: "deep-dive"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+
+	items, _, err := f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rustID string
+	for _, it := range items {
+		if it.Title == "Rust 2.0 is here" {
+			rustID = it.ID
+		}
+	}
+	if rustID == "" {
+		t.Fatal("setup: could not find the rust item")
+	}
+
+	tagsByItem, err := f.repo.ItemTags(f.ctx, f.alice, []string{rustID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tagID string
+	for _, tag := range tagsByItem[rustID] {
+		if tag.Name == "deep-dive" {
+			tagID = tag.ID
+		}
+	}
+	if tagID == "" {
+		t.Fatal("setup: the tag rule did not tag the rust item on the first run")
+	}
+
+	// The reader changes their mind and removes the tag the rule applied.
+	if err := f.repo.UntagItem(f.ctx, f.alice, rustID, tagID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same fan-out job is redelivered — a reclaim, a retry, a rule edit
+	// with retroactive apply. The rule still matches and still says "tag".
+	f.run(t)
+
+	tagsByItem, err = f.repo.ItemTags(f.ctx, f.alice, []string{rustID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range tagsByItem[rustID] {
+		if tag.Name == "deep-dive" {
+			t.Error("a repeat fan-out re-tagged an item the reader had explicitly untagged")
+		}
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }

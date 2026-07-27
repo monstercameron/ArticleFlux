@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // onePixelPNG is a real PNG, because the sniffing path is part of what is under
@@ -153,6 +154,53 @@ func TestUpstreamErrorIsNegativeCached(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Errorf("origin was hit %d times; a dead image must be asked for once, not once per read", hits.Load())
+	}
+}
+
+// The negative cache exists so a dead image costs one request per interval, not
+// one per read — but the interval has to end, or a publisher that fixes a 404
+// stays hidden behind a marker written before the fix. This backdates the
+// marker's mtime rather than sleeping six real hours: the property under test
+// is negativeHit's expiry arithmetic, and Chtimes exercises exactly that
+// without asking anyone to wait for it.
+func TestNegativeCacheExpiresAfterTTL(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	f := newFetcher(t)
+	target := srv.URL + "/missing.png"
+
+	if _, err := f.Get(context.Background(), target); err == nil {
+		t.Fatal("expected an error")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("origin hit %d times on the first failure, want 1", hits.Load())
+	}
+
+	// Still within the TTL: a second read must not re-ask the origin.
+	if _, err := f.Get(context.Background(), target); err == nil {
+		t.Fatal("expected an error")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("origin hit %d times before the TTL elapsed, want 1", hits.Load())
+	}
+
+	failPath := f.failPath(cacheKey(target))
+	old := time.Now().Add(-negativeTTL - time.Minute)
+	if err := os.Chtimes(failPath, old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	if _, err := f.Get(context.Background(), target); err == nil {
+		t.Fatal("expected an error")
+	}
+	if hits.Load() != 2 {
+		t.Errorf("origin hit %d times after the negative cache expired, want 2 — "+
+			"an expired failure marker must be retried, not remembered forever", hits.Load())
 	}
 }
 

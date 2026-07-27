@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,15 @@ func jsOnlyServer(t *testing.T) *httptest.Server {
 
 func browserOrSkip(t *testing.T) *Renderer {
 	t.Helper()
+	// Same guard as live_test.go's skipOnUnprovenHostedCI, applied here too:
+	// every test that reaches this helper starts a real chromedp session, and
+	// a hosted windows-latest runner has been observed to find Edge, launch
+	// it, and produce no frame within sixty seconds — an environment gap, not
+	// a timing one. ARTICLEFLUX_BROWSER_TESTS=1 forces these anywhere,
+	// including CI, once a runner is confirmed to actually paint.
+	if os.Getenv("ARTICLEFLUX_BROWSER_TESTS") == "" && os.Getenv("CI") != "" {
+		t.Skip("CI: set ARTICLEFLUX_BROWSER_TESTS=1 to run browser-driven render tests")
+	}
 	// AllowPrivate, because the fixture server binds loopback and the guard
 	// would otherwise refuse it — the same reason the e2e seed passes the flag.
 	r := New(Options{AllowPrivate: true, IdleTimeout: 60 * time.Second})
@@ -440,6 +450,56 @@ func TestAnOversizeSnapshotSaysSoRatherThanSucceeding(t *testing.T) {
 	// have to pay for the render a second time to look at it.
 	if snap.HTML == "" || len(snap.Compressed) == 0 {
 		t.Error("an over-budget snapshot came back empty, so the render was wasted")
+	}
+}
+
+// The same guard as Stream's, pinned separately here: Snapshot has its own
+// call to CheckURL/CheckURLPermissive ahead of the semaphore and the browser,
+// and nothing enforces that the two call sites stay in sync just because one
+// of them is tested.
+func TestSnapshotRefusesBlockedAddress(t *testing.T) {
+	r := New(Options{})
+	defer r.Close()
+	_, err := r.Snapshot(context.Background(), "http://169.254.169.254/latest/meta-data/", Viewport{})
+	if err == nil {
+		t.Fatal("the metadata endpoint must be refused before a browser is started")
+	}
+}
+
+// A default Renderer must cap concurrency at one, not zero: an unbuffered or
+// zero-length semaphore channel would either block forever on the first
+// caller or, if the guard were ever weakened to "<0" instead of "<=0", let an
+// unlimited number of renders through — a preservation pass that shells out to
+// a browser per item is exactly the "cooks the box" failure §10.1c names.
+func TestDefaultMaxSessionsIsOne(t *testing.T) {
+	r := New(Options{})
+	defer r.Close()
+	if cap(r.sem) != 1 {
+		t.Errorf("default MaxSessions slot capacity = %d, want 1", cap(r.sem))
+	}
+}
+
+// Snapshot and Stream are documented (render.go's Stream comment, and the
+// remark on Snapshot) as sharing ONE resource — a browser tab on a box with
+// one reader — so a slot held by either must refuse the other, not just its
+// own kind. Both branches are exercised without starting a real browser: the
+// semaphore is acquired directly and the guard is checked before r.browser()
+// is ever called, so this is a pure unit test of the queueing, not a
+// browser-driven one.
+func TestSnapshotAndStreamShareTheSameSlot(t *testing.T) {
+	r := New(Options{MaxSessions: 1})
+	defer r.Close()
+
+	r.sem <- struct{}{} // occupy the only slot by hand
+	defer func() { <-r.sem }()
+
+	if _, err := r.Snapshot(context.Background(), "http://example.invalid/", Viewport{}); !errors.Is(err, ErrBusy) {
+		t.Errorf("Snapshot while the slot is held by something else: err = %v, want ErrBusy", err)
+	}
+	err := r.Stream(context.Background(), "some-session", "http://example.invalid/", Viewport{}, make(chan Frame, 1))
+	if !errors.Is(err, ErrBusy) {
+		t.Errorf("Stream while the slot is held by something else: err = %v, want ErrBusy — "+
+			"Stream and Snapshot are documented as the same resource", err)
 	}
 }
 

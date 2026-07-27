@@ -112,12 +112,22 @@ type cached struct {
 // that came back wrong — a reader who can see that a button says the wrong
 // thing has no other lever.
 func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]i18n.Entry, error) {
+	// Checked before the Languages lookup, and deliberately not folded into it:
+	// i18n.Languages is the OFFERED TARGETS and by design excludes "en" (see
+	// client/i18n/languages.go), so a lookup-first order can never see a code
+	// equal to DefaultLocale — ErrIsSource would be unreachable dead code, and
+	// the caller would be told English is unsupported rather than that it is
+	// the source language. The two map to different copy at the one consumer
+	// that matters (internal/transport/grpcsrv/smart.go's TranslateUI): "not
+	// one of the offered languages" versus "the interface is already in
+	// English" — different enough to justify keeping both errors distinct and
+	// reachable.
+	if strings.EqualFold(strings.TrimSpace(locale), i18n.DefaultLocale) {
+		return nil, ErrIsSource
+	}
 	lang, ok := LanguageByCode(locale)
 	if !ok {
 		return nil, ErrUnsupportedLanguage
-	}
-	if strings.EqualFold(lang.Code, i18n.DefaultLocale) {
-		return nil, ErrIsSource
 	}
 
 	source := flatten(i18n.Export(i18n.DefaultLocale))

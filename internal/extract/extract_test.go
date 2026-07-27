@@ -1,6 +1,9 @@
 package extract
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -190,6 +193,112 @@ func TestExcerptCutsAtAWordBoundary(t *testing.T) {
 	short := "already short"
 	if got := excerptFrom(short); got != short {
 		t.Errorf("excerptFrom(%q) = %q", short, got)
+	}
+}
+
+// syntheticArticle is long enough to clear MinWords, for tests that only care
+// about the Fetch/HTTP plumbing rather than extraction quality.
+const syntheticArticlePage = `<!doctype html><html><head><title>A post</title></head><body>
+<article><h1>A post</h1><p>` +
+	`Real article text that readability will keep because it is long enough to score. ` +
+	`Real article text that readability will keep because it is long enough to score. ` +
+	`</p></article></body></html>`
+
+// Extractor.Fetch — the actual network-touching path — had no test coverage
+// at all before this: everything above exercises FromBytes, which starts
+// after the fetch already happened. The redirect handling, the status-code
+// check, and the size bound are all here and untested elsewhere, unlike the
+// sibling internal/feed package, whose Fetch has this exact shape of test
+// (TestFetchHonoursNotModified, TestFetchRefusesInternalAddresses,
+// TestFetchBoundsTheBody in internal/feed/feed_test.go).
+
+// The URL after redirects is what relative links in the article must resolve
+// against, and it is what CanonicalURL reports.
+func TestFetchFollowsRedirectsAndRecordsCanonicalURL(t *testing.T) {
+	var final string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/old", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/new", http.StatusFound)
+	})
+	mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(syntheticArticlePage))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	final = srv.URL + "/new"
+
+	// httptest binds loopback, which the guard refuses by design; this is the
+	// documented escape hatch (see feed.Config.AllowPrivateAddresses).
+	e := New(Config{AllowPrivateAddresses: true})
+	e.client = srv.Client()
+
+	art, err := e.Fetch(context.Background(), srv.URL+"/old")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if art.CanonicalURL != final {
+		t.Errorf("CanonicalURL = %q, want the post-redirect URL %q", art.CanonicalURL, final)
+	}
+}
+
+// A non-2xx status is a fetch failure, not a page with no article: the two
+// need different handling upstream (retry/backoff vs. "nothing there").
+func TestFetchRejectsNonSuccessStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	e := New(Config{AllowPrivateAddresses: true})
+	e.client = srv.Client()
+	if _, err := e.Fetch(context.Background(), srv.URL); err == nil {
+		t.Error("a 404 should be refused")
+	}
+}
+
+// A single page over MaxBodyBytes must be refused rather than buffered — the
+// same discipline internal/feed applies to a feed body, and for the same
+// reason: an unbounded read is a memory exhaustion vector on a URL a stranger
+// controls (it arrived inside someone else's feed).
+func TestFetchBoundsTheBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		chunk := strings.Repeat("x", 1<<20)
+		for i := 0; i < 10; i++ {
+			if _, err := w.Write([]byte(chunk)); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	e := New(Config{AllowPrivateAddresses: true})
+	e.client = srv.Client()
+	_, err := e.Fetch(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("an oversized page should be refused, not buffered")
+	}
+	if err != ErrTooLarge {
+		t.Errorf("err = %v, want ErrTooLarge", err)
+	}
+}
+
+// A page URL is exactly as untrusted as a feed URL — extraction fetches
+// whatever link a stranger's feed item happened to contain — and Fetch is
+// documented to consult netguard for the same reason. Without
+// AllowPrivateAddresses, an internal address must be refused.
+func TestFetchRefusesInternalAddressesByDefault(t *testing.T) {
+	e := New(Config{})
+	for _, u := range []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://127.0.0.1:9/",
+		"file:///etc/passwd",
+	} {
+		if _, err := e.Fetch(context.Background(), u); err == nil {
+			t.Errorf("Fetch(%q) should have been refused", u)
+		}
 	}
 }
 

@@ -152,6 +152,58 @@ func TestGarbageDoesNotPanic(t *testing.T) {
 	}
 }
 
+// ItemKey has no direct coverage elsewhere in this package — it is exercised
+// indirectly through internal/feed and internal/scrapesel, both of which rely
+// on it keeping the fragment. This is the fixture that pins its own contract
+// rather than someone else's use of it, and lines it up against Norm and
+// DupeKey on the SAME inputs so the three-way disagreement is visible in one
+// place.
+func TestItemKeyKeepsTheFragment(t *testing.T) {
+	// The historical case: a linkblog publishing a day's entries as anchors on
+	// one page. ItemKey is the only one of the three that may not collapse them.
+	a := "http://www.scripting.com/1999/07/08.html#stockMarket"
+	b := "http://www.scripting.com/1999/07/08.html#nodesc"
+	c := "http://www.scripting.com/1999/07/08.html#ents"
+
+	if ItemKey(a) == ItemKey(b) || ItemKey(b) == ItemKey(c) || ItemKey(a) == ItemKey(c) {
+		t.Errorf("ItemKey collapsed distinct fragments: %q, %q, %q", ItemKey(a), ItemKey(b), ItemKey(c))
+	}
+	// Norm and DupeKey both drop the fragment and so must both collapse these.
+	if Norm(a) != Norm(b) || Norm(b) != Norm(c) {
+		t.Errorf("Norm should collapse fragment-only variants: %q, %q, %q", Norm(a), Norm(b), Norm(c))
+	}
+	if DupeKey(a) != DupeKey(b) || DupeKey(b) != DupeKey(c) {
+		t.Errorf("DupeKey should collapse fragment-only variants: %q, %q, %q", DupeKey(a), DupeKey(b), DupeKey(c))
+	}
+}
+
+// ItemKey is Norm PLUS the fragment — it must still do everything Norm does
+// (tracking-parameter stripping, case-folding, trailing-slash trimming), or an
+// item's identity would flap every time a generator re-stamps a utm_ parameter.
+func TestItemKeyIsNormPlusTheFragment(t *testing.T) {
+	same := [][2]string{
+		{"https://example.com/a#frag", "https://example.com/a?utm_source=x#frag"},
+		{"https://example.com/a#frag", "https://EXAMPLE.com:443/a#frag"},
+		{"https://example.com/a#frag", "https://example.com/a/#frag"},
+	}
+	for _, p := range same {
+		if a, b := ItemKey(p[0]), ItemKey(p[1]); a != b {
+			t.Errorf("ItemKey should collapse %s and %s (%s vs %s)", p[0], p[1], a, b)
+		}
+	}
+
+	differ := [][2]string{
+		// The one thing that must NOT collapse: two different fragments.
+		{"https://example.com/a#one", "https://example.com/a#two"},
+		{"https://example.com/a#frag", "https://example.com/a"},
+	}
+	for _, p := range differ {
+		if a, b := ItemKey(p[0]), ItemKey(p[1]); a == b {
+			t.Errorf("ItemKey must NOT collapse %s and %s (both -> %s)", p[0], p[1], a)
+		}
+	}
+}
+
 func TestRootPathNormalises(t *testing.T) {
 	if a, b := DupeKey("https://example.com"), DupeKey("https://example.com/"); a != b {
 		t.Errorf("bare host and host+slash should match: %q vs %q", a, b)

@@ -183,11 +183,22 @@ func (r *ReaderRepo) FanoutItems(ctx context.Context, sub Subscriber, ruleSet []
 			itemID := itemIDs[i]
 			out := rules.Evaluate(item, ruleSet, now)
 
+			// Which of the rules that matched THIS time have already fired for
+			// this exact (user, item) before. rule_hits is the audit trail
+			// plan.md §13.1 already promises, and it doubles as the ledger that
+			// makes a rule's action apply once rather than on every redelivery
+			// — see the comment on upsertState for why this beats teaching the
+			// coalesce a third state.
+			alreadyFired, err := firedRules(ctx, tx, sub.UserID, itemID, hitRuleIDs(out.Hits))
+			if err != nil {
+				return err
+			}
+
 			// The state row is written for every delivered item, whether or not
 			// any rule matched. Its existence is what makes the item known to
 			// this user; without it an unread count is a LEFT JOIN over nothing
 			// and paging cannot express "unread".
-			if err := upsertState(ctx, tx, sub, itemID, out, nowStr); err != nil {
+			if err := upsertState(ctx, tx, sub, itemID, out, alreadyFired, nowStr); err != nil {
 				return err
 			}
 			res.Delivered++
@@ -201,7 +212,7 @@ func (r *ReaderRepo) FanoutItems(ctx context.Context, sub Subscriber, ruleSet []
 				case rules.ActionStar:
 					res.Starred++
 				case rules.ActionTag:
-					if err := applyTag(ctx, tx, sub, itemID, a, nowStr); err != nil {
+					if err := applyTag(ctx, tx, sub, itemID, a, alreadyFired, nowStr); err != nil {
 						return err
 					}
 					res.Tagged++
@@ -209,6 +220,34 @@ func (r *ReaderRepo) FanoutItems(ctx context.Context, sub Subscriber, ruleSet []
 			}
 
 			for _, hit := range out.Hits {
+				// Record once per (rule, item, user), not once per delivery.
+				// alreadyFired already answers "has this rule's action run for
+				// this item before" — recordHit is that action's other half,
+				// and gating it the same way turns rule_hits from a queue-
+				// delivery log into a ledger of distinct applications, which is
+				// what both of its readers actually want:
+				//
+				//   - §13.5's last_matched_at/match_count are maintained inside
+				//     recordHit itself, so skipping the call on a redelivery
+				//     stops match_count counting retries as new matches — a
+				//     rule redelivered 40 times for one stubborn job no longer
+				//     looks 40x busier than a rule that only ever saw it once.
+				//   - §13.1's "basis for undo": undoing a duplicate row is
+				//     meaningless, so recording one row per application is
+				//     strictly what undo needs, never less than before.
+				//
+				// This must NOT become "skip if alreadyFired at the START of
+				// this rule's history" — alreadyFired is recomputed fresh per
+				// item from firedRules (below) each run, so the FIRST time a
+				// rule fires it is false and the row is written; only the
+				// SECOND and later deliveries of the same (rule, item, user)
+				// see it true and skip. If this ever skipped the first write
+				// too, firedRules would never see a row, alreadyFired would
+				// never come back true, and the redelivery bug this table
+				// exists to close would return.
+				if alreadyFired[hit.RuleID] {
+					continue
+				}
 				if err := recordHit(ctx, tx, sub, itemID, hit, nowStr); err != nil {
 					return err
 				}
@@ -221,7 +260,7 @@ func (r *ReaderRepo) FanoutItems(ctx context.Context, sub Subscriber, ruleSet []
 }
 
 func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
-	out rules.Result, now string) error {
+	out rules.Result, alreadyFired map[string]bool, now string) error {
 
 	var readAt, starredAt, mutedAt, mutedBy any
 	homeWeight := 1.0
@@ -229,13 +268,29 @@ func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 	for _, a := range out.Actions {
 		switch a.Kind {
 		case rules.ActionMarkRead:
-			readAt = now
+			// Only on the run that first records this rule's hit for this
+			// item+user. `alreadyFired` is that check — see the comment below
+			// for why coalesce alone cannot make this safe.
+			if !alreadyFired[a.RuleID] {
+				readAt = now
+			}
 		case rules.ActionStar:
-			starredAt = now
+			if !alreadyFired[a.RuleID] {
+				starredAt = now
+			}
 		case rules.ActionMute:
-			mutedAt = now
-			mutedBy = nullify(a.RuleID)
+			if !alreadyFired[a.RuleID] {
+				mutedAt = now
+				mutedBy = nullify(a.RuleID)
+			}
 		case rules.ActionSetHomeWeight:
+			// Deliberately NOT gated on alreadyFired: home_weight is not
+			// reader-settable (StateChange has no field for it) and the column
+			// has no coalesce — every run recomputes it fresh from whichever
+			// rule currently matches. Gating it here would leave the write
+			// unconditional (`home_weight = excluded.home_weight` below) while
+			// starving it of a value, silently resetting a previously-set
+			// weight back to 1.0 on the very redelivery this fix targets.
 			if w, err := parseFloat(a.Value); err == nil {
 				homeWeight = w
 			}
@@ -245,9 +300,17 @@ func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 	// The upsert never overwrites state the READER set. Fan-out can run again —
 	// a reclaimed job, a retry, a rule edit with retroactive apply — and a second
 	// run marking an item unread, or un-starring it, would be the application
-	// undoing something a person did. `coalesce(existing, new)` is what makes
-	// re-running safe, and re-running is guaranteed by the queue's at-least-once
-	// delivery rather than merely possible.
+	// undoing something a person did. `coalesce(existing, new)` handles that
+	// direction, but it cannot by itself handle the mirror case: `coalesce`
+	// cannot tell "never touched" apart from "the reader explicitly cleared
+	// this", since both are NULL, so a naive coalesce-only upsert re-applies a
+	// still-enabled rule's action over a flag the reader deliberately turned
+	// off. That is why `alreadyFired`, above, exists: once a rule's hit for
+	// this item+user is on record, this function stops asking the coalesce to
+	// write that field at all, on every subsequent run, forever — the reader's
+	// state (set OR cleared) then owns the field exclusively. Only a rule's
+	// first hit ever gets to move it, which is what turns "coalesce keeps a
+	// rerun from being destructive" into "a rerun is fully idempotent".
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO user_item_state
 		    (tenant_id, user_id, item_id, source_id, published_at, read_at, starred_at,
@@ -267,16 +330,94 @@ func upsertState(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 	return err
 }
 
+// hitRuleIDs is the distinct rule IDs behind a Result's hits, in no
+// particular order — just the set firedRules needs to query against.
+func hitRuleIDs(hits []rules.Hit) []string {
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(hits))
+	out := make([]string, 0, len(hits))
+	for _, h := range hits {
+		if !seen[h.RuleID] {
+			seen[h.RuleID] = true
+			out = append(out, h.RuleID)
+		}
+	}
+	return out
+}
+
+// firedRules reports which of ruleIDs already have a rule_hits row for this
+// (user, item) pair from some EARLIER run — i.e. which rules' actions have
+// already been applied here once and must not be applied again.
+//
+// rule_hits (plan.md §13.1's audit trail) is reused rather than adding new
+// state: a hit already means "this rule matched this item for this user and
+// its actions ran", which is exactly the fact upsertState needs. The
+// alternative — a new column recording which actor (rule vs. reader) last
+// touched each flag — would answer the same question more directly, but it's
+// a schema change, and per plan.md's "when the spec is silent" rule that is a
+// structural decision to raise, not to make unilaterally.
+func firedRules(ctx context.Context, tx *sql.Tx, userID, itemID string, ruleIDs []string) (map[string]bool, error) {
+	fired := map[string]bool{}
+	if len(ruleIDs) == 0 {
+		return fired, nil
+	}
+	args := make([]any, 0, len(ruleIDs)+2)
+	args = append(args, userID, itemID)
+	for _, id := range ruleIDs {
+		args = append(args, id)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT rule_id FROM rule_hits
+		 WHERE user_id = ? AND item_id = ? AND rule_id IN (`+placeholders(len(ruleIDs))+`)`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		fired[id] = true
+	}
+	return fired, rows.Err()
+}
+
 // applyTag adds a rule-applied tag, creating the tag on first use.
 //
 // applied_by_rule_id is recorded so a misfiring rule's work can be undone in one
 // statement. Without it, an over-broad rule that tagged four hundred articles is
 // uncleanable, and the only remedy is to stop trusting tags.
+//
+// Same defect as upsertState's coalesce, different shape: `ON CONFLICT(...) DO
+// NOTHING` protects against a duplicate row, but it has no way to tell "never
+// tagged" from "tagged once, then the reader deliberately removed it" once
+// that row is gone — so an at-least-once redelivery of a still-matching rule's
+// job would silently restore a tag the reader took off.
+//
+// item_tags does carry a column that names who is responsible for a tag —
+// `applied_by_rule_id`, NULL for a person and a rule id otherwise (see
+// itemtags.go and 0010_content.sql) — which looks at first glance like a more
+// direct fix than reusing rule_hits. It isn't, for this bug: that column lives
+// on the item_tags ROW, and the row is exactly what the reader deletes when
+// they untag something. The fact of who applied it is deleted along with it,
+// so by the time a redelivery arrives there is nothing left on this table to
+// consult. rule_hits is the one thing that survives the delete — it is an
+// audit ledger, never touched by UntagItem — which is why this reuses
+// `alreadyFired`, the same map upsertState already gates on, rather than
+// inventing a second mechanism for what is the same fact: has this rule's
+// action already run once for this item and user.
 func applyTag(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
-	a rules.Action, now string) error {
+	a rules.Action, alreadyFired map[string]bool, now string) error {
 
 	name := strings.TrimSpace(a.Value)
 	if name == "" {
+		return nil
+	}
+	if alreadyFired[a.RuleID] {
 		return nil
 	}
 
@@ -304,6 +445,12 @@ func applyTag(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 }
 
 // recordHit writes the audit row §13 promises and undo depends on.
+//
+// Callers gate this on !alreadyFired[hit.RuleID]: it is called once per
+// (rule, item, user) — on the delivery that first applies the rule — and not
+// again on a redelivery that only re-confirms the same match. See the call
+// site in FanoutItems for why that boundary is exactly at "already fired"
+// and not "already fired, including this run's own first write".
 func recordHit(ctx context.Context, tx *sql.Tx, sub Subscriber, itemID string,
 	hit rules.Hit, now string) error {
 

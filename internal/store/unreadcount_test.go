@@ -349,6 +349,43 @@ func TestUnsubscribedFeedsLeaveTheCount(t *testing.T) {
 	f.assertSidebarSumsToBadge(t, "unsubscribe")
 }
 
+// A source can be deactivated while the subscription and its unread state
+// rows are left standing — RetireUnusableSource refuses to touch a source
+// that anyone still subscribes to, so this reaches a DIFFERENT path: an
+// operator (or a future repair job) flips deactivated_at directly on a
+// source nobody unsubscribed from. That is deliberately not the same
+// operation as TestUnsubscribedFeedsLeaveTheCount: unsubscribing deletes the
+// subscription row, this leaves it in place and only marks the source dead.
+//
+// countUnreadFast's outer query joins subscriptions to sources and filters
+// on src.deactivated_at IS NULL for exactly this reason: without it, a
+// deactivated source's still-unread items keep inflating the badge forever,
+// silently, because nothing about deactivation throws. ListFeeds applies the
+// same filter, so the deactivated feed also vanishes from the sidebar list —
+// which is what makes assertSidebarSumsToBadge able to catch the badge
+// disagreeing with the sidebar it is supposed to sum to.
+func TestDeactivatedSourceLeavesTheCount(t *testing.T) {
+	f := newCountFixture(t, 3, 10)
+	before, _ := f.repo.CountQuery(f.ctx, f.sc, ListQuery{UnreadOnly: true})
+	if before != 30 {
+		t.Fatalf("fixture: %d unread, want 30", before)
+	}
+
+	if _, err := f.db.Write.ExecContext(f.ctx,
+		`UPDATE sources SET deactivated_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), f.sources[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	after, _ := f.repo.CountQuery(f.ctx, f.sc, ListQuery{UnreadOnly: true})
+	if after != 20 {
+		t.Errorf("%d unread after deactivating one of three ten-item feeds "+
+			"(still subscribed, state rows untouched), want 20", after)
+	}
+	f.assertAgrees(t, "deactivating a source without unsubscribing")
+	f.assertSidebarSumsToBadge(t, "deactivating a source without unsubscribing")
+}
+
 // The fast path answers ONE shape. Everything else must fall through to the
 // general query rather than silently returning an unread total for a question
 // that was not about unread.

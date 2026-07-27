@@ -205,10 +205,38 @@ func TestTenantIsolation(t *testing.T) {
 
 // Keyset pagination must not skip or repeat a row, including when several items
 // share a published_at — which is the whole reason the cursor carries the id.
+//
+// seedReader gives every item its own time.Now() call, so a genuine tie only
+// happens when two of those calls land in the same clock tick — measured at
+// roughly 40% of runs, which means a missing id tie-break in the cursor
+// comparison escaped this test on 3 of 5 runs. Two rows are pinned to the
+// exact same time.Time value below so the tie exists on every run.
+//
+// The tie is placed at positions 1 and 2 (0-indexed) of the 6-item order —
+// straddling the page-1/page-2 boundary at this test's Limit of 2 — because
+// that is the only placement a missing tie-break can actually damage: tie two
+// rows that land in the SAME page and there is nothing to skip; tie the last
+// row of one page with the first row of the next and a cursor that compares
+// on published_at alone excludes the second one forever. Position 2's row is
+// given position 1's own PublishedAt string rather than a fresh value, so it
+// stays exactly between positions 0 and 3 in the order and does not merely
+// relocate the boundary.
 func TestKeysetPaginationCoversEveryRowOnce(t *testing.T) {
 	db := openTest(t)
 	repo, sc := seedReader(t, db)
 	ctx := context.Background()
+
+	all, _, err := repo.ListItems(ctx, sc, ListQuery{Limit: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) < 4 {
+		t.Fatalf("fixture produced %d items, need at least 4 to place a tie across a page boundary", len(all))
+	}
+	if _, err := db.Write.ExecContext(ctx,
+		`UPDATE items SET published_at = ? WHERE id = ?`, all[1].PublishedAt, all[2].ID); err != nil {
+		t.Fatal(err)
+	}
 
 	seen := map[string]int{}
 	cursor := ""

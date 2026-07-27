@@ -3,9 +3,13 @@ package telemetry
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 // TestRouteClassNeverEchoesTheURL is the important test in this file.
@@ -136,4 +140,64 @@ func TestNopIsUsable(t *testing.T) {
 func TestRecordErrorToleratesNil(t *testing.T) {
 	var t2 *Telemetry
 	t2.RecordError(context.Background(), nil, "s", "c", errString("boom"))
+}
+
+// TestResourceMergeWithSchemalessNeverConflicts pins the fix behind the
+// commit whose WARN reads "telemetry: falling back to the default resource —
+// conflicting Schema URL" (see New(), the resource.Merge call). New()
+// deliberately builds its own resource with resource.NewSchemaless(...)
+// rather than NewWithAttributes(semconv.SchemaURL, ...): a schemaless
+// resource's schema URL is always "", and resource.Merge's documented rule
+// is that an empty schema URL on either side never conflicts — the
+// non-empty side's schema simply wins. That holds no matter which semconv
+// version resource.Default() happens to carry internally, which is what
+// makes it robust against the SDK moving its bundled schema version.
+//
+// A consequence worth stating plainly: as the code stands, the
+// `if err != nil` branch guarding that Merge call in New() is unreachable.
+// b's schema URL (resource.NewSchemaless(...)) is always empty by
+// construction, so Merge can only take the "b.schemaURL == \"\"" arm, which
+// never returns an error. A "falling back to the default resource" WARN
+// seen at runtime today cannot be originating from this call as currently
+// written — it would have to be coming from somewhere else (e.g. an
+// internal merge inside resource.Default() itself, routed through
+// otel.Handle rather than this package's logger) or from a process still
+// running older code.
+func TestResourceMergeWithSchemalessNeverConflicts(t *testing.T) {
+	merged, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		semconv.ServiceName("test-service"),
+		semconv.ServiceVersion("9.9.9"),
+	))
+	if err != nil {
+		t.Fatalf("resource.Merge with a schemaless resource returned an error: %v", err)
+	}
+	if merged.SchemaURL() != resource.Default().SchemaURL() {
+		t.Errorf("merged schema URL = %q, want Default()'s schema URL %q (the schemaless side must never override the non-empty one)",
+			merged.SchemaURL(), resource.Default().SchemaURL())
+	}
+}
+
+// TestResourceMergeWithPinnedSchemaCanConflict is the negative case: it
+// reproduces the ORIGINAL bug shape — pinning our own semconv.SchemaURL via
+// NewWithAttributes, which is what the code did before the fix — to prove
+// the schema mismatch between this package's semconv import version and the
+// SDK's internally bundled version is real today, not hypothetical, and
+// therefore that switching to NewSchemaless in New() was load-bearing.
+//
+// If this test starts failing, it does not mean telemetry.go regressed: it
+// means the two semconv schema versions happened to converge, and the
+// assumption behind this test (not the product code) needs revisiting.
+func TestResourceMergeWithPinnedSchemaCanConflict(t *testing.T) {
+	pinned := resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName("test-service"))
+	if pinned.SchemaURL() == resource.Default().SchemaURL() {
+		t.Skipf("this package's semconv schema (%s) now matches resource.Default()'s internal schema (%s); the pre-fix bug shape no longer reproduces",
+			pinned.SchemaURL(), resource.Default().SchemaURL())
+	}
+	_, err := resource.Merge(resource.Default(), pinned)
+	if err == nil {
+		t.Fatal("expected resource.Merge to report a conflict for two different non-empty schema URLs")
+	}
+	if !errors.Is(err, resource.ErrSchemaURLConflict) {
+		t.Errorf("err = %v, want errors.Is(_, resource.ErrSchemaURLConflict)", err)
+	}
 }

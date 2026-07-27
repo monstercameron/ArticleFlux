@@ -111,6 +111,18 @@ func TestFallingTooFarBehindAsksForAResync(t *testing.T) {
 	if got, err := b.Replay("t", "u", head-10); err != nil || len(got) != 10 {
 		t.Errorf("a recently-disconnected client got %d events, %v", len(got), err)
 	}
+
+	// The cutoff itself, exactly. Sampling only deep inside each region (as
+	// above) would not catch an off-by-one on the boundary: since = oldest-1
+	// must succeed and start at oldest, and one sequence further back must not.
+	if got, err := b.Replay("t", "u", resync.Oldest-1); err != nil {
+		t.Fatalf("replay from exactly the oldest held sequence was refused: %v", err)
+	} else if len(got) == 0 || got[0].Seq != resync.Oldest {
+		t.Fatalf("replay from the boundary returned %+v, want to start at seq %d", got, resync.Oldest)
+	}
+	if _, err := b.Replay("t", "u", resync.Oldest-2); !errors.As(err, &ErrResyncRequired{}) {
+		t.Errorf("replay one sequence before the oldest held was not refused: %v", err)
+	}
 }
 
 // An event carrying a user is that user's alone: a read receipt delivered to a

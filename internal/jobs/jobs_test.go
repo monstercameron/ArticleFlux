@@ -283,6 +283,124 @@ func TestStopWaitsForInFlightWork(t *testing.T) {
 	}
 }
 
+// Restart-survivable is the point of locked_by/locked_at: a worker that dies
+// mid-job must not leave that job stuck in 'running' forever. This claims a
+// job directly, the way a real worker would just before crashing, and never
+// completes or fails it — simulating the crash — then checks that a Pool's
+// reclaim sweep notices the abandoned lock and puts the job back to work.
+func TestPoolReclaimsAJobAbandonedByADeadWorker(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.Enqueue(ctx, store.NewJob{Kind: store.JobRank}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A "worker" claims the job and then goes away without ever calling
+	// Complete or Fail — exactly what a crash looks like from the queue's side.
+	ghost, err := repo.Claim(ctx, store.ClaimOptions{Worker: "ghost-that-crashed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := repo.QueueDepth(ctx); d[store.JobRank].Running != 1 {
+		t.Fatalf("setup: job is not running after the ghost claimed it: %+v", d[store.JobRank])
+	}
+
+	var recovered int64
+	p := New(repo, Options{
+		Workers: 1, Idle: 5 * time.Millisecond,
+		// The reclaim interval floors at 1s regardless of StaleAfter, so a tiny
+		// StaleAfter just makes the job eligible the moment that floor is hit.
+		StaleAfter: 10 * time.Millisecond,
+	})
+	p.Handle(store.JobRank, func(_ context.Context, j store.Job) error {
+		if j.ID != ghost.ID {
+			t.Errorf("recovered the wrong job: %s, want %s", j.ID, ghost.ID)
+		}
+		atomic.AddInt64(&recovered, 1)
+		return nil
+	})
+	p.Start(ctx)
+	defer p.Stop()
+
+	waitFor(t, "the reclaim sweep to hand the abandoned job to a live worker", func() bool {
+		return atomic.LoadInt64(&recovered) == 1
+	})
+
+	job, err := repo.GetJob(ctx, ghost.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != store.StateDone {
+		t.Errorf("state = %s after reclaim and rerun, want done", job.State)
+	}
+}
+
+// OnResult is the only telemetry seam this package has, and it is called on
+// the worker goroutine after the job is settled — so it must see the real
+// outcome, not just "the handler returned".
+func TestOnResultReportsSuccessAndFailure(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	type result struct {
+		kind store.JobKind
+		err  error
+	}
+	var mu sync.Mutex
+	var results []result
+
+	p := New(repo, Options{
+		Workers: 1, Idle: 5 * time.Millisecond,
+		OnResult: func(_ context.Context, kind store.JobKind, d time.Duration, err error) {
+			if d < 0 {
+				t.Errorf("negative duration reported: %v", d)
+			}
+			mu.Lock()
+			results = append(results, result{kind, err})
+			mu.Unlock()
+		},
+	})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+	p.Handle(store.JobRank, func(context.Context, store.Job) error { return fmt.Errorf("boom") })
+	p.Start(ctx)
+	defer p.Stop()
+
+	if _, err := repo.Enqueue(ctx, store.NewJob{Kind: store.JobFanout}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Enqueue(ctx, store.NewJob{Kind: store.JobRank}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "OnResult to be called for both jobs", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(results) == 2
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawOK, sawErr bool
+	for _, r := range results {
+		switch r.kind {
+		case store.JobFanout:
+			if r.err != nil {
+				t.Errorf("OnResult reported an error for a handler that succeeded: %v", r.err)
+			}
+			sawOK = true
+		case store.JobRank:
+			if r.err == nil {
+				t.Error("OnResult reported success for a handler that returned an error")
+			}
+			sawErr = true
+		}
+	}
+	if !sawOK || !sawErr {
+		t.Errorf("did not see both outcomes: results=%+v", results)
+	}
+}
+
 func TestRunningReportsConcurrency(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()

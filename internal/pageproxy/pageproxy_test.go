@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // prox is a recognisable stand-in for the real capability minter.
@@ -224,6 +226,72 @@ func TestCacheReusesTheFetchButRemintsTheURLs(t *testing.T) {
 	}
 	if n == 0 || !strings.Contains(second.HTML, "v=2") {
 		t.Errorf("cached page replayed stale capabilities instead of re-minting:\n%s", second.HTML)
+	}
+}
+
+// A page is a moving target — cacheTTL is deliberately short so a reader who
+// reopens the same article an hour later sees what the site looks like now,
+// not what it looked like when they first clicked through. Backdating the
+// cache file's mtime stands in for the 30 real minutes cacheTTL asks for; the
+// property under test is readCache's expiry arithmetic.
+func TestPageCacheExpiresAfterTTL(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>v1</body></html>`))
+	}))
+	defer srv.Close()
+
+	f := fetcher(t)
+	target := srv.URL + "/x"
+
+	first, err := f.Get(context.Background(), target, prox, page)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if !first.Fetched || hits.Load() != 1 {
+		t.Fatalf("first call: fetched=%v hits=%d, want fetched=true hits=1", first.Fetched, hits.Load())
+	}
+
+	// Still within the TTL: a second read must be served from cache.
+	second, err := f.Get(context.Background(), target, prox, page)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second.Fetched || hits.Load() != 1 {
+		t.Fatalf("second call (within TTL): fetched=%v hits=%d, want fetched=false hits=1", second.Fetched, hits.Load())
+	}
+
+	old := time.Now().Add(-cacheTTL - time.Minute)
+	if err := os.Chtimes(f.path(target), old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	third, err := f.Get(context.Background(), target, prox, page)
+	if err != nil {
+		t.Fatalf("third: %v", err)
+	}
+	if !third.Fetched || hits.Load() != 2 {
+		t.Errorf("third call (after TTL): fetched=%v hits=%d, want fetched=true hits=2 — "+
+			"an expired page cache entry must be refetched, not served stale forever",
+			third.Fetched, hits.Load())
+	}
+}
+
+// A non-http(s) scheme must never reach the fetch. In practice net/http's own
+// client already refuses these transports, so this mostly pins the outcome
+// rather than proving netguard's CheckURL is what stopped it — the case that
+// actually isolates netguard's contribution (a blocked address on an allowed
+// scheme) is TestBlockedAddressIsRefused below. Kept anyway as an explicit,
+// scheme-by-scheme statement of the property rather than an implicit reliance
+// on stdlib behaviour.
+func TestSchemeIsRefused(t *testing.T) {
+	f := fetcher(t)
+	for _, u := range []string{"file:///etc/passwd", "gopher://x/1", "ftp://x/y.html"} {
+		if _, err := f.Get(context.Background(), u, prox, page); err == nil {
+			t.Errorf("%s was not refused", u)
+		}
 	}
 }
 
