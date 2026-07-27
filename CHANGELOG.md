@@ -11,6 +11,19 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Sanitisation has named policies** (`internal/sanitize`, TODO 2.9). GWC's sanitizer stays the
+  engine; what it lacks is an opinion about where the HTML came from, and that turns out to be the
+  whole question. Four sources, four threat models: a feed keeps its photographs because a hardware
+  review is mostly photographs; a newsletter drops remote images outright, because in email a remote
+  image is a read receipt and proxying it still tells the sender you opened the message; an archived
+  page is our own extraction output; a public excerpt gets text and emphasis and nothing else. Plus
+  two things an allowlist cannot express, because they are decisions about values rather than names:
+  every link gains `rel="noopener noreferrer"` (without it, `target=_blank` hands the opened page a
+  handle to navigate ours — a phishing primitive that costs an attacker one attribute in their own
+  feed), and tracking pixels are removed. A 48-vector XSS corpus runs against *every* policy, so a
+  policy added later inherits the whole corpus and a policy loosened later has to survive it. An
+  unmapped policy value fails closed to the strictest one.
+
 - **Feeds can be filed: folders, end to end** — store, service, five RPCs, and an OPML importer that
   finally keeps the categories it had been parsing and discarding. A subscription has one folder and
   any number of tags, which is not an arbitrary asymmetry: a folder answers *where does this live*
