@@ -2851,7 +2851,7 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 
       The vet half was a second gap nobody had named: `go vet ./...` is as native-only as the build
       was, so the client had been getting **no vet at all**.
-- [ ] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs
+- [x] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs
       (`reader` · `design-parity` · `responsive` · `tagsettings`). Every spec drives a server that used
       to need no credential and now goes through `Root`, and several still assert pre-transcription
       behaviour (see 8b.24). *Until it is green the suite is not a gate, which is the state a suite
@@ -2870,6 +2870,15 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       still listed. And it did not clear `user_prefs`, so once one test selected the Read later
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
+
+      ✅ 2026-07-27 (night) — **56 passed. Nothing failed, nothing flaked, nothing skipped**, in 7.2
+      minutes on `--project=desktop`. The suite is a gate again.
+      The last two real failures were fixed rather than adjusted: the autosave glyph (an update lost
+      inside a frame — GWC's inbox now drains between passes, see H11) and the reading pane's focus
+      guard (8b.52). The `fixme` that had been standing in for the second one is un-`fixme`d and
+      passing, so the suite also lost its one skip.
+      *`retries: 1` stays*, and now earns its keep differently: with nothing failing, a test that ever
+      appears in the flaky section is a signal rather than noise.
 
       ◧ 2026-07-27 (night, final) — **50 passed · 2 failed · 3 flaky · 1 skipped, in 6.6 minutes.**
       `retries: 1` is what makes that sentence possible, and it is there to make flakiness VISIBLE
