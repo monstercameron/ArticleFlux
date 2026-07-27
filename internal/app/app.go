@@ -511,7 +511,8 @@ func (a *App) buildHandler() {
 	pb.RegisterReaderServiceServer(a.grpc,
 		grpcsrv.NewReaderServer(a.svc, a.scopeFromContext).
 			WithAssetProxy(a.AssetURL).
-			WithPageProxy(a.PageURL))
+			WithPageProxy(a.PageURL).
+			WithLiveView(a.StreamURL))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
 			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))

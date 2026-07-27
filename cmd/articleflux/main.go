@@ -162,6 +162,15 @@ func serve(log *slog.Logger, args []string) error {
 	// clue in a server flag they would have to already know about.
 	proxyPages := fs.Bool("proxy-pages", envBoolDefault("ARTICLEFLUX_PROXY_PAGES", true),
 		"serve publisher pages through this server (see plan.md §10.1b); requires -proxy-images")
+	// Off by default and staying that way. This is the only rung that runs a
+	// browser on the box, and the only one whose SSRF story is weaker than the
+	// rest of this codebase — the browser dials for itself, so the socket-level
+	// guard never sees it. That is an operator's decision, not something
+	// inherited from wanting images to load.
+	proxyStream := fs.Bool("proxy-stream", envBool("ARTICLEFLUX_PROXY_STREAM"),
+		"run a headless browser and stream live page views (see plan.md §10.1d); requires -proxy-pages")
+	browserPath := fs.String("browser-path", envOr("ARTICLEFLUX_BROWSER_PATH", ""),
+		"browser binary for -proxy-stream; empty auto-detects Edge/Chrome/Chromium")
 	proxyOrigin := fs.String("proxy-origin", envOr("ARTICLEFLUX_PROXY_ORIGIN", ""),
 		"absolute origin for proxied content, e.g. https://proxy.example.com; empty means same-origin")
 	if err := fs.Parse(args); err != nil {
@@ -228,6 +237,8 @@ func serve(log *slog.Logger, args []string) error {
 		AllowedOrigins:    splitList(*origin),
 		ProxyImages:       *proxyImages,
 		ProxyPages:        *proxyPages,
+		ProxyStream:       *proxyStream,
+		BrowserPath:       *browserPath,
 		ProxyOrigin:       *proxyOrigin,
 	})
 	if err != nil {
