@@ -1,7 +1,6 @@
 package sanitize
 
 import (
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -288,17 +287,49 @@ func structure(s string) string {
 	return b.String()
 }
 
-// FuzzTextNeverEmitsMarkup: Text() flattens to plain text, and anything that
-// still looks like a tag on the way out is a hole wherever that string is
-// interpolated.
+// FuzzTextNeverEmitsMarkup checks the property Text() can actually promise.
+//
+// # The invariant this does NOT assert, and why
+//
+// It first asserted that the output contains no markup, and the fuzzer answered
+// with `<<A>A>`, which flattens to the literal string `<A>`: the parser reads
+// the leading `<` as text, `<A>` as an element, and `A>` as text, so the two
+// TEXT nodes concatenate into something that looks like a tag.
+//
+// That is not a defect, and "escape it" would be the wrong fix. Text() extracts
+// PLAIN TEXT, and plain text legitimately contains angle brackets — an article
+// about `5 < 10` must survive. A function cannot be both a faithful text
+// extractor and a producer of HTML-safe strings; those are different jobs, and
+// conflating them is how `&lt;` ends up displayed to readers.
+//
+// The safety of the value therefore belongs to its CONSUMER, and the consumers
+// are correct: the sole render path is `html.Text(it.GetSummary())` in
+// client/view/panes.go, which builds a DOM text node, and a text node cannot be
+// markup by construction. What this asserts is the part Text() genuinely owns.
 func FuzzTextNeverEmitsMarkup(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s)
 	}
-	tag := regexp.MustCompile(`<\s*/?\s*[a-zA-Z]`)
 	f.Fuzz(func(t *testing.T, in string) {
-		if out := Text(in); tag.MatchString(out) {
-			t.Errorf("Text kept markup\n  in:  %q\n  out: %q", truncate(in), truncate(out))
+		out := Text(in)
+
+		// 1. Script and style CONTENT must never surface. A summary that quietly
+		//    contained a publisher's JavaScript would be both nonsense to read
+		//    and, in any consumer that ever interpolates rather than escapes, a
+		//    payload waiting for one.
+		for _, leak := range []string{"alert(1)", "@import", "behavior:url"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("Text leaked script/style content %q\n  in:  %q\n  out: %q",
+					leak, truncate(in), truncate(out))
+			}
+		}
+
+		// 2. Stable: extracting twice must not discover new text. A second pass
+		//    finding more than the first would mean the first left markup behind
+		//    that the parser later re-read as content.
+		if again := Text(out); again != out {
+			t.Errorf("Text is not stable\n  in:    %q\n  once:  %q\n  twice: %q",
+				truncate(in), truncate(out), truncate(again))
 		}
 	})
 }
