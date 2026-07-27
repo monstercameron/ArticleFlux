@@ -842,7 +842,8 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 	return n, err
 }
 
-// ResetUserState clears every read/starred flag for a user.
+// ResetUserState clears a user's reading state: read/starred flags, notes and
+// feed tags.
 //
 // Test support, and deliberately scoped: it wipes this user's state and nothing
 // global. It exists because the e2e suite shares one database across tests, so a
@@ -850,15 +851,28 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 // classic source of a suite that only passes in one order. Resetting between
 // tests is cheaper and far more honest than writing order-tolerant assertions.
 //
+// Notes and tags are in here for exactly that reason, even though neither is
+// "read state": a note left behind puts an item in the Notes stream for every
+// later test, and a tag left behind puts a row in the sidebar. Tags go before
+// the tag rows they hang off — feed_tags cascades from tags, but the tag itself
+// does not disappear when its last association does, so both have to be said.
+//
 // Reachable only through the DevMode-gated debug endpoint, which is loopback-only.
 func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 	if !s.Valid() {
 		return ErrNoScope
 	}
-	_, err := r.db.Write.ExecContext(ctx,
+	for _, q := range []string{
 		`DELETE FROM user_item_state WHERE user_id = ? AND tenant_id = ?`,
-		s.UserID, s.TenantID)
-	return err
+		`DELETE FROM item_notes WHERE user_id = ? AND tenant_id = ?`,
+		`DELETE FROM feed_tags WHERE user_id = ? AND tenant_id = ?`,
+		`DELETE FROM tags WHERE user_id = ? AND tenant_id = ?`,
+	} {
+		if _, err := r.db.Write.ExecContext(ctx, q, s.UserID, s.TenantID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Prefs are a user's UI preferences, as a flat key/value map.
