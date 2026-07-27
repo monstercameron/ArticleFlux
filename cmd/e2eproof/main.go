@@ -98,7 +98,7 @@ func report(ctx context.Context, db *store.DB) {
 		must(rows.Scan(&g, &n))
 		fmt.Printf("%s %d · ", g, n)
 	}
-	fmt.Println("\n")
+	fmt.Println()
 
 	// A real sample: the newest analysed articles and what they were filed as.
 	sample, err := db.Read.QueryContext(ctx, `

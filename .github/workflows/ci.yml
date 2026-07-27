@@ -43,7 +43,7 @@ jobs:
     # The slowest step here is a wasm build; the whole job is minutes. A cap
     # turns a hung runner into a failure somebody sees the same hour instead of
     # a job that sits for six.
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -103,8 +103,15 @@ jobs:
       # GOARCH=amd64 fallback needs cgo with a mingw-style gcc that is not
       # installed. So this line is not belt-and-braces for obs; it is the only
       # place that check will ever run.
+      #
+      # `internal/store` exercises the wasm-backed SQLite FTS5 implementation.
+      # Under -race that package normally finishes close to Go's 10-minute
+      # default test timeout and has crossed it on an otherwise healthy runner.
+      # Give the package a real diagnostic ceiling rather than making runner
+      # variance look like a race failure; the job-level cap still catches a
+      # genuinely wedged suite.
       - name: go test -race (concurrency-carrying packages)
-        run: go test -race ./internal/jobs/... ./internal/store/... ./internal/obs/...
+        run: go test -race -timeout=20m ./internal/jobs/... ./internal/store/... ./internal/obs/...
 
       - name: staticcheck
         run: |
