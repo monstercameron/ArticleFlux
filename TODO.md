@@ -2699,11 +2699,44 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       and the rail. It found 8b.53 — which arithmetic had passed five times — and confirmed the
       filmstrip, the tab bar and the pinned add-a-feed button. *Still owed:* a side-by-side against
       `design/04-fanciful-mobile.html`, which remains the one spec never compared to the build.
-- [ ] **8b.54 Compare the phone build against `design/04-fanciful-mobile.html`, and against `design/04-fanciful-mobile.html`.**
+- [x] **8b.54 Compare the phone build against `design/04-fanciful-mobile.html`, and against `design/04-fanciful-mobile.html`.**
       8b.39's readability floor is arithmetic and it passed every theme; 8b.48 is what *looking* found,
       and it found it in the two themes nobody had opened. The mobile mockup has never been compared
       against the built app at all. *Done when: all five themes have been seen at 390px beside the
       mockup, and whatever that turns up is either fixed or written down.*
+
+      ✅ 2026-07-27 — **seen, and written down.** All five captured at 390×844 through the real app
+      (sign in · pick the theme in Settings → Appearance · return through the phone's own tab bar ·
+      screenshot the list) and compared against `e2e/shots/mockup-phone.png`. The images are under
+      `e2e/shots/phone-*.png`, which is gitignored like the rest of that directory, so the findings
+      are here rather than the pixels.
+
+      **The finding worth acting on: four of the five themes are indistinguishable in the list.**
+      Fanciful, Ink, Ledger and Contrast all render as the same dark neutral with the same ink, the
+      same borders and the same source hues. Their own descriptions promise otherwise — Ledger is
+      "sepia and lamplight, no blue", Ink "near-black and cold" — and the theme CARDS in settings show
+      those palettes plainly, so the colours exist and the list is not using them. The only large area
+      of theme colour in a row is the selected-row wash. Daylight is the one that reads as its own
+      thing, and it is also the only one that changes the ground.
+      *Not fixed here:* which surfaces carry a theme's character is a design decision about
+      `client/design`, and choosing it while another lane is mid-refactor there would be guessing at
+      somebody else's intent.
+
+      **Structural differences from the mockup, all deliberate-looking rather than broken:** the
+      mockup opens with a wordmark row (dot · ArticleFlux · search · menu) where the build has a
+      "‹ Feeds" back link and no identity at all · the mockup's headline is editorial ("Twenty-eight
+      worth your evening", "Ranked from what you actually read") against the build's functional "All
+      feeds / 5 unread, newest first" · the mockup carries **four evenly-sized pills in one row**
+      where the build stacks **seven controls in three**, roughly 120px of chrome before the first
+      headline against the mockup's ~60 · every mockup row has a **reason line** with an underlined
+      phrase ("You open 84% of everything they write", "Three other feeds carried this today") and the
+      build shows the article summary instead · the mockup shows reading time on every row, the build
+      on some · the tab bar is Home / Unread (badge 143) / Starred / Saved / More against Read / Feeds
+      / Notes / Settings, and nothing in the build's bar carries an unread count.
+      The left accent bar, the source-coloured name and the serif headline all match.
+      *Most of that gap is one thing:* the mockup is a RANKED HOME and the built phone surface is a
+      feed list. The reason line, the pills and the editorial headline are that screen's argument, and
+      it does not exist yet — which is 10.x's territory now, not a phone-layout bug.
 - [x] **8b.51 The saved view is fetched behind the splash, not after it** — §7.1b, §20.13. Cam: *"after
       the splash it is instantly the default view and then flashes to the past state."* Exactly what it
       looked like: the reader mounted with its defaults, painted the All stream with an expanded rail
@@ -3498,7 +3531,7 @@ brief for that milestone: which plan sections define it, which pages (Appendix A
 | **M23** | Outbound webhooks + send-to | §17.2 | `/settings/webhooks` | — | — | T20 |
 | **M24** | Article revisions UI + diffs (data since M1) | §10.3 | article overlay | C3 | 1 | — |
 | **M25** | Scraped feeds + AI rule drafting | §14.2 | `/settings/sources` | C6 `RulePreview` | 6 | — |
-| **M26** | Discovery rung 4 · WebSub · **screensaver** | §11, §15.6, **§19** | `/screensaver` | — | 6 | T20 |
+| **M26** | Discovery rung 4 · WebSub · ~~screensaver~~ (**slideshow shipped 2026-07-27**) | §11, §15.6, **§19** | overlay, not a route | — | 6 | T20 |
 | **M27** | **Page proxy** — asset rewriting · `snapshot` policy · the proxy origin · signed URLs | §10.1b | article pane, `Page` mode | C3 `RenderModeSwitcher` **`PageView`** | — | T23 |
 | **M28** | **Headless renderer** (2r, compressed) + **frame stream** (tiers 3–4) + **the ladder** | §10.1c–d, **§10.1-R** | article pane, `Live` mode | C3 **`RemotePage`**, ladder controller | — | T23 |
 
@@ -3592,7 +3625,7 @@ available from the mirror). Marked below only where the state is *non-obvious*.
 
 | Route | Page | Notes |
 |---|---|---|
-| `/screensaver` | Fullscreen slideshow — M11 | O: must work from the pack |
+| ~~`/screensaver`~~ | **Shipped 2026-07-27 as an overlay, not a route** (§19) | It plays the feed you are LOOKING at, so it has no address of its own: a URL would have to carry the scope, and the scope is already on screen. Started with `s` or the chip beside Mark all read. O: must still work from the pack — not yet done |
 
 ### Settings — M8 shell, pages land with their features
 
@@ -4294,7 +4327,7 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       over-long prompts, the 32-regex cap) for `rules.Validate`'s reason: scoring must never fail on
       one bad item, and authoring must fail loudly on the one bad term.
 
-- [ ] **10.2 · The default taxonomy, in Go.** 26 categories, `internal/classify/lexicon/*.go`, one
+- [x] **10.2 · The default taxonomy, in Go.** 26 categories, `internal/classify/lexicon/*.go`, one
       file per category, each term with its weight and its guards. **Code, not SQL** (§27.3f) — it
       ships with the build, tests without a database, and `git blame` answers "why is this term
       here", which is the question an unaccountable 900-row lexicon table can never answer.
@@ -4505,13 +4538,37 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       *Done when: accepting a suggestion creates exactly one tag and backfills it without touching
       `label_removals` entries.* §27.3e
 
-- [ ] **10.12 · `llm.ClassifyPayload` + the §18.8 amendment.** ← M17's egress harness. New payload
-      type with fields only for what may leave; `EgressKeys` gains its ten keys; `AuditEgress` runs
-      against the **assembled** body in a test, not the template. Two consent keys — `smart.classify`
-      (owner) and `feed.smartPlusLabels` (per user) — and neither implies the other or `feed.smartPlus`.
+- [ ] **10.12 · `llm.ClassifyPayload` + the §18.8 amendment.** ◧ **PARTIAL** — ← M17's egress harness. New payload
+      type with fields only for what may leave; `AuditEgress` runs against the **assembled** body in a
+      test, not the template. Two consent keys — `smart.classify` (owner) and `feed.smartPlusLabels`
+      (per user) — and neither implies the other or `feed.smartPlus`.
       *Done when: `TestEgressAllowlist`, `TestNoUserVocabularyInGlobalRead` and `TestConsentGates`
       pass — the last asserting **zero outbound requests** with `smart.classify` off, whatever else is
       enabled.* §27.4e
+
+      ◧ 2026-07-27 — the **payload and the boundary** are done (`internal/llm/classify.go`, 10 tests).
+      The **consent keys are not**, because they are read at the call site and the call site is
+      10.14/10.16. `TestConsentGates` lands with them.
+
+      **The ticket said "`EgressKeys` gains its ten keys" and that was wrong — it would have quietly
+      undone what §18.8 is built on.** `AuditEgress` is one global check, so admitting `body` there
+      makes a body legal in a **rank** payload too, and the whole argument for types-as-enforcement is
+      that the boundary cannot be widened by accident from somewhere else. One shared list means every
+      future exception loosens every existing caller — the failure-open mode §18.8 rejected a
+      scrubbing function for in the first place.
+
+      So: the interest layer keeps `EgressKeys` **unchanged**, classification carries `ClassifyKeys`,
+      one shared walk serves both audits. Two guards make the split real rather than a convention —
+      `TestEgressKeysWereNotWidened` asserts `body` never appears in `EgressKeys` and that it still
+      has exactly its original ten entries, and `ForbiddenKeys` enumerates what **no** list may ever
+      admit, checked against every allowlist in the package. An allowlist describes today's payloads;
+      that list describes the boundary, and only the second survives the next amendment.
+
+      `Shared()` is a constructor with **no parameter through which a per-user vocabulary could
+      reach it** — §27.4d as a type signature rather than as a code review. And `Trim` returns a
+      `TrimReport` naming every prompt it truncated and every label it dropped, because "no silent
+      caps" is a rule this house applies to itself: a request that quietly dropped eleven of a
+      reader's forty prompts looks exactly like tuning that did not work.
 
 - [x] **10.13 · The ambiguity gate. ← the cost design, and it lands before the read.** `escalate:
       never | ambiguous | always`, defaulting to **ambiguous**. Build the gate before the thing it
@@ -4728,3 +4785,278 @@ surface that needs it.
       harness already knows how, T21(e) needs it anyway — and the reset is retried once. Only if that
       fails does it say the server went away, in one message that states plainly that no failure after
       it is about the product. A run that can heal beats a run that explains itself well.
+
+---
+
+## The field, audited — every gap we can close alone (2026-07-27)
+
+Filed from `docs/COMPETITORS.md`, which put the shipped feature set against Feedly, Inoreader,
+NewsBlur, Feedbin, Readwise Reader, Folo, FreshRSS, Miniflux, Tiny Tiny RSS and NetNewsWire.
+
+**The filter for this list: no dependency on anybody but OpenAI.** Anything that would need a mail
+provider, a push vendor, an app store, the Internet Archive, or another company's account is
+excluded and named at the bottom with the reason, so the exclusion is a decision rather than an
+oversight.
+
+**What the comparison actually found.** The gap is not capability, it is *reach* — four of the five
+things paid competitors sell (rules, ranking, recommendations, preservation) are already written,
+tested, and unreachable, and the two features a new user meets first (bringing their feeds in, and
+reading on a phone) do not exist at all. So the order below is **not** the interesting-work order:
+
+> **F1 import → F3 rules → F20 sync API → F2 the pump → F4 the ranked home.**
+> The first four are wiring. Only the fifth is a product decision.
+
+Band A is engine-exists-no-surface. Band B is OpenAI-backed and mostly also engine-exists. Band C is
+a real build. Nothing here is scheduled; this is a backlog, not a plan.
+
+### Band A — capabilities that exist and cannot be reached
+
+- [ ] **F1 · There is no supported way to bring 151 feeds in.** `internal/opml` and `internal/netscape`
+      round-trip OPML both directions (proved against a live 151-feed export), Netscape bookmarks both
+      directions, and Chrome JSON in. There is no RPC and no data tab, so a new reader's first act —
+      migrating from the thing they are leaving — is the one act the product cannot perform. Every
+      competitor in the matrix ships this, including the free self-hosted ones.
+      *Done when: Settings has a Data tab; an OPML file dropped on it subscribes what it contains and
+      reports what it skipped and why; export returns a file that imports back into itself; and the
+      import runs as a job with progress, because 151 feeds is a minute of fetching, not a click.*
+
+- [ ] **F2 · The event pump has no caller.** `EventService.WatchEvents` is on the wire, the server
+      side is rate-limited and concurrency-capped (P1), and `client/data/stream_wasm.go` implements the
+      full pump with coalescing (`client/data/coalesce.go`) — and **nothing in `client/app` calls it**,
+      so live updates do not arrive. Every hosted competitor pushes. This is a call site and a
+      lifecycle, not a feature.
+      *Done when: an item arriving on the server appears in an open list without a refresh; the pump
+      starts on mount, stops on teardown, resumes from its last sequence after a reconnect, and a
+      resync signal reloads the scope rather than appending twice.* §12.4, §20.19
+
+- [ ] **F3 · The rules engine has no screens.** `internal/rules` is the whole matcher — every operator,
+      ordering, stop-processing — with per-subscriber fan-out as a queued job, mute as a reversible
+      flag, and hit logging. Missing: the list, the editor, live preview against real recent items,
+      retroactive apply, undo, and the `/muted` view. Inoreader gates rules behind Pro ($90/yr),
+      Feedly behind Pro+ ($99/yr); FreshRSS, Miniflux and TT-RSS give them away. We give away nothing
+      because there is no way in.
+      *Done when: a rule can be written, previewed against the last N items before saving, applied
+      retroactively, undone, and its hits inspected; and a muted item is findable rather than gone.*
+
+- [ ] **F4 · The ranked home does not exist, and the scorer does.** `internal/rank` has the score, the
+      reason list, the volume penalty, the per-source half-life and highlights-mode scoring;
+      `internal/derive` runs it. There is no home service, no ranked stream, no explanation line, no
+      tuning panel, no suppressed view. This is the single thing Feedly Pro+ and NewsBlur Archive are
+      both largely selling, at $99/yr each.
+      *Done when: a ranked scope exists beside the chronological ones; every ranked item can say in one
+      line why it is where it is; a reader can move the weights and see the order change; and anything
+      suppressed is one click from visible, because a ranker you cannot audit is one you stop trusting.*
+
+- [ ] **F5 · Topics are clustered and never shown.** TF-IDF clustering exists in `internal/topics` with
+      no surface and no correction path. A cluster nobody can rename or split is a cluster nobody can
+      fix.
+      *Done when: topics appear as a scope, a wrong topic can be corrected, and the correction survives
+      the next derivation pass.*
+
+- [ ] **F6 · Recommendations are harvested and discarded.** `internal/recommend` does outlink
+      harvesting, aggregator pass-through, the health gate, evidence strings and scoring. No
+      `/discover`, no dismissal, no trial subscriptions. The evidence string is the interesting part —
+      "three feeds you read linked to this in a fortnight" is a claim a reader can check, unlike
+      "recommended for you".
+      *Done when: `/discover` lists candidates with their evidence; a candidate can be dismissed
+      permanently; and a trial subscription can be taken and then kept or dropped on a verdict.*
+
+- [ ] **F7 · Preservation is invisible until it is too late.** `internal/preserve` does tiered archival,
+      the distress sweep when a source starts failing, and eviction that can never drop an archive
+      whose origin is dead. Nothing tells the reader any of it happened.
+      *Done when: an item whose origin is gone reads from the copy and says so with the date it was
+      saved; a dead-source view exists; and a source's lifecycle transitions are visible in its feed
+      settings.* **Explicitly not in scope: the Wayback fallback** — see the exclusions.
+
+- [ ] **F8 · Item-level tags have a store and a repository and no UI.** Feed-level tags shipped; the
+      item half is reachable only from Go.
+      *Done when: an article can be tagged from the chip row, the tag is a scope in the rail, and
+      item tags and feed tags are visibly different things rather than one list that lies.*
+
+- [ ] **F9 · Two search corpora are indexed and unreachable.** `SearchNotes` and `SearchBookmarks` are
+      built on their own FTS indexes, deliberately separate from item search so a merged ranking cannot
+      bury the rarer and more valuable hit. Neither is wired.
+      *Done when: notes and archives are searchable as their own scopes, and the search UI makes which
+      corpus is being searched unmistakable.*
+
+- [ ] **F10 · The settings registry is written and every control is still hand-built.** The typed
+      registry does three-layer resolution and reports *which layer supplied a value*. Preferences are
+      still a flat key/value table with a bespoke control per key — affordable at twelve keys, which is
+      roughly where we are, and not at the ninety this backlog implies.
+      *Done when: settings render from the registry, and a value shows whether it came from system,
+      tenant or user.* **Do this before F3/F4 ship their panels**, or they will each hand-build a
+      dozen more controls that then have to be unbuilt.
+
+- [ ] **F11 · Roles are stored and not enforced.** The static per-method capability map fails closed and
+      the boot check refuses to start on an unmapped RPC — and the map is **not wired into the
+      interceptor**. On a multi-tenant server that is a security gap, not a polish item, and it is the
+      one row in the whole matrix where we are behind the free self-hosted competition on something
+      that matters.
+      *Done when: a member cannot call an owner's method; the refusal is the same shape as every other
+      refusal; and a test asserts it per role rather than per method.*
+
+- [ ] **F12 · The job queue is durable, restart-surviving, per-kind capped, and invisible.** Import
+      (F1), retroactive rules (F3) and derivation (F4) all queue work a reader will wait on.
+      *Done when: Settings → Activity, or a sibling, shows what is queued, what is running, what
+      failed and why, and a failed job can be retried.*
+
+- [ ] **F13 · The degrade ladder has four watermarks and no voice.** It sheds audio and packs first and
+      keeps read state alive longest, and the asset cache is not wired into it.
+      *Done when: the asset cache participates, and crossing a watermark says so once, plainly, with
+      what it dropped — a reader whose audio silently stopped will conclude speech is broken.*
+
+### Band B — OpenAI-backed, and mostly already written
+
+- [ ] **F14 · Article translation is implemented and only the UI is translated.** `internal/smart/
+      translate.go` exists and tests; the wire carries `TranslateUI` and nothing else. Feedly, Inoreader
+      and Readwise all charge for article translation; Folo gives it away.
+      *Done when: an article can be read in another language from the chip row, the translation is
+      cached per item+language forever (the text is immutable, exactly as with audio), and the egress
+      is named in the copy before it is sent.* §10.6
+
+- [ ] **F15 · The digest engine has no RPC.** `internal/smart/digest.go` is built and tested. NewsBlur's
+      Daily Briefing sits on the $99/yr tier; Folo's daily AI digest is its headline feature.
+      *Done when: a digest can be produced for a scope and a window, on demand rather than on a
+      schedule; it is charged once and cached; and every claim in it links to the item it came from,
+      because an unsourced summary of your own reading is not checkable.*
+
+- [ ] **F16 · Broadcast segments are built and unreachable.** `internal/smart/podcast.go` produces the
+      continuous-broadcast form, hands over from the previous story, and has its own cache. It is a
+      third egress that outranks `tts.digest` rather than combining with it (there is no coherent
+      "summary of a broadcast segment") — all decided in §10.4 and none of it exposed.
+      *Done when: "play this scope as a broadcast" exists beside Keep playing, and the reader can tell
+      which of the three speech modes they are hearing.*
+
+- [ ] **F17 · There is no way to ask a question about an article.** Feedly Pro+, Inoreader Pro,
+      NewsBlur Archive, Readwise and Folo all ship this; it is the most-cited AI feature in the field
+      and we have the only architecture that would do it on the reader's own key.
+      *Done when: a question about the open article is answered from that article's text, the answer
+      says when the text does not contain the answer instead of guessing, and each question is metered
+      into the same spend counters as speech and summaries.*
+
+- [ ] **F18 · Discovery rung 4 — the model proposes feed candidates.** Rungs 1, 2 and 5 ship. Rung 4 is
+      the tail case: no declaration, no common path, and the site does have a feed somewhere unusual.
+      *Done when: candidates the model proposes are fetched and parsed before being offered, exactly as
+      rungs 1–2 are, and are labelled as a guess rather than as a discovery.* §11.1
+
+- [ ] **F19 · Classification, automatic tags and article categories — filed already.** M29 / Tier 10
+      above owns these end to end. Recorded here only so the competitive read is complete: this is the
+      cluster Feedly's Leo and Inoreader Intelligence occupy, and Tier 10 is the answer to it.
+      *No new work. If Tier 10 slips, this row is what slipped.*
+
+### Band C — things we would have to build
+
+- [ ] **F20 · A Google Reader–compatible API is the cheap answer to "no mobile app."** §15.1 and A18
+      already commit to it; `/reader/api/0/*` is already in the transport diagram in §5. FreshRSS,
+      Miniflux and TT-RSS all expose it, and that is *how* they have mobile apps — NetNewsWire, Reeder
+      and Unread become our clients for the cost of a protocol, with no store, no Swift, and no second
+      product to maintain. Fever alongside it is a smaller second dialect.
+      *Done when: NetNewsWire syncs against a live instance — subscribes, marks read, stars, and does
+      not double-count on reconnect — and the system-tag model for read/starred is asserted by tests
+      rather than by trying it.* **This is the highest-leverage item in the whole backlog.** §15.1, A18
+
+- [ ] **F21 · Bookmarks and archiving have a milestone and no screens.** M9's pages exist in Appendix A;
+      the store does not surface. Feedbin and Readwise both compete on exactly this.
+      *Done when: an article can be archived deliberately, the archive is searchable (F9), and an
+      archived copy is readable when the original is not (F7).*
+
+- [ ] **F22 · Highlights.** Selecting text does nothing. Inoreader, Readwise and Folo all sell
+      highlight capture; the notes panel already proves we have the storage shape.
+      *Done when: a selection can be highlighted, highlights are listed per article and as a scope,
+      and highlights-mode scoring (already in `internal/rank`) has something real to score.*
+
+- [ ] **F23 · No enclosure player.** The schema has `enclosure_url`, `enclosure_type`,
+      `enclosure_bytes`, `enclosure_duration_s`; §10.4's premise is that an article read aloud and an
+      `<enclosure>` are the same player. Every competitor in the matrix plays podcasts; we parse the
+      enclosure and drop it.
+      *Done when: a feed item with audio plays in the transport that already exists, with position
+      remembered per item.* §10.4
+
+- [ ] **F24 · The render ladder is two buttons, not a ladder.** No automatic escalation, no per-feed
+      default, no global default, no keyboard binding. Automatic escalation is blocked on a real probe —
+      "the network blocked it", "DNS failed", "captive portal" and "plain offline" arrive as one opaque
+      error — so the probe is the ticket, not the escalation.
+      *Done when: a feed can default to a rung; a rung has a key; and escalation happens on a
+      distinguishable failure rather than on any failure.*
+
+- [ ] **F25 · Discovery rung 3 — platform rules.** YouTube, Reddit, GitHub, Substack and Mastodon all
+      publish feeds at derivable addresses. This is URL rewriting, and it needs no key from anybody.
+      *Done when: pasting a channel, subreddit, repo, publication or profile URL subscribes the right
+      feed on the first try.* Platforms that require an API key are **out of scope by the same rule
+      that governs this whole list**. §11.1
+
+- [ ] **F26 · Saved searches and monitoring feeds.** A query is already a scope; what is missing is
+      persisting one and letting new matches arrive into it. Inoreader gates this behind Pro.
+      *Done when: a search can be saved as a rail entry, new matches arrive in it, and it can drive a
+      rule (F3) rather than being a second parallel mechanism.*
+
+- [ ] **F27 · Notifications that need nobody's push service.** In-app badges and, while a tab is open,
+      the browser's own `Notification` API. Quiet hours belong here, not later — a reader that can
+      interrupt you is one that needs to be told when not to.
+      *Done when: a rule (F3) can raise a notification; notifications collect somewhere reviewable
+      rather than being fire-and-forget; and quiet hours suppress without dropping.* **Web Push is
+      excluded** — see the exclusions.
+
+- [ ] **F28 · Outbound webhooks.** The endpoint is the operator's own; nothing third-party is required
+      to implement it. Miniflux ships 25+ integrations partly on the back of this one primitive.
+      *Done when: a rule can POST an item to a URL, failures retry with backoff and are visible in
+      F12, and the payload is versioned.*
+
+- [ ] **F29 · Public feeds and sharing.** §5 already reserves `/pub/:slug` and §7 describes it as the
+      social layer whose removal people still bring up about Google Reader. This is our own Atom
+      output from our own server.
+      *Done when: a folder or a tag can be published as an Atom feed at a slug, the slug can be
+      revoked, and an unpublished scope is genuinely unreachable rather than merely unlinked.*
+
+- [ ] **F30 · An installable PWA, and trip packs.** The honest answer to the mobile gap that is ours
+      alone to build: a service worker, an app manifest, and offline packs. The `keep-offline` flag
+      already exists **with no consumer**, which is half a ticket already done.
+      *Done when: the reader installs to a home screen; a scope can be packed for offline before a
+      flight; and what is packed and how stale it is are both visible.* Pairs with F20 — F20 gives
+      good mobile clients, F30 gives *ours*.
+
+- [ ] **F31 · A bookmarklet.** Save-from-web that posts to your own server. No extension store, no
+      review, no third party.
+      *Done when: a page can be saved from any browser, and the saved page reads through the same
+      extraction path as a truncated feed does.*
+
+- [ ] **F32 · Trends and feed health.** We already know every feed's publish cadence and error history —
+      that is what makes "not responding" possible in the rail. A heatmap and a health view are
+      presentations of data we hold.
+      *Done when: a reader can see which subscriptions have gone quiet, which have gone loud, and which
+      are failing; and can act on each from that view.*
+
+- [ ] **F33 · The admin console.** Multi-tenant with no operator surface beyond the CLI. Depends on F11
+      being real first — a console over unenforced roles is a lie with a UI.
+      *Done when: users and tenants can be listed, suspended and deleted; a deletion previews exactly
+      what it will remove before it removes it.*
+
+- [ ] **F34 · Article revisions.** Publishers edit silently. The `item_revisions` table and the
+      `content_hash` / `revision` columns are already in the M3 schema, so the noticing is free; only
+      the telling is missing.
+      *Done when: an edited article says it was edited and can show what changed.*
+
+- [ ] **F35 · WebSub subscriber.** M26 has it. The hub belongs to the publisher — the same relationship
+      we already have with the feed — so this is not a third-party dependency in the sense this list
+      excludes, but it **does** require a publicly reachable callback, which is a deployment
+      precondition worth stating before the work starts.
+      *Done when: a feed advertising a hub is refreshed by push rather than by poll, and falls back to
+      polling silently when the subscription lapses.* §15.6
+
+- [ ] **F36 · A retention policy, stated.** NewsBlur Archive, Feedbin, Readwise and every self-hosted
+      competitor promise items never expire. We evict, correctly (F7's rules), and never say so.
+      *Done when: retention is a setting with a stated default, and what was evicted is auditable.*
+
+### Deliberately not filed, and why
+
+Each of these fails the one rule this list has. They are recorded so nobody re-derives the reasoning:
+
+| Not filed | Depends on |
+|---|---|
+| Newsletters into the reader (M22) | A mail provider. `internal/mailparse` and the encrypted-credential storage are built, and the IMAP client would still be pointed at somebody's mailbox. |
+| Wayback fallback for dead originals | The Internet Archive. F7 keeps our own copy, which is the part we control. |
+| Web Push notifications | Apple/Google/Mozilla push endpoints. F27 does what can be done without them. |
+| Native iOS / Android apps | Apple and Google review, accounts and fees. F20 and F30 are the two answers that route around it. |
+| Share to Pocket / Instapaper / Notion / Slack | Those services. F28's webhook is the primitive that lets a reader wire any of them up themselves. |
+| A community/curation layer (Folo's model) | Other people's servers, and a moderation obligation we should not take on. F29's public feeds are the federated-by-Atom version. |
+| Non-OpenAI model providers | Not a dependency problem — a scope one. `internal/llm` is the only LLM path by design, and widening it is a decision, not a gap. Inoreader shipped BYOAI across three providers in April 2026 if that changes. |
