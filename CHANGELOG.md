@@ -56,6 +56,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Interest topics** (`internal/topics`, TODO 4.10) — pure clustering over TF-IDF vectors, so Smart
+  needs no model and no network. §18.2's argument holds: a single interest vector is the average of
+  your interests and matches none of them, and someone reading SQLite internals, NPU inference and
+  the Go runtime has a centroid sitting in empty space between the three. Labels are deterministic
+  from the heaviest terms — dull on purpose, because a label that changes on recomputation renames
+  the reader's interests behind their back every night. Input is sorted before clustering so tie
+  breaks cannot depend on row order. Clusters below three members are reported as *unclustered*
+  rather than promoted: two items sharing a rare word are a coincidence, and a model that forces
+  every article into a topic invents interests. Also ships `Nearest` (an item scores against its
+  nearest topic, never the average — which is what lets explainability say "matches your NPU
+  inference reading"), `Starved` for Explore's under-served slot, and `Concentration` so the app can
+  say "70% of your reading is one topic". Under 50 engaged items it reports cold start instead of
+  presenting a confident wrong answer.
+
 - **The ranking scorer** (`internal/rank`, TODO 4.11) — pure `(Signals, Item, Weights, now) ->
   (score, []Reason)`. **The score is literally the sum of its reasons**, asserted by a test, because
   §18.9 shows them verbatim and a reason list that has drifted from the arithmetic is a lie that
