@@ -260,3 +260,60 @@ test('phone navigation survives the narrow-viewport chrome rules', async ({ page
   await page.getByRole('button', { name: '‹ List' }).click();
   await expect(page.locator('.pane-list')).toBeVisible();
 });
+
+/**
+ * Every theme, at desktop and at a phone width.
+ *
+ * appearance.spec.mjs already proves each theme's colours stay readable; it
+ * does that at whatever viewport the default project boots into and never
+ * changes it. A theme is CSS layered on the same markup this whole file
+ * already knows how to break, so the failure this adds coverage for is a
+ * theme-specific rule that only overflows at 390px — contrast is not the only
+ * thing five parallel stylesheets can get wrong at a width nobody checked.
+ */
+async function pickTheme(page, name) {
+  await page.keyboard.press(',');
+  await page.locator('[data-action="settings-tab"][data-value="appearance"]').click();
+  await page.waitForTimeout(300);
+  await page.locator(`.thm-card[data-value='${name}']`).click();
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Escape');
+}
+
+const THEMES = ['fanciful', 'ink', 'ledger', 'daylight', 'contrast'];
+const THEME_VIEWPORTS = [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: '390px', width: 390, height: 844 },
+];
+
+for (const theme of THEMES) {
+  for (const vp of THEME_VIEWPORTS) {
+    test(`the "${theme}" theme has no horizontal overflow at ${vp.name}`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await boot(page);
+      await pickTheme(page, theme);
+
+      await expectNoHorizontalOverflow(page);
+      await expect(page.locator('.item-row').first()).toBeVisible();
+
+      // And with an article open, which renders arbitrary publisher HTML — the
+      // same reason the plain-viewport loop above checks it too.
+      if (vp.width < 720) {
+        // Below 720 only one pane is on screen; the list has to be reached
+        // before a row in it can be clicked.
+        const rail = page.locator('.pane-rail');
+        if (await rail.isVisible()) {
+          await page.getByRole('button', { name: '‹ Feeds' }).click().catch(() => {});
+        }
+      }
+      await page.locator('.item-row').first().click();
+      await expect(page.locator('.article h1').first()).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+
+      // Leave the instance on the house theme, same discipline as
+      // appearance.spec.mjs: appearance is server-side account state, and a
+      // test that ends on Contrast changes what the next one boots into.
+      await pickTheme(page, 'fanciful');
+    });
+  }
+}
