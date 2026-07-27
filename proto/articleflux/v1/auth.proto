@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package articleflux.v1;
+
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1";
+
+// AuthService mints and retires sessions. It is the only service that may be
+// called without a credential, because it is where credentials come from.
+//
+// Why this exists at all: before it, `DevMode` was derived from a loopback bind,
+// and the standard reverse-proxy deployment — nginx on :443 forwarding to
+// 127.0.0.1:9000 — is a loopback bind. That combination served the first user's
+// superadmin scope to anyone who could reach the domain. The bind address is a
+// fact about network topology and says nothing about who is on the other end;
+// authentication has to be its own thing, so here it is.
+//
+// Scope: this is TODO 6.1 minus the parts 6.1 also lists — there is no lockout,
+// no refresh family with reuse detection, no recovery code, no reset token, and
+// no sudo mode. What is here is a password check that always runs the hash, a
+// uniform error, a per-IP-and-per-user attempt limiter, and a revocable
+// server-side session. That is the floor for putting this on the public
+// internet, not the ceiling, and the rest of 6.1 remains owed.
+service AuthService {
+  // Login exchanges a username and password for a session token.
+  //
+  // The token is returned once and never again — the server stores only its
+  // SHA-256, so a database dump does not hand out live sessions (see
+  // internal/secret on why tokens are hashed fast and passwords are not).
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // Logout revokes the calling session. Idempotent: logging out twice, or with a
+  // token the server has already forgotten, succeeds.
+  //
+  // It revokes the one session rather than the device family, because a family
+  // is 6.1's refresh-token work and this has no refresh tokens to detect reuse
+  // across.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // WhoAmI reports who the caller is, and is how the client decides between
+  // showing the reader and showing the login screen.
+  //
+  // It is separate from GetVersion on purpose: GetVersion must stay
+  // information-free for the readiness probe, and this one deliberately is not.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+
+  // device_id groups sessions from one browser profile, so the account screen
+  // can later revoke a device rather than a token. The client generates and
+  // persists it; an empty value gets one assigned server-side.
+  string device_id = 3;
+}
+
+message LoginResponse {
+  // token is the bearer credential. Sent on every subsequent RPC as
+  // `authorization: Bearer <token>`.
+  string token = 1;
+  // expires_at is RFC3339. The client uses it to decide when to stop trusting a
+  // stored token without a round trip; the server checks it in SQL regardless,
+  // because a client-side expiry is a suggestion.
+  string expires_at = 2;
+  string username = 3;
+  string role = 4;
+  // device_id echoes what the session was filed under — assigned here when the
+  // request left it empty.
+  string device_id = 5;
+}
+
+message LogoutRequest {}
+
+message LogoutResponse {}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  string username = 1;
+  string role = 2;
+  string tenant_id = 3;
+  // dev_mode reports that the server is serving an unauthenticated local
+  // account. Surfaced so the client can say so out loud — an instance that
+  // thinks it is a private laptop while facing the internet is exactly the
+  // failure this service was added to prevent, and it should be visible rather
+  // than inferred.
+  bool dev_mode = 4;
+}

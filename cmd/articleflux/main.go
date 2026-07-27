@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/app"
+	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/opml"
 )
 
@@ -46,6 +47,16 @@ func main() {
 		return
 	case "serve":
 		err = serve(log, args)
+	case "init":
+		err = initInstance(log, args)
+	case "adduser":
+		err = addUser(log, args)
+	case "passwd":
+		err = passwd(log, args)
+	case "migrate":
+		err = migrate(log, args)
+	case "backup":
+		err = backup(log, args)
 	case "seed":
 		err = seed(log, args)
 	case "poll":
@@ -71,14 +82,23 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `articleflux — a self-hosted feed reader
 
-  articleflux serve [-addr host:port] [-db path] [-web dir]
-  articleflux seed  [-db path] [-feeds url,url,...]
-  articleflux poll   [-db path]
-  articleflux import -file feeds.opml [-db path] [-fetch]
-  articleflux export [-file feeds.opml] [-db path]
+  articleflux serve   [-addr host:port] [-db path] [-web dir] [-origin url] [-dev]
+  articleflux init    -user name -password pass [-db path]
+  articleflux adduser -user name -password pass [-role member] [-db path]
+  articleflux passwd  -user name -password pass [-db path]
+  articleflux migrate [-db path]
+  articleflux backup  -out path [-db path] [-keep n]
+  articleflux seed    [-db path] [-feeds url,url,...]
+  articleflux poll    [-db path]
+  articleflux import  -file feeds.opml [-db path] [-fetch]
+  articleflux export  [-file feeds.opml] [-db path]
   articleflux version
 
-serve defaults to 127.0.0.1:9000.
+serve defaults to 127.0.0.1:9000 and REQUIRES a login. Pass -dev to serve the
+local account with no login; that is refused on any bind but loopback.
+
+A fresh install needs "articleflux init" once — without an account there is
+nothing to log in as, and serve says so at boot rather than at the login screen.
 `)
 }
 
@@ -88,25 +108,91 @@ func commonFlags(fs *flag.FlagSet) *string {
 }
 
 func serve(log *slog.Logger, args []string) error {
+	// .env before the flags, so it can supply their defaults. See loadDotenv:
+	// anything already in the real environment wins, and every one of these is
+	// still overridable by an explicit flag.
+	loadDotenv(log)
+
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := commonFlags(fs)
-	addr := fs.String("addr", "127.0.0.1:9000", "address to listen on")
+	addr := fs.String("addr", envOr("ARTICLEFLUX_ADDR", "127.0.0.1:9000"), "address to listen on")
 	// bin/web, not web/: web/ holds the source index.html, and bin/web is the
 	// assembled root the build produces. Serving the source directory would work
 	// right up until it needed a file the build generates.
-	webRoot := fs.String("web", filepath.Join("bin", "web"), "assembled web root (see ./scripts/make.ps1 wasm)")
+	webRoot := fs.String("web", envOr("ARTICLEFLUX_WEB", filepath.Join("bin", "web")),
+		"assembled web root (see ./scripts/make.ps1 wasm, or `make wasm`)")
 	poll := fs.Duration("poll", 15*time.Minute, "how often to poll feeds in the background; 0 disables")
-	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "articleflux", "password for the local account, on first run only")
+	user := fs.String("user", envOr("ARTICLEFLUX_DEV_USER", "cam"),
+		"username for the -dev local account")
+	pass := fs.String("password", envOr("ARTICLEFLUX_DEV_PASSWORD", devPassword),
+		"password for the -dev local account, on first run only")
+	// -dev is opt-in and refused off loopback. See below for why it is not
+	// derived from the bind address any more.
+	devFlag := fs.Bool("dev", envBool("ARTICLEFLUX_DEV"),
+		"serve the local account with NO login; loopback binds only (env: ARTICLEFLUX_DEV)")
+	origin := fs.String("origin", envOr("ARTICLEFLUX_ORIGIN", ""),
+		"comma-separated page origins allowed to open the tunnel, e.g. https://reader.example.com")
+	// Off by default, because X-Forwarded-For is a header any client can send.
+	// See clientAddr for why trusting it unconditionally is worse than useless.
+	behindProxy := fs.Bool("behind-proxy", envBool("ARTICLEFLUX_BEHIND_PROXY"),
+		"trust X-Forwarded-For / X-Real-IP for client addresses; ONLY behind a proxy you control")
+	// On by default, which is the odd one out among these flags and is
+	// deliberate (§10.1a). The failure it prevents is an article whose images
+	// silently never load because the *reader's* network blocks a publisher the
+	// server can reach — and from the reading pane that is indistinguishable
+	// from this application being broken. Turning it off is a real choice with
+	// a real reason (every image becomes an outbound request from this box),
+	// so it gets a flag rather than being buried.
+	proxyImages := fs.Bool("proxy-images", envBoolDefault("ARTICLEFLUX_PROXY_IMAGES", true),
+		"re-serve article images through this server (see plan.md §10.1a)")
+	proxyOrigin := fs.String("proxy-origin", envOr("ARTICLEFLUX_PROXY_ORIGIN", ""),
+		"absolute origin for proxied content, e.g. https://proxy.example.com; empty means same-origin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	// DevMode serves the single local account with no login. It is tied to a
-	// loopback bind rather than to a flag anyone can pass: an internet-facing
-	// instance with DevMode on is an open reader, where whoever reaches the port
-	// is the superadmin.
-	dev := isLoopback(*addr)
+	// DevMode used to be `isLoopback(*addr)`, and that was the single most
+	// dangerous line in the program.
+	//
+	// The reasoning behind it was that a loopback bind cannot be reached from
+	// outside the machine — which is true of the *socket* and false of the
+	// *deployment*. Every reverse-proxy setup in existence, including the nginx
+	// one this ships with, terminates TLS on :443 and forwards to
+	// 127.0.0.1:9000. Under the old rule that bind turned authentication off, so
+	// the canonical way to host this was also the way to publish one's entire
+	// reading history, notes and all, to anyone who typed the domain.
+	//
+	// A bind address is a fact about network topology. It cannot tell you who is
+	// on the other end of a connection, and nothing that cannot tell you that may
+	// be allowed to decide whether to ask for a password. So: explicit flag,
+	// default off, and still refused off loopback — belt and braces, since the
+	// flag alone would eventually be pasted into a systemd unit by someone who
+	// wanted to skip a login screen once.
+	dev := *devFlag
+	if dev && !isLoopback(*addr) {
+		return fmt.Errorf(
+			"-dev serves the local account with no login and %s is not a loopback address; "+
+				"run `articleflux init` and log in instead", *addr)
+	}
+	// The loopback rule alone is NOT sufficient once -dev can come from a file.
+	//
+	// A deployed instance binds 127.0.0.1 and puts nginx in front — that is the
+	// shipped systemd unit — so the loopback check passes there by design. It is
+	// the whole reason DevMode stopped being derived from the bind address. Add a
+	// `.env` that can set ARTICLEFLUX_DEV and the original vulnerability walks
+	// straight back in through a new door: a stale development `.env` copied to a
+	// server, or committed by someone who did not know it was read, and the
+	// reader is open to the internet again.
+	//
+	// -behind-proxy is the operator stating that something is forwarding to this
+	// process, which is exactly the fact the bind address cannot tell us. The two
+	// together are never a development machine, so they are refused.
+	if dev && *behindProxy {
+		return errors.New(
+			"-dev (no login) and -behind-proxy are mutually exclusive: a proxy in front of a " +
+				"loopback bind is a published instance, which is precisely the case -dev must " +
+				"never apply to. Unset ARTICLEFLUX_DEV, or drop -behind-proxy if nothing is in front")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -122,6 +208,9 @@ func serve(log *slog.Logger, args []string) error {
 		// the same machine, which the SSRF guard blocks by design.
 		AllowPrivateFeeds: dev,
 		PollInterval:      *poll,
+		AllowedOrigins:    splitList(*origin),
+		ProxyImages:       *proxyImages,
+		ProxyOrigin:       *proxyOrigin,
 	})
 	if err != nil {
 		return err
@@ -137,10 +226,19 @@ func serve(log *slog.Logger, args []string) error {
 		if _, err := a.EnsureDevUser(ctx, *user, *pass); err != nil {
 			return fmt.Errorf("creating the local account: %w", err)
 		}
+		log.Warn("DEV MODE: every request is served as the local superadmin, with no login")
+	}
+
+	// Refuse to listen if this instance cannot work. See app.Preflight for why
+	// each check is there; the short version is that all three failures otherwise
+	// surface long after boot, and one of them (no account) produces a login
+	// screen nobody can get past while /healthz reports green.
+	if err := a.Preflight(ctx); err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(filepath.Join(*webRoot, "app.wasm")); err != nil {
-		log.Warn("client not built — run ./scripts/make.ps1 wasm",
+		log.Warn("client not built — run `make wasm` (or ./scripts/make.ps1 wasm on Windows)",
 			"expected", filepath.Join(*webRoot, "app.wasm"))
 	}
 
@@ -148,7 +246,7 @@ func serve(log *slog.Logger, args []string) error {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logging(log, a.Handler()),
+		Handler:           logging(log, *behindProxy, a.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: the gRPC tunnel is a long-lived WebSocket, and a write
 		// deadline would sever it on a timer.
@@ -193,7 +291,7 @@ func seed(log *slog.Logger, args []string) error {
 	dbPath := commonFlags(fs)
 	list := fs.String("feeds", "", "comma-separated feed URLs; empty uses the starter set")
 	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "articleflux", "password, on first run only")
+	pass := fs.String("password", devPassword, "password, on first run only")
 	// Seeding is an operator action with explicit URLs, not user-supplied input
 	// from a tenant — but it still defaults to off. Allowing loopback and RFC1918
 	// by default would quietly weaken the SSRF guard for every future caller of
@@ -310,21 +408,145 @@ func isLoopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func logging(log *slog.Logger, next http.Handler) http.Handler {
+// dotenvPath is the file loaded before flags are parsed.
+//
+// Relative, so it is the `.env` of whatever directory the server was started
+// from — the repository root during development. Deliberately not searched for
+// up the tree: a loader that walks parent directories can pick up a `.env`
+// belonging to something else entirely, and "which file configured this?" stops
+// having a short answer.
+const dotenvPath = ".env"
+
+// loadDotenv applies `.env`, and says what it did.
+//
+// Logged rather than silent, and by KEY only. A configuration that arrives from
+// a file nobody mentioned is the kind of thing people spend an afternoon on —
+// especially the dev credentials below, where the symptom of a forgotten `.env`
+// is "the password I am sure of does not work". The values never appear: this
+// file holds an API key that bills and a password, and a log line that helpfully
+// echoed either is how a secret ends up in a journal.
+//
+// A parse error is a warning rather than a fatal: `.env` is a development
+// convenience, and refusing to start because a comment was malformed would be a
+// worse failure than ignoring the file. The flags still have their defaults, and
+// the warning names the problem.
+func loadDotenv(log *slog.Logger) {
+	applied, err := envfile.Load(dotenvPath)
+	if err != nil {
+		log.Warn("ignoring "+dotenvPath, "err", err)
+		return
+	}
+	if len(applied) > 0 {
+		log.Info("loaded "+dotenvPath, "keys", strings.Join(applied, ","))
+	}
+}
+
+// envOr returns the environment value for key, or def when it is unset or empty.
+//
+// Empty counts as unset on purpose. `.env.example` ships keys with nothing after
+// the `=` so they are visible and documented, and a copied-but-unfilled line
+// must mean "I did not set this" rather than "set this to the empty string" —
+// otherwise copying the example file silently blanks the bind address.
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// envBool reads a boolean environment variable, defaulting to false.
+//
+// Only the affirmative spellings people actually type are true, and everything
+// else — including a misspelling — is false. That asymmetry is deliberate for
+// ARTICLEFLUX_DEV in particular: the failure mode of "meant to turn it off and
+// it stayed on" is an unauthenticated reader, and the failure mode of "meant to
+// turn it on and it stayed off" is a login prompt. Only one of those is a
+// security incident, so ambiguity resolves towards the safe one.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// envBoolDefault is envBool for a setting whose default is on.
+//
+// It cannot share envBool's implementation, and the difference is the point:
+// envBool resolves ambiguity towards *off* because the settings it reads are
+// ones where "accidentally on" is the security incident. Here the accident runs
+// the other way — a value nobody set must keep the default, and only an
+// explicit, recognisable "off" turns the feature off. An unparseable value is
+// therefore left as the default rather than read as false.
+func envBoolDefault(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+// splitList parses a comma-separated flag into a trimmed, non-empty slice.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// clientAddr reports who made a request, honouring X-Forwarded-For only when the
+// operator has said a proxy is in front.
+//
+// The conditional is the whole point. X-Forwarded-For is a request header, which
+// means any client can send one, which means trusting it unconditionally lets
+// anybody write whatever address they like into the log — and, once TODO 7.3d
+// puts a per-IP limiter behind it, lets them evade that limiter by rotating a
+// header field. So it is trusted only behind `-behind-proxy`, and the systemd
+// unit's loopback bind is what makes that claim true: nothing but nginx can
+// reach the socket, so nothing but nginx can set the header.
+//
+// The LEFTMOST entry is taken. XFF is a chain, appended to by each hop, so the
+// first entry is the original client and the rest are proxies. Taking the last —
+// which reads as "the most recent, therefore most trustworthy" — gets you
+// nginx's own address on every line.
+func clientAddr(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.IndexByte(xff, ','); i > 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
+		}
+		if xr := r.Header.Get("X-Real-IP"); xr != "" {
+			return strings.TrimSpace(xr)
+		}
+	}
+	return r.RemoteAddr
+}
+
+func logging(log *slog.Logger, trustProxy bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The tunnel is one long-lived request; logging its duration would emit a
 		// single line hours later and nothing in between.
 		if r.URL.Path == "/grpc" {
-			log.Info("tunnel open", "remote", r.RemoteAddr)
+			log.Info("tunnel open", "remote", clientAddr(r, trustProxy))
 			next.ServeHTTP(w, r)
-			log.Info("tunnel closed", "remote", r.RemoteAddr)
+			log.Info("tunnel closed", "remote", clientAddr(r, trustProxy))
 			return
 		}
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		log.Info("req", "method", r.Method, "path", r.URL.Path,
-			"status", rec.status, "ms", time.Since(start).Milliseconds())
+			"status", rec.status, "ms", time.Since(start).Milliseconds(),
+			"remote", clientAddr(r, trustProxy))
 	})
 }
 
@@ -384,7 +606,7 @@ func importOPML(log *slog.Logger, args []string) error {
 	file := fs.String("file", "", "path to an OPML file (required)")
 	fetch := fs.Bool("fetch", false, "fetch every feed before returning, instead of leaving it to the poller")
 	user := fs.String("user", "cam", "username for the local account")
-	pass := fs.String("password", "articleflux", "password, on first run only")
+	pass := fs.String("password", devPassword, "password, on first run only")
 	allowPrivate := fs.Bool("allow-private", false, "permit feeds on loopback/LAN addresses")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -495,7 +717,7 @@ func exportOPML(log *slog.Logger, args []string) error {
 	}
 	defer a.Close()
 
-	sc, err := a.EnsureDevUser(ctx, "cam", "articleflux")
+	sc, err := a.EnsureDevUser(ctx, devUsername, devPassword)
 	if err != nil {
 		return err
 	}
