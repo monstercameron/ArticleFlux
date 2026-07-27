@@ -80,6 +80,10 @@ func paletteCommands(tr i18n.Runtime) []paletteEntry {
 		{"mark-all", ""},
 		{"toggle-unread", "u"},
 		{"toggle-feed-filter", ""},
+		// Directly under the two list-wide verbs, because it is one: it plays the
+		// feed you are looking at. The hint is the key, like every other entry
+		// here — the palette is also how anyone finds out that key exists.
+		{actSlideOpen, "s"},
 		{"listen", ""},
 		{"read-later", "t"},
 		{"mark-unread", "U"},

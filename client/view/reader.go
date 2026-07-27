@@ -186,9 +186,43 @@ type actions struct {
 	smartVoice  func()
 	digestVoice func()
 	autoPlay    func()
+	// podcastVoice rewrites each article as one slot of a continuous broadcast,
+	// handing over from the one before it (§19). A third voice mode rather than a
+	// flavour of the digest, because it is a third egress and a third bill.
+	podcastVoice func()
 	// playLoaded is offered every article body that lands and ignores all but
 	// the one a continuous session is waiting for.
 	playLoaded func(full *pb.Item)
+	// The slideshow (§19). Five verbs rather than one taking a command string,
+	// because they are reached from three places each — a HUD button, a key, and
+	// in two cases the palette — and a string parameter would put the same typo
+	// risk in all three.
+	//
+	// slideStep takes a direction rather than there being a next and a previous,
+	// because the two differ by a sign and by nothing else; slideOpen does not,
+	// because starting and stopping are genuinely different acts with different
+	// side effects (a wake lock, a fullscreen request, a voice).
+	slideStart  func()
+	slideStop   func()
+	slideStep   func(delta int)
+	slidePause  func()
+	slideListen func()
+	// slideListenOn starts the narrator for whatever is on screen. Separate from
+	// slideListen, which TOGGLES: the show starting in read-to-me mode and a
+	// reader switching into it mid-show both need the first half only.
+	slideListenOn func()
+	// slideSetDwell changes the pace from the settings screen.
+	slideSetDwell func(v string)
+	// slideTick is one beat of the slideshow's own clock, reached through this
+	// Ref for the reason everything else here is: the timer that calls it was
+	// armed by an earlier render, and a closure over that render's state would
+	// pace the display by a list and a preference that have since moved on.
+	slideTick func()
+	// slideAudio carries the narrator's playhead in, in seconds. Same reason: the
+	// listener is registered once, and what it has to drive — the current story,
+	// the phase, the scroll — all change underneath it.
+	slideAudio func(pos, dur float64)
+
 	// speakSeen carries the visibility observer's answer back into state.
 	//
 	// It goes through the actions Ref like every other listener callback, and
@@ -484,6 +518,12 @@ func Reader(p readerProps) ui.Node {
 
 	feeds := ui.UseState[[]*pb.Feed](nil)
 	totalUnread := ui.UseState(0)
+	// rankedCount is how many items are on My Feed, for the rail's badge.
+	//
+	// Its own state rather than derived from the loaded list, because the rail renders whether
+	// or not My Feed is the current stream — a count computed from the list would be absent
+	// until the reader had already opened the thing it describes.
+	rankedCount := ui.UseState(0)
 	items := ui.UseState[[]*pb.Item](nil)
 	// itemsRef is the authoritative copy of the loaded page list; the State above
 	// is what the render reads.
@@ -608,6 +648,10 @@ func Reader(p readerProps) ui.Node {
 	// speakDigest reads a one-minute summary instead of the article. Server-side
 	// preference — /speech reads it too — so it is stored, not just held here.
 	speakDigest := ui.UseState(prefBool(saved, "tts.digest", false))
+	// speakPodcast rewrites each article as one slot of a running broadcast,
+	// handing over from the one played before it (§19). Server-side like the
+	// digest — /speech reads it — and default off like every other paid switch.
+	speakPodcast := ui.UseState(prefBool(saved, "tts.podcast", false))
 	// speakAuto keeps going down the list when a track ends. Purely a client
 	// behaviour: the server has no idea one listen followed another.
 	speakAuto := ui.UseState(prefBool(saved, "tts.autoplay", false))
@@ -675,6 +719,49 @@ func Reader(p readerProps) ui.Node {
 	// precisely because the way out is on screen — the toggle stays pinned to the
 	// top of the pane in focus mode, and Escape leaves as well.
 	focusMode := ui.UseState(prefBool(saved, "ui.focus", false))
+	// The slideshow (§19): one story on the whole screen, advancing by itself.
+	//
+	// showOpen is deliberately NOT restored from preferences, unlike focus mode
+	// above and unlike everything else on this screen. A reader who closed the
+	// laptop on a running slideshow and opens it the next morning wants their
+	// reader, not a display that seizes the screen and goes fullscreen before
+	// they have touched anything — and a browser would refuse the fullscreen
+	// request anyway, leaving a mode running with no way out that looks like one.
+	showOpen := ui.UseState(false)
+	// showID is the story on screen. An id rather than an index, because in
+	// read-to-me mode the NARRATOR decides what is showing (speakID is the
+	// authority, see slideSync) and an index would have to be kept in step with
+	// a list that pages underneath it.
+	showID := ui.UseState("")
+	showPhase := ui.UseState("card")
+	showPaused := ui.UseState(false)
+	// showAudio is read-to-me: the voice paces the slides instead of the clock.
+	// Persisted, because it is a decision about how this reader likes to consume
+	// the news rather than about this session.
+	showAudio := ui.UseState(prefBool(saved, slidesAudioPref, false))
+	// showDwell is how long a story stays up, as the stored string — "auto", or
+	// a number of seconds. See dwellFor.
+	showDwell := ui.UseState(dwellPrefFrom(saved))
+	// The clock, as three Refs because none of it paints anything: when the
+	// current slide started, how much of it had already run when it was paused,
+	// and the timer that is due to fire next.
+	//
+	// Refs rather than State for the reason autoWant is one — a render per tick,
+	// four times a second, for values that are written straight onto the DOM as
+	// custom properties, would be the most expensive thing in the application
+	// and would change nothing on screen that the properties do not already.
+	showStart := ui.UseRef(time.Time{})
+	showHeld := ui.UseRef(time.Duration(0))
+	// showReadAt is the elapsed time at which THIS story opened out of its title
+	// card, and -1 until it has. Not a constant, because a body that arrives late
+	// opens late: scrolling from where the clock says rather than from where the
+	// text appeared would drop the reader into the middle of a paragraph.
+	showReadAt := ui.UseRef(time.Duration(-1))
+	// showMeasured is the id whose travel distance has been measured. Measuring
+	// forces a layout, and the answer only changes when the article does — so
+	// this is what keeps a four-times-a-second tick from doing it four times a
+	// second.
+	showMeasured := ui.UseRef("")
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
@@ -1051,6 +1138,9 @@ func Reader(p readerProps) ui.Node {
 				feeds.Set(res.GetFeeds())
 				hostsRef.Set(iconHostsOf(res.GetFeeds()))
 				totalUnread.Set(int(res.GetTotalUnread()))
+				// My Feed's count rides with the sidebar, so the badge is present on the
+				// first paint rather than appearing a beat after the row it belongs to.
+				rankedCount.Set(int(res.GetRankedCount()))
 			})
 		}()
 	}
@@ -1382,6 +1472,17 @@ func Reader(p readerProps) ui.Node {
 		}
 		setItems(withRead(itemsRef.Get(), it.GetId(), true))
 		adjustUnread(feeds, totalUnread, it.GetSourceId(), -1)
+		// My Feed's badge follows the same optimistic path as the unread counts.
+		//
+		// A read item LEAVES the ranked page (RankedItems filters on read_at), so a badge
+		// that did not move would keep claiming 123 while the list showed 122 — and the
+		// discrepancy grows for as long as the reader keeps reading, which is the whole
+		// session. Adjusted only when the item was actually ranked, so reading from All
+		// feeds does not decrement a stream it was never on.
+		ranked := it.GetRankTier() != ""
+		if ranked {
+			adjustRanked(rankedCount, -1)
+		}
 		go func() {
 			yes := true
 			_, err := c.SetItemState(context.Background(), it.GetId(), &yes, nil, nil,
@@ -1390,6 +1491,9 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() {
 					setItems(withRead(itemsRef.Get(), it.GetId(), false))
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), 1)
+					if ranked {
+						adjustRanked(rankedCount, 1)
+					}
 					notice.Set(tr.T("reader", "errMarkRead"))
 				})
 			}
@@ -3539,6 +3643,13 @@ func Reader(p readerProps) ui.Node {
 			})
 		}
 		autoWant.Set("")
+		// What was playing until this instant, which is what a broadcast segment
+		// hands over FROM. Captured before speakID moves on, and captured here
+		// rather than kept in a Ref of its own because this is the one place that
+		// knows the order things were actually played in — trackEnded's "next" is
+		// what the list says comes next, which is not the same thing after a
+		// reader has jumped around.
+		prev := speakID.Get()
 		speakID.Set(it.GetId())
 		if speakSmart.Get() {
 			// The listening ticket rides on the item, minted by GetItem (§10.7).
@@ -3555,7 +3666,7 @@ func Reader(p readerProps) ui.Node {
 			if src := it.GetSpeechUrl(); src != "" {
 				platform.SpeechStop()
 				speakState.Set("loading")
-				platform.PlayAudio(src, onState)
+				platform.PlayAudio(speechFrom(src, prev, speakPodcast.Get()), onState)
 				// Warm the NEXT article's audio while this one plays.
 				//
 				// Without this a continuous session is forty seconds of silence
@@ -3569,7 +3680,14 @@ func Reader(p readerProps) ui.Node {
 				if speakAuto.Get() {
 					if nx := itemAfter(itemsRef.Get(), it.GetId()); nx != nil {
 						if b := bodies.Get()[nx.GetId()]; b != nil && b.GetSpeechUrl() != "" {
-							platform.PrefetchURL(b.GetSpeechUrl())
+							// With the SAME handover the real request will carry.
+							// A broadcast segment is written per ordered pair, so
+							// prefetching the bare URL would warm a recording of
+							// the next story after nothing — which is a different
+							// file, still has to be synthesised when it is wanted,
+							// and has now been paid for twice.
+							platform.PrefetchURL(
+								speechFrom(b.GetSpeechUrl(), it.GetId(), speakPodcast.Get()))
 						}
 					}
 				}
@@ -3697,6 +3815,432 @@ func Reader(p readerProps) ui.Node {
 			notice.Set(tr.T("reader", "autoplayOn"))
 		}
 	}
+	// podcastVoice turns the queue into a broadcast (§19). Like the digest
+	// switch and unlike Keep playing, it changes WHAT is spoken rather than what
+	// happens afterwards, so it stops playback: continuing across the change
+	// would finish reading the version the reader just turned off, and the two
+	// are cached separately so flipping back costs nothing.
+	act.Get().podcastVoice = func() {
+		next := !speakPodcast.Get()
+		speakPodcast.Set(next)
+		platform.SpeechStop()
+		platform.AudioStop()
+		speakID.Set("")
+		speakState.Set("")
+		autoWant.Set("")
+		savePrefs(map[string]string{"tts.podcast": strconv.FormatBool(next)})
+		if next {
+			notice.Set(tr.T("reader", "podcastOn"))
+		}
+	}
+
+	// --- the slideshow (§19) -------------------------------------------------
+	//
+	// The state is here rather than in client/view/slideshow.go for the reason
+	// every other pane's is: the panes are pure functions, and this one needs a
+	// clock, a wake lock and — in read-to-me mode — the listening session that
+	// already lives in this component.
+	//
+	// # Two clocks, one set of variables
+	//
+	// Silent mode runs on a timer here. Read-to-me mode runs on the <audio>
+	// element's own playhead, arriving through act.slideAudio. Both end up
+	// writing the SAME three custom properties onto the surface — how far through
+	// the slide we are, how far through the scroll, and how far the scroll has to
+	// go — so the stylesheet has one behaviour rather than two, and the visual
+	// cannot drift from the audio because it is not being estimated from it.
+
+	// slideAt finds the story the display is showing, and where it sits in the
+	// list. -1 for an id that is no longer loaded, which happens legitimately:
+	// switching feeds while the slideshow runs replaces the list underneath it.
+	slideAt := func(id string) (*pb.Item, int) {
+		if id == "" {
+			return nil, -1
+		}
+		for i, it := range itemsRef.Get() {
+			if it.GetId() == id {
+				return it, i
+			}
+		}
+		return nil, -1
+	}
+
+	// slideVars writes the two numbers the stylesheet animates from.
+	//
+	// Four decimal places: the scroll multiplies these by a distance that can be
+	// several thousand pixels, and at two places the quantisation is a visible
+	// step of half a pixel per tick on a long article.
+	slideVars := func(fill, scan float64) {
+		platform.SetVar(".slides", "--fill", strconv.FormatFloat(fill, 'f', 4, 64))
+		platform.SetVar(".slides", "--scan", strconv.FormatFloat(scan, 'f', 4, 64))
+	}
+
+	// slideMeasure asks the DOM how far this story has to travel.
+	//
+	// From the DOM rather than from the word count, because what actually
+	// overflows depends on the window, the reading size and the pictures the
+	// article brought with it — an estimate is wrong in both directions and both
+	// are visible, as a slide that scrolls when it did not need to or one that
+	// holds still with a paragraph below the fold.
+	slideMeasure := func(scanSecs float64) {
+		platform.SetVar(".slides", "--shift",
+			platform.Px(slideShift(platform.ScrollOverflow(".slide-stage"), scanSecs)))
+	}
+
+	// slideWords is how long this story is, preferring the fetched article over
+	// the list stub — the stub's count is of the SUMMARY, which is what makes an
+	// automatic dwell come out at the twenty-second floor for a piece that turns
+	// out to be two thousand words.
+	slideWords := func(it, full *pb.Item) int32 {
+		if full != nil && full.GetWordCount() > 0 {
+			return full.GetWordCount()
+		}
+		return it.GetWordCount()
+	}
+
+	// slideOpen puts one story on screen and starts its clock from zero.
+	//
+	// The custom properties are reset BEFORE the state change, and that ordering
+	// is load-bearing: the rule's fill is a keyed element, so the render replaces
+	// it — but it inherits --fill from the surface, which is still at 1 from the
+	// story that just ended. Writing 0 first means the new element mounts empty.
+	// The other way round, every seam shows a full bar for one frame.
+	slideOpen := func(it *pb.Item) {
+		if it == nil {
+			return
+		}
+		slideVars(0, 0)
+		platform.SetVar(".slides", "--shift", "0px")
+		showStart.Set(time.Now())
+		showHeld.Set(0)
+		showReadAt.Set(-1)
+		showMeasured.Set("")
+		showID.Set(it.GetId())
+		showPhase.Set("card")
+
+		// The story on screen and the two behind it. Two rather than one because
+		// a title card lasts under three seconds and a fetch does not always: by
+		// the time the display gets there the text should already be here, or the
+		// mode degrades into a sequence of headlines.
+		list := itemsRef.Get()
+		i := indexOf(list, it)
+		fetchBody(it)
+		for n := 1; n <= 2 && i >= 0 && i+n < len(list); n++ {
+			fetchBody(list[i+n])
+		}
+		// Reach for the next page well before running out. A display meant to be
+		// left running must never stall at the end of a loaded page, and asking
+		// three stories early means the request has landed by the time it is
+		// needed. loadMore refuses re-entry, so this costs two comparisons.
+		if i >= 0 && i+3 >= len(list) && nextCursor.Get() != "" {
+			loadMore(len(list) + 1)
+		}
+	}
+
+	// slideNarrate starts the voice on one story.
+	//
+	// It is the tail of trackEnded rather than a call to listen(), and the
+	// difference is not stylistic: the listening ticket that an <audio src> needs
+	// is minted by GetItem and rides on the FETCHED article, so an item that only
+	// exists as a list row has nothing to play. listen() looks in the reading
+	// stream, finds a stub, and quietly does nothing — which in this mode is a
+	// slideshow that stops.
+	//
+	// autoWant is the note that says "start this one the moment its body lands",
+	// and playLoaded is offered every body that arrives and ignores all but that
+	// one. It is the same mechanism a continuous listening session already uses,
+	// which is the point of building this mode on top of Keep playing rather than
+	// beside it.
+	slideNarrate := func(it *pb.Item) {
+		if it == nil {
+			return
+		}
+		autoWant.Set(it.GetId())
+		speakState.Set("loading")
+		openItem(it)
+		// Usually already here: slideOpen fetched this body when the story before
+		// it came up, so the common case skips the wait entirely.
+		if b := bodies.Get()[it.GetId()]; b != nil {
+			act.Get().playLoaded(b)
+		}
+	}
+
+	// slideStep moves the display, and decides what the end of the feed means.
+	//
+	// It LOOPS. That is the one genuinely contentious decision in this file, and
+	// it follows from what the mode is for: something you leave running. A
+	// slideshow that reaches the end of the list and stops has turned itself off
+	// at some point during the afternoon, and what the reader finds when they
+	// look up is a dark screen with no explanation. Going round again is honest —
+	// the running order in the slug line says which time round it is.
+	//
+	// In read-to-me mode it does not loop, because the narrator's session has its
+	// own end (see trackEnded) and a broadcast that silently starts again from
+	// the top would be a second reading of stories the listener has just heard.
+	act.Get().slideStep = func(delta int) {
+		list := itemsRef.Get()
+		if len(list) == 0 {
+			return
+		}
+		_, i := slideAt(showID.Get())
+		if i < 0 {
+			// The list changed underneath the display — a feed switch, or a
+			// refresh that dropped what was showing. Start again at the top of
+			// whatever is there now rather than stopping.
+			slideOpen(list[0])
+			return
+		}
+		next := i + delta
+		switch {
+		case next >= len(list):
+			next = 0
+		case next < 0:
+			next = len(list) - 1
+		}
+		if showAudio.Get() {
+			// Both halves, in this order. The picture cuts to the new title card
+			// straight away; the narrator starts when the server has written the
+			// segment, which can be several seconds later. Waiting for the audio
+			// before moving the picture would leave the finished story on screen
+			// for all of it, which reads as a press that did nothing.
+			//
+			// Deliberately NOT marked read. A track that finishes marks the
+			// article, because hearing it out is reading it — skipping past one is
+			// the opposite claim.
+			slideOpen(list[next])
+			slideNarrate(list[next])
+			return
+		}
+		slideOpen(list[next])
+	}
+
+	// slideBeat is one look at the clock: where the story has got to, what the
+	// slide should therefore be doing, and whether it is over.
+	//
+	// Everything it needs is read fresh from state, and it is reached through the
+	// actions Ref, because the timer that calls it was armed by a render that has
+	// since been replaced — see the actions struct.
+	act.Get().slideTick = func() {
+		if !showOpen.Get() || showAudio.Get() {
+			return
+		}
+		it, _ := slideAt(showID.Get())
+		if it == nil {
+			act.Get().slideStep(1)
+			return
+		}
+		full, ready := bodies.Get()[it.GetId()]
+		dwell := dwellFor(slideWords(it, full), showDwell.Get())
+
+		elapsed := showHeld.Get()
+		if !showPaused.Get() {
+			elapsed += time.Since(showStart.Get())
+		}
+
+		phase := slidePhase(elapsed, dwell, ready)
+		if phase != showPhase.Get() {
+			showPhase.Set(phase)
+		}
+		// When the story actually opened, which is not always slideCardHold: a
+		// body that arrives late opens later, and scrolling from where the clock
+		// says rather than from where the text started would drop the reader into
+		// the middle of the first paragraph.
+		if phase != "card" && showReadAt.Get() < 0 {
+			showReadAt.Set(elapsed)
+		}
+		opened := showReadAt.Get()
+		if opened < 0 {
+			opened = slideCardHold
+		}
+
+		// Measured once per story, when its text is finally on the page. Every
+		// tick would be a forced layout four times a second for an answer that
+		// only changes when the article does.
+		if ready && showMeasured.Get() != it.GetId() {
+			showMeasured.Set(it.GetId())
+			slideMeasure(slideScanSeconds(dwell, opened))
+		}
+		slideVars(slideFill(elapsed, dwell), slideScan(elapsed, opened, dwell))
+
+		if elapsed >= dwell {
+			act.Get().slideStep(1)
+		}
+	}
+
+	// slideAudio is the same beat, paced by the narrator instead of the clock.
+	//
+	// Nothing here decides when the story ends — the <audio> element's `ended`
+	// event does, through the listening session's own trackEnded, which is the
+	// whole point of building this mode on top of Keep playing rather than beside
+	// it. What this does is keep the PICTURE where the VOICE is.
+	act.Get().slideAudio = func(pos, dur float64) {
+		if !showOpen.Get() || !showAudio.Get() {
+			return
+		}
+		it, _ := slideAt(showID.Get())
+		if it == nil {
+			return
+		}
+		_, ready := bodies.Get()[it.GetId()]
+
+		// The same three states, read off the narrator's clock. A segment whose
+		// length is not known yet (metadata still loading) holds on its title
+		// card, which is exactly what should be on screen while the server is
+		// still writing it.
+		phase := "card"
+		switch {
+		case dur > 0 && pos >= dur-slideExit.Seconds():
+			phase = "out"
+		case ready && pos >= slideCardHold.Seconds():
+			phase = "read"
+		}
+		if phase != showPhase.Get() {
+			showPhase.Set(phase)
+		}
+
+		fill, scan, scanSecs := 0.0, 0.0, 0.0
+		if dur > 0 {
+			fill = clamp01(pos / dur)
+			opened := slideCardHold.Seconds()
+			scanSecs = dur - opened - slideExit.Seconds() - slideSettle.Seconds()
+			if scanSecs > 0 {
+				scan = clamp01((pos - opened) / scanSecs)
+			}
+		}
+		if ready && scanSecs > 0 && showMeasured.Get() != it.GetId() {
+			showMeasured.Set(it.GetId())
+			slideMeasure(scanSecs)
+		}
+		slideVars(fill, scan)
+	}
+
+	act.Get().slideStart = func() {
+		list := itemsRef.Get()
+		if len(list) == 0 {
+			notice.Set(tr.T("reader", "slidesEmpty"))
+			return
+		}
+		// From wherever the reader already is, not from the top. They have been
+		// looking at this feed; starting the display three headlines behind where
+		// they had got to is the app disagreeing with them about where they are.
+		start := list[0]
+		if cur := current.Get(); cur != nil {
+			if it, i := slideAt(cur.GetId()); i >= 0 {
+				start = it
+			}
+		}
+		showPaused.Set(false)
+		showOpen.Set(true)
+		slideOpen(start)
+		// Taking the screen happens HERE rather than in an effect, and the
+		// distinction is load-bearing twice over. Fullscreen is refused outside a
+		// user gesture, and this is one — an effect runs a commit later, by which
+		// time the browser may no longer count it. And an effect's cleanup would
+		// give the screen back on any re-run, which the reader sees as the mode
+		// closing itself (see the fullscreen listener below).
+		//
+		// Both calls are requests rather than commands and both may be refused:
+		// the wake lock does not exist on some browsers (plan.md §22.13) and
+		// fullscreen can be declined outright. The mode is correct without either
+		// — the overlay covers the viewport whether or not the browser gave up its
+		// chrome, and the screen may sleep where no lock could be had.
+		platform.KeepAwake(true)
+		platform.RequestFullscreen()
+		if showAudio.Get() {
+			act.Get().slideListenOn()
+		}
+	}
+
+	// slideStop is idempotent, and has to be: the fullscreen listener below calls
+	// it for the exit that this function itself performs.
+	act.Get().slideStop = func() {
+		platform.KeepAwake(false)
+		platform.ExitFullscreen()
+		showOpen.Set(false)
+		showID.Set("")
+		showPhase.Set("card")
+		showPaused.Set(false)
+		// The voice goes with it. Leaving a narrator reading into an empty room
+		// after the picture has gone is the single most startling thing this mode
+		// could do, and "Keep playing" is still there for someone who wanted the
+		// audio without the display.
+		if showAudio.Get() {
+			act.Get().listenStop()
+		}
+	}
+
+	// slidePause stops both clocks. One control, because to a reader the timer
+	// and the voice are the same thing — the show is running or it is not.
+	act.Get().slidePause = func() {
+		next := !showPaused.Get()
+		showPaused.Set(next)
+		if next {
+			// Bank what has run so far. Without this, resuming would restart the
+			// story from wherever `time.Since(start)` had got to, which after a
+			// long pause is "the end".
+			showHeld.Set(showHeld.Get() + time.Since(showStart.Get()))
+			if showAudio.Get() {
+				act.Get().listenPause()
+			}
+			return
+		}
+		showStart.Set(time.Now())
+		if showAudio.Get() {
+			act.Get().listen(showID.Get())
+		}
+	}
+
+	// slideListenOn starts the narrator for whatever is on screen.
+	//
+	// It turns Keep playing ON as a side effect, and that is not a liberty: in
+	// this mode the queue advancing IS the display advancing, so a session that
+	// stopped after one article would leave the picture frozen on it. The switch
+	// is the same one the Listening settings show, so the reader can see what
+	// happened and it stays on afterwards — which is the behaviour someone who
+	// asked to be read to almost certainly wants anyway.
+	act.Get().slideListenOn = func() {
+		if !speakAuto.Get() {
+			speakAuto.Set(true)
+			savePrefs(map[string]string{"tts.autoplay": "true"})
+		}
+		if it, i := slideAt(showID.Get()); i >= 0 {
+			slideNarrate(it)
+		}
+	}
+
+	act.Get().slideListen = func() {
+		next := !showAudio.Get()
+		showAudio.Set(next)
+		savePrefs(map[string]string{slidesAudioPref: strconv.FormatBool(next)})
+		if !showOpen.Get() {
+			return
+		}
+		// Switching mode mid-show restarts the current story rather than picking
+		// up part-way through it. The two clocks measure different things and
+		// there is no honest way to map a position on one onto the other — and
+		// hearing a segment begin at its third sentence is worse than hearing it
+		// again from the top.
+		showStart.Set(time.Now())
+		showHeld.Set(0)
+		showReadAt.Set(-1)
+		showMeasured.Set("")
+		slideVars(0, 0)
+		showPhase.Set("card")
+		if next {
+			act.Get().slideListenOn()
+			return
+		}
+		act.Get().listenStop()
+	}
+
+	act.Get().slideSetDwell = func(v string) {
+		if v == "" {
+			v = slideAuto
+		}
+		showDwell.Set(v)
+		savePrefs(map[string]string{slidesDwellPref: v})
+	}
+
 	feedFilterSave.Set(func(v string) {
 		savePrefs(map[string]string{"rail.filter": v})
 	})
@@ -4307,6 +4851,8 @@ func Reader(p readerProps) ui.Node {
 				a.toggleUnread()
 			case "toggle-feed-filter":
 				a.toggleFeedFilter()
+			case actSlideOpen:
+				a.slideStart()
 			case "listen":
 				a.listen("")
 			case "read-later":
@@ -4739,6 +5285,22 @@ func Reader(p readerProps) ui.Node {
 					a.smartVoice()
 				case "toggle-digest":
 					a.digestVoice()
+				case actSlideOpen:
+					a.slideStart()
+				case actSlideLeave:
+					a.slideStop()
+				case actSlidePause:
+					a.slidePause()
+				case actSlideNext:
+					a.slideStep(1)
+				case actSlidePrev:
+					a.slideStep(-1)
+				case actSlideListen:
+					a.slideListen()
+				case actSlideDwell:
+					a.slideSetDwell(value)
+				case "toggle-podcast":
+					a.podcastVoice()
 				case "toggle-autoplay":
 					a.autoPlay()
 				case "read-later":
@@ -4935,6 +5497,16 @@ func Reader(p readerProps) ui.Node {
 				if v, ok := p["tts.autoplay"]; ok {
 					speakAuto.Set(v == "true")
 				}
+				if v, ok := p["tts.podcast"]; ok {
+					speakPodcast.Set(v == "true")
+				}
+				if v, ok := p[slidesAudioPref]; ok {
+					showAudio.Set(v == "true")
+				}
+				// Not `if ok`, unlike the flags above: the empty string is not a
+				// valid pace and dwellPrefFrom resolves it to auto, so passing the
+				// whole map keeps the fallback in one place.
+				showDwell.Set(dwellPrefFrom(p))
 				if v, ok := p["read.markOnPast"]; ok {
 					markOnPast.Set(v == "true")
 				}
@@ -5427,6 +5999,42 @@ func Reader(p readerProps) ui.Node {
 				return
 			}
 
+			// --- the slideshow owns the keyboard while it is running ---------
+			//
+			// Every key, not just the five it uses, and that is the point of
+			// returning at the end of this block rather than falling through:
+			// this is a MODE, and a reader who has handed the screen over to it
+			// must not be able to open the command palette behind it, mark the
+			// feed read, or navigate a list they cannot see. The five that do
+			// something are the transport, plus the two ways out.
+			//
+			// Escape is here AND in design/slideshow.go's fullscreen listener,
+			// because the two cases are different: the browser swallows Escape
+			// while it owns the screen, so this branch is what serves a reader
+			// whose fullscreen request was refused — which is the ordinary case
+			// on a browser that will not go fullscreen outside a gesture.
+			if showOpen.Get() {
+				switch k.Name {
+				case "Escape":
+					ui.PostAsync(func() { act.Get().slideStop() })
+				case " ", "Spacebar":
+					// The universal key for "hold on a moment", in every player
+					// anyone has ever used. It is the one binding here nobody
+					// needs to be taught.
+					ui.PostAsync(func() { act.Get().slidePause() })
+				case "ArrowRight", "j", "n":
+					ui.PostAsync(func() { act.Get().slideStep(1) })
+				case "ArrowLeft", "k", "p":
+					ui.PostAsync(func() { act.Get().slideStep(-1) })
+				case "v":
+					// v for voice. `l` is Like everywhere else in this
+					// application, and a key that means one thing in the reader
+					// and another in the slideshow is worse than an unbound one.
+					ui.PostAsync(func() { act.Get().slideListen() })
+				}
+				return
+			}
+
 			// --- moving between panes ---------------------------------------
 			//
 			// Tab moves BETWEEN panes, the arrows move WITHIN one. That split is
@@ -5556,12 +6164,145 @@ func Reader(p readerProps) ui.Node {
 			// letter of the word.
 			case "w":
 				ui.PostAsync(func() { act.Get().toggleFocus() })
+			// s for slideshow. It is the next step past w — w gives the article
+			// the window, this gives it the screen — so the two sitting next to
+			// each other in the help sheet is the whole explanation.
+			case "s":
+				ui.PostAsync(func() { act.Get().slideStart() })
 			case "u":
 				ui.PostAsync(func() { act.Get().toggleUnread() })
 			}
 		})
 		return l.Release
 	}, []any{})
+
+	// --- the slideshow's lifecycle (§19) --------------------------------------
+
+	// The clock, in silent mode only.
+	//
+	// A re-armed timer rather than a ticker, because a ticker that fires while
+	// the tab is throttled queues its missed beats and delivers them in a burst
+	// when the tab comes back — which would advance three stories in one frame.
+	// Re-arming after each beat means a throttled tab simply ticks slowly, and
+	// the elapsed time is read from the clock rather than counted in beats, so
+	// nothing is lost by that.
+	//
+	// Paused is in the dependencies rather than checked inside, so a paused
+	// slideshow has no timer at all — the correct amount of work for a display
+	// that has been told to stop.
+	ui.UseEffect(func() func() {
+		if !showOpen.Get() || showAudio.Get() || showPaused.Get() {
+			return nil
+		}
+		stopped := false
+		var timer *time.Timer
+		var beat func()
+		beat = func() {
+			if stopped {
+				return
+			}
+			// PostAsync for the reason every other callback here uses it: this
+			// runs outside GWC's event dispatch, and a State.Set from here would
+			// schedule an update the reconciler does not coalesce.
+			ui.PostAsync(func() {
+				if !stopped {
+					act.Get().slideTick()
+				}
+			})
+			timer = time.AfterFunc(slideTick, beat)
+		}
+		timer = time.AfterFunc(slideTick, beat)
+		return func() {
+			stopped = true
+			if timer != nil {
+				timer.Stop()
+			}
+		}
+	}, []any{showOpen.Get(), showAudio.Get(), showPaused.Get()})
+
+	// The narrator's playhead, in read-to-me mode only.
+	//
+	// This is the join that makes the mode what it is: the picture is driven by
+	// the same clock as the voice, so they cannot drift. Estimating the segment's
+	// length from its word count instead — the obvious alternative — is wrong
+	// within one article and wrong by a paragraph by the third, because synthesis
+	// speed depends on the voice, the punctuation and how many numbers are in the
+	// text.
+	ui.UseEffect(func() func() {
+		if !showOpen.Get() || !showAudio.Get() {
+			return nil
+		}
+		l := platform.OnAudioProgress(func(pos, dur float64) {
+			ui.PostAsync(func() { act.Get().slideAudio(pos, dur) })
+		})
+		return l.Release
+	}, []any{showOpen.Get(), showAudio.Get()})
+
+	// In read-to-me mode the NARRATOR decides what is showing.
+	//
+	// The picture follows speakID rather than the other way round, and it follows
+	// it here rather than in the audio callback — because the gap that matters is
+	// the one BEFORE any audio exists: the server can take several seconds to
+	// write and synthesise a segment, and a display that waited for the first
+	// `timeupdate` would sit on the finished story for all of it. Cutting to the
+	// next title card immediately, with "Writing the segment" in the corner, is
+	// what makes that wait read as the broadcast working.
+	ui.UseEffect(func() func() {
+		if !showOpen.Get() || !showAudio.Get() {
+			return nil
+		}
+		id := speakID.Get()
+		if id == "" || id == showID.Get() {
+			return nil
+		}
+		if it, i := slideAt(id); i >= 0 {
+			slideOpen(it)
+		}
+		return nil
+	}, []any{showOpen.Get(), showAudio.Get(), speakID.Get()})
+
+	// Leaving fullscreen is leaving the slideshow.
+	//
+	// This is the ONLY thing in this file that listens; taking the screen and
+	// giving it back happen in slideStart and slideStop, imperatively. That split
+	// is not stylistic — it is the bug this replaced.
+	//
+	// An effect's dependencies are a hint in GWC, not a guarantee: an effect can
+	// re-run on a commit whose deps did not change. This one used to acquire the
+	// wake lock and request fullscreen on the way in and RELEASE BOTH in its
+	// cleanup, so a re-run exited fullscreen — which fired the event below, which
+	// stopped the slideshow. The mode closed itself two seconds after opening,
+	// every time, and the cause looked nothing like the symptom.
+	//
+	// Registering a listener is idempotent in a way that taking the screen is
+	// not, so a re-run here now costs one removeEventListener and one add.
+	//
+	// The listener is not a nicety either. While a document is fullscreen the
+	// browser OWNS Escape — it never reaches a keydown handler — so this event is
+	// the only way the application learns the reader has left. Without it the
+	// slideshow would carry on advancing behind restored browser chrome.
+	ui.UseEffect(func() func() {
+		if !showOpen.Get() {
+			return nil
+		}
+		// Focus leaves whatever opened the mode. Guarded on focus not ALREADY
+		// being in here, because this effect can re-run on a commit — and
+		// stealing focus back from a HUD button the reader had tabbed to would
+		// be the same class of bug as the one this fixes.
+		if !platform.FocusedIn(".slides") {
+			platform.FocusElement(".slides")
+		}
+		l := platform.OnFullscreenChange(func(on bool) {
+			if on {
+				return
+			}
+			// Also fires for the slideshow's own exit on the way out, where it is
+			// a second call to a function that has already run. slideStop is
+			// idempotent, which is what makes that harmless.
+			ui.PostAsync(func() { act.Get().slideStop() })
+		})
+		return l.Release
+	}, []any{showOpen.Get()})
 
 	// --- render -------------------------------------------------------------
 
@@ -5606,6 +6347,7 @@ func Reader(p readerProps) ui.Node {
 				openCats:        openCats.Get(),
 				catsClosed:      railCatsClosed.Get(),
 				total:           totalUnread.Get(),
+				ranked:          rankedCount.Get(),
 				sel:             sel.Get(),
 				unreadFeedsOnly: unreadFeedsOnly.Get(),
 				loading:         feedsLoading.Get(),
@@ -5650,28 +6392,31 @@ func Reader(p readerProps) ui.Node {
 			grip(tr, "list"),
 			ui.If(pane.Get() == viewSettings, func() ui.Node {
 				return settingsPane(tr, settingsProps{
-					tab:         settingsTab(setTab.Get()),
-					conn:        conn.Get(),
-					reconnects:  reconnects,
-					connHealth:  connHealth,
-					feeds:       len(feeds.Get()),
-					unread:      totalUnread.Get(),
-					loadedItems: len(items.Get()),
-					totalItems:  totalItems.Get(),
-					unreadOnly:  unreadOnly.Get(),
-					unreadFeeds: unreadFeedsOnly.Get(),
-					markOnPast:  markOnPast.Get(),
-					look:        look.Get(),
-					speakSmart:  speakSmart.Get(),
-					speakDigest: speakDigest.Get(),
-					speakAuto:   speakAuto.Get(),
-					busy:        busy.Get(),
-					stats:       serverStats.Get(),
-					logs:        serverLogs.Get(),
-					logLevel:    logLevel.Get(),
-					loading:     statsLoading.Get(),
-					statsErr:    statsErr.Get(),
-					serverURL:   platform.Origin(),
+					tab:          settingsTab(setTab.Get()),
+					conn:         conn.Get(),
+					reconnects:   reconnects,
+					connHealth:   connHealth,
+					feeds:        len(feeds.Get()),
+					unread:       totalUnread.Get(),
+					loadedItems:  len(items.Get()),
+					totalItems:   totalItems.Get(),
+					unreadOnly:   unreadOnly.Get(),
+					unreadFeeds:  unreadFeedsOnly.Get(),
+					markOnPast:   markOnPast.Get(),
+					look:         look.Get(),
+					speakSmart:   speakSmart.Get(),
+					speakDigest:  speakDigest.Get(),
+					speakAuto:    speakAuto.Get(),
+					speakPodcast: speakPodcast.Get(),
+					slideDwell:   showDwell.Get(),
+					slideAudio:   showAudio.Get(),
+					busy:         busy.Get(),
+					stats:        serverStats.Get(),
+					logs:         serverLogs.Get(),
+					logLevel:     logLevel.Get(),
+					loading:      statsLoading.Get(),
+					statsErr:     statsErr.Get(),
+					serverURL:    platform.Origin(),
 					smart: smartProps{
 						cfg:         smartCfg.Get(),
 						languages:   smartLangs.Get(),
@@ -5796,6 +6541,31 @@ func Reader(p readerProps) ui.Node {
 			feeds:       feedsForTag(feeds.Get(), tagFeeds.Get(), tsOpen.Get()),
 			saving:      tsSaving.Get(),
 		}),
+		// LAST, and above everything: the slideshow is a mode rather than a
+		// dialog, so nothing behind it is addressable while it runs. It renders
+		// nothing at all when closed — it holds a parsed article body and a
+		// full-screen gradient, and a reader who never opens it should pay for
+		// neither.
+		func() ui.Node {
+			it, i := slideAt(showID.Get())
+			return slideshow(tr, slideProps{
+				open:  showOpen.Get(),
+				it:    it,
+				body:  bodies.Get()[currentID(it)],
+				phase: showPhase.Get(),
+				// A show that has run out of loaded items reads as paused, because
+				// that is what it is: the clock is still going and the picture is
+				// not moving. It is a transient state — slideOpen asks for the next
+				// page three stories early — and saying nothing about it is better
+				// than a spinner over a headline.
+				paused:     showPaused.Get(),
+				audio:      showAudio.Get(),
+				speakState: speakState.Get(),
+				index:      i,
+				total:      len(items.Get()),
+				hosts:      hosts,
+			})
+		}(),
 		palette(tr, paletteProps{
 			open:   paletteOpen.Get(),
 			query:  paletteQuery.Get(),
@@ -5970,6 +6740,22 @@ func cloneItem(it *pb.Item) *pb.Item {
 
 func cloneFeed(f *pb.Feed) *pb.Feed {
 	return proto.Clone(f).(*pb.Feed)
+}
+
+// adjustRanked moves My Feed's badge optimistically, clamped at zero.
+//
+// Its own tiny function rather than an inline Set, for the reason adjustUnread is one: the
+// clamp is the whole content. A badge that can go negative is a badge that has been
+// double-decremented somewhere, and "-1" on screen is how that bug reports itself — which is
+// better than silently wrapping, and better still if it cannot happen.
+//
+// The authoritative value arrives with the next sidebar fetch (ListFeedsResponse.ranked_count),
+// so drift here is corrected rather than permanent. This exists so the number moves under the
+// reader's hand instead of a round trip later.
+func adjustRanked(ranked ui.State[int], delta int) {
+	if n := ranked.Get() + delta; n >= 0 {
+		ranked.Set(n)
+	}
 }
 
 func adjustUnread(feeds ui.State[[]*pb.Feed], total ui.State[int], sourceID string, delta int) {

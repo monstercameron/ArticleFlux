@@ -676,9 +676,23 @@ func (*ListFeedsRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListFeedsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Feeds         []*Feed                `protobuf:"bytes,1,rep,name=feeds,proto3" json:"feeds,omitempty"`
-	TotalUnread   int32                  `protobuf:"varint,2,opt,name=total_unread,json=totalUnread,proto3" json:"total_unread,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Feeds       []*Feed                `protobuf:"bytes,1,rep,name=feeds,proto3" json:"feeds,omitempty"`
+	TotalUnread int32                  `protobuf:"varint,2,opt,name=total_unread,json=totalUnread,proto3" json:"total_unread,omitempty"`
+	// How many items are on the ranked page right now — My Feed's count.
+	//
+	// It rides with the sidebar rather than being its own RPC because the RAIL needs it, and
+	// the rail is rendered from this response. A separate call would mean the count appeared a
+	// beat after the row it belongs to, or — worse — only after the reader had already opened
+	// My Feed, which is precisely when they no longer need to be told how much is in it.
+	//
+	// A different number from total_unread and deliberately so: that one is "how much is
+	// waiting", this one is "how much is worth reading". They diverge by an order of magnitude
+	// in normal use — 3,733 unread against 123 ranked — and that gap is the feature.
+	//
+	// Zero is a real value, not a missing one: an account whose interest layer has not run, or
+	// one that has read everything ranked, genuinely has none.
+	RankedCount   int32 `protobuf:"varint,3,opt,name=ranked_count,json=rankedCount,proto3" json:"ranked_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -723,6 +737,13 @@ func (x *ListFeedsResponse) GetFeeds() []*Feed {
 func (x *ListFeedsResponse) GetTotalUnread() int32 {
 	if x != nil {
 		return x.TotalUnread
+	}
+	return 0
+}
+
+func (x *ListFeedsResponse) GetRankedCount() int32 {
+	if x != nil {
+		return x.RankedCount
 	}
 	return 0
 }
@@ -4382,10 +4403,11 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\adelta_y\x18\x03 \x01(\x01R\x06deltaY\",\n" +
 	"\x16ScrollLiveViewResponse\x12\x12\n" +
 	"\x04live\x18\x01 \x01(\bR\x04live\"\x12\n" +
-	"\x10ListFeedsRequest\"b\n" +
+	"\x10ListFeedsRequest\"\x85\x01\n" +
 	"\x11ListFeedsResponse\x12*\n" +
 	"\x05feeds\x18\x01 \x03(\v2\x14.articleflux.v1.FeedR\x05feeds\x12!\n" +
-	"\ftotal_unread\x18\x02 \x01(\x05R\vtotalUnread\"\xce\x01\n" +
+	"\ftotal_unread\x18\x02 \x01(\x05R\vtotalUnread\x12!\n" +
+	"\franked_count\x18\x03 \x01(\x05R\vrankedCount\"\xce\x01\n" +
 	"\x10ListItemsRequest\x12/\n" +
 	"\x05scope\x18\x01 \x01(\x0e2\x19.articleflux.v1.ListScopeR\x05scope\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12\x1d\n" +

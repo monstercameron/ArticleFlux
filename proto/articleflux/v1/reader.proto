@@ -332,6 +332,20 @@ message ListFeedsRequest {}
 message ListFeedsResponse {
   repeated Feed feeds = 1;
   int32 total_unread = 2;
+  // How many items are on the ranked page right now — My Feed's count.
+  //
+  // It rides with the sidebar rather than being its own RPC because the RAIL needs it, and
+  // the rail is rendered from this response. A separate call would mean the count appeared a
+  // beat after the row it belongs to, or — worse — only after the reader had already opened
+  // My Feed, which is precisely when they no longer need to be told how much is in it.
+  //
+  // A different number from total_unread and deliberately so: that one is "how much is
+  // waiting", this one is "how much is worth reading". They diverge by an order of magnitude
+  // in normal use — 3,733 unread against 123 ranked — and that gap is the feature.
+  //
+  // Zero is a real value, not a missing one: an account whose interest layer has not run, or
+  // one that has read everything ranked, genuinely has none.
+  int32 ranked_count = 3;
 }
 
 // Scope selects what a list request is about.

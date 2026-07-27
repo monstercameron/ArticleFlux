@@ -34,6 +34,30 @@ const ttsPrefKey = "tts.smartPlus"
 // apart on the settings screen.
 const digestPrefKey = "tts.digest"
 
+// podcastPrefKey rewrites each article as one slot of a continuous broadcast,
+// handing over from whatever was played before it (§19).
+//
+// A THIRD opt-in, default off, for the reason the second one is: it is a
+// separate egress and a separate bill. It also OUTRANKS the digest rather than
+// combining with it — see speechScript — because both replace the article text
+// and there is no meaningful "a digest of a broadcast segment".
+const podcastPrefKey = "tts.podcast"
+
+// prevItemParam names the story that was just played, so a broadcast segment can
+// hand over from it.
+//
+// A query parameter rather than something inside the sealed ticket, which is the
+// obvious alternative and is wrong: the ticket is minted by GetItem, at a moment
+// when nobody knows what the reader will play this after. The order is decided by
+// the client, at play time, and can differ between two listens of the same feed.
+//
+// It is not a security hole for it to be caller-supplied. The id is resolved
+// through the SAME SCOPE as the item being spoken (see serveSpeech), so a caller
+// can only name a story they were already allowed to read, and the worst a forged
+// value achieves is a handover from an article of their own choosing — which is
+// indistinguishable from having played it.
+const prevItemParam = "p"
+
 // digestFor returns the spoken summary of an item.
 //
 // Split out of the handler so the fallback logic there stays legible: every
@@ -48,6 +72,111 @@ func (a *App) digestFor(ctx context.Context, it store.Item) (string, error) {
 	// `<div class="wp-block-group">` at the summariser as well as at the voice.
 	body := speechBody(it)
 	return a.digest.Speakable(ctx, it.ID, it.SourceTitle, it.Title, body)
+}
+
+// podcastFor returns this item's slot in the broadcast, handing over from prev.
+//
+// prev is the zero Item when there is nothing before this one — the top of a
+// session, or a story the reader jumped to — and that is a supported case rather
+// than a degraded one: the opening segment of a broadcast is a different piece of
+// writing, and smart.Segment says so explicitly rather than leaving it to be
+// inferred from an absence.
+//
+// Split out beside digestFor for the same reason that one is: every error from
+// here is recoverable by reading the article, and the handler says so in one
+// place.
+func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item) (string, error) {
+	if a.podcast == nil {
+		return "", smart.ErrNothingToSummarise
+	}
+	return a.podcast.Segment(ctx, smart.Segment{
+		ItemID: it.ID,
+		Source: it.SourceTitle,
+		Title:  it.Title,
+		// The article stripped of markup, like the digest gets: the model is
+		// being asked to retell it, not to read our HTML, and the provider bills
+		// per character either way.
+		Body:       speechBody(it),
+		PrevID:     prev.ID,
+		PrevSource: prev.SourceTitle,
+		PrevTitle:  prev.Title,
+	})
+}
+
+// podcastKey names an audio recording by the PAIR of articles it covers, not by
+// the article.
+//
+// The same story after a different story is a different recording, because the
+// segment opens by handing over from what came before it. Keying the audio on
+// the item alone would serve one for the other — and the result does not sound
+// like a bug, it sounds like the narrator misremembering what was just said,
+// which is far worse.
+//
+// A function rather than a concatenation at the call site because it is the
+// half of the contract that lives HERE: smart.Podcast keys its text cache on the
+// same pair, and the two have to agree about what "the same segment" means.
+func podcastKey(itemID, prevID string) string {
+	return itemID + "#podcast:" + prevID
+}
+
+// speechScript decides WHAT gets read aloud, and what the audio is cached under.
+//
+// The two answers travel together because they cannot be allowed to disagree:
+// the audio cache is keyed by the second, so a mode that changed the text and not
+// the key would serve yesterday's rendering of a different script — which looks
+// exactly like the preference silently not working, and is the bug the digest's
+// `#digest` suffix already exists to prevent.
+//
+// Three modes, in a strict order of precedence rather than in combination:
+//
+//	podcast   the article as one slot of a running broadcast (§19)
+//	digest    about a minute of spoken summary (§10.7)
+//	neither   the article itself
+//
+// Podcast outranks digest because both REPLACE the article text and there is no
+// coherent "summary of a broadcast segment" — the segment is already the short
+// form. A reader with both switched on gets the one that subsumes the other.
+//
+// Every failure below falls through to the next-simplest thing rather than
+// reporting. That is the same policy the digest has always had and it matters
+// more here: a listener whose narrator falls over should hear the article, which
+// is less pleasant than what they asked for and infinitely better than silence.
+func (a *App) speechScript(ctx context.Context, prefs map[string]string,
+	it store.Item, prev store.Item) (text, cacheKey string) {
+	text, cacheKey = speechText(it), it.ID
+
+	if prefs[podcastPrefKey] == "true" {
+		seg, err := a.podcastFor(ctx, it, prev)
+		switch {
+		case err == nil:
+			return seg, podcastKey(it.ID, prev.ID)
+		case errors.Is(err, smart.ErrNothingToSummarise):
+			// A two-line link post is its own segment. Read it.
+			a.cfg.Log.Debug("broadcast segment skipped, reading the article", "item", it.ID)
+		default:
+			a.cfg.Log.Warn("broadcast segment failed, falling back",
+				"item", it.ID, "err", err)
+		}
+	}
+
+	if prefs[digestPrefKey] == "true" {
+		d, err := a.digestFor(ctx, it)
+		switch {
+		case err == nil:
+			return d, it.ID + "#digest"
+		case errors.Is(err, smart.ErrNothingToSummarise):
+			// Nothing to condense is not a failure — an item with two lines of
+			// body IS its own summary. Read it.
+			a.cfg.Log.Debug("digest skipped, reading the article", "item", it.ID)
+		default:
+			// A summariser that is down must not take listening down with it.
+			// The reader asked to hear the article; they get the article, which
+			// is longer than they wanted and infinitely better than silence.
+			a.cfg.Log.Warn("digest failed, falling back to the full article",
+				"item", it.ID, "err", err)
+		}
+	}
+	return text, cacheKey
 }
 
 // speechTTL is how long a minted listening ticket stays valid.
@@ -150,6 +279,8 @@ var errBadTicket = errors.New("speech: ticket will not open")
 //
 //	GET /speech?t=<sealed ticket>      — how the client actually calls it
 //	GET /speech?item=<id>              — header-authenticated, for tools and tests
+//	          &p=<previous item id>    — optional; the story to hand over FROM,
+//	                                     read only in broadcast mode (§19)
 //
 // A plain HTTPS endpoint rather than an RPC over the tunnel, because the client
 // is an <audio> element: giving the browser a URL lets it stream, seek, buffer
@@ -232,27 +363,30 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Two things to read aloud and they are different artifacts, not two
-	// renderings of one. `cacheKey` carries the difference, because the audio
-	// cache is keyed by it: without that, turning the digest on would serve the
-	// full article from yesterday's cache, and turning it off would serve the
-	// digest — each looking exactly like the toggle silently not working.
-	text, cacheKey := speechText(it), it.ID
-	if prefs[digestPrefKey] == "true" {
-		if d, derr := a.digestFor(r.Context(), it); derr == nil {
-			text, cacheKey = d, it.ID+"#digest"
-		} else if errors.Is(derr, smart.ErrNothingToSummarise) {
-			// Nothing to condense is not a failure — an item with two lines of
-			// body IS its own summary. Read it.
-			a.cfg.Log.Debug("digest skipped, reading the article", "item", id)
-		} else {
-			// A summariser that is down must not take listening down with it.
-			// The reader asked to hear the article; they get the article, which
-			// is longer than they wanted and infinitely better than silence.
-			a.cfg.Log.Warn("digest failed, falling back to the full article",
-				"item", id, "err", derr)
+	// Whatever this reader last heard, so a broadcast segment can hand over from
+	// it. Resolved through the SAME SCOPE as the item above, which is what makes
+	// a caller-supplied id safe (see prevItemParam) — and it is only looked up at
+	// all when the preference that uses it is on, so the ordinary listen still
+	// costs one query.
+	var prev store.Item
+	if prefs[podcastPrefKey] == "true" {
+		if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != id {
+			// An unreadable or unknown predecessor is simply no predecessor. It
+			// is not an error the listener can act on, and refusing to speak
+			// because the story BEFORE this one could not be found would be a
+			// silence caused by something that is not the point.
+			if p, perr := a.repo.GetItem(r.Context(), sc, pid); perr == nil {
+				prev = p
+			}
 		}
 	}
+
+	// Three things this could be — the article, its digest, or its slot in a
+	// broadcast — and they are different artifacts, not renderings of one.
+	// `cacheKey` carries the difference, because the audio cache is keyed by it:
+	// without that, turning a mode on would serve yesterday's rendering of a
+	// different script, which looks exactly like the toggle not working.
+	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev)
 	if text == "" {
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return

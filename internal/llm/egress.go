@@ -1,9 +1,6 @@
 package llm
 
-import (
-	"encoding/json"
-	"fmt"
-)
+import "fmt"
 
 // The §18.8 egress boundary, as types rather than as a filter (TODO 6.11).
 //
@@ -129,31 +126,17 @@ var EgressKeys = map[string]bool{
 // Exported so a caller that hand-builds a payload can check it too. The types
 // above make the ordinary path safe; this makes the extraordinary path
 // checkable, and it is what the §18.8 test asserts against.
+//
+// **This list is the INTEREST layer's and it is not widened by later features.**
+// Classification (§27.4e) needs to send article text and carries its own named
+// allowlist and its own audit — see classify.go for why one shared list would
+// mean every future exception loosening every existing caller.
 func AuditEgress(body []byte) ([]string, error) {
-	var v any
-	if err := json.Unmarshal(body, &v); err != nil {
-		return nil, fmt.Errorf("llm: outbound body is not JSON: %w", err)
-	}
+	return auditAgainst(body, EgressKeys)
+}
 
-	seen := map[string]bool{}
-	var bad []string
-	var walk func(any)
-	walk = func(node any) {
-		switch n := node.(type) {
-		case map[string]any:
-			for k, child := range n {
-				if !EgressKeys[k] && !seen[k] {
-					seen[k] = true
-					bad = append(bad, k)
-				}
-				walk(child)
-			}
-		case []any:
-			for _, child := range n {
-				walk(child)
-			}
-		}
-	}
-	walk(v)
-	return bad, nil
+// errNotJSON keeps the two audits' failure message identical, since they differ
+// only in which list they check against.
+func errNotJSON(err error) error {
+	return fmt.Errorf("llm: outbound body is not JSON: %w", err)
 }

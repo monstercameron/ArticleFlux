@@ -85,14 +85,21 @@ type settingsProps struct {
 	// Formatted in Reader rather than here: the numbers come off the Client, and
 	// a pane that reached for a transport handle to render a row would be the
 	// one place in the view that knew what a connection was.
-	reconnects  int
-	connHealth  string
-	unreadOnly  bool
-	unreadFeeds bool
-	markOnPast  bool
-	speakSmart  bool
-	speakDigest bool
-	speakAuto   bool
+	reconnects   int
+	connHealth   string
+	unreadOnly   bool
+	unreadFeeds  bool
+	markOnPast   bool
+	speakSmart   bool
+	speakDigest  bool
+	speakAuto    bool
+	speakPodcast bool
+	// The slideshow (§19): how long a story stays up, and whether the narrator
+	// paces it instead of the clock. The pace is the stored string — "auto" or a
+	// number of seconds — rather than a resolved duration, because "auto" is a
+	// choice the screen has to be able to show as chosen.
+	slideDwell string
+	slideAudio bool
 	// look is the whole visual preference — theme, accent, reading size, motion.
 	// One field rather than four, because the Appearance screen needs them
 	// together to resolve anything: which accents to offer depends on the
@@ -202,7 +209,43 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 			glyphChip("toggle-mark-past", glyphMarkRead, markLabel, p.markOnPast)),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "bulkMarkDisclaim"))),
+
+		// The slideshow (§19). In Reading rather than in a tab of its own,
+		// because both of these are answers to "how do I want to take the news
+		// in" — which is what this tab is.
+		fsGroup(glyphSlideshow, tr.T("settings", "slidesGroup"),
+			tr.T("settings", "slidesGroupHint")),
+		setRow(tr.T("settings", "slidesPace"), tr.T("settings", "slidesPaceHint"),
+			slideDwellPicker(tr, p.slideDwell)),
+		setRow(tr.T("settings", "slidesRead"), tr.T("settings", "slidesReadHint"),
+			glyphChip(actSlideListen, glyphListen, onOff(tr, p.slideAudio), p.slideAudio)),
 	}
+}
+
+// slideDwellPicker is the pace, as a row of chips.
+//
+// A segmented control rather than a number field, because there is no useful
+// answer between twenty and thirty seconds and a field invites someone to look
+// for one. "Auto" leads because it is the default and because it is the answer
+// most people should keep — it is the only option that knows how long the story
+// actually is.
+func slideDwellPicker(tr i18n.Runtime, current string) ui.Node {
+	if current == "" {
+		current = slideAuto
+	}
+	chips := make([]ui.Node, 0, len(slideDwellChoices))
+	for _, c := range slideDwellChoices {
+		label := tr.T("settings", "slidesAuto")
+		if c != slideAuto {
+			// Through the catalog rather than concatenating a unit, because "s"
+			// is not the abbreviation for a second in every language and a bare
+			// number is not a duration in any of them.
+			label = tr.T("settings", "slidesSeconds", i18n.Args{"n": c})
+		}
+		chips = append(chips, pickChip(actSlideDwell, c, label, c == current))
+	}
+	return html.Span(html.Props{Class: "set-picks", Role: "group",
+		Aria: map[string]string{"label": tr.T("settings", "slidesPace")}}, chips...)
 }
 
 // --- listening -----------------------------------------------------------------
@@ -223,6 +266,14 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		setRow(tr.T("settings", "digest"),
 			tr.T("settings", "digestHint"),
 			glyphChip("toggle-digest", glyphAction, onOff(tr, p.speakDigest), p.speakDigest)),
+		// Below the digest and pointedly next to it, because the two are
+		// alternatives rather than layers: a broadcast segment is already the
+		// short form, so turning both on gets you the broadcast. The hint says so
+		// rather than the control disabling the other one — a switch that silently
+		// turns another switch off is worse than a sentence.
+		setRow(tr.T("settings", "podcast"),
+			tr.T("settings", "podcastHint"),
+			glyphChip("toggle-podcast", glyphSlideshow, onOff(tr, p.speakPodcast), p.speakPodcast)),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
 

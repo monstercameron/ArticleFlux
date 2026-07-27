@@ -161,6 +161,11 @@ func (s *Service) ListRanked(ctx context.Context, sc store.Scope, after, limit i
 	return s.repo.RankedItems(ctx, sc, after, limit)
 }
 
+// CountRanked returns how many items are on My Feed, for the rail's badge.
+func (s *Service) CountRanked(ctx context.Context, sc store.Scope) (int, error) {
+	return s.repo.CountRanked(ctx, sc)
+}
+
 // CountItems returns how many items a query matches in all, for the client's
 // scrollbar. Same query object as ListItems, so the two cannot describe
 // different result sets.

@@ -217,6 +217,12 @@ const (
 	// frame \u2014 not a maximise square, because nothing here goes fullscreen and
 	// promising that would be a lie about where the view ends up.
 	glyphWide = "\u21f9"
+	// The slideshow (\u00a719). A film frame: a rectangle with the sprocket bar down
+	// its side, which is the one mark in this set that says "this plays by
+	// itself". Deliberately NOT \u25b6, which is Listen here \u2014 pressing play on a
+	// feed and pressing play on an article have to look like different acts,
+	// because in this application they genuinely are.
+	glyphSlideshow = "\u25a4"
 )
 
 // lead renders a leading glyph. Hidden from assistive tech: the label beside it
@@ -251,7 +257,11 @@ type railProps struct {
 	feeds []*pb.Feed
 	tags  []*pb.Tag
 	total int
-	sel   scope
+	// ranked is how many items are on My Feed. A separate number from `total`, which is
+	// unread across every feed: one is how much is waiting, the other is how much is worth
+	// reading, and the whole point of the stream is that they differ.
+	ranked int
+	sel    scope
 	// unreadFeedsOnly hides feeds with nothing new. At 150 subscriptions the
 	// sidebar is mostly feeds that have not published today, and scrolling past
 	// them to reach the three that have is the actual daily cost.
@@ -375,7 +385,14 @@ func railPane(p railProps) ui.Node {
 			// question: the rows below are "show me everything / the unread / the ones
 			// I saved", and this one is "show me what is worth reading". A reader who
 			// wants that wants it before they want a list.
-			specialRow(glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, -1, p.sel.MyFeed),
+			// With its count, unlike Later/Liked/Notes. Those are collections whose size a
+			// reader already knows because they put things in them by hand; this one is an
+			// answer the app computed, and how many things it found is the first thing
+			// anyone wants to know about it.
+			//
+			// It is also the number that makes the stream legible next to the row beneath:
+			// 123 against 3,733 unread says what My Feed is FOR in a way no label does.
+			specialRow(glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, p.ranked, p.sel.MyFeed),
 			specialRow(glyphAll, tr.T("stream", "all"), streamAll, p.total,
 				p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
 					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && !p.sel.MyFeed &&
@@ -1599,6 +1616,18 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			glyphChip("refresh", glyphRefresh, tr.T("list", "refresh"), false),
 			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly),
 			glyphChip("mark-all", glyphMarkRead, tr.T("list", "markAllRead"), false),
+			// The slideshow (§19). Here rather than beside the article controls,
+			// because it acts on the FEED you are looking at rather than on one
+			// story — it is the same kind of thing as Refresh and Mark all read,
+			// and it belongs in the row where those live.
+			//
+			// Absent, not disabled, when there is nothing to show. A control that
+			// offers a display of an empty list has made a promise it cannot keep,
+			// and there is nothing the reader can do about it from here.
+			ui.If(len(p.items) > 0, func() ui.Node {
+				return glyphChip(actSlideOpen, glyphSlideshow,
+					tr.T("list", "slideshow"), false)
+			}),
 			// Settings is reachable from the phone's tab bar and from a comma.
 			// Neither is discoverable on a desktop, so it also gets a gear here —
 			// beside the other controls that act on the whole app rather than on
@@ -3157,6 +3186,16 @@ func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 		{tr.T("help", "groupList"), []binding{
 			{"\u2191 \u2193", tr.T("help", "moveAndOpen")},
 			{"j k", tr.T("help", "nextPrev")},
+		}},
+		// Its own group, because none of these keys mean anything anywhere else
+		// and every other key means nothing while it is running — which is the
+		// most useful thing this sheet can say about the mode.
+		{tr.T("help", "groupSlides"), []binding{
+			{"s", tr.T("help", "slidesStart")},
+			{"Space", tr.T("help", "slidesPause")},
+			{"← →", tr.T("help", "slidesStep")},
+			{"v", tr.T("help", "slidesVoice")},
+			{"Esc", tr.T("help", "slidesLeave")},
 		}},
 		{tr.T("help", "groupArticle"), []binding{
 			{"w", tr.T("help", "focusMode")},

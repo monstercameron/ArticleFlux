@@ -155,6 +155,14 @@ func (s *ReaderServer) ListFeeds(ctx context.Context, _ *pb.ListFeedsRequest) (*
 		TotalUnread: int32(total),
 		Feeds:       make([]*pb.Feed, 0, len(feeds)),
 	}
+	// My Feed's count, alongside the sidebar it is drawn in.
+	//
+	// A failed count is not a failed sidebar. Losing it costs one badge; refusing to return
+	// the feed list because a COUNT went wrong would trade the whole rail for an ornament —
+	// the same trade ListItems makes with its total, for the same reason.
+	if n, cerr := s.svc.CountRanked(ctx, sc); cerr == nil {
+		out.RankedCount = int32(n)
+	}
 	for _, f := range feeds {
 		out.Feeds = append(out.Feeds, &pb.Feed{
 			Id: f.ID, SourceId: f.SourceID, Title: f.Title,
