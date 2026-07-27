@@ -1,5 +1,8 @@
 import { test as base, expect } from '@playwright/test';
 
+import { APP_PORT } from './ports.mjs';
+import { startServer } from './server.mjs';
+
 /**
  * Every test starts from the same state.
  *
@@ -14,13 +17,59 @@ import { test as base, expect } from '@playwright/test';
  */
 export const test = base.extend({
   page: async ({ page, baseURL }, use) => {
-    const res = await page.request.post(`${baseURL}/debug/reset-state`);
-    if (!res.ok()) {
-      throw new Error(`reset-state failed (${res.status()}); is the server in DevMode?`);
-    }
+    await resetState(page, baseURL);
     await use(page);
   },
 });
+
+/**
+ * resetState clears the user's state, and recovers if the server has died.
+ *
+ * # Why this is more than one POST
+ *
+ * When the app server goes away mid-run, every remaining test fails at this line
+ * with the same connection error — and a run that reported "16 passed, 39
+ * failed" was reporting one dead socket thirty-nine times. Every one of those
+ * reads as a product bug, the real baseline is invisible, and it took three
+ * attempts to learn that the suite had not found anything.
+ *
+ * So a failure here asks WHY before it reports. If the port is answering, this
+ * is a genuine failure and it is thrown as one. If it is not, the server is
+ * restarted — the harness already knows how, T21(e) needs it anyway — and the
+ * reset is retried once. A run that can heal is worth more than a run that
+ * explains itself well, and the message covers the case where it cannot.
+ */
+async function resetState(page, baseURL) {
+  try {
+    const res = await page.request.post(`${baseURL}/debug/reset-state`);
+    if (res.ok()) return;
+    throw new Error(`reset-state answered ${res.status()}; is the server in DevMode?`);
+  } catch (first) {
+    if (await healthy()) {
+      // The server is up and said no. That is a real failure about this test.
+      throw first;
+    }
+    await startServer();
+    const res = await page.request.post(`${baseURL}/debug/reset-state`);
+    if (res.ok()) return;
+    throw new Error(
+      'THE APP SERVER WENT AWAY and could not be restarted. Every test after this ' +
+      'one will fail for the same reason, and none of those failures is about the ' +
+      `product. Original error: ${first.message}`);
+  }
+}
+
+/** healthy reports whether this run's server is answering. */
+async function healthy() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${APP_PORT}/healthz`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export { expect };
 

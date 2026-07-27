@@ -4335,13 +4335,52 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       Also reconciled: plan.md §27.3d's table said slug `film-tv`; the code and the test say `filmtv`.
       The doc was corrected, since the executable contract is the one that cannot drift silently.
 
-- [ ] **10.3 · The corpus, and the ratchet. ← do not skip, and do not do it last.** A few hundred real
-      feed items, hand-labeled, committed at `internal/classify/testdata/corpus.jsonl`.
+- [x] **10.3 · The corpus, and the ratchet. ← do not skip, and do not do it last.** A few hundred real
+      feed items, hand-labeled, committed at `internal/classify/lexicon/testdata/corpus.jsonl`.
       `TestTaxonomyPrecision` (**T24**) asserts per-category precision and recall floors and the
       floors only go up. **This is the only thing that stops a lexicon decaying one well-meaning term
       at a time**, and a term added without a corpus case that motivates it is a guess with a comment
       on it.
       *Done when: T24 is green, ratcheting, and named in plan §23's register.* §27.11
+
+      ✅ 2026-07-27 — **302 items**: 249 real, pulled read-only from the development database, and 53
+      written for the categories a tech-only feed set has no examples of (`food`, `travel` and
+      `design` had **zero** real matches across ~4,000 items). **46 have no correct category**, which
+      is the group that makes false assignment measurable at all, and `TestCorpusIsWellFormed`
+      asserts its size so it cannot quietly erode.
+
+      **The first measurement is the interesting artefact, and it changed what to fix:**
+
+      > Precision 0.83–1.00 across almost every category. Recall as low as **0.000**. And every one
+      > of the twelve worst confusions was `X→(none)`.
+
+      The lexicon was not misfiling articles — it was **refusing** them. That is a much better
+      problem to have than the one it looked like from the recall column alone: the term lists are
+      right and only the bar was wrong. Confident misfiles would have meant rewriting 26 categories.
+
+      `TestCalibrationSweep` then turned `MinScore` from a placeholder into a decision. Two findings:
+      **2.25 and 2.50 are strictly dominated by 2.00** (identical false assignment, worse accuracy —
+      so the curve is not smooth and "pick the middle" lands on a setting worse than its neighbour),
+      and the real choice, 2.00 against 3.00, is close to **one extra wrong chip per extra right
+      chip**. R23's premise is that this exact trade is a losing one, so 3.00 stands — now with a
+      table under it instead of a shrug. Refusing is also not a dead end: an unsorted item is what
+      §27.4a escalates.
+
+      The cost is recorded rather than glossed: at 3.00 the free tier declines to place **30%** of
+      the articles that have a correct answer.
+
+      **The recall ratchet is a named list, not a lower floor.** `politics` 0.125, `science` 0.273,
+      `transport` 0.375 do not clear 0.45, and dropping the bar to fit them would assert nothing
+      about the other twenty-three. They are enumerated with their measured values: each may not get
+      worse, the list may only shrink, and **a category that starts clearing the floor fails the test
+      until it is deleted from the list** — an exception that outlives its problem is a permanently
+      lowered bar, which is how every ratchet in this house has previously rotted.
+
+      Also: the corpus lives beside the lexicon, not in `internal/classify`, because `go test`
+      resolves `testdata/` per package and a test reaching out of its own directory breaks when
+      somebody moves a package. §27.11 and this ticket were both corrected. And the corpus was
+      written against §27.3d's `film-tv`, which had since become `filmtv` — caught before it could
+      look like a lexicon failure for a category that was working.
 
 - [x] **10.4 · Migration `0021_classification.sql`.** `item_analysis` (global) · `categories` ·
       `item_categories` · `label_removals` · `tag_rules` · `item_tags.source` + `.score`. The
@@ -4370,13 +4409,50 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       without the lexicon and the reverse, and the backfill wants to know which — a lexicon change
       only invalidates `category_scores`, an analyzer change may invalidate the whole row.
 
-- [ ] **10.5 · `internal/pipeline` — stages, batch, and the `Analyzer` registry.** The deterministic
+- [x] **10.5 · `internal/pipeline` — stages, batch, and the `Analyzer` registry.** The deterministic
       half: tokenise, vector, lang, keyphrases, entities, category scores → one `item_analysis` row.
       `analyzer_version` + `lexicon_hash` on every row from the first commit, because retrofitting
       staleness detection means a backfill nobody can scope.
       *Done when: `TestClearDerivedReproduces` passes — `ClearDerived` then a re-run reproduces
       `item_analysis` exactly (§27.2c), extending the existing derive test rather than adding a second
       one.* §27.2a, §27.2c
+
+      ✅ 2026-07-27 — `internal/pipeline` (six analyzers: lang · category · genre · keyphrase ·
+      entity · vector) and `internal/store/analysis.go`. Both suites green, plus the whole store
+      package including the leak harness, which needed all five new methods registered as unscoped
+      by design with the same justification `IngestItems` carries.
+
+      **The vector column holds TF, not TF-IDF — a correction to §27.7 and the most substantive one
+      in this tier.** TF is a property of the document; IDF is a property of the collection, and
+      there is no collection at ingest: `derive` computes IDF over one reader's engaged items in a
+      rolling 90-day window, a different corpus per user per day. A frozen ingest-time IDF would
+      score every reader against document frequencies taken from whatever else was in that poll's
+      batch, drifting with batch composition rather than with anyone's interests. So the row stores
+      TF, derive applies its own IDF, derive's semantics are untouched — and A41's saving survives
+      whole, because tokenising a 4,000-word article is the cost and a per-term lookup is not.
+
+      **An analyzer error fails the whole batch**, which is the opposite of what the model stage will
+      do (§27.2b rule 2). The failures are different in kind: a contributor fails because a provider
+      returned something odd, which is normal; a deterministic analyzer has no I/O and can only fail
+      because of a bug. Continuing past it would write a row stamped with the CURRENT version and
+      missing a field, and the backfill selects on version — so that row would never be revisited. A
+      silently incomplete row the staleness query cannot see is worse than a job that retries.
+
+      **`StaleAnalysis` is a LEFT JOIN against `items`, not a scan of `item_analysis`.** An item that
+      has never been analysed is the most stale thing there is and a query over the analysis table
+      alone can never see it. Called out in the brief as the easiest thing here to get wrong.
+
+      Two bugs the tests caught: a **typed-nil `[]byte` boxed into `any`** stored an empty BLOB
+      instead of NULL — the same class `nullify()` exists to prevent for strings, found because the
+      empty-round-trip test asserts NULL-ness with a raw scan rather than trusting a lenient Go-side
+      read. And the entity analyzer **concatenated title and summary** before extraction, which
+      defeats `textvec.Phrases`'s Title-Case refusal (a ratio over the whole string): each field is
+      now judged on its own capitalisation.
+
+      `LexiconHash` covers everything that can change a score — term text, weight, guards, regex
+      flag, per-label floor, excludes — and deliberately **not** display names or Smart+ prompts,
+      because renaming "Film & TV" must not re-analyse a database. Sorted before hashing, so
+      reordering `Categories()` does not either.
 
 - [ ] **10.6 · `JobAnalyze`, and fan-out moves downstream of it.** New job kind, cap 2, enqueued by
       ingest; **it** enqueues `JobFanout` on completion. This is the one behavioural change to an
@@ -4572,7 +4648,7 @@ surface that needs it.
       *Done when: the status screen shows speech spend and the cache-hit ratio beside the LLM
       breaker.* §9, §22.8
 
-- [ ] **P4 · Two e2e runs still cannot share this machine, and a killed run reports product failures.**
+- [x] **P4 · Two e2e runs still cannot share this machine, and a killed run reports product failures.**
       Two full desktop runs on 2026-07-27 died mid-suite: tests passing normally, then
       `ECONNREFUSED` on every remaining one. The app server's log ends abruptly with no shutdown
       line, and this happened with `ports.mjs`'s per-run slots in place and the run holding its own
@@ -4584,3 +4660,19 @@ surface that needs it.
       anyone else is working cannot be one.
       *Done when: two suites started a second apart both finish; and a run whose server dies says
       "the server went away" once, instead of reporting every remaining test as a failure.* 8b.34
+
+      ✅ 2026-07-27 — **both halves, and the first was measured rather than assumed.** Two full
+      desktop suites started a second apart: **85 passed · 7 failed · 1 flaky, 18.0 minutes** and
+      **85 · 7 · 1, 17.9 minutes.** Both ran to completion, and the identical counts say the seven are
+      systematic rather than contention — which is the other thing this ticket was asking for, since
+      the previous state made that question unanswerable.
+      *What fixed the first half* was already landing while this was filed: the restarted server is
+      **detached** (it was a child of the Playwright worker, which gets recycled between spec files,
+      so it died with the worker), teardown kills by **port** rather than by handle (after a restart
+      the handle names a dead process and the live server belongs to nobody), and `startServer` no
+      longer spawns a duplicate that opens the same SQLite file to lose a bind race.
+      *The reporting half* is now a **recovery**: `resetState` asks WHY before it reports. If the port
+      answers, the failure is real and is thrown as one. If it does not, the server is restarted — the
+      harness already knows how, T21(e) needs it anyway — and the reset is retried once. Only if that
+      fails does it say the server went away, in one message that states plainly that no failure after
+      it is about the product. A run that can heal beats a run that explains itself well.
