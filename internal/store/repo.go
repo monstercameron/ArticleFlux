@@ -158,6 +158,49 @@ type ListQuery struct {
 	Limit  int
 }
 
+// driveIndex pins the driving index for the unfiltered list (G3, TODO 5.4, R2).
+//
+// # The measurement that forced this
+//
+// At 50,000 items x 3 users the unfiltered "unread by newest" query took 478ms,
+// and EXPLAIN QUERY PLAN said why: SQLite drove from `subscriptions`, joined
+// every one of the ~16,700 unread rows to `items`, and then sorted all of them
+// in a TEMP B-TREE to take the first 50. Pinning `items_published` — an index
+// that has existed since 0001 — makes it walk items newest-first and stop after
+// 51. **478ms to under a millisecond**, with no schema change at all.
+//
+// It is not an artefact of the benchmark's ANALYZE: the planner chooses the same
+// bad plan with the statistics dropped. And it does not show up on the
+// development database, because 3,600 rows are cheap to materialise and sort —
+// which is precisely R2's curve, and precisely why §6.5 asked for a number at
+// 50k rather than a number at whatever size the box happened to have.
+//
+// # Why only when there is no source filter
+//
+// With a source filter the planner is already right: `items_source_published`
+// is (source_id, published_at DESC, id DESC) and serves both the filter and the
+// sort. Pinning `items_published` there would FORBID that index and make the
+// per-feed list worse. So the hint is applied exactly where it was measured to
+// help and nowhere else.
+//
+// INDEXED BY is a hard constraint — SQLite errors rather than falling back if
+// the index becomes unusable — which is a real risk and is why a test asserts
+// the index exists and that both list shapes still run.
+func driveIndex(q ListQuery) string {
+	// A single source is the one case where the planner is already right:
+	// `items_source_published` is (source_id, published_at DESC, id DESC) and
+	// serves the filter AND the sort from one index. Pinning items_published
+	// there would FORBID it and make the per-feed list worse.
+	if q.SourceID != "" || len(q.SourceIDs) == 1 {
+		return ""
+	}
+	// Everything else — no filter, or a set of sources (a folder, a tag) —
+	// measured faster walking items newest-first and stopping at 51. A set of 50
+	// sources cannot be served by items_source_published as one range, so the
+	// planner falls back to materialise-and-sort, which is the 478ms case.
+	return "INDEXED BY items_published"
+}
+
 // MaxLimit bounds a page (§20.7). A client asking for everything gets 200.
 const MaxLimit = 200
 
@@ -243,7 +286,7 @@ func (r *ReaderRepo) ListItems(ctx context.Context, s Scope, q ListQuery) ([]Ite
 		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 		       COALESCE(uis.rating,0),
 		       i.word_count, COALESCE(i.image_url,'')
-		  FROM items i
+		  FROM items i ` + driveIndex(q) + `
 		  JOIN sources src ON src.id = i.source_id
 		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
 		  LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?
