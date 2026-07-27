@@ -381,6 +381,34 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The tab froze for exactly eight seconds, repeatedly.** In Go/wasm a `js.FuncOf` callback that
+  blocks holds the JavaScript event loop — and the tunnel is a WebSocket, so the reply the blocked
+  call waits for arrives *on the loop it is holding*. The call could not succeed; it could only run to
+  its deadline. The signals outbox was flushing inline from the page-hide handler and from `Stop`
+  (reached from an effect cleanup, and effects run on the frame loop, which is also a JS callback), so
+  every backgrounding froze the app for the full `engagementTimeout`. Reported as *"the collapsable
+  menu items take very long to collapse"*: the rail was never slow, the click was queued behind a page
+  deadlocked against itself. Both paths now hand the ship to a goroutine, and `Flush` will not start a
+  second batch while one is in the air — a wedged tunnel was otherwise accumulating blocked goroutines
+  each holding a slice of events. **The signature to recognise: a Chrome `[Violation]` whose duration
+  equals one of our own timeout constants to the millisecond.**
+- **A click could be silently dropped.** The delegated dispatcher read the click's target out of refs
+  shared by every click, one frame after the click, from inside `ui.PostAsync`. Two clicks in a single
+  frame made the first handler act on the second's target and then clear the ref, after which the
+  second handler acted on nothing at all — no error, no save, nothing to notice. The payload is now
+  captured on the click's own stack. Frames are not always 16ms: a busy or throttled tab stretches the
+  window this raced in to seconds.
+- **Removing a tag is immediate.** It waited on two sequential round trips — the write, then the tag
+  list refetch it queued — with no feedback in between, so the chip sat under the pointer looking
+  broken and the reader's next move was to click it again. Removal now applies the server's own rules
+  locally with a rollback on failure. Adding cannot be optimistic (the id is the server's to assign),
+  so it shows the wait instead of hiding it: the chip appears at once, pending, with its remove
+  control withheld because there is nothing on the server to remove yet.
+- **Two derived values were being rebuilt on every frame** — the article chips' source-to-tags map
+  (walked, allocated per feed and sorted, from inside the render) and the tag glyph catalogue's
+  grouping (a full rescan per group per repaint, for a value that is constant). Both now rebuild only
+  where their inputs change. The chip map's identity is stable as a result, which is what lets the
+  article pane's props comparison skip work at all.
 - **The OPML fixture was being ignored, so two tests never ran.** `*.opml` correctly excludes real
   exports — an export is a complete list of what one person reads — but it also swallowed the
   package's only full-size parse fixture, and both tests that opened it called `t.Skip` when it was

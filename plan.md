@@ -445,6 +445,48 @@ Folder scoping resolves `folder_id → source_id[]` from `subscriptions` first, 
 unread-by-newest, and unread-by-folder. Rev 7 only committed to the first, which was the one that
 already worked.
 
+---
+
+**G3 · MEASURED 2026-07-26 at 50,000 items × 3 users × 150 feeds** (`internal/store/hotquery_test.go`,
+`HOTQUERY=1`). The denormalisation above was **never actually built** — `user_item_state` has neither
+`source_id` nor `published_at`, and TODO 5.3 recorded it as done. So the numbers below are for the
+schema as it exists, and the surprise is that the denormalisation turned out **not to be needed**.
+
+| Shape | Before | After | |
+|---|---|---|---|
+| unread by newest | **478 ms** | **0.5 ms** | ✅ |
+| unread by folder | 178 ms | **0.5 ms** | ✅ |
+| keyset page 40 | 408 ms | **0.3 ms** | ✅ |
+| flat unread count | 447 ms | 556 ms | ❌ still over |
+| sidebar with per-feed counts | 512 ms | 447 ms | ❌ still over |
+
+**What was actually wrong: the query planner, not the schema.** `EXPLAIN QUERY PLAN` showed SQLite
+driving from `subscriptions`, joining all ~16,700 unread rows to `items`, and then sorting every one
+of them in a `USE TEMP B-TREE FOR ORDER BY` to take the first 50. Pinning `items_published` — an
+index that has existed since `0001_init` — makes it walk items newest-first and stop after 51. **No
+migration, no denormalisation, three orders of magnitude.** It is not an artefact of the benchmark's
+`ANALYZE`: the planner picks the same plan with the statistics dropped.
+
+**And a second bug the fix exposed.** With the index pinned, page 2 on the real 3,800-item
+development database went from 13 ms to **1.3 seconds**. The keyset cursor was
+`published_at < ? OR (published_at = ? AND id < ?)`, and SQLite cannot turn an `OR` into an index
+range — so it scanned the whole index evaluating the predicate per row. Rewritten as the row-value
+comparison `(published_at, id) < (?, ?)`, which is seekable, it became **0.5 ms**. Both pages on the
+real database improved 20× over where they started. *Worth keeping: page 1 got faster while page 2
+collapsed, which is exactly the regression a page-1 benchmark never sees.*
+
+**Why the dev database said everything was fine.** It has 3,800 items, where materialise-and-sort
+costs 13 ms. This is R2's curve, and it is why §6.5 asked for a number at 50k rather than a number at
+whatever size the box happened to have.
+
+**What remains, and what it costs.** Both failures are *counting* — they must visit every unread row
+and cannot stop at 50, so the index hint does nothing for them. R2 names the fix, "a materialized
+per-user unread index", and says to measure first. **This is the measurement, and the answer is
+build it**: the sidebar renders per-feed unread counts on every screen, and half a second there is
+not something the client can work around. Tracked as **TODO 5.4a**, with the current numbers recorded
+in `knownSlow` as a ratchet — a regression past them fails, and the entry has to be deleted when the
+counter lands.
+
 ### 6.6 Item tags (A21) — the prerequisite
 
 ```sql
@@ -3578,45 +3620,119 @@ logical-property usage (`padding-inline`, not `padding-left`) is what makes that
 
 #### 22.16a What shipping it actually taught (2026-07-26, TODO 8.4a)
 
-The section above said "goes through GWC's `i18n`". It does, but not the way the sentence implies,
-and the four corrections below are the section rather than footnotes to it.
+The UI goes through GWC's `i18n` **using its API, not around it**: `i18n.Provider`
+puts a `Runtime` in context, `UseI18n` reads it back, `Runtime.T(namespace, key)`
+looks up and interpolates, `Runtime.NS` binds a namespace for a helper that reads
+many keys from one surface, and `i18n.UseLocale` is the reactive, persisted locale
+state. There is no hand-rolled accessor. Switching language re-renders; it does not
+reload.
 
-**`i18n.T` is a plain function, not GWC's `UseI18n()` hook.** GWC matches hooks positionally. This UI
-translates inside a `for` over 3,600 virtualised list rows and inside branches of a render, and a
-context hook in either place binds to the wrong slot and corrupts the render — the same failure the
-pane helpers carry a comment about. So `client/i18n` holds the `Bundle` at package scope and `T` is
-hook-free. GWC still does the real work: locale-candidate resolution, plural category selection,
-`{arg}` interpolation. Only the *access* is package-level. This is the load-bearing decision of the
-whole module; anything that reintroduces a hook on the translation path breaks the list.
+A first pass DID hand-roll a package-level `T`, justified as "translation happens
+inside loops over 3,600 rows, and hooks are positional". **That reason was wrong** —
+you call the hook once at the top and use the returned Runtime inside the loop — and
+it is recorded here because the correct constraint is a different one that still
+shapes the design:
 
-**Switching locale is a full page reload, and that is correct.** GWC has no way to invalidate every
-mounted component from outside the tree, so a partial re-render leaves a page half in each language —
-visibly worse than not switching. `i18n.SetLocale` therefore changes the catalog and nothing else; the
-picker persists the choice and reloads. The consequence that matters: **the catalog must be complete
-before the first component renders.** `view.Root` loads a saved translation inside its boot phase, ahead
-of mounting the reader, for exactly that reason.
+**This view layer renders through plain functions, not nested components.** `grep -c
+ui.CreateElement client/view` returns three. Four functions can legally hold a hook
+(`Root`, `Login`, `Reader`, `railPane`); the other ~70, holding most of the 527 call
+sites, are ordinary Go — `feedSettingsBody`, `helpSheet`, `connLabel`,
+`humanDuration(int64)`, `thousands(int)`, `themeLabel(design.Theme)`. A further 47
+call sites are inside `go func()` in Reader, running after render returns. So the
+Runtime is **threaded as an explicit first parameter** through those helpers, and
+converting them into components instead would add ~70 fibers per render to a tree
+that virtualises 3,600 rows precisely to avoid that.
 
-**Importing GWC's `i18n` costs 221 KB gzipped** — 5.96 → 6.18 MB, +3.7% against G5's ratchet
-(R4). It is entirely `x/text`, from two functions: `language.Parse` inside `NormalizeLocale`, and
-`message.NewPrinter` inside `FormatNumber`. GWC's plural rules are hand-rolled and cost nothing.
-`client/i18n.Number` already avoids `FormatNumber` with a separator table, but package-level import
-links the tables regardless. **The fix belongs in GWC, not here**: `NormalizeLocale` is BCP-47
-canonicalisation of a tag we control and needs no CLDR, and `FormatNumber`'s printer is `x/text`'s only
-real user. Dropping it would remove the cost for every GWC app. Paid rather than forked, because
-forking means owning plural rules for Polish and Arabic and drifting from the canonical copy.
+Four findings from doing it, each of which will bite whoever touches this next:
 
-**`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and cannot be linked
-into a native test binary; the catalog can, which is what makes `keycoverage_test.go` possible —
-and, unplanned but decisive, what lets the *server* read the English catalog in order to translate it
-(§10.5a). Do not add a build tag to this package.
+**The Provider must live in a component that re-renders rarely — it lives in `Root`.**
+When a Provider fiber re-renders, the reconciler compares old and new context values
+and calls `markSubtreeNeedsUpdate` on the whole subtree if they differ; that flag is
+checked in `buildFiberNeedsWork` **before** any props comparison, so it defeats every
+memo bailout below it. `i18n.Runtime` is a struct of func fields, so it is not
+`Comparable` and `fastEqual` falls through to `reflect.DeepEqual`, where two non-nil
+funcs are **never** equal. The context value therefore reads as "changed" on every
+render of whatever component mounts the Provider. That is exactly right for a
+language switch and a disaster anywhere else. `Root` has two pieces of state — the
+auth phase and the locale — and both are events the whole screen should redraw for.
+**Mounting the Provider inside `Reader` would mark the 151-row rail and the
+virtualised list dirty on every keystroke.**
 
-**The ratchet is a guard, not a convention.** `internal/tools/guards` gained a fifth check: no
-hardcoded user-facing copy in `client/view`. It flags literals in `html.Text`, in the copy-bearing
-`Props` fields, in `aria-label`/`title`/`placeholder` attributes, and in the view's own label-taking
-helpers. It passes at zero across all eleven files. The two catalog tests in `client/i18n` cover the
-other direction — a referenced key that does not exist, and a registered key nothing uses. Keys built
-at runtime from a stable id (`"theme." + t.Name`) are invisible to both, which is why `themeLabel` and
-its siblings fall back to the source package's own label rather than trusting the catalog.
+**For the same reason, a Runtime must never go on a props struct.** `railProps` is
+compared by value to stop 151 rows re-rendering; a func field makes that comparison
+either impossible or always-false. Hence the parameter.
+
+**`UseLocale` clamps to its supported set at boot, before any translation is
+imported** — so the language list lives in `client/i18n`, not beside the translator in
+`internal/smart`. A supported set derived from "what is registered in the bundle"
+would be `["en"]` on every cold start, and a reader who chose French would be reset to
+English before the fetch that would have registered French even began.
+
+**Anything rendered outside the Provider cannot see it.** `Root` builds its `child`
+value before handing it to `Provider`, so `bootSplash` had to become a mounted
+component rather than a function called inline — otherwise it reads an empty catalog
+and renders raw keys.
+
+Two costs, both accepted:
+
+- **Importing GWC's `i18n` costs 221 KB gzipped** (5.96 → 6.18 MB against G5's
+  ratchet, R4), entirely `x/text` via `language.Parse` in `NormalizeLocale` and
+  `message.NewPrinter` in `FormatNumber`. GWC's plural rules are hand-rolled and
+  free; `client/i18n.Number` already avoids `FormatNumber` with a separator table,
+  but a package-level import links the tables regardless. **The fix belongs in GWC** —
+  `NormalizeLocale` is BCP-47 canonicalisation of a tag we control and needs no CLDR —
+  and would remove the cost for every GWC app.
+- **A forced re-translation reloads the page.** It changes no state: same locale, same
+  props, so the context value never moves and the memoised panes keep the strings they
+  already rendered. Only the Provider can invalidate them, and it is in `Root`, which
+  `Reader` cannot reach. It is a repair action taken almost never, so one reload beats
+  plumbing a revision counter up through the component that exists to re-render rarely.
+
+**Four things a reader sees are NOT in the catalog, and each is a decision rather than
+an oversight** (audited 2026-07-26 after the guard reported zero — the guard only sees
+`client/view`, so "zero" was never the same as "everything"):
+
+- **`web/index.html`** — the pre-wasm bootstrap: the wordmark, "Loading…", and the
+  failure line. It runs before the wasm module exists, so it cannot reach a Go catalog
+  at all. Translating it means either JS beyond the ~15-line bootstrap A26 permits, or
+  the server templating it from a locale it does not know (the choice lives in the
+  browser's localStorage). Left English on purpose; it is three strings and two of them
+  are a brand name.
+- **gRPC status messages shown verbatim.** `loginMessage` passes the server's text
+  straight through for Unauthenticated/ResourceExhausted/FailedPrecondition, and the
+  Smart+ screen's `statusText` does the same for everything. These are written for a
+  person and are often the only actionable part — but they are English regardless of
+  locale. Fixing it properly means the server returning a key plus arguments instead of
+  prose, which is a protocol change, not a sweep. Same shape as CashFlux's C362 debt.
+- **`{err}` interpolations.** The sentence around a failure is translated; the
+  transport's own text inside it is not. Deliberate, and stated where the keys are
+  defined: the provider's message is the actionable half and paraphrasing it helps
+  nobody.
+- **Feed content.** Titles, summaries, authors, article bodies. That is §10.5's job and
+  a different machine entirely.
+
+Two gaps found in the same audit WERE real oversights and are fixed: `relTime` — the
+most-rendered string in the app, on every list row — was emitting `t.Format("2 Jan")`,
+and Go's layouts are not locale-aware, so month names were English in every language;
+and `internal/tagglyph`'s fifty glyph names plus seven group headings, which are the
+accessible name on every cell of a grid of unlabelled symbols and therefore matter most
+to exactly the readers who cannot see the difference between them.
+
+**`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and
+cannot be linked into a native test binary; the catalog can, which is what makes
+`keycoverage_test.go` and `provider_test.go` possible — and, unplanned but decisive,
+what lets the *server* read the English catalog in order to translate it (§10.5a).
+
+**The ratchet is a guard plus tests, not a convention.** `internal/tools/guards` gained
+a fifth check — no hardcoded user-facing copy in `client/view` — passing at zero across
+all eleven files. `client/i18n` adds: a referenced key that does not exist, a registered
+key nothing uses, malformed placeholders, plurals missing `other`, and six tests that
+render the real Provider/`UseI18n` path through `ui.RenderToString` natively and assert
+that English resolves, plurals select by locale, an imported catalog renders, missing
+keys fall back to English rather than to raw identifiers, and `Import` refuses to
+overwrite English. Keys built at runtime from a stable id (`tr.T("theme", t.Name)`) are
+invisible to the static checks, which is why `themeLabel` and its siblings fall back to
+the source package's own label rather than trusting the catalog.
 
 ---
 
@@ -3665,27 +3781,40 @@ Highest-value first:
     **`articleflux init` creates exactly one superadmin and can't be re-run**.
 **T20 · Webhook SSRF**, **public feed safety** (excerpt-only, rotation invalidates), **newsletter
     sanitization** corpus, **301 handling** (URL updates, chain capped, guard re-run per hop).
-**T21 · Connection state machine** (§20.19, A40) — five parts, and the first two are the ones that
-    would have caught what the audit found by reading:
+**T21 · Connection state machine** (§20.19, A40) — **(a)–(d) built and green 2026-07-26; (e) owed.**
+    Five parts, and the first two are the ones that would have caught what the audit found by reading:
     **(a) Classification, native** — a table test over every §20.7 code asserting which of transport /
     application / terminal it lands in. `NotFound` must not touch the indicator; `Unauthenticated`
     must stop the retry loop.
     **(b) Half-open detection, against a blackhole** — a TCP relay that accepts and then silently
-    stops forwarding, which is the only honest way to reproduce F3. Assert the client declares
-    `down` **within 40 s** and re-dials. A browser cannot be made to do this; the test is native, over
-    the same tunnel client.
-    **(c) Idle soak, 30 minutes, zero reconnects** — an untouched connection with keepalive on. This
-    is the `too_many_pings` regression test, and it fails loudly the day someone removes the server's
-    enforcement policy as an unused option.
-    **(d) Recovery does not storm** — ten `READY` transitions in five seconds produce **one** refetch,
-    and a response from a superseded load never lands.
+    stops forwarding, which is the only honest way to reproduce F3. The relay must keep READING and
+    discard, not stop reading: a relay that blocks fills the kernel buffer, the peer's writes fail,
+    and the client learns something is wrong from backpressure rather than from a probe — passing for
+    the wrong reason and proving nothing about the keepalive. A browser cannot be made to do this; the
+    test is native, over the same tunnel client. **~12 s, and it cannot be made much faster**, because
+    gRPC clamps the client interval to a 10 s floor (§20.19.3).
+    **(c) The idle soak is two seconds, not thirty minutes.** Written as a half-hour test, which is not
+    a test anyone runs. The same property is provable in under two seconds by lowering the SERVER's
+    `MinTime` — the one knob that makes the shipping numbers observable at speed — and watching an
+    idle, correctly-probing client stay `Ready`. That is the `too_many_pings` regression test, and it
+    is what fails the day someone removes the enforcement policy as an unused option, because the gRPC
+    defaults it falls back to kick that client immediately. The numbers themselves are pinned
+    separately in `internal/connpolicy`.
+    **(d) Recovery does not storm** — and the spec's own number was wrong. Ten *sub-second* blips
+    produce **zero** refetches, not one: nothing publishes in two seconds, and the outage floor
+    suppresses them entirely. Ten *real* outages spanning ~26 s produce **five** — one per spacing
+    window, which is the honest answer between "one per flap" (the storm) and "one in total" (a stale
+    screen). Also asserted: a response from a superseded load never lands.
     **(e) E2E, Windows-native** — kill the server mid-session and assert `down`; restart and assert
     `live` plus a refetched list; `context.setOffline(true)` and assert `offline`, not `down`.
 
-**T22 · Nothing is lost across an outage** — the write half of T21, and it is blocked on §12.4 rather
-    than on the connection: mark five articles read while disconnected, reconnect, and assert all five
-    survived; close the tab mid-outage and assert the signals buffer survives the reload. Both fail
-    today, by design-not-yet-built, and the test is what stops that from being forgotten.
+**T22 · Nothing is lost across an outage** — the write half of T21. **Built 2026-07-26 at the unit
+    level** (`client/outbox`, `client/track`): coalescing keeps the LAST intent and its key, ordering
+    between items survives, the cap drops oldest and says how many, a superseded key acked mid-drain
+    does not take the newer intent with it, and a buffer written on `pagehide` comes back in the next
+    tab and ships. *Still owed: the end-to-end version* — mark five articles read with the server down,
+    restart it, and assert all five survived a real drain. That one is Playwright and rides with
+    T21(e) on 8b.34.
 
 **T23 · The proxy tiers, and the one property that matters** (§10.1) — **(a) nothing leaks to the
     origin**: render a fixture page through tier 2 and assert against a request log that *zero*

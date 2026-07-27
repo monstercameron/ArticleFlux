@@ -1522,18 +1522,56 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       `Unauthenticated` for a wrong password and must not read as an expired session. `device_id`
       survives sign-out on purpose: it identifies the browser, not the session.
 
+**The event loop, and the cost of an interaction**
+
+- [x] **8b.35 No blocking call on the JS stack.** A `js.FuncOf` callback that blocks holds the
+      JavaScript event loop, and the tunnel's WebSocket delivers its reply *on that loop* — so an RPC
+      awaited from a handler cannot succeed, only time out, with the tab frozen for the whole
+      deadline. The signals outbox was flushing inline from `OnPageHide` and from `Stop` (an effect
+      cleanup, and effects run on the frame loop). Both now hand the ship to a goroutine; `Flush`
+      grew an in-flight guard so a wedged tunnel cannot stack blocked batches. **The tell is a Chrome
+      `[Violation] '<event>' handler took N000ms` where N000 equals an RPC timeout constant** — here
+      `engagementTimeout`, to the millisecond.
+- [x] **8b.36 The delegated dispatcher owns its click's payload.** `forItem` / `forValue` are refs
+      every click shares, written synchronously by two sibling listeners and — until now — read a
+      frame later from inside `ui.PostAsync`. Two clicks in one frame made the first body read the
+      second's id and clear the ref, after which the second body read `""` and its action silently did
+      nothing. Captured on the click's own stack now. *A dropped action with no error is the worst
+      failure shape there is: it is indistinguishable from a control that was never wired up.*
+- [x] **8b.37 Nothing derived rebuilt per frame.** The article chips' `source → tags` map was walked,
+      allocated and sorted inside the render; `internal/tagglyph` rescanned its fifty-entry catalogue
+      per group per repaint. Both are now built where their inputs change — the chips behind
+      `setTagData`, the single write path for tag state, so the cache cannot go stale by omission.
+      Same rule `hostsRef` already followed, and the same trap it already documented.
+- [x] **8b.38 Taking a tag off is instant; putting one on says it is not.** Removal applies the
+      server's own rules locally and rolls back on failure. Adding cannot — the id is the server's to
+      assign — so the chip appears immediately in a pending state with the × withheld, rather than
+      pretending or making the reader wait on two round trips with no feedback.
+
 **Owed**
 
 - [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
       and during this batch the wasm build was broken for a stretch while the native build and every Go
       test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on
       the same run that a broken `go test` would.*
-- [ ] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs now
-      (`reader` · `design-parity` · `responsive` · `tagsettings`), and **the last run failed** — a
-      categories test (`a feed … the rail groups it`). Every spec also drives a server that used to
-      need no credential and now goes through `Root`, and several still assert pre-transcription
+- [ ] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs
+      (`reader` · `design-parity` · `responsive` · `tagsettings`). Every spec drives a server that used
+      to need no credential and now goes through `Root`, and several still assert pre-transcription
       behaviour (see 8b.24). *Until it is green the suite is not a gate, which is the state a suite
       must not quietly be left in.*
+
+      ◧ 2026-07-26 (late) — **measured: 21 passed, 20 failed** on `--project=desktop`. All four
+      `tagsettings` cases pass. The twenty are **stale assertions, not regressions**, and they cluster
+      into three shapes worth fixing as three edits rather than twenty:
+      **(a) strict-mode violations** where the app grew a second element matching an old selector —
+      `.article h1` now resolves to three because the reading pane is a *stream*, and
+      `{name: /Alpha Journal/}` matches the row *and* its gear;
+      **(b) counts that grew** — `mark all read` asserts `.feed-count` reaches zero, but categories now
+      carry counts too (its `Marked N read` assertion passes first, so **the click works**);
+      **(c) design-parity colour** — the palette assertion reads a background the theming engine
+      (8b.31) no longer sets on that element.
+      *Attribution is by reading each failure, not by bisect:* several lanes were mid-refactor in this
+      tree and there was no safe way to take a clean baseline, which is itself an argument for 8b.32.
 
 ---
 
@@ -1790,6 +1828,88 @@ minute. Neither would have reached a commit with **8b.32** done, which is the wh
 
 ---
 
+## Every interaction point, audited — the eight-second freeze and what else was on the JS stack (2026-07-26, late)
+
+Prompted by three plain reports, in this order: *"the left side collapsable menu items take very long
+to collapse"*, *"removing a tag is really slow and the ui seems to seize up"*, and then *"check all
+interaction points and make sure they arent doing bad things and arent latency prone"*. The first two
+turned out to be **the same bug wearing different clothes**, and the third found four more.
+
+**The freeze.** Both reports carried the same console line — `[Violation] 'visibilitychange' handler
+took 8000ms` — and 8000 is not a round number that appears by accident. It is `engagementTimeout` in
+`client/data/client.go`, exactly.
+
+> In Go/wasm a `js.FuncOf` callback that blocks **holds the JavaScript event loop**, and the tunnel
+> is a WebSocket — so the reply the blocked call is waiting for arrives *on the loop it is holding*.
+> The call cannot succeed by construction. It can only end at its own deadline, and the tab is frozen
+> for the whole of it. `track.Collector.Start`'s page-hide handler was calling `Flush()` inline; the
+> comment directly above `platform.OnPageHide` already said the flush "cannot await anything", which
+> is how a rule that is written down still gets broken — it said *what* and not *why*.
+
+Fixed by handing the ship to a goroutine on both the page-hide path and `Stop` (reached from an
+effect cleanup, and effects run on the frame loop, which is also a JS callback). `Flush` grew an
+**in-flight guard**: a batch takes up to eight seconds to give up, the periodic ship fires every ten,
+and `Emit` starts another every time the buffer crosses `BatchSize` — so a wedged tunnel accumulated
+blocked goroutines each holding a slice of events. Batching harder under pressure is the right
+response to a slow connection; opening more calls to it is not. The rule is now in the doc comment on
+`OnPageHide` **with the mechanism**, not just the prohibition.
+
+*The rail collapse was never slow.* The click was queued behind a page that had deadlocked against
+itself, and folding a section was simply the next thing the reader tried.
+
+**Removing a tag waited on two round trips before anything moved** — the `SetFeedTag` call, and then
+the `ListTags` refetch it queued — with no feedback in between. Removal is now optimistic, applying
+the server's own two rules locally (drop the association; drop the tag if that was its last feed) with
+a full rollback and a notice on failure. The refetch became a background reconcile rather than the
+thing the reader waits for.
+
+> **Adding cannot be optimistic and is not pretended to be.** The tag's id is the server's to assign,
+> and the rail, the scope and the association map are all keyed by it — inventing one would mean a
+> chip that is briefly clickable into a tag that does not exist. So the wait is shown rather than
+> hidden: the chip appears at once, dashed and dimmed, with the × withheld because there is nothing on
+> the server to remove yet. The honest version of instant — the input is acknowledged immediately, and
+> the one capability that genuinely is not ready is the one that is withheld.
+
+**Then the audit itself.** Thirty-three `js.FuncOf` entry points, every delegated handler, every RPC
+call site and the render path. Four more findings, all fixed:
+
+- **The delegated dispatcher dropped clicks.** Three sibling listeners: two write the click's payload
+  into shared refs (`forItem`, `forValue`), the third reads them — but it read them *inside* its
+  `ui.PostAsync` body, a frame later. Two clicks in one frame both queue a body; the first reads the
+  **second** click's id and then clears the ref, so the second body reads `""` and its action silently
+  does nothing. No error, no save, nothing to see. The payload is now captured on the click's own
+  stack and passed into the closure. This was **not theoretical** — it is what made the tag panel's
+  "clear the rename" e2e case fail, since that is a second click on the same button.
+- **The chip derivation ran on every frame** — walking every feed's tags, allocating per feed and
+  *sorting* each, from inside the render, to rebuild a value identical to the one discarded the frame
+  before. Moved behind `setTagData`, the single write path for the three pieces of tag state, so the
+  cache cannot be written any other way and there is nothing to forget. It also made the map identity
+  stable, which is what lets `articlePane`'s props bailout work at all.
+- **`tagglyph` rescanned its own catalogue per render** — `Groups()` and `In()` walked all fifty
+  entries per group, ~350 comparisons and eight allocations every repaint, for a value that is a
+  compile-time constant in all but name. Indexed once at init, beside the validation map that already
+  was.
+- **`tagByID` walked the tag list to discover the panel was shut.** The empty case is the common one
+  and it is on the render path.
+
+**What the audit found clean**, recorded because "we checked" is worth as much as "we fixed":
+every RPC call site in `client/view` is inside a `go func()`; every `platform.On*` callback either
+posts through `ui.PostAsync` or does local-only work; every listener is released and every ticker
+stopped; scroll handlers are rAF-coalesced or edge-triggered and `passive`; the 500ms impression poll
+reads a **virtualised** window rather than 151 rows; item actions (read · star · rate · unread ·
+folder) were already optimistic with rollback; every `js.Value` index is bounds-guarded; and the
+signals buffer persists on flush and page-hide rather than per event — a `localStorage` write per
+`pointermove` would be a real cost for the one layer that may never cost the reader anything.
+
+**My typo, flagged by another lane and fixed correctly.** A line-ranged `perl` rewrite of
+`forValue.Get()` → `value` inside the dispatcher clipped the capture line itself into
+`id, value := forItem.Get(), value`. Completing it to `forValue.Get()` was right, and the lane that
+hit it was right not to leave the wasm build red while reporting green. A range-scoped text
+substitution over a file another lane is editing is the wrong tool; the capture line was the one line
+in the range that had to keep the old spelling.
+
+---
+
 ## Tier 9 — Systems: the milestone → spec map
 
 Everything above composes. From here **the plan's milestone order governs**. Each row is the complete
@@ -1846,6 +1966,16 @@ brief for that milestone: which plan sections define it, which pages (Appendix A
   anything untyped. (A26)
 - **`syscall/js` appears in exactly one package**, `client/platform`. A `js` import anywhere else in
   `client/` is a build break.
+- **Nothing that touches the network runs on the JS stack.** A `js.FuncOf` callback, a frame-loop
+  callback, or an effect cleanup that blocks holds the JavaScript event loop — and the tunnel's
+  WebSocket delivers its reply *on that loop*, so the call cannot succeed, only time out, with the tab
+  frozen for the full deadline. Hand it to a `go func()` and return. Cheap local work (arithmetic
+  under a mutex, banking a dwell timer, a `localStorage` write that must commit before the tab is
+  gone) may stay inline. **The tell in the wild is a Chrome `[Violation] '<event>' handler took
+  N000ms` where N000 is one of our own timeout constants.** (8b.35)
+- **A click's payload is read on the click's own stack, never from a shared ref one frame later.**
+  Two clicks inside one frame otherwise make the first handler act on the second's target and the
+  second act on nothing — silently, with no error to notice. (8b.36)
 - **The only JavaScript is `wasm_exec.js`, the ~15-line bootstrap, and `sw.js`.** A fourth `.js` file
   needs a written justification, not a commit message.
 - **No file over ~800 lines; `client/main.go` under 200.** Self-imposed, not a GWC rule.
