@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package articleflux.v1;
+
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1";
+
+// EventService tells a connected client that something changed (§20.3, TODO 8.7).
+//
+// Its own service and its own file rather than another method on ReaderService,
+// because it is the only STREAMING surface in the API and streams fail
+// differently: a unary call that errors is one request, while this one holds a
+// goroutine, a subscription and a tunnel stream for as long as the tab is open.
+// Keeping it separate means the thing with a different lifetime also has a
+// different place to look when it misbehaves.
+//
+// # What this is not
+//
+// Not a data channel. Events carry IDS, never rows — an event carrying a full
+// item is a second serialisation of the same record that can disagree with the
+// query the client makes next, and the client would have two sources of truth
+// for one article. The event says "this changed"; the client's existing read
+// path says what it now is.
+//
+// Not a replacement for polling the feeds either. The server polls sources on
+// its own schedule; this only reports what that polling FOUND, to a client that
+// would otherwise show yesterday's list until somebody pressed something.
+service EventService {
+  // WatchEvents streams changes for the caller's own scope until the client
+  // goes away.
+  //
+  // `since` resumes: a client that reconnects asks for everything after the
+  // last sequence it saw, so a reconnect inside the buffer window costs a
+  // catch-up batch rather than a full reload. Zero means "only what happens
+  // from now on", which is what a fresh tab wants — replaying a thousand
+  // buffered events into a page that is about to fetch the current state anyway
+  // is work that ends in the same place.
+  rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse);
+}
+
+message WatchEventsRequest {
+  // since is the last sequence this client processed. Zero means live-only.
+  uint64 since = 1;
+}
+
+// WatchEventsResponse is what arrives in one message: a BATCH.
+//
+// A batch rather than one event per message, because the events that matter
+// arrive in bursts — a poll cycle finishing across forty feeds is forty events
+// in a few milliseconds — and one message per event would put forty frames on
+// the tunnel to say one thing: "the list changed".
+message WatchEventsResponse {
+  repeated Event events = 1;
+
+  // resync_required means the client fell too far behind to be caught up.
+  //
+  // The buffer is finite by design, and a client that has been asleep longer
+  // than it holds cannot be handed the difference. Saying so explicitly is the
+  // point: the alternative is a client that silently receives a batch starting
+  // in the middle and believes it has the whole story.
+  //
+  // When set, the events list carries what IS available and the client should
+  // reload rather than patch.
+  bool resync_required = 2;
+}
+
+message Event {
+  // seq is monotonic per tenant, starting at 1. A client stores the highest it
+  // has processed and passes it back as `since` on reconnect.
+  uint64 seq = 1;
+
+  // kind is one of: items_added, state_changed, feed_changed, poll_finished,
+  // ranking_updated.
+  //
+  // A string rather than an enum, and this is the one place in the API where
+  // that is the right call: the client's response to an unknown kind is to
+  // invalidate broadly and move on, which is exactly what an old client should
+  // do about a kind a newer server has. An enum would make an unrecognised kind
+  // arrive as the zero value — indistinguishable from the FIRST kind in the
+  // list, which is the one thing worse than not knowing.
+  string kind = 2;
+
+  // source_id names the feed involved, when one is.
+  string source_id = 3;
+
+  // item_ids are what changed. Bounded by the server: a mark-all-read over
+  // three thousand items is one event about a source, not three thousand ids.
+  repeated string item_ids = 4;
+
+  // at is when it happened, RFC3339. For a client that wants to say "updated a
+  // moment ago" without trusting its own clock against the server's.
+  string at = 5;
+}

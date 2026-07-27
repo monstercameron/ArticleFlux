@@ -201,6 +201,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Live updates: the list changes while you are looking at it** (`EventService.WatchEvents` ·
+  `client/data`, TODO 8.7, §20.3). `internal/events` had been a complete, tested bus with nothing on
+  either side of it — no publisher, no transport, and nothing in the application had ever called it.
+  Now a poll that finds new items announces them to the accounts **subscribed to that source** (a
+  source belongs to no tenant, so a tenant-wide announcement would wake readers whose lists did not
+  change), a streaming RPC carries them, and a client pump on one goroutine turns each batch into a
+  cache invalidation — never a direct state write, because state belongs to the frame loop and a
+  write from a socket's goroutine produces renders that occasionally miss an update. Events carry
+  **ids, never rows**: an event carrying an article would be a second copy that can disagree with
+  the next query. A client that reconnects resumes from its last sequence; one that has been away
+  longer than the buffer is **told to resync** rather than handed a batch that silently starts in
+  the middle. A poll that found nothing invalidates nothing — otherwise an untouched screen
+  repaints on the poll interval forever.
+
 - **Rendered snapshots — a real browser runs the page and we keep what it made** (`render.Snapshot`,
   TODO 6.16, §10.1c, tier 2r). Tier 2 fetches HTML and gets `<div id="root"></div>` on anything
   built in the browser; this rung runs the scripts first. It returns `outerHTML`, a full-page

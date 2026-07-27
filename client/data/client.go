@@ -62,6 +62,9 @@ type Client struct {
 	system pb.SystemServiceClient
 	auth   pb.AuthServiceClient
 	smart  pb.SmartServiceClient
+	// events is the live-update stream (§20.3). The only streaming stub here,
+	// and the only one whose call outlives the function that made it.
+	events pb.EventServiceClient
 
 	// pending holds writes made while the connection was not working, so an
 	// outage delays them instead of discarding them (§20.19.8). Its own lock —
@@ -89,10 +92,14 @@ type Client struct {
 	// Session health, for the Settings screen (§20.19.10). Cheap enough to keep
 	// always: three fields, updated on a transition that happens seconds apart
 	// at worst.
-	reconnects int
-	downtime   time.Duration
-	downAt     time.Time
-	onState    func(ConnState)
+	// lastEventSeq is the highest event sequence this client has processed, so a
+	// reconnect resumes rather than reloads. Under mu because the pump's
+	// goroutine writes it and the pump's next dial reads it.
+	lastEventSeq uint64
+	reconnects   int
+	downtime     time.Duration
+	downAt       time.Time
+	onState      func(ConnState)
 }
 
 // TunnelURL derives the WebSocket endpoint from the page origin.
@@ -201,6 +208,7 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 	c.system = pb.NewSystemServiceClient(conn)
 	c.auth = pb.NewAuthServiceClient(conn)
 	c.smart = pb.NewSmartServiceClient(conn)
+	c.events = pb.NewEventServiceClient(conn)
 	// Writes that outlived the last tab. Restored BEFORE the connection is
 	// asked for, so a reader who closed the laptop mid-outage and opened it the
 	// next morning has their marks replayed by the first recovery rather than

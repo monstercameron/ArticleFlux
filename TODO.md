@@ -2111,8 +2111,34 @@ hand-written CSS and vanilla JS, and nobody ports them.
       read can wedge without the conn leaving Ready — that is the CashFlux failure this note
       warned about, and `Watch` as written would not see it.
 
-- [ ] **8.7 `client/data/stream.go`** — event pump on one goroutine → **`ui.PostAsync`**, coalesced on
+- [x] **8.7 `client/data/stream.go`** — event pump on one goroutine → **`ui.PostAsync`**, coalesced on
       a ~100 ms tick. **Never touch state directly.**
+      ✅ 2026-07-27 — `client/data/coalesce.go` + `stream_wasm.go`, and **the whole path under it**,
+      because the pump had nothing to pump: `internal/events` was a complete, tested bus with no
+      publisher and no transport, and nothing in the application had ever called it.
+      *Now:* `EventService.WatchEvents` (its own proto file — the only streaming surface in the API,
+      and streams fail differently from unary calls) · `grpcsrv.EventServer` · the poll publishing
+      `items_added` per subscriber · the client pump.
+      **Subscribe BEFORE replaying, on the server.** The obvious order loses events: anything
+      published between the end of a replay and the start of a subscription belongs to neither and
+      nothing afterwards notices. This order produces duplicates instead, which the handler drops by
+      sequence — a duplicate the client ignores is cheap, a gap it cannot see is what makes people
+      stop trusting live updates and reload out of habit.
+      **One event per SUBSCRIBER, not per tenant.** Sources are global (A14), so "new items on source
+      X" is only news to the accounts subscribed to X; a tenant-wide event would wake every other
+      reader to invalidate a list that did not change.
+      **`poll_finished` deliberately invalidates nothing.** An idle instance publishes it every cycle,
+      and a pump that repainted for it would flicker an untouched screen on a timer forever.
+      **An unknown kind invalidates broadly**, which is the entire reason `kind` crosses as a string
+      rather than an enum: an old client meeting a newer server's kind must be able to tell it does
+      not recognise it, and an enum would deliver it as the zero value — indistinguishable from the
+      first kind in the list.
+      **The decision half is untagged and tested natively** (`Coalesce` → `Effect`, 7 tests): the pump
+      needs `ui.PostAsync` and a browser, but what a batch INVALIDATES is arithmetic over strings, and
+      keeping that out of the wasm-only file is what makes the likeliest bug reachable by `go test`.
+      *Owed, and additive:* the view has to call `WatchEvents` and refetch on the `Effect`. That is
+      one line in `reader.go`, which another lane is mid-rewrite in — so the pump invalidates the
+      cache itself and the screen updates on the next read either way.
 - [ ] **8.8 `client/view/model.go`** + `client/data/mappers.go` — **pb → plain view structs.** Nothing
       generated crosses this line. R3
 - [x] **8.9** `client/data/keys.go` + one package-level `query.New(WithStaleTime(30s))`

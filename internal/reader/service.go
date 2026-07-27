@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -36,11 +38,92 @@ type Service struct {
 	pages    *discover.Fetcher
 	extract  *extract.Extractor
 	analyzer *smart.SiteAnalyzer
+	// onSignals is called after engagements land, so the interest layer can be
+	// rebuilt while the reader is still in the session that produced the signal.
+	// Nil on an instance with no job pool, which is every test that does not want
+	// one.
+	onSignals func(store.Scope)
+	// onIngest is called after a poll writes new items, so §20.3's live update
+	// can announce them. Nil on an instance with no event bus — which is every
+	// test, and every deployment before this was wired.
+	//
+	// A func rather than the bus itself, for the same reason onSignals is one:
+	// this package is the service layer the sync surface and the offline-pack
+	// channel also go through, and a dependency on a delivery mechanism here is
+	// how one entry point starts behaving differently from another.
+	onIngest func(sourceID string, itemIDs []string)
+	// log is where PollDue and Refresh report a panic recovered from a
+	// per-source poll (see pollOneRecovered and WithLogger). Nil on an instance
+	// nobody has wired one into; logger() falls back to slog.Default() rather
+	// than dropping the line, because a recover with nowhere to report is a
+	// crash that becomes a feed that silently never updates.
+	log *slog.Logger
 }
 
 // New returns a Service.
 func New(repo *store.ReaderRepo, f *feed.Fetcher) *Service {
 	return &Service{repo: repo, fetcher: f}
+}
+
+// WithSignalHook installs the callback that closes the interest loop.
+//
+// # Why the loop has to close faster than the poller
+//
+// The deriver was scheduled only from the background poll, at fifteen-minute
+// intervals. Everything worked and the feature was still wrong from the reader's
+// side: like three articles, go to My Feed, and it looks exactly as it did before —
+// for up to a quarter of an hour, with nothing on screen to say why. A ranking that
+// cannot be seen responding is one nobody believes is responding, and the natural
+// next move is to stop giving it signals.
+//
+// The hook is a func rather than a *derive.Service because this package must not
+// import the deriver: `reader` is the service layer that the REST sync surface and
+// the offline-pack channel also go through, and a dependency on a background job
+// here is how "marked read in Reeder" starts behaving differently from the web UI.
+// The app wires the two together; neither knows the other's type.
+//
+// The callback is expected to be cheap and non-blocking — it enqueues, it does not
+// derive. See App.NudgeDerive for the rate limit that makes that safe.
+func (s *Service) WithSignalHook(f func(store.Scope)) *Service {
+	s.onSignals = f
+	return s
+}
+
+// WithIngestHook installs the callback fired when a poll produces new items.
+//
+// Optional in the same way, and for the same reason: an instance with nobody
+// watching for live updates should not pay for them, and every test that does
+// not wire one gets a working service.
+//
+// Called with the ids of the items ingest CREATED, never the ones it updated. A
+// publisher fixing a typo is not news, and treating it as news is how a live
+// list starts reshuffling under somebody who is reading it.
+func (s *Service) WithIngestHook(f func(sourceID string, itemIDs []string)) *Service {
+	s.onIngest = f
+	return s
+}
+
+// WithLogger installs the logger a panic recovered from a per-source poll is
+// reported through (see pollOneRecovered). Optional, the same way
+// WithSignalHook is: every caller that does not wire one gets a working
+// default rather than a nil logger every call site has to guard against.
+//
+// The natural wiring is the same *slog.Logger the app already hands
+// internal/jobs.Options.Log — reqid-wrapped, so a recovered panic here lands
+// in the same request-id-tagged log as everything else instead of narrating on
+// its own. As of this fix nothing calls WithLogger yet; see the ticket report.
+func (s *Service) WithLogger(l *slog.Logger) *Service {
+	s.log = l
+	return s
+}
+
+// logger returns the installed logger, or slog.Default() so a recovered panic
+// is never reported into silence just because nobody called WithLogger.
+func (s *Service) logger() *slog.Logger {
+	if s.log != nil {
+		return s.log
+	}
+	return slog.Default()
 }
 
 // ListFeeds returns the sidebar.
@@ -263,7 +346,7 @@ func (s *Service) Refresh(ctx context.Context, sc store.Scope, sourceIDs []strin
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			n, err := s.pollOne(ctx, src)
+			n, err := s.pollOneRecovered(ctx, src, s.pollOne)
 			mu.Lock()
 			defer mu.Unlock()
 			res.Polled++
@@ -326,7 +409,91 @@ func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error)
 		SourceID: src.ID, ETag: parsed.ETag, LastModified: parsed.LastModified,
 		Title: parsed.Title, SiteURL: parsed.SiteURL, IconURL: parsed.IconURL,
 	})
+
+	// Announced AFTER the fetch outcome is recorded, so the poll is fully
+	// consistent before anybody is told to come and look at it. A client that
+	// reacted to the event and read a source row still mid-update would see a
+	// feed with new items and a stale last-polled time.
+	if len(ing.NewIDs) > 0 && s.onIngest != nil {
+		s.onIngest(src.ID, ing.NewIDs)
+	}
 	return ing.New, nil
+}
+
+// pollOneRecovered runs work (in production, always pollOne — see the
+// parameter note below) and converts a panic into the same failed-fetch
+// outcome pollOne already produces for an ordinary error, instead of letting
+// it unwind past the top of the goroutine PollDue or Refresh started it on.
+//
+// # Why this has to live here, per source
+//
+// A panic that unwinds past the top of ITS OWN goroutine's stack kills the
+// whole process, full stop — recover() anywhere else, including the
+// queued-job path in internal/jobs/jobs.go, is on a different goroutine and
+// cannot see it. PollDue and Refresh already run one goroutine per source
+// (MaxConcurrentPolls bounds how many run AT ONCE, not how many exist), so
+// recovering inside the same goroutine that calls this means a poisoned feed
+// can only ever cost its own goroutine — the other sources in the batch were
+// never on its stack and are unaffected.
+//
+// Everything downstream of work — fetcher.Fetch, charsetdec.Decode,
+// feed.ParseBytes, the extractor, the sanitizer — parses bytes and headers
+// from whatever a publisher's server sent back, with no authentication and no
+// user interaction. One hostile or merely broken feed must not be able to take
+// the reader down for every tenant on the next scheduled poll.
+//
+// # Never silent
+//
+// The recovered value is logged at ERROR with the source id, the feed url and
+// the full stack, through ctx so a caller's request id (internal/reqid)
+// survives onto the line — matching internal/jobs/jobs.go's "a job panicked"
+// treatment, because a log that reads differently between the two recovery
+// sites is one more thing to remember when grepping for either. It is then
+// routed through RecordFetch exactly like an ordinary fetch error, so the
+// source's consecutive_failures and last_error — what the Health panel and the
+// failing-sources list both read (store.Feed, store.Stats.Dormant) — pick it
+// up like any other broken feed. A recover that stops short of that leaves no
+// trace in the data: the feed looks healthy and silently stops, which is worse
+// than the crash it replaces, because nobody investigates a feed that merely
+// looks a little stale.
+//
+// The error is prefixed "panic: ", identical to jobs.go's own recover, so a
+// crash reads as visibly distinct from an ordinary transient fetch error in
+// the failing-sources list — a publisher timing out looks nothing like a
+// defect in this codebase, and the two should not be indistinguishable in the
+// one place an operator would notice either.
+//
+// # Why work is a parameter instead of a hard-coded call to pollOne
+//
+// Service.fetcher is a concrete *feed.Fetcher, not an interface, so the
+// network call inside pollOne cannot be swapped for a fake without changing
+// that field (or New's signature) — a bigger change than this ticket, and one
+// this fix deliberately does not make (see the ticket report). Taking the
+// "poll one source" step as a parameter here, rather than hard-coding a call
+// to pollOne, at least lets this exact function — the one PollDue and Refresh
+// both call in production — be driven directly by a test double for the
+// recover-and-record behaviour, without requiring the fetcher itself to be
+// fakeable too.
+func (s *Service) pollOneRecovered(ctx context.Context, src store.SourceRow,
+	work func(context.Context, store.SourceRow) (int, error)) (n int, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			stack := debug.Stack()
+			s.logger().Log(ctx, slog.LevelError, "a feed poll panicked",
+				"source_id", src.ID, "feed_url", src.FeedURL,
+				"panic", v, "stack", string(stack))
+			err = fmt.Errorf("panic: %v", v)
+			n = 0
+			if rerr := s.repo.RecordFetch(ctx, store.FetchOutcome{
+				SourceID: src.ID, Err: err.Error(),
+			}); rerr != nil {
+				s.logger().Log(ctx, slog.LevelError,
+					"recording a panicked poll's failure also failed",
+					"source_id", src.ID, "err", rerr)
+			}
+		}
+	}()
+	return work(ctx, src)
 }
 
 // PollDue polls whatever the scheduler says is due. Runs unscoped because
@@ -349,7 +516,7 @@ func (s *Service) PollDue(ctx context.Context, limit int) (RefreshResult, error)
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			n, err := s.pollOne(ctx, src)
+			n, err := s.pollOneRecovered(ctx, src, s.pollOne)
 			mu.Lock()
 			defer mu.Unlock()
 			res.Polled++
@@ -529,6 +696,13 @@ func (s *Service) RecordEngagements(ctx context.Context, sc store.Scope,
 		}
 		accepted += written
 		good = good[n:]
+	}
+
+	// Only when something was actually stored. A batch that was entirely duplicates or
+	// entirely invalid has changed nothing, and waking the deriver to recompute the
+	// same answer is the sort of cost that only shows up as a warm laptop.
+	if accepted > 0 && s.onSignals != nil {
+		s.onSignals(sc)
 	}
 	return accepted, rejected, nil
 }

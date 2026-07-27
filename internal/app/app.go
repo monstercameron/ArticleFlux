@@ -32,6 +32,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/derive"
 	"github.com/monstercameron/ArticleFlux/internal/discover"
+	"github.com/monstercameron/ArticleFlux/internal/events"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
@@ -196,6 +197,11 @@ type App struct {
 	// per-RPC latency, both in memory and both bounded. A self-hosted reader has
 	// no operator, so these are how the person running it answers "why did that
 	// feed stop working" without a terminal.
+	// bus carries §20.3's live updates: the poll publishes, connected clients
+	// subscribe over EventService.WatchEvents. Always present — it costs a map
+	// until somebody connects, and making it optional would mean every publisher
+	// carrying a nil check for a saving nobody can measure.
+	bus  *events.Bus
 	ring *obs.Ring
 	lat  *obs.Latency
 	// tunnels counts WebSocket lifetimes, which is the only way anyone can tell
@@ -298,6 +304,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 
 	repo := store.NewReaderRepo(db)
 	svc := reader.New(repo, feed.New(feed.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}))
+	bus := events.New()
 
 	// Argon2id, tuned to this box (§7.1, TODO 6.1).
 	//
@@ -367,7 +374,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		tel.Instruments.EgressDuration.Record(ctx, d.Seconds(), attrs)
 	}
 
-	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log,
+	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log, bus: bus,
 		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
 		icons:  favicon.New(cfg.AllowPrivateFeeds),
 		stopPo: make(chan struct{})}
@@ -458,6 +465,25 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// on the next poll. See reader.WithSignalHook for why the callback is a func, and
 	// NudgeDerive for the rate limit that makes it safe to call on every batch.
 	svc.WithSignalHook(a.NudgeDerive)
+	// And the live-update announcement (§20.3). Wired here rather than inside
+	// reader.New for the reason the signal hook is: the service layer must not
+	// know how anybody is told, or the sync surface and the offline-pack channel
+	// start behaving differently from the web UI.
+	svc.WithIngestHook(a.publishItemsAdded)
+	// The poller's own logger, and it has to be THIS one rather than the
+	// default.
+	//
+	// `reader.pollOneRecovered` catches a panic from a source's poll — the path
+	// that parses bytes and headers from an arbitrary publisher — and reports it.
+	// Left unwired it falls back to `slog.Default()`, which on this application
+	// means plain stderr: the line would never reach the ring buffer behind
+	// Settings → Activity, which on a self-hosted box is the only place an
+	// operator ever looks. A crash report nobody can see is a crash report that
+	// did not happen.
+	//
+	// Wired here rather than at `reader.New` above because `cfg.Log` is replaced
+	// by the reqid-aware handler further up, after the service was constructed.
+	svc.WithLogger(cfg.Log)
 	// Following a page that has no feed (§11, §14.2).
 	//
 	// Three pieces, wired together because they are one ladder: `discover`
@@ -825,6 +851,7 @@ func (a *App) buildHandler() {
 			// (TODO 8c.15). Survivable only because every queued mutation sets
 			// an absolute value, so applying it twice lands on the same state —
 			// the first relative operation would have double-applied silently.
+			idem.Unary(a.repo, a.scopeFromContext),
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
@@ -865,7 +892,6 @@ func (a *App) buildHandler() {
 				}
 				return res, err
 			}),
-			idem.Unary(a.repo, a.scopeFromContext),
 		// **This is the other half of the client's keepalive, and neither works
 		// without it** (§20.19.3, client/data/client.go).
 		//
@@ -915,6 +941,11 @@ func (a *App) buildHandler() {
 	// like a version mismatch instead of a setting nobody has filled in.
 	pb.RegisterSmartServiceServer(a.grpc,
 		grpcsrv.NewSmartServer(a.settings, a.llm, a.translator, a.scopeFromContext, a.log))
+	// Live updates (§20.3). The only streaming surface in the API: it holds a
+	// goroutine and a subscription for as long as a tab is open, which is why it
+	// is its own service rather than another method on the reader.
+	pb.RegisterEventServiceServer(a.grpc,
+		grpcsrv.NewEventServer(a.bus, a.scopeFromContext, a.log))
 
 	// The tunnel carries gRPC over one WebSocket, which is what lets a wasm
 	// client speak real gRPC — browsers cannot open the HTTP/2 connection gRPC
@@ -1393,6 +1424,17 @@ func (a *App) StartPoller(ctx context.Context) {
 				// stops, the reader goes quiet and looks like a slow news day,
 				// which is the failure mode §22.11 exists to make visible.
 				pollCtx, span := a.tel.Tracer.Start(ctx, "poll.cycle")
+				// A request id for the cycle, the same way the job pool stamps
+				// one before running a job (jobs.go) and the interceptor stamps
+				// one per RPC.
+				//
+				// Without it a poll is the one path in the application whose
+				// failures cannot be grepped back to the work that caused them —
+				// and it is the path most likely to fail, because it is the one
+				// that talks to a hundred and fifty strangers on a timer. §22.11
+				// asks for one id threaded handler → job → poller; this is the
+				// third of those three.
+				pollCtx = reqid.With(pollCtx, "")
 				start := time.Now()
 				res, err := a.svc.PollDue(pollCtx, 25)
 				elapsed := time.Since(start)

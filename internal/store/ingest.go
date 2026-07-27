@@ -27,6 +27,15 @@ type IngestItem struct {
 type IngestResult struct {
 	New     int
 	Updated int
+	// NewIDs are the items created by this call, in the order they arrived.
+	//
+	// Carried out because the caller has no other way to name them: ingest is
+	// the only place that knows which of a poll's entries were already here, and
+	// re-deriving it afterwards means asking the database what changed while
+	// nothing records when. §20.3's live update is about THESE items, so an
+	// event announcing a source-wide change instead would make every client
+	// reload the whole list to discover three new articles.
+	NewIDs []string
 }
 
 // IngestItems writes a poll's worth of entries for one source.
@@ -102,9 +111,16 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 				return err
 			}
 		}
+		res.NewIDs = fresh
 		return deliver(ctx, tx, sourceID, fresh, now)
 	})
-	return res, err
+	if err != nil {
+		// A rolled-back transaction created nothing, so the ids collected inside
+		// it name rows that do not exist. Returning them would have a caller
+		// announce items nobody can fetch.
+		return IngestResult{}, err
+	}
+	return res, nil
 }
 
 // deliver gives every subscriber a state row for each newly ingested item.
