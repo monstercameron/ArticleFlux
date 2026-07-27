@@ -116,35 +116,10 @@ func (c *Client) sendOp(parent context.Context, op outbox.Op) error {
 //     every write behind it forever — one dead op turning a queue into a wall.
 //   - **Acked by key, not by position**, so a write the reader has changed again
 //     mid-drain keeps its newer intent (see outbox.Queue.Done).
+// The rules themselves live in drain.go, which carries no build tag so they can
+// be asserted without a browser — the failure cases here are all "what does a
+// refusal halfway through a replay mean", which is precisely the state that is
+// hard to reach by hand.
 func (c *Client) Drain(parent context.Context) (int, error) {
-	if c.pending == nil || c.pending.Len() == 0 {
-		return 0, nil
-	}
-	sent := 0
-	for _, op := range c.pending.Pending() {
-		err := c.sendOp(parent, op)
-		if err == nil {
-			c.pending.Done(op.Key)
-			sent++
-			continue
-		}
-		switch Classify(err).Class {
-		case ClassTransport:
-			// Still down. Everything after this is still owed.
-			c.saveOutbox()
-			return sent, err
-		case ClassTerminal:
-			// A credential the queue cannot fix. Hold everything: the reader
-			// signs in and it drains then, rather than being discarded because
-			// their session happened to expire while they were offline.
-			c.saveOutbox()
-			return sent, err
-		default:
-			// The server answered and said no. Retrying forever cannot change
-			// that, and this op is in front of every other one.
-			c.pending.Done(op.Key)
-		}
-	}
-	c.saveOutbox()
-	return sent, nil
+	return drain(parent, c.pending, c.sendOp, c.saveOutbox)
 }
