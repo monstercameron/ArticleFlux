@@ -56,6 +56,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The typed settings registry** (`internal/settingsreg` + `internal/store/settingslayers.go`,
+  TODO 6.3) — **system → tenant → user** resolution that returns the value *and which layer supplied
+  it*. That second half is not a nicety: "why is this off for me?" has two very different answers —
+  you turned it off, or your admin did — and a settings screen that cannot tell them apart shows a
+  control that silently does nothing. Registered keys make a typo an error at the boundary instead of
+  a silent fallback to the default that looks like a broken setting, and a default that violates its
+  own bounds is caught at registration rather than by the one user who never overrode it. A setting's
+  `Scope` is the lowest layer it may be written at, so "the admin decides retention" is structural
+  rather than a control the UI hopes to hide. A corrupt stored value is **skipped and reported**, and
+  resolution continues to the next layer — using it would let a bad tenant value mask a good system
+  one, and erroring would blank a screen whose other eighty-nine settings are fine.
+
 - **G3 passed, and the answer was not the one the plan expected** (`internal/store/hotquery_test.go`,
   TODO 5.4, §6.5, R2). At 50,000 items × 3 users: **unread by newest 478ms → 0.5ms, unread by folder
   178ms → 0.5ms, keyset page 40 408ms → 0.3ms.** §6.5 prescribed denormalising `source_id` and
