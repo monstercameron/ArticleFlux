@@ -632,17 +632,44 @@ func ftsQuery(s string) string {
 	return strings.Join(terms, " AND ")
 }
 
+// NewSubscription is what Subscribe is being asked to attach.
+//
+// A struct rather than five positional strings: the call had four of them
+// already and adding FolderID would have made a signature where transposing two
+// arguments compiles, runs, and files every new feed under a URL.
+type NewSubscription struct {
+	NaturalKey string
+	FeedURL    string
+	SiteURL    string
+	// Title is the reader's own name for the feed, or empty to use the
+	// publisher's.
+	Title string
+	// FolderID files the feed on the way in. Empty leaves it unfiled, which is
+	// where a feed added without a category belongs.
+	FolderID string
+}
+
 // Subscribe attaches a user to a source, creating the source if no tenant has it
 // yet (A14: global, polled once).
-func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, naturalKey, feedURL, siteURL, title string) (Feed, bool, error) {
+func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, n NewSubscription) (Feed, bool, error) {
 	if !s.Valid() {
 		return Feed{}, false, ErrNoScope
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	naturalKey, feedURL, siteURL, title := n.NaturalKey, n.FeedURL, n.SiteURL, n.Title
 	var sourceID string
 	var existed bool
 
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		// The folder is checked BEFORE the source is created, so a bad folder id
+		// cannot leave a half-done subscription behind. It is inside the
+		// transaction rather than before it because the folder could otherwise be
+		// deleted between the check and the write.
+		if n.FolderID != "" {
+			if err := checkFolder(ctx, tx, s, n.FolderID); err != nil {
+				return err
+			}
+		}
 		err := tx.QueryRowContext(ctx,
 			`SELECT id FROM sources WHERE natural_key = ?`, naturalKey).Scan(&sourceID)
 		switch {
@@ -666,12 +693,29 @@ func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, naturalKey, feedURL
 			return err
 		}
 
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO subscriptions (id,tenant_id,user_id,source_id,title,created_at)
-			VALUES (?,?,?,?,?,?)
+		var folder any
+		if n.FolderID != "" {
+			folder = n.FolderID
+		}
+		// DO NOTHING on conflict, so re-adding a feed you already have is not an
+		// error — but a re-add that names a category DOES refile it. Silently
+		// ignoring the category because the subscription happened to exist would
+		// make the form lie about what it just did.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO subscriptions (id,tenant_id,user_id,source_id,folder_id,title,created_at)
+			VALUES (?,?,?,?,?,?,?)
 			ON CONFLICT(user_id,source_id) DO NOTHING`,
-			idgen.New(), s.TenantID, s.UserID, sourceID, title, now)
-		return err
+			idgen.New(), s.TenantID, s.UserID, sourceID, folder, title, now); err != nil {
+			return err
+		}
+		if n.FolderID != "" {
+			_, err := tx.ExecContext(ctx, `
+				UPDATE subscriptions SET folder_id = ?
+				 WHERE user_id = ? AND tenant_id = ? AND source_id = ?`,
+				n.FolderID, s.UserID, s.TenantID, sourceID)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return Feed{}, false, err

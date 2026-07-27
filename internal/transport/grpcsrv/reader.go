@@ -202,8 +202,14 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	f, existed, err := s.svc.Subscribe(ctx, sc, req.GetUrl(), req.GetTitle())
+	f, existed, err := s.svc.Subscribe(ctx, sc, req.GetUrl(), req.GetTitle(), req.GetFolderId())
 	if err != nil {
+		// A category that is not this user's is NotFound like every other
+		// unowned row, and must not be reported as a bad URL — the form would
+		// blame the field the reader can see rather than the one that was wrong.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, toStatus(err)
+		}
 		// A bad URL is the user's mistake and they can fix it, so it is
 		// InvalidArgument rather than a generic failure.
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -211,11 +217,92 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 	return &pb.SubscribeResponse{
 		Feed: &pb.Feed{
 			Id: f.ID, SourceId: f.SourceID, Title: f.Title,
-			FeedUrl: f.FeedURL, SiteUrl: f.SiteURL,
+			FeedUrl: f.FeedURL, SiteUrl: f.SiteURL, FolderId: f.FolderID,
 			UnreadCount: int32(f.UnreadCount),
 		},
 		SourceExisted: existed,
 	}, nil
+}
+
+// The category RPCs.
+//
+// Naming errors — empty, too long, a duplicate on rename — are InvalidArgument
+// rather than Internal: they are the reader's to fix and the message says how,
+// so swallowing them into "internal error" would leave a dialog that refuses to
+// save and will not say why.
+func (s *ReaderServer) ListFolders(ctx context.Context, _ *pb.ListFoldersRequest) (*pb.ListFoldersResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	folders, err := s.svc.ListFolders(ctx, sc)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &pb.ListFoldersResponse{}
+	for _, f := range folders {
+		out.Folders = append(out.Folders, pbFolder(f))
+	}
+	return out, nil
+}
+
+func (s *ReaderServer) CreateFolder(ctx context.Context, req *pb.CreateFolderRequest) (*pb.CreateFolderResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	f, err := s.svc.CreateFolder(ctx, sc, req.GetName())
+	if err != nil {
+		return nil, folderStatus(err)
+	}
+	return &pb.CreateFolderResponse{Folder: pbFolder(f)}, nil
+}
+
+func (s *ReaderServer) RenameFolder(ctx context.Context, req *pb.RenameFolderRequest) (*pb.RenameFolderResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	f, err := s.svc.RenameFolder(ctx, sc, req.GetFolderId(), req.GetName())
+	if err != nil {
+		return nil, folderStatus(err)
+	}
+	return &pb.RenameFolderResponse{Folder: pbFolder(f)}, nil
+}
+
+func (s *ReaderServer) DeleteFolder(ctx context.Context, req *pb.DeleteFolderRequest) (*pb.DeleteFolderResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if err := s.svc.DeleteFolder(ctx, sc, req.GetFolderId()); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.DeleteFolderResponse{}, nil
+}
+
+func (s *ReaderServer) SetFeedFolder(ctx context.Context, req *pb.SetFeedFolderRequest) (*pb.SetFeedFolderResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if err := s.svc.SetFeedFolder(ctx, sc, req.GetSourceId(), req.GetFolderId()); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.SetFeedFolderResponse{}, nil
+}
+
+func pbFolder(f store.Folder) *pb.Folder {
+	return &pb.Folder{Id: f.ID, Name: f.Name, Position: int32(f.Position)}
+}
+
+// folderStatus keeps the taxonomy's own errors intact and hands everything else
+// to the standard mapping, so an unowned folder is still NotFound.
+func folderStatus(err error) error {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNoScope) {
+		return toStatus(err)
+	}
+	return status.Error(codes.InvalidArgument, err.Error())
 }
 
 func (s *ReaderServer) Unsubscribe(ctx context.Context, req *pb.UnsubscribeRequest) (*pb.UnsubscribeResponse, error) {

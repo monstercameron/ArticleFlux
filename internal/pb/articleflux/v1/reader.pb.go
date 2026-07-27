@@ -1647,10 +1647,24 @@ func (*SetPrefsResponse) Descriptor() ([]byte, []int) {
 }
 
 type Tag struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	FeedCount     int32                  `protobuf:"varint,3,opt,name=feed_count,json=feedCount,proto3" json:"feed_count,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// name is the IDENTITY: the word typed to file a feed, and the handle
+	// SetFeedTag takes. It is never changed by a rename — see label.
+	Name      string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	FeedCount int32  `protobuf:"varint,3,opt,name=feed_count,json=feedCount,proto3" json:"feed_count,omitempty"`
+	// label is the reader's own name for the tag's row in the rail. Empty means
+	// "use name", exactly as FeedSettings.title is empty to mean "use the
+	// publisher's" — so there is never a second copy of the name to drift.
+	//
+	// Sent alongside name rather than pre-resolved into one field because the
+	// client needs BOTH: the label to draw the row, and the name to send back
+	// when a tag is added to or removed from a feed.
+	Label string `protobuf:"bytes,4,opt,name=label,proto3" json:"label,omitempty"`
+	// glyph is one character from the internal/tagglyph catalogue, or empty for
+	// the section default. The server validates it against that catalogue; a
+	// client is not trusted to put arbitrary text into everyone's sidebar.
+	Glyph         string `protobuf:"bytes,5,opt,name=glyph,proto3" json:"glyph,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1704,6 +1718,20 @@ func (x *Tag) GetFeedCount() int32 {
 		return x.FeedCount
 	}
 	return 0
+}
+
+func (x *Tag) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *Tag) GetGlyph() string {
+	if x != nil {
+		return x.Glyph
+	}
+	return ""
 }
 
 type ListTagsRequest struct {
@@ -1944,6 +1972,632 @@ func (x *SetFeedTagResponse) GetTag() *Tag {
 	return nil
 }
 
+// UpdateTagRequest patches how a tag PRESENTS. Same tri-state rule as
+// UpdateFeedSettingsRequest: unset means "leave it alone".
+//
+// Note what is absent: `name`. The identity is not editable here, and that is
+// the point of the message rather than an omission. A tag is created by use and
+// removed with its last association, so its name is the handle a reader has on
+// it everywhere else in the app; letting a settings panel change that out from
+// under the chips and the tag field would be renaming the key, not the label.
+type UpdateTagRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	TagId string                 `protobuf:"bytes,1,opt,name=tag_id,json=tagId,proto3" json:"tag_id,omitempty"`
+	// An empty string is meaningful and is sent rather than skipped: it CLEARS
+	// the override and restores the tag's own name. Distinguishing "clear it"
+	// from "leave it alone" is exactly what the optional is for.
+	Label         *string `protobuf:"bytes,2,opt,name=label,proto3,oneof" json:"label,omitempty"`
+	Glyph         *string `protobuf:"bytes,3,opt,name=glyph,proto3,oneof" json:"glyph,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTagRequest) Reset() {
+	*x = UpdateTagRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTagRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTagRequest) ProtoMessage() {}
+
+func (x *UpdateTagRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTagRequest.ProtoReflect.Descriptor instead.
+func (*UpdateTagRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *UpdateTagRequest) GetTagId() string {
+	if x != nil {
+		return x.TagId
+	}
+	return ""
+}
+
+func (x *UpdateTagRequest) GetLabel() string {
+	if x != nil && x.Label != nil {
+		return *x.Label
+	}
+	return ""
+}
+
+func (x *UpdateTagRequest) GetGlyph() string {
+	if x != nil && x.Glyph != nil {
+		return *x.Glyph
+	}
+	return ""
+}
+
+type UpdateTagResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tag           *Tag                   `protobuf:"bytes,1,opt,name=tag,proto3" json:"tag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTagResponse) Reset() {
+	*x = UpdateTagResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTagResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTagResponse) ProtoMessage() {}
+
+func (x *UpdateTagResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTagResponse.ProtoReflect.Descriptor instead.
+func (*UpdateTagResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UpdateTagResponse) GetTag() *Tag {
+	if x != nil {
+		return x.Tag
+	}
+	return nil
+}
+
+// Folder is one category: a named group of subscriptions in the rail.
+//
+// Flat, deliberately. The table behind it carries parent_id and a depth ceiling
+// (plan.md §6.8), and nothing here builds a tree yet — a nesting UI nobody asked
+// for is a folder picker that needs a path, a drag target that needs a drop
+// zone, and a rail that can indent itself off the right edge. The column stays
+// so the day it is wanted is a migration nobody has to write.
+type Folder struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name  string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// position is the rail order. Assigned on create and stable thereafter, so a
+	// renamed category does not jump.
+	Position      int32 `protobuf:"varint,3,opt,name=position,proto3" json:"position,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Folder) Reset() {
+	*x = Folder{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Folder) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Folder) ProtoMessage() {}
+
+func (x *Folder) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Folder.ProtoReflect.Descriptor instead.
+func (*Folder) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *Folder) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Folder) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Folder) GetPosition() int32 {
+	if x != nil {
+		return x.Position
+	}
+	return 0
+}
+
+type ListFoldersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFoldersRequest) Reset() {
+	*x = ListFoldersRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFoldersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFoldersRequest) ProtoMessage() {}
+
+func (x *ListFoldersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFoldersRequest.ProtoReflect.Descriptor instead.
+func (*ListFoldersRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{35}
+}
+
+type ListFoldersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Folders       []*Folder              `protobuf:"bytes,1,rep,name=folders,proto3" json:"folders,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFoldersResponse) Reset() {
+	*x = ListFoldersResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFoldersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFoldersResponse) ProtoMessage() {}
+
+func (x *ListFoldersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFoldersResponse.ProtoReflect.Descriptor instead.
+func (*ListFoldersResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ListFoldersResponse) GetFolders() []*Folder {
+	if x != nil {
+		return x.Folders
+	}
+	return nil
+}
+
+// CreateFolderRequest names a category.
+//
+// Creating one that already exists — matched case-insensitively — returns the
+// existing folder instead of erroring. This is called from the add-a-feed form,
+// where "Tech" and "tech" are one intent and an error is a dead end in the
+// middle of a task the reader is halfway through.
+type CreateFolderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateFolderRequest) Reset() {
+	*x = CreateFolderRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateFolderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateFolderRequest) ProtoMessage() {}
+
+func (x *CreateFolderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateFolderRequest.ProtoReflect.Descriptor instead.
+func (*CreateFolderRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *CreateFolderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type CreateFolderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Folder        *Folder                `protobuf:"bytes,1,opt,name=folder,proto3" json:"folder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateFolderResponse) Reset() {
+	*x = CreateFolderResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateFolderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateFolderResponse) ProtoMessage() {}
+
+func (x *CreateFolderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateFolderResponse.ProtoReflect.Descriptor instead.
+func (*CreateFolderResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *CreateFolderResponse) GetFolder() *Folder {
+	if x != nil {
+		return x.Folder
+	}
+	return nil
+}
+
+type RenameFolderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FolderId      string                 `protobuf:"bytes,1,opt,name=folder_id,json=folderId,proto3" json:"folder_id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameFolderRequest) Reset() {
+	*x = RenameFolderRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameFolderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameFolderRequest) ProtoMessage() {}
+
+func (x *RenameFolderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameFolderRequest.ProtoReflect.Descriptor instead.
+func (*RenameFolderRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *RenameFolderRequest) GetFolderId() string {
+	if x != nil {
+		return x.FolderId
+	}
+	return ""
+}
+
+func (x *RenameFolderRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type RenameFolderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Folder        *Folder                `protobuf:"bytes,1,opt,name=folder,proto3" json:"folder,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameFolderResponse) Reset() {
+	*x = RenameFolderResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameFolderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameFolderResponse) ProtoMessage() {}
+
+func (x *RenameFolderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameFolderResponse.ProtoReflect.Descriptor instead.
+func (*RenameFolderResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *RenameFolderResponse) GetFolder() *Folder {
+	if x != nil {
+		return x.Folder
+	}
+	return nil
+}
+
+type DeleteFolderRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FolderId      string                 `protobuf:"bytes,1,opt,name=folder_id,json=folderId,proto3" json:"folder_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteFolderRequest) Reset() {
+	*x = DeleteFolderRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteFolderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteFolderRequest) ProtoMessage() {}
+
+func (x *DeleteFolderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteFolderRequest.ProtoReflect.Descriptor instead.
+func (*DeleteFolderRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *DeleteFolderRequest) GetFolderId() string {
+	if x != nil {
+		return x.FolderId
+	}
+	return ""
+}
+
+type DeleteFolderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteFolderResponse) Reset() {
+	*x = DeleteFolderResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteFolderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteFolderResponse) ProtoMessage() {}
+
+func (x *DeleteFolderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteFolderResponse.ProtoReflect.Descriptor instead.
+func (*DeleteFolderResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{42}
+}
+
+// SetFeedFolderRequest files one feed.
+type SetFeedFolderRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SourceId string                 `protobuf:"bytes,1,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	// Empty unfiles the feed. Empty rather than a separate ClearFeedFolder RPC:
+	// "no category" is a value the picker offers like any other, and a second RPC
+	// would be a second path to keep in step with the first.
+	FolderId      string `protobuf:"bytes,2,opt,name=folder_id,json=folderId,proto3" json:"folder_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetFeedFolderRequest) Reset() {
+	*x = SetFeedFolderRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetFeedFolderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetFeedFolderRequest) ProtoMessage() {}
+
+func (x *SetFeedFolderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetFeedFolderRequest.ProtoReflect.Descriptor instead.
+func (*SetFeedFolderRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *SetFeedFolderRequest) GetSourceId() string {
+	if x != nil {
+		return x.SourceId
+	}
+	return ""
+}
+
+func (x *SetFeedFolderRequest) GetFolderId() string {
+	if x != nil {
+		return x.FolderId
+	}
+	return ""
+}
+
+type SetFeedFolderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetFeedFolderResponse) Reset() {
+	*x = SetFeedFolderResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetFeedFolderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetFeedFolderResponse) ProtoMessage() {}
+
+func (x *SetFeedFolderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetFeedFolderResponse.ProtoReflect.Descriptor instead.
+func (*SetFeedFolderResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{44}
+}
+
 type SetNoteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ItemId        string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
@@ -1954,7 +2608,7 @@ type SetNoteRequest struct {
 
 func (x *SetNoteRequest) Reset() {
 	*x = SetNoteRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1966,7 +2620,7 @@ func (x *SetNoteRequest) String() string {
 func (*SetNoteRequest) ProtoMessage() {}
 
 func (x *SetNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1979,7 +2633,7 @@ func (x *SetNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNoteRequest.ProtoReflect.Descriptor instead.
 func (*SetNoteRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{32}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *SetNoteRequest) GetItemId() string {
@@ -2004,7 +2658,7 @@ type SetNoteResponse struct {
 
 func (x *SetNoteResponse) Reset() {
 	*x = SetNoteResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2016,7 +2670,7 @@ func (x *SetNoteResponse) String() string {
 func (*SetNoteResponse) ProtoMessage() {}
 
 func (x *SetNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2029,7 +2683,7 @@ func (x *SetNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNoteResponse.ProtoReflect.Descriptor instead.
 func (*SetNoteResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{33}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{46}
 }
 
 type ListNotesRequest struct {
@@ -2041,7 +2695,7 @@ type ListNotesRequest struct {
 
 func (x *ListNotesRequest) Reset() {
 	*x = ListNotesRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2053,7 +2707,7 @@ func (x *ListNotesRequest) String() string {
 func (*ListNotesRequest) ProtoMessage() {}
 
 func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2066,7 +2720,7 @@ func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesRequest.ProtoReflect.Descriptor instead.
 func (*ListNotesRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{34}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListNotesRequest) GetLimit() int32 {
@@ -2085,7 +2739,7 @@ type ListNotesResponse struct {
 
 func (x *ListNotesResponse) Reset() {
 	*x = ListNotesResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2097,7 +2751,7 @@ func (x *ListNotesResponse) String() string {
 func (*ListNotesResponse) ProtoMessage() {}
 
 func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2110,7 +2764,7 @@ func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesResponse.ProtoReflect.Descriptor instead.
 func (*ListNotesResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{35}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListNotesResponse) GetItems() []*Item {
@@ -2129,7 +2783,7 @@ type GetFeedSettingsRequest struct {
 
 func (x *GetFeedSettingsRequest) Reset() {
 	*x = GetFeedSettingsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2141,7 +2795,7 @@ func (x *GetFeedSettingsRequest) String() string {
 func (*GetFeedSettingsRequest) ProtoMessage() {}
 
 func (x *GetFeedSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2154,7 +2808,7 @@ func (x *GetFeedSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeedSettingsRequest.ProtoReflect.Descriptor instead.
 func (*GetFeedSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{36}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetFeedSettingsRequest) GetSourceId() string {
@@ -2177,7 +2831,7 @@ type GetFeedSettingsResponse struct {
 
 func (x *GetFeedSettingsResponse) Reset() {
 	*x = GetFeedSettingsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2189,7 +2843,7 @@ func (x *GetFeedSettingsResponse) String() string {
 func (*GetFeedSettingsResponse) ProtoMessage() {}
 
 func (x *GetFeedSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2202,7 +2856,7 @@ func (x *GetFeedSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeedSettingsResponse.ProtoReflect.Descriptor instead.
 func (*GetFeedSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{37}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetFeedSettingsResponse) GetSettings() *FeedSettings {
@@ -2221,7 +2875,7 @@ type UpdateFeedSettingsResponse struct {
 
 func (x *UpdateFeedSettingsResponse) Reset() {
 	*x = UpdateFeedSettingsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2233,7 +2887,7 @@ func (x *UpdateFeedSettingsResponse) String() string {
 func (*UpdateFeedSettingsResponse) ProtoMessage() {}
 
 func (x *UpdateFeedSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2246,7 +2900,7 @@ func (x *UpdateFeedSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFeedSettingsResponse.ProtoReflect.Descriptor instead.
 func (*UpdateFeedSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{38}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *UpdateFeedSettingsResponse) GetSettings() *FeedSettings {
@@ -2297,7 +2951,7 @@ type FeedSettings struct {
 
 func (x *FeedSettings) Reset() {
 	*x = FeedSettings{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2309,7 +2963,7 @@ func (x *FeedSettings) String() string {
 func (*FeedSettings) ProtoMessage() {}
 
 func (x *FeedSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2322,7 +2976,7 @@ func (x *FeedSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeedSettings.ProtoReflect.Descriptor instead.
 func (*FeedSettings) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{39}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *FeedSettings) GetSourceId() string {
@@ -2469,7 +3123,7 @@ type UpdateFeedSettingsRequest struct {
 
 func (x *UpdateFeedSettingsRequest) Reset() {
 	*x = UpdateFeedSettingsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2481,7 +3135,7 @@ func (x *UpdateFeedSettingsRequest) String() string {
 func (*UpdateFeedSettingsRequest) ProtoMessage() {}
 
 func (x *UpdateFeedSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2494,7 +3148,7 @@ func (x *UpdateFeedSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFeedSettingsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateFeedSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{40}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *UpdateFeedSettingsRequest) GetSourceId() string {
@@ -2581,7 +3235,7 @@ type Engagement struct {
 
 func (x *Engagement) Reset() {
 	*x = Engagement{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2593,7 +3247,7 @@ func (x *Engagement) String() string {
 func (*Engagement) ProtoMessage() {}
 
 func (x *Engagement) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2606,7 +3260,7 @@ func (x *Engagement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Engagement.ProtoReflect.Descriptor instead.
 func (*Engagement) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{41}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *Engagement) GetId() string {
@@ -2681,7 +3335,7 @@ type RecordEngagementsRequest struct {
 
 func (x *RecordEngagementsRequest) Reset() {
 	*x = RecordEngagementsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2693,7 +3347,7 @@ func (x *RecordEngagementsRequest) String() string {
 func (*RecordEngagementsRequest) ProtoMessage() {}
 
 func (x *RecordEngagementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2706,7 +3360,7 @@ func (x *RecordEngagementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordEngagementsRequest.ProtoReflect.Descriptor instead.
 func (*RecordEngagementsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{42}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *RecordEngagementsRequest) GetEvents() []*Engagement {
@@ -2731,7 +3385,7 @@ type RecordEngagementsResponse struct {
 
 func (x *RecordEngagementsResponse) Reset() {
 	*x = RecordEngagementsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2743,7 +3397,7 @@ func (x *RecordEngagementsResponse) String() string {
 func (*RecordEngagementsResponse) ProtoMessage() {}
 
 func (x *RecordEngagementsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2756,7 +3410,7 @@ func (x *RecordEngagementsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordEngagementsResponse.ProtoReflect.Descriptor instead.
 func (*RecordEngagementsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{43}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RecordEngagementsResponse) GetAccepted() int32 {
@@ -2898,12 +3552,14 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"PrefsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x12\n" +
-	"\x10SetPrefsResponse\"H\n" +
+	"\x10SetPrefsResponse\"t\n" +
 	"\x03Tag\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
-	"feed_count\x18\x03 \x01(\x05R\tfeedCount\"\x11\n" +
+	"feed_count\x18\x03 \x01(\x05R\tfeedCount\x12\x14\n" +
+	"\x05label\x18\x04 \x01(\tR\x05label\x12\x14\n" +
+	"\x05glyph\x18\x05 \x01(\tR\x05glyph\"\x11\n" +
 	"\x0fListTagsRequest\"\xdd\x01\n" +
 	"\x10ListTagsResponse\x12'\n" +
 	"\x04tags\x18\x01 \x03(\v2\x13.articleflux.v1.TagR\x04tags\x12K\n" +
@@ -2918,7 +3574,38 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x0e\n" +
 	"\x02on\x18\x03 \x01(\bR\x02on\";\n" +
 	"\x12SetFeedTagResponse\x12%\n" +
-	"\x03tag\x18\x01 \x01(\v2\x13.articleflux.v1.TagR\x03tag\"=\n" +
+	"\x03tag\x18\x01 \x01(\v2\x13.articleflux.v1.TagR\x03tag\"s\n" +
+	"\x10UpdateTagRequest\x12\x15\n" +
+	"\x06tag_id\x18\x01 \x01(\tR\x05tagId\x12\x19\n" +
+	"\x05label\x18\x02 \x01(\tH\x00R\x05label\x88\x01\x01\x12\x19\n" +
+	"\x05glyph\x18\x03 \x01(\tH\x01R\x05glyph\x88\x01\x01B\b\n" +
+	"\x06_labelB\b\n" +
+	"\x06_glyph\":\n" +
+	"\x11UpdateTagResponse\x12%\n" +
+	"\x03tag\x18\x01 \x01(\v2\x13.articleflux.v1.TagR\x03tag\"H\n" +
+	"\x06Folder\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
+	"\bposition\x18\x03 \x01(\x05R\bposition\"\x14\n" +
+	"\x12ListFoldersRequest\"G\n" +
+	"\x13ListFoldersResponse\x120\n" +
+	"\afolders\x18\x01 \x03(\v2\x16.articleflux.v1.FolderR\afolders\")\n" +
+	"\x13CreateFolderRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"F\n" +
+	"\x14CreateFolderResponse\x12.\n" +
+	"\x06folder\x18\x01 \x01(\v2\x16.articleflux.v1.FolderR\x06folder\"F\n" +
+	"\x13RenameFolderRequest\x12\x1b\n" +
+	"\tfolder_id\x18\x01 \x01(\tR\bfolderId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"F\n" +
+	"\x14RenameFolderResponse\x12.\n" +
+	"\x06folder\x18\x01 \x01(\v2\x16.articleflux.v1.FolderR\x06folder\"2\n" +
+	"\x13DeleteFolderRequest\x12\x1b\n" +
+	"\tfolder_id\x18\x01 \x01(\tR\bfolderId\"\x16\n" +
+	"\x14DeleteFolderResponse\"P\n" +
+	"\x14SetFeedFolderRequest\x12\x1b\n" +
+	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x1b\n" +
+	"\tfolder_id\x18\x02 \x01(\tR\bfolderId\"\x17\n" +
+	"\x15SetFeedFolderResponse\"=\n" +
 	"\x0eSetNoteRequest\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x12\n" +
 	"\x04body\x18\x02 \x01(\tR\x04body\"\x11\n" +
@@ -2997,7 +3684,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x12LIST_SCOPE_STARRED\x10\x03\x12\x17\n" +
 	"\x13LIST_SCOPE_MEGAFEED\x10\x04\x12\x14\n" +
 	"\x10LIST_SCOPE_LIKED\x10\x05\x12\x17\n" +
-	"\x13LIST_SCOPE_DISLIKED\x10\x062\xf0\f\n" +
+	"\x13LIST_SCOPE_DISLIKED\x10\x062\x89\x11\n" +
 	"\rReaderService\x12P\n" +
 	"\tListFeeds\x12 .articleflux.v1.ListFeedsRequest\x1a!.articleflux.v1.ListFeedsResponse\x12P\n" +
 	"\tListItems\x12 .articleflux.v1.ListItemsRequest\x1a!.articleflux.v1.ListItemsResponse\x12J\n" +
@@ -3013,7 +3700,13 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\bSetPrefs\x12\x1f.articleflux.v1.SetPrefsRequest\x1a .articleflux.v1.SetPrefsResponse\x12M\n" +
 	"\bListTags\x12\x1f.articleflux.v1.ListTagsRequest\x1a .articleflux.v1.ListTagsResponse\x12S\n" +
 	"\n" +
-	"SetFeedTag\x12!.articleflux.v1.SetFeedTagRequest\x1a\".articleflux.v1.SetFeedTagResponse\x12J\n" +
+	"SetFeedTag\x12!.articleflux.v1.SetFeedTagRequest\x1a\".articleflux.v1.SetFeedTagResponse\x12P\n" +
+	"\tUpdateTag\x12 .articleflux.v1.UpdateTagRequest\x1a!.articleflux.v1.UpdateTagResponse\x12V\n" +
+	"\vListFolders\x12\".articleflux.v1.ListFoldersRequest\x1a#.articleflux.v1.ListFoldersResponse\x12Y\n" +
+	"\fCreateFolder\x12#.articleflux.v1.CreateFolderRequest\x1a$.articleflux.v1.CreateFolderResponse\x12Y\n" +
+	"\fRenameFolder\x12#.articleflux.v1.RenameFolderRequest\x1a$.articleflux.v1.RenameFolderResponse\x12Y\n" +
+	"\fDeleteFolder\x12#.articleflux.v1.DeleteFolderRequest\x1a$.articleflux.v1.DeleteFolderResponse\x12\\\n" +
+	"\rSetFeedFolder\x12$.articleflux.v1.SetFeedFolderRequest\x1a%.articleflux.v1.SetFeedFolderResponse\x12J\n" +
 	"\aSetNote\x12\x1e.articleflux.v1.SetNoteRequest\x1a\x1f.articleflux.v1.SetNoteResponse\x12P\n" +
 	"\tListNotes\x12 .articleflux.v1.ListNotesRequest\x1a!.articleflux.v1.ListNotesResponse\x12b\n" +
 	"\x0fGetFeedSettings\x12&.articleflux.v1.GetFeedSettingsRequest\x1a'.articleflux.v1.GetFeedSettingsResponse\x12k\n" +
@@ -3033,7 +3726,7 @@ func file_articleflux_v1_reader_proto_rawDescGZIP() []byte {
 }
 
 var file_articleflux_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
 var file_articleflux_v1_reader_proto_goTypes = []any{
 	(ListScope)(0),                     // 0: articleflux.v1.ListScope
 	(*Feed)(nil),                       // 1: articleflux.v1.Feed
@@ -3068,21 +3761,34 @@ var file_articleflux_v1_reader_proto_goTypes = []any{
 	(*TagIDs)(nil),                     // 30: articleflux.v1.TagIDs
 	(*SetFeedTagRequest)(nil),          // 31: articleflux.v1.SetFeedTagRequest
 	(*SetFeedTagResponse)(nil),         // 32: articleflux.v1.SetFeedTagResponse
-	(*SetNoteRequest)(nil),             // 33: articleflux.v1.SetNoteRequest
-	(*SetNoteResponse)(nil),            // 34: articleflux.v1.SetNoteResponse
-	(*ListNotesRequest)(nil),           // 35: articleflux.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),          // 36: articleflux.v1.ListNotesResponse
-	(*GetFeedSettingsRequest)(nil),     // 37: articleflux.v1.GetFeedSettingsRequest
-	(*GetFeedSettingsResponse)(nil),    // 38: articleflux.v1.GetFeedSettingsResponse
-	(*UpdateFeedSettingsResponse)(nil), // 39: articleflux.v1.UpdateFeedSettingsResponse
-	(*FeedSettings)(nil),               // 40: articleflux.v1.FeedSettings
-	(*UpdateFeedSettingsRequest)(nil),  // 41: articleflux.v1.UpdateFeedSettingsRequest
-	(*Engagement)(nil),                 // 42: articleflux.v1.Engagement
-	(*RecordEngagementsRequest)(nil),   // 43: articleflux.v1.RecordEngagementsRequest
-	(*RecordEngagementsResponse)(nil),  // 44: articleflux.v1.RecordEngagementsResponse
-	nil,                                // 45: articleflux.v1.GetPrefsResponse.PrefsEntry
-	nil,                                // 46: articleflux.v1.SetPrefsRequest.PrefsEntry
-	nil,                                // 47: articleflux.v1.ListTagsResponse.BySourceEntry
+	(*UpdateTagRequest)(nil),           // 33: articleflux.v1.UpdateTagRequest
+	(*UpdateTagResponse)(nil),          // 34: articleflux.v1.UpdateTagResponse
+	(*Folder)(nil),                     // 35: articleflux.v1.Folder
+	(*ListFoldersRequest)(nil),         // 36: articleflux.v1.ListFoldersRequest
+	(*ListFoldersResponse)(nil),        // 37: articleflux.v1.ListFoldersResponse
+	(*CreateFolderRequest)(nil),        // 38: articleflux.v1.CreateFolderRequest
+	(*CreateFolderResponse)(nil),       // 39: articleflux.v1.CreateFolderResponse
+	(*RenameFolderRequest)(nil),        // 40: articleflux.v1.RenameFolderRequest
+	(*RenameFolderResponse)(nil),       // 41: articleflux.v1.RenameFolderResponse
+	(*DeleteFolderRequest)(nil),        // 42: articleflux.v1.DeleteFolderRequest
+	(*DeleteFolderResponse)(nil),       // 43: articleflux.v1.DeleteFolderResponse
+	(*SetFeedFolderRequest)(nil),       // 44: articleflux.v1.SetFeedFolderRequest
+	(*SetFeedFolderResponse)(nil),      // 45: articleflux.v1.SetFeedFolderResponse
+	(*SetNoteRequest)(nil),             // 46: articleflux.v1.SetNoteRequest
+	(*SetNoteResponse)(nil),            // 47: articleflux.v1.SetNoteResponse
+	(*ListNotesRequest)(nil),           // 48: articleflux.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),          // 49: articleflux.v1.ListNotesResponse
+	(*GetFeedSettingsRequest)(nil),     // 50: articleflux.v1.GetFeedSettingsRequest
+	(*GetFeedSettingsResponse)(nil),    // 51: articleflux.v1.GetFeedSettingsResponse
+	(*UpdateFeedSettingsResponse)(nil), // 52: articleflux.v1.UpdateFeedSettingsResponse
+	(*FeedSettings)(nil),               // 53: articleflux.v1.FeedSettings
+	(*UpdateFeedSettingsRequest)(nil),  // 54: articleflux.v1.UpdateFeedSettingsRequest
+	(*Engagement)(nil),                 // 55: articleflux.v1.Engagement
+	(*RecordEngagementsRequest)(nil),   // 56: articleflux.v1.RecordEngagementsRequest
+	(*RecordEngagementsResponse)(nil),  // 57: articleflux.v1.RecordEngagementsResponse
+	nil,                                // 58: articleflux.v1.GetPrefsResponse.PrefsEntry
+	nil,                                // 59: articleflux.v1.SetPrefsRequest.PrefsEntry
+	nil,                                // 60: articleflux.v1.ListTagsResponse.BySourceEntry
 }
 var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	1,  // 0: articleflux.v1.ListFeedsResponse.feeds:type_name -> articleflux.v1.Feed
@@ -3093,59 +3799,75 @@ var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	0,  // 5: articleflux.v1.MarkAllReadRequest.scope:type_name -> articleflux.v1.ListScope
 	1,  // 6: articleflux.v1.SubscribeResponse.feed:type_name -> articleflux.v1.Feed
 	2,  // 7: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
-	45, // 8: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
-	46, // 9: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
+	58, // 8: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
+	59, // 9: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
 	27, // 10: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
-	47, // 11: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
+	60, // 11: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
 	27, // 12: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
-	2,  // 13: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
-	40, // 14: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	40, // 15: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	42, // 16: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
-	30, // 17: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
-	3,  // 18: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
-	5,  // 19: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
-	7,  // 20: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
-	9,  // 21: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
-	12, // 22: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
-	11, // 23: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
-	15, // 24: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
-	17, // 25: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
-	19, // 26: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
-	21, // 27: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
-	23, // 28: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
-	25, // 29: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
-	28, // 30: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
-	31, // 31: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
-	33, // 32: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
-	35, // 33: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
-	37, // 34: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
-	41, // 35: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
-	43, // 36: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
-	4,  // 37: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
-	6,  // 38: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
-	8,  // 39: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
-	10, // 40: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
-	13, // 41: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
-	14, // 42: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
-	16, // 43: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
-	18, // 44: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
-	20, // 45: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
-	22, // 46: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
-	24, // 47: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
-	26, // 48: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
-	29, // 49: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
-	32, // 50: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
-	34, // 51: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
-	36, // 52: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
-	38, // 53: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
-	39, // 54: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
-	44, // 55: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
-	37, // [37:56] is the sub-list for method output_type
-	18, // [18:37] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	27, // 13: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
+	35, // 14: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
+	35, // 15: articleflux.v1.CreateFolderResponse.folder:type_name -> articleflux.v1.Folder
+	35, // 16: articleflux.v1.RenameFolderResponse.folder:type_name -> articleflux.v1.Folder
+	2,  // 17: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
+	53, // 18: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	53, // 19: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	55, // 20: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
+	30, // 21: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
+	3,  // 22: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
+	5,  // 23: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
+	7,  // 24: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
+	9,  // 25: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
+	12, // 26: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
+	11, // 27: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
+	15, // 28: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
+	17, // 29: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
+	19, // 30: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
+	21, // 31: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
+	23, // 32: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
+	25, // 33: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
+	28, // 34: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
+	31, // 35: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
+	33, // 36: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
+	36, // 37: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
+	38, // 38: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
+	40, // 39: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
+	42, // 40: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
+	44, // 41: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
+	46, // 42: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
+	48, // 43: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
+	50, // 44: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
+	54, // 45: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
+	56, // 46: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
+	4,  // 47: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
+	6,  // 48: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
+	8,  // 49: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
+	10, // 50: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
+	13, // 51: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
+	14, // 52: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
+	16, // 53: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
+	18, // 54: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
+	20, // 55: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
+	22, // 56: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
+	24, // 57: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
+	26, // 58: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
+	29, // 59: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
+	32, // 60: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
+	34, // 61: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
+	37, // 62: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
+	39, // 63: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
+	41, // 64: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
+	43, // 65: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
+	45, // 66: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
+	47, // 67: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
+	49, // 68: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
+	51, // 69: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
+	52, // 70: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
+	57, // 71: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
+	47, // [47:72] is the sub-list for method output_type
+	22, // [22:47] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_reader_proto_init() }
@@ -3154,14 +3876,15 @@ func file_articleflux_v1_reader_proto_init() {
 		return
 	}
 	file_articleflux_v1_reader_proto_msgTypes[8].OneofWrappers = []any{}
-	file_articleflux_v1_reader_proto_msgTypes[40].OneofWrappers = []any{}
+	file_articleflux_v1_reader_proto_msgTypes[32].OneofWrappers = []any{}
+	file_articleflux_v1_reader_proto_msgTypes[53].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_reader_proto_rawDesc), len(file_articleflux_v1_reader_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   47,
+			NumMessages:   60,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

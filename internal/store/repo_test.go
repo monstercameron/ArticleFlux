@@ -25,7 +25,9 @@ func seedReader(t *testing.T, db *DB) (*ReaderRepo, Scope) {
 		{"feed:a", "https://a.example/feed", "Alpha Journal"},
 		{"feed:b", "https://b.example/feed", "Beta Notes"},
 	} {
-		if _, _, err := repo.Subscribe(ctx, sc, f.key, f.url, "", f.title); err != nil {
+		if _, _, err := repo.Subscribe(ctx, sc, NewSubscription{
+			NaturalKey: f.key, FeedURL: f.url, Title: f.title,
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

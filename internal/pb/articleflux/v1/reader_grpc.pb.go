@@ -33,6 +33,12 @@ const (
 	ReaderService_SetPrefs_FullMethodName           = "/articleflux.v1.ReaderService/SetPrefs"
 	ReaderService_ListTags_FullMethodName           = "/articleflux.v1.ReaderService/ListTags"
 	ReaderService_SetFeedTag_FullMethodName         = "/articleflux.v1.ReaderService/SetFeedTag"
+	ReaderService_UpdateTag_FullMethodName          = "/articleflux.v1.ReaderService/UpdateTag"
+	ReaderService_ListFolders_FullMethodName        = "/articleflux.v1.ReaderService/ListFolders"
+	ReaderService_CreateFolder_FullMethodName       = "/articleflux.v1.ReaderService/CreateFolder"
+	ReaderService_RenameFolder_FullMethodName       = "/articleflux.v1.ReaderService/RenameFolder"
+	ReaderService_DeleteFolder_FullMethodName       = "/articleflux.v1.ReaderService/DeleteFolder"
+	ReaderService_SetFeedFolder_FullMethodName      = "/articleflux.v1.ReaderService/SetFeedFolder"
 	ReaderService_SetNote_FullMethodName            = "/articleflux.v1.ReaderService/SetNote"
 	ReaderService_ListNotes_FullMethodName          = "/articleflux.v1.ReaderService/ListNotes"
 	ReaderService_GetFeedSettings_FullMethodName    = "/articleflux.v1.ReaderService/GetFeedSettings"
@@ -99,6 +105,38 @@ type ReaderServiceClient interface {
 	// Nobody wants to manage a taxonomy; they want to label the thing in front of
 	// them, and the tag list is the consequence.
 	SetFeedTag(ctx context.Context, in *SetFeedTagRequest, opts ...grpc.CallOption) (*SetFeedTagResponse, error)
+	// UpdateTag changes how a tag looks in the rail — its label and its glyph —
+	// without touching the tag itself.
+	//
+	// There is no matching GetTagSettings, and that asymmetry with the feed panel
+	// is deliberate: ListTags already returns everything the tag panel shows, so
+	// fetching it again would be a round trip for data the client is holding. The
+	// panel opens instantly as a result, which a settings dialog should.
+	UpdateTag(ctx context.Context, in *UpdateTagRequest, opts ...grpc.CallOption) (*UpdateTagResponse, error)
+	// ListFolders returns this user's categories — the named groups the rail
+	// files feeds under.
+	//
+	// A category is WHERE a feed lives; a tag is something you say ABOUT it. That
+	// is why a feed has at most one folder and any number of tags, and why the
+	// two are separate concepts rather than one with a flag.
+	//
+	// No feed counts on the wire: ListFeeds already carries folder_id on every
+	// feed, so the rail derives them. A second source of the same number is a
+	// second thing to keep in step, and the one that drifts is always the one
+	// nobody is looking at.
+	ListFolders(ctx context.Context, in *ListFoldersRequest, opts ...grpc.CallOption) (*ListFoldersResponse, error)
+	// CreateFolder makes a category. Naming one that already exists returns the
+	// existing row rather than a duplicate — see the request message.
+	CreateFolder(ctx context.Context, in *CreateFolderRequest, opts ...grpc.CallOption) (*CreateFolderResponse, error)
+	// RenameFolder changes a category's name. Unlike a tag, the name IS editable:
+	// nothing else refers to a folder by name, so renaming one renames the row
+	// rather than orphaning a key.
+	RenameFolder(ctx context.Context, in *RenameFolderRequest, opts ...grpc.CallOption) (*RenameFolderResponse, error)
+	// DeleteFolder removes the category and unfiles its feeds. It never
+	// unsubscribes anything — deleting a shelf is not deleting the books.
+	DeleteFolder(ctx context.Context, in *DeleteFolderRequest, opts ...grpc.CallOption) (*DeleteFolderResponse, error)
+	// SetFeedFolder files a feed, or unfiles it when folder_id is empty.
+	SetFeedFolder(ctx context.Context, in *SetFeedFolderRequest, opts ...grpc.CallOption) (*SetFeedFolderResponse, error)
 	// SetNote writes or clears the note on an item. An empty body deletes it, so
 	// "has a note" stays an existence check.
 	SetNote(ctx context.Context, in *SetNoteRequest, opts ...grpc.CallOption) (*SetNoteResponse, error)
@@ -274,6 +312,66 @@ func (c *readerServiceClient) SetFeedTag(ctx context.Context, in *SetFeedTagRequ
 	return out, nil
 }
 
+func (c *readerServiceClient) UpdateTag(ctx context.Context, in *UpdateTagRequest, opts ...grpc.CallOption) (*UpdateTagResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateTagResponse)
+	err := c.cc.Invoke(ctx, ReaderService_UpdateTag_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) ListFolders(ctx context.Context, in *ListFoldersRequest, opts ...grpc.CallOption) (*ListFoldersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFoldersResponse)
+	err := c.cc.Invoke(ctx, ReaderService_ListFolders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) CreateFolder(ctx context.Context, in *CreateFolderRequest, opts ...grpc.CallOption) (*CreateFolderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateFolderResponse)
+	err := c.cc.Invoke(ctx, ReaderService_CreateFolder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) RenameFolder(ctx context.Context, in *RenameFolderRequest, opts ...grpc.CallOption) (*RenameFolderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenameFolderResponse)
+	err := c.cc.Invoke(ctx, ReaderService_RenameFolder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) DeleteFolder(ctx context.Context, in *DeleteFolderRequest, opts ...grpc.CallOption) (*DeleteFolderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteFolderResponse)
+	err := c.cc.Invoke(ctx, ReaderService_DeleteFolder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) SetFeedFolder(ctx context.Context, in *SetFeedFolderRequest, opts ...grpc.CallOption) (*SetFeedFolderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetFeedFolderResponse)
+	err := c.cc.Invoke(ctx, ReaderService_SetFeedFolder_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *readerServiceClient) SetNote(ctx context.Context, in *SetNoteRequest, opts ...grpc.CallOption) (*SetNoteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetNoteResponse)
@@ -383,6 +481,38 @@ type ReaderServiceServer interface {
 	// Nobody wants to manage a taxonomy; they want to label the thing in front of
 	// them, and the tag list is the consequence.
 	SetFeedTag(context.Context, *SetFeedTagRequest) (*SetFeedTagResponse, error)
+	// UpdateTag changes how a tag looks in the rail — its label and its glyph —
+	// without touching the tag itself.
+	//
+	// There is no matching GetTagSettings, and that asymmetry with the feed panel
+	// is deliberate: ListTags already returns everything the tag panel shows, so
+	// fetching it again would be a round trip for data the client is holding. The
+	// panel opens instantly as a result, which a settings dialog should.
+	UpdateTag(context.Context, *UpdateTagRequest) (*UpdateTagResponse, error)
+	// ListFolders returns this user's categories — the named groups the rail
+	// files feeds under.
+	//
+	// A category is WHERE a feed lives; a tag is something you say ABOUT it. That
+	// is why a feed has at most one folder and any number of tags, and why the
+	// two are separate concepts rather than one with a flag.
+	//
+	// No feed counts on the wire: ListFeeds already carries folder_id on every
+	// feed, so the rail derives them. A second source of the same number is a
+	// second thing to keep in step, and the one that drifts is always the one
+	// nobody is looking at.
+	ListFolders(context.Context, *ListFoldersRequest) (*ListFoldersResponse, error)
+	// CreateFolder makes a category. Naming one that already exists returns the
+	// existing row rather than a duplicate — see the request message.
+	CreateFolder(context.Context, *CreateFolderRequest) (*CreateFolderResponse, error)
+	// RenameFolder changes a category's name. Unlike a tag, the name IS editable:
+	// nothing else refers to a folder by name, so renaming one renames the row
+	// rather than orphaning a key.
+	RenameFolder(context.Context, *RenameFolderRequest) (*RenameFolderResponse, error)
+	// DeleteFolder removes the category and unfiles its feeds. It never
+	// unsubscribes anything — deleting a shelf is not deleting the books.
+	DeleteFolder(context.Context, *DeleteFolderRequest) (*DeleteFolderResponse, error)
+	// SetFeedFolder files a feed, or unfiles it when folder_id is empty.
+	SetFeedFolder(context.Context, *SetFeedFolderRequest) (*SetFeedFolderResponse, error)
 	// SetNote writes or clears the note on an item. An empty body deletes it, so
 	// "has a note" stays an existence check.
 	SetNote(context.Context, *SetNoteRequest) (*SetNoteResponse, error)
@@ -459,6 +589,24 @@ func (UnimplementedReaderServiceServer) ListTags(context.Context, *ListTagsReque
 }
 func (UnimplementedReaderServiceServer) SetFeedTag(context.Context, *SetFeedTagRequest) (*SetFeedTagResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetFeedTag not implemented")
+}
+func (UnimplementedReaderServiceServer) UpdateTag(context.Context, *UpdateTagRequest) (*UpdateTagResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateTag not implemented")
+}
+func (UnimplementedReaderServiceServer) ListFolders(context.Context, *ListFoldersRequest) (*ListFoldersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListFolders not implemented")
+}
+func (UnimplementedReaderServiceServer) CreateFolder(context.Context, *CreateFolderRequest) (*CreateFolderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateFolder not implemented")
+}
+func (UnimplementedReaderServiceServer) RenameFolder(context.Context, *RenameFolderRequest) (*RenameFolderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RenameFolder not implemented")
+}
+func (UnimplementedReaderServiceServer) DeleteFolder(context.Context, *DeleteFolderRequest) (*DeleteFolderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteFolder not implemented")
+}
+func (UnimplementedReaderServiceServer) SetFeedFolder(context.Context, *SetFeedFolderRequest) (*SetFeedFolderResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetFeedFolder not implemented")
 }
 func (UnimplementedReaderServiceServer) SetNote(context.Context, *SetNoteRequest) (*SetNoteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetNote not implemented")
@@ -748,6 +896,114 @@ func _ReaderService_SetFeedTag_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ReaderService_UpdateTag_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateTagRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).UpdateTag(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_UpdateTag_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).UpdateTag(ctx, req.(*UpdateTagRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_ListFolders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFoldersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).ListFolders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_ListFolders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).ListFolders(ctx, req.(*ListFoldersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_CreateFolder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateFolderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).CreateFolder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_CreateFolder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).CreateFolder(ctx, req.(*CreateFolderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_RenameFolder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenameFolderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).RenameFolder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_RenameFolder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).RenameFolder(ctx, req.(*RenameFolderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_DeleteFolder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteFolderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).DeleteFolder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_DeleteFolder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).DeleteFolder(ctx, req.(*DeleteFolderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_SetFeedFolder_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetFeedFolderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).SetFeedFolder(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_SetFeedFolder_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).SetFeedFolder(ctx, req.(*SetFeedFolderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ReaderService_SetNote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetNoteRequest)
 	if err := dec(in); err != nil {
@@ -900,6 +1156,30 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetFeedTag",
 			Handler:    _ReaderService_SetFeedTag_Handler,
+		},
+		{
+			MethodName: "UpdateTag",
+			Handler:    _ReaderService_UpdateTag_Handler,
+		},
+		{
+			MethodName: "ListFolders",
+			Handler:    _ReaderService_ListFolders_Handler,
+		},
+		{
+			MethodName: "CreateFolder",
+			Handler:    _ReaderService_CreateFolder_Handler,
+		},
+		{
+			MethodName: "RenameFolder",
+			Handler:    _ReaderService_RenameFolder_Handler,
+		},
+		{
+			MethodName: "DeleteFolder",
+			Handler:    _ReaderService_DeleteFolder_Handler,
+		},
+		{
+			MethodName: "SetFeedFolder",
+			Handler:    _ReaderService_SetFeedFolder_Handler,
 		},
 		{
 			MethodName: "SetNote",

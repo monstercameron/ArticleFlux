@@ -73,6 +73,44 @@ service ReaderService {
   // them, and the tag list is the consequence.
   rpc SetFeedTag(SetFeedTagRequest) returns (SetFeedTagResponse);
 
+  // UpdateTag changes how a tag looks in the rail — its label and its glyph —
+  // without touching the tag itself.
+  //
+  // There is no matching GetTagSettings, and that asymmetry with the feed panel
+  // is deliberate: ListTags already returns everything the tag panel shows, so
+  // fetching it again would be a round trip for data the client is holding. The
+  // panel opens instantly as a result, which a settings dialog should.
+  rpc UpdateTag(UpdateTagRequest) returns (UpdateTagResponse);
+
+  // ListFolders returns this user's categories — the named groups the rail
+  // files feeds under.
+  //
+  // A category is WHERE a feed lives; a tag is something you say ABOUT it. That
+  // is why a feed has at most one folder and any number of tags, and why the
+  // two are separate concepts rather than one with a flag.
+  //
+  // No feed counts on the wire: ListFeeds already carries folder_id on every
+  // feed, so the rail derives them. A second source of the same number is a
+  // second thing to keep in step, and the one that drifts is always the one
+  // nobody is looking at.
+  rpc ListFolders(ListFoldersRequest) returns (ListFoldersResponse);
+
+  // CreateFolder makes a category. Naming one that already exists returns the
+  // existing row rather than a duplicate — see the request message.
+  rpc CreateFolder(CreateFolderRequest) returns (CreateFolderResponse);
+
+  // RenameFolder changes a category's name. Unlike a tag, the name IS editable:
+  // nothing else refers to a folder by name, so renaming one renames the row
+  // rather than orphaning a key.
+  rpc RenameFolder(RenameFolderRequest) returns (RenameFolderResponse);
+
+  // DeleteFolder removes the category and unfiles its feeds. It never
+  // unsubscribes anything — deleting a shelf is not deleting the books.
+  rpc DeleteFolder(DeleteFolderRequest) returns (DeleteFolderResponse);
+
+  // SetFeedFolder files a feed, or unfiles it when folder_id is empty.
+  rpc SetFeedFolder(SetFeedFolderRequest) returns (SetFeedFolderResponse);
+
   // SetNote writes or clears the note on an item. An empty body deletes it, so
   // "has a note" stays an existence check.
   rpc SetNote(SetNoteRequest) returns (SetNoteResponse);
@@ -301,8 +339,22 @@ message SetPrefsResponse {}
 
 message Tag {
   string id = 1;
+  // name is the IDENTITY: the word typed to file a feed, and the handle
+  // SetFeedTag takes. It is never changed by a rename — see label.
   string name = 2;
   int32 feed_count = 3;
+  // label is the reader's own name for the tag's row in the rail. Empty means
+  // "use name", exactly as FeedSettings.title is empty to mean "use the
+  // publisher's" — so there is never a second copy of the name to drift.
+  //
+  // Sent alongside name rather than pre-resolved into one field because the
+  // client needs BOTH: the label to draw the row, and the name to send back
+  // when a tag is added to or removed from a feed.
+  string label = 4;
+  // glyph is one character from the internal/tagglyph catalogue, or empty for
+  // the section default. The server validates it against that catalogue; a
+  // client is not trusted to put arbitrary text into everyone's sidebar.
+  string glyph = 5;
 }
 
 message ListTagsRequest {}
@@ -327,6 +379,88 @@ message SetFeedTagRequest {
 message SetFeedTagResponse {
   Tag tag = 1;
 }
+
+// UpdateTagRequest patches how a tag PRESENTS. Same tri-state rule as
+// UpdateFeedSettingsRequest: unset means "leave it alone".
+//
+// Note what is absent: `name`. The identity is not editable here, and that is
+// the point of the message rather than an omission. A tag is created by use and
+// removed with its last association, so its name is the handle a reader has on
+// it everywhere else in the app; letting a settings panel change that out from
+// under the chips and the tag field would be renaming the key, not the label.
+message UpdateTagRequest {
+  string tag_id = 1;
+  // An empty string is meaningful and is sent rather than skipped: it CLEARS
+  // the override and restores the tag's own name. Distinguishing "clear it"
+  // from "leave it alone" is exactly what the optional is for.
+  optional string label = 2;
+  optional string glyph = 3;
+}
+
+message UpdateTagResponse {
+  Tag tag = 1;
+}
+
+// Folder is one category: a named group of subscriptions in the rail.
+//
+// Flat, deliberately. The table behind it carries parent_id and a depth ceiling
+// (plan.md §6.8), and nothing here builds a tree yet — a nesting UI nobody asked
+// for is a folder picker that needs a path, a drag target that needs a drop
+// zone, and a rail that can indent itself off the right edge. The column stays
+// so the day it is wanted is a migration nobody has to write.
+message Folder {
+  string id = 1;
+  string name = 2;
+  // position is the rail order. Assigned on create and stable thereafter, so a
+  // renamed category does not jump.
+  int32 position = 3;
+}
+
+message ListFoldersRequest {}
+
+message ListFoldersResponse {
+  repeated Folder folders = 1;
+}
+
+// CreateFolderRequest names a category.
+//
+// Creating one that already exists — matched case-insensitively — returns the
+// existing folder instead of erroring. This is called from the add-a-feed form,
+// where "Tech" and "tech" are one intent and an error is a dead end in the
+// middle of a task the reader is halfway through.
+message CreateFolderRequest {
+  string name = 1;
+}
+
+message CreateFolderResponse {
+  Folder folder = 1;
+}
+
+message RenameFolderRequest {
+  string folder_id = 1;
+  string name = 2;
+}
+
+message RenameFolderResponse {
+  Folder folder = 1;
+}
+
+message DeleteFolderRequest {
+  string folder_id = 1;
+}
+
+message DeleteFolderResponse {}
+
+// SetFeedFolderRequest files one feed.
+message SetFeedFolderRequest {
+  string source_id = 1;
+  // Empty unfiles the feed. Empty rather than a separate ClearFeedFolder RPC:
+  // "no category" is a value the picker offers like any other, and a second RPC
+  // would be a second path to keep in step with the first.
+  string folder_id = 2;
+}
+
+message SetFeedFolderResponse {}
 
 message SetNoteRequest {
   string item_id = 1;

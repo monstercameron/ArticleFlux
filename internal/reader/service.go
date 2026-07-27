@@ -97,7 +97,7 @@ func (s *Service) Search(ctx context.Context, sc store.Scope, query, sourceID st
 // added a feed and sees an empty list assumes it did not work. One fetch is a
 // second or two, and it is the difference between "added" and "added and here it
 // is".
-func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title string) (store.Feed, bool, error) {
+func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, folderID string) (store.Feed, bool, error) {
 	if rawURL == "" {
 		return store.Feed{}, false, errors.New("reader: no url")
 	}
@@ -105,8 +105,9 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title s
 		return store.Feed{}, false, fmt.Errorf("reader: %q is not a URL", rawURL)
 	}
 
-	key := feed.NaturalKey(rawURL)
-	f, existed, err := s.repo.Subscribe(ctx, sc, key, rawURL, "", title)
+	f, existed, err := s.repo.Subscribe(ctx, sc, store.NewSubscription{
+		NaturalKey: feed.NaturalKey(rawURL), FeedURL: rawURL, Title: title, FolderID: folderID,
+	})
 	if err != nil {
 		return store.Feed{}, false, err
 	}
@@ -286,14 +287,57 @@ func (s *Service) PollDue(ctx context.Context, limit int) (RefreshResult, error)
 // so Subscribe polls synchronously. Importing 144 feeds that way takes minutes
 // and looks like a hang, so import subscribes and lets the poller catch up —
 // giving a usable sidebar in under a second.
-func (s *Service) SubscribeOnly(ctx context.Context, sc store.Scope, rawURL, title, siteURL string) (store.Feed, bool, error) {
+func (s *Service) SubscribeOnly(ctx context.Context, sc store.Scope, rawURL, title, siteURL, folderID string) (store.Feed, bool, error) {
 	if rawURL == "" {
 		return store.Feed{}, false, errors.New("reader: no url")
 	}
 	if urlnorm.Host(rawURL) == "" {
 		return store.Feed{}, false, fmt.Errorf("reader: %q is not a URL", rawURL)
 	}
-	return s.repo.Subscribe(ctx, sc, feed.NaturalKey(rawURL), rawURL, siteURL, title)
+	return s.repo.Subscribe(ctx, sc, store.NewSubscription{
+		NaturalKey: feed.NaturalKey(rawURL), FeedURL: rawURL, SiteURL: siteURL,
+		Title: title, FolderID: folderID,
+	})
+}
+
+// The category surface. Thin, like the rest of this layer: the naming rules, the
+// cap and the ownership checks live in the repository, where a second caller
+// cannot skip them.
+func (s *Service) ListFolders(ctx context.Context, sc store.Scope) ([]store.Folder, error) {
+	return s.repo.ListFolders(ctx, sc)
+}
+
+func (s *Service) CreateFolder(ctx context.Context, sc store.Scope, name string) (store.Folder, error) {
+	return s.repo.CreateFolder(ctx, sc, name)
+}
+
+func (s *Service) RenameFolder(ctx context.Context, sc store.Scope, folderID, name string) (store.Folder, error) {
+	return s.repo.RenameFolder(ctx, sc, folderID, name)
+}
+
+func (s *Service) DeleteFolder(ctx context.Context, sc store.Scope, folderID string) error {
+	return s.repo.DeleteFolder(ctx, sc, folderID)
+}
+
+func (s *Service) SetFeedFolder(ctx context.Context, sc store.Scope, sourceID, folderID string) error {
+	return s.repo.SetFeedFolder(ctx, sc, sourceID, folderID)
+}
+
+// FolderByName resolves a category name to its id, creating it if this user has
+// no such category yet.
+//
+// It exists for OPML import, which carries folder NAMES rather than ids: an
+// export from another reader is the one place a category arrives as text. Every
+// other caller has an id, because every other caller got it from ListFolders.
+func (s *Service) FolderByName(ctx context.Context, sc store.Scope, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	f, err := s.repo.CreateFolder(ctx, sc, name)
+	if err != nil {
+		return "", err
+	}
+	return f.ID, nil
 }
 
 // GetPrefs returns a user's UI preferences.

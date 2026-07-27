@@ -229,7 +229,9 @@ func seed(log *slog.Logger, args []string) error {
 		if u == "" {
 			continue
 		}
-		f, existed, err := a.Service().Subscribe(ctx, sc, u, "")
+		// No category: the seed is a starter set, and inventing a taxonomy for
+		// someone before they have read anything is filing their post for them.
+		f, existed, err := a.Service().Subscribe(ctx, sc, u, "", "")
 		if err != nil {
 			// One unreachable feed must not abort the seed: the rest are still
 			// worth having, and the failure is visible in the log.
@@ -418,9 +420,35 @@ func importOPML(log *slog.Logger, args []string) error {
 		return err
 	}
 
+	// The OPML folders become categories, resolved once each rather than per
+	// feed: a 144-feed export from FreshRSS has perhaps eight of them, and
+	// resolving inside the loop would be 144 writes to create eight rows.
+	//
+	// This is the one place a category arrives as a NAME. Everywhere else the
+	// client holds ids from ListFolders, which is why FolderByName lives on the
+	// service rather than being how filing works generally.
+	folderIDs := map[string]string{}
+	for _, feed := range doc.Feeds {
+		if feed.Folder == "" {
+			continue
+		}
+		if _, ok := folderIDs[feed.Folder]; ok {
+			continue
+		}
+		id, err := a.Service().FolderByName(ctx, sc, feed.Folder)
+		if err != nil {
+			// An unusable folder name must not cost the feeds inside it: they
+			// import unfiled, which is recoverable, where skipping them is not.
+			log.Warn("category skipped", "name", feed.Folder, "err", err)
+			continue
+		}
+		folderIDs[feed.Folder] = id
+	}
+
 	var added, shared, failed int
 	for _, feed := range doc.Feeds {
-		_, existed, err := a.Service().SubscribeOnly(ctx, sc, feed.FeedURL, feed.Title, feed.SiteURL)
+		_, existed, err := a.Service().SubscribeOnly(ctx, sc, feed.FeedURL, feed.Title, feed.SiteURL,
+			folderIDs[feed.Folder])
 		if err != nil {
 			// One bad row must not abort a 144-feed migration.
 			log.Warn("skipped", "title", feed.Title, "url", feed.FeedURL, "err", err)
