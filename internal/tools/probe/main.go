@@ -47,38 +47,35 @@ func main() {
 		ranked, _ := repo.HomeRanking(ctx, sc, 200)
 		fmt.Printf("home_ranking: %d rows\n", len(ranked))
 
-		corr, dupe, slots := 0, 0, map[string]int{}
+		// Counted on the reason's TERM rather than by grepping its prose.
+		//
+		// This used to match English substrings — "carried", "already shown" — because a
+		// stored reason was only a sentence. store.RankReason now carries the scoring
+		// term alongside the prose, so the count is exact and survives any rewording of
+		// the sentences in internal/rank.
+		slots, terms, plus := map[string]int{}, map[string]int{}, 0
 		for _, r := range ranked {
 			slots[r.Slot]++
+			if r.Tier == store.TierSmartPlus {
+				plus++
+			}
 			for _, why := range r.Reasons {
-				if len(why) > 0 {
-					switch {
-					case contains(why, "carried"), contains(why, "sources"), contains(why, "corrobor"):
-						corr++
-					case contains(why, "already shown"), contains(why, "close to something"):
-						dupe++
-					}
-				}
+				terms[why.Term]++
 			}
 		}
 		fmt.Printf("slots: %v\n", slots)
-		fmt.Printf("rows citing corroboration: %d\n", corr)
-		fmt.Printf("rows citing duplication:   %d\n", dupe)
+		fmt.Printf("reason terms: %v\n", terms)
+		fmt.Printf("smart_plus rows: %d of %d\n", plus, len(ranked))
 		fmt.Println("\n-- first 12 reason sets --")
 		for i, r := range ranked {
 			if i >= 12 {
 				break
 			}
-			fmt.Printf("  #%-3d %-7s %.3f  %v\n", r.Rank, r.Slot, r.Score, r.Reasons)
+			labels := make([]string, 0, len(r.Reasons))
+			for _, why := range r.Reasons {
+				labels = append(labels, why.Term)
+			}
+			fmt.Printf("  #%-3d %-7s %-10s %.3f  %v\n", r.Rank, r.Slot, r.Tier, r.Score, labels)
 		}
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

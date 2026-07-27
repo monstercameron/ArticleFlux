@@ -187,29 +187,20 @@ test.describe('reading', () => {
       .toHaveAttribute('data-read', 'false');
   });
 
-  // FIXME (TODO 8b.52). Still fixme, but for a different reason than before, and
-  // the new one is measured rather than suspected.
+  // Un-fixme'd 2026-07-27 (8b.52). Two fixes stood between this and green.
   //
-  // The topmost-article handler is alive again — it was bound to the `#app` node
-  // GWC's Render replaces, and it listens on the document now. What blocks this
-  // is one layer in: opening an article arms `expectFocus` with its id and the
-  // handler ignores every article until THAT one reports as topmost. Row 2 is
-  // the LAST article, so the pane runs out of scroll before its top reaches the
-  // fold — it can never be topmost, the gate is never disarmed, and from then on
-  // every scroll in the session is ignored.
+  // The handler was bound to the `#app` node GWC's Render then replaces, so it
+  // was attached to a detached element for the life of the session. And once
+  // that was fixed, the guard that suppresses reports DURING a click's scroll
+  // was only disarmed by its target reporting as topmost — which a last article
+  // can never do, because the pane runs out of scroll before its top reaches the
+  // fold. The guard now ends when the travel ends, which always happens.
   //
-  // Instrumented directly: after clicking row 2 the handler fires with row 1's
-  // id while waiting for row 2's, and after wheeling back up it fires with row
-  // 0's id while STILL waiting for row 2's. Both return early. So this test does
-  // not fail because scrolling-back marking was lost — it fails because nothing
-  // is listening by the time it scrolls.
-  //
-  // Two candidate fixes, both inside `reader.go`, which another lane holds:
-  // disarm the gate when the scroll settles anywhere at or past the target, or
-  // give the stream enough trailing space that its last article can reach the
-  // top — which the reading model needs anyway, since an article that cannot
-  // become topmost cannot be the one A28 says is being read.
-  test.fixme('scrolling back into a skipped article does mark it read', async ({ page }) => {
+  // This is the assertion that keeps the jump suppression TEMPORARY: the article
+  // a jump passed over is still in the stream above the reader, and scrolling up
+  // into it is reading it. A fix that made the test above pass by making this one
+  // fail would be a regression wearing a fix's hat.
+  test('scrolling back into a skipped article does mark it read', async ({ page }) => {
     await boot(page);
     await openAlpha(page);
     const rows = page.locator('.item-row');
@@ -235,9 +226,23 @@ test.describe('reading', () => {
     // object the browser produces. (It is also not merely unrealistic: the
     // synthetic version killed the Playwright worker outright, with no result
     // and no error, every time it ran.)
+    // Scrolled up in STEPS, with a pause between them, and stopped when the
+    // skipped article reaches the top — which is what "scrolling back into it"
+    // means under A28: the article at the top of the pane is the one being read.
+    //
+    // Eight wheels in a burst was the earlier version and it asked for something
+    // else. It lands at scrollTop 0, where the article being read is the FIRST
+    // one; the middle article is merely visible, having been travelled through at
+    // speed — which is the case the app deliberately does not count. A reader
+    // going back to re-read something stops on it, so the test does too.
     const box = await page.locator('.pane-article').boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    for (let i = 0; i < 8; i++) await page.mouse.wheel(0, -600);
+    for (let i = 0; i < 12; i++) {
+      if (await rows.nth(1).getAttribute('aria-current') === 'true') break;
+      await page.mouse.wheel(0, -300);
+      await page.waitForTimeout(250);
+    }
+    await expect(rows.nth(1)).toHaveAttribute('aria-current', 'true', { timeout: 15_000 });
 
     await expect(rows.nth(1))
       .toHaveAttribute('data-read', 'true', { timeout: 30_000 });

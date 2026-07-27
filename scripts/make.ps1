@@ -27,7 +27,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('gen', 'build', 'test', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'tools', 'clean', 'help')]
+    [ValidateSet('gen', 'build', 'test', 'wasmtest', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'tools', 'clean', 'help')]
     [string]$Target = 'help',
 
     # 9000 is the port Cam watches to follow along; changing the default moves the
@@ -108,6 +108,53 @@ function Invoke-Build {
 function Invoke-Test {
     Step 'go test ./...'
     Invoke-Checked 'go test' { go test ./... }
+}
+
+# wasmtest is the ONLY way client/view ever gets tested: it is entirely
+# `//go:build js && wasm` (zero untagged files), so `go test .\client\view`
+# under a native build fails outright with "build constraints exclude all Go
+# files". Cross-compiling the test binary to wasm and running it under Node
+# (via `go test -exec`) is what client/i18n/provider_test.go already proves
+# works; this is that same harness, made a verb instead of a remembered
+# incantation.
+#
+# GOROOT and the node wrapper are resolved at run time rather than hardcoded,
+# so this works on a fresh checkout without anyone hunting for
+# wasm_exec_node.js under whatever GOROOT this machine's Go toolchain manager
+# happens to use.
+#
+# Scoped to client/i18n and client/view rather than ./client/..., for the
+# same reason the Makefile's mirror of this verb is: those are the two
+# packages the harness exists for, and the rest of client/... is either
+# native-portable (client/design) or untested, so running it through -exec
+# would only add noise.
+#
+# -skip drops two client/i18n tests that walk a directory
+# (TestEveryReferencedKeyExists, TestNoOrphanedKeys, plus srvkeys_test.go's
+# two) because Go's js/wasm syscall layer refuses O_DIRECTORY ON WINDOWS —
+# this machine. That is a gap in the toolchain on this platform, not a
+# broken test: ci.yml's wasmtest job runs the identical suite WITHOUT this
+# skip, on Linux, where the syscall is supported, so nothing here goes
+# permanently unchecked — it is checked on the platform that can check it.
+function Invoke-WasmTest {
+    Step 'go test (wasm, via node) -> client/i18n + client/view'
+    $goroot = (go env GOROOT)
+    if (-not $goroot) { Fail 'go env GOROOT returned nothing' }
+    $execJs = Join-Path $goroot 'lib\wasm\wasm_exec_node.js'
+    if (-not (Test-Path $execJs)) {
+        Fail "wasm_exec_node.js not found under $goroot\lib\wasm - is this Go's Node exec shim missing?"
+    }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Fail 'node is not on PATH — the wasm test harness runs the compiled test binary under it'
+    }
+    Invoke-Checked 'go test (wasm)' {
+        $env:GOOS = 'js'; $env:GOARCH = 'wasm'
+        try {
+            go test -exec="node $execJs" `
+                -skip 'TestEveryReferencedKeyExists|TestNoOrphanedKeys|TestEveryServerErrorKeyExists|TestServerErrorKeysMatchTheirEnglishFallback' `
+                ./client/i18n/... ./client/view/...
+        } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
+    }
 }
 
 function Invoke-Wasm {
@@ -312,6 +359,7 @@ switch ($Target) {
     'gen'     { Invoke-Gen }
     'build'   { Invoke-Build }
     'test'    { Invoke-Test }
+    'wasmtest' { Invoke-WasmTest }
     'wasm'    { Invoke-Wasm }
     'demo'    { Invoke-Demo -DemoVersion $Version }
     'lint'    { Invoke-Lint }
@@ -341,6 +389,7 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
   ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
+  ./scripts/make.ps1 wasmtest   go test client/i18n + client/view under GOOS=js GOARCH=wasm (via node)
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
   ./scripts/make.ps1 demo       build the GitHub Pages demo into bin/demo (-Version v1.0.0)
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards

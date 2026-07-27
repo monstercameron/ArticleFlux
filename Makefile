@@ -44,13 +44,14 @@ VERSION  ?= dev
 # was quietly measuring a different binary from the one CI and make.ps1 measure.
 WASMFLAGS := -trimpath '-ldflags=-s -w'
 
-.PHONY: help deps gen build test wasm demo run dev e2e lint migrate tools clean \
+.PHONY: help deps gen build test wasmtest wasm demo run dev e2e lint migrate tools clean \
         linux install-service backup
 
 help:
 	@echo 'ArticleFlux task runner (mirrors scripts/make.ps1)'
 	@echo
 	@echo '  make deps      check the toolchain and the D0 sibling checkout'
+	@echo '  make wasmtest  go test client/i18n + client/view under GOOS=js GOARCH=wasm'
 	@echo '  make tools     build gwc.exe from ../GoWebComponents (D0)'
 	@echo '  make gen       buf lint + buf generate -> internal/pb'
 	@echo '  make build     go build -> bin/articleflux'
@@ -113,6 +114,32 @@ build: deps
 
 test:
 	go test ./...
+
+# wasmtest is the ONLY way client/view ever gets tested: it is entirely
+# `//go:build js && wasm` (zero untagged files), so `go test ./client/view`
+# under a native build fails outright with "build constraints exclude all Go
+# files". Cross-compiling the test binary to wasm and running it under Node
+# (via `go test -exec`) is what client/i18n/provider_test.go already proves
+# works; this is that same harness, made a verb instead of a remembered
+# incantation.
+#
+# GOROOT and the node wrapper are resolved at run time — not hardcoded — so
+# this works on a fresh checkout without anyone hunting for wasm_exec_node.js
+# under whatever GOROOT this machine's Go toolchain manager happens to use
+# (module-cached toolchains put it somewhere under GOPATH, not under a fixed
+# system path).
+#
+# Scoped to client/i18n and client/view rather than ./client/..., because
+# those are the two packages this harness actually exists for — i18n is the
+# harness's own proof of life, view is the reason it was built. The rest of
+# client/... is either native-portable (client/design) or has no tests of
+# its own, and dragging them through -exec would only surface OS-specific
+# noise that has nothing to do with what this target is checking.
+wasmtest:
+	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec_node.js"; \
+	 [ -f "$$exec_js" ] || { echo "wasm_exec_node.js not found under $$(go env GOROOT)/lib/wasm — is this Go's Node exec shim missing?"; exit 1; }; \
+	 command -v node >/dev/null || { echo "node is not on PATH — the wasm test harness runs the compiled test binary under it"; exit 1; }; \
+	 GOOS=js GOARCH=wasm go test -exec="node $$exec_js" ./client/i18n/... ./client/view/...
 
 lint:
 	go vet ./...
