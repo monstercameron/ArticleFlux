@@ -123,6 +123,16 @@ func OnScrolledPast(rootSelector, matchSelector, attr string, fn func(value stri
 	return Listener{}
 }
 
+func PrefetchURL(src string) {}
+
+// WatchVisible reports "visible" once and never changes its mind. There is no
+// viewport off the browser, and visible is the answer that suppresses the
+// floating player rather than stranding one on screen.
+func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Listener {
+	fn(true)
+	return Listener{}
+}
+
 func SetTitle(s string) {}
 
 func OpenExternal(url string) {}
@@ -132,6 +142,10 @@ func ScrollPaneToTop(selector string) {}
 func ScrollIntoView(selector string) {}
 
 func Origin() string { return "" }
+
+// BasePath is "/" for a process with no document. See the wasm build for what it
+// is for.
+func BasePath() string { return "/" }
 
 // A native build has no browser, so it has no network events and nothing that
 // resumes. Online reports true for the same reason LocalGet reports "": the

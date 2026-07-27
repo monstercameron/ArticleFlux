@@ -14,6 +14,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
+	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -982,8 +983,8 @@ func hueFor(sourceID string) string { return design.HueFor(sourceID) }
 // the icon of a site they already know faster than they read its name — so both
 // carry, and neither is load-bearing alone.
 func sourceMark(sourceID string, hosts map[string]string, class string) ui.Node {
-	host := hosts[sourceID]
-	if host == "" {
+	src := faviconSrc(hosts[sourceID])
+	if src == "" {
 		return html.I(html.Props{Class: class,
 			Raw: map[string]any{"style": "background:" + design.HueFor(sourceID)}})
 	}
@@ -992,7 +993,7 @@ func sourceMark(sourceID string, hosts map[string]string, class string) ui.Node 
 			Raw: map[string]any{"style": "background:" + design.HueFor(sourceID)}}),
 		html.Img(html.Props{
 			Class: class + "-img",
-			Src:   "/favicon?host=" + host,
+			Src:   src,
 			Alt:   "",
 			// Lazy, because a virtualised list scrolling fast would otherwise
 			// fire a request for every row it passes through.
@@ -1011,16 +1012,45 @@ func sourceMark(sourceID string, hosts map[string]string, class string) ui.Node 
 // The server caches these for thirty days and answers with a transparent pixel
 // for hosts that have none, so a missing icon costs one request a month rather
 // than one per render.
+// faviconSrc is where the client asks for a site's icon, or "" when there is
+// nowhere to ask.
+//
+// Two fixes in one small function, both visible on the published demo:
+//
+//  1. **Base-relative, not absolute.** "/favicon?host=…" is correct on exactly
+//     one deployment shape. On a GitHub project page it leaves the site and asks
+//     github.io for a service that is not there; behind a reverse proxy that
+//     mounts the app under /reader/ it asks the wrong root.
+//  2. **Nothing to ask, so do not ask.** The demo's "server" is compiled into the
+//     same module and answers RPCs, not HTTP — there is no favicon endpoint, so
+//     every icon was nine 404s per load in a stranger's console. The hue dot
+//     already carries identity; the icon is the enhancement, and an enhancement
+//     that cannot work should be absent rather than broken.
+func faviconSrc(host string) string {
+	if host == "" || !HasFaviconService {
+		return ""
+	}
+	return platform.BasePath() + "favicon?host=" + host
+}
+
+// HasFaviconService is false in a build with no HTTP server behind it.
+//
+// A package var rather than a build tag: the demo and the reader are one module
+// compiled one way, and the difference between them is which root is mounted
+// (see DemoRoot). A tag would mean two builds of the client and a second thing
+// CI has to compile.
+var HasFaviconService = true
+
 func feedIcon(f *pb.Feed) ui.Node {
-	host := iconHost(f)
-	if host == "" {
+	src := faviconSrc(iconHost(f))
+	if src == "" {
 		return html.I(html.Props{Class: "feed-dot"})
 	}
 	return html.Span(html.Props{Class: "feed-icon-wrap"},
 		html.I(html.Props{Class: "feed-dot"}),
 		html.Img(html.Props{
 			Class: "feed-icon",
-			Src:   "/favicon?host=" + host,
+			Src:   src,
 			Alt:   "",
 			// Lazy, because a 150-feed sidebar would otherwise fire 150 image
 			// requests before the first row is readable.
@@ -1173,9 +1203,9 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 		return html.Div(html.Props{Class: "pane pane-list"}, head, skeletonList(tr))
 	}
 	if len(p.items) == 0 {
-		return html.Div(html.Props{Class: "pane pane-list"}, head,
-			actionButton("back-rail", "btn btn-ghost back", tr.T("list", "backToFeeds")),
-			emptyList(tr, p))
+		// No back button here any more: `head` carries it now, for every state
+		// of the list rather than only this one.
+		return html.Div(html.Props{Class: "pane pane-list"}, head, emptyList(tr, p))
 	}
 
 	// The list is as long as the scope actually is, not as long as what has been
@@ -1411,6 +1441,17 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 	}
 
 	return html.Div(html.Props{Class: "list-head"},
+		// The way back to the rail, in the HEAD rather than in the empty-list
+		// branch it used to live in.
+		//
+		// Below 1221px the rail is off-screen and this is the only route to it
+		// (`.back` is display:none above that width, so desktop is unaffected).
+		// Rendering it only when the list was EMPTY meant that as soon as a feed
+		// had articles — which is the normal state, and the state a reader is in
+		// after tapping a feed — the phone had no way back to the sidebar at all.
+		// A secondary action can be traded away for space; the sole means of
+		// navigation cannot.
+		actionButton("back-rail", "btn btn-ghost back", tr.T("list", "backToFeeds")),
 		// Keyed on the scope, so switching feeds REPLACES these two lines rather
 		// than patching their text — which is what lets them fade in again. A CSS
 		// animation fires when an element is created and never afterwards, so
@@ -1482,25 +1523,37 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 				Aria:  map[string]string{"label": tr.T("list", "shortcuts")},
 			}, lead(glyphHelp)),
 		),
-		ui.If(status != "", func() ui.Node {
-			return html.Div(html.Props{Class: "banner", Role: "status",
-				// Busy and finished look identical as two lines of text. The
-				// hairline runs only while the work is in flight, so the banner
-				// stops moving at the moment the operation ends.
-				Data: map[string]string{"busy": strconv.FormatBool(p.busy != "")},
-				Aria: map[string]string{"live": "polite"}},
-				html.Span(html.Props{Class: "banner-text"}, html.Text(status)),
-				// The undo rides in the banner that announced the change, which
-				// is the only place a reader is already looking. A toast in a
-				// corner is a control you have to notice in two seconds.
-				ui.If(p.undo != "", func() ui.Node {
-					return html.Button(html.Props{
-						Class: "chip chip-mini banner-undo",
-						Raw:   map[string]any{"data-action": "undo-mark-all"},
-					}, html.Text(tr.T("list", "undo")))
-				}),
-			)
-		}),
+		// The banner is wrapped rather than conditional, so it can leave as well
+		// as arrive.
+		//
+		// A `ui.If` unmounts on the frame the message clears, which is why this
+		// used to fade up and then simply cease — and it is the banner that
+		// carries the Undo after a bulk mark, so it is on screen at exactly the
+		// moment a reader is deciding whether they meant it. The wrapper is a
+		// grid whose single row goes 0fr → 1fr, which is the one way to animate
+		// a collapse without keeping the content permanently taking space.
+		html.Div(html.Props{Class: "banner-slot",
+			Data: map[string]string{"open": strconv.FormatBool(status != "")}},
+			html.Div(html.Props{Class: "banner-clip"},
+				html.Div(html.Props{Class: "banner", Role: "status",
+					// Busy and finished look identical as two lines of text. The
+					// hairline runs only while the work is in flight, so the banner
+					// stops moving at the moment the operation ends.
+					Data: map[string]string{"busy": strconv.FormatBool(p.busy != "")},
+					Aria: map[string]string{"live": "polite"}},
+					html.Span(html.Props{Class: "banner-text"}, html.Text(status)),
+					// The undo rides in the banner that announced the change, which
+					// is the only place a reader is already looking. A toast in a
+					// corner is a control you have to notice in two seconds.
+					ui.If(p.undo != "", func() ui.Node {
+						return html.Button(html.Props{
+							Class: "chip chip-mini banner-undo",
+							Raw:   map[string]any{"data-action": "undo-mark-all"},
+						}, html.Text(tr.T("list", "undo")))
+					}),
+				),
+			),
+		),
 	)
 }
 
@@ -1736,6 +1789,15 @@ type articleProps struct {
 	// speakID is empty when nothing is playing.
 	speakID    string
 	speakState string
+	// speakVisible is whether the playing article's own listen bar is on
+	// screen. When it is not, the floating transport takes over — see
+	// nowPlaying. True by default so a reader who has not scrolled anywhere
+	// never sees a second player.
+	speakVisible bool
+	// speakDigest reads a one-minute summary rather than the whole article, and
+	// speakAuto carries on to the next one when this finishes.
+	speakDigest bool
+	speakAuto   bool
 	// speakSmart routes playback through the server's Smart+ voice instead of
 	// the browser's own synthesiser.
 	speakSmart bool
@@ -2303,14 +2365,124 @@ func listenBar(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	// only place anyone will look for it — and because it is an EGRESS decision,
 	// which the reader should be able to see the state of at the moment they
 	// press play, not buried two screens away.
-	kids = append(kids, html.Button(html.Props{
-		Class: "chip chip-mini",
-		Raw:   map[string]any{"data-action": "toggle-smart-voice"},
-		Title: tr.T("article", "smartTitle"),
-		Aria:  map[string]string{"pressed": strconv.FormatBool(p.speakSmart)},
-	}, html.Text(tr.T("article", "smartVoice"))))
+	mini := func(action, label, title string, on bool) ui.Node {
+		return html.Button(html.Props{
+			Class: "chip chip-mini",
+			Raw:   map[string]any{"data-action": action},
+			Title: title,
+			Aria:  map[string]string{"pressed": strconv.FormatBool(on)},
+		}, html.Text(label))
+	}
+	kids = append(kids, mini("toggle-smart-voice",
+		tr.T("article", "smartVoice"), tr.T("article", "smartTitle"), p.speakSmart))
 
-	return html.Div(html.Props{Class: "listen-bar"}, kids...)
+	// Summarise only appears once Smart+ is on, because it cannot work without
+	// it: the digest is written by the same OpenAI key that speaks it, and the
+	// browser's own synthesiser has no summary to read. A toggle that is
+	// visible but inert is worse than one that is absent — the reader presses
+	// it and nothing happens.
+	if p.speakSmart {
+		kids = append(kids, mini("toggle-digest",
+			tr.T("article", "digest"), tr.T("article", "digestTitle"), p.speakDigest))
+	}
+	// Keep playing works with either engine, so it is always offered.
+	kids = append(kids, mini("toggle-autoplay",
+		tr.T("article", "autoplay"), tr.T("article", "autoplayTitle"), p.speakAuto))
+
+	// data-listen-for is what the floating player watches. It marks the control
+	// this one would REPLACE, so the two can never both be on screen: the
+	// floating bar exists exactly when this element does not.
+	return html.Div(html.Props{
+		Class: "listen-bar",
+		Raw:   map[string]any{"data-listen-for": it.GetId()},
+	}, kids...)
+}
+
+// nowPlaying is the transport that follows you when the article does not.
+//
+// The rule the in-article bar states — "a floating player covers the text it is
+// reading" — is not overturned here, it is completed. This appears only once
+// listenBar has left the viewport, so by construction it never covers the
+// article it is reading; it covers whatever you scrolled away to. And that is
+// the moment the control is actually needed, because until then the real one is
+// right there.
+//
+// It carries one thing listenBar does not need: WHAT is playing. That is the
+// only information you lose by scrolling away, which makes it the only thing
+// worth adding. Everything else is the same chips doing the same jobs.
+func nowPlaying(tr i18n.Runtime, p articleProps) ui.Node {
+	if p.speakID == "" || p.speakState == "" || p.speakState == "idle" {
+		return nil
+	}
+	// Suppressed while the real control is on screen. Two transports for one
+	// stream is a bug the reader has to reason about.
+	if p.speakVisible {
+		return nil
+	}
+	it := itemByID(p.stream, p.bodies, p.speakID)
+	if it == nil {
+		return nil
+	}
+
+	var controls []ui.Node
+	switch p.speakState {
+	case "loading":
+		controls = append(controls,
+			html.Span(html.Props{Class: "chip chip-static"},
+				html.Text(tr.T("article", "preparing"))),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, p.speakID))
+	case "paused":
+		controls = append(controls,
+			glyphItemChip("listen", glyphListen, tr.T("article", "resume"), false, p.speakID),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, p.speakID))
+	case "error":
+		controls = append(controls,
+			html.Span(html.Props{Class: "chip chip-static"},
+				html.Text(tr.T("article", "playFailed"))),
+			glyphItemChip("listen", glyphListen, tr.T("article", "listenAgain"), false, p.speakID))
+	default:
+		controls = append(controls,
+			glyphItemChip("listen-pause", glyphPause, tr.T("article", "pause"), false, p.speakID),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, p.speakID))
+	}
+
+	// The title IS the way back, rather than a separate "jump to article"
+	// button beside it. The only reason this bar exists is that you have lost
+	// sight of what is talking, so the name of the thing talking is the obvious
+	// thing to press — and it saves a control on a bar that should stay small.
+	title := strings.TrimSpace(it.GetTitle())
+	if title == "" {
+		title = tr.T("article", "untitled")
+	}
+	return html.Div(html.Props{Class: "np", Raw: map[string]any{"data-state": p.speakState}},
+		html.Button(html.Props{
+			Class: "np-what",
+			Raw:   map[string]any{"data-action": "listen-jump", "data-for-item": p.speakID},
+			Title: tr.T("article", "jumpToPlaying"),
+		},
+			html.Span(html.Props{Class: "np-glyph"}, html.Text(glyphListen)),
+			html.Span(html.Props{Class: "np-src"}, html.Text(it.GetSourceTitle())),
+			html.Span(html.Props{Class: "np-title"}, html.Text(title)),
+		),
+		html.Div(html.Props{Class: "np-controls"}, controls...),
+	)
+}
+
+// itemByID finds an item in whichever collection holds it. The opened article
+// is in bodies; one that was only ever listed is in the stream.
+func itemByID(stream []*pb.Item, bodies map[string]*pb.Item, id string) *pb.Item {
+	if id == "" {
+		return nil
+	}
+	if b, ok := bodies[id]; ok && b != nil {
+		return b
+	}
+	for _, it := range stream {
+		if it.GetId() == id {
+			return it
+		}
+	}
+	return nil
 }
 
 // itemChip is a chip that acts on a named article rather than on "the" article.

@@ -161,19 +161,34 @@ type actions struct {
 	setPageMode func(id string, live bool)
 	// togglePageWide expands that frame to fill the pane, keeping its mode.
 	togglePageWide func(id string)
-	later       func(id string)
-	markUnread  func(id string)
-	openExtern  func(id string)
-	saveNote    func(id string)
-	addTag      func(id string)
-	removeTag   func(id, name string)
-	editNote    func(id, body string)
-	editTag     func(sourceID, name string)
+	later          func(id string)
+	markUnread     func(id string)
+	openExtern     func(id string)
+	saveNote       func(id string)
+	addTag         func(id string)
+	removeTag      func(id, name string)
+	editNote       func(id, body string)
+	editTag        func(sourceID, name string)
 
 	listen      func(id string)
 	listenPause func()
 	listenStop  func()
+	listenJump  func(id string)
 	smartVoice  func()
+	digestVoice func()
+	autoPlay    func()
+	// playLoaded is offered every article body that lands and ignores all but
+	// the one a continuous session is waiting for.
+	playLoaded func(full *pb.Item)
+	// speakSeen carries the visibility observer's answer back into state.
+	//
+	// It goes through the actions Ref like every other listener callback, and
+	// for the reason stated at the top of this block: a closure created inside
+	// UseEffect captures the state handles of the render that created it, and
+	// calling Set on those is a silent no-op a render later. The symptom is
+	// exactly what it was here — the observer fires, reports correctly, and
+	// nothing on screen changes.
+	speakSeen func(visible bool)
 
 	// The per-feed settings panel.
 	openFeedSettings  func(id string)
@@ -553,6 +568,21 @@ func Reader(p readerProps) ui.Node {
 	speakID := ui.UseState("")
 	speakState := ui.UseState("")
 	speakSmart := ui.UseState(prefBool(saved, "tts.smartPlus", false))
+	// speakDigest reads a one-minute summary instead of the article. Server-side
+	// preference — /speech reads it too — so it is stored, not just held here.
+	speakDigest := ui.UseState(prefBool(saved, "tts.digest", false))
+	// speakAuto keeps going down the list when a track ends. Purely a client
+	// behaviour: the server has no idea one listen followed another.
+	speakAuto := ui.UseState(prefBool(saved, "tts.autoplay", false))
+	// speakVisible is whether the playing article's own listen bar is on screen.
+	// True until told otherwise, so the floating transport never flashes up
+	// during the frame before the observer has reported.
+	speakVisible := ui.UseState(true)
+	// autoWant is the article a continuous session is waiting on. A Ref rather
+	// than State because nothing renders from it: it is a note left for the
+	// GetItem response that has not come back yet, and re-rendering the tree
+	// when it changes would be a render per track for no visible difference.
+	autoWant := ui.UseRef("")
 	// The command palette. paletteActive is the highlighted row, kept in state
 	// rather than in the DOM so the keyboard and the pointer cannot disagree
 	// about what Enter will do.
@@ -2183,6 +2213,12 @@ func Reader(p readerProps) ui.Node {
 			noteServer.Get()[full.GetId()] = full.GetNote()
 			noteSync.Set(withEntry(noteSync.Get(), full.GetId(), ""))
 		}
+		// A continuous session may have been waiting for exactly this body: the
+		// listening ticket is minted by GetItem, so until it lands there is
+		// nothing to play. Ignored unless this is the article being waited on.
+		if p := act.Get().playLoaded; p != nil {
+			p(full)
+		}
 	}
 	act.Get().open = openItem
 	act.Get().pick = selectScope
@@ -3049,6 +3085,126 @@ func Reader(p readerProps) ui.Node {
 	// offline, already installed, and the voice the reader has already chosen
 	// system-wide) and — only on an explicit opt-in — the server's Smart+ voice,
 	// which means sending the article to OpenAI.
+	// trackEnded is what happens when an article finishes speaking.
+	//
+	// With "Keep playing" off it is the end of the session. With it on this is
+	// the seam between two segments of a personal audio digest, and three things
+	// have to happen in the right order: the finished article is read (hearing
+	// it out IS reading it, the same claim scrolling to the last line already
+	// makes), the next one is opened so its listening ticket gets minted, and
+	// playback starts again the moment that ticket lands.
+	// Declared before trackEnded and assigned after it, because the two call
+	// each other: a track that ends starts the next one, and a track that
+	// starts has to know what to do when it ends.
+	var startPlayback func(it *pb.Item)
+
+	trackEnded := func() {
+		if !speakAuto.Get() {
+			speakID.Set("")
+			speakState.Set("")
+			return
+		}
+		done := speakID.Get()
+		list := itemsRef.Get()
+		next := itemAfter(list, done)
+		if done != "" {
+			// Through readArticle rather than markRead, so it takes the same
+			// path as every other way an article gets marked read — including
+			// the offline outbox.
+			act.Get().readArticle(done)
+		}
+		if next == nil {
+			// The end of the loaded list, not the end of the feed: more may be
+			// a page away. Stopping is still right — silently paging and
+			// carrying on would turn "play the list" into "play forever".
+			speakID.Set("")
+			speakState.Set("")
+			notice.Set(tr.T("reader", "queueFinished"))
+			return
+		}
+		// Held across the round trip. The ticket is minted by GetItem, so a
+		// body that has not landed yet has nothing to play; autoWant is the
+		// note that says "start this one the moment it does".
+		autoWant.Set(next.GetId())
+		speakState.Set("loading")
+		openItem(next)
+		// Usually already here: prefetchAround fetched this body when the
+		// previous article was opened, so the common case skips the wait
+		// entirely and the gap between segments is one frame.
+		if b := bodies.Get()[next.GetId()]; b != nil {
+			act.Get().playLoaded(b)
+		}
+	}
+
+	startPlayback = func(it *pb.Item) {
+		if it == nil {
+			return
+		}
+		onState := func(s string) {
+			ui.PostAsync(func() {
+				// "idle" is the <audio> element's `ended` event, which is the
+				// only state that means the article is OVER rather than
+				// stopped — listenStop clears speakID before the element can
+				// report anything, so a manual stop never reaches here.
+				if s == "idle" && speakID.Get() != "" {
+					trackEnded()
+					return
+				}
+				speakState.Set(s)
+			})
+		}
+		autoWant.Set("")
+		speakID.Set(it.GetId())
+		if speakSmart.Get() {
+			// The listening ticket rides on the item, minted by GetItem (§10.7).
+			// It is not built here from the id, because an <audio src> cannot
+			// send an Authorization header — the URL has to BE the credential,
+			// and only the server can seal one.
+			//
+			// Empty means either that this instance has no OpenAI key, or that
+			// the item came from the list rather than an open article and so
+			// never had one minted. Both are the same thing to a reader who
+			// pressed play: fall through to the browser's own synthesiser and
+			// say why, rather than start an <audio> element pointed at nothing
+			// and leave the control spinning.
+			if src := it.GetSpeechUrl(); src != "" {
+				platform.SpeechStop()
+				speakState.Set("loading")
+				platform.PlayAudio(src, onState)
+				// Warm the NEXT article's audio while this one plays.
+				//
+				// Without this a continuous session is forty seconds of silence
+				// between every segment, because synthesis only starts when the
+				// <audio> element asks for the file. One speculative GET during
+				// a track the reader is already listening to turns the seam into
+				// nothing — the server has the mp3 on disk before it is wanted.
+				//
+				// Only when Keep playing is on: otherwise it is a paid synthesis
+				// of an article nobody asked to hear.
+				if speakAuto.Get() {
+					if nx := itemAfter(itemsRef.Get(), it.GetId()); nx != nil {
+						if b := bodies.Get()[nx.GetId()]; b != nil && b.GetSpeechUrl() != "" {
+							platform.PrefetchURL(b.GetSpeechUrl())
+						}
+					}
+				}
+				return
+			}
+			notice.Set(tr.T("reader", "noSmartVoice"))
+		}
+		platform.AudioStop()
+		if !platform.SpeechAvailable() {
+			notice.Set(tr.T("reader", "noSpeech"))
+			speakID.Set("")
+			return
+		}
+		// The rendered text, not the stored HTML: what is spoken should be what
+		// is on screen, and the DOM has already resolved entities and dropped
+		// anything hidden.
+		platform.SpeakElement(`[data-article-id="`+it.GetId()+`"] .article-body`, onState)
+		speakState.Set("playing")
+	}
+
 	act.Get().listen = func(id string) {
 		it := itemOrCurrent(stream, bodies, current, id)
 		if it == nil {
@@ -3065,27 +3221,38 @@ func Reader(p readerProps) ui.Node {
 			speakState.Set("playing")
 			return
 		}
-
-		onState := func(s string) { ui.PostAsync(func() { speakState.Set(s) }) }
-		speakID.Set(it.GetId())
-		if speakSmart.Get() {
-			platform.SpeechStop()
-			speakState.Set("loading")
-			platform.PlayAudio("/speech?item="+it.GetId(), onState)
-			return
-		}
-		platform.AudioStop()
-		if !platform.SpeechAvailable() {
-			notice.Set(tr.T("reader", "noSpeech"))
-			speakID.Set("")
-			return
-		}
-		// The rendered text, not the stored HTML: what is spoken should be what
-		// is on screen, and the DOM has already resolved entities and dropped
-		// anything hidden.
-		platform.SpeakElement(`[data-article-id="`+it.GetId()+`"] .article-body`, onState)
-		speakState.Set("playing")
+		// A deliberate press cancels whatever a continuous session was waiting
+		// for: the reader has just named the article they want.
+		autoWant.Set("")
+		startPlayback(it)
 	}
+
+	// playLoaded is called for every article body that lands, and does nothing
+	// unless a continuous session is waiting on that exact one. Self-gating,
+	// because the alternative is bodyLanded knowing about listening.
+	act.Get().playLoaded = func(full *pb.Item) {
+		if full == nil || autoWant.Get() != full.GetId() {
+			return
+		}
+		autoWant.Set("")
+		startPlayback(full)
+	}
+
+	act.Get().speakSeen = func(visible bool) { speakVisible.Set(visible) }
+
+	// listenJump brings the article being read back on screen. The floating
+	// transport's title is what invokes it — see nowPlaying.
+	act.Get().listenJump = func(id string) {
+		if id == "" {
+			id = speakID.Get()
+		}
+		if id == "" {
+			return
+		}
+		pane.Set(viewArticle)
+		platform.ScrollChildToTop(".pane-article", `[data-article-id="`+id+`"]`, true)
+	}
+
 	act.Get().listenPause = func() {
 		if speakSmart.Get() {
 			platform.AudioPause()
@@ -3112,6 +3279,37 @@ func Reader(p readerProps) ui.Node {
 		savePrefs(map[string]string{"tts.smartPlus": strconv.FormatBool(next)})
 		if next {
 			notice.Set(tr.T("reader", "smartVoiceOn"))
+		}
+	}
+	// digestVoice swaps the whole article for about a minute of summary.
+	//
+	// Stops playback like the Smart+ switch does, and for the same reason: what
+	// is loaded is the other version, and continuing across the change would
+	// finish reading the thing the reader just turned off. The audio is cached
+	// separately per mode, so flipping back costs nothing.
+	act.Get().digestVoice = func() {
+		next := !speakDigest.Get()
+		speakDigest.Set(next)
+		platform.SpeechStop()
+		platform.AudioStop()
+		speakID.Set("")
+		speakState.Set("")
+		autoWant.Set("")
+		savePrefs(map[string]string{"tts.digest": strconv.FormatBool(next)})
+		if next {
+			notice.Set(tr.T("reader", "digestOn"))
+		}
+	}
+	// autoPlay does NOT stop what is playing. Unlike the two above it changes
+	// what happens after this article rather than what this article is, so
+	// interrupting would be gratuitous — and turning it on mid-article is
+	// exactly how someone decides they want to keep going.
+	act.Get().autoPlay = func() {
+		next := !speakAuto.Get()
+		speakAuto.Set(next)
+		savePrefs(map[string]string{"tts.autoplay": strconv.FormatBool(next)})
+		if next {
+			notice.Set(tr.T("reader", "autoplayOn"))
 		}
 	}
 	feedFilterSave.Set(func(v string) {
@@ -4046,8 +4244,14 @@ func Reader(p readerProps) ui.Node {
 					a.listenPause()
 				case "listen-stop":
 					a.listenStop()
+				case "listen-jump":
+					a.listenJump(id)
 				case "toggle-smart-voice":
 					a.smartVoice()
+				case "toggle-digest":
+					a.digestVoice()
+				case "toggle-autoplay":
+					a.autoPlay()
 				case "read-later":
 					a.later(id)
 				case "mark-unread":
@@ -4233,6 +4437,12 @@ func Reader(p readerProps) ui.Node {
 				}
 				if v, ok := p["tts.smartPlus"]; ok {
 					speakSmart.Set(v == "true")
+				}
+				if v, ok := p["tts.digest"]; ok {
+					speakDigest.Set(v == "true")
+				}
+				if v, ok := p["tts.autoplay"]; ok {
+					speakAuto.Set(v == "true")
 				}
 				if v, ok := p["read.markOnPast"]; ok {
 					markOnPast.Set(v == "true")
@@ -4453,6 +4663,33 @@ func Reader(p readerProps) ui.Node {
 			})
 		return l.Release
 	}, []any{})
+
+	// Watch whether the playing article's own transport is still on screen.
+	//
+	// Re-established whenever the article being read changes, because the thing
+	// being watched changes with it — the observer is bound to one element, and
+	// that element belongs to one article.
+	//
+	// Nothing playing means nothing to watch, and the state is forced back to
+	// "visible" rather than left where it was: a stale false would keep the
+	// floating transport up after the audio stopped.
+	ui.UseEffect(func() func() {
+		id := speakID.Get()
+		if id == "" {
+			speakVisible.Set(true)
+			return nil
+		}
+		l := platform.WatchVisible(".pane-article", `[data-listen-for="`+id+`"]`,
+			func(visible bool) {
+				// Through the Ref, not the captured state: see actions.speakSeen.
+				ui.PostAsync(func() {
+					if f := act.Get().speakSeen; f != nil {
+						f(visible)
+					}
+				})
+			})
+		return l.Release
+	}, []any{speakID.Get()})
 
 	// A click inside an article is also a claim to have read it. Cheap, obvious,
 	// and the only way to say so without scrolling on a short article that never
@@ -4837,6 +5074,14 @@ func Reader(p readerProps) ui.Node {
 		// One attribute closes four grid tracks and recentres the article — the
 		// whole of focus mode is CSS hanging off this. See design/focus.go.
 		"focus": strconv.FormatBool(focusMode.Get()),
+		// What listening is doing, on the root rather than buried in the
+		// transport, because both the CSS and the e2e suite need to see it
+		// without knowing which of the two transports is currently mounted.
+		"speak": speakState.Get(),
+		// Kebab, not camel: the Data map becomes `data-<key>` verbatim and HTML
+		// lowercases attribute names, so a camelCase key arrives as
+		// `data-speakvisible` and never matches `dataset.speakVisible`.
+		"speak-visible": strconv.FormatBool(speakVisible.Get()),
 	}},
 		html.Div(html.Props{Class: "panes"},
 			// railPane is a real component so GWC can bail out of re-rendering it
@@ -4909,6 +5154,8 @@ func Reader(p readerProps) ui.Node {
 					markOnPast:  markOnPast.Get(),
 					look:        look.Get(),
 					speakSmart:  speakSmart.Get(),
+					speakDigest: speakDigest.Get(),
+					speakAuto:   speakAuto.Get(),
 					busy:        busy.Get(),
 					stats:       serverStats.Get(),
 					logs:        serverLogs.Get(),
@@ -4952,6 +5199,9 @@ func Reader(p readerProps) ui.Node {
 				speakID:      speakID.Get(),
 				speakState:   speakState.Get(),
 				speakSmart:   speakSmart.Get(),
+				speakDigest:  speakDigest.Get(),
+				speakAuto:    speakAuto.Get(),
+				speakVisible: speakVisible.Get(),
 				loadingAbove: loadingMore.Get() && extending.Get() == "up",
 				loadingBelow: loadingMore.Get() && extending.Get() == "down",
 				atStart:      streamAtStart(items.Get(), stream.Get()),
@@ -4963,6 +5213,17 @@ func Reader(p readerProps) ui.Node {
 				noteOpen:     noteOpen.Get(),
 			}),
 		),
+		// Outside `.panes`, because it is fixed to the viewport rather than to
+		// the article column — inside, the pane's own transform would become its
+		// containing block and "bottom of the screen" would mean "bottom of a
+		// pane that has been slid sideways".
+		nowPlaying(tr, articleProps{
+			stream:       stream.Get(),
+			bodies:       bodies.Get(),
+			speakID:      speakID.Get(),
+			speakState:   speakState.Get(),
+			speakVisible: speakVisible.Get(),
+		}),
 		tabBar(tr, pane.Get(), sel.Get()),
 		helpSheet(tr, helpOpen.Get()),
 		feedSettings(tr, feedSettingsProps{
@@ -5243,6 +5504,30 @@ func withEntry[V any](m map[string]V, k string, v V) map[string]V {
 // the copy carrying the authoritative starred flag and URL. An empty id means
 // "whatever is being read", which is what the keyboard shortcuts pass — they
 // have no element to name.
+// itemAfter is the next article in the LIST, which is the order a continuous
+// session plays in.
+//
+// The list and not the reading stream, deliberately. The stream is a window
+// that has been paged around and may not extend past what is loaded; the list
+// is what the reader is looking at and what "until the end of the list" means
+// to them. An id that is not in the list returns nil rather than the first
+// item — silently restarting at the top would turn a finished queue into a loop
+// nobody asked for.
+func itemAfter(list []*pb.Item, id string) *pb.Item {
+	if id == "" {
+		return nil
+	}
+	for i, it := range list {
+		if it.GetId() == id {
+			if i+1 < len(list) {
+				return list[i+1]
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
 func itemOrCurrent(stream ui.State[[]*pb.Item], bodies ui.State[map[string]*pb.Item],
 	current ui.State[*pb.Item], id string) *pb.Item {
 	if id == "" {

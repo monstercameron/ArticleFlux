@@ -211,7 +211,7 @@ func init() {
 		// Said in the mode it applies to, because a reader who picks Live and
 		// then cannot select a quote will conclude the feature is broken rather
 		// than that it is a picture.
-		"viewPageLiveNote": "A picture of the page — you can't select or search it.",
+		"viewPageLiveNote":    "A picture of the page — you can't select or search it.",
 		"viewPageLiveAlt":     "Live view of the page, rendered on your server",
 		"viewPageLiveLoading": "Starting the browser…",
 		// The frame's accessible name. It says where the content is from and
@@ -232,6 +232,21 @@ func init() {
 		"playFailed":  "Couldn't play that",
 		"smartVoice":  "Smart+ voice",
 		"smartTitle":  "Smart+ reads the article with a better voice, which means sending its text to OpenAI",
+
+		// The two Smart+ listening options that spend beyond the voice itself.
+		// Both name what they DO rather than what they are: "Summarise" is the
+		// verb the reader is choosing, and "Keep playing" describes the
+		// behaviour rather than calling it autoplay, which is a word people
+		// associate with something being done to them.
+		"digest":        "Summarise",
+		"digestTitle":   "Read a one-minute summary instead of the whole article. Costs an extra request to OpenAI, once per article.",
+		"autoplay":      "Keep playing",
+		"autoplayTitle": "When an article finishes, mark it read and start the next one — down the list until it runs out",
+
+		// The floating transport, for when the article being read has scrolled
+		// out of sight.
+		"untitled":      "Untitled",
+		"jumpToPlaying": "Back to what's playing",
 	})
 
 	plural(DefaultLocale, "article", "wordCount", map[PluralCategory]string{

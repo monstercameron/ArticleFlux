@@ -1459,6 +1459,166 @@ func OnScrolledPast(rootSelector, matchSelector, attr string, fn func(value stri
 	return Listener{target: root, event: "scroll", fn: f, capture: true}
 }
 
+// PrefetchURL asks the browser to fetch a URL and does nothing with it.
+//
+// For the next track in a continuous listening session. Synthesising an article
+// takes tens of seconds and only starts when something asks for the file, so
+// without this every seam between two segments is that long a silence. One
+// speculative GET during a track the reader is already hearing moves the whole
+// cost off the critical path: by the time the <audio> element wants the file the
+// server has it on disk.
+//
+// Failures are swallowed on purpose. This is speculative work whose only
+// possible outcome is that the next track starts faster; a prefetch that 403s
+// because a ticket expired must not surface anything, because the real request
+// is going to happen anyway and will report properly if it fails too.
+func PrefetchURL(src string) {
+	if src == "" {
+		return
+	}
+	fetch := js.Global().Get("fetch")
+	if !fetch.Truthy() {
+		return
+	}
+	opts := js.Global().Get("Object").New()
+	// Same-origin credentials and the browser's own HTTP cache, so this really
+	// does warm the cache the <audio> element will read from rather than
+	// fetching a private copy nothing else can see.
+	opts.Set("credentials", "same-origin")
+	p := fetch.Invoke(src, opts)
+	if !p.Truthy() || !p.Get("catch").Truthy() {
+		return
+	}
+	var f js.Func
+	f = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		f.Release()
+		return nil
+	})
+	// An unhandled rejection is a red line in the console for work that was
+	// never guaranteed to succeed.
+	p.Call("catch", f)
+}
+
+// WatchVisible reports whether one element is on screen, and keeps reporting as
+// that changes.
+//
+// An IntersectionObserver rather than a scroll handler, and the difference is
+// not style. `OnScrolledPast` next door is the scroll-handler shape and it
+// LATCHES — it holds a `seen` set and fires once per element, because marking an
+// article read is a one-way door. This question is the opposite: it is asked
+// continuously and the answer goes both ways, so a latch would strand the
+// caller on whichever answer came first. An observer also costs nothing while
+// nothing moves, where a scroll handler runs on every frame of every scroll to
+// answer a question whose answer changes twice a session.
+//
+// fn is called once on setup with the current state, so a caller that mounts
+// while the target is already off screen is not left believing it is visible
+// until the reader happens to scroll.
+//
+// Returns a zero Listener when the target does not exist. That is not an error:
+// the article being spoken can legitimately not be in the DOM — it is exactly
+// what happens when the reader navigates to Settings — and the caller wants
+// "not visible", which is what the zero Listener plus the initial call gives it.
+func WatchVisible(rootSelector, targetSelector string, fn func(visible bool)) Listener {
+	dbg := func(k string) {
+		g := js.Global().Get("__afWatch")
+		if !g.Truthy() {
+			g = js.Global().Get("Object").New()
+			js.Global().Set("__afWatch", g)
+		}
+		n := 0
+		if v := g.Get(k); v.Type() == js.TypeNumber {
+			n = v.Int()
+		}
+		g.Set(k, n+1)
+	}
+	dbg("setup")
+	report := func(v bool, from string) {
+		g := js.Global().Get("__afWatch")
+		if g.Truthy() {
+			g.Set("last", v)
+			g.Set("lastFrom", from)
+		}
+		dbg(from + map[bool]string{true: "True", false: "False"}[v])
+		fn(v)
+	}
+	doc := js.Global().Get("document")
+	target := doc.Call("querySelector", targetSelector)
+	if !target.Truthy() {
+		dbg("noTarget")
+		fn(false)
+		return Listener{}
+	}
+	ctor := js.Global().Get("IntersectionObserver")
+	if !ctor.Truthy() {
+		// No observer in this browser. Reporting "visible" is the safe default:
+		// it suppresses the floating player, and a reader who never sees it is
+		// strictly better off than one who cannot get rid of it.
+		fn(true)
+		return Listener{}
+	}
+
+	cb := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		dbg("cb")
+		if len(args) == 0 {
+			return nil
+		}
+		entries := args[0]
+		n := entries.Get("length").Int()
+		if n == 0 {
+			return nil
+		}
+		if entries.Index(n - 1).Get("isIntersecting").Bool() {
+			dbg("cbTrue")
+		} else {
+			dbg("cbFalse")
+		}
+		// The last entry wins: the callback can be handed a batch covering
+		// several frames, and only the final state is the current one.
+		v := entries.Index(n - 1).Get("isIntersecting").Bool()
+		report(v, "cb")
+		return nil
+	})
+
+	opts := js.Global().Get("Object").New()
+	if root := doc.Call("querySelector", rootSelector); root.Truthy() {
+		// Scoped to the scrolling pane rather than the viewport. The article
+		// column scrolls inside the shell, so viewport-relative intersection
+		// would answer a question nobody asked.
+		opts.Set("root", root)
+	}
+	// A sliver is enough. Requiring the whole control to be visible would raise
+	// the floating player while the one in the article is still half on screen,
+	// which reads as two players fighting.
+	opts.Set("threshold", 0)
+	obs := ctor.New(cb, opts)
+	dbg("observing")
+	obs.Call("observe", target)
+
+	// Reported immediately rather than waiting for the observer's first
+	// delivery: that arrives a frame or more later, and the gap is long enough
+	// to flash a player that should never have appeared.
+	iv := inViewport(target, doc.Call("querySelector", rootSelector))
+	report(iv, "init")
+
+	return Listener{extra: func() {
+		obs.Call("disconnect")
+		cb.Release()
+	}}
+}
+
+// inViewport answers the same question synchronously, for the first report.
+func inViewport(el, root js.Value) bool {
+	r := el.Call("getBoundingClientRect")
+	top, bottom := r.Get("top").Float(), r.Get("bottom").Float()
+	if root.Truthy() {
+		rr := root.Call("getBoundingClientRect")
+		return bottom > rr.Get("top").Float() && top < rr.Get("bottom").Float()
+	}
+	h := js.Global().Get("innerHeight").Float()
+	return bottom > 0 && top < h
+}
+
 // SetTitle sets the document title.
 func SetTitle(s string) {
 	if doc := js.Global().Get("document"); doc.Truthy() {
@@ -1528,6 +1688,33 @@ func Origin() string {
 		return ""
 	}
 	return loc.Get("origin").String()
+}
+
+// BasePath is the directory this document was served from, with a trailing
+// slash: "/" on a normal deployment, "/ArticleFlux/" on a GitHub project page,
+// "/reader/" behind a reverse proxy that mounts the app under a path.
+//
+// Every asset the client asks the server for has to be built on this rather than
+// on a leading slash. An absolute "/favicon?host=…" is correct on exactly one
+// deployment shape and 404s on the other two — on the published demo it left the
+// site entirely and asked github.io for a favicon service that is not there,
+// nine times per page load.
+//
+// Derived from the document's own address rather than configured, so a build
+// does not have to be told where it will be mounted.
+func BasePath() string {
+	loc := js.Global().Get("location")
+	if !loc.Truthy() {
+		return "/"
+	}
+	path := loc.Get("pathname").String()
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		path = path[:i+1]
+	}
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 // --- the connection's view of the outside world (§20.19.5) --------------------

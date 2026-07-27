@@ -296,6 +296,27 @@ func motionDialogs(r func(string, string) css.Rule) {
 		r("transform", "translateY(14px) scale(.985)"),
 		r("transition", "opacity "+warm+", transform "+move),
 	)
+	// The banner: a grid row that opens from nothing.
+	//
+	// Height cannot be animated from `auto`, and a fixed height would be a lie
+	// about a message whose length nobody controls. `grid-template-rows: 0fr →
+	// 1fr` is the one technique that interpolates to the content's OWN height,
+	// and it is affordable here for the same reason it was declined for the
+	// rail's 151 feed rows: this is one line of text.
+	css.Global(".banner-slot",
+		r("display", "grid"), r("grid-template-rows", "0fr"),
+		r("transition", "grid-template-rows "+move+", opacity "+warm),
+		r("opacity", "0"),
+	)
+	css.Global(".banner-slot[data-open='true']",
+		r("grid-template-rows", "1fr"), r("opacity", "1"),
+		r("transition", "grid-template-rows "+slow+", opacity "+move),
+	)
+	// The clip is what makes the fraction mean anything: without a min-height of
+	// zero on the row's child, the content refuses to be squeezed and the row
+	// never actually closes.
+	css.Global(".banner-clip", r("overflow", "hidden"), r("min-height", "0"))
+
 	css.Global(".pal-scrim[data-open='true'] :is("+panels+")",
 		r("opacity", "1"), r("transform", "none"),
 		r("transition", "opacity "+move+", transform "+slow),

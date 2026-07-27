@@ -91,6 +91,8 @@ type settingsProps struct {
 	unreadFeeds bool
 	markOnPast  bool
 	speakSmart  bool
+	speakDigest bool
+	speakAuto   bool
 	// look is the whole visual preference — theme, accent, reading size, motion.
 	// One field rather than four, because the Appearance screen needs them
 	// together to resolve anything: which accents to offer depends on the
@@ -218,8 +220,17 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		setRow(tr.T("settings", "smartVoice"),
 			tr.T("settings", "smartVoiceHint"),
 			glyphChip("toggle-smart-voice", glyphListen, onOff(tr, p.speakSmart), p.speakSmart)),
+		setRow(tr.T("settings", "digest"),
+			tr.T("settings", "digestHint"),
+			glyphChip("toggle-digest", glyphAction, onOff(tr, p.speakDigest), p.speakDigest)),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
+
+		fsGroup(glyphListen, tr.T("settings", "queueGroup"),
+			tr.T("settings", "queueGroupHint")),
+		setRow(tr.T("settings", "autoplay"),
+			tr.T("settings", "autoplayHint"),
+			glyphChip("toggle-autoplay", glyphListen, onOff(tr, p.speakAuto), p.speakAuto)),
 	}
 }
 

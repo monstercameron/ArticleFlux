@@ -47,6 +47,11 @@ type DemoProps struct {
 
 // DemoRoot mounts the reader against a backend that answers in this tab.
 func DemoRoot(p DemoProps) ui.Node {
+	// There is no HTTP server behind this build — the instance answers RPCs from
+	// memory — so the icon endpoint does not exist. Said once, here, rather than
+	// letting every feed row discover it as a 404.
+	HasFaviconService = false
+
 	// The interface language, exactly as Root does it: read from localStorage,
 	// clamped to the supported set, written back on change.
 	//
