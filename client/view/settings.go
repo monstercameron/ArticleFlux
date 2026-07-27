@@ -113,8 +113,10 @@ type settingsProps struct {
 	// speakVibe is how the narrator sounds. Only meaningful while speakPodcast is
 	// on, and the row is hidden otherwise.
 	speakVibe string
-	// speakBed is the broadcast's opening sting and background pad.
-	speakBed bool
+	// speakBed is the music under the broadcast: a track id, or "off".
+	speakBed string
+	// bedTracks is what this server ships, for the picker to name.
+	bedTracks []data.AudioTrack
 	// speakRate is how fast the narrator reads, as the stored multiplier string.
 	speakRate string
 	// The slideshow (§19): how long a story stays up, and whether the narrator
@@ -307,6 +309,33 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 // comparable between two people and "1.4x" is. The default is marked in the
 // copy rather than by position, so a reader can tell which one they have drifted
 // away from.
+// bedPicker chooses the music under the broadcast.
+//
+// The track names come from the server rather than from a list in here, because
+// the server is the only thing that knows which files exist — and because a name
+// like "Late Night Patchcord" is the title of a piece of music, not interface
+// copy, so it is not the catalogue's to translate.
+//
+// A deployment shipping no audio gets a picker with one option in it. That is
+// the honest shape: there is nothing to choose between, and a control that
+// disappears leaves a reader hunting for the setting they remember.
+func bedPicker(tr i18n.Runtime, current string, tracks []data.AudioTrack) ui.Node {
+	if current == "" {
+		current = bedAuto
+	}
+	on := current != bedOff
+	// "auto" is not offered as a chip — it is what the stored preference says
+	// before anybody has picked a piece, and it resolves to the first track. So
+	// the first track is what shows as selected, which is what is playing.
+	sel := bedTrackID(current, tracksFor(tracks, roleBed))
+	chips := []ui.Node{pickChip(actBed, bedOff, tr.T("settings", "bedOff"), !on)}
+	for _, t := range tracks {
+		chips = append(chips, pickChip(actBed, t.ID, t.Title, on && t.ID == sel))
+	}
+	return html.Span(html.Props{Class: "set-picks", Role: "group",
+		Aria: map[string]string{"label": tr.T("settings", "bed")}}, chips...)
+}
+
 func ratePicker(tr i18n.Runtime, current string) ui.Node {
 	if current == "" {
 		current = speechRateDefault
@@ -404,10 +433,12 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 			return setRow(tr.T("settings", "vibe"), tr.T("settings", "vibeHint"),
 				vibePicker(tr, p.speakVibe))
 		}),
-		ui.If(p.speakPodcast, func() ui.Node {
-			return setRow(tr.T("settings", "bed"), tr.T("settings", "bedHint"),
-				glyphChip(actBed, glyphListen, onOff(tr, p.speakBed), p.speakBed))
-		}),
+		// NOT gated on the broadcast switch, unlike the manner above. The sting
+		// and the music play whenever read-to-me is running, so hiding the
+		// control behind a switch they have not pressed is how somebody ends up
+		// with music they cannot turn off.
+		setRow(tr.T("settings", "bed"), tr.T("settings", "bedHint"),
+			bedPicker(tr, p.speakBed, p.bedTracks)),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
 

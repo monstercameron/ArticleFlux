@@ -101,9 +101,21 @@ func init() {
 		// The broadcast's own sound. Named for what it is rather than for
 		// "jingle", which promises something with a tune in it — this is three
 		// notes and a low pad, and the pad is meant to be felt rather than heard.
-		"bed": "Opening sting and background",
-		"bedHint": "Three notes when the broadcast starts — they fill the pause while the first segment is being written — and a low pad underneath it afterwards. " +
-			"Synthesised in the browser, so it costs no download and sends nothing anywhere. Quiet enough to sit under speech; turn it off if you would rather have silence.",
+		// How fast the narrator reads. Named for the reader's experience rather
+		// than for playbackRate, and the default is marked in the chip itself
+		// because 1.2 is a deliberate choice and not the absence of one.
+		"rate": "Reading speed",
+		"rateHint": "How fast the voice reads. Applied in the player, so it costs nothing and works on audio you have already heard. " +
+			"1.2 is the default: news read at conversational pace sounds slow.",
+		"rateTimes":        "{n}×",
+		"rateTimesDefault": "{n}× default",
+		"bed":              "Opening sting and music",
+		"bedHint": "Three notes when the broadcast starts — they fill the pause while the first segment is being written — and a track underneath it afterwards, " +
+			"quiet enough to sit under speech. The music is only downloaded when you first play it, and only the piece you chose.",
+		// The value, inside a chip the row above has already named — so
+		// lowercase, and "off" rather than "no music", because it sits in a row
+		// of titles and has to read as the absence of one.
+		"bedOff":     "off",
 		"vibe.calm":  "Calm",
 		"vibe.brisk": "Brisk",
 		"vibe.warm":  "Warm",

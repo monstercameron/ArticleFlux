@@ -223,8 +223,14 @@ type actions struct {
 	podcastStart func()
 	// setVibe changes how the narrator sounds — calm, brisk, warm or dry.
 	setVibe func(v string)
-	// toggleBed silences the broadcast's opening sting and background pad.
-	toggleBed func()
+	// setBed chooses the music under the broadcast, or silences it.
+	setBed func(v string)
+	// introEnded is the broadcast's greeting finishing — which is not a story
+	// finishing, and must not advance the queue. It starts the interlude.
+	introEnded func()
+	// introPlay starts the first story once the interlude is over, or early
+	// when a paused reader presses play during it.
+	introPlay func()
 	// setRate changes how fast the narrator reads.
 	setRate func(v string)
 	// slideSetDwell changes the pace from the settings screen.

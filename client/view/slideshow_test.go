@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -575,5 +576,181 @@ func TestSpeechFromCarriesTheLineup(t *testing.T) {
 	mid := speechFrom(ticket, speechAsk{prevID: "z", podcast: true, lineup: []string{"a", "b"}})
 	if strings.Contains(mid, "q=") {
 		t.Errorf("a mid-broadcast segment carried a run-through: %q", mid)
+	}
+}
+
+// --- the music ------------------------------------------------------------------
+//
+// Which piece plays where is a decision with a mix behind it (see
+// client/platform/music_wasm.go): the openings are loud and have a front to
+// them, the beds are furniture. Everything below is about not getting those two
+// backwards, because a bed played as an opening is a broadcast that starts on
+// nothing and an opening played as a bed is one nobody can hear the news over.
+
+func trackList() []data.AudioTrack {
+	return []data.AudioTrack{
+		{ID: "sig", Title: "Signal", Role: roleSting},
+		{ID: "mid", Title: "Midnight", Role: roleSting},
+		{ID: "pc1", Title: "Patchcord", Role: roleBed},
+		{ID: "pc2", Title: "Patchcord II", Role: roleBed},
+	}
+}
+
+func TestTracksForSplitsTheRoles(t *testing.T) {
+	beds := tracksFor(trackList(), roleBed)
+	if len(beds) != 2 || beds[0] != "pc1" || beds[1] != "pc2" {
+		t.Errorf("the beds are %v", beds)
+	}
+	stings := tracksFor(trackList(), roleSting)
+	if len(stings) != 2 || stings[0] != "sig" {
+		t.Errorf("the openings are %v", stings)
+	}
+	// A role the server invented after this client shipped counts as a bed —
+	// the quieter of the two mistakes.
+	odd := []data.AudioTrack{{ID: "x", Role: "fanfare"}}
+	if got := tracksFor(odd, roleBed); len(got) != 1 {
+		t.Errorf("an unknown role was dropped instead of treated as a bed: %v", got)
+	}
+	if got := tracksFor(odd, roleSting); len(got) != 0 {
+		t.Errorf("an unknown role was played as an opening: %v", got)
+	}
+}
+
+// The opening varies between sessions and is never a bed.
+func TestStingPickIsAnOpeningAndVaries(t *testing.T) {
+	seen := map[string]bool{}
+	for _, seed := range []int64{0, 1, 2, 3, 1753000000000} {
+		got := stingPick(trackList(), seed)
+		if got != "sig" && got != "mid" {
+			t.Fatalf("seed %d picked %q, which is not an opening", seed, got)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("every seed picked the same opening: %v", seen)
+	}
+	// A negative clock (a machine set before 1970, or an offset gone wrong)
+	// must not index backwards off the end of the slice.
+	if got := stingPick(trackList(), -7); got == "" {
+		t.Error("a negative seed produced no opening")
+	}
+	// A deployment with no audio is silence, not a crash.
+	if got := stingPick(nil, 4); got != "" {
+		t.Errorf("an empty catalogue produced %q", got)
+	}
+	if got := stingPick([]data.AudioTrack{{ID: "pc1", Role: roleBed}}, 1); got != "" {
+		t.Errorf("a bed was chosen as the opening: %q", got)
+	}
+}
+
+// The stored preference is a track id now and used to be a boolean. Both have to
+// keep meaning what they meant, or somebody who turned the music off a month ago
+// gets it back the day they update.
+func TestBedTrackFromMigratesTheOldSwitch(t *testing.T) {
+	for _, c := range []struct{ stored, want string }{
+		{"false", bedOff},
+		{"true", bedAuto},
+		{"", bedAuto},
+		{"pc2", "pc2"},
+	} {
+		if got := bedTrackFrom(map[string]string{podcastBedPref: c.stored}); got != c.want {
+			t.Errorf("%q became %q, wanted %q", c.stored, got, c.want)
+		}
+	}
+	if got := bedTrackFrom(nil); got != bedAuto {
+		t.Errorf("a reader with no preferences got %q", got)
+	}
+}
+
+func TestBedTrackIDResolvesAgainstWhatExists(t *testing.T) {
+	have := tracksFor(trackList(), roleBed)
+	if got := bedTrackID(bedAuto, have); got != "pc1" {
+		t.Errorf("auto picked %q rather than the first bed", got)
+	}
+	if got := bedTrackID("pc2", have); got != "pc2" {
+		t.Errorf("a chosen bed became %q", got)
+	}
+	if got := bedTrackID(bedOff, have); got != "" {
+		t.Errorf("off produced %q", got)
+	}
+	// A track that has been removed since the reader chose it falls back to
+	// music rather than to silence: they asked for a bed, and which piece is the
+	// part they are least attached to.
+	if got := bedTrackID("gone", have); got != "pc1" {
+		t.Errorf("a missing bed produced %q rather than falling back", got)
+	}
+	// A deployment that ships no audio is silence whatever is stored.
+	if got := bedTrackID("pc2", nil); got != "" {
+		t.Errorf("a server with no music produced %q", got)
+	}
+}
+
+// --- the split opening ----------------------------------------------------------
+//
+// The greeting is its own recording when there is music to time against, and the
+// one thing that must never happen is the listener being greeted twice — which
+// is exactly what the "already done" marker exists to prevent.
+
+func TestSpeechFromSplitsTheOpening(t *testing.T) {
+	const ticket = "/speech?t=abc"
+	only := speechFrom(ticket, speechAsk{
+		podcast: true, intro: askIntroOnly,
+		now: "2026-07-27T08:00:00-04:00", stories: 9, lineup: []string{"a", "b"},
+	})
+	if !strings.Contains(only, "&i=1") {
+		t.Errorf("the opening did not ask for itself: %q", only)
+	}
+	// It still carries what the greeting is made of.
+	if !strings.Contains(only, "&q=a,b") || !strings.Contains(only, "&n=9") {
+		t.Errorf("the opening lost its material: %q", only)
+	}
+
+	// The first story after a recorded opening: says only "do not greet
+	// anybody". Nothing else would be used, and sending it would change the URL,
+	// which is the browser's audio cache key.
+	first := speechFrom(ticket, speechAsk{
+		podcast: true, intro: askIntroDone,
+		now: "2026-07-27T08:00:00-04:00", stories: 9, lineup: []string{"a", "b"},
+	})
+	if !strings.Contains(first, "&i=0") {
+		t.Errorf("the first story asked for a second greeting: %q", first)
+	}
+	for _, bad := range []string{"n=9", "q=a", "now="} {
+		if strings.Contains(first, bad) {
+			t.Errorf("the first story carried %q it cannot use: %q", bad, first)
+		}
+	}
+
+	// Mid-broadcast is untouched by any of it.
+	mid := speechFrom(ticket, speechAsk{podcast: true, prevID: "z", intro: askIntroDone})
+	if strings.Contains(mid, "i=") {
+		t.Errorf("a mid-broadcast segment carried an opening marker: %q", mid)
+	}
+	if !strings.Contains(mid, "&p=z") {
+		t.Errorf("a mid-broadcast segment lost its handover: %q", mid)
+	}
+
+	// Without broadcast mode none of it is sent: the parameters would change the
+	// URL for a request that ignores them.
+	off := speechFrom(ticket, speechAsk{intro: askIntroOnly})
+	if off != ticket {
+		t.Errorf("read-to-me without a broadcast carried broadcast parameters: %q", off)
+	}
+}
+
+// The interlude has to be long enough to be a phrase of music and short enough
+// not to be a wait. These are the numbers the choreography in reader.go depends
+// on; the test exists so that changing one is a decision rather than a typo.
+func TestTheInterludeIsAPhraseNotAWait(t *testing.T) {
+	if introHold < 4*time.Second || introHold > 8*time.Second {
+		t.Errorf("the theme plays alone for %v", introHold)
+	}
+	if introHandover >= introHold {
+		t.Errorf("the narrator starts %v in, which is not inside a %v fade",
+			introHandover, introHold)
+	}
+	if introHandover < time.Second {
+		t.Errorf("the narrator starts %v after the fade begins, on top of the music",
+			introHandover)
 	}
 }

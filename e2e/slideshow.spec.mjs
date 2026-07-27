@@ -337,4 +337,47 @@ test.describe('slideshow', () => {
     await expect(page.getByRole('button', { name: /^30 sec$/ }))
       .toHaveAttribute('aria-pressed', 'true');
   });
+  /**
+   * The music catalogue comes down the TUNNEL, not from a URL (§19).
+   *
+   * That decision is invisible until it breaks, and when it breaks it breaks
+   * silently: the picker renders, the show runs, and there is simply no music.
+   * So this test asserts the one thing that proves the RPC answered — the
+   * tracks are named on the screen, with names only the server knows.
+   *
+   * It also asserts what is NOT offered. The openings and the beds are different
+   * recordings for different jobs, and only the beds are choosable: an opening
+   * played as background is a mix nobody can hear the news over.
+   */
+  test('the background music is named by the server, and only the beds are offered', async ({ page }) => {
+    await boot(page);
+    await openSettings(page);
+    await page.getByRole('button', { name: 'Listening' }).click();
+
+    const music = page.getByRole('group', { name: /Opening sting and music/i });
+    await expect(music).toBeVisible();
+
+    // Both takes of the bed, by name. These strings live in the server's table
+    // and nowhere in the client, so seeing them here means the stream ran.
+    await expect(music.getByRole('button', { name: /^Late Night Patchcord$/ })).toBeVisible();
+    await expect(music.getByRole('button', { name: /^Late Night Patchcord II$/ })).toBeVisible();
+    // And silence, for anyone who would rather have it.
+    await expect(music.getByRole('button', { name: /^off$/ })).toBeVisible();
+    // The openings are not choices. They play at the top of a broadcast and
+    // nowhere else.
+    await expect(music.getByRole('button', { name: /Signal and Ideas/ })).toHaveCount(0);
+    await expect(music.getByRole('button', { name: /Midnight Thought Loop/ })).toHaveCount(0);
+
+    // Choosing one is a saved preference like every other here.
+    await music.getByRole('button', { name: /^Late Night Patchcord II$/ }).click();
+    await expect(music.getByRole('button', { name: /^Late Night Patchcord II$/ }))
+      .toHaveAttribute('aria-pressed', 'true');
+    await page.reload();
+    await boot(page);
+    await openSettings(page);
+    await page.getByRole('button', { name: 'Listening' }).click();
+    await expect(page.getByRole('group', { name: /Opening sting and music/i })
+      .getByRole('button', { name: /^Late Night Patchcord II$/ }))
+      .toHaveAttribute('aria-pressed', 'true');
+  });
 });

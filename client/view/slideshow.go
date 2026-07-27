@@ -12,6 +12,7 @@ import (
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
@@ -423,6 +424,15 @@ func speechFrom(src string, ask speechAsk) string {
 	if src == "" || !ask.podcast {
 		return src
 	}
+	if ask.prevID == "" && ask.intro == askIntroDone {
+		// The first story of a SPLIT broadcast. Nothing about the opening is sent
+		// — not the clock, not the count, not the run-through — because the
+		// opening has already been recorded and none of it would be used. All
+		// this request has to say is "do not greet anybody": the server decides
+		// where the top of the show is by looking for a predecessor, and this
+		// request does not have one.
+		return src + "&i=0"
+	}
 	if ask.prevID != "" {
 		// Mid-broadcast: hand over from what was just played, and nothing else.
 		// The opening parameters are deliberately NOT sent here — the server
@@ -443,6 +453,16 @@ func speechFrom(src string, ask speechAsk) string {
 	}
 	if len(ask.lineup) > 0 {
 		out += "&q=" + strings.Join(ask.lineup, ",")
+	}
+	switch ask.intro {
+	case askIntroOnly:
+		out += "&i=1"
+	case askIntroDone:
+		// Sent even though everything else about this request says "top of the
+		// broadcast", because that is exactly what makes it necessary: the
+		// server decides where the opening goes by looking for a predecessor,
+		// and the first story of a split broadcast does not have one.
+		out += "&i=0"
 	}
 	return out
 }
@@ -513,7 +533,27 @@ type speechAsk struct {
 	// fine and common — a greeting straight into the first story is still a
 	// broadcast.
 	lineup []string
+	// intro says where in the SPLIT opening this request sits. See the askIntro
+	// constants.
+	intro int
 }
+
+// Where a request sits in the split opening.
+//
+// The opening is its own recording when there is music to time against — the
+// programme's theme has to swell and clear before the first story, and the only
+// moment a client can see coming is the end of a file. Without music there is
+// nothing to time, so the greeting rides on the first segment as it always did
+// and one fewer request is paid for.
+const (
+	// askIntroWith is the unsplit form: greeting and first story in one.
+	askIntroWith = iota
+	// askIntroOnly asks for the greeting alone.
+	askIntroOnly
+	// askIntroDone says the greeting has already been recorded — do not send
+	// another one. Without this the listener is greeted twice.
+	askIntroDone
+)
 
 // localStamp composes what platform.LocalNow reports into RFC3339.
 //
@@ -613,6 +653,23 @@ func speechRateValue(pref string) float64 {
 	return f
 }
 
+// The opening interlude: what happens between the greeting ending and the first
+// story starting. See the choreography in reader.go.
+//
+// introHold is how long the theme plays alone once the narrator has finished
+// introducing the programme. Five seconds is short enough not to be a wait and
+// long enough to be a phrase of music rather than a swell and a fade — under
+// about four it reads as a mistake, as though something was cut off.
+//
+// introHandover is the overlap: the theme is fading, the bed is rising, and this
+// is how far into that the narrator starts. Two seconds means the voice arrives
+// while the music is still audibly leaving, which is what makes it sound like
+// one programme rather than a jingle followed by a podcast.
+const (
+	introHold     = 5 * time.Second
+	introHandover = 2 * time.Second
+)
+
 // podcastBedPref is the opening sting and the low pad underneath the broadcast.
 //
 // Client-only: the sound is synthesised in the browser (see
@@ -621,6 +678,100 @@ func speechRateValue(pref string) float64 {
 // it is a preference about how this reader likes the news and not about this
 // browser.
 const podcastBedPref = "tts.podcastBed"
+
+// The bed's two reserved values. Everything else stored under podcastBedPref is
+// a track id the server named.
+//
+// bedAuto rather than a track id as the default because the client has no
+// business knowing which files a deployment ships: the id it stored last week
+// may not exist today, and "whatever this server leads with" survives that where
+// a baked-in slug turns into silence nobody can explain.
+const (
+	bedOff  = "off"
+	bedAuto = "auto"
+)
+
+// bedTrackFrom reads the stored bed, MIGRATING the switch it used to be.
+//
+// This preference shipped as a boolean — sound on or off, one synthesised pad —
+// and became a track picker when the music moved to real files (§19). So "true"
+// and "false" are values in the wild that must keep meaning what they meant, or
+// a reader who turned the pad off gets it back the day they update.
+func bedTrackFrom(prefs map[string]string) string {
+	switch v := strings.TrimSpace(prefs[podcastBedPref]); v {
+	case "false":
+		return bedOff
+	case "", "true":
+		return bedAuto
+	default:
+		return v
+	}
+}
+
+// The two things a track can be. The server decides which is which (see
+// internal/transport/grpcsrv/audio.go); these are the names it uses on the wire.
+//
+// An unrecognised role counts as a bed, which is the quieter of the two
+// mistakes: a piece that was meant to open the show playing quietly underneath
+// it is odd, and a piece meant to sit underneath playing at opening volume over
+// the narrator is unlistenable.
+const (
+	roleBed   = "bed"
+	roleSting = "sting"
+)
+
+// tracksFor is the ids of every track with a role, in the order the server gave
+// them.
+func tracksFor(list []data.AudioTrack, role string) []string {
+	out := make([]string, 0, len(list))
+	for _, t := range list {
+		if t.Role == role || (role == roleBed && t.Role != roleSting) {
+			out = append(out, t.ID)
+		}
+	}
+	return out
+}
+
+// stingPick chooses which opening plays, from the seed of the moment.
+//
+// Random rather than fixed, because the opening is the one piece a regular
+// listener hears every single session and the second-most-boring thing it could
+// be is the same every time. (The most boring is nothing.) Seeded by the caller
+// from the clock rather than drawn from a package generator, so the choice is a
+// pure function of an input a test can supply.
+func stingPick(list []data.AudioTrack, seed int64) string {
+	ids := tracksFor(list, roleSting)
+	if len(ids) == 0 {
+		return ""
+	}
+	if seed < 0 {
+		seed = -seed
+	}
+	return ids[seed%int64(len(ids))]
+}
+
+// bedTrackID resolves the stored choice against what the server actually has.
+//
+// Returns "" for silence — which covers three different situations that all
+// sound the same and should: the reader chose off, this deployment ships no
+// audio at all, and the reader's chosen track is no longer there.
+//
+// A stored id that has gone missing falls back to the first track rather than to
+// silence. The reader asked for music; the specific piece is the part they are
+// least attached to.
+func bedTrackID(pref string, have []string) string {
+	if pref == bedOff || len(have) == 0 {
+		return ""
+	}
+	if pref != bedAuto {
+		for _, id := range have {
+			if id == pref {
+				return id
+			}
+		}
+	}
+	return have[0]
+}
 
 // --- the surface ---------------------------------------------------------------
 

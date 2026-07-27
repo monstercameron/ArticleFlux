@@ -427,7 +427,7 @@ func (d delegatedClicks) wire() {
 				case actVibe:
 					a.setVibe(value)
 				case actBed:
-					a.toggleBed()
+					a.setBed(value)
 				case actRate:
 					a.setRate(value)
 				case actSlideNeeds:
