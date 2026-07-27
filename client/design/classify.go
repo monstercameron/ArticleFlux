@@ -59,9 +59,6 @@ var Categories = []CategoryInfo{
 // happened to land in the same band would be a 27th thing wearing the app's
 // own colour, and next to an actual age-tag chip in the same meta row that
 // reads as a bug rather than a category.
-const categoryHueStart = 70
-const categoryHueStep = 13.2
-
 // CategoryHue returns a category's hue in degrees, or -1 for a slug this
 // client does not know (which is a slug the server invented that this build
 // predates — see CategoryColor).

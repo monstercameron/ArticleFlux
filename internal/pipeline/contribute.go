@@ -404,11 +404,11 @@ func (e SliceError) Error() string { return e.Name + ": " + e.Err.Error() }
 // The fatal error is reserved for the case where there is nothing to split: a
 // reply that is not a JSON object at all.
 func (r *Registry) Dispatch(ctx context.Context, out *Analysis, reply []byte,
-	included []string) (error, []SliceError) {
+	included []string) ([]SliceError, error) {
 
 	var slices map[string]json.RawMessage
 	if err := json.Unmarshal(reply, &slices); err != nil {
-		return fmt.Errorf("pipeline: the shared read was not a JSON object: %w", err), nil
+		return nil, fmt.Errorf("pipeline: the shared read was not a JSON object: %w", err)
 	}
 
 	var failures []SliceError
@@ -430,7 +430,7 @@ func (r *Registry) Dispatch(ctx context.Context, out *Analysis, reply []byte,
 			failures = append(failures, SliceError{name, err})
 		}
 	}
-	return nil, failures
+	return failures, nil
 }
 
 // Names lists the registered contributors in request order.

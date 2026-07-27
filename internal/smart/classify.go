@@ -184,7 +184,7 @@ func (c *Classifier) Enrich(ctx context.Context, item pipeline.Item, out *pipeli
 		return err
 	}
 
-	fatal, failures := c.registry.Dispatch(call, out, []byte(reply), req.Included)
+	failures, fatal := c.registry.Dispatch(call, out, []byte(reply), req.Included)
 	if fatal != nil {
 		return fatal
 	}

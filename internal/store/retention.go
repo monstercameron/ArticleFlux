@@ -150,24 +150,6 @@ func (r *ReaderRepo) SweepItems(ctx context.Context, cut time.Time, apply bool) 
 	return out, nil
 }
 
-// pinnedInto lets SUM's NULL — what an empty table returns — read as zero.
-//
-// Without it a sweep over a database with no items at all fails on the scan,
-// which is a confusing way to be told that there was nothing to do.
-type pinnedInto struct{ dst *int }
-
-func (p *pinnedInto) Scan(v any) error {
-	switch t := v.(type) {
-	case nil:
-		*p.dst = 0
-	case int64:
-		*p.dst = int(t)
-	case float64:
-		*p.dst = int(t)
-	}
-	return nil
-}
-
 // RecordSweep writes one row to the retention ledger.
 //
 // The policy is COPIED in rather than referenced: reading today's setting to

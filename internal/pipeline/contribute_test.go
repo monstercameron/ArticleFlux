@@ -294,7 +294,7 @@ func TestUnionIsolation(t *testing.T) {
 	r := MustRegistry(good, bad)
 
 	var out Analysis
-	fatal, failures := r.Dispatch(context.Background(), &out,
+	failures, fatal := r.Dispatch(context.Background(), &out,
 		[]byte(`{"good":{"v":"x"},"bad":{"v":"y"}}`), []string{"good", "bad"})
 
 	if fatal != nil {
@@ -311,7 +311,7 @@ func TestUnionIsolation(t *testing.T) {
 func TestDispatchReportsAMissingSlice(t *testing.T) {
 	r := MustRegistry(newFake("alpha", 50), newFake("bravo", 40))
 	var out Analysis
-	fatal, failures := r.Dispatch(context.Background(), &out,
+	failures, fatal := r.Dispatch(context.Background(), &out,
 		[]byte(`{"alpha":{"v":"x"}}`), []string{"alpha", "bravo"})
 
 	if fatal != nil {
@@ -326,7 +326,7 @@ func TestDispatchReportsAMissingSlice(t *testing.T) {
 func TestDispatchIsFatalOnNonJSON(t *testing.T) {
 	r := MustRegistry(newFake("alpha", 50))
 	var out Analysis
-	fatal, _ := r.Dispatch(context.Background(), &out, []byte("not json at all"), []string{"alpha"})
+	_, fatal := r.Dispatch(context.Background(), &out, []byte("not json at all"), []string{"alpha"})
 	if fatal == nil {
 		t.Fatalf("a non-JSON reply was not fatal")
 	}
@@ -498,7 +498,7 @@ func TestFullRoundTrip(t *testing.T) {
 	}`)
 
 	out := Analysis{ItemID: "x", Primary: "gaming", Ambiguous: true}
-	fatal, failures := DefaultRegistry.Dispatch(context.Background(), &out, reply, req.Included)
+	failures, fatal := DefaultRegistry.Dispatch(context.Background(), &out, reply, req.Included)
 	if fatal != nil || len(failures) != 0 {
 		t.Fatalf("round trip failed: %v %v", fatal, failures)
 	}
