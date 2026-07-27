@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import { BASE_URL } from './ports.mjs';
+
 // The suite drives a REAL server against a REAL database seeded from fixture
 // feeds served locally. No mocking: the point of e2e here is to catch the wiring
 // between wasm, the gRPC tunnel, SQLite and FTS5 — which is exactly the seam
@@ -16,8 +18,9 @@ export default defineConfig({
   reporter: [['list']],
   globalSetup: './global-setup.mjs',
   use: {
-    baseURL: process.env.ARTICLEFLUX_URL ||
-      `http://127.0.0.1:${process.env.AF_E2E_APP_PORT || 9010}`,
+    // Ports come from ports.mjs, which derives them from the process id so two
+    // concurrent runs cannot kill each other's server. See that file.
+    baseURL: BASE_URL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

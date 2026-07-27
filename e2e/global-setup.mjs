@@ -4,25 +4,24 @@ import { readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { APP_PORT, FEED_PORT } from './ports.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
 
-// Ports are pinned and distinct from the dev server's 9000, so running the suite
-// never disturbs the instance Cam has open in a tab.
+// Ports come from ports.mjs, which derives them from the process id.
 //
-// Overridable, because `killListener` below kills whatever holds these ports —
-// and the fixture feed server lives inside THIS node process, so a second suite
-// starting on the same ports does not just steal them, it kills the runner that
-// had them. The symptom is a run that prints "Running 1 test" and then exits
-// with no result and no error, which reads as a crashed test rather than as
-// somebody else's setup. Two runs at once is not hypothetical here: two agents
-// share this machine.
+// They used to be pinned at 9010/9011 with an environment variable as the escape
+// hatch, and the comment here described the failure exactly: `killListener`
+// below kills whatever holds these ports, the fixture feed server lives inside
+// THIS node process, so a second suite on the same ports kills the first
+// RUNNER — a run that prints "Running 22 tests" and exits after three with no
+// result, no failure and no error.
 //
-//   AF_E2E_APP_PORT=9020 AF_E2E_FEED_PORT=9021 npx playwright test
-//
-// The base URL follows automatically unless ARTICLEFLUX_URL says otherwise.
-const FEED_PORT = Number(process.env.AF_E2E_FEED_PORT || 9011);
-const APP_PORT = Number(process.env.AF_E2E_APP_PORT || 9010);
+// It happened. The remedy existed and was behind a variable nobody remembered,
+// which is the same as not existing; the default is safe now and the variable is
+// an override. Two runs at once is not hypothetical here: two agents share this
+// machine.
 // Unique per run: a lock we could not clear becomes an orphaned file rather
 // than a suite that cannot start.
 const DB = join(here, '.tmp', `e2e-${process.pid}.db`);
