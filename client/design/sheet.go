@@ -22,27 +22,68 @@ func Sheet() {
 	r := css.Raw
 	css.Preflight()
 
-	css.Root(
-		css.Custom("bg", Ground),
-		css.Custom("sur", Raised),
-		css.Custom("sur-2", Sunk),
-		css.Custom("line", Line),
-		css.Custom("hair", Hair),
-		css.Custom("cream", Cream),
-		css.Custom("soft", Soft),
-		css.Custom("mute", Dim),
-		css.Custom("cc", Accent),
+	// The `:root` block is assembled from the SAME ordered token lists the
+	// runtime theming engine writes onto documentElement.style — see
+	// design/theme.go. That is the whole trick: first paint and a theme switch
+	// set identical property names, so switching is a repaint with no re-render,
+	// and a token that exists in one and not the other cannot happen.
+	//
+	// Fanciful is emitted here rather than "whatever was saved", because the
+	// sheet is static and the preference arrives over the wire a moment later.
+	// An unconfigured install and the first frame of a configured one are both
+	// the house design, which is the right thing to be looking at while the
+	// server answers.
+	root := make([]css.Rule, 0, 32)
+	for _, kv := range Fanciful.Vars() {
+		root = append(root, css.Custom(kv[0], kv[1]))
+	}
+	for _, kv := range MotionVars() {
+		root = append(root, css.Custom(kv[0], kv[1]))
+	}
+	root = append(root,
 		css.Custom("dsp", Display),
 		css.Custom("rd", Reading),
 		css.Custom("ui", UI),
+		css.Custom("rd-size", ReadingSizes[1].Size),
 		css.Custom("row", RowHeight),
 		// Pane widths are custom properties so dragging a grip changes one
 		// variable rather than re-rendering: setting a property repaints, while
 		// re-rendering the tree on pointermove drops frames.
 		css.Custom("w-rail", RailWidth),
 		css.Custom("w-list", ListWidth),
-		r("color-scheme", "dark"),
+		r("color-scheme", string(Fanciful.Tone)),
 	)
+	css.Root(root...)
+
+	// --ink is a source hue where it carries TEXT rather than fills a shape.
+	//
+	// A hue is chosen at 78% lightness so it reads as a clear mark on a dark
+	// ground — and at that lightness, as the colour of a word on a cream one, it
+	// is a smear. So on a light theme the same hue is mixed toward the ink
+	// colour before it is used for type, and only for type: the dots, the row
+	// bars and the article wash keep the hue exactly as it was, because a
+	// coloured shape on paper is legible at any lightness.
+	//
+	// Declared on the three selectors that use it rather than on `*`, so this
+	// costs three rules instead of a custom property computed on every element in
+	// the document. Where --c is not inherited the var() is invalid and the
+	// fallback in each use site applies — which is the same behaviour
+	// var(--c, …) had before.
+	css.Global(".item-source, .article-link, .article-body a", css.Custom("ink", "var(--c)"))
+	css.Global("html[data-tone='light'] :is(.item-source, .article-link, .article-body a)",
+		css.Custom("ink", "color-mix(in oklab, var(--c, currentColor), var(--cream) 52%)"))
+
+	// The article's wash is the other thing that only works in one direction.
+	//
+	// It is a radial gradient in the source hue, clipped by the article's own
+	// box, and at 24% over a dark ground it reads as light falling in. Over
+	// cream it reads as a coloured PANEL — and because the article clips it, the
+	// panel has a hard bottom edge exactly where one article ends, which turns a
+	// continuous stream into a stack of cards. Half the mix removes the seam and
+	// keeps the light.
+	css.Global("html[data-tone='light'] .article::after",
+		r("background", "radial-gradient(ellipse at 22% 0%, "+
+			"color-mix(in srgb, var(--c) 11%, transparent), transparent 62%)"))
 
 	base(r)
 	shell(r)
@@ -56,10 +97,18 @@ func Sheet() {
 	paletteCSS(r)
 	helpCSS(r)
 	feedSettingsCSS(r)
+	loginCSS(r)
+	categoriesCSS(r)
 	glyphs(r)
 	mobile(r)
+	appearanceCSS(r)
 	skeletons(r)
 	responsive(r)
+	// LAST, and it has to be: motion layers transitions onto rules the sections
+	// above authored, and a transition declared before the property it animates
+	// is a shorthand waiting to be overwritten by the next `transition:` the
+	// cascade meets. See design/motion.go.
+	motion(r)
 }
 
 func base(r func(string, string) css.Rule) {
@@ -100,6 +149,19 @@ func base(r func(string, string) css.Rule) {
 		r("font-weight", "600"), r("z-index", "50"), r("text-decoration", "none"),
 	)
 	css.Global(".skip:focus", r("left", "12px"))
+
+	// Visible to a screen reader, to nothing else. Where a glyph carries the
+	// whole message — the note's autosave mark is the only one so far — the
+	// words have to exist somewhere, and `aria-label` on a live region is not
+	// reliably re-announced when it changes.
+	//
+	// clip-path rather than display:none or visibility:hidden, both of which
+	// remove the element from the accessibility tree along with the pixels.
+	css.Global(".sr",
+		r("position", "absolute"), r("width", "1px"), r("height", "1px"),
+		r("padding", "0"), r("margin", "-1px"), r("overflow", "hidden"),
+		r("clip-path", "inset(50%)"), r("white-space", "nowrap"), r("border", "0"),
+	)
 }
 
 func shell(r func(string, string) css.Rule) {
@@ -136,17 +198,17 @@ func shell(r func(string, string) css.Rule) {
 	// Both syntaxes, because they are not interchangeable: `scrollbar-color` is
 	// the standard (Firefox, and Chrome 121+) and `::-webkit-scrollbar` is what
 	// actually lets us make it always-on and set its geometry.
-	css.Global(".pane, .list-scroll, .article-body pre, .article-body table",
+	css.Global(".pane, .list-scroll, .rail-scroll, .article-body pre, .article-body table",
 		r("scrollbar-width", "thin"),
 		r("scrollbar-color", "var(--line) transparent"),
 	)
-	css.Global(".pane::-webkit-scrollbar, .list-scroll::-webkit-scrollbar",
+	css.Global(".pane::-webkit-scrollbar, .list-scroll::-webkit-scrollbar, .rail-scroll::-webkit-scrollbar",
 		r("width", "10px"), r("height", "10px"),
 	)
-	css.Global(".pane::-webkit-scrollbar-track, .list-scroll::-webkit-scrollbar-track",
+	css.Global(".pane::-webkit-scrollbar-track, .list-scroll::-webkit-scrollbar-track, .rail-scroll::-webkit-scrollbar-track",
 		r("background", "transparent"),
 	)
-	css.Global(".pane::-webkit-scrollbar-thumb, .list-scroll::-webkit-scrollbar-thumb",
+	css.Global(".pane::-webkit-scrollbar-thumb, .list-scroll::-webkit-scrollbar-thumb, .rail-scroll::-webkit-scrollbar-thumb",
 		r("background", "var(--line)"),
 		r("border-radius", "99px"),
 		// An inset border keeps the thumb clear of the pane's content instead of
@@ -154,7 +216,7 @@ func shell(r func(string, string) css.Rule) {
 		r("border", "2px solid transparent"),
 		r("background-clip", "content-box"),
 	)
-	css.Global(".pane::-webkit-scrollbar-thumb:hover, .list-scroll::-webkit-scrollbar-thumb:hover",
+	css.Global(".pane::-webkit-scrollbar-thumb:hover, .list-scroll::-webkit-scrollbar-thumb:hover, .rail-scroll::-webkit-scrollbar-thumb:hover",
 		r("background", "var(--soft)"), r("background-clip", "content-box"),
 	)
 
@@ -178,7 +240,7 @@ func grips(r func(string, string) css.Rule) {
 		r("inset", "0 auto 0 50%"), r("width", "1px"),
 		r("transform", "translateX(-50%)"),
 		r("background", "var(--hair)"),
-		r("transition", "background .14s, width .14s"),
+		r("transition", "background var(--t1) var(--e-out), width var(--t1) var(--e-out)"),
 	)
 	css.Global(".grip::after",
 		r("content", `""`), r("position", "absolute"),
@@ -186,7 +248,7 @@ func grips(r func(string, string) css.Rule) {
 		r("width", "3px"), r("height", "34px"), r("border-radius", "99px"),
 		r("transform", "translate(-50%,-50%) scaleY(.4)"),
 		r("background", "var(--cc)"), r("opacity", "0"),
-		r("transition", "opacity .16s, transform .16s"),
+		r("transition", "opacity var(--t2) var(--e-out), transform var(--t2) var(--e-mark)"),
 	)
 	css.Global(".grip:hover::before",
 		r("width", "2px"),
@@ -210,7 +272,38 @@ func rail(r func(string, string) css.Rule) {
 	// it had ONE density for everything, so 151 subscriptions were laid out with
 	// the same generosity as a five-item menu — fourteen feeds visible in a
 	// thousand pixels, with the structure costing more than the contents.
-	css.Global(".pane-rail", r("padding", "14px 10px 18px"))
+	// Three regions, one scroller.
+	//
+	// The rail was a single overflow-y:auto column, so the masthead and the five
+	// streams — six rows a reader learns the position of and returns to all day —
+	// scrolled away the moment they went hunting through 151 subscriptions. Now
+	// the pane itself does not scroll: it is a flex column whose head and foot are
+	// fixed and whose middle takes the remaining height. The scroll starts under
+	// Notes, at the Feeds band.
+	//
+	// overflow:hidden here overrides the .pane rule, which is why rail() must keep
+	// running after shell() — same specificity, later wins.
+	css.Global(".pane-rail",
+		r("padding", "0"),
+		r("display", "flex"), r("flex-direction", "column"),
+		r("overflow", "hidden"),
+	)
+	css.Global(".rail-head", r("flex", "none"), r("padding", "14px 10px 0"))
+	css.Global(".rail-scroll",
+		r("flex", "1 1 auto"), r("min-height", "0"),
+		r("overflow-y", "auto"), r("overflow-x", "hidden"),
+		r("scrollbar-gutter", "stable"), r("overscroll-behavior", "contain"),
+		r("padding", "0 10px 6px"),
+	)
+	// The foot is separated by a hairline rather than by space: it is pinned, so
+	// rows scroll UNDER it and without a rule they appear to be cut off mid-list.
+	css.Global(".rail-foot",
+		r("flex", "none"), r("padding", "0 10px"),
+		r("border-top", "1px solid var(--hair)"),
+	)
+	// The band directly under the masthead does not also need the 18px of air a
+	// band gets when it is separating two groups of rows.
+	css.Global(".rail-head > .rail-band", r("padding-top", "4px"))
 
 	// One line: the wordmark and the count share a baseline, and the count is
 	// the only part that ever changes.
@@ -240,15 +333,12 @@ func rail(r func(string, string) css.Rule) {
 	)
 	css.Global(".feed-row:hover", r("background", "var(--sur)"))
 	css.Global(".feed-row[aria-current='true']", r("background", "var(--sur-2)"))
-	// The amber bar, borrowed from the item list. It is what marks the current
-	// row now that the streams have no dots — one selection signal for the whole
-	// app instead of two that had to be learned separately.
-	css.Global(".feed-row[aria-current='true']::before",
-		r("content", `""`), r("position", "absolute"),
-		r("left", "0"), r("top", "5px"), r("bottom", "5px"),
-		r("width", "3px"), r("border-radius", "0 3px 3px 0"),
-		r("background", "var(--cc)"),
-	)
+	// The amber bar — one selection signal for the whole app rather than two that
+	// had to be learned separately — is authored in design/motion.go, because it
+	// is the one mark that DRAWS ITSELF and a pseudo-element that only exists in
+	// the selected state cannot animate: it is created at its final size, which
+	// is the same as not animating at all. The geometry is there with the
+	// transition that needs it.
 
 	// Streams carry no marker; the label is inset by the marker column instead,
 	// so the rail keeps a single text axis from the top of the list to the
@@ -337,6 +427,32 @@ func rail(r func(string, string) css.Rule) {
 		r("font-size", "10px"), r("letter-spacing", ".14em"),
 		r("color", "var(--mute)"), r("flex", "none"),
 	)
+	// The whole left end of the band is the fold control — caret, glyph and label
+	// in one hit area. A 10px triangle on its own is a target you have to aim at,
+	// and a label sitting beside a control that ignores clicks reads as broken.
+	css.Global(".rail-band-toggle",
+		r("display", "flex"), r("align-items", "center"), r("gap", "9px"),
+		r("flex", "none"), r("padding", "2px 4px"), r("margin", "-2px -4px"),
+		r("border-radius", "6px"),
+	)
+	css.Global(".rail-band-toggle:hover .rail-band-label", r("color", "var(--cream)"))
+	css.Global(".rail-band-toggle:hover .rail-chev", r("color", "var(--cream)"))
+	// One caret, rotated — not two glyphs swapped. Rotation is a state a reader
+	// can see move; a substitution is a flicker.
+	css.Global(".rail-chev",
+		r("display", "inline-block"), r("width", "8px"),
+		r("font-size", "12px"), r("line-height", "1"),
+		r("color", "var(--mute)"), r("flex", "none"),
+		r("transform", "rotate(0deg)"), r("transform-origin", "50% 50%"),
+		r("transition", "transform var(--t2) var(--e-mark), color var(--t1) var(--e-out)"),
+	)
+	css.Global(".rail-band[data-open='true'] .rail-chev", r("transform", "rotate(90deg)"))
+	// What a folded section is hiding. Set like a feed count, because that is what
+	// it is — the number of rows behind the caret.
+	css.Global(".rail-band-count",
+		r("font-size", "11px"), r("color", "var(--mute)"),
+		r("font-variant-numeric", "tabular-nums"), r("flex", "none"),
+	)
 	css.Global(".rail-band-rule",
 		r("flex", "1 1 auto"), r("height", "1px"),
 		r("background", "var(--hair)"),
@@ -358,9 +474,12 @@ func rail(r func(string, string) css.Rule) {
 		r("width", "100%"), r("box-sizing", "border-box"),
 		r("padding", "4px 11px"), r("font-size", "12px"),
 	)
+	// The foot is pinned now, so its band no longer needs the 18px that separated
+	// it from a list of feeds directly above it — the hairline does that job.
+	css.Global(".rail-foot > .rail-band", r("padding", "9px 10px 6px"))
 	css.Global(".rail-add",
 		r("display", "flex"), r("gap", "7px"), r("align-items", "center"),
-		r("padding", "2px 11px 20px"),
+		r("padding", "2px 11px 14px"),
 	)
 	css.Global(".rail-add .field", r("flex", "1 1 auto"), r("min-width", "0"))
 	css.Global(".tag-dot",
@@ -457,7 +576,9 @@ func list(r func(string, string) css.Rule) {
 		r("white-space", "nowrap"), r("overflow", "hidden"),
 	)
 	css.Global(".item-source",
-		r("color", "var(--c, var(--soft))"), r("font-weight", "500"),
+		// --ink, not --c: this is the hue used as TYPE, and on a light theme it
+		// has to come down to where a word set in it is readable. See Sheet().
+		r("color", "var(--ink, var(--soft))"), r("font-weight", "500"),
 		r("overflow", "hidden"), r("text-overflow", "ellipsis"),
 	)
 	// A 3px dot at half opacity as the field separator. A middot sits on the
@@ -479,7 +600,7 @@ func list(r func(string, string) css.Rule) {
 	// than a background so it sits behind the baseline like a marker stroke.
 	css.Global(".item-summary b",
 		r("color", "var(--soft)"), r("font-weight", "500"),
-		r("box-shadow", "inset 0 -.42em 0 color-mix(in srgb, var(--c, #fff) 26%, transparent)"),
+		r("box-shadow", "inset 0 -.42em 0 color-mix(in srgb, var(--c, var(--cream)) 26%, transparent)"),
 	)
 
 	// A note in a list row is the reader's own words, so it is set in the reading
@@ -576,8 +697,11 @@ func reader(r func(string, string) css.Rule) {
 	// "start here".
 	css.Global(".article-body",
 		r("padding", "14px 0 56px"), r("max-width", "66ch"),
-		r("font-family", "var(--rd)"), r("font-size", "18px"),
-		r("line-height", "1.76"), r("color", "#E4DCEC"),
+		// Both tokens: the size is a reader preference (Appearance → Reading
+		// size) and the colour belongs to the theme. 18px and #E4DCEC are still
+		// what an unconfigured Fanciful install renders.
+		r("font-family", "var(--rd)"), r("font-size", "var(--rd-size)"),
+		r("line-height", "1.76"), r("color", "var(--read)"),
 		r("overflow-wrap", "anywhere"),
 	)
 	css.Global(".article-body p", r("margin", "0 0 1.1em"))
@@ -594,7 +718,7 @@ func reader(r func(string, string) css.Rule) {
 	// itself out inside our column.
 	css.Global(".article-body a",
 		r("color", "var(--cream)"), r("text-decoration", "underline"),
-		r("text-decoration-color", "var(--c, var(--mute))"),
+		r("text-decoration-color", "var(--ink, var(--mute))"),
 		r("text-underline-offset", ".15em"),
 	)
 	css.Global(".article-body img",
@@ -641,7 +765,143 @@ func reader(r func(string, string) css.Rule) {
 		r("margin", "0 0 10px"),
 	)
 	css.Global(".note-head + .note-head", r("margin-top", "18px"))
-	css.Global(".note-status", r("text-transform", "none"), r("letter-spacing", "0"))
+
+	// --- the note disclosure ------------------------------------------------
+	//
+	// Closed, the whole panel is one quiet line and the card recedes: no fill,
+	// a hairline border, and padding tight enough that it reads as a footer to
+	// the article rather than as a form after it. Open, it becomes the card it
+	// always was. The border and radius are shared so the two states are
+	// obviously the same object rather than two different ones.
+	css.Global(".article-note[data-open='false']",
+		r("background", "transparent"),
+		r("border-color", "var(--hair)"),
+		r("padding", "10px 14px"),
+	)
+	// Only the closed state fades on hover: an open panel the reader is typing
+	// in must not react to the pointer crossing it.
+	css.Global(".article-note[data-open='false']:hover",
+		r("border-color", "var(--line)"),
+	)
+	css.Global(".note-summary",
+		r("display", "flex"), r("align-items", "center"),
+		r("flex-wrap", "wrap"), r("gap", "10px"),
+	)
+	css.Global(".note-toggle",
+		r("display", "inline-flex"), r("align-items", "center"), r("gap", "8px"),
+		r("background", "none"), r("border", "0"), r("padding", "0"),
+		r("cursor", "pointer"), r("color", "var(--mute)"),
+		r("font-family", "var(--ui)"), r("font-size", "11.5px"),
+		r("letter-spacing", ".1em"), r("text-transform", "uppercase"),
+		r("transition", "color var(--t1) var(--e-out)"),
+	)
+	css.Global(".note-toggle:hover", r("color", "var(--cream)"))
+	// One glyph that TURNS, rather than two glyphs that swap. A rotation reads as
+	// one thing changing state; a substitution reads as the control having been
+	// replaced, and at this size the difference is the whole affordance.
+	css.Global(".note-caret",
+		r("display", "inline-block"), r("font-size", "14px"), r("line-height", "1"),
+		r("transition", "transform var(--t2) var(--e-mark)"),
+	)
+	css.Global(".article-note[data-open='true'] .note-caret",
+		r("transform", "rotate(90deg)"),
+	)
+	// The note in miniature, so a closed panel still answers "did I write
+	// something about this one". Reading face, not the UI face: it is a quotation
+	// of the reader's own prose, and one line of it only.
+	css.Global(".note-peek",
+		r("flex", "1 1 12ch"), r("min-width", "0"),
+		r("font-family", "var(--rd)"), r("font-size", "13.5px"),
+		r("color", "var(--soft)"), r("font-style", "italic"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
+	)
+	// Open, the fields sit below the summary row with the card's own rhythm.
+	css.Global(".note-body", r("margin-top", "14px"))
+	// The sync mark goes last on the row and stays there whether or not a peek
+	// or a chip is between it and the toggle.
+	css.Global(".note-summary .note-sync", r("margin-left", "auto"))
+
+	// The autosave mark, in the space the old "Unsaved — press Ctrl+Enter" line
+	// occupied. It is at the far end of the head row, so it can appear and
+	// disappear without moving the field or the heading beside it.
+	css.Global(".note-sync",
+		r("display", "inline-flex"), r("align-items", "center"),
+		r("font-size", "13px"), r("line-height", "1"),
+		r("color", "var(--mute)"), r("text-transform", "none"),
+		r("letter-spacing", "0"),
+		r("transition", "color var(--t2) var(--e-out), opacity var(--t2) var(--e-out)"),
+	)
+	// Faint while the debounce is still counting: the reader has not stopped
+	// typing, and a mark competing for attention mid-sentence is worse than no
+	// mark at all. It firms up the moment the write actually starts.
+	css.Global(".note-sync[data-sync='pending']", r("opacity", ".45"))
+	// Amplitude-gated, not duration-gated: a LOOPING animation keeps its real
+	// duration and turns itself off by animating to the value it started at, so
+	// `--mo: 0` leaves the glyph upright instead of relying on what a browser
+	// does with a zero-second infinite animation. See design/motion.go.
+	spin := css.Keyframes("note-spin",
+		css.At("0%", r("transform", "rotate(0deg)")),
+		css.At("100%", r("transform", "rotate(calc(var(--mo) * 360deg))")),
+	)
+	css.Global(".note-sync[data-sync='saving'] .sync-gl",
+		r("display", "inline-block"), spin,
+		r("animation-duration", "1.1s"),
+		r("animation-timing-function", "linear"),
+		r("animation-iteration-count", "infinite"),
+	)
+	// The same two colours the connection dot uses for live and down. A reader
+	// only has to learn "green is fine, warm is not" once.
+	css.Global(".note-sync[data-sync='saved']", r("color", "var(--pos)"))
+	css.Global(".note-sync[data-sync='failed']", r("color", "var(--neg)"))
+
+	// The tags already on this feed. Above the add field, because they are the
+	// answer to "is it already tagged" — which is the question you ask before
+	// typing one.
+	css.Global(".note-tagged",
+		r("display", "flex"), r("flex-wrap", "wrap"), r("gap", "6px"),
+		r("margin", "0 0 10px"),
+	)
+	css.Global(".tag-chip",
+		r("display", "inline-flex"), r("align-items", "center"), r("gap", "6px"),
+	)
+	css.Global(".tag-x",
+		r("color", "var(--mute)"), r("font-size", "13px"), r("line-height", "1"),
+	)
+	// The × warms on hover rather than the whole chip lighting up: the chip is
+	// destructive, and it should look destructive before it is clicked, not
+	// merely interactive.
+	css.Global(".tag-chip:hover .tag-x", r("color", "var(--neg)"))
+	css.Global(".tag-chip:hover", r("border-color", "var(--neg)"))
+
+	// A tag that has been applied but not yet acknowledged.
+	//
+	// Dimmed and dashed rather than hidden or greyed to the point of illegibility:
+	// the reader typed this word a moment ago and it must still read as theirs.
+	// The dashed border is the whole message — "this outline is not settled yet" —
+	// and it costs no colour, which matters on a chip row that already spends its
+	// one warm colour on the destructive hover above.
+	css.Global(".tag-chip-pending",
+		r("opacity", ".62"), r("border-style", "dashed"), r("cursor", "default"),
+	)
+	// No destructive affordance while pending: there is nothing on the server to
+	// remove yet, and a chip that warms red on hover is promising an action it
+	// cannot perform.
+	css.Global(".tag-chip-pending:hover", r("border-color", "var(--line)"))
+	// The same spinner the note autosave uses, at the size of the × it stands in
+	// for. One vocabulary for "your change is on its way".
+	tagSpin := css.Keyframes("tag-wait-spin",
+		css.At("0%", r("transform", "rotate(0deg)")),
+		css.At("100%", r("transform", "rotate(calc(var(--mo) * 360deg))")),
+	)
+	css.Global(".tag-wait",
+		r("display", "inline-block"), r("color", "var(--mute)"),
+		r("font-size", "12px"), r("line-height", "1"),
+		tagSpin,
+		r("animation-duration", "1.1s"),
+		r("animation-timing-function", "linear"),
+		r("animation-iteration-count", "infinite"),
+	)
 	css.Global(".note-field",
 		r("width", "100%"), r("background", "var(--sur-2)"),
 		r("color", "var(--cream)"), r("border", "1px solid var(--line)"),
@@ -667,9 +927,26 @@ func chrome(r func(string, string) css.Rule) {
 		r("width", "8px"), r("height", "8px"), r("border-radius", "50%"),
 		r("background", "var(--mute)"), r("flex", "none"),
 	)
-	css.Global(".conn[data-state='live'] .conn-dot", r("background", "#7DDCB0"))
+	css.Global(".conn[data-state='live'] .conn-dot", r("background", "var(--pos)"))
 	css.Global(".conn[data-state='connecting'] .conn-dot", r("background", "var(--cc)"))
-	css.Global(".conn[data-state='down'] .conn-dot", r("background", "#FF8A6B"))
+	css.Global(".conn[data-state='down'] .conn-dot", r("background", "var(--neg)"))
+	// Offline keeps the DEFAULT grey, which is the accurate thing to say: there
+	// is no network, so nothing is in flight and nothing is broken here. Red
+	// would blame a server that is fine, and the accent is the reader's own
+	// choice (`--cc`) and already means "connecting" — a sixth colour would
+	// have to be a literal, which A39 does not allow outside a Theme. The word
+	// beside the dot is what separates this from `down`, which is why the word
+	// is there.
+	//
+	// Blocked IS red: it is the one state where nothing will happen at all
+	// until the reader acts (§20.19.2).
+	css.Global(".conn[data-state='blocked'] .conn-dot", r("background", "var(--neg)"))
+	// Sized down from a normal chip: this appears next to a 12.5px label in a
+	// toolbar row, and a full-height button beside it reads as the primary
+	// control of the pane rather than as a footnote to a failure.
+	css.Global(".conn-fix",
+		r("padding", "2px 8px"), r("font-size", "12px"), r("line-height", "1.5"),
+	)
 
 	css.Global(".field",
 		r("background", "var(--sur-2)"), r("color", "var(--cream)"),
@@ -698,7 +975,10 @@ func chrome(r func(string, string) css.Rule) {
 		r("color", "var(--cream)"), r("font-weight", "500"),
 	)
 
+	css.Global(".banner-text", r("flex", "1 1 auto"), r("min-width", "0"))
+	css.Global(".banner-undo", r("flex", "none"))
 	css.Global(".banner",
+		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
 		r("margin", "14px 0 0"),
 		r("background", "var(--sur-2)"),
 		r("border", "1px solid var(--line)"),
@@ -755,29 +1035,27 @@ func verdicts(r func(string, string) css.Rule) {
 		r("background", "var(--cc)"), r("border-color", "var(--cc)"), r("color", "var(--bg)"),
 	)
 
-	css.Global(".verdict-up", r("color", "#7DDCB0"))
-	css.Global(".verdict-down", r("color", "#FF8A6B"))
+	css.Global(".verdict-up", r("color", "var(--pos)"))
+	css.Global(".verdict-down", r("color", "var(--neg)"))
 
 	// The verdict chips take their colour only when they are the active one, so
 	// an unrated article shows two neutral buttons rather than a red one and a
 	// green one demanding a decision.
 	css.Global(".chip[data-action='like'][aria-pressed='true']",
-		r("background", "#7DDCB0"), r("border-color", "#7DDCB0"), r("color", "var(--bg)"),
+		r("background", "var(--pos)"), r("border-color", "var(--pos)"), r("color", "var(--bg)"),
 	)
 	css.Global(".chip[data-action='dislike'][aria-pressed='true']",
-		r("background", "#FF8A6B"), r("border-color", "#FF8A6B"), r("color", "var(--bg)"),
+		r("background", "var(--neg)"), r("border-color", "var(--neg)"), r("color", "var(--bg)"),
 	)
 
 	// The headline link is not decorated: it is already the largest thing on the
 	// page, and underlining 44px type is a wall. The hover state is what tells
 	// you it is a link.
-	css.Global(".article-link", r("color", "inherit"), r("text-decoration", "none"))
-	css.Global(".article-link:hover",
-		r("text-decoration", "underline"),
-		r("text-decoration-color", "var(--c, var(--cc))"),
-		r("text-decoration-thickness", "2px"),
-		r("text-underline-offset", ".08em"),
-	)
+	// The hover state is authored in design/motion.go: `text-decoration` cannot
+	// transition, so the underline is present at all times in a TRANSPARENT hue
+	// and only its colour moves. Adding the decoration on hover also reflowed a
+	// 44px headline by the thickness of its own underline.
+	css.Global(".article-link", r("color", "inherit"))
 
 	// The clamp on a long article. A fixed max-height plus a fade, so the cut is
 	// obviously a cut rather than an article that happens to end mid-sentence.
@@ -857,7 +1135,7 @@ func paletteCSS(r func(string, string) css.Rule) {
 		r("background", "var(--sur)"),
 		r("border", "1px solid var(--line)"),
 		r("border-radius", "18px"),
-		r("box-shadow", "0 24px 70px rgba(0,0,0,.55)"),
+		r("box-shadow", "var(--shadow)"),
 		r("overflow", "hidden"),
 		r("display", "flex"), r("flex-direction", "column"),
 		r("max-height", "70vh"),
@@ -946,7 +1224,7 @@ func helpCSS(r func(string, string) css.Rule) {
 		r("background", "var(--sur)"),
 		r("border", "1px solid var(--line)"),
 		r("border-radius", "18px"),
-		r("box-shadow", "0 24px 70px rgba(0,0,0,.55)"),
+		r("box-shadow", "var(--shadow)"),
 		r("padding", "26px 28px 30px"),
 		r("max-height", "76vh"), r("overflow-y", "auto"),
 	)
@@ -1016,7 +1294,7 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 		// sidebar is a column of hardware competing with the one thing the rail
 		// is for.
 		r("opacity", "0"), r("pointer-events", "none"),
-		r("transition", "opacity .12s"),
+		r("transition", "opacity var(--t1) var(--e-out), transform var(--t2) var(--e-out), color var(--t1) var(--e-out), background-color var(--t1) var(--e-out)"),
 	)
 	// Hover anywhere in the slot, or focus on the gear itself: a control that
 	// only appears on hover is unreachable from a keyboard, and this rail is
@@ -1036,7 +1314,7 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 		r("background", "var(--sur)"),
 		r("border", "1px solid var(--line)"),
 		r("border-radius", "18px"),
-		r("box-shadow", "0 24px 70px rgba(0,0,0,.55)"),
+		r("box-shadow", "var(--shadow)"),
 		r("display", "flex"), r("flex-direction", "column"),
 		r("max-height", "78vh"), r("overflow", "hidden"),
 	)
@@ -1119,7 +1397,7 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 	css.Global(".fs-lasterror",
 		r("margin-top", "8px"), r("padding", "9px 12px"),
 		r("border-radius", "10px"), r("background", "var(--sur-2)"),
-		r("border-left", "3px solid #FF8A6B"),
+		r("border-left", "3px solid var(--neg)"),
 		r("font-size", "12px"), r("color", "var(--soft)"),
 		r("overflow-wrap", "anywhere"),
 	)
@@ -1130,16 +1408,75 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 	)
 	// Destructive, and it looks it — but only on hover, so a panel of settings
 	// does not open with a red button demanding attention.
-	css.Global(".fs-danger", r("color", "#FF8A6B"), r("border-color", "#FF8A6B"))
+	css.Global(".fs-danger", r("color", "var(--neg)"), r("border-color", "var(--neg)"))
 	css.Global(".fs-danger:hover",
-		r("background", "#FF8A6B"), r("color", "var(--bg)"), r("border-color", "#FF8A6B"),
+		r("background", "var(--neg)"), r("color", "var(--bg)"), r("border-color", "var(--neg)"),
 	)
 	css.Global(".fs-note",
 		r("margin-top", "10px"), r("font-size", "12px"), r("color", "var(--mute)"),
 	)
 	css.Global(".fs-error",
-		r("padding", "18px 0"), r("color", "#FF8A6B"), r("font-size", "13px"),
+		r("padding", "18px 0"), r("color", "var(--neg)"), r("font-size", "13px"),
 	)
+
+	// --- the tag panel's glyph picker ---
+	//
+	// The one thing in the tag panel that is not already in the feed panel's
+	// vocabulary. Everything else there — the dialog, the groups, the rows, the
+	// rename — is `fs-*`, deliberately: two settings dialogs that look like two
+	// different applications is a worse outcome than a class prefix that no
+	// longer says "feed".
+	css.Global(".ts-glyphs",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "12px"),
+		r("padding", "4px 0 2px"),
+	)
+	css.Global(".ts-glyph-group",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "5px"),
+	)
+	// The group name is the same 10px tracked caps the settings groups use, so
+	// the picker reads as more of the same panel rather than as a widget dropped
+	// into it.
+	css.Global(".ts-glyph-title",
+		r("font-size", "10px"), r("letter-spacing", ".14em"), r("color", "var(--mute)"),
+	)
+	// auto-fill rather than a fixed column count: the panel is 620px on a desktop
+	// and the width of a phone below that, and a grid that keeps eight columns at
+	// 360px is eight columns of clipped buttons.
+	css.Global(".ts-glyph-row",
+		r("display", "grid"),
+		r("grid-template-columns", "repeat(auto-fill, minmax(38px, 1fr))"),
+		r("gap", "5px"),
+	)
+	css.Global(".ts-glyph",
+		r("aspect-ratio", "1"), r("display", "grid"), r("place-items", "center"),
+		r("border", "1px solid var(--line)"), r("border-radius", "10px"),
+		r("background", "var(--sur-2)"), r("color", "var(--soft)"),
+		// Larger than body text. These are being recognised by shape rather than
+		// read, and at 13px half the catalogue is the same small smudge.
+		r("font-size", "17px"), r("line-height", "1"),
+		r("cursor", "pointer"), r("transition", "background-color var(--t1) var(--e-out), color var(--t1) var(--e-out), border-color var(--t1) var(--e-out)"),
+	)
+	css.Global(".ts-glyph:hover",
+		r("color", "var(--cream)"), r("border-color", "var(--soft)"),
+	)
+	// The chosen one is filled, not outlined. A selected state that only changes
+	// a border is invisible in a grid of fifty bordered cells.
+	css.Global(`.ts-glyph[aria-pressed="true"]`,
+		r("background", "var(--cc)"), r("color", "var(--bg)"), r("border-color", "var(--cc)"),
+	)
+	css.Global(`.ts-glyph[aria-pressed="true"]:hover`,
+		r("background", "var(--cc)"), r("color", "var(--bg)"),
+	)
+
+	// A tag's chosen glyph in the rail. It stands where the dot stood, so it gets
+	// the dot's width — otherwise every renamed tag's name starts at a different
+	// x than the feed names above it, and a column of left edges that do not line
+	// up is the thing the eye notices before it reads anything.
+	css.Global(".tag-gl",
+		r("width", "9px"), r("flex", "none"), r("text-align", "center"),
+		r("font-size", "12px"), r("line-height", "1"), r("color", "var(--soft)"),
+	)
+	css.Global(`.feed-row[aria-current="true"] .tag-gl`, r("color", "var(--cream)"))
 
 	// On a phone the rows stack: a 58%-wide control column next to a label is
 	// two cramped columns rather than one readable one.
@@ -1186,7 +1523,10 @@ func glyphs(r func(string, string) css.Rule) {
 	)
 
 	// The band's glyph sits at the head of the rule, not floating before it.
-	css.Global(".rail-band > .gl", r("margin-right", "0"), r("font-size", "11px"))
+	// Descendant, not child: on a foldable band the glyph lives inside the toggle
+	// button with the caret and the label, so `>` stopped matching it and every
+	// section heading grew a glyph a size too big with a stray margin.
+	css.Global(".rail-band .gl", r("margin-right", "0"), r("font-size", "11px"))
 	css.Global(".fs-group-head",
 		r("display", "flex"), r("align-items", "center"), r("gap", "2px"),
 	)
@@ -1213,9 +1553,13 @@ func skeletons(r func(string, string) css.Rule) {
 	// animation-name to a CONTENT-HASHED name — so the animation cannot be
 	// referenced by the string "shimmer" from elsewhere. It has to be applied as a
 	// rule wherever it is wanted, which is why this is a variable.
+	// Amplitude-gated for the reason spelled out in design/motion.go: at
+	// `--mo: 0` both offsets collapse to 0 and the highlight stops travelling,
+	// leaving a static gradient rather than a shimmer frozen at a visibly wrong
+	// position — which is what a zero-second infinite animation risks.
 	shimmer := css.Keyframes("shimmer",
-		css.At("0%", r("background-position", "-160% 0")),
-		css.At("100%", r("background-position", "260% 0")),
+		css.At("0%", r("background-position", "calc(var(--mo) * -160%) 0")),
+		css.At("100%", r("background-position", "calc(var(--mo) * 260%) 0")),
 	)
 	sweep := []css.Rule{
 		r("background", "linear-gradient(90deg, var(--sur) 0%, var(--sur-2) 40%, var(--sur) 80%)"),
@@ -1295,23 +1639,164 @@ func mobile(r func(string, string) css.Rule) {
 	css.Global(".tab[aria-current='true']", r("color", "var(--cream)"))
 	css.Global(".tab[aria-current='true'] .tab-glyph", r("color", "var(--cc)"))
 
-	css.Global(".pane-settings", r("min-width", "0"))
-	css.Global(".set-group", r("margin-top", "26px"), r("max-width", "40rem"))
-	css.Global(".set-row",
-		r("display", "flex"), r("align-items", "center"), r("gap", "12px"),
-		r("padding", "13px 0"), r("border-bottom", "1px solid var(--hair)"),
-	)
-	css.Global(".set-label",
-		r("font-size", "14.5px"), r("color", "var(--cream)"), r("flex", "none"),
-	)
-	css.Global(".set-value",
-		r("font-size", "12.5px"), r("color", "var(--mute)"),
-		r("flex", "1 1 auto"), r("text-align", "right"),
+	css.Global(".pane-settings",
+		r("min-width", "0"), r("padding", "40px 46px 60px"),
 	)
 	css.Global(".pane-settings h1",
-		r("font-family", "var(--dsp)"), r("font-size", "30px"),
-		r("font-weight", "600"), r("letter-spacing", "-.02em"), r("margin", "0"),
+		r("font-family", "var(--dsp)"),
+		r("font-variation-settings", `"SOFT" 55, "WONK" 1, "opsz" 72`),
+		r("font-size", "34px"), r("font-weight", "600"),
+		r("letter-spacing", "-.025em"), r("margin", "0"),
 	)
+	css.Global(".set-head", r("margin-bottom", "26px"), r("max-width", "60ch"))
+	css.Global(".set-sub",
+		r("display", "block"), r("margin-top", "7px"),
+		r("font-family", "var(--rd)"), r("font-size", "14px"),
+		r("color", "var(--mute)"),
+	)
+
+	// The tabs are a row of pills, not a sidebar inside a sidebar. This pane is
+	// already the third column on a wide screen and the ONLY column on a phone,
+	// and nesting a second navigation rail in it would spend exactly the width
+	// the settings themselves need.
+	css.Global(".set-tabs",
+		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
+		r("padding-bottom", "18px"), r("border-bottom", "1px solid var(--hair)"),
+		r("margin-bottom", "6px"),
+	)
+	css.Global(".set-tab",
+		r("display", "inline-flex"), r("align-items", "center"),
+		r("font-size", "13px"), r("padding", "6px 13px"),
+		r("border-radius", "99px"), r("color", "var(--soft)"),
+		r("border", "1px solid transparent"),
+	)
+	css.Global(".set-tab:hover", r("background", "var(--sur)"), r("color", "var(--cream)"))
+	css.Global(".set-tab[aria-current='true']",
+		r("background", "var(--cream)"), r("color", "var(--bg)"), r("font-weight", "500"),
+	)
+	css.Global(".set-tab[aria-current='true'] > .gl", r("opacity", "1"))
+
+	css.Global(".set-panel", r("max-width", "56rem"))
+	css.Global(".set-group", r("margin-top", "26px"))
+	css.Global(".set-fact",
+		r("display", "flex"), r("justify-content", "space-between"),
+		r("gap", "16px"), r("padding", "7px 0"), r("font-size", "13.5px"),
+		r("border-bottom", "1px solid var(--hair)"),
+	)
+	css.Global(".set-fact-name", r("color", "var(--mute)"), r("flex", "none"))
+	css.Global(".set-fact-value",
+		r("color", "var(--soft)"), r("font-variant-numeric", "tabular-nums"),
+		r("text-align", "right"), r("overflow-wrap", "anywhere"),
+	)
+	css.Global(".set-actions",
+		r("display", "flex"), r("gap", "8px"), r("flex-wrap", "wrap"),
+		r("align-items", "center"), r("padding", "14px 0 0"),
+	)
+	css.Global(".set-counts",
+		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
+		r("padding", "10px 0 2px"),
+	)
+	css.Global(".set-note",
+		r("margin-top", "12px"), r("max-width", "62ch"),
+		r("font-family", "var(--rd)"), r("font-size", "13px"),
+		r("line-height", "1.6"), r("color", "var(--mute)"),
+	)
+
+	// --- the log ---
+	//
+	// A three-column grid, not a list of paragraphs: time, level and message line
+	// up so the eye can run down the level column and stop at the one thing that
+	// is not INFO. That is the entire reason this screen exists.
+	css.Global(".log-list",
+		r("margin-top", "14px"), r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".log-row",
+		r("display", "grid"),
+		r("grid-template-columns", "4.5rem 3.6rem 1fr"),
+		r("gap", "10px"), r("align-items", "baseline"),
+		r("padding", "7px 0"), r("border-bottom", "1px solid var(--hair)"),
+		r("font-size", "12.5px"),
+	)
+	css.Global(".log-time",
+		r("color", "var(--mute)"), r("font-variant-numeric", "tabular-nums"),
+	)
+	css.Global(".log-level",
+		r("font-size", "10px"), r("letter-spacing", ".1em"),
+		r("text-transform", "uppercase"), r("color", "var(--mute)"),
+	)
+	css.Global(".log-row[data-level='warn'] .log-level", r("color", "var(--cc)"))
+	css.Global(".log-row[data-level='error'] .log-level", r("color", "var(--neg)"))
+	// Only errors tint the row. Tinting warnings as well leaves a wall of colour
+	// with nothing standing out, which is the failure mode of every log viewer
+	// that colours everything.
+	css.Global(".log-row[data-level='error']",
+		r("background", "color-mix(in srgb, var(--neg) 8%, transparent)"),
+	)
+	css.Global(".log-msg", r("min-width", "0"), r("overflow-wrap", "anywhere"))
+	css.Global(".log-text", r("color", "var(--soft)"))
+	css.Global(".log-attrs",
+		r("display", "block"), r("margin-top", "2px"),
+		r("color", "var(--mute)"), r("font-size", "11.5px"),
+	)
+	css.Global(".chip.log-warn", r("color", "var(--cc)"), r("border-color", "var(--cc)"))
+	css.Global(".chip.log-error", r("color", "var(--neg)"), r("border-color", "var(--neg)"))
+
+	// --- Smart+ languages ---
+	//
+	// A language chip carries two things: the endonym, and whether choosing it
+	// is free. They stack rather than sitting side by side, because sixteen
+	// chips on one row each carrying two inline strings is a wall — and the
+	// hint is the smaller fact, so it gets the smaller line under the name.
+	css.Global(".lang-chip",
+		r("display", "inline-flex"), r("flex-direction", "column"),
+		r("align-items", "flex-start"), r("gap", "1px"),
+		r("padding", "5px 11px"), r("line-height", "1.25"),
+	)
+	css.Global(".lang-hint",
+		r("font-size", "10px"), r("color", "var(--mute)"),
+		r("letter-spacing", ".04em"), r("text-transform", "uppercase"),
+	)
+	// The pressed chip inverts, so its hint has to invert with it — a muted
+	// grey on the cream fill is the one combination in the palette that is
+	// genuinely unreadable.
+	css.Global(".lang-chip[aria-pressed='true'] .lang-hint",
+		r("color", "var(--bg)"), r("opacity", ".62"),
+	)
+	// Disabled means either "no key yet" or "another translation is running".
+	// Both are temporary, so it dims rather than looking broken.
+	css.Global(".lang-chip:disabled",
+		r("opacity", ".38"), r("cursor", "not-allowed"),
+	)
+	css.Global(".lang-chip:disabled:hover",
+		r("border-color", "var(--line)"), r("color", "var(--soft)"),
+	)
+
+	// --- latency ---
+	css.Global(".lat-table", r("margin-top", "12px"))
+	css.Global(".lat-row",
+		r("display", "grid"),
+		r("grid-template-columns", "1fr 4.5rem 4.5rem 4.5rem 4.5rem"),
+		r("gap", "8px"), r("padding", "6px 0"),
+		r("border-bottom", "1px solid var(--hair)"), r("font-size", "12.5px"),
+	)
+	css.Global(".lat-head",
+		r("font-size", "10px"), r("letter-spacing", ".1em"),
+		r("text-transform", "uppercase"), r("color", "var(--mute)"),
+	)
+	css.Global(".lat-m", r("color", "var(--soft)"), r("overflow-wrap", "anywhere"))
+	css.Global(".lat-n",
+		r("text-align", "right"), r("color", "var(--soft)"),
+		r("font-variant-numeric", "tabular-nums"),
+	)
+	css.Global(".lat-row[data-failing='true'] .lat-m", r("color", "var(--neg)"))
+
+	css.Global(".pane-settings", css.Media(css.MaxW(900),
+		r("padding", "22px 16px 40px"))...)
+	css.Global(".log-row", css.Media(css.MaxW(900),
+		r("grid-template-columns", "4rem 1fr"), r("gap", "6px"))...)
+	css.Global(".log-level", css.Media(css.MaxW(900), r("display", "none"))...)
+	css.Global(".lat-row", css.Media(css.MaxW(900),
+		r("grid-template-columns", "1fr 3.4rem 3.4rem"))...)
 }
 
 // responsive follows the mockup's breakpoints rather than inverting them: 1220px
@@ -1339,8 +1824,13 @@ func responsive(r func(string, string) css.Rule) {
 
 	css.Global(".tabbar", css.Media(css.MaxW(900), r("display", "grid"))...)
 	css.Global(".shell", css.Media(css.MaxW(900), r("grid-template-rows", "1fr auto"))...)
-	// The settings pane exists only where the tab bar does.
-	css.Global(".pane-settings", css.Media(css.MinW(901), r("display", "none"))...)
+	// Settings is a full surface now, not a phone-only pane, so it no longer
+	// hides itself above the tab-bar breakpoint. On a wide screen it takes the
+	// READING column and leaves the rail and the list in place: the settings are
+	// about the feeds you can see, and hiding them to show a preferences screen
+	// loses the context the preferences are about.
+	css.Global(".shell[data-view='settings'] .pane-article",
+		css.Media(css.MinW(901), r("display", "none"))...)
 	css.Global(".shell[data-view='settings'] .pane-rail",
 		css.Media(css.MaxW(900), r("display", "none"))...)
 	css.Global(".shell[data-view='settings'] .pane-list",
@@ -1358,10 +1848,135 @@ func responsive(r func(string, string) css.Rule) {
 	// The back buttons exist only where one pane can hide another.
 	css.Global(".back", css.Media(css.MinW(1221), r("display", "none"))...)
 
-	// Reduced motion: everything here is a transition or the skeleton shimmer, so
-	// removing all of it is the correct and complete response.
-	css.Global("*", css.Media(css.RawMedia("(prefers-reduced-motion: reduce)"),
-		r("transition", "none"), r("animation", "none"),
-		r("scroll-behavior", "auto"),
-	)...)
+	// Reduced motion is NOT handled here any more.
+	//
+	// It used to be a `* { transition: none; animation: none }` under a media
+	// query at the bottom of this file, which had two problems worth naming. It
+	// could only ever answer the OS, so a reader who wanted motion on a machine
+	// configured to suppress it had no way to say so — and there was no way to
+	// say the reverse either, on a machine that had never been configured at all.
+	// And it was a broom: correct only for as long as every future transition
+	// happened to be reachable by `*` and to lose the cascade to it.
+	//
+	// The gate is now the duration token itself — every time in this application
+	// is `calc(var(--mo) * …)` — and the switch lives in design/motion.go, where
+	// it also answers a preference the reader sets on the Appearance screen.
+}
+
+// loginCSS styles the credential screen and the boot splash (client/view/login.go,
+// client/view/root.go).
+//
+// It is the app's own vocabulary rather than a generic centred form: the plum
+// ground with its noise wash, Fraunces for the wordmark, the amber accent on the
+// focus ring. The first screen of a self-hosted reader is part of the reader, and
+// a login page in a different visual language reads as somebody else's software
+// standing in front of yours.
+//
+// The card is a `Sunk` well on `Raised`, which is the same two-surface
+// relationship the settings panels use — so the one piece of furniture a reader
+// meets before anything else is already teaching them the palette.
+func loginCSS(r func(string, string) css.Rule) {
+	css.Global(".login",
+		// dvh, not vh: on iOS Safari the address bar makes vh taller than the
+		// visible viewport, which pushes a centred card off the bottom of the
+		// screen on exactly the device most likely to be used one-handed.
+		r("min-height", "100dvh"),
+		r("display", "grid"), r("place-items", "center"),
+		// Padding rather than a fixed inset so a short phone in landscape can
+		// scroll the card instead of clipping it.
+		r("padding", "24px 20px"),
+		r("box-sizing", "border-box"),
+		r("overflow", "auto"),
+	)
+
+	css.Global(".login-card",
+		r("width", "100%"), r("max-width", "372px"),
+		r("background", "var(--sur)"),
+		r("border", "1px solid var(--line)"),
+		r("border-radius", "18px"),
+		r("padding", "34px 30px 26px"),
+		r("box-sizing", "border-box"),
+		// A soft lift rather than a hard drop shadow — the mockup's surfaces sit
+		// on the ground rather than floating over it.
+		r("box-shadow", "0 18px 48px rgba(0,0,0,.28)"),
+	)
+
+	css.Global(".login-mark",
+		r("font-family", "var(--dsp)"), r("font-weight", "500"),
+		r("font-size", "27px"), r("letter-spacing", "-.01em"),
+		r("font-variation-settings", `"SOFT" 80,"WONK" 1`),
+		r("color", "var(--cream)"),
+	)
+	css.Global(".login-lede",
+		r("margin", "5px 0 24px"), r("color", "var(--mute)"),
+		r("font-size", "13.5px"),
+	)
+
+	css.Global(".login-field", r("margin-bottom", "15px"))
+	css.Global(".login-label",
+		r("display", "block"), r("margin-bottom", "6px"),
+		r("font-size", "12px"), r("font-weight", "500"),
+		r("letter-spacing", ".02em"), r("color", "var(--soft)"),
+	)
+	// The shared .field is a pill sized for a toolbar. A credential field is
+	// touched once and typed into carefully, so it gets full width, a larger
+	// type size, and a radius that matches the card rather than the chips.
+	//
+	// 16px is not an aesthetic choice: iOS Safari zooms the viewport when a
+	// focused input's font-size is under 16px, and that zoom is not undone when
+	// the field blurs. A login screen that leaves a phone permanently zoomed in
+	// is a bug reported as "the app is broken on my phone".
+	css.Global(".login-input",
+		r("width", "100%"), r("box-sizing", "border-box"),
+		r("border-radius", "12px"), r("padding", "11px 14px"),
+		r("font-size", "16px"),
+	)
+
+	css.Global(".login-error",
+		r("min-height", "18px"), r("margin", "2px 0 14px"),
+		r("font-size", "12.5px"), r("color", "var(--neg)"),
+		r("line-height", "1.45"),
+	)
+	// Reserved, not removed: the slot keeps its height so the button does not
+	// jump when a message appears, and the live region stays in the document so
+	// a screen reader announces into it (see errClass).
+	css.Global(".login-error.is-empty", r("visibility", "hidden"))
+
+	css.Global(".login-submit",
+		r("width", "100%"), r("border-radius", "12px"),
+		r("padding", "11px 15px"), r("font-size", "14px"),
+		r("font-weight", "600"), r("justify-content", "center"),
+		r("text-align", "center"),
+		r("background", "var(--cc)"), r("color", "var(--bg)"),
+		r("border-color", "var(--cc)"),
+	)
+	css.Global(".login-submit:hover",
+		r("border-color", "var(--cc)"), r("color", "var(--bg)"),
+		r("filter", "brightness(1.06)"),
+	)
+	// A disabled submit still reads as the primary action — dimmed, not greyed
+	// into the furniture — because during the ~50ms Argon2id pause it is still
+	// the thing the reader is waiting on.
+	css.Global(".login-submit:disabled",
+		r("opacity", ".62"), r("cursor", "default"), r("filter", "none"),
+	)
+
+	css.Global(".login-foot",
+		r("margin", "18px 0 0"), r("font-size", "12px"),
+		r("color", "var(--mute)"), r("line-height", "1.55"),
+	)
+	css.Global(".login-foot code",
+		r("font-family", "ui-monospace, SFMono-Regular, Menlo, monospace"),
+		r("font-size", "11.5px"), r("color", "var(--soft)"),
+		r("background", "var(--sur-2)"), r("border-radius", "5px"),
+		r("padding", "1px 5px"),
+	)
+
+	// The boot splash: the wordmark alone while a stored token is validated. No
+	// border and no shadow, so it reads as the page still arriving rather than as
+	// a card that is missing its contents.
+	css.Global(".login-splash",
+		r("background", "none"), r("border", "0"), r("box-shadow", "none"),
+		r("text-align", "center"),
+	)
 }
