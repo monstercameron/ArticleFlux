@@ -190,6 +190,7 @@ var unscopedByDesign = map[string]string{
 	"IngestItems":   "writes global items (A14); no tenant owns them",
 	"RecordFetch":   "updates global source health (A14)",
 	"DueSources":    "the scheduler polls for every tenant at once (A14)",
+	"PollerLag":     "instance-wide polling health over global sources (A14)",
 	"Close":         "not a query",
 	"Path":          "not a query",
 	"Tx":            "the caller's fn carries the scope",

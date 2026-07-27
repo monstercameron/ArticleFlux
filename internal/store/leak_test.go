@@ -76,6 +76,7 @@ var unscopedByDesign = map[string]string{
 	"IngestItems": "writes global items; per-user state is fanout's job",
 	"RecordFetch": "poll health on a global source row",
 	"DueSources":  "the poller's queue over global sources",
+	"PollerLag":   "instance-wide polling health over global sources (A14)",
 	"SourceHosts": "global; feeds the favicon fetcher",
 	"GetFavicon":  "global cache keyed by host",
 	"PutFavicon":  "same",
