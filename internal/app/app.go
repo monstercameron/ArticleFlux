@@ -44,6 +44,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
@@ -194,6 +195,12 @@ type App struct {
 	// nothing to do and /speech reads the whole article, which is the correct
 	// degradation — longer than asked for, and not silence.
 	digest *smart.Digest
+	// podcast rewrites an article as one slot of a continuous broadcast, handing
+	// over from whatever was played before it (§19). Nil-safe on the same terms
+	// as digest: absent means the preference has nothing to do and the reader
+	// hears the article or its digest, which is the right degradation — a queue
+	// instead of a programme, not silence.
+	podcast *smart.Podcast
 	// speechKey seals the listening tickets in an <audio src> (see SpeechURL).
 	//
 	// Its own key rather than assetKey, which is the one an obvious edit would
@@ -209,9 +216,14 @@ type App struct {
 	// subscribe over EventService.WatchEvents. Always present — it costs a map
 	// until somebody connects, and making it optional would mean every publisher
 	// carrying a nil check for a saving nobody can measure.
-	bus  *events.Bus
-	ring *obs.Ring
-	lat  *obs.Latency
+	bus *events.Bus
+	// streamCap bounds how many streams one credential holds at once (TODO P1).
+	// On the App rather than inside the chain so §9's status screen can report
+	// refusals — a cap nobody can see is one that gets discovered by a reader
+	// whose second tab stopped updating.
+	streamCap *ratelimit.Concurrent
+	ring      *obs.Ring
+	lat       *obs.Latency
 	// tunnels counts WebSocket lifetimes, which is the only way anyone can tell
 	// a reader on bad Wi-Fi from a keepalive tuned wrong (§20.19.10).
 	tunnels *obs.Tunnels
@@ -387,7 +399,8 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	}
 
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log, bus: bus,
-		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
+		streamCap: ratelimit.NewConcurrent(maxStreamsPerCaller),
+		ring:      ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
 		policy: grpcsrv.DefaultPolicy(),
 		icons:  favicon.New(cfg.AllowPrivateFeeds),
 		stopPo: make(chan struct{})}
@@ -524,6 +537,12 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// paragraph that cannot have changed is money spent on an identical answer.
 	a.digest = smart.NewDigest(a.llm, a.settings,
 		filepath.Join(filepath.Dir(cfg.DBPath), "digest-cache"))
+	// Its own directory rather than the digest's, because the two are keyed
+	// differently — a digest is per article, a broadcast segment is per ORDERED
+	// PAIR of them — and one cache holding two key shapes is one nobody can
+	// reason about the size of.
+	a.podcast = smart.NewPodcast(a.llm, a.settings,
+		filepath.Join(filepath.Dir(cfg.DBPath), "podcast-cache"))
 	// Unconditionally, unlike the asset key below: listening does not depend on
 	// the image proxy being on, and an instance that turned pictures off must
 	// not lose its voice as a side effect. A failure here is a warning rather
@@ -957,9 +976,10 @@ func (a *App) buildHandler() {
 		// long-lived per-scope subscription in the API — would be the single
 		// endpoint on the server with no authorization at all, on a build whose
 		// tests and metrics all reported authorization as enforced.
-		grpc.ChainStreamInterceptor(
-			grpcsrv.AuthzStream(a.policy, a.scopeFromContext, a.log, a.recordDenial),
-		),
+		// The streaming chain, which used to be authorization alone — see
+		// streamchain.go for what was missing and why the tunnel's connection cap
+		// was not standing in for it.
+		a.streamChain(),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             keepaliveMinTime,
 			PermitWithoutStream: true,

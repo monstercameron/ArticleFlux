@@ -202,3 +202,24 @@ func StampFrom(ctx context.Context) string {
 	}
 	return vals[0]
 }
+
+// Stream refuses a client below the minimum before its stream opens.
+//
+// The same reasoning as Unary and the same policy: a client too old to
+// understand the answer should not be given one. It matters slightly more here
+// — a refused unary call costs the caller one round trip, while a stream a stale
+// client cannot parse holds a subscription and a goroutine for as long as that
+// client keeps the tab open.
+func Stream(p Policy) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler) error {
+
+		if ExemptMethods[info.FullMethod] {
+			return handler(srv, ss)
+		}
+		if err := p.Check(StampFrom(ss.Context())); err != nil {
+			return err
+		}
+		return handler(srv, ss)
+	}
+}

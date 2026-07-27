@@ -4311,13 +4311,32 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       on it.
       *Done when: T24 is green, ratcheting, and named in plan §23's register.* §27.11
 
-- [ ] **10.4 · Migration `0021_classification.sql`.** `item_analysis` (global) · `categories` ·
+- [x] **10.4 · Migration `0021_classification.sql`.** `item_analysis` (global) · `categories` ·
       `item_categories` · `label_removals` · `tag_rules` · `item_tags.source` + `.score`. The
       one-primary-per-item partial unique index is schema, not application logic. `item_analysis`
       joins `unscopedByDesign` in the leak harness with ingest's justification: it holds nothing
       per-user.
       *Done when: T1 (leak harness) is green with the new tables, and `schema_test.go` accepts them.*
       §27.7
+
+      ✅ 2026-07-27 — applies clean; the full `internal/store` suite is green, leak harness included.
+
+      **Two decisions the schema guard forced into the open**, which is the guard working as
+      intended. `TestForeignKeyShapedColumnsHaveReferences` refused both new `*_id` columns until
+      each had a registered reason:
+      - **`item_categories.category_id` is not a foreign key**, because most assignments name one of
+        the 26 **built-ins**, and the built-ins ship in Go with no row anywhere — `categories` holds
+        only a reader's delta (§27.3f), so somebody who never edited `security` has nothing to point
+        at. The column holds a `categories.id` *or* a built-in slug. Seeding 26 rows per user at
+        signup was the alternative and it is the copy-on-first-edit failure wearing a different hat:
+        a seeded row freezes that reader's taxonomy at the version it was created from.
+      - **`label_removals.label_id` is not a foreign key on purpose.** A removal has to outlive the
+        label it is about; a cascade here would hand back every label a reader ever removed the
+        moment a row was tidied, which is the exact failure §27.5 exists to prevent.
+
+      `analyzer_version` **and** `lexicon_hash`, not one combined stamp: the analyzer can change
+      without the lexicon and the reverse, and the backfill wants to know which — a lexicon change
+      only invalidates `category_scores`, an analyzer change may invalidate the whole row.
 
 - [ ] **10.5 · `internal/pipeline` — stages, batch, and the `Analyzer` registry.** The deterministic
       half: tokenise, vector, lang, keyphrases, entities, category scores → one `item_analysis` row.
@@ -4452,7 +4471,7 @@ Found by measuring rather than reading: the full gate set (`scripts/run-checks.s
 existing item covers. Two of them are the same shape — a control that exists and does not reach the
 surface that needs it.
 
-- [ ] **P1 · Streaming RPCs are outside every limit the unary chain applies.** `grpc.ChainStreamInterceptor`
+- [x] **P1 · Streaming RPCs are outside every limit the unary chain applies.** `grpc.ChainStreamInterceptor`
       carries `grpcsrv.AuthzStream` and nothing else. The unary chain has a request id, version skew,
       the §20.7 rate limit and the telemetry span; the stream chain has none of the four, so a
       streaming call is unmetered, untimed, unversioned and unlimited.
@@ -4464,6 +4483,31 @@ surface that needs it.
       *Done when: the N+1th stream from one credential is refused the way the N+1th unary call is,
       a refused stream shows up in the same metrics a refused unary call does, and a stream carries
       a request id into the log like everything else.* §20.7, 7.3d
+
+      ✅ 2026-07-27 — `internal/app/streamchain.go`, plus `ratelimit.Stream` / `ratelimit.Concurrent`
+      and `skew.Stream`. The stream chain now carries the same five things the unary chain does, in
+      the same order and for the reasons recorded there: request id · skew · rate limit · **the
+      concurrency cap** · authorization · telemetry.
+
+      **Two limits, because a stream fails in two ways.** The ordinary per-caller rule admits the
+      OPENING, which stops open-close churn; a concurrency cap bounds what is HELD, which stops slow
+      accumulation. Either alone leaves the other door open — and the second is the one a stream
+      actually needs, since `WatchEvents` pins a goroutine and a bus subscription for as long as a tab
+      is open. **Four per credential**: the app opens one, and four leaves room for a reload racing
+      its predecessor's teardown, a second tab, and a future second stream.
+
+      **Refusals are counted, not just returned** (`Concurrent.Refused`), because a cap nobody can see
+      is one that gets discovered by a reader whose second tab stopped updating. The refusal is
+      `ResourceExhausted` — the same answer a refused unary call gives, so a client needs one branch
+      rather than two — and carries **no** retry hint, deliberately: a slot frees when that caller
+      closes one of its own streams, which is not a schedule anybody can predict.
+
+      **Stream duration gets its own instrument.** For a unary call the duration is how long the work
+      took; for a stream it is how long the stream was HELD, and only the unit is shared. Averaging
+      them would have made the server look slower the day live updates shipped.
+
+      Three tests against the real server, through the real tunnel: the N+1th stream is refused and
+      counted, closing one frees its slot, and a client below the minimum cannot open one at all.
 
 - [ ] **P2 · `TestAPageThatNeverGoesIdleStillRenders` fails on a busy machine, not a broken one.**
       Measured 2026-07-27: it passes alone in 11–16s and failed at **52.5s against an 8s cap**

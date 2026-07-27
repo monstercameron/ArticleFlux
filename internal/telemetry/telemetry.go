@@ -280,6 +280,12 @@ type Instruments struct {
 
 	RPCRequests metric.Int64Counter
 	RPCDuration metric.Float64Histogram
+	// StreamDuration is how long a STREAM was held, which is a different
+	// quantity from how long a call took and only shares a unit with it. Its own
+	// instrument so nothing averages an hour-long event stream together with a
+	// unary call and concludes the server got slower the day live updates
+	// shipped (TODO P1).
+	StreamDuration metric.Float64Histogram
 
 	PollRuns      metric.Int64Counter
 	PollDuration  metric.Float64Histogram
@@ -326,6 +332,8 @@ func newInstruments(m metric.Meter) (*Instruments, error) {
 
 		RPCRequests: counter("articleflux.rpc.requests", "gRPC calls served, by method and outcome."),
 		RPCDuration: hist("articleflux.rpc.duration", "gRPC call duration."),
+		StreamDuration: hist("articleflux.rpc.stream.duration",
+			"How long a streaming RPC was held open, by method and outcome."),
 
 		PollRuns:      counter("articleflux.poll.runs", "Feed poll attempts, by outcome."),
 		PollDuration:  hist("articleflux.poll.duration", "Time to poll one source."),
