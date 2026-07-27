@@ -94,6 +94,15 @@ function Invoke-Build {
     Step 'go build ./...'
     Invoke-Checked 'go build' { go build -o bin\articleflux.exe ./cmd/articleflux }
     Invoke-Checked 'go vet'   { go build ./... }
+    # `go build ./...` does NOT compile the client (8b.32). The wasm packages sit
+    # behind `//go:build js`, so a native build skips them entirely — during one
+    # batch the wasm build was broken for a stretch while the native build and
+    # every Go test stayed green. Catching it here is catching it before CI.
+    Invoke-Checked 'go build (wasm client)' {
+        $env:GOOS = 'js'; $env:GOARCH = 'wasm'
+        try { go build ./client/... }
+        finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
+    }
 }
 
 function Invoke-Test {

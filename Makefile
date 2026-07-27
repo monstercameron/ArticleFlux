@@ -105,6 +105,10 @@ build: deps
 	@mkdir -p $(BIN)
 	go build -o $(BIN)/articleflux ./cmd/articleflux
 	go build ./...
+# `go build ./...` does NOT compile the client (8b.32): the wasm packages are
+# behind `//go:build js` and a native build skips them, so the client was
+# broken for a stretch while every native build and test stayed green.
+	GOOS=js GOARCH=wasm go build ./client/...
 	@echo "  $(BIN)/articleflux"
 
 test:

@@ -49,7 +49,28 @@ jobs:
           cache: true
 
       - run: go build ./...
+
+      # `go build ./...` does NOT compile the client (8b.32).
+      #
+      # The wasm packages are behind `//go:build js` and a native build skips
+      # them entirely, so during one batch the wasm build was broken for a
+      # stretch while the native build and every Go test stayed green. The
+      # `wasm-size` job below does build wasm — but only `./client/app`, so a
+      # broken package that binary does not happen to import still slips
+      # through, and it is a separate job that a reader scanning for "did the
+      # build pass" does not necessarily look at.
+      #
+      # `./client/...` in THIS job, on the same run as the native build, is
+      # what makes a broken client fail the same way a broken server does.
+      - name: go build (wasm client)
+        run: GOOS=js GOARCH=wasm go build ./client/...
+
       - run: go vet ./...
+
+      # And vet the wasm side too: `go vet ./...` is as native-only as the
+      # build was, so the client got no vet at all.
+      - name: go vet (wasm client)
+        run: GOOS=js GOARCH=wasm go vet ./client/...
 
       # The race detector, which the Windows test job CANNOT run: -race is not
       # supported on windows/arm64, and that is the development box. The

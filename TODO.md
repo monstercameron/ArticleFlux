@@ -2156,10 +2156,24 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       > *Verification is incomplete: the second test (scrolling back up into a skipped article must
       > mark it) has not had a clean run, because another session was rebuilding `bin/web/app.wasm`
       > and running the same Playwright suite throughout. Run both before trusting them.*
-- [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
+- [x] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
       and during this batch the wasm build was broken for a stretch while the native build and every Go
       test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on
       the same run that a broken `go test` would.*
+
+      ✅ 2026-07-27 — `GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./client/...` now run in
+      the **build job**, beside `go build ./...`, plus the same in `Makefile` and `scripts/make.ps1`
+      so it fails locally before it fails in CI.
+
+      **The existing `wasm-size` job was not enough**, which is why this stayed open. It builds only
+      `./client/app` — and `client/demo` and `client/demodata` are not reachable from that binary, so
+      a break in either was invisible. Verified rather than assumed: with a deliberate type error in
+      `client/demodata`, `go build ./client/app` **passes** and `go build ./client/...` fails. It is
+      also a separate job, which a reader scanning for "did the build pass" does not necessarily look
+      at.
+
+      The vet half was a second gap nobody had named: `go vet ./...` is as native-only as the build
+      was, so the client had been getting **no vet at all**.
 - [ ] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs
       (`reader` · `design-parity` · `responsive` · `tagsettings`). Every spec drives a server that used
       to need no credential and now goes through `Root`, and several still assert pre-transcription
