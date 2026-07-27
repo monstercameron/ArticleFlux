@@ -74,6 +74,7 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 			SchemaName:      "json_feed_rule",
 			Schema:          jsonSchema(),
 			MaxOutputTokens: analyzeMaxTokens,
+			Effort:          analyzeEffort,
 		})
 		if err != nil {
 			return nil, err

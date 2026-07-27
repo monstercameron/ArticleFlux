@@ -13,13 +13,66 @@
 // they produced does not start, and the demo is the one build of this
 // application that nobody is watching when it breaks.
 //
+// It takes either a URL or a DIRECTORY:
+//
+//     node e2e/demo-smoke.mjs bin/demo              # serves it itself
+//     node e2e/demo-smoke.mjs https://…/ArticleFlux/  # checks a deployed one
+//
+// Serving it here rather than starting a server beside it in the workflow is
+// deliberate. A backgrounded server in a CI step needs a PID, a trap, a
+// wait-for-the-port loop and a kill that works on every platform — four moving
+// parts, all of them in YAML, none of them tested — to do what fifteen lines of
+// node do inside the process that already has to exit cleanly.
+//
 // The filename ends in .mjs rather than .spec.mjs on purpose: playwright's
 // default testMatch would otherwise pick it up and run it inside the suite,
 // against the suite's server, which is not what it is for.
 import { chromium } from '@playwright/test';
+import { createServer } from 'node:http';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { join, normalize, extname } from 'node:path';
 
-const url = process.argv[2] || 'http://127.0.0.1:9310/';
+const target = process.argv[2] || 'bin/demo';
 const shot = process.argv[3] || '';
+
+// A static file server as unhelpful as GitHub Pages: no compression
+// negotiation, no directory listing, no SPA fallback, and a 404 for anything
+// that is not on disk — which is what /favicon and /app.wasm have to be for the
+// demo's own fallbacks to be the ones under test.
+const TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.gz': 'application/gzip',
+  '.wasm': 'application/wasm',
+  '.png': 'image/png',
+};
+
+async function serve(root) {
+  const server = createServer(async (req, res) => {
+    const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const file = join(root, normalize(rel === '/' ? '/index.html' : rel).replace(/^(\.\.[/\\])+/, ''));
+    try {
+      const info = await stat(file);
+      if (!info.isFile()) throw new Error('not a file');
+      res.writeHead(200, {
+        'content-type': TYPES[extname(file)] || 'application/octet-stream',
+        'content-length': info.size,
+      });
+      createReadStream(file).pipe(res);
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain' }).end('not found\n');
+    }
+  });
+  // Port 0: the operating system picks one that is free, so this cannot collide
+  // with a development server, the e2e suite, or another copy of itself.
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  return { server, url: `http://127.0.0.1:${server.address().port}/` };
+}
+
+const local = /^https?:\/\//.test(target) ? null : await serve(target);
+const url = local ? local.url : target;
+if (local) console.log(`serving ${target} at ${url}`);
 
 // Generous, and it has to be. A headless browser throttles requestAnimationFrame
 // to a fraction of the normal frame rate, so a client that renders in two frames
@@ -130,6 +183,10 @@ try {
 } finally {
   if (shot) await page.screenshot({ path: shot }).catch(() => {});
   await browser.close();
+  // Closed explicitly rather than left to process exit: a listening socket is
+  // the one thing that can keep node alive after the last line of a script, and
+  // a workflow step that never returns is worse than one that fails.
+  if (local) await new Promise((ok) => local.server.close(ok));
 }
 
 if (problems.length) {

@@ -68,8 +68,8 @@ func TestIdenticalTitlesAreRejected(t *testing.T) {
 		ItemSelector:  "article.post",
 		TitleSelector: "h1",
 		LinkSelector:  "h2 a@href",
-	}, `<html><body><h1>Field Notes</h1>` + strings.Repeat(
-		`<article class="post"><h1>Field Notes</h1><h2><a href="/a">A</a></h2></article>`, 3) +
+	}, `<html><body><h1>Field Notes</h1>`+strings.Repeat(
+		`<article class="post"><h1>Field Notes</h1><h2><a href="/a">A</a></h2></article>`, 3)+
 		`</body></html>`)
 	if problem == "" {
 		t.Fatal("a rule producing three identical titles was accepted")

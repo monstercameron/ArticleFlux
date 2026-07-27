@@ -158,7 +158,21 @@ func Tune(target time.Duration, ceiling Params) Params {
 	p := Params{Time: 1, Memory: 8 * 1024, Threads: DefaultParams.Threads,
 		KeyLen: DefaultParams.KeyLen, SaltLen: DefaultParams.SaltLen}
 	if ceiling.Memory == 0 {
-		ceiling.Memory = 256 * 1024 // 256 MiB; beyond this a login costs real RAM
+		// 64 MiB, which is what §7.1 specifies, and the reason is CONCURRENCY
+		// rather than the cost of one hash.
+		//
+		// Argon2id allocates its full memory for the duration of the hash. At
+		// 256 MiB — where the previous ceiling put a fast machine, measured —
+		// ten simultaneous login attempts reserve 2.5 GB, and login is the one
+		// endpoint a stranger can call. The parameter chosen to make each guess
+		// expensive becomes a memory amplifier pointed at the server: an
+		// attacker spends a TCP connection and the box spends a quarter of a
+		// gigabyte.
+		//
+		// The lockout curve is what makes guessing expensive here (§7.3). This
+		// only has to make a stolen hash expensive to crack offline, and 64 MiB
+		// does that while staying survivable under a burst.
+		ceiling.Memory = 64 * 1024
 	}
 	if ceiling.Time == 0 {
 		ceiling.Time = 10

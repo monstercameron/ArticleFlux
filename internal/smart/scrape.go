@@ -68,10 +68,22 @@ const minItems = 2
 // judge the rule by, few enough that the response stays a preview.
 const maxSamples = 6
 
-// analyzeMaxTokens bounds the answer. The reply is eight short selectors and a
-// sentence; anything approaching this bound is a model narrating instead of
-// answering.
-const analyzeMaxTokens = 1200
+// analyzeMaxTokens bounds the answer.
+//
+// The reply is eight short selectors and a sentence — perhaps 120 tokens. The
+// bound is fifty times that because on a reasoning model this budget covers the
+// THINKING TOO: the first attempt at 1200 came back `ErrTruncated` having spent
+// every token reasoning and emitted nothing. That failure is indistinguishable
+// from a bad prompt unless you know to look for it, which is why the number is
+// generous and the reason is written down.
+const analyzeMaxTokens = 6000
+
+// analyzeEffort keeps the reasoning short.
+//
+// The question is structural — which container repeats, which key holds the
+// title — and the evidence is in front of the model. Deliberation buys nothing
+// here and is charged for by the token.
+const analyzeEffort = "low"
 
 // SiteAnalyzer proposes scrape rules.
 type SiteAnalyzer struct {
@@ -133,6 +145,7 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 			SchemaName:      "scrape_rule",
 			Schema:          scrapeSchema(),
 			MaxOutputTokens: analyzeMaxTokens,
+			Effort:          analyzeEffort,
 		})
 		if err != nil {
 			return nil, err

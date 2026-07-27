@@ -324,3 +324,29 @@ func TestActiveReflectsTuning(t *testing.T) {
 		t.Errorf("a hash written with the tuned params does not verify: ok=%v err=%v", ok, err)
 	}
 }
+
+// The tuning ceiling is about CONCURRENCY, not about the cost of one hash.
+//
+// Argon2id reserves its full memory for the duration of the hash, and login is
+// the one endpoint a stranger can call. At the previous 256 MiB ceiling — which
+// a fast machine really did reach, measured at boot — ten simultaneous attempts
+// reserve 2.5 GB: the parameter chosen to make each guess expensive becomes a
+// memory amplifier pointed at the server.
+func TestTuningCannotReserveAnAbsurdAmountOfMemoryPerLogin(t *testing.T) {
+	t.Cleanup(ResetParamsForTest)
+	ResetParamsForTest()
+
+	// A target no machine can reach, so Tune runs to its ceiling.
+	p, _ := TuneToBox(time.Hour)
+
+	const maxMiB = 64 // §7.1's figure
+	if got := p.Memory / 1024; got > maxMiB {
+		t.Errorf("tuning settled on %d MiB per hash; ten concurrent logins would "+
+			"reserve %d MiB, and login is the one endpoint a stranger can call",
+			got, got*10)
+	}
+	// And it did not collapse to something trivial either.
+	if p.Memory < DefaultParams.Memory {
+		t.Errorf("tuning fell below the %d KiB baseline", DefaultParams.Memory)
+	}
+}

@@ -154,18 +154,35 @@ type Request struct {
 	// MaxOutputTokens bounds the answer. Zero lets the provider decide, which
 	// is right for short answers and wrong for anything that assembles a
 	// document — see ErrTruncated.
+	//
+	// **On a reasoning model this budget covers the THINKING as well.** A
+	// request whose answer is forty tokens can still be truncated at 1200,
+	// because the model spent the first 1200 reasoning and never emitted the
+	// object. That failure looks like a bad prompt and is not one.
 	MaxOutputTokens int
+	// Effort is the reasoning budget: "minimal", "low", "medium", "high", or
+	// empty for the provider's default.
+	//
+	// Worth setting low for structural questions — "which key holds the title" —
+	// where the answer is in front of the model and more deliberation buys
+	// nothing but tokens. Left empty by callers whose task genuinely needs it.
+	Effort string
 }
 
 // responsesRequest is the wire shape. Kept separate from Request so the public
 // type can stay ergonomic while this one stays faithful to the API.
 type responsesRequest struct {
-	Model           string         `json:"model"`
-	Input           string         `json:"input"`
-	Instructions    string         `json:"instructions,omitempty"`
-	Text            *responsesText `json:"text,omitempty"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	Store           bool           `json:"store"`
+	Model           string             `json:"model"`
+	Input           string             `json:"input"`
+	Instructions    string             `json:"instructions,omitempty"`
+	Text            *responsesText     `json:"text,omitempty"`
+	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
+	Reasoning       *responsesThinking `json:"reasoning,omitempty"`
+	Store           bool               `json:"store"`
+}
+
+type responsesThinking struct {
+	Effort string `json:"effort"`
 }
 
 type responsesText struct {
@@ -233,6 +250,9 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 		// to true, which is exactly the kind of default a self-hosted reader
 		// should not inherit silently.
 		Store: false,
+	}
+	if e := strings.TrimSpace(r.Effort); e != "" {
+		wire.Reasoning = &responsesThinking{Effort: e}
 	}
 	if len(r.Schema) > 0 {
 		name := r.SchemaName

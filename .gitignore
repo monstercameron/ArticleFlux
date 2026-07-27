@@ -65,6 +65,9 @@
 /e2e/shots/
 /e2e/*.log
 /e2e/.playwright-artifacts-*/
+# Suite output written to the repository root rather than into e2e/, which is
+# where a `--reporter=json > file` lands when it is run from the wrong place.
+/e2e-run.json
 # One-off probe scripts. They are written against whatever bug is in front of
 # you, they hard-code a port and a database, and they are worthless a day later.
 #
