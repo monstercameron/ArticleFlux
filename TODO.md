@@ -2732,6 +2732,28 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
 
+      ◧ 2026-07-27 (evening) — **the suite was not a gate, and the reason was not in the specs.**
+      A full run reported 30 failures while every one of those files passed ALONE. The cascade came
+      from `connection.spec`, which is the only file that restarts the server: a server started from a
+      test is a child of the **worker** process, and Playwright recycles workers between spec files —
+      so the replacement died the moment that file finished, and every later spec failed at
+      `reset-state: ECONNREFUSED`, which reads as a broken harness and points at nothing. The restart
+      is now **detached** and teardown kills by **port** rather than by handle, since after that file
+      the handle refers to a process that is already dead and the live server belongs to nobody.
+      Two more, both silent: `startServer` was spawning a DUPLICATE on every `afterEach` (the server
+      was already running, so it lost the bind race — but only after opening the same SQLite file,
+      running migrations and deriving the interest layer, several times a run, two writers on one WAL
+      database for no reason); and its output was buffered and printed only if the port never came up,
+      so a server that started fine and died later said nothing at all. It is echoed now, and its
+      death announced at the moment it happens.
+      **Two real client bugs came out of chasing the last flake**, both in `client/data`, both the
+      indicator lying (§20.19, A40) — see the CHANGELOG: a badge stuck on `down` over a healthy
+      connection because nothing re-checks a phase that a failed RPC set, and `offline` vs `down`
+      resting entirely on an event that is delivered about half the time. `Kick` verifies with a real
+      call now, and the network flag is polled as well as listened for. `connection.spec` went from
+      **50% flaky to 5-for-5**, and from 1–3 minutes to 15 seconds — a passing run of that file no
+      longer waits out a 150-second recovery timeout.
+
       ◧ 2026-07-27 (later) — **49 passed, 4 failed.** The remaining four, each a real question rather
       than a stale name: `jumping down the list does not read what it jumped over` (8b.49's
       suppression is incomplete — see 8b.52), the categories rail's `.cat-slot`/`.cat-row` markup,

@@ -193,6 +193,13 @@ export default async function globalSetup() {
     // still frees the port for the next one.
     releaseSlot();
     if (app) app.kill();
+    // And whatever is on the port, which is not always `app`. T21(e) kills the
+    // server and starts a replacement that deliberately outlives the worker
+    // that spawned it (see server.mjs), so after that file the handle above
+    // refers to a process that is already dead and the live server belongs to
+    // nobody. Killing by port covers both, and covers the case where the
+    // original died on its own.
+    await killListener(APP_PORT);
     if (feedServer) await new Promise((ok) => feedServer.close(ok));
   };
 }

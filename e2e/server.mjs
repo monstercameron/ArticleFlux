@@ -59,6 +59,17 @@ export async function stopServer() {
  * list comes BACK, not that a fresh empty one appears.
  */
 export async function startServer() {
+  // Nothing to do if one is already answering, and this is not an optimisation.
+  //
+  // The `afterEach` that guarantees a server for the next spec runs after the
+  // test that already restarted one, so this was spawning a DUPLICATE every
+  // time. The duplicate loses the bind race and exits — but not before it has
+  // opened the same SQLite file, run migrations and derived the interest layer.
+  // Two writers on one WAL database, several times per run, for no reason: the
+  // suite went flaky here and the second process is the only thing in the room
+  // that could touch state the first one owns.
+  if (await healthy(APP_PORT)) return null;
+
   const bin = process.env.AF_E2E_BIN;
   const db = process.env.AF_E2E_DB;
   if (!bin || !db) {
@@ -72,15 +83,53 @@ export async function startServer() {
       cwd: repo,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, OPENAI_API_KEY: '', OPENAI_SDK_KEY: '' },
+      // DETACHED, and this is the whole reason the suite could not be trusted
+      // past this file.
+      //
+      // A server started from a test is a child of the WORKER process, and
+      // Playwright recycles workers between spec files. The replacement server
+      // therefore died the moment this file finished — leaving every later spec
+      // to fail at `reset-state: ECONNREFUSED`, which reads as "the harness is
+      // broken" and points at nothing. The original server survives the whole
+      // run because global-setup owns it from the main process; a restart has to
+      // survive on the same terms.
+      //
+      // Teardown kills by PORT rather than by handle, so the replacement is
+      // cleaned up even though nobody holds a reference to it.
+      detached: true,
     });
+  // The parent must not wait on it at exit. Without this the worker process
+  // hangs at the end of the file, holding the run open on a child that is
+  // deliberately outliving it.
+  app.unref();
 
-  // Kept, and only used if it does not come up. A restart that fails silently
-  // reports as "the port never became healthy", which says nothing about why —
-  // and the why is usually one line the server printed before exiting.
+  // Echoed AND kept. The buffer is for a server that never comes up, where the
+  // why is usually one line it printed before exiting. The echo is for the
+  // opposite case, which cost an hour: a server that came up fine and died
+  // later. Its output goes to a worker process whose stdout nobody was reading,
+  // so a panic after the health check was invisible, and the failure surfaced
+  // three tests later as "reset-state: connection refused" — which reads as a
+  // harness bug and is not one. global-setup prefixes its server's output for
+  // exactly this reason; a restart is the same server and deserves the same.
   let said = '';
-  const keep = (d) => { said += d; if (said.length > 4000) said = said.slice(-4000); };
+  const keep = (d) => {
+    said += d;
+    if (said.length > 4000) said = said.slice(-4000);
+    process.stdout.write(`[restarted] ${d}`);
+  };
   app.stdout.on('data', keep);
   app.stderr.on('data', keep);
+
+  // And its death is announced. A non-zero exit after a clean start is the
+  // event every later failure descends from, so it is worth one line at the
+  // moment it happens rather than a mystery at the next reset-state.
+  app.on('exit', (code, signal) => {
+    if (code !== 0 && code !== null) {
+      process.stdout.write(`[restarted] server exited with code ${code}\n`);
+    } else if (signal) {
+      process.stdout.write(`[restarted] server was killed by ${signal}\n`);
+    }
+  });
 
   try {
     await waitForPort(APP_PORT, true);
@@ -106,18 +155,23 @@ async function pidOnPort(port) {
   return null;
 }
 
+/** healthy reports whether something is answering /healthz on the port. */
+async function healthy(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** waitForPort waits for the port to start or stop answering. */
 async function waitForPort(port, want, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    let healthy = false;
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      healthy = res.ok;
-    } catch { healthy = false; }
-    if (healthy === want) return;
+    if (await healthy(port) === want) return;
     if (Date.now() > deadline) {
       throw new Error(`port ${port} did not become ${want ? 'healthy' : 'dead'} in ${timeoutMs}ms`);
     }

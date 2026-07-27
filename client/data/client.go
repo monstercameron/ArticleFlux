@@ -27,6 +27,7 @@ import (
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
 	"github.com/monstercameron/ArticleFlux/client/outbox"
+	"github.com/monstercameron/ArticleFlux/client/platform"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
@@ -234,6 +235,7 @@ func (c *Client) Watch(ctx context.Context, onRecover func()) {
 	if c.conn == nil {
 		return
 	}
+	go c.watchNetwork(ctx)
 	for {
 		s := c.conn.GetState()
 		switch s {
@@ -257,6 +259,52 @@ func (c *Client) Watch(ctx context.Context, onRecover func()) {
 		// ctx ends — which is the page going away.
 		if !c.conn.WaitForStateChange(ctx, s) {
 			return
+		}
+	}
+}
+
+// networkPoll is how often the browser's own network flag is re-read.
+//
+// A property read, not a request: `navigator.onLine` is a synchronous field, so
+// this costs about as much as reading a Go struct and is nothing beside the
+// render it might cause.
+const networkPoll = 2 * time.Second
+
+// watchNetwork keeps the offline flag true by POLLING as well as by listening.
+//
+// The `online`/`offline` events are the obvious source and they are not a
+// reliable one. Headless Chrome under CDP emulation delivers them about half the
+// time — measured, over a dozen runs of the connection spec, which is what
+// turned this from a suspicion into a fix — and real browsers are worse in the
+// cases that matter most: waking from sleep, a VPN dropping, iOS switching
+// between cellular and a wifi network it cannot actually reach.
+//
+// A missed event does not correct itself. Nothing else reads the flag, so a
+// reader whose wifi is off gets a countdown toward a reconnect that cannot
+// happen — the exact confusion §20.19.5 separates `offline` from `down` to
+// avoid, arriving through the back door of an event that never fired.
+//
+// It only ever REPORTS what the browser says; `SetOffline` ignores a value that
+// has not changed, so the steady state is one property read every two seconds
+// and no repaints at all.
+func (c *Client) watchNetwork(ctx context.Context) {
+	t := time.NewTicker(networkPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			online := platform.Online()
+			// The same two steps the event handler takes, because a poll that
+			// only updates the flag fixes half the problem and leaves the worse
+			// half: the network comes back, the badge stops saying `offline`,
+			// and it says `down` forever instead — the phase a failed call left
+			// behind, with nothing to correct it because the event that would
+			// have kicked the connection is the event that never arrived.
+			if c.SetOffline(!online) && online {
+				c.Kick()
+			}
 		}
 	}
 }
@@ -402,15 +450,19 @@ func (c *Client) Unblock() { c.block(ReasonNone) }
 // socket can be dead while the network is fine (the server is down) and the
 // network can be gone while gRPC has not noticed yet (which is most of the first
 // second of every disconnection).
-func (c *Client) SetOffline(off bool) {
+// It reports whether this CHANGED anything, so a caller that polls can tell a
+// transition from a repetition — the network coming back is worth acting on and
+// its still being there is not.
+func (c *Client) SetOffline(off bool) bool {
 	c.mu.Lock()
 	if c.offline == off {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	c.offline = off
 	c.mu.Unlock()
 	c.publish()
+	return true
 }
 
 // Kick abandons the current backoff and re-dials now.
@@ -430,6 +482,34 @@ func (c *Client) Kick() {
 	}
 	c.conn.ResetConnectBackoff()
 	c.conn.Connect()
+	go c.verify()
+}
+
+// verify makes one cheap call so the indicator can be corrected by evidence.
+//
+// Resetting the backoff is not enough, and the gap it leaves is a badge that
+// says "down" over a connection that is fine — for as long as the reader does
+// not click anything, which on a reading app is exactly the situation the badge
+// exists for.
+//
+// How it happens: an RPC fails during an outage and marks the phase failed.
+// gRPC itself never noticed, because a socket that stops carrying traffic looks
+// identical to one nobody is using until the keepalive probes it forty seconds
+// later. So `Watch` sits in WaitForStateChange(READY) and never wakes, the
+// transport recovers silently, and the only thing that could correct the badge
+// is a successful call that nobody is making.
+//
+// The transport's own READY is NOT sufficient evidence — it is the state that
+// lies about a socket the browser has abandoned, which is why `track` prefers a
+// completed call to it. So this makes a real one and lets the ordinary path
+// judge the outcome: `Version` is the cheapest, needs no session, and is
+// answered by the same server on the same connection every other call uses.
+func (c *Client) verify() {
+	ctx, cancel := context.WithTimeout(context.Background(), verifyTimeout)
+	defer cancel()
+	// The result is discarded on purpose. What matters is that it completed or
+	// did not, which `track` has already recorded by the time this returns.
+	_, _ = c.Version(ctx)
 }
 
 // State is the current connection state.
@@ -533,6 +613,15 @@ const callTimeout = 20 * time.Second
 // better served by being told now.
 const downTimeout = 4 * time.Second
 
+// verifyTimeout is a backstop on Kick's probe, not its real deadline.
+//
+// The probe goes through the ordinary call path, so `ctx` above already bounds
+// it — four seconds while the indicator says down, which is the case it runs in.
+// This exists so the goroutine cannot outlive its usefulness if that ever
+// changes: a probe still running when the reader has pressed Retry twice more is
+// three probes racing to report on three different moments.
+const verifyTimeout = 10 * time.Second
+
 // ctx bounds one RPC, tightening the deadline when the connection is already
 // known to be down.
 func (c *Client) ctx(parent context.Context) (context.Context, context.CancelFunc) {
@@ -558,6 +647,20 @@ func (c *Client) track(err error) error {
 		// there is — better evidence than the connectivity state, which lags.
 		c.setPhase(phaseReady)
 	case ClassTransport:
+		// Ask the browser BEFORE reporting, because this is the one moment the
+		// answer matters and the one moment it is cheap.
+		//
+		// `offline` and `down` send the reader to different places, and the
+		// difference is decided by a flag kept up to date by an EVENT — which
+		// is not always delivered. Headless Chrome drops it outright often
+		// enough to reproduce in this suite, and a real browser waking from
+		// sleep is no better. When the event is missed, a reader with their wifi
+		// off gets a countdown toward a reconnect that cannot happen until they
+		// do something the countdown does not mention.
+		//
+		// A failed call is positive evidence that SOMETHING is wrong; the
+		// browser's own opinion is what says which thing.
+		c.SetOffline(!platform.Online())
 		c.setPhase(phaseFailed)
 	case ClassTerminal:
 		c.block(v.Reason)

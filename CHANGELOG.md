@@ -70,6 +70,27 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The connection badge could say "down" over a working connection, forever** (`client/data`,
+  §20.19, A40). An RPC that fails during an outage marks the transport failed. gRPC itself never
+  notices — a socket that stops carrying traffic is indistinguishable from one nobody is using until
+  the keepalive probes it forty seconds later — so `Watch` sits in `WaitForStateChange(READY)` and
+  never wakes, the connection recovers silently, and the only thing that could correct the badge is a
+  successful call that nobody is making. On a reading app, "nobody is clicking" is the normal state
+  and precisely what the indicator exists for. `Kick` now **verifies** rather than assuming: it makes
+  one cheap `Version` call and lets the ordinary error path judge the outcome. The transport's own
+  `READY` is deliberately not used as the evidence — it is the state that lies about a socket the
+  browser has abandoned.
+- **`offline` and `down` were decided by an event that is not always delivered.** The browser's
+  `online`/`offline` events were the only source of the flag that separates "your wifi is off" from
+  "the server is not answering". Headless Chrome delivers them about half the time under network
+  emulation — measured over a dozen runs, which is what turned a suspected flake into a fix — and
+  real browsers are worse in the cases that matter most: waking from sleep, a VPN dropping, a phone
+  switching to a network it cannot actually reach. A missed event never corrects itself, so a reader
+  with no network got a countdown toward a reconnect that could not happen. The client now also
+  **polls** `navigator.onLine` every two seconds (a synchronous property read) and treats a
+  transition exactly as the event handler does, including the kick when the network returns. A failed
+  call also asks the browser before reporting, because that is the one moment the answer matters.
+
 - **The renderer could wedge holding the only render slot** (`internal/render`, TODO 6.16). Two
   places, the same mistake: the context argument was accepted and then not used for the work.
   `Snapshot` built its run context from the browser tab rather than from the caller's, so a reader

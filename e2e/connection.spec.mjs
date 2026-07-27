@@ -36,9 +36,11 @@ test.describe('the connection badge', () => {
     // Unconditional. A test that fails midway must not leave the suite without
     // a server: the next file would fail on reset-state and the real failure
     // would be buried under fifty ECONNREFUSEDs.
-    try {
-      await startServer();
-    } catch { /* already running, which is the common case */ }
+    // `startServer` is a no-op when one is already answering, so the common
+    // case — a test that restarted its own server and passed — costs a health
+    // check rather than a duplicate process fighting for the port and the
+    // database.
+    await startServer();
   });
 
   const badge = (page) => page.locator('.conn').first();
