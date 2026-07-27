@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package articleflux.v1;
+
+option go_package = "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1";
+
+// ErrorDetail carries a TRANSLATABLE identity for a failure, attached to a gRPC
+// status alongside its English message.
+//
+// The problem it solves: a status message is prose written on the server, and
+// the client renders it verbatim — so every refusal the reader sees ("only an
+// administrator can change Smart+ settings", "invalid username or password")
+// was English no matter what language the interface was in. The server cannot
+// translate it either, because the language is a per-device choice held in the
+// browser.
+//
+// So the server sends the KEY and the ARGUMENTS, and the client looks them up
+// in the same catalog everything else comes from. The status message stays as
+// the English fallback, which matters for the two consumers that have no
+// catalog: the Google Reader-compatible sync API (§20.7) and anyone reading the
+// error off a curl.
+message ErrorDetail {
+  // Catalog key in flat "namespace.key" form — always the "srv" namespace, so
+  // one file holds every message the server can send a person.
+  string key = 1;
+  // Placeholder values for the message, already stringified. Server-side
+  // identifiers only: never the reader's own content, which does not belong in
+  // an error the server composed.
+  map<string, string> args = 2;
+}

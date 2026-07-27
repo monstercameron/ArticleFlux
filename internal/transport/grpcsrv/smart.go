@@ -3,12 +3,12 @@ package grpcsrv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
@@ -53,18 +53,18 @@ var ownerRoles = map[string]bool{"superadmin": true, "admin": true}
 // requireOwner resolves the caller and refuses anyone who is not an owner.
 func (s *SmartServer) requireOwner(ctx context.Context) (store.Scope, error) {
 	if s.scopeOf == nil {
-		return store.Scope{}, status.Error(codes.Unauthenticated, "not signed in")
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
 	}
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return store.Scope{}, status.Error(codes.Unauthenticated, "not signed in")
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
 	}
 	if !ownerRoles[sc.Role] {
 		// Names the requirement rather than the failure. "Permission denied" on
 		// a settings screen sends someone hunting for a bug; "this is an
 		// administrator setting" sends them to whoever runs the server.
-		return store.Scope{}, status.Error(codes.PermissionDenied,
-			"only an administrator can change Smart+ settings")
+		return store.Scope{}, errKey(codes.PermissionDenied, "srv.adminOnly",
+			"only an administrator can change Smart+ settings", nil)
 	}
 	return sc, nil
 }
@@ -97,8 +97,8 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		// from a pasted URL or a whole shell line — which is what actually gets
 		// pasted into this box.
 		if !strings.HasPrefix(key, "sk-") {
-			return nil, status.Error(codes.InvalidArgument,
-				"that does not look like an OpenAI API key — they begin with sk-")
+			return nil, errKey(codes.InvalidArgument, "srv.badApiKeyShape",
+				"that does not look like an OpenAI API key — they begin with sk-", nil)
 		}
 		if err := s.settings.SetSystemSecret(ctx, store.KeyOpenAIAPIKey, key, sc.UserID); err != nil {
 			return nil, s.secretErr(err)
@@ -108,7 +108,7 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 
 	if m := strings.TrimSpace(req.GetModel()); m != "" {
 		if err := s.settings.SetSystemValue(ctx, store.KeySmartModel, m, sc.UserID); err != nil {
-			return nil, status.Error(codes.Internal, "couldn't save the model")
+			return nil, errKey(codes.Internal, "srv.saveModelFailed", "couldn't save the model", nil)
 		}
 	}
 
@@ -148,22 +148,26 @@ func (s *SmartServer) TranslateUI(ctx context.Context, req *pb.TranslateUIReques
 	entries, err := s.tr.Catalog(ctx, locale, req.GetForce())
 	switch {
 	case errors.Is(err, smart.ErrUnsupportedLanguage):
-		return nil, status.Errorf(codes.InvalidArgument, "%q is not one of the offered languages", locale)
+		return nil, errKey(codes.InvalidArgument, "srv.unsupportedLanguage",
+			fmt.Sprintf("%q is not one of the offered languages", locale),
+			map[string]string{"locale": locale})
 	case errors.Is(err, smart.ErrIsSource):
-		return nil, status.Error(codes.InvalidArgument, "the interface is already in English")
+		return nil, errKey(codes.InvalidArgument, "srv.alreadySourceLanguage",
+			"the interface is already in English", nil)
 	case errors.Is(err, llm.ErrNotConfigured):
-		return nil, status.Error(codes.FailedPrecondition,
-			"Smart+ needs an OpenAI API key — add one in Settings › Smart+")
+		return nil, errKey(codes.FailedPrecondition, "srv.smartNoKey",
+			"Smart+ needs an OpenAI API key — add one in Settings › Smart+", nil)
 	case errors.Is(err, llm.ErrTruncated):
 		// Named, because the remedy is specific and nobody would guess it: the
 		// batch was too big for the model's output ceiling.
-		return nil, status.Error(codes.ResourceExhausted,
-			"the translation was cut off before it finished — try again")
+		return nil, errKey(codes.ResourceExhausted, "srv.translationTruncated",
+			"the translation was cut off before it finished — try again", nil)
 	case err != nil:
 		// The provider's text can echo the request, so it goes to the log with
 		// the request id and a flat message goes to the client (§20.7).
 		s.log.Error("ui translation failed", "locale", locale, "err", err)
-		return nil, status.Error(codes.Unavailable, "couldn't translate the interface just now")
+		return nil, errKey(codes.Unavailable, "srv.translateFailed",
+			"couldn't translate the interface just now", nil)
 	}
 
 	msgs := make([]*pb.UIMessage, 0, len(entries))
@@ -213,10 +217,10 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 // secretErr turns a storage refusal into something the screen can act on.
 func (s *SmartServer) secretErr(err error) error {
 	if errors.Is(err, secret.ErrKeyLength) {
-		return status.Error(codes.FailedPrecondition,
+		return errKey(codes.FailedPrecondition, "srv.cannotStoreSecret",
 			"this server has no encryption key, so it will not store a credential — "+
-				"set OPENAI_API_KEY in the environment instead")
+				"set OPENAI_API_KEY in the environment instead", nil)
 	}
 	s.log.Error("couldn't save the Smart+ key", "err", err)
-	return status.Error(codes.Internal, "couldn't save that")
+	return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
 }

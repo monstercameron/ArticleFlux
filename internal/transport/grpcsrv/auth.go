@@ -80,7 +80,7 @@ func NewAuthServer(repo *store.ReaderRepo, scopeOf func(context.Context) (store.
 // One message for "no such user", "wrong password", and "deactivated". Any
 // distinction is a free account-enumeration API, and the person who genuinely
 // mistyped is no better served by knowing which half they got wrong.
-var errBadCredentials = status.Error(codes.Unauthenticated, "invalid username or password")
+var errBadCredentials = errKey(codes.Unauthenticated, "srv.badCredentials", "invalid username or password", nil)
 
 func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
 	username := strings.TrimSpace(req.GetUsername())
@@ -161,7 +161,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		ExpiresAt: expires.Format(time.RFC3339Nano),
 	}); err != nil {
 		s.log.Error("creating session", "err", err)
-		return nil, status.Error(codes.Internal, "internal error")
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 
 	// Upgrade the stored hash while the plaintext is in hand. This is the only
@@ -206,7 +206,7 @@ func (s *AuthServer) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.Logou
 	if err := s.repo.RevokeSession(ctx, secret.HashToken(tok),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		s.log.Error("revoking session", "err", err)
-		return nil, status.Error(codes.Internal, "internal error")
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 	return &pb.LogoutResponse{}, nil
 }
