@@ -1917,7 +1917,32 @@ hand-written CSS and vanilla JS, and nobody ports them.
       a ~100 ms tick. **Never touch state directly.**
 - [ ] **8.8 `client/view/model.go`** + `client/data/mappers.go` — **pb → plain view structs.** Nothing
       generated crosses this line. R3
-- [ ] **8.9** `client/data/keys.go` + one package-level `query.New(WithStaleTime(30s))`
+- [x] **8.9** `client/data/keys.go` + one package-level `query.New(WithStaleTime(30s))`
+
+      ✅ 2026-07-27 — `client/data/keys.go` + `DropPrefix` on the existing cache, 5 tests.
+
+      The builders existed — `itemsKey`, `feedsKey`, `itemKey` — inside `cache_wasm.go`, unexported
+      and behind `//go:build js`, so the one piece of pure string arithmetic in that file was the one
+      piece that could not be tested natively, and the view could not name a key it wanted
+      invalidated. The cache needs a build tag; the naming scheme does not.
+
+      **No `query.New` was added, deliberately.** This application already has a cache: the bounded
+      LRU serving offline read-through. A second layer would mean two answers to the same key, and
+      the failure would look like a stale UI rather than like two caches. `keys.go` addresses the
+      cache that exists.
+
+      **Invalidation was not actually possible before this.** The cache had `Drop(key)` and nothing
+      else, so "every list has to go after a subscribe" meant the call site enumerating keys whose
+      scheme it would have to know — the thing `keys.go` exists to keep in one place. `DropPrefix`
+      closes that and refuses an empty prefix, since a builder returning `""` for an uncacheable
+      request would otherwise silently empty the cache.
+
+      **`TestEveryListFilterIsInTheKey`** enumerates `ListItemsRequest`'s fields through
+      protoreflect and requires each to change the key or be exempted with a reason. Adding a filter
+      and forgetting the key gives a cache that serves one filter's answer to another's question —
+      the reader sees the wrong articles under the right heading, nothing errors, and nobody notices
+      from the code. This application has had that failure once already by a different route (H10),
+      and a comment would not have stopped it.
 - [x] **8.10** Connection badge — early, because everything after it lies without it
       ✅ 2026-07-26 — Connection badge in the list header and in mobile Settings — dot plus the word.
 
@@ -2116,6 +2141,44 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       ↻ 2026-07-27 — `internal/tts` had no tests at all; it has 14 now (cache, single-flight,
       abandoned-synthesis, word-boundary truncation, allowlist/endpoint agreement, no-key-no-egress),
       plus 18 in `internal/app` for the ticket and the four gates.
+
+- [x] **8b.19a Listening to a LIST** — the three pieces that turn one article read aloud into a
+      session you can leave running (§10.7).
+      **The floating transport.** `listenBar` argued that "a floating player covers the text it is
+      reading", and that stays true — which is why `nowPlaying` appears only once the in-article
+      control has left the viewport. It covers what you scrolled away TO, at the moment you have no
+      other way to stop it. An IntersectionObserver on `[data-listen-for=<id>]`, scoped to
+      `.pane-article`, re-established when the article being read changes; `platform.WatchVisible`
+      is the observer shape rather than `OnScrolledPast`'s, because that one LATCHES (marking read
+      is a one-way door) and this question is asked continuously and answers both ways. The bar
+      carries the one thing the in-article control never needs — which article is talking — and the
+      title IS the control that takes you back, rather than a separate button beside it.
+      **Summarise before reading** (`tts.digest`, default off). `smart.Digest` rewrites an article
+      as ~180 words of continuous spoken prose: the prompt is mostly negative clauses, because a
+      summarising model's default output is a document — heading, bullets, closing restatement —
+      and read aloud that is unbearable. `cleanForSpeech` strips what the prompt asked it not to
+      emit anyway; a stray asterisk is the word "asterisk" in the middle of a sentence, cached as
+      audio forever. Cached on disk beside the audio, keyed by item + model + prompt version, and
+      the cache is read BEFORE the key is required — text already paid for should not be stranded
+      by a rotated credential. A second opt-in rather than a mode of the first, because it is a
+      second egress and a second bill.
+      **Keep playing** (`tts.autoplay`, default off). On `ended`: mark read (hearing it out is the
+      same claim scrolling to the last line already makes), open the next item in the LIST — not
+      the reading stream, which is a window that has been paged around — and play when its ticket
+      lands. The next track is prefetched during the current one, which is the difference between
+      a session and forty seconds of silence per seam; the prefetch DRAINS the body, because a
+      fetch whose body is never read leaves nothing in the HTTP cache and the megabyte crosses
+      twice. Every segment now opens "From {source}. {title}." — a queue with no announcement tells
+      a listener what a piece is called but not where it came from, which is most of how anyone
+      decides whether to keep listening.
+      ⚠ The cache key had to change with it: `it.ID` for the article, `it.ID+"#digest"` for the
+      summary. Without that, turning the digest on serves yesterday's full-article audio and
+      turning it off serves the digest — each looking exactly like the toggle not working.
+      ⚠ **`platform` callbacks must go through the actions Ref.** A closure created inside
+      `UseEffect` captures the state handles of the render that made it, and `Set` on those stores
+      the value without scheduling a render — the observer fired, reported correctly, and nothing
+      moved until an unrelated click flushed it. `actions.speakSeen` is the fix and the reason is
+      written there. The same trap is already documented one line above `act.Get().fill`.
 
 **Continuity and configuration**
 
@@ -2416,6 +2479,29 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       a merge. *Done when: the title and the highlighted row follow a scroll through three articles,
       and `scrolling back into a skipped article does mark it read` is un-`fixme`d and green.*
 
+      ◧ 2026-07-27 — **the handler runs again**, and the hypothesis was right for the wrong node.
+      `OnTopmostChild` resolved its root with `querySelector("#app")` and listened on THAT node —
+      but GWC's `Render` replaces its mount point, so the listener outlived the `#app` it was
+      registered on: attached to a detached element, receiving nothing, for the life of the session.
+      That is exactly what a probe counting six scroll events at `#app` while the callback never
+      fires looks like from outside.
+
+      It listens on the **document** now. Scroll events do not bubble, but capture-phase listeners on
+      ancestors receive them — which is why this was already a capture listener and why moving it up
+      costs nothing. The document cannot be replaced. `rootSelector` still scopes the MATCH rather
+      than the binding, or a scroll in any matching element anywhere — a settings pane, a dialog —
+      would report as the reading stream.
+
+      Fixed in `client/platform`, not in `client/view/reader.go`: the bug was never in the view, so
+      the file this ticket said not to touch did not have to be touched.
+
+      *Still owed, and it is the second half of the Done-when:* `scrolling back into a skipped
+      article does mark it read` is still `fixme`, because the assertion it shares with `jumping down
+      the list does not read what it jumped over` still fails — `rows.nth(1)` comes back
+      `data-read=true`. That failure **predates this fix** (it is in the run logs from before the
+      handler was revived), so 8b.49's suppression is incomplete on some path, and finding which
+      needs edits inside `reader.go` while another session has uncommitted changes there.
+
 - [x] **8b.49 A jump no longer reads what it jumped over** — §20.9. Cam: *"click n then click n+2 and
       n, n+1 and n+2 are all marked read — isn't granular enough."* Both the seeded predecessor on an
       open and the article a prepend inserts are placed above the fold **by the app**, and "scrolled
@@ -2471,6 +2557,19 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       still listed. And it did not clear `user_prefs`, so once one test selected the Read later
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
+
+      ◧ 2026-07-27 (later) — **49 passed, 4 failed.** The remaining four, each a real question rather
+      than a stale name: `jumping down the list does not read what it jumped over` (8b.49's
+      suppression is incomplete — see 8b.52), the categories rail's `.cat-slot`/`.cat-row` markup,
+      `j` not advancing on a second press, and one tag-settings case.
+
+      Two more harness fixes got it there. The port **slot is now claimed with an exclusive file
+      create** rather than derived from the pid — a guess is not enough when the penalty for
+      colliding is that one run kills the other. And `global-setup` **no longer kills whatever holds
+      the FEED port**: the app server is a child process this run spawned, so a stale one is our own
+      corpse, but the fixture feed server lives INSIDE the Playwright process, so anything on that
+      port is somebody's live runner. Killing it does not free a port, it destroys a run — silently,
+      because the process that dies is the one that would have reported.
 
       **Full desktop suite: 39 passed, 14 failed** (53 tests, 9.5 min) — against the 21/20 below,
       and against "does not finish" an hour before that. `appearance` and `tagsettings` are entirely
