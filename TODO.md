@@ -35,6 +35,67 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 
 ---
 
+## Stop-ship — account and session boundary (2026-07-27 review)
+
+These precede ordinary feature work. The focused `authn`, `pwpolicy`, `secret`, `authz`, `store`,
+`grpcsrv` and `app` tests pass, but none proves the cross-account collision or full refresh-family
+revocation below. Plan §7.3a is the spec.
+
+- [ ] **SEC1 · Separate a browser label from refresh-token identity.** `client/data/auth.go` currently
+      produces a timestamp `device_id`; `devices.id` is globally unique; and `RegisterDevice` handles
+      a collision by updating the refresh hash while retaining the old row's user and tenant.
+      `ScopeForDevice` then mints the refreshed session for that retained owner. Replace this with a
+      server-generated, high-entropy refresh-record ID. Keep any client-stable browser value as
+      presentation metadata only. A write that collides with another user/tenant must fail and must
+      not modify either account.
+      *Done when: two users can submit the same browser label without sharing a row; an authenticated
+      user cannot turn a chosen/guessed ID into another user's session; the record ID has at least
+      128 bits of CSPRNG entropy; and store + transport regression tests exercise the exact old
+      exploit.*
+
+- [ ] **SEC2 · Revoke renewal authority, not just today's access token.** `Logout`,
+      `ChangePassword`, the CLI `passwd`, suspension and deletion currently reason primarily about
+      `sessions`; a live refresh family can create another session afterwards. Add scoped repository
+      operations for: current-session + current-family logout, all-session + all-family logout,
+      password change keeping only the explicitly selected current family, and recovery/admin reset
+      revoking everything. Decide and expose API-token revocation separately.
+      *Done when: after each action, direct calls to `RefreshSession` with every credential that
+      should be dead fail; the ordinary logout remains idempotent; and tests cover current device,
+      another device, a stolen refresh token and a replayed token.*
+
+- [ ] **SEC3 · Make password/reset and revocation one transaction.** The RPC and CLI currently store
+      the new hash and revoke sessions in separate writes; the RPC logs a revocation failure and
+      reports success. Add transactional repository methods that update the password, consume the
+      recovery/reset credential when applicable, revoke sessions, revoke refresh families and append
+      the audit event together. Nothing commits if any invariant write fails.
+      *Done when: injected failures at every write boundary leave the old password and old
+      credentials consistently live, or the new password and old credentials consistently dead —
+      never half of each; the RPC never returns success with an invented zero revocation count; and
+      the CLI uses the same transaction.*
+
+- [ ] **SEC4 · Either complete refresh rotation in the wasm client or stop issuing refresh tokens.**
+      The login client currently stores only the 30-day access token and discards `RefreshToken`.
+      After SEC1–3, define a versioned credential bundle containing access token, expiry,
+      refresh-record ID and refresh secret; rotate it atomically; coordinate one rotation across
+      tabs; and treat replay/rotation failure as a return to login. Then reduce access-session TTL to
+      15–60 minutes. Until that client ships, gate or remove server issuance so an unconsumed
+      credential is not presented as a compensating control.
+      *Done when: a browser stays signed in across access expiry without reusing a refresh token;
+      two tabs cannot race the family into self-revocation; a lost rotation response fails safely;
+      sign-out clears the whole local bundle; and an e2e test advances time through at least two
+      rotations.*
+
+- [ ] **SEC5 · Remove plaintext passwords from command arguments and examples.** Deprecate/remove
+      `-password`, stop printing `articleflux … -password pass` in usage and documentation, keep
+      hidden terminal confirmation for people, and define one non-argv automation input
+      (`ARTICLEFLUX_PASSWORD`, protected stdin/file descriptor, or secret file) with explicit
+      precedence and failure behaviour. Scrub password values from error and audit paths.
+      *Done when: the supported setup/reset examples put no secret in shell history or the process
+      list; terminal entry does not echo; non-interactive input has a deterministic test; and a
+      repository search finds no example that places a literal after `-password`.*
+
+---
+
 ## Tier 0 — Unblock (no code)
 
 - [x] **G1 · D2 · FTS5 spike.** ✅ **PASSED 2026-07-26** — but the desk answer was wrong. FTS5 is **not
@@ -5458,9 +5519,18 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       are failing; and can act on each from that view.*
 
 - [ ] **F33 · The admin console.** Multi-tenant with no operator surface beyond the CLI. Depends on F11
-      being real first — a console over unenforced roles is a lie with a UI.
-      *Done when: users and tenants can be listed, suspended and deleted; a deletion previews exactly
-      what it will remove before it removes it.*
+      being real first — a console over unenforced roles is a lie with a UI — and on SEC1–3, because
+      force-logout/reset controls that leave refresh families alive are worse than no controls.
+      List users and tenants; invite a user with an explicit role and expiring one-use credential;
+      change roles; suspend/reactivate; revoke sessions/devices; issue a 15-minute reset URL; and
+      soft-delete with the §7.9 preview and grace period. Every mutation is capability-gated,
+      sudo-gated where §7.3 requires it, tenant-scoped, audit-logged and confirmation-specific. Do not
+      create a public-signup path, silently select `FirstTenantID`, or expose whether an account
+      exists through reset responses.
+      *Done when: an admin can complete the lifecycle without host access; a non-admin and an admin
+      from another tenant receive the same fail-closed denial; invite/reset plaintext appears once;
+      suspension and deletion invalidate sessions and refresh families atomically; and deletion
+      previews exactly what it will remove before it removes it.*
 
 - [ ] **F34 · Article revisions.** Publishers edit silently. The `item_revisions` table and the
       `content_hash` / `revision` columns are already in the M3 schema, so the noticing is free; only
@@ -5661,6 +5731,213 @@ A backlog built from either mistake funds work that already exists.
       documents disagreeing about what the keys are is the specific failure that promise names.
       *Done when: §20.14 lists every binding the reader ships, including the scoped ones, and says
       which scope each belongs to.* A32
+
+- [ ] **F45 · A desktop application that wraps ArticleFlux rather than forks it.** The client is
+      already Go/WASM, the server already owns SQLite, polling, workers and the gRPC-over-WebSocket
+      tunnel, and the PWA already supplies a standalone browser window. A desktop edition therefore
+      is **not a native-UI rewrite**. It is a lifecycle, storage, security and distribution host for
+      those same two halves.
+
+      **Direction, decided 2026-07-27:** add a separate `cmd/articleflux-desktop` using **Wails v2**
+      as the first production shell. Keep `cmd/articleflux` as the self-hosted/server product, keep
+      the shipping WASM client, and keep the existing RPC contract. Wails v3 has the better built-in
+      tray/updater/service story, but it is still alpha; revisit it when it reaches beta/stable rather
+      than making ArticleFlux's first desktop release its stabilisation project. **Tauri v2 + the Go
+      binary as a sidecar is the fallback** if native updater/tray/deep-link support is required
+      before Wails can supply it. It is operationally credible but buys a Rust toolchain, a
+      two-process lifecycle and per-target sidecar packaging. **Electron is not the default**: it
+      would add Chromium, Node, preload/IPC hardening and a fourth application toolchain to a product
+      whose deliberate claim is "Go all the way down." A full Fyne/Gio/native rewrite is rejected
+      unless the web client itself is being abandoned.
+
+      The installed PWA remains the **desktop-lite** path: document one-click installation and, if
+      useful, pair it with a per-user launcher/startup task that keeps `articleflux serve` alive.
+      That can ship before F45 and is not throwaway work, but it does not solve application-owned
+      updates, file associations, single-instance focus, reliable background lifetime or a native
+      tray. It is an entry point, not the canonical downloadable desktop product.
+
+      Build in this order:
+
+      - [ ] **F45a · Put the architecture in the spec before adding a framework.** Add the desktop
+            product and its threat model to `plan.md`: one codebase and one database implementation;
+            a separate desktop entry point; the same protobuf API and WASM client; server and desktop
+            release lines allowed to coexist. Record Wails v2 as the first host, Wails v3 as a
+            revisit, and Tauri as the named fallback so the choice is not re-litigated from package
+            popularity.
+
+      - [ ] **F45b · Extract a reusable runtime from the `serve` command.** `cmd/articleflux` is
+            currently flag parsing, application construction, worker startup, listener ownership and
+            shutdown in one path. Give the desktop command a tested runtime that accepts an existing
+            `net.Listener`, starts `app.Open` → `StartWorkers` → `DeriveDue` → `StartPoller`, reports
+            the actual address, and closes HTTP, jobs, telemetry and SQLite exactly once. The server
+            command must consume the same runtime afterwards; two boot paths that merely look alike
+            will drift.
+            *Done when: server and desktop tests start the same runtime on `127.0.0.1:0`, and
+            cancellation leaves no listener or worker behind.*
+
+      - [ ] **F45c · Give desktop state an OS-owned home and migrate the whole instance.** The current
+            defaults (`articleflux.db`, `bin/web`) are relative to the working directory. A desktop
+            shortcut has no trustworthy working directory. Define platform paths for durable data,
+            cache, logs and the WebView profile; keep the database and `secrets.key`, `proxy.key` and
+            `speech.key` together as the recoverable instance, while the speech/digest/podcast/asset/
+            page caches remain disposable. On first run, detect a legacy working-directory instance
+            and offer an explicit import/move of the database **and adjacent keys** — moving the
+            database alone can strand encrypted Smart+ credentials. Do not roam the SQLite database
+            through OneDrive/iCloud/AppData Roaming.
+            *Done when: launching from an arbitrary directory opens the same instance; a legacy
+            migration preserves encrypted settings; and backup/restore covers the desktop layout.*
+
+      - [ ] **F45d · Add `DesktopMode`; never reuse `DevMode` as desktop authentication.** `-dev`
+            does more than skip the login: it relaxes private-feed SSRF policy and changes development
+            behaviour. The desktop host binds only an ephemeral loopback port, generates a
+            high-entropy one-use bootstrap capability, opens
+            `/_desktop/bootstrap/<capability>`, sets an HttpOnly + SameSite session cookie and
+            redirects to `/`. Require that authenticated session on every private HTTP surface and
+            the WebSocket upgrade; retain the existing Origin checks. Loopback is a topology fact,
+            not an authentication boundary — another local process or page can reach it.
+            *Done when: the WebView enters without a password; a browser that guesses the port does
+            not; replaying the bootstrap capability fails; non-loopback and behind-proxy desktop mode
+            are refused; and private feeds remain blocked.*
+
+      - [ ] **F45e · Embed the assembled client without inventing a second frontend build.** Teach the
+            static handler/preflight to accept an embedded `fs.FS` as well as a deployment directory,
+            and embed the exact `bin/web` artifact produced by the existing WASM build. Wails is the
+            window and lifecycle host only — do not adopt a Node frontend template or replace
+            GoGRPCBridge with framework bindings. Mark desktop boot explicitly and do not register a
+            Service Worker there: the shell bytes are local and versioned with the executable, so a
+            second cache can only serve an older client against the bundled server. Browser/PWA
+            behaviour must remain unchanged.
+            *Done when: the installed application has no adjacent `bin/web` requirement; deleting
+            the build directory after packaging does not affect it; the browser build still installs
+            as a PWA; and one build-version test proves server, WASM and embedded shell agree.*
+
+      - [ ] **F45f · Make the shell own application lifecycle.** One launch means one instance, one
+            backend and one main window. A second launch focuses the existing window. Window close
+            either quits cleanly or, only after an explicit preference, hides to a tray whose menu
+            says Open, Refresh now, Pause polling and Quit. Persist bounds/theme without persisting
+            the bootstrap URL. Open publisher links in the system browser; never navigate the reader
+            window away from its private origin. Save/restore enough view state that an update or
+            WebView runtime restart is boring.
+            *Done when: start, second-launch, close, tray reopen and Quit have deterministic process
+            counts; background polling happens only while the chosen lifetime policy says it should;
+            and an external link cannot replace the app UI.*
+
+      - [ ] **F45g · Package and update the application as a database owner.** Produce signed,
+            versioned artifacts from a CI matrix: Windows installer first (with an Evergreen WebView2
+            presence check), then signed/notarized macOS and Linux packages when those hosts pass.
+            Updates need a signed manifest/artifact, an explicit stable channel, atomic replacement
+            and rollback of application bytes. Before the first run of a version that migrates
+            schema, take a verified backup of the database and key files; application rollback is not
+            database rollback. Never collect telemetry merely because the desktop updater exists.
+            *Done when: clean-machine install, upgrade, failed upgrade and uninstall are exercised;
+            user data survives uninstall by default; and an unsigned or wrong-platform update is
+            refused.*
+
+      - [ ] **F45h · Reuse the browser test investment and add only desktop-specific proof.** Keep the
+            full Playwright suite against the ordinary ArticleFlux HTTP runtime — the WASM client
+            must not acquire a desktop fork. Add unit/integration coverage for paths, bootstrap
+            authentication, random-port startup, single-instance arbitration, graceful shutdown and
+            migration. Add one packaged-app smoke per OS that launches a clean profile, waits for the
+            reader, performs one RPC, opens an external link through a fake handler, closes, and
+            verifies the database is healthy. Do not duplicate 123 browser cases through fragile
+            WebView automation.
+            *Done when: a client change is still proved once, while every behaviour introduced by the
+            desktop host has a deterministic test.*
+
+      **Release line:** F45a–e are the minimum coherent application; F45f makes it behave like a
+      desktop product; F45g makes it distributable; F45h is part of each slice rather than a final
+      hardening pass. Do not announce the native shell before a clean-machine installer can start it
+      without a terminal, a working directory or a separately running server.
+
+- [ ] **F46 · Complete the account lifecycle instead of exposing isolated authentication
+      primitives.** Plan §7.3a. SEC1–5 are prerequisites: the UI must not make unsafe refresh or
+      revocation paths easier to reach. D12 remains the product rule — invite-only, no public signup.
+
+      - [ ] **F46a · Carry identity through boot and replace the false Account placeholder.** Keep the
+            `WhoAmIResponse` instead of discarding it, pass username/display name/role/provider state
+            into the reader, and make Settings → Account describe the authenticated account. Remove
+            “one local account with no login screen” from authenticated production. Show an explicit
+            DevMode warning only when `WhoAmI.dev_mode` says it is true.
+            *Done when: the Account page names the real caller and role after boot and after login;
+            it never falls back to “local account” merely because a prop was omitted; and its
+            identity state updates without a reload.*
+
+      - [ ] **F46b · Ship sign-out and session/device management.** Wire the existing client
+            `SignOut` method to a visible action; add “sign out everywhere”; list active devices and
+            sessions with label, approximate last use, client version and current-device marker; and
+            revoke one device/family. A failed server logout still clears the local credential and
+            explains that remote revocation could not be confirmed. Destructive actions require
+            confirmation that names their scope.
+            *Done when: current sign-out, all-device sign-out and single-device revoke are usable by
+            keyboard and screen reader; the current credential disappears locally even offline; and
+            server tests prove the corresponding refresh authority is dead.*
+
+      - [ ] **F46c · Add self-service password and recovery-code management behind sudo.** Build the
+            re-authentication dialog for `PermissionDenied`/sudo-required operations, change-password
+            form with the shared password policy, and recovery-code regeneration/download/print
+            sheet. Codes appear once, are never logged or restored from UI state, and the screen says
+            how many remain without revealing hashes or prior plaintext.
+            *Done when: changing a password ends other sessions/families per §7.3a; stale sudo asks
+            for the current password without navigating away; regenerating burns every old code; and
+            copy/print/download handling has tests that prevent codes entering analytics, logs or
+            persisted preferences.*
+
+      - [ ] **F46d · Make recovery codes recover accounts.** Add an enumeration-neutral recovery
+            entry point that accepts username + code, consumes the code once, opens a short-lived
+            reset transaction, and atomically commits the new password plus total session/family
+            revocation. Do not require an authenticated session to use the recovery mechanism.
+            *Done when: unknown account, wrong code, spent code and expired transaction have
+            indistinguishable public responses; eight concurrent submissions produce one winner;
+            and the winning reset invalidates every old access and refresh credential.*
+
+      - [ ] **F46e · Add administrator/filesystem reset links.** Expose the existing reset-token
+            repository through a capability- and sudo-gated admin RPC plus a safe CLI command that
+            prints a 15-minute, single-use URL exactly once. Add the redemption screen. Reconcile the
+            current one-hour implementation with the 15-minute spec; issuing another link invalidates
+            the first. Do not require SMTP.
+            *Done when: an operator can recover a locked-out account without choosing or seeing its
+            new password; plaintext is absent from the database/log; expiry and replacement are
+            deterministic; and redemption uses SEC3's atomic reset transaction.*
+
+      - [ ] **F46f · Replace routine `adduser` with audited invitations.** The first superadmin still
+            comes from `articleflux init`. Afterwards an admin chooses tenant and role, creates an
+            expiring one-use invitation, and the recipient sets a local password or links an enabled
+            identity provider. `adduser` remains documented as break-glass/bootstrap automation, not
+            the normal flow. Never infer the tenant with `FirstTenantID` in a multi-tenant surface.
+            *Done when: invitation creation/redemption is tenant-scoped, replay-safe and audited; a
+            role cannot exceed the inviter's authority; accepting an invite creates exactly one
+            account under concurrency; and no unauthenticated route creates an uninvited user.*
+
+      - [ ] **F46g · Decide and, only if accepted, implement optional Google sign-in.** This is an
+            explicit operator-enabled exception to A42, not a dependency silently introduced by the
+            login screen. Use backend OIDC authorization-code flow with PKCE; validate state, nonce,
+            issuer, audience, expiry and signature; request only `openid email profile`; store
+            `(provider, sub)` as the identity key; and never match/provision by email. Google may
+            authenticate only an explicitly linked account or redeem a live ArticleFlux invite.
+            Linking/unlinking is sudo-gated, and unlinking the last usable credential is refused.
+            Preserve a local superadmin and local recovery path. The desktop shell opens the system
+            browser and uses a loopback callback rather than embedding Google in its WebView.
+            *Done when: a local fake issuer proves every validation failure; email collision cannot
+            take over or merge an account; provider outage leaves local login usable; each instance
+            owns and can remove its client configuration; disabling Google removes the button and
+            all provider egress; and the A42 exception is recorded in the decision table before
+            production code is enabled.*
+
+      - [ ] **F46h · Align documentation, telemetry and the full journey test.** Correct
+            `docs/FEATURES.md` claims that recovery/admin-minted tokens and account management are
+            usable before they have routes. Document local-storage/XSS tradeoffs, session and refresh
+            lifetimes, invite-only creation, recovery choices, Google configuration when enabled,
+            and what each revocation action ends. Audit events record actor/action/target/result but
+            never passwords, bearer/refresh/reset/invite tokens, recovery codes or Google tokens.
+            *Done when: one clean-instance e2e creates the first admin, invites a member, redeems the
+            invite, signs in, rotates a refresh token, changes password, revokes a device, recovers
+            with a code, uses an admin reset link and signs out everywhere; the feature catalogue
+            matches reachability; and the secret-log scanner remains empty.*
+
+      **Release line:** SEC1–3 before another authentication release; SEC4 before refresh rotation is
+      claimed as a shipped control; F46a–e before account management/recovery is called usable; F46f
+      before the admin console is the normal provisioning path; F46g is optional and cannot block
+      the local lifecycle; F46h closes the feature.
 
 ### Deliberately not filed, and why
 

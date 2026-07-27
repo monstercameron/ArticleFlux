@@ -1237,6 +1237,130 @@ to free 2FA, since the check happens before a request reaches the app.
 RFC 6238, a shared secret and an HMAC, ~a day of work. `user_mfa` would be a purely additive
 migration, so this stays a one-day change whenever wanted.
 
+### 7.3a Account lifecycle correction — security review 2026-07-27
+
+The primitives above are substantially built: Argon2id with per-box tuning, the bundled
+common-password policy, uniform login failures with a real decoy hash, persistent lockout, hashed
+session/reset/recovery secrets, rotating refresh families with replay detection, sudo
+re-authentication, and a fail-closed capability map. The user journey is not substantially built, and
+three implementation details currently invalidate claims this section makes about session ownership
+and revocation. These are **stop-ship defects**, not account-screen polish.
+
+**1. A browser label is not an authentication key.** The current client mints `device_id` from a
+timestamp and sends it at login. `devices.id` is globally unique, while `RegisterDevice` resolves an
+ID collision by replacing only `refresh_hash` and retaining the row's original `user_id`,
+`tenant_id`, and `family_id`. `RefreshSession` then correctly trusts the row rather than the request
+to choose the user — which turns that malformed upsert into a cross-account session-minting path.
+
+The corrected model has two identifiers:
+
+- a client-stable browser label, useful only for presentation such as “this browser”; and
+- a server-generated, cryptographically random refresh-record ID, returned with the refresh secret
+  and used to locate exactly one account-owned family.
+
+No write may change a device or refresh record across user or tenant ownership. A conflict belonging
+to another scope is an error, never an upsert. A regression test must log two different users in with
+the same client label and prove neither can refresh into the other.
+
+**2. Revocation includes renewal authority.** A session row is only the current access credential.
+The refresh family is the authority to create its replacement. Therefore:
+
+| Action | Access sessions | Refresh families |
+|---|---|---|
+| Sign out | revoke the calling session | revoke the calling family |
+| Sign out everywhere | revoke all sessions | revoke all families |
+| Change password | keep only the calling session if desired | keep only the explicitly chosen current family; revoke every other family |
+| Recovery or administrator reset | revoke every session | revoke every family |
+| Suspend or delete user | revoke every session | revoke every family |
+
+These mutations are one repository transaction with the password update or account-state change.
+“The password changed but revocation failed” is not success with a zero count; it is a transaction
+that did not commit. API-token revocation on recovery/reset is an explicit product choice shown to
+the user, never an accidental side effect.
+
+**3. Rotation must have a client.** The server issues a refresh token, but the wasm client currently
+discards it and has no refresh call. Until the fixed ownership model above lands, this dead path is
+more dangerous than useful. Afterwards, persist the access expiry, refresh-record ID and refresh
+secret as one versioned credential bundle; coordinate rotation across tabs so exactly one request
+uses a token; replace the whole bundle atomically; and return to login on replay or rotation failure.
+Shorten access sessions to 15–60 minutes once renewal is working. A 30-day bearer in local storage
+is not a substitute for renewal merely because the server also emitted an unused refresh token.
+
+#### The complete account journey
+
+**Creation stays invite-only (D12).** `articleflux init` remains the one-time bootstrap for the first
+superadmin. Every later account is created by an audited administrator invitation: choose role,
+issue a single-use expiring invite, then let the invitee either set a local password or link an
+enabled identity provider. There is no public registration, CAPTCHA, or automatic provisioning.
+The existing `adduser` command remains a break-glass/operator path, not the normal product flow.
+
+**Account settings are a security surface, not a placeholder.** `WhoAmI` supplies username, display
+name, role and provider state to the reader. The Account page provides change password behind sudo,
+recovery-code status and regeneration, active devices/sessions with last-used metadata, revoke one,
+sign out, sign out everywhere, and linked-provider management. It never says “one local account with
+no login screen” on an authenticated instance. Administrative user/role/suspension/deletion/reset
+actions belong to the admin console (§9) and remain capability- and sudo-gated.
+
+**Recovery has two self-hostable rungs before email.**
+
+1. A reader enters username plus one recovery code. Responses are enumeration-neutral. A successful
+   code opens a short-lived password-reset transaction, is consumed atomically, and ends every
+   session and refresh family when the new password commits.
+2. An administrator or filesystem operator mints a 15-minute, single-use reset URL. The plaintext
+   token appears once; only its hash is stored. Issuing another invalidates the first. Consumption,
+   password replacement and total revocation are one transaction and one audit event.
+
+Optional email delivery may transport the same reset URL when SMTP exists; it does not define a
+third reset mechanism. Repository objects without an RPC/CLI route and a screen are not a recovery
+flow. The current one-hour reset-token implementation must be reconciled to the specified 15-minute
+TTL rather than left as an undocumented discrepancy.
+
+**CLI passwords do not belong in argv.** Remove examples that teach
+`articleflux … -password pass`, and deprecate/remove the plaintext flag. Hidden terminal input is the
+interactive default; automation uses a deliberately named environment secret, protected file
+descriptor/stdin contract, or secret file. Passwords must not appear in shell history or process
+listings.
+
+#### Optional Google sign-in
+
+Google sign-in is not implemented and is **not silently exempt from A42**. If adopted, it is an
+operator-enabled exception recorded as a separate decision: the application remains fully usable
+with local credentials, and a local superadmin plus recovery path always survives Google
+misconfiguration, outage, or account loss.
+
+Use backend OpenID Connect authorization-code flow with PKCE. A desktop shell opens the system
+browser and receives the result on a loopback callback; it never embeds Google's login page in the
+WebView. Validate `state`, `nonce`, issuer, audience, expiry and signature. Store the immutable pair
+`(provider = "google", subject = sub)` as the external identity. Email is display/notification data,
+not an account key: never merge, provision, or take over an existing ArticleFlux account because an
+email string matches. Google may authenticate only an already linked account or redeem a live
+ArticleFlux invitation. Linking and unlinking require sudo; unlinking the last usable credential is
+refused.
+
+The deployment owns its OAuth client ID, secret and redirect configuration, may disable the provider
+entirely, and requests only `openid email profile` for sign-in. No Google API refresh token is needed
+when Google is used only as an identity provider.
+
+Implementation references: Google's
+[OAuth 2.0 web-server flow](https://developers.google.com/identity/protocols/oauth2/web-server),
+[OpenID Connect validation rules](https://developers.google.com/identity/openid-connect/reference),
+and [desktop loopback redirect guidance](https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration).
+
+#### Proof required before calling the lifecycle complete
+
+- Cross-account tests: duplicate client labels, guessed/unknown refresh-record IDs, wrong-user
+  conflicts, deactivated users, and concurrent rotation.
+- Revocation tests: sign out, sign out everywhere, password change, recovery, admin reset,
+  suspension, and deletion all prove both access sessions and the appropriate refresh families die.
+- Failure-injection tests prove password/reset/account mutations roll back if revocation cannot
+  commit.
+- Recovery tests cover unknown/spent/expired tokens with indistinguishable responses and one winner
+  under concurrent use.
+- Browser tests cover invite redemption, local login, refresh, password change, recovery-code reset,
+  reset-link redemption, device revocation, and sign-out.
+- OIDC tests use a local fake issuer and cover state/nonce/audience/issuer/signature failures,
+  invitation-only provisioning, explicit linking, and refusal to link by email alone.
+
 ### 7.4 Capabilities, not role checks
 
 ```
