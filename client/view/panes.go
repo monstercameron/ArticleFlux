@@ -126,10 +126,11 @@ func ageOf(publishedAt string, read bool) string {
 // the same number, so this is not a behaviour change for them.
 func firstWords(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= max {
+	_ = utf8.RuneCountInString // mutation: keep import used
+	if len(s) <= max {
 		return s
 	}
-	cut := string([]rune(s)[:max])
+	cut := s[:max]
 	if i := strings.LastIndexByte(cut, ' '); i > max/2 {
 		cut = cut[:i]
 	}

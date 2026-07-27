@@ -551,7 +551,7 @@ CREATE TABLE item_tags (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
-  source TEXT NOT NULL DEFAULT 'manual',   -- manual | rule | sync
+  applied_by_rule_id TEXT,                 -- NULL = a person; a rule id = which rule
   at INTEGER NOT NULL, PRIMARY KEY (user_id, item_id, tag_id)
 );
 CREATE INDEX item_tags_tag ON item_tags(user_id, tag_id, item_id);
@@ -561,11 +561,25 @@ CREATE INDEX item_tags_tag ON item_tags(user_id, tag_id, item_id);
 Google Reader worked this way, the GReader API models read/starred/broadcast as *system tags* over the
 same mechanism, and the rules engine's `tag` action writes here. One table, three consumers.
 
-**As built (2026-07-26): tags attach to the *subscription*, not yet to the item.** `0004_tags.sql`
-carries `tags` + `subscription_tags`, per-user, created on first use and removed with the last
-association. `item_tags` above is still owed — it is what A21 is actually for, and both rules (A19) and
-the sync API (A18) need it. Nothing about the item-level table changes; the feed-level one arrived
-first because labelling a feed is what a reader wanted at 151 subscriptions.
+**As built — both levels now exist.** `0004_tags.sql` carries `tags` + `subscription_tags`, per-user,
+created on first use and removed with the last association; the feed-level one arrived first because
+labelling a feed is what a reader wanted at 151 subscriptions. `item_tags` then shipped in
+`0010_content.sql`, which is what A21 is actually for and what both rules (A19) and the sync API (A18)
+need.
+
+*Corrected 2026-07-27: this section previously sketched an `item_tags.source` enum
+(`manual | rule | sync`) and said the table was still owed. Neither was true — the shipped column is
+`applied_by_rule_id` (NULL means a person applied it, a rule id says which rule), with a partial index
+over the non-NULL case. The plan was wrong, so the plan changed.*
+
+**That column cannot answer "did a rule apply this?" after the fact, and a fan-out fix had to route
+around it.** `applied_by_rule_id` lives on the `item_tags` row, and that row is exactly what
+`UntagItem` deletes when a reader removes a tag — so at the precise moment you need to know whether a
+rule or a person put it there, the answer has already been deleted with it. That is why the
+at-least-once redelivery guard (§13.2) reads `rule_hits` instead: it is append-only, `UntagItem` never
+touches it, and it therefore survives the event it is being asked about. Worth remembering before
+anyone adds a column intending it to carry provenance — provenance stored *on* the thing dies *with*
+the thing.
 
 **Identity and presentation are two columns (A38).** `0008_tag_style.sql` adds:
 
@@ -1857,8 +1871,21 @@ reader who started it navigates away. No TTL anywhere in that, deliberately —
 article text is immutable, so an expiry could only ever be a schedule for
 re-buying identical audio.
 
-The provider's error text is logged and **never** returned — provider errors can
-echo request content, and request content here is the user's article (§22.11).
+The provider's error text is **capped, not suppressed** — trimmed to 300 bytes and
+returned inside the Go error, in both `internal/tts` and `internal/llm`. *(Corrected
+2026-07-27: this section said "logged and never returned", and the code has never
+done that. Both packages cap and return, each with a comment saying so. The plan was
+wrong, so the plan changed.)*
+
+The reasoning behind capping rather than suppressing is that a provider failure a
+reader cannot see anything about is a failure nobody can act on — "it didn't work" is
+not a bug report. The reasoning behind the cap is the original concern, unchanged:
+provider errors can echo request content, and request content here is the user's own
+article (§22.11). A cap bounds how much of it can come back; it does not eliminate
+the path. Two things follow that are worth being explicit about rather than assuming:
+the text reaches the **reader's own** error surface, where it is their own article and
+not a disclosure, and it must not be written to a shared log at a level that outlives
+the request.
 
 **Listening to a list.** Three preferences, each default off, each a separate
 decision:

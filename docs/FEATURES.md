@@ -1580,6 +1580,41 @@ guard rather than by review.
 Recorded because a gap that is only in someone's head is a gap nobody is assigned. Each is tracked in
 `TODO.md` at the reference given.
 
+## Measured 2026-07-27 — the tree is not green, and the docs said it was
+
+Found by running the suite rather than by reading about it. `TODO.md` and this document both recorded
+"38 packages passing"; that claim came from a run whose exit code had been swallowed by a pipe to
+`tail`. The real state:
+
+| | Finding |
+|---|---|
+| **A real defect, found and fixed inside one hour** | `TestIdleTunnelIsNotKicked` and `TestHalfOpenSocketIsDetected` (T21 b/c) failed in every run where the package built, each burning its full ~11.5s detection budget. The cause was visible in the log: `ws_upgrade_failed … error="websocket: response does not implement http.Hijacker"`. **A metrics middleware wrapped `ResponseWriter` without forwarding `Hijack()`, so every WebSocket upgrade on `/grpc` returned 500 and no tunnel could be established** — the pings had nothing to traverse, so both tests sat until they timed out. Fixed in `c0501ed`; both now pass (`ok internal/app 18.284s`). |
+| **What that defect cost, and the test that was missing** | The failure surfaced as two tunnel tests timing out eleven seconds later, rather than as "the middleware broke the socket". A direct assertion — that the `ResponseWriter` reaching a handler through the full middleware chain still implements `http.Hijacker` and `http.Flusher` — fails instantly and names the cause. That test did not exist and is now being written. `Flusher` matters independently: `/stream` serves live-view frames as `multipart/x-mixed-replace` and cannot deliver them without it. |
+| **The guards went red and green again inside two minutes** | A run at 03:09 showed `repository methods take Scope` failing on **19** methods with no `unscopedByDesign` entry, all in the newest code. All 19 were then verified individually as legitimately global — the login ledger and reset tokens precede identity, `ScopeForAPIToken`/`ScopeForDevice` *return* a Scope, `ScopesToDerive` produces the set of them, `RecordOutlinks` keys on globally-shared items, `ReconcileUnread` is a maintenance sweep. **No tenant-isolation hole.** Commit `749bd81` at 03:10:34 registered all 19 with written reasons, and a fresh `go run ./internal/tools/guards .` now exits 0 on all five. |
+| **The `no SQL` guard hit was never real** | It came from `tq3/main.go`, an untracked scratch program at the repo root. The guard deliberately scans only git-tracked files, so a real run never saw it. Running a **stale `guards.exe`** from the repo root did. CI is unaffected — it runs `go run ./internal/tools/guards .` fresh. |
+| **The full suite has a build cascade** | One run in three failed to build **17 packages** at once — every one of them downstream of `internal/store`. The shape of a single shared dependency failing, not seventeen problems. Intermittent; under investigation. |
+| **CI would have caught all of it** | The workflow gates on `go build`, the wasm client build, native *and* wasm `go vet`, `-race` on `internal/jobs` and `internal/store`, staticcheck, govulncheck, the guards, `buf breaking`, and the size ratchet. It is well built. The failures above are therefore not a CI design gap. |
+
+**The transferable lesson, and it caught me twice in one session:** `cmd | tail` reports the exit code of
+`tail`. Any script or agent judging a suite through a pipe will report green over red. Capture the exit
+code directly.
+
+## What a testing campaign found, 2026-07-27
+
+Sixteen real defects, thirteen fixed. Listed because the *distribution* is the useful part.
+
+| Severity | Defect |
+|---|---|
+| **Unauthenticated DoS** | A crafted `Content-Type` on any subscribed feed crashed the whole server on the next poll. `strings.ToLower` is not length-preserving — a lone `0xEF` becomes a 3-byte U+FFFD — so an index found in the lowercased copy ran off the end of the original. Compounding it: **the poll goroutines had no `recover()` at all**, so any panic below them took the process down. Both fixed. |
+| **Security** | `<base href="weird:">` was adopted as a resolution base without a scheme check, silently disabling *all* asset rewriting — sending the reader's browser and IP straight to the publisher and defeating the blocked-origin tier. Reachable by any hostile page. |
+| **Two features dead** | A metrics middleware embedded `http.ResponseWriter` by value, which promotes only that interface's methods — so `Hijacker` and `Flusher` were lost. No `/grpc` WebSocket upgrade could complete and `/stream` could not flush frames. |
+| **Thirteen stale surfaces** | A `ui.PostAsync` issued from a goroutine spawned *inside* an executing `PostAsync` callback never schedules a render. State lands; the DOM freezes. Hit `markAllRead`, `subscribeURL`, `refresh`, `followPage`, four category operations, `patchFeed`, `patchTag`, `unsubscribe`, `undoMarkAll`, and — worst — `addTag`, where a **server-confirmed tag vanished** from the chip. |
+| **Correctness** | Stale `ui.State` read in a mount-only keyboard closure broke `j`/`k` navigation · `firstWords` emitted invalid UTF-8 into every Notes-row preview · `hostOf` mangled bracketed IPv6 · a non-idempotent CSS scanner invented a closing paren · three missing empty states · a hint pointing at a removed control. |
+
+**Where the bugs were.** Ten packages assumed to be the riskiest — the security and auth layer — were already thoroughly tested and yielded **zero** defects. `client/view`, 12,660 lines with no tests at all, yielded two on first contact. Fuzzing packages that had none yielded four more. The correlation was not with how dangerous the code sounded; it was with whether anything had ever executed it.
+
+**A framework question left open.** The nested-`PostAsync` symptom matches **H11** above. Reading the framework found `ui.PostAsync` itself probably sound — the inbox re-arms correctly — but two plausible mechanisms one layer down: `GoUseState`'s setter short-circuits on `fastEqual`, so a write that changes no value schedules nothing; and `resolveOwnedFiberTarget` can fail to remap a captured fiber and schedule nothing while the value has already been written. `reader.go`'s own `bumpList`/`revRef` workaround independently documents this symptom, which is evidence the team hit it before without naming it.
+
 ## Behavioural defects
 
 | | Symptom | Ref |
