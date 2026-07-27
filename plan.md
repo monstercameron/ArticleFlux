@@ -2799,6 +2799,24 @@ The article pane holds a **sequence** of articles, not one:
   control, so time-per-item while scanning stays roughly constant. One 4,000-word essay between two
   headlines makes a feed unpredictable to scan, and scanning is what the stream is for.
 
+**Movement the APP causes is not evidence of reading** *(fixed 2026-07-27)*. The two rules above —
+seed the article before the clicked one, hold the scroll across a prepend — both put an article the
+reader has never seen above the fold, and "scrolled completely past" is one of the two ways this app
+marks something read. So opening row *n* and then row *n+2* marked **all three** read, and credited a
+`Completed` engagement for the middle one: an article that was never on screen for a frame scored as
+finished. Reported by Cam as *"isn't granular enough"*, which is the polite version.
+
+The fix is a suppression set (`skipPast`), not a weaker rule about scrolling. Three sites put an id in
+— the seeded predecessor on a fresh open, everything the travel passes over on a jump inside the
+stream, and the article a prepend inserts — and **one site takes it out again: becoming the topmost
+article.** Scrolling up into something *is* reading it, so the suppression has to end exactly there;
+without that, a jumped-over article could never be marked read by scrolling again, which is the same
+bug with the sign flipped.
+
+> Rejected: a time window around the programmatic scroll. It makes correctness depend on how fast the
+> browser settles a smooth scroll, which is not a property this can be built on. The ids are known at
+> the moment the app moves them, so name them.
+
 **Both scroll triggers re-arm on GROWTH, not only on position.** A purely positional edge fires once
 and goes quiet, because appending keeps the reader inside the trigger zone — downward reading stopped
 dead after exactly one article. If the container got taller since the last fire, the previous request
