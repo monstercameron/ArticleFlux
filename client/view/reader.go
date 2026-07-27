@@ -3516,9 +3516,9 @@ func Reader(p readerProps) ui.Node {
 		setLook(next)
 	}
 	// Toggling writes the RESOLVED opposite, not the opposite of the stored
-	// value: with nothing stored on a machine that asks for reduced motion, the
-	// stored value is "" and its opposite is meaningless — what the reader is
-	// asking for is the opposite of what they can see.
+	// value: the stored value can be "" (the default) or "system", and the
+	// opposite of either is meaningless — what the reader is asking for is the
+	// opposite of what they can see.
 	act.Get().toggleMotion = func() {
 		next := look.Get()
 		if next.motionOn() {
@@ -3530,7 +3530,7 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().motionSystem = func() {
 		next := look.Get()
-		next.Motion = ""
+		next.Motion = design.MotionSystem
 		setLook(next)
 	}
 

@@ -248,15 +248,13 @@ func TestEveryDurationIsGated(t *testing.T) {
 	}
 }
 
-// TestMotionGateIsEmitted pins the three rules that make the switch work, in
-// both directions. Dropping the `full` rule is the subtle one: motion would
-// still turn OFF, so the bug only shows for a reader whose machine asks for
-// reduced motion and who then turns animations back on — and it would look like
-// the setting simply does not work.
+// TestMotionGateIsEmitted pins the two rules that make the switch work, in both
+// directions. Dropping the `full` rule is the subtle one: motion would still
+// turn OFF, so the bug only shows for a reader who turned animations back on
+// after reducing them — and it would look like the setting does not work.
 func TestMotionGateIsEmitted(t *testing.T) {
 	sheet := sheetText(t)
 	for _, want := range []string{
-		"prefers-reduced-motion",
 		`html[data-motion='reduced']`,
 		`html[data-motion='full']`,
 		"--mo:0",
@@ -265,6 +263,20 @@ func TestMotionGateIsEmitted(t *testing.T) {
 		if !strings.Contains(sheet, want) {
 			t.Errorf("the motion gate is missing %q from the emitted sheet", want)
 		}
+	}
+}
+
+// The sheet must NOT decide motion from the operating system.
+//
+// Full motion is the default (design.MotionFull), and the OS preference is
+// honoured only when a reader picks "follow my system setting" — which is
+// resolved in Go and arrives as an ordinary data-motion value. A media query
+// here would outrank that silently: it would zero --mo for everyone who had
+// never opened the Appearance screen, while the screen went on reporting full
+// motion, because nothing in Go would know the sheet had overruled it.
+func TestTheSheetDoesNotReadTheOSMotionPreference(t *testing.T) {
+	if sheet := sheetText(t); strings.Contains(sheet, "prefers-reduced-motion") {
+		t.Error("the sheet gates motion on prefers-reduced-motion; that decision belongs to appearance.motionAttr")
 	}
 }
 

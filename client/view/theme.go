@@ -79,9 +79,10 @@ func applyAppearance(a appearance) {
 	// scrollbar and a dark caret in every text field.
 	platform.SetRootVar("color-scheme", string(t.Tone))
 	platform.SetRootAttr("data-tone", string(t.Tone))
-	// "" removes the attribute, which is how a reader hands the decision back to
-	// their operating system.
-	platform.SetRootAttr("data-motion", a.Motion)
+	// Always one of the two attribute values, never absent: the reader's choice
+	// and the OS resolution both end up here, so the DOM says what is actually
+	// in force rather than leaving it to be inferred from a missing attribute.
+	platform.SetRootAttr("data-motion", a.motionAttr())
 	mirrorToBoot(t)
 }
 
@@ -200,13 +201,31 @@ func appearanceFromPrefs(p map[string]string) appearance {
 // machine where nothing is moving is a toggle that is lying.
 func (a appearance) motionOn() bool {
 	switch a.Motion {
-	case design.MotionFull:
-		return true
 	case design.MotionReduced:
 		return false
-	default:
+	case design.MotionSystem:
 		return !platform.PrefersReducedMotion()
+	default:
+		// Unset and MotionFull are the same answer, and unset is the one that
+		// matters: full motion is what a reader gets until they say otherwise,
+		// on every machine. See design.MotionFull for why the OS preference is
+		// a choice here rather than the default.
+		return true
 	}
+}
+
+// motionAttr is what goes on <html>: one of the two values the sheet knows.
+//
+// MotionSystem is resolved HERE rather than in CSS, which is the whole reason
+// the sheet no longer carries a prefers-reduced-motion rule. Resolving in Go
+// means one answer, computed once, visible in the DOM — instead of a media
+// query that silently outranks an unset preference and leaves the Appearance
+// screen describing a state the sheet is not in.
+func (a appearance) motionAttr() string {
+	if a.motionOn() {
+		return design.MotionFull
+	}
+	return design.MotionReduced
 }
 
 // --- the screen ------------------------------------------------------------------
@@ -269,11 +288,15 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 		setRow(tr.T("appearance", "motionLabel"),
 			tr.T("appearance", "motionHint"),
 			glyphChip("toggle-motion", glyphAction, motionLabel, motionOn)),
-		ui.If(a.Motion != "", func() ui.Node {
+		// Offered whenever the reader is NOT already following the machine —
+		// including the default, which is full motion rather than whatever the OS
+		// says. Handing the decision to the system is a choice you can make here;
+		// it is no longer the state you are in for never having looked.
+		ui.If(a.Motion != design.MotionSystem, func() ui.Node {
 			return html.Div(html.Props{Class: "set-actions"},
 				glyphChip("motion-system", glyphRefresh, tr.T("appearance", "motionFollow"), false))
 		}),
-		ui.If(a.Motion == "", func() ui.Node {
+		ui.If(a.Motion == design.MotionSystem, func() ui.Node {
 			return html.Div(html.Props{Class: "set-note"},
 				html.Text(systemMotionNote(tr, motionOn)))
 		}),

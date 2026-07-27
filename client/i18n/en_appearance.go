@@ -30,7 +30,7 @@ func init() {
 		"motionGroup":     "Motion",
 		"motionGroupHint": "Movement here is used to say where you are and what changed — nothing moves for decoration.",
 		"motionLabel":     "Animations",
-		"motionHint":      "Reduce it and every transition takes zero time: the interface arrives at the state it would have animated to, immediately.",
+		"motionHint":      "Full by default, on every machine. Reduce it and every transition takes zero time: the interface arrives at the state it would have animated to, immediately.",
 		"motionFull":      "Full",
 		"motionReduced":   "Reduced",
 		"motionFollow":    "Follow my system setting",

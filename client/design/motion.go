@@ -64,10 +64,21 @@ import "github.com/monstercameron/GoWebComponents/v5/css"
 // forever changing nothing. Same switch, no spec corner.
 const (
 	// MotionFull and MotionReduced are the two values of the `data-motion`
-	// attribute on <html>. The attribute is absent until the reader chooses, and
-	// while it is absent the OS preference decides — see motionGate.
+	// attribute on <html>, and the only two the sheet knows about.
+	//
+	// FULL IS THE DEFAULT, including on a machine whose OS asks for reduced
+	// motion. The movement in this application is not decoration — it says which
+	// pane you came from and what changed — so an interface that silently drops
+	// it is one that has quietly stopped explaining itself, and the reader is
+	// never told that happened. The OS preference is still reachable, as a
+	// choice: MotionSystem asks for it by name.
 	MotionFull    = "full"
 	MotionReduced = "reduced"
+	// MotionSystem is a stored preference rather than an attribute value. It
+	// means "resolve against the OS at apply time", and what lands on <html> is
+	// the resolved MotionFull or MotionReduced — the sheet never sees this
+	// string, which is why it is not part of the gate.
+	MotionSystem = "system"
 )
 
 // MotionVars are the motion half of the `:root` block, in the same ordered
@@ -109,25 +120,28 @@ const (
 	slow = "var(--t3) var(--e-out)"
 )
 
-// motionGate emits the switch itself: what turns `--mo` off, and in what order
-// of authority.
+// motionGate emits the switch itself: what turns `--mo` off, and what turns it
+// back on.
 //
-//	no attribute, OS says reduce   off   we were never asked, and the machine was
-//	data-motion="reduced"          off   asked, and the answer was less
-//	data-motion="full"             on    asked, and the answer was more
+//	no attribute                   ON    the default, and the point of this file
+//	data-motion="reduced"          off   the reader asked for less
+//	data-motion="full"             on    the reader asked for more
 //
-// The third row WINS over the OS preference, in that direction specifically: a
-// reader who found the switch and turned motion back on has said something more
-// specific about this application than their system-wide default says about
-// every application.
+// THE OS PREFERENCE IS NOT IN THIS TABLE, and that is the change: a
+// `(prefers-reduced-motion: reduce)` rule used to sit in `:root` and zero `--mo`
+// for anyone who had never opened the Appearance screen. It meant the default
+// experience on those machines was an application whose transitions all took
+// zero time — which is a legitimate thing to ask for and the wrong thing to
+// assume, because the movement here carries meaning rather than decoration.
 //
-// Precedence falls out of specificity rather than order: `html[data-motion=…]`
-// is (0,1,1) and the `:root` block inside the media query is (0,1,0), so the
-// explicit choice wins wherever it exists, in both directions, no matter how the
-// sheet is concatenated.
+// It is still honoured when it is asked for: MotionSystem resolves against the
+// OS in Go (client/view/theme.go) and writes the answer as one of the two
+// attribute values below. So the signal reaches the sheet through a choice
+// instead of behind one, and the reader can see which state they are in.
+//
+// Both rules are `html[data-motion=…]` at the same specificity, so they cannot
+// fight; the base `--mo: 1` in MotionVars is what an absent attribute lands on.
 func motionGate(r func(string, string) css.Rule) {
-	css.Global(":root", css.Media(css.RawMedia("(prefers-reduced-motion: reduce)"),
-		css.Custom("mo", "0"))...)
 	css.Global("html[data-motion='"+MotionReduced+"']", css.Custom("mo", "0"))
 	css.Global("html[data-motion='"+MotionFull+"']", css.Custom("mo", "1"))
 
