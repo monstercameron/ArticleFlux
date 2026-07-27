@@ -63,6 +63,36 @@ var (
 	WebSubPerSource  = Rule{Name: "websub callback", Per: time.Minute, Limit: 120, Burst: 20}
 	PackBuildPerUser = Rule{Name: "pack build", Per: time.Hour, Limit: 10, Burst: 3}
 	DefaultPerUser   = Rule{Name: "requests", Per: time.Minute, Limit: 600, Burst: 60}
+
+	// ProxyPerClient covers /asset and /p — TODO 6.14 and 6.15 both record a
+	// per-user rate limit as owed to 7.3d.
+	//
+	// The rate is §20.7's "everything else" backstop. The BURST is not from the
+	// table, because the table has no row for a surface where one legitimate
+	// user action produces hundreds of requests at once, and getting that
+	// number wrong does not throttle an abuser — it breaks the images in an
+	// article and looks like the proxy is broken.
+	//
+	// So it was measured rather than chosen. Running the real rewriter over
+	// every article body in a 3,878-item corpus, counting the asset URLs each
+	// one mints:
+	//
+	//	with any assets   1,353 of 3,878 (35%)
+	//	mean              3.0
+	//	p50 / p90 / p95   0 / 6 / 13
+	//	p99               43
+	//	MAX               396
+	//
+	// The distribution is the point. Almost every article is free, and the tail
+	// is enormous — a photo essay mints 396 capabilities that the browser
+	// requests in one go. A burst sized on the p99 would work for a year and
+	// then break the one article somebody actually wanted to look at.
+	//
+	// 500 clears the corpus maximum with room, so no article that exists here
+	// can trip it, while a runaway client is still held to the sustained 10 a
+	// second. Both halves matter: the burst is what makes it invisible to a
+	// reader, and the rate is what makes it a limit at all.
+	ProxyPerClient = Rule{Name: "proxy", Per: time.Minute, Limit: 600, Burst: 500}
 )
 
 // rate returns tokens per second.
