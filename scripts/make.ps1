@@ -15,7 +15,13 @@
     plus `tools` (build gwc.exe), `dev` (build + serve, the loop Cam watches) and
     `clean`.
 
-    Usage:  ./make.ps1 <verb> [-Port 9000]
+    Usage:  ./scripts/make.ps1 <verb> [-Port 9000]
+
+    It lives in scripts/ but every path it touches is the REPOSITORY root, which
+    is $PSScriptRoot's parent — see $Root below. Nothing in here may use
+    $PSScriptRoot directly: that is scripts/, and the difference is silent. A
+    path built from the wrong one produces scripts/bin/tidings.exe, which is a
+    build that succeeds into a directory nobody serves from.
 #>
 
 [CmdletBinding()]
@@ -30,13 +36,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
 
-$GWC       = Join-Path $PSScriptRoot 'bin\gwc.exe'
-$GWCSource = Join-Path (Split-Path $PSScriptRoot -Parent) 'GoWebComponents'
-$ClientApp = Join-Path $PSScriptRoot 'client\app'
-$WebSrc    = Join-Path $PSScriptRoot 'web'
-$OutDir    = Join-Path $PSScriptRoot 'bin\web'
+# The repository root, one level up from scripts/. Every path below hangs off
+# this and never off $PSScriptRoot, and the working directory is set to it so
+# that `go build ./...`, `buf lint` and the guards resolve the way they do when
+# a person runs them by hand.
+$Root = Split-Path $PSScriptRoot -Parent
+Set-Location $Root
+
+$GWC       = Join-Path $Root 'bin\gwc.exe'
+$GWCSource = Join-Path (Split-Path $Root -Parent) 'GoWebComponents'
+$ClientApp = Join-Path $Root 'client\app'
+$WebSrc    = Join-Path $Root 'web'
+$OutDir    = Join-Path $Root 'bin\web'
 $WasmOut   = Join-Path $OutDir 'app.wasm'
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -157,7 +169,7 @@ function Invoke-Lint {
 function Invoke-Migrate {
     Ensure-Build
     Step 'tidings migrate'
-    Invoke-Checked 'migrate' { & (Join-Path $PSScriptRoot 'bin\tidings.exe') migrate }
+    Invoke-Checked 'migrate' { & (Join-Path $Root 'bin\tidings.exe') migrate }
 }
 
 function Ensure-Build { if (-not (Test-Path 'bin\tidings.exe')) { Invoke-Build } }
@@ -165,7 +177,7 @@ function Ensure-Build { if (-not (Test-Path 'bin\tidings.exe')) { Invoke-Build }
 function Invoke-Run {
     Invoke-Build
     Step "serving on http://127.0.0.1:$Port"
-    & (Join-Path $PSScriptRoot 'bin\tidings.exe') serve -addr "127.0.0.1:$Port"
+    & (Join-Path $Root 'bin\tidings.exe') serve -addr "127.0.0.1:$Port"
 }
 
 switch ($Target) {
@@ -182,7 +194,7 @@ switch ($Target) {
         Invoke-Build
         Invoke-Wasm
         Step 'playwright'
-        Push-Location (Join-Path $PSScriptRoot 'e2e')
+        Push-Location (Join-Path $Root 'e2e')
         try {
             if (-not (Test-Path 'node_modules')) { Invoke-Checked 'npm install' { npm install } }
             Invoke-Checked 'playwright' { npx playwright test }
@@ -197,17 +209,20 @@ switch ($Target) {
         Write-Host @'
 Tidings task runner (TODO 1.4)
 
-  ./make.ps1 tools      build gwc.exe from ../GoWebComponents  (D0: no published tag)
-  ./make.ps1 gen        buf lint + buf generate -> internal/pb
-  ./make.ps1 build      go build -> bin/tidings.exe
-  ./make.ps1 test       go test ./...
-  ./make.ps1 wasm       build the client into bin/web, prints the G5 size
-  ./make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards
-  ./make.ps1 migrate    apply migrations
-  ./make.ps1 run        build, then serve on :9000
-  ./make.ps1 dev        wasm + run          <- the loop to leave open
-  ./make.ps1 e2e        build, then run the Playwright suite (desktop + phone)
-  ./make.ps1 clean      remove bin/ (which is all generated output)
+  ./scripts/make.ps1 tools      build gwc.exe from ../GoWebComponents  (D0: no published tag)
+  ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
+  ./scripts/make.ps1 build      go build -> bin/tidings.exe
+  ./scripts/make.ps1 test       go test ./...
+  ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
+  ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards
+  ./scripts/make.ps1 migrate    apply migrations
+  ./scripts/make.ps1 run        build, then serve on :9000
+  ./scripts/make.ps1 dev        wasm + run          <- the loop to leave open
+  ./scripts/make.ps1 e2e        build, then run the Playwright suite (desktop + phone)
+  ./scripts/make.ps1 clean      remove bin/ (which is all generated output)
+
+Run it from anywhere: it sets the working directory to the repository root
+itself, so ./scripts/make.ps1 and scripts/make.ps1 behave identically.
 
 Override the port with -Port; 9000 is the default because that is the tab Cam
 has open.

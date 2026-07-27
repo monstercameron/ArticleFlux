@@ -77,16 +77,16 @@ same deal.
 ## Sixty seconds to a running reader
 
 ```powershell
-./make.ps1 build
-./bin/tidings.exe seed          # subscribe to a starter set and fetch it
-./make.ps1 dev                  # http://127.0.0.1:9000
+./scripts/make.ps1 build
+./bin/tidings.exe seed    # subscribe to a starter set and fetch it
+./scripts/make.ps1 dev    # http://127.0.0.1:9000
 ```
 
 ```powershell
-./make.ps1 dev      # build the client and serve it
-./make.ps1 e2e      # Playwright, desktop + phone, against a real server
-./make.ps1 test     # go test ./...
-./make.ps1 lint     # go vet, buf lint, and the four structural guards
+./scripts/make.ps1 dev      # build the client and serve it
+./scripts/make.ps1 e2e      # Playwright, desktop + phone, against a real server
+./scripts/make.ps1 test     # go test ./...
+./scripts/make.ps1 lint     # go vet, buf lint, and the four structural guards
 ```
 
 No Node for the app. No Docker. No WSL. Node appears exactly once, in the e2e suite, because

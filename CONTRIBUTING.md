@@ -6,10 +6,10 @@ written down in `plan.md`; what follows is the part you need before your first c
 ## Before you write anything
 
 ```powershell
-./make.ps1 tools     # buf and the protoc plugins
-./make.ps1 build
+./scripts/make.ps1 tools     # buf and the protoc plugins
+./scripts/make.ps1 build
 ./bin/tidings.exe seed
-./make.ps1 dev       # http://127.0.0.1:9000
+./scripts/make.ps1 dev       # http://127.0.0.1:9000
 ```
 
 You need Go 1.26+ and a sibling checkout of
@@ -60,7 +60,7 @@ both are security properties, and both have a test that must be extended alongsi
 
 ## The four structural guards
 
-`./make.ps1 lint` runs `internal/tools/guards`, which fails the build on any of:
+`./scripts/make.ps1 lint` runs `internal/tools/guards`, which fails the build on any of:
 
 1. **A `.css` file anywhere in the tree.** All styling is authored in Go through the GWC `css`
    package. There is no escape hatch, because one stylesheet becomes ten.
@@ -78,8 +78,8 @@ the conversation is about the decision, not about the guard.
 `proto/tidings/v1` is the only contract, and both ends are generated from it.
 
 ```powershell
-./make.ps1 gen       # buf generate
-./make.ps1 lint      # buf lint + buf breaking
+./scripts/make.ps1 gen       # buf generate
+./scripts/make.ps1 lint      # buf lint + buf breaking
 ```
 
 **Additive-only within v1.** The client is cached by a Service Worker, so old clients exist in the
@@ -91,8 +91,8 @@ omitting them.
 ## Tests
 
 ```powershell
-./make.ps1 test      # go test ./...
-./make.ps1 e2e       # Playwright, desktop + phone, against a real server
+./scripts/make.ps1 test      # go test ./...
+./scripts/make.ps1 e2e       # Playwright, desktop + phone, against a real server
 ```
 
 - Native Go tests are the default. `syscall/js` is quarantined precisely so most of the client can be
@@ -123,5 +123,5 @@ Fill in the template. It asks four things, and all four are things a reviewer ca
 diff: which decision this implements, what you decided that the spec did not cover, how it was
 verified, and whether the contract moved.
 
-Run `./make.ps1 lint` and `./make.ps1 test` before opening it. CI runs both, plus the e2e suite,
+Run `./scripts/make.ps1 lint` and `./scripts/make.ps1 test` before opening it. CI runs both, plus the e2e suite,
 staticcheck, `buf breaking` and the size ratchet — but finding it locally is faster for everyone.

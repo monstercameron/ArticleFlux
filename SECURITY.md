@@ -38,7 +38,7 @@ If you are adding an outbound call, it goes through the guard. There is no fast 
 
 ### The dev server's missing login is tied to the bind address
 
-`./make.ps1 dev` serves without authentication so that the loop stays short. That is only ever true
+`./scripts/make.ps1 dev` serves without authentication so that the loop stays short. That is only ever true
 on a loopback bind — binding a real interface turns it off, because an internet-facing instance with
 it on would be an open reader. The behaviour is coupled to the bind on purpose, so that "it worked
 in dev" cannot ship.

@@ -68,7 +68,7 @@ export default async function globalSetup() {
   const bin = join(repo, 'bin', 'tidings.exe');
   if (!existsSync(bin)) throw new Error(`build the server first: ${bin} is missing`);
   if (!existsSync(join(repo, 'bin', 'web', 'app.wasm'))) {
-    throw new Error('build the client first: bin/web/app.wasm is missing (./make.ps1 wasm)');
+    throw new Error('build the client first: bin/web/app.wasm is missing (./scripts/make.ps1 wasm)');
   }
 
   const urls = [
