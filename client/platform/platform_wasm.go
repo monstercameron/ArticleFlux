@@ -1398,7 +1398,20 @@ func ScrollIntoView(selector string) {
 		if el := doc.Call("querySelector", selector); el.Truthy() {
 			opts := js.Global().Get("Object").New()
 			opts.Set("block", "center")
-			opts.Set("behavior", "auto")
+			// Smooth, because this is the LIST keeping step with the article
+			// being read: the row it is moving to is one or two rows away and
+			// already on screen, so there is something to travel between and the
+			// movement is what says which way the list went. An instant jump at
+			// the same moment the reading pane is scrolling reads as the list
+			// having been replaced.
+			//
+			// The app's own motion setting decides, falling back to the OS —
+			// same bit the stylesheet is gated on, read from the same attribute.
+			behavior := "smooth"
+			if MotionReduced() {
+				behavior = "auto"
+			}
+			opts.Set("behavior", behavior)
 			el.Call("scrollIntoView", opts)
 		}
 		return nil

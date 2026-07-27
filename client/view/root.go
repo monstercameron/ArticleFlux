@@ -63,6 +63,11 @@ func Root() ui.Node {
 	// The connection, once someone is authenticated. Login dials it and hands it
 	// over so the reader does not open a second tunnel.
 	authed := ui.UseRef[*data.Client](nil)
+	// catalogReady exists only to force one re-render after a translated catalog
+	// lands. The locale has not changed at that point — it was already set — so
+	// nothing else would invalidate the tree, and the reader would sit looking
+	// at English until they touched something.
+	catalogReady := ui.UseState(0)
 
 	tunnel := data.TunnelURL(platform.Origin())
 
@@ -106,23 +111,6 @@ func Root() ui.Node {
 				return
 			}
 			_, err = c.WhoAmI(context.Background())
-			// The interface language is restored HERE, before the reader is
-			// mounted, and that placement is the whole design.
-			//
-			// i18n.T is a plain function reading a package-level catalog (see
-			// client/i18n), so a component that has already rendered does not
-			// re-render when the catalog changes. Loading a translation after
-			// the reader mounts would leave the shell in English and only the
-			// bits that happened to re-render in French — visibly worse than
-			// not translating at all. Mounting after the catalog is in place
-			// makes the first paint the right language.
-			//
-			// It is deliberately best-effort and non-blocking on failure: a
-			// server that cannot translate today must still hand the reader
-			// their feeds, in English, rather than a splash screen.
-			if err == nil {
-				restoreLocale(c)
-			}
 			ui.PostAsync(func() {
 				if err != nil {
 					// Two different failures land here and they are deliberately
@@ -145,16 +133,80 @@ func Root() ui.Node {
 		return nil
 	}, []any{})
 
+	// The interface language.
+	//
+	// GWC's own hook does the whole job: reads localStorage under
+	// i18n.PersistenceKey, clamps to the supported set, writes back on change,
+	// and — because it is built on ui.UseState — re-renders when Set is called.
+	// That last property is why switching language is a re-render and not a
+	// page reload.
+	//
+	// DetectBrowser is off. Guessing from navigator.language would put a reader
+	// whose browser is set to French into a French UI on first boot, which
+	// costs a Smart+ translation nobody asked for and bills the instance. The
+	// language is a choice someone makes, once, on the Smart+ tab.
+	locale := i18n.UseLocale(i18n.LocaleOptions{
+		InitialLocale:    i18n.DefaultLocale,
+		FallbackLocale:   i18n.DefaultLocale,
+		SupportedLocales: i18n.SupportedLocales(),
+		PersistenceKey:   i18n.PersistenceKey,
+	})
+
+	// A saved non-English locale needs its catalog fetched before anything below
+	// renders in it. Guarded by a Ref rather than a dep list, for the reason the
+	// WhoAmI effect above records; re-runs when the locale changes because that
+	// is exactly when a different catalog is wanted.
+	//
+	// Best-effort: a server that cannot translate today must still hand the
+	// reader their feeds, in English, rather than a splash screen. Import is
+	// idempotent, and a locale whose catalog never arrives simply falls back to
+	// English key by key.
+	fetched := ui.UseRef("")
+	ui.UseEffect(func() func() {
+		want := locale.Get()
+		c := authed.Get()
+		if c == nil || want == "" || want == i18n.DefaultLocale || fetched.Get() == want {
+			return nil
+		}
+		fetched.Set(want)
+		go func() {
+			// force=false, so this is a server-side cache read on every boot
+			// after the first. A cold cache — the English changed in a new
+			// build — pays for one re-translation and is then warm for every
+			// other device too.
+			_, _ = c.TranslateUI(context.Background(), want, false)
+			// PostAsync so the re-render happens on the frame loop with the
+			// catalog already in the bundle. Setting the locale to what it
+			// already is would not re-render, so this nudges the ref instead.
+			ui.PostAsync(func() { catalogReady.Set(catalogReady.Get() + 1) })
+		}()
+		return nil
+	}, []any{locale.Get(), authed.Get() != nil})
+
+	// The document's own language and direction. Not decoration: they decide
+	// hyphenation, quotation marks, the spellchecker, and which way the logical
+	// properties the whole sheet is written in actually point.
+	ui.UseEffect(func() func() {
+		platform.SetRootAttr("lang", locale.Get())
+		platform.SetRootAttr("dir", string(i18n.DirectionFor(locale.Get())))
+		// And the splash's words, for the next load — see mirrorBootCopy. It
+		// reads through i18n.At rather than a Runtime, because an effect body
+		// runs outside the render and UseI18n is a hook.
+		mirrorBootCopy(i18n.At(locale.Get()))
+		return nil
+	}, []any{locale.Get()})
+
 	// Every hook above this line runs on every render, unconditionally. The
-	// branch is here, at the end, and only chooses which child to mount — GWC
-	// matches hooks positionally, so a conditional hook binds to the wrong slot,
-	// and a child component mounted conditionally gets its own slot sequence and
-	// is safe.
+	// branch is below, inside the Provider's child, and only chooses which
+	// component to mount — GWC matches hooks positionally, so a conditional hook
+	// binds to the wrong slot, and a child mounted conditionally gets its own
+	// slot sequence and is safe.
+	var child ui.Node
 	switch phase.Get() {
 	case phaseReader:
-		return ui.CreateElement(Reader, readerProps{client: authed.Get()})
+		child = ui.CreateElement(Reader, readerProps{client: authed.Get()})
 	case phaseLogin:
-		return ui.CreateElement(Login, loginProps{
+		child = ui.CreateElement(Login, loginProps{
 			tunnel: tunnel,
 			onSuccess: func(c *data.Client) {
 				authed.Set(c)
@@ -162,54 +214,29 @@ func Root() ui.Node {
 			},
 		})
 	default:
-		return bootSplash()
+		child = ui.CreateElement(bootSplash)
 	}
-}
 
-// localeKey is where the chosen interface language is remembered on this
-// device.
-//
-// localStorage rather than server prefs, and that is not laziness. The language
-// has to be known BEFORE the reader mounts, and reading it from the server
-// would put a round trip in front of the first paint for every reader —
-// including the overwhelming majority who never leave English. A device-local
-// value costs nothing to read and is the right scope anyway: which language you
-// read this app in is a property of the machine you are sitting at, like the
-// theme.
-//
-// It is written by the language picker, immediately before it reloads.
-const localeKey = "articleflux.locale"
-
-// restoreLocale loads the saved interface language, blocking until it is in
-// place or has failed.
-//
-// Synchronous inside the boot goroutine on purpose: its caller has not mounted
-// the reader yet, and the entire point is that the catalog is complete before
-// the first component reads it. i18n.T is a plain function over a package-level
-// catalog, so a component that has already rendered will NOT pick up a
-// translation that lands later — loading it after the mount would leave the
-// shell in English with only the re-rendered parts translated.
-//
-// Every failure is swallowed to English. A translation that cannot be fetched
-// is a cosmetic loss; a reader who cannot see their feeds because a language
-// model was unavailable is the app being broken by an optional feature.
-func restoreLocale(c *data.Client) {
-	want := platform.LocalGet(localeKey)
-	if want == "" || want == i18n.DefaultLocale {
-		return
-	}
-	// force=false, so this is a server-side cache read on every boot after the
-	// first. A cold cache — the English changed in a new build — pays for one
-	// re-translation and is then warm for every other device too.
-	if _, err := c.TranslateUI(context.Background(), want, false); err != nil {
-		return
-	}
-	i18n.SetLocale(want)
-	// The document's own language and direction, which are not decoration: they
-	// decide hyphenation, quotation marks, the spellchecker, and which way the
-	// logical properties the whole sheet is written in actually point.
-	platform.SetRootAttr("lang", want)
-	platform.SetRootAttr("dir", string(i18n.Direction()))
+	// **The Provider is mounted HERE, in Root, and that placement is load-bearing.**
+	//
+	// When a Provider fiber re-renders, the reconciler compares the old and new
+	// context values and, if they differ, calls markSubtreeNeedsUpdate on the
+	// whole subtree — which is checked BEFORE any props comparison, so it
+	// defeats every memo bailout below it. i18n.Runtime is a struct of func
+	// fields, so it is not Comparable and the comparison falls through to
+	// reflect.DeepEqual, where two non-nil funcs are NEVER equal. The value
+	// therefore reads as "changed" on every single render of this component.
+	//
+	// That is exactly what we want on a language switch and a disaster anywhere
+	// else, so it goes in the component that re-renders least: Root has two
+	// pieces of state, `phase` and the locale, and both are events the entire
+	// screen should redraw for. Mounting it inside Reader instead would mark the
+	// 151-row rail and the virtualised 3,600-item list dirty on every keystroke.
+	return i18n.Provider(i18n.ProviderProps{
+		Locale: locale,
+		Bundle: i18n.Bundle(),
+		Child:  child,
+	})
 }
 
 // initialPhase loads the stored credential and hands the decision to the server.
@@ -232,10 +259,15 @@ func initialPhase() rootPhase {
 // are otherwise indistinguishable from outside. That is not a hypothetical
 // tidiness point: it made a check for "is the login screen up?" match the splash
 // mid-check and report the wrong answer. One attribute names the state outright.
+// A component, not a helper called inline. Root builds `child` BEFORE handing it
+// to the Provider, so anything invoked at that point runs outside the context
+// and would read an empty catalog. Mounting it as an element defers the call to
+// reconciliation, under the Provider, where UseI18n resolves.
 func bootSplash() ui.Node {
+	tr := i18n.UseI18n()
 	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "checking"}},
 		html.Div(html.Props{Class: "login-card login-splash"},
-			html.Div(html.Props{Class: "login-mark"}, html.Text(i18n.T("login.mark"))),
+			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 		),
 	)
 }

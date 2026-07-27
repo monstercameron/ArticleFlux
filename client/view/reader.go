@@ -133,21 +133,29 @@ type actions struct {
 	closeAddFeed    func()
 	pickAddFolder   func(id string)
 	toggleAddNewCat func()
-	newCategory     func()
-	openCategory    func(id string)
-	closeCategory   func()
-	saveCategory    func()
-	deleteCategory  func()
-	setFeedFolder   func(sourceID, folderID string)
-	itemByID          func(string) *pb.Item
-	feedByID          func(string) *pb.Feed
-	search            func(string)
+	// The ladder (§11): looking for a feed at an address that is not one, and
+	// what happens when there is not one to find.
+	analyzeSite          func(smart bool)
+	toggleSmartSubscribe func()
+	addCandidate         func(url string)
+	followPage           func()
+	newCategory          func()
+	openCategory         func(id string)
+	closeCategory        func()
+	saveCategory         func()
+	deleteCategory       func()
+	setFeedFolder        func(sourceID, folderID string)
+	itemByID             func(string) *pb.Item
+	feedByID             func(string) *pb.Feed
+	search               func(string)
 
 	// Article-scoped actions carry the id of the article they act on. The
 	// reading pane is a stream, so "the article" is ambiguous in the markup and
 	// has to be named; an empty id means "whichever one is being read", which is
 	// what the keyboard shortcuts pass.
-	rate       func(id string, want int)
+	rate func(id string, want int)
+	// togglePage shows or hides the proxied publisher page for one article.
+	togglePage func(id string)
 	later      func(id string)
 	markUnread func(id string)
 	openExtern func(id string)
@@ -180,10 +188,12 @@ type actions struct {
 	loadStats      func()
 	setLogLevel    func(level string)
 	toggleMarkPast func()
+	// toggleFocus gives the reading pane the whole window, and takes it back.
+	toggleFocus func()
 
 	// Smart+ (§10.5, §18). Every one of these either changes the credential
 	// every Smart+ feature spends, or spends it.
-	loadSmart   func()
+	loadSmart      func()
 	saveSmartKey   func()
 	clearSmartKey  func()
 	saveSmartModel func()
@@ -286,20 +296,45 @@ func intentKey(prefix, id string) string {
 // nobody needs to the second and everybody reads in relative terms — "about a
 // minute" is the whole message, and "1m13.482s" makes a reader parse before
 // they can conclude.
-func shortDuration(d time.Duration) string {
+// Through the `unit` catalogue rather than concatenating a letter: "5m" is
+// English, and a suffix glued onto a number is exactly the shape that breaks in
+// a language where the unit is a word that agrees with it.
+//
+// Each key is written out in full rather than assembled from a prefix, so the
+// catalogue's coverage test can find it. A key built at runtime is a key nobody
+// can grep for, which is exactly the state that test exists to prevent — and
+// "add its prefix to the dynamic allowlist" buys a shorter function by weakening
+// the check for the whole namespace.
+func shortDuration(tr i18n.Runtime, d time.Duration) string {
+	n := func(v float64) i18n.Args { return i18n.Args{"n": strconv.Itoa(int(v))} }
+	// One Namespace handle: every branch reads from `unit`, and NS is what stops
+	// a positional namespace being typo'd at one of four call sites.
+	unit := tr.NS("unit")
 	switch {
 	case d < time.Second:
-		return "<1s"
+		return unit.T("ms", n(float64(d.Milliseconds())))
 	case d < time.Minute:
-		return strconv.Itoa(int(d.Seconds())) + "s"
+		return unit.T("seconds", n(d.Seconds()))
 	case d < time.Hour:
-		return strconv.Itoa(int(d.Minutes())) + "m"
+		return unit.T("minutes", n(d.Minutes()))
 	default:
-		return strconv.Itoa(int(d.Hours())) + "h"
+		return unit.T("hours", n(d.Hours()))
 	}
 }
 
+func traceLoading(l bool, n int) bool {
+	println("TRACE render listProps loading=", l, " items=", n)
+	return l
+}
+
 func Reader(p readerProps) ui.Node {
+	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
+	// top, unconditionally — GWC matches hooks positionally. It is threaded
+	// into the plain helpers below as a parameter rather than put on a props
+	// struct, because Runtime carries func fields and a props struct holding
+	// one compares unequal on every render, which would defeat the memo
+	// bailout this pane depends on.
+	tr := i18n.UseI18n()
 	client := ui.UseState[*data.Client](nil)
 	conn := ui.UseState(data.Connecting)
 	fatal := ui.UseState("")
@@ -397,6 +432,10 @@ func Reader(p readerProps) ui.Node {
 	extending := ui.UseState("")
 	// expanded is which long articles have been opened out past the clamp.
 	expanded := ui.UseState(map[string]bool{})
+	// pageOpen is which articles are showing the proxied publisher page in the
+	// reading column. Not persisted: it holds a live iframe, and restoring one
+	// on load would fetch a page nobody asked for yet.
+	pageOpen := ui.UseState(map[string]bool{})
 	// Which articles have their note panel opened out. Closed is the default and
 	// the absent value: in a continuous stream this control repeats once per
 	// article, so its resting state has to be the quiet one.
@@ -456,6 +495,13 @@ func Reader(p readerProps) ui.Node {
 	// scrolling past an article marks it read, which is right for a firehose and
 	// wrong for someone who scrolls to look rather than to read.
 	markOnPast := ui.UseState(true)
+	// focusMode closes the rail and the list so the article has the window.
+	//
+	// Persisted like every other view preference: a reader who set it deliberately
+	// and then reloaded should not have to set it again. It is safe to persist
+	// precisely because the way out is on screen — the toggle stays pinned to the
+	// top of the pane in focus mode, and Escape leaves as well.
+	focusMode := ui.UseState(false)
 	// The visual preference: theme, accent, reading size, motion. Zero value is
 	// "nothing chosen", which is the house theme following the machine's motion
 	// setting — see client/view/theme.go. It is state because the Appearance
@@ -500,8 +546,14 @@ func Reader(p readerProps) ui.Node {
 	// made feed switching feel like a page load in the first place.
 	feedsLoading := ui.UseState(true)
 	itemsLoading := ui.UseState(true)
+	// Whether what is on screen came from the server or from the last time it
+	// answered. §12.3 requires the fallback to be visible and it is right to:
+	// a list that silently shows yesterday's articles during an outage is the
+	// "silently disconnected looks like a quiet news day" failure wearing a
+	// different hat.
+	listFrom := ui.UseState(data.Staleness{})
 
-	sel := ui.UseState(scope{Title: i18n.T("stream.all")})
+	sel := ui.UseState(scope{Title: tr.T("stream", "all")})
 	pane := ui.UseState(viewList)
 	unreadOnly := ui.UseState(false)
 	busy := ui.UseState("")
@@ -519,6 +571,20 @@ func Reader(p readerProps) ui.Node {
 	addNewOpen := ui.UseState(false)
 	addBusy := ui.UseState(false)
 	addErr := ui.UseState("")
+	// The ladder (§11). Everything here is empty until "Add feed" discovers
+	// that the address is not a feed, and is cleared again whenever the URL
+	// changes — a result about the previous address is worse than no result,
+	// because it looks like an answer.
+	addLooking := ui.UseState(false)
+	addSearched := ui.UseState(false)
+	addCands := ui.UseState[[]*pb.FeedCandidate](nil)
+	addProposal := ui.UseState[*pb.ScrapeProposal](nil)
+	addSmartStatus := ui.UseState("")
+	addSmartBusy := ui.UseState(false)
+	// smartSubscribe is the standing consent for the model to read a page,
+	// restored from prefs on connect like every other setting. Default off: it
+	// is an egress decision (§18.8) and a default that egresses is not consent.
+	smartSubscribe := ui.UseState(false)
 	// The category editor: which category, the draft name, and whether the
 	// delete button is armed. Arming is per-open, deliberately — a confirm that
 	// survives closing the dialog is a confirm the reader has forgotten giving.
@@ -535,7 +601,16 @@ func Reader(p readerProps) ui.Node {
 	// Enter is NOT handled here: a func(string) handler receives
 	// event.target.value rather than the key, so key handling lives in the
 	// document-level listener that can actually see it.
-	onAddInput := ui.UseEvent(func(v string) { addURL.Set(v) })
+	onAddInput := ui.UseEvent(func(v string) {
+		addURL.Set(v)
+		// Editing the address invalidates everything found for the previous one.
+		// Leaving a candidate list under a URL it does not belong to is the one
+		// way this dialog could subscribe someone to the wrong site.
+		addSearched.Set(false)
+		addCands.Set(nil)
+		addProposal.Set(nil)
+		addSmartStatus.Set("")
+	})
 	onAddTitleInput := ui.UseEvent(func(v string) { addTitle.Set(v) })
 	onAddNewInput := ui.UseEvent(func(v string) { addNewCat.Set(v) })
 	onCatNameInput := ui.UseEvent(func(v string) {
@@ -697,11 +772,14 @@ func Reader(p readerProps) ui.Node {
 		}
 		feedsLoading.Set(true)
 		go func() {
-			res, err := c.ListFeeds(context.Background())
+			// The rail matters more than the list during an outage: a reader who
+			// can still see their feeds knows the app is working and one thing
+			// is missing, where an empty rail reads as data loss.
+			res, _, err := c.ListFeedsCached(context.Background())
 			ui.PostAsync(func() {
 				feedsLoading.Set(false)
 				if err != nil {
-					notice.Set(i18n.T("reader.errLoadFeeds", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errLoadFeeds", i18n.Args{"err": err.Error()}))
 					return
 				}
 				feeds.Set(res.GetFeeds())
@@ -722,10 +800,32 @@ func Reader(p readerProps) ui.Node {
 	// race into a reachable one. Same discipline as the note autosave withholding
 	// its tick when typing continued during the write.
 	loadGen := ui.UseRef(0)
+	// inFlight counts list loads that have been asked for and not yet answered.
+	// itemsLoading is derived from it rather than assigned, so no ordering of
+	// responses can leave the list stuck on its skeleton. See loadItems.
+	inFlight := ui.UseRef(0)
+
+	// clearList empties everything derived from the current scope's item list.
+	//
+	// All four together, because they are read together: the rows, the count the
+	// virtual list sizes itself from, the paging cursor, and the reading stream
+	// built out of the rows. Leaving `totalItems` behind is the subtle one — the
+	// list renders `max(len(items), total)` rows, so a stale count would draw
+	// placeholder rows for articles that do not exist and ask the server to page
+	// into a feed that has nothing to page.
+	clearList := func() {
+		setItems(nil)
+		totalItems.Set(0)
+		nextCursor.Set("")
+		stream.Set(nil)
+		current.Set(nil)
+	}
 
 	loadItems := func(s scope, unread bool) {
+		println("TRACE loadItems enter src=", s.SourceID)
 		c := client.Get()
 		if c == nil {
+			println("TRACE loadItems ABORT client nil")
 			return
 		}
 		gen := loadGen.Get() + 1
@@ -734,24 +834,52 @@ func Reader(p readerProps) ui.Node {
 		// Set before the goroutine starts, so the placeholder is on screen in the
 		// same frame as the click. Setting it inside the goroutine would leave one
 		// frame showing the previous feed's rows, which is the flicker.
+		inFlight.Set(inFlight.Get() + 1)
+		println("TRACE inFlight++ ->", inFlight.Get())
 		itemsLoading.Set(true)
+		// done is called on EVERY exit from the response handler, including the
+		// stale one, and that is the whole point.
+		//
+		// The flag used to be cleared only on the fresh path, so a superseded load
+		// that happened to return LAST left `itemsLoading` true with nothing left
+		// to clear it. The list then sat on its loading skeleton permanently — a
+		// feed that never finishes opening, with no error and no way back except a
+		// reload. Counting in flight rather than assigning a boolean is what makes
+		// that unrepresentable: the flag is false exactly when nothing is pending,
+		// no matter which response arrives in which order.
+		done := func() {
+			n := inFlight.Get() - 1
+			if n < 0 {
+				n = 0
+			}
+			inFlight.Set(n)
+			println("TRACE done() inFlight ->", n)
+			if n == 0 {
+				itemsLoading.Set(false)
+				println("TRACE itemsLoading set false; reads back as", itemsLoading.Get())
+			}
+		}
 		go func() {
 			var (
 				list  []*pb.Item
 				next  string
 				count int
 				err   error
+				// Where this answer came from. Zero value = the server, just
+				// now, which is what every path that does not consult the cache
+				// correctly reports.
+				from data.Staleness
 			)
 			if s.Notes {
 				var list []*pb.Item
 				list, err = c.ListNotes(context.Background())
 				ui.PostAsync(func() {
+					done()
 					if stale() {
 						return
 					}
-					itemsLoading.Set(false)
 					if err != nil {
-						notice.Set(i18n.T("reader.errLoadNotes", i18n.Args{"err": err.Error()}))
+						notice.Set(tr.T("reader", "errLoadNotes", i18n.Args{"err": err.Error()}))
 						return
 					}
 					setItems(list)
@@ -794,14 +922,23 @@ func Reader(p readerProps) ui.Node {
 				case s.FolderID != "":
 					req.SourceIds = folderSources(feeds.Get(), s.FolderID)
 				}
+				println("TRACE calling ListItems scope=", int(req.Scope), " src=", req.SourceId)
 				var res *pb.ListItemsResponse
-				res, err = c.ListItems(context.Background(), req)
+				// Cached fallback: on a TRANSPORT failure this returns the last
+				// answer to this exact question with err == nil, so the reader
+				// keeps a usable list instead of a skeleton and an apology. The
+				// staleness rides back with it and is rendered — a fallback
+				// nobody can see is indistinguishable from a lie.
+				res, from, err = c.ListItemsCached(context.Background(), req)
+				println("TRACE ListItems returned err=", err != nil)
 				if res != nil {
 					list, next = res.GetItems(), res.GetNextCursor()
 					count = int(res.GetTotal())
 				}
 			}
 			ui.PostAsync(func() {
+				println("TRACE response landed stale=", stale(), " n=", len(list))
+				done()
 				// A newer load has already been asked for. This answer is to a
 				// question nobody is asking any more, and letting it land would
 				// replace the list the reader is looking at with the one they
@@ -809,11 +946,11 @@ func Reader(p readerProps) ui.Node {
 				if stale() {
 					return
 				}
-				itemsLoading.Set(false)
 				if err != nil {
-					notice.Set(i18n.T("reader.errLoadItems", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errLoadItems", i18n.Args{"err": err.Error()}))
 					return
 				}
+				listFrom.Set(from)
 				setItems(list)
 				nextCursor.Set(next)
 				totalItems.Set(count)
@@ -956,7 +1093,7 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() {
 					setItems(withRead(itemsRef.Get(), it.GetId(), false))
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), 1)
-					notice.Set(i18n.T("reader.errMarkRead"))
+					notice.Set(tr.T("reader", "errMarkRead"))
 				})
 			}
 		}()
@@ -976,7 +1113,13 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		go func() {
-			full, err := c.GetItem(context.Background(), it.GetId())
+			// Cached fallback, and this is the one that makes an outage
+			// survivable rather than merely honest: neighbour prefetch (8b.2)
+			// has usually already pulled the articles either side of this one,
+			// so losing the connection mid-stream leaves the reader able to
+			// keep going in both directions instead of hitting a wall on the
+			// next press of j.
+			full, _, err := c.GetItemCached(context.Background(), it.GetId())
 			if err != nil || full == nil {
 				return
 			}
@@ -1249,7 +1392,7 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() {
 					setItems(withRating(itemsRef.Get(), it.GetId(), had))
 					setLocalRating(stream, bodies, it.GetId(), had)
-					notice.Set(i18n.T("reader.errSave"))
+					notice.Set(tr.T("reader", "errSave"))
 				})
 			}
 		}()
@@ -1266,30 +1409,30 @@ func Reader(p readerProps) ui.Node {
 		var only []string
 		if s := sel.Get(); s.SourceID != "" {
 			only = []string{s.SourceID}
-			busy.Set(i18n.T("reader.busyFetchOne", i18n.Args{"feed": s.Title}))
+			busy.Set(tr.T("reader", "busyFetchOne", i18n.Args{"feed": s.Title}))
 		} else {
-			busy.Set(i18n.T("reader.busyFetchAll"))
+			busy.Set(tr.T("reader", "busyFetchAll"))
 		}
 		go func() {
 			res, err := c.Refresh(context.Background(), only)
 			ui.PostAsync(func() {
 				busy.Set("")
 				if err != nil {
-					notice.Set(i18n.T("reader.errRefresh", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errRefresh", i18n.Args{"err": err.Error()}))
 					return
 				}
 				// Each clause is a whole message with its own plural rather
 				// than a stem plus a glued-on fragment: " · 3 new" appended to
 				// a translated stem is the shape that breaks first.
-				msg := i18n.N("reader.refreshChecked", int(res.GetSourcesPolled()))
+				msg := tr.T("reader", "refreshChecked", i18n.Count(int(res.GetSourcesPolled())))
 				if n := res.GetNewItems(); n > 0 {
-					msg += i18n.T("reader.refreshJoin") + i18n.N("reader.refreshNew", int(n))
+					msg += tr.T("reader", "refreshJoin") + tr.T("reader", "refreshNew", i18n.Count(int(n)))
 				}
 				// Per-feed failures are surfaced rather than swallowed: a feed
 				// that has died is something the reader has to be able to tell
 				// you about.
 				if e := res.GetErrors(); len(e) > 0 {
-					msg += i18n.T("reader.refreshJoin") + i18n.N("reader.refreshFailed", len(e))
+					msg += tr.T("reader", "refreshJoin") + tr.T("reader", "refreshFailed", i18n.Count(len(e)))
 				}
 				notice.Set(msg)
 				loadFeeds()
@@ -1313,7 +1456,7 @@ func Reader(p readerProps) ui.Node {
 		c := client.Get()
 		url := strings.TrimSpace(addURL.Get())
 		if c == nil || url == "" {
-			addErr.Set(i18n.T("reader.errNeedURL"))
+			addErr.Set(tr.T("reader", "errNeedURL"))
 			return
 		}
 		if addBusy.Get() {
@@ -1325,7 +1468,7 @@ func Reader(p readerProps) ui.Node {
 		if addNewOpen.Get() {
 			newCat = strings.TrimSpace(addNewCat.Get())
 			if newCat == "" {
-				addErr.Set(i18n.T("reader.errNeedCategory"))
+				addErr.Set(tr.T("reader", "errNeedCategory"))
 				return
 			}
 		}
@@ -1338,7 +1481,7 @@ func Reader(p readerProps) ui.Node {
 				if err != nil {
 					ui.PostAsync(func() {
 						addBusy.Set(false)
-						addErr.Set(i18n.T("reader.errNewCategory", i18n.Args{"err": err.Error()}))
+						addErr.Set(tr.T("reader", "errNewCategory", i18n.Args{"err": err.Error()}))
 					})
 					return
 				}
@@ -1348,11 +1491,18 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				addBusy.Set(false)
 				if err != nil {
-					addErr.Set(i18n.T("reader.errAddFeed", i18n.Args{"err": err.Error()}))
+					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": err.Error()}))
 					// A category created a moment ago survives the failed
 					// subscribe, so it is pulled in now: without this the retry
 					// would name it again and the chips would not show it.
 					loadFolders()
+					// The address is not a feed. That is not the end of the
+					// answer — most addresses people paste are pages, and the
+					// free rungs of the ladder find the feed for four sites in
+					// five. Running them here rather than making the reader
+					// press something else is the difference between an error
+					// and a next step.
+					act.Get().analyzeSite(false)
 					return
 				}
 				addOpen.Set(false)
@@ -1362,11 +1512,9 @@ func Reader(p readerProps) ui.Node {
 				addNewOpen.Set(false)
 				addFolder.Set("")
 				if res.GetSourceExisted() {
-					notice.Set(i18n.T("reader.addedFeedExisted",
-						i18n.Args{"feed": res.GetFeed().GetTitle()}))
+					notice.Set(tr.T("reader", "addedFeedExisted", i18n.Args{"feed": res.GetFeed().GetTitle()}))
 				} else {
-					notice.Set(i18n.T("reader.addedFeed",
-						i18n.Args{"feed": res.GetFeed().GetTitle()}))
+					notice.Set(tr.T("reader", "addedFeed", i18n.Args{"feed": res.GetFeed().GetTitle()}))
 				}
 				loadFolders()
 				loadFeeds()
@@ -1384,7 +1532,7 @@ func Reader(p readerProps) ui.Node {
 			n, undo, err := c.MarkAllRead(context.Background(), sel.Get().SourceID)
 			ui.PostAsync(func() {
 				if err != nil {
-					notice.Set(i18n.T("reader.errMarkAll"))
+					notice.Set(tr.T("reader", "errMarkAll"))
 					return
 				}
 				// Recorded, and deliberately inert. Giving up on a backlog says
@@ -1402,8 +1550,7 @@ func Reader(p readerProps) ui.Node {
 				// "All feeds" was selected has just lost their backlog. It has
 				// happened twice in this repository's own testing.
 				undoToken.Set(undo)
-				notice.Set(i18n.N("reader.markedRead", int(n),
-					i18n.Args{"count": thousands(int(n))}))
+				notice.Set(tr.T("reader", "markedRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
 				loadFeeds()
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
@@ -1421,19 +1568,19 @@ func Reader(p readerProps) ui.Node {
 		s := sel.Get()
 		s.Search = q
 		if q == "" {
-			s.Title = i18n.T("stream.all")
+			s.Title = tr.T("stream", "all")
 			s.SourceID = ""
 		} else {
-			s.Title = i18n.T("reader.scopeSearch", i18n.Args{"query": q})
+			s.Title = tr.T("reader", "scopeSearch", i18n.Args{"query": q})
 		}
 		rememberScope(s)
 		sel.Set(s)
-		// The reading stream is built out of the list, so a new list invalidates
-		// it: extending it would splice articles from the previous scope into the
-		// new one. Bodies are kept — they are keyed by id and cost a round trip
-		// each, and coming back to a feed should not re-fetch what we still have.
-		stream.Set(nil)
-		current.Set(nil)
+		// Same reason as selectScope: a search is a scope change, so the previous
+		// scope's rows must go before the new answer arrives rather than after it.
+		// A search that matches nothing is the empty case here, and it is a common
+		// one — leaving the old rows up under "Results for xyzzy" reads as a
+		// search that found them.
+		clearList()
 		pane.Set(viewList)
 		loadItems(s, unreadOnly.Get())
 	}
@@ -1444,12 +1591,31 @@ func Reader(p readerProps) ui.Node {
 		undoToken.Set("")
 		rememberScope(s)
 		sel.Set(s)
-		// The reading stream is built out of the list, so a new list invalidates
-		// it: extending it would splice articles from the previous scope into the
-		// new one. Bodies are kept — they are keyed by id and cost a round trip
-		// each, and coming back to a feed should not re-fetch what we still have.
-		stream.Set(nil)
-		current.Set(nil)
+		// The OLD feed's rows go now, not when the new feed's answer arrives.
+		//
+		// Without this the list keeps its previous contents for the whole round
+		// trip, and `listPane` only draws its skeleton when the list is BOTH
+		// loading and empty — a condition a scope change never reached. So the
+		// header said "AMD Blogs" while the rows underneath were still the last
+		// feed's articles.
+		//
+		// On a feed that has items that resolves itself, because the response
+		// replaces them. On a feed with NO items it never resolves: the response
+		// replaces them with nothing, so the stale rows simply stay, and the
+		// reader is looking at one feed's articles filed under another feed's
+		// name. That is worse than a slow list — it is a list that lies.
+		//
+		// Cleared HERE rather than inside loadItems, because loadItems is also how
+		// the list refreshes in place — after "mark all read", after a reconnect —
+		// and blanking the screen on those would turn a silent update into a
+		// flash. Only a scope CHANGE invalidates what is on screen.
+		//
+		// The reading stream goes with it, for the reason it always did: it is
+		// built out of the list, so a new list invalidates it and extending it
+		// would splice articles from the previous scope into the new one. Bodies
+		// are kept — they are keyed by id and cost a round trip each, and coming
+		// back to a feed should not re-fetch what we still have.
+		clearList()
 		pane.Set(viewList)
 		loadItems(s, unreadOnly.Get())
 	}
@@ -1488,7 +1654,7 @@ func Reader(p readerProps) ui.Node {
 		// panic in wasm is a blank page with nothing in the console worth reading.
 		c := p.client
 		if c == nil {
-			ui.PostAsync(func() { fatal.Set(i18n.T("reader.errNoConnection")) })
+			ui.PostAsync(func() { fatal.Set(tr.T("reader", "errNoConnection")) })
 			cancel()
 			return nil
 		}
@@ -1595,8 +1761,7 @@ func Reader(p readerProps) ui.Node {
 							}
 							// Only worth saying when it was enough to notice.
 							if n > 2 {
-								notice.Set(i18n.T("reader.outboxDrained",
-									i18n.Args{"count": strconv.Itoa(n)}))
+								notice.Set(tr.T("reader", "outboxDrained", i18n.Args{"count": strconv.Itoa(n)}))
 							}
 						})
 					}
@@ -1655,10 +1820,20 @@ func Reader(p readerProps) ui.Node {
 	if c := client.Get(); c != nil {
 		reconnects, downtime = c.Health()
 	}
-	connHealth := i18n.T("settings.reconnectSummary", i18n.Args{
+	connHealth := tr.T("settings", "reconnectSummary", i18n.Args{
 		"count": strconv.Itoa(reconnects),
-		"lost":  shortDuration(downtime),
+		"lost":  shortDuration(tr, downtime),
 	})
+
+	// The cached-list badge (§12.3). Says both halves — that this came from the
+	// cache, and how old it is — because "cached" alone is not enough to act on:
+	// a list from four minutes ago and one from yesterday are the same word and
+	// very different facts.
+	staleNote := ""
+	if from := listFrom.Get(); from.FromCache {
+		staleNote = tr.T("list", "staleNote",
+			i18n.Args{"age": shortDuration(tr, from.Age(time.Now()))})
+	}
 
 	// The remedy beside the indicator, and it is often nothing.
 	//
@@ -1671,17 +1846,17 @@ func Reader(p readerProps) ui.Node {
 	case data.Down:
 		fixAction = actReconnect
 		if n := retryIn.Get(); n > 0 {
-			fixLabel = i18n.T("list.connRetryIn", i18n.Args{"secs": strconv.Itoa(n)})
+			fixLabel = tr.T("list", "connRetryIn", i18n.Args{"secs": strconv.Itoa(n)})
 		} else {
-			fixLabel = i18n.T("list.connRetry")
+			fixLabel = tr.T("list", "connRetry")
 		}
 	case data.Blocked:
 		// The two terminal refusals want opposite things: one needs a
 		// credential, the other needs a different build of this application.
 		if c := client.Get(); c != nil && c.BlockedReason() == data.ReasonSkew {
-			fixAction, fixLabel = actReload, i18n.T("list.connReload")
+			fixAction, fixLabel = actReload, tr.T("list", "connReload")
 		} else {
-			fixAction, fixLabel = actSignIn, i18n.T("list.connSignIn")
+			fixAction, fixLabel = actSignIn, tr.T("list", "connSignIn")
 		}
 	}
 
@@ -1738,7 +1913,7 @@ func Reader(p readerProps) ui.Node {
 	act.Get().pageLanded = func(res *pb.ListItemsResponse, err error) {
 		loadingMore.Set(false)
 		if err != nil {
-			notice.Set(i18n.T("reader.errLoadMore", i18n.Args{"err": err.Error()}))
+			notice.Set(tr.T("reader", "errLoadMore", i18n.Args{"err": err.Error()}))
 			return
 		}
 		// itemsRef, not items: the Ref is the copy that survives renders, and
@@ -1804,7 +1979,7 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() {
 					setItems(withStarred(itemsRef.Get(), it.GetId(), !want))
 					setLocalStarred(stream, bodies, it.GetId(), !want)
-					notice.Set(i18n.T("reader.errSave"))
+					notice.Set(tr.T("reader", "errSave"))
 				})
 			}
 		}()
@@ -1830,7 +2005,7 @@ func Reader(p readerProps) ui.Node {
 					setItems(withRead(itemsRef.Get(), it.GetId(), true))
 					setLocalRead(stream, bodies, it.GetId(), true)
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), -1)
-					notice.Set(i18n.T("reader.errMarkUnread"))
+					notice.Set(tr.T("reader", "errMarkUnread"))
 				})
 			}
 		}()
@@ -2062,7 +2237,7 @@ func Reader(p readerProps) ui.Node {
 					// so the glyph has to keep saying so. The notice explains it
 					// once; the glyph is what persists.
 					noteSync.Set(withEntry(noteSync.Get(), id, noteSyncFailed))
-					notice.Set(i18n.T("reader.errSaveNote"))
+					notice.Set(tr.T("reader", "errSaveNote"))
 					return
 				}
 				if err != nil {
@@ -2138,11 +2313,10 @@ func Reader(p readerProps) ui.Node {
 					// The draft goes back, so the word they typed is not lost to
 					// a failure they did not cause.
 					tagDrafts.Set(withEntry(tagDrafts.Get(), src, name))
-					notice.Set(i18n.T("reader.errAddTag"))
+					notice.Set(tr.T("reader", "errAddTag"))
 					return
 				}
-				notice.Set(i18n.T("reader.tagged",
-					i18n.Args{"source": it.GetSourceTitle(), "tag": name}))
+				notice.Set(tr.T("reader", "tagged", i18n.Args{"source": it.GetSourceTitle(), "tag": name}))
 				loadTags()
 			})
 		}()
@@ -2190,7 +2364,7 @@ func Reader(p readerProps) ui.Node {
 		// with the chip rather than a round trip behind it.
 		if s := sel.Get(); s.TagID != "" {
 			if srcs := tagSources(prevTags, prevFeeds, s.TagID); len(srcs) == 1 && srcs[0] == src {
-				selectScope(scope{Title: i18n.T("stream.all")})
+				selectScope(scope{Title: tr.T("stream", "all")})
 			}
 		}
 
@@ -2202,11 +2376,10 @@ func Reader(p readerProps) ui.Node {
 					// a chip that reappears on its own with no explanation reads
 					// as the app undoing their click.
 					setTagData(prevTags, prevFeeds, tagPending.Get())
-					notice.Set(i18n.T("reader.errRemoveTag"))
+					notice.Set(tr.T("reader", "errRemoveTag"))
 					return
 				}
-				notice.Set(i18n.T("reader.untagged",
-					i18n.Args{"tag": name, "source": it.GetSourceTitle()}))
+				notice.Set(tr.T("reader", "untagged", i18n.Args{"tag": name, "source": it.GetSourceTitle()}))
 				// Reconciling, not revealing. The screen is already right; this
 				// is what corrects it if another device disagreed, and it costs
 				// the reader no waiting because they are not watching it.
@@ -2215,7 +2388,7 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 	act.Get().pickTag = func(id, name string) {
-		selectScope(scope{TagID: id, Title: i18n.T("reader.scopeTag", i18n.Args{"tag": name})})
+		selectScope(scope{TagID: id, Title: tr.T("reader", "scopeTag", i18n.Args{"tag": name})})
 	}
 	// Selecting a category shows everything filed under it, as one list. The
 	// title is the category's own name rather than "Category: X" — the reader
@@ -2232,9 +2405,24 @@ func Reader(p readerProps) ui.Node {
 
 	// --- the add-a-feed dialog ----------------------------------------------
 
+	// clearLadder throws away everything learned about the previous address.
+	//
+	// Called whenever the URL changes and whenever the dialog opens, because a
+	// result that belongs to a different address is worse than no result at all:
+	// it is indistinguishable from an answer about the one on screen.
+	clearLadder := func() {
+		addLooking.Set(false)
+		addSearched.Set(false)
+		addCands.Set(nil)
+		addProposal.Set(nil)
+		addSmartStatus.Set("")
+		addSmartBusy.Set(false)
+	}
+
 	act.Get().openAddFeed = func() {
 		addErr.Set("")
 		addOpen.Set(true)
+		clearLadder()
 		// The categories may have changed on another device since boot, and this
 		// dialog is where a stale list would be visible.
 		loadFolders()
@@ -2263,11 +2451,140 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 
+	// --- the ladder (§11) --------------------------------------------------
+
+	// analyzeSite climbs the ladder for whatever is in the URL field.
+	//
+	// smart is passed through rather than read from the preference here: the
+	// server checks the preference too, and this flag is what says the reader
+	// pressed the button THIS time. Both have to hold before a page's markup
+	// leaves the machine.
+	act.Get().analyzeSite = func(smart bool) {
+		c := client.Get()
+		url := strings.TrimSpace(addURL.Get())
+		if c == nil || url == "" {
+			return
+		}
+		if addLooking.Get() || addSmartBusy.Get() {
+			return
+		}
+		if smart {
+			addSmartBusy.Set(true)
+		} else {
+			addLooking.Set(true)
+			// The candidates from the previous attempt go now rather than when
+			// the new ones arrive, so a slow search cannot show a stale list
+			// next to a spinner.
+			addCands.Set(nil)
+			addProposal.Set(nil)
+			addSmartStatus.Set("")
+		}
+		go func() {
+			res, err := c.AnalyzeSite(context.Background(), url, smart)
+			ui.PostAsync(func() {
+				addLooking.Set(false)
+				addSmartBusy.Set(false)
+				addSearched.Set(true)
+				if err != nil {
+					addErr.Set(tr.T("reader", "errAnalyzeSite", i18n.Args{"err": err.Error()}))
+					return
+				}
+				// The error from the failed subscribe has been answered by the
+				// search, so it goes: leaving "that is not a feed" above a list
+				// of feeds we found reads as a contradiction.
+				addErr.Set("")
+				addCands.Set(res.GetFeeds())
+				addSmartStatus.Set(res.GetSmartStatus())
+				if res.GetScrape() != nil {
+					addProposal.Set(res.GetScrape())
+				}
+			})
+		}()
+	}
+
+	// toggleSmartSubscribe is the standing consent, saved server-side like every
+	// other preference so it follows the reader between machines.
+	act.Get().toggleSmartSubscribe = func() {
+		next := !smartSubscribe.Get()
+		smartSubscribe.Set(next)
+		savePrefs(map[string]string{smartSubscribePref: strconv.FormatBool(next)})
+	}
+
+	// addCandidate subscribes to a feed the ladder found, keeping the category
+	// and the name the reader had already chosen in the form.
+	act.Get().addCandidate = func(url string) {
+		if strings.TrimSpace(url) == "" {
+			return
+		}
+		addURL.Set(url)
+		// Through the Ref, on the next tick: subscribe reads the URL from state,
+		// and the Set above has not been applied to this render yet.
+		ui.PostAsync(func() { act.Get().addFeed() })
+	}
+
+	// followPage accepts the proposal: the rule the reader just looked at is
+	// sent back exactly as it was shown, and the server re-runs it against the
+	// live page before writing anything.
+	act.Get().followPage = func() {
+		c := client.Get()
+		prop := addProposal.Get()
+		if c == nil || prop == nil || addBusy.Get() {
+			return
+		}
+		url := strings.TrimSpace(addURL.Get())
+		title := strings.TrimSpace(addTitle.Get())
+		folderID := addFolder.Get()
+		newCat := ""
+		if addNewOpen.Get() {
+			newCat = strings.TrimSpace(addNewCat.Get())
+			if newCat == "" {
+				addErr.Set(tr.T("reader", "errNeedCategory"))
+				return
+			}
+		}
+		addBusy.Set(true)
+		addErr.Set("")
+		go func() {
+			if newCat != "" {
+				f, err := c.CreateFolder(context.Background(), newCat)
+				if err != nil {
+					ui.PostAsync(func() {
+						addBusy.Set(false)
+						addErr.Set(tr.T("reader", "errNewCategory", i18n.Args{"err": err.Error()}))
+					})
+					return
+				}
+				folderID = f.GetId()
+			}
+			res, err := c.SubscribeScrape(context.Background(), url, title, folderID, prop.GetRule())
+			ui.PostAsync(func() {
+				addBusy.Set(false)
+				if err != nil {
+					addErr.Set(tr.T("reader", "errFollowPage", i18n.Args{"err": err.Error()}))
+					loadFolders()
+					return
+				}
+				addOpen.Set(false)
+				addURL.Set("")
+				addTitle.Set("")
+				addNewCat.Set("")
+				addNewOpen.Set(false)
+				addFolder.Set("")
+				clearLadder()
+				notice.Set(tr.T("addFeed", "followed", i18n.CountWith(int(res.GetItems()),
+					i18n.Args{"name": res.GetFeed().GetTitle()})))
+				loadFolders()
+				loadFeeds()
+				loadItems(sel.Get(), unreadOnly.Get())
+			})
+		}()
+	}
+
 	// --- the category editor -------------------------------------------------
 
 	// newCategory makes one from the rail's ＋, without a dialog.
 	//
-	// It creates i18n.T("reader.newCategoryName") and opens the editor on it with the name
+	// It creates tr.T("reader", "newCategoryName") and opens the editor on it with the name
 	// selected, which is one click plus typing — where a dialog that asks for a
 	// name first is a click, a decision, and a confirm before anything exists.
 	// The row appears immediately, which is also what tells the reader where
@@ -2278,10 +2595,10 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		go func() {
-			f, err := c.CreateFolder(context.Background(), i18n.T("reader.newCategoryName"))
+			f, err := c.CreateFolder(context.Background(), tr.T("reader", "newCategoryName"))
 			ui.PostAsync(func() {
 				if err != nil {
-					notice.Set(i18n.T("reader.errAddCategory", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errAddCategory", i18n.Args{"err": err.Error()}))
 					return
 				}
 				loadFolders()
@@ -2373,7 +2690,7 @@ func Reader(p readerProps) ui.Node {
 				// And so is the list, if the reader was looking at the category
 				// that no longer exists.
 				if s := sel.Get(); s.FolderID == id {
-					selectScope(scope{Title: i18n.T("stream.all")})
+					selectScope(scope{Title: tr.T("stream", "all")})
 				}
 			})
 		}()
@@ -2391,7 +2708,7 @@ func Reader(p readerProps) ui.Node {
 			err := c.SetFeedFolder(context.Background(), sourceID, folderID)
 			ui.PostAsync(func() {
 				if err != nil {
-					notice.Set(i18n.T("reader.errMoveFeed", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errMoveFeed", i18n.Args{"err": err.Error()}))
 				}
 				loadFeeds()
 			})
@@ -2467,7 +2784,7 @@ func Reader(p readerProps) ui.Node {
 		}
 		platform.AudioStop()
 		if !platform.SpeechAvailable() {
-			notice.Set(i18n.T("reader.noSpeech"))
+			notice.Set(tr.T("reader", "noSpeech"))
 			speakID.Set("")
 			return
 		}
@@ -2502,7 +2819,7 @@ func Reader(p readerProps) ui.Node {
 		speakState.Set("")
 		savePrefs(map[string]string{"tts.smartPlus": strconv.FormatBool(next)})
 		if next {
-			notice.Set(i18n.T("reader.smartVoiceOn"))
+			notice.Set(tr.T("reader", "smartVoiceOn"))
 		}
 	}
 	feedFilterSave.Set(func(v string) {
@@ -2530,7 +2847,7 @@ func Reader(p readerProps) ui.Node {
 		fsLoading.Set(false)
 		fsSaving.Set(false)
 		if err != nil {
-			fsErr.Set(i18n.T("reader.errFeedSettings", i18n.Args{"err": err.Error()}))
+			fsErr.Set(tr.T("reader", "errFeedSettings", i18n.Args{"err": err.Error()}))
 			return
 		}
 		fsData.Set(res)
@@ -2591,7 +2908,7 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				tsSaving.Set(false)
 				if err != nil {
-					notice.Set(i18n.T("reader.errSaveTag", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errSaveTag", i18n.Args{"err": err.Error()}))
 					return
 				}
 				// The whole rail is refetched rather than the one row patched.
@@ -2625,14 +2942,14 @@ func Reader(p readerProps) ui.Node {
 			err := c.Unsubscribe(context.Background(), id)
 			ui.PostAsync(func() {
 				if err != nil {
-					notice.Set(i18n.T("reader.errUnsubscribe", i18n.Args{"err": err.Error()}))
+					notice.Set(tr.T("reader", "errUnsubscribe", i18n.Args{"err": err.Error()}))
 					return
 				}
-				notice.Set(i18n.T("reader.unsubscribed", i18n.Args{"feed": name}))
+				notice.Set(tr.T("reader", "unsubscribed", i18n.Args{"feed": name}))
 				loadFeeds()
 				// If they were reading it, that scope no longer exists.
 				if sel.Get().SourceID == id {
-					act.Get().pick(scope{Title: i18n.T("stream.all")})
+					act.Get().pick(scope{Title: tr.T("stream", "all")})
 				}
 			})
 		}()
@@ -2658,7 +2975,7 @@ func Reader(p readerProps) ui.Node {
 					// Unimplemented is not a failure worth alarming about: it
 					// means a server built without the observability wiring,
 					// which still reads feeds perfectly well.
-					statsErr.Set(i18n.T("reader.errStats", i18n.Args{"err": serr.Error()}))
+					statsErr.Set(tr.T("reader", "errStats", i18n.Args{"err": serr.Error()}))
 					return
 				}
 				serverStats.Set(st)
@@ -2712,7 +3029,7 @@ func Reader(p readerProps) ui.Node {
 					// PermissionDenied lands here for a member account, and the
 					// server's message names the requirement rather than the
 					// failure — so it is shown as written.
-					smartErr.Set(statusText(cerr))
+					smartErr.Set(serverText(tr, cerr))
 					return
 				}
 				smartCfg.Set(cfg)
@@ -2742,11 +3059,11 @@ func Reader(p readerProps) ui.Node {
 				smartKeyDraft.Set("")
 				platform.ClearField("smart-key")
 				if err != nil {
-					smartErr.Set(statusText(err))
+					smartErr.Set(serverText(tr, err))
 					return
 				}
 				smartCfg.Set(cfg)
-				smartNotice.Set(i18n.T("smart.keySaved"))
+				smartNotice.Set(tr.T("smart", "keySaved"))
 			})
 		}()
 	}
@@ -2761,11 +3078,11 @@ func Reader(p readerProps) ui.Node {
 			cfg, err := c.SetSmartConfig(context.Background(), "", true, "")
 			ui.PostAsync(func() {
 				if err != nil {
-					smartErr.Set(statusText(err))
+					smartErr.Set(serverText(tr, err))
 					return
 				}
 				smartCfg.Set(cfg)
-				smartNotice.Set(i18n.T("smart.keyRemoved"))
+				smartNotice.Set(tr.T("smart", "keyRemoved"))
 			})
 		}()
 	}
@@ -2781,7 +3098,7 @@ func Reader(p readerProps) ui.Node {
 			cfg, err := c.SetSmartConfig(context.Background(), "", false, model)
 			ui.PostAsync(func() {
 				if err != nil {
-					smartErr.Set(statusText(err))
+					smartErr.Set(serverText(tr, err))
 					return
 				}
 				smartCfg.Set(cfg)
@@ -2791,18 +3108,23 @@ func Reader(p readerProps) ui.Node {
 
 	// setLocale is the language switch.
 	//
-	// English is a local decision and takes no call at all — it is the language
-	// the catalog is written in, so going back to it is a stored preference and
-	// a reload. Anything else fetches a catalog first, and only reloads once it
-	// is actually in hand: reloading first and translating afterwards would
-	// show the reader a boot splash and then English.
+	// **No page reload.** tr.SetLocale forwards to the LocaleState Root built
+	// with i18n.UseLocale, which is ui.UseState underneath — so setting it
+	// re-renders, the Provider sees a changed context value, and the whole tree
+	// below it redraws in the new language. UseLocale also writes the choice to
+	// localStorage on its own, so there is nothing to persist here.
+	//
+	// English takes no call at all: it is the language the catalog is written
+	// in, always present, and the way back from a translation someone cannot
+	// read. Anything else fetches its catalog FIRST and only switches once the
+	// messages are actually in the bundle — switching first would repaint the
+	// whole app in raw "namespace.key" strings for as long as the fetch took.
 	act.Get().setLocale = func(code string) {
 		if smartBusy.Get() != "" {
 			return
 		}
 		if code == "" || code == i18n.DefaultLocale {
-			platform.LocalRemove(localeKey)
-			platform.Reload()
+			tr.SetLocale(i18n.DefaultLocale)
 			return
 		}
 		c := client.Get()
@@ -2813,32 +3135,21 @@ func Reader(p readerProps) ui.Node {
 		smartNotice.Set("")
 		smartBusy.Set(code)
 		go func() {
-			// The cache-hit flag is deliberately discarded on this path: the
-			// success case reloads, so any notice it could produce would be
-			// thrown away half a frame later. It matters only to the
-			// storage-blocked branch below, which does not reload — and there
-			// the honest thing to say is that the catalog is in hand.
-			_, err := c.TranslateUI(context.Background(), code, false)
+			cached, err := c.TranslateUI(context.Background(), code, false)
 			ui.PostAsync(func() {
 				smartBusy.Set("")
 				if err != nil {
-					smartErr.Set(i18n.T("smart.langFailed",
-						i18n.Args{"err": statusText(err)}))
+					smartErr.Set(tr.T("smart", "langFailed", i18n.Args{"err": serverText(tr, err)}))
 					return
 				}
-				// Persisted only after the catalog arrived. A locale written
-				// before the fetch would survive a failure and make every
-				// subsequent boot re-attempt a translation that does not work.
-				if !platform.LocalSet(localeKey, code) {
-					// Storage is blocked. The translation is in the bundle for
-					// THIS session, so the switch still works — it just will not
-					// survive a reload, and reloading now would throw it away.
-					i18n.SetLocale(code)
-					smartNotice.Set(i18n.T("smart.langDoneFresh",
+				// TranslateUI has already called i18n.Import, so the catalog is
+				// in the bundle by the time this runs. Only now is it safe to
+				// point the locale at it.
+				tr.SetLocale(code)
+				if !cached {
+					smartNotice.Set(tr.T("smart", "langDoneFresh",
 						i18n.Args{"language": languageName(smartLangs.Get(), code)}))
-					return
 				}
-				platform.Reload()
 			})
 		}()
 	}
@@ -2846,9 +3157,18 @@ func Reader(p readerProps) ui.Node {
 	// retranslate is the way out of a translation that came back wrong. It is
 	// the only caller that passes force, and the only thing that can spend on a
 	// language the server already has.
+	//
+	// It RELOADS, and that is the one place in this feature where a reload is
+	// the right answer rather than a cop-out. A re-translation changes no state:
+	// same locale, same props, so the Provider's context value never moves and
+	// the memoised rail and virtualised list keep the strings they already
+	// rendered. Only the Provider can invalidate them and it lives in Root,
+	// which Reader cannot reach. This is a repair action a reader takes almost
+	// never, so one reload beats plumbing a revision counter up through the
+	// component that exists specifically to re-render rarely.
 	act.Get().retranslate = func() {
 		c := client.Get()
-		code := i18n.Locale()
+		code := tr.Locale()
 		if c == nil || code == i18n.DefaultLocale || smartBusy.Get() != "" {
 			return
 		}
@@ -2859,13 +3179,18 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				smartBusy.Set("")
 				if err != nil {
-					smartErr.Set(i18n.T("smart.langFailed",
-						i18n.Args{"err": statusText(err)}))
+					smartErr.Set(tr.T("smart", "langFailed", i18n.Args{"err": serverText(tr, err)}))
 					return
 				}
 				platform.Reload()
 			})
 		}()
+	}
+
+	act.Get().toggleFocus = func() {
+		next := !focusMode.Get()
+		focusMode.Set(next)
+		savePrefs(map[string]string{"ui.focus": strconv.FormatBool(next)})
 	}
 
 	act.Get().toggleMarkPast = func() {
@@ -2927,11 +3252,10 @@ func Reader(p readerProps) ui.Node {
 			n, err := c.UndoMarkAllRead(context.Background(), token)
 			ui.PostAsync(func() {
 				if err != nil {
-					notice.Set(i18n.T("reader.errUndo"))
+					notice.Set(tr.T("reader", "errUndo"))
 					return
 				}
-				notice.Set(i18n.N("reader.undoneRead", int(n),
-				i18n.Args{"count": thousands(int(n))}))
+				notice.Set(tr.T("reader", "undoneRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
 				loadFeeds()
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
@@ -2955,7 +3279,7 @@ func Reader(p readerProps) ui.Node {
 		paletteQuery.Set("")
 	}
 	act.Get().movePalette = func(delta int) {
-		n := len(filterPalette(buildPalette(feeds.Get(), tags.Get()), paletteQuery.Get()))
+		n := len(filterPalette(buildPalette(tr, feeds.Get(), tags.Get()), paletteQuery.Get()))
 		if n == 0 {
 			return
 		}
@@ -2975,15 +3299,15 @@ func Reader(p readerProps) ui.Node {
 		case "stream":
 			switch id {
 			case streamAll:
-				a.pick(scope{Title: i18n.T("stream.all")})
+				a.pick(scope{Title: tr.T("stream", "all")})
 			case streamUnread:
-				a.pick(scope{Title: i18n.T("stream.unread"), Unread: true})
+				a.pick(scope{Title: tr.T("stream", "unread"), Unread: true})
 			case streamLater:
-				a.pick(scope{Title: i18n.T("stream.later"), Later: true})
+				a.pick(scope{Title: tr.T("stream", "later"), Later: true})
 			case streamLiked:
-				a.pick(scope{Title: i18n.T("stream.liked"), Rating: 1})
+				a.pick(scope{Title: tr.T("stream", "liked"), Rating: 1})
 			case streamNotes:
-				a.pick(scope{Title: i18n.T("stream.notes"), Notes: true})
+				a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
 			}
 		case "feed":
 			if f := a.feedByID(id); f != nil {
@@ -3037,6 +3361,23 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().expand = func(id string) {
 		expanded.Set(withEntry(expanded.Get(), id, true))
+	}
+	// Closing removes the entry rather than storing false, so the map holds open
+	// frames only. In a stream of twenty articles the difference is twenty live
+	// iframes versus the one being looked at.
+	act.Get().togglePage = func(id string) {
+		cur := pageOpen.Get()
+		if cur[id] {
+			next := map[string]bool{}
+			for k, v := range cur {
+				if k != id {
+					next[k] = v
+				}
+			}
+			pageOpen.Set(next)
+			return
+		}
+		pageOpen.Set(withEntry(cur, id, true))
 	}
 	// Opening the note panel focuses the field, because a disclosure that makes
 	// you click twice to start typing has spent the click it saved. Closing does
@@ -3197,6 +3538,14 @@ func Reader(p readerProps) ui.Node {
 					a.pickAddFolder(value)
 				case actAddNewCat:
 					a.toggleAddNewCat()
+				case actAddCandidate:
+					a.addCandidate(forValue.Get())
+				case actAddSmart:
+					a.toggleSmartSubscribe()
+				case actAddAnalyze:
+					a.analyzeSite(true)
+				case actAddFollow:
+					a.followPage()
 				case actCatToggle:
 					a.toggleCategory(value)
 				case actCatNew:
@@ -3226,6 +3575,8 @@ func Reader(p readerProps) ui.Node {
 					a.removeTag(id, value)
 				case "expand":
 					a.expand(id)
+				case "toggle-page":
+					a.togglePage(id)
 				case "toggle-note":
 					a.toggleNote(id)
 				case "modal-keep":
@@ -3258,6 +3609,8 @@ func Reader(p readerProps) ui.Node {
 					a.setLocale(value)
 				case actSmartRetranslate:
 					a.retranslate()
+				case actFocus:
+					a.toggleFocus()
 				case "toggle-mark-past":
 					a.toggleMarkPast()
 				case "set-theme":
@@ -3357,11 +3710,11 @@ func Reader(p readerProps) ui.Node {
 					// Home is the reading surface, and on a phone that means the
 					// list — not the article, which would drop you back into
 					// whatever you last read rather than into today.
-					a.pick(scope{Title: i18n.T("stream.all")})
+					a.pick(scope{Title: tr.T("stream", "all")})
 				case "tab-feeds":
 					a.showTab(viewRail)
 				case "tab-notes":
-					a.pick(scope{Title: i18n.T("stream.notes"), Notes: true})
+					a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
 				case "tab-settings":
 					a.showTab(viewSettings)
 				}
@@ -3392,7 +3745,7 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				a := act.Get()
 				if id == unfiledID {
-					a.pickFolder(id, i18n.T("stream.unfiled"))
+					a.pickFolder(id, tr.T("stream", "unfiled"))
 					return
 				}
 				for _, f := range folders.Get() {
@@ -3412,15 +3765,15 @@ func Reader(p readerProps) ui.Node {
 				a := act.Get()
 				switch id {
 				case streamAll:
-					a.pick(scope{Title: i18n.T("stream.all")})
+					a.pick(scope{Title: tr.T("stream", "all")})
 				case streamUnread:
-					a.pick(scope{Title: i18n.T("stream.unread"), Unread: true})
+					a.pick(scope{Title: tr.T("stream", "unread"), Unread: true})
 				case streamLiked:
-					a.pick(scope{Title: i18n.T("stream.liked"), Rating: 1})
+					a.pick(scope{Title: tr.T("stream", "liked"), Rating: 1})
 				case streamLater:
-					a.pick(scope{Title: i18n.T("stream.later"), Later: true})
+					a.pick(scope{Title: tr.T("stream", "later"), Later: true})
 				case streamNotes:
-					a.pick(scope{Title: i18n.T("stream.notes"), Notes: true})
+					a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
 				default:
 					if f := a.feedByID(id); f != nil {
 						a.pick(scope{SourceID: id, Title: f.GetTitle()})
@@ -3464,7 +3817,7 @@ func Reader(p readerProps) ui.Node {
 				}
 				go func() {
 					if err := c.SetPrefs(context.Background(), prefs); err != nil {
-						ui.PostAsync(func() { notice.Set(i18n.T("reader.errSaveLayout")) })
+						ui.PostAsync(func() { notice.Set(tr.T("reader", "errSaveLayout")) })
 					}
 				}()
 			})
@@ -3511,11 +3864,17 @@ func Reader(p readerProps) ui.Node {
 				if v, ok := p["rail.closed."+actCats]; ok {
 					railCatsClosed.Set(v == "true")
 				}
+				if v, ok := p[smartSubscribePref]; ok {
+					smartSubscribe.Set(v == "true")
+				}
 				if v, ok := p["tts.smartPlus"]; ok {
 					speakSmart.Set(v == "true")
 				}
 				if v, ok := p["read.markOnPast"]; ok {
 					markOnPast.Set(v == "true")
+				}
+				if v, ok := p["ui.focus"]; ok {
+					focusMode.Set(v == "true")
 				}
 				// Applied immediately rather than through an effect keyed on
 				// state. The sheet has already painted the house theme by now, so
@@ -3542,13 +3901,13 @@ func Reader(p readerProps) ui.Node {
 				resume := sel.Get()
 				switch p["read.kind"] {
 				case "unread":
-					resume = scope{Title: i18n.T("stream.unread"), Unread: true}
+					resume = scope{Title: tr.T("stream", "unread"), Unread: true}
 				case "liked":
-					resume = scope{Title: i18n.T("stream.liked"), Rating: 1}
+					resume = scope{Title: tr.T("stream", "liked"), Rating: 1}
 				case "later":
-					resume = scope{Title: i18n.T("stream.later"), Later: true}
+					resume = scope{Title: tr.T("stream", "later"), Later: true}
 				case "notes":
-					resume = scope{Title: i18n.T("stream.notes"), Notes: true}
+					resume = scope{Title: tr.T("stream", "notes"), Notes: true}
 				case "feed":
 					if v := p["read.value"]; v != "" {
 						resume = scope{SourceID: v, Title: p["read.title"]}
@@ -3570,7 +3929,7 @@ func Reader(p readerProps) ui.Node {
 				// A feed whose title was never saved would render an empty header;
 				// the pane's own default beats blank.
 				if resume.Title == "" {
-					resume.Title = i18n.T("stream.all")
+					resume.Title = tr.T("stream", "all")
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
 				resumeItem.Set(p["read.item"])
@@ -3906,7 +4265,7 @@ func Reader(p readerProps) ui.Node {
 					q := platform.FieldValue("palette")
 					ui.PostAsync(func() {
 						a := act.Get()
-						list := filterPalette(buildPalette(feeds.Get(), tags.Get()), q)
+						list := filterPalette(buildPalette(tr, feeds.Get(), tags.Get()), q)
 						if len(list) == 0 {
 							return
 						}
@@ -4047,6 +4406,13 @@ func Reader(p readerProps) ui.Node {
 					a.closeAddFeed()
 					a.closeCategory()
 					a.listenStop()
+					// Escape peels one layer. In focus mode the outermost layer is
+					// focus mode itself — and "back to the list" is meaningless
+					// while the list is closed, so the key would read as dead.
+					if focusMode.Get() {
+						a.toggleFocus()
+						return
+					}
 					pane.Set(viewList)
 				})
 				platform.Blur()
@@ -4104,6 +4470,11 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() { act.Get().rate("", -1) })
 			case "r":
 				ui.PostAsync(refresh)
+			// w for wide. f was taken by the rail's name filter, and a key that
+			// silently does two things is worse than a key that is not the first
+			// letter of the word.
+			case "w":
+				ui.PostAsync(func() { act.Get().toggleFocus() })
 			case "u":
 				ui.PostAsync(func() { act.Get().toggleUnread() })
 			}
@@ -4115,9 +4486,9 @@ func Reader(p readerProps) ui.Node {
 
 	if msg := fatal.Get(); msg != "" {
 		return html.Div(html.Props{Class: "empty"},
-			html.Strong(html.Props{}, html.Text(i18n.T("reader.fatalTitle"))),
+			html.Strong(html.Props{}, html.Text(tr.T("reader", "fatalTitle"))),
 			html.Div(html.Props{}, html.Text(msg)),
-			html.Div(html.Props{}, html.Text(i18n.T("reader.fatalHint"))),
+			html.Div(html.Props{}, html.Text(tr.T("reader", "fatalHint"))),
 		)
 	}
 
@@ -4126,7 +4497,12 @@ func Reader(p readerProps) ui.Node {
 	// rebuilding it on every scroll frame is pure waste.
 	hosts := hostsRef.Get()
 
-	return html.Div(html.Props{Class: "shell", Data: map[string]string{"view": string(pane.Get())}},
+	return html.Div(html.Props{Class: "shell", Data: map[string]string{
+		"view": string(pane.Get()),
+		// One attribute closes four grid tracks and recentres the article — the
+		// whole of focus mode is CSS hanging off this. See design/focus.go.
+		"focus": strconv.FormatBool(focusMode.Get()),
+	}},
 		html.Div(html.Props{Class: "panes"},
 			// railPane is a real component so GWC can bail out of re-rendering it
 			// when its props are unchanged — that is what stopped 150 sidebar rows
@@ -4150,12 +4526,12 @@ func Reader(p readerProps) ui.Node {
 				feedsClosed:     railFeedsClosed.Get(),
 				tagsClosed:      railTagsClosed.Get(),
 			}),
-			grip("rail"),
+			grip(tr, "rail"),
 			// NOT a component, deliberately: listProps carries the item slice, and
 			// GWC's props comparison treated two different listProps values as
 			// equal, freezing the list at whatever it first rendered. The list is
 			// the thing that changes; memoizing it is all cost and no benefit.
-			listPane(listProps{
+			listPane(tr, listProps{
 				items:         items.Get(),
 				sel:           sel.Get(),
 				current:       current.Get(),
@@ -4163,7 +4539,7 @@ func Reader(p readerProps) ui.Node {
 				connected:     client.Get() != nil,
 				hasMore:       nextCursor.Get() != "",
 				loadingMore:   loadingMore.Get(),
-				loading:       itemsLoading.Get(),
+				loading:       traceLoading(itemsLoading.Get(), len(items.Get())),
 				undo:          undoToken.Get(),
 				total:         totalItems.Get(),
 				iconHosts:     hosts,
@@ -4173,6 +4549,7 @@ func Reader(p readerProps) ui.Node {
 				conn:          conn.Get(),
 				connFix:       fixAction,
 				connFixLabel:  fixLabel,
+				staleNote:     staleNote,
 				unread:        totalUnread.Get(),
 				busy:          busy.Get(),
 				notice:        notice.Get(),
@@ -4180,9 +4557,9 @@ func Reader(p readerProps) ui.Node {
 				onSearchInput: onSearchInput,
 				onSearchKey:   noopHandler,
 			}),
-			grip("list"),
+			grip(tr, "list"),
 			ui.If(pane.Get() == viewSettings, func() ui.Node {
-				return settingsPane(settingsProps{
+				return settingsPane(tr, settingsProps{
 					tab:         settingsTab(setTab.Get()),
 					conn:        conn.Get(),
 					reconnects:  reconnects,
@@ -4206,7 +4583,7 @@ func Reader(p readerProps) ui.Node {
 					smart: smartProps{
 						cfg:         smartCfg.Get(),
 						languages:   smartLangs.Get(),
-						locale:      i18n.Locale(),
+						locale:      tr.Locale(),
 						keyDraft:    smartKeyDraft.Get(),
 						modelDraft:  smartModelDraft.Get(),
 						onKeyEdit:   onSmartKeyInput,
@@ -4218,7 +4595,8 @@ func Reader(p readerProps) ui.Node {
 					},
 				})
 			}),
-			articlePane(articleProps{
+			articlePane(tr, articleProps{
+				focus:     focusMode.Get(),
 				stream:    stream.Get(),
 				bodies:    bodies.Get(),
 				currentID: currentID(current.Get()),
@@ -4243,12 +4621,13 @@ func Reader(p readerProps) ui.Node {
 				atStart:      streamAtStart(items.Get(), stream.Get()),
 				atEnd:        streamAtEnd(items.Get(), stream.Get(), nextCursor.Get()),
 				expanded:     expanded.Get(),
+				pageOpen:     pageOpen.Get(),
 				noteOpen:     noteOpen.Get(),
 			}),
 		),
-		tabBar(pane.Get(), sel.Get()),
-		helpSheet(helpOpen.Get()),
-		feedSettings(feedSettingsProps{
+		tabBar(tr, pane.Get(), sel.Get()),
+		helpSheet(tr, helpOpen.Get()),
+		feedSettings(tr, feedSettingsProps{
 			open:        fsOpen.Get() != "",
 			loading:     fsLoading.Get(),
 			s:           fsData.Get(),
@@ -4264,7 +4643,7 @@ func Reader(p readerProps) ui.Node {
 			// picker ends up disagreeing with the list behind it.
 			folderID: folderOf(feeds.Get(), fsOpen.Get()),
 		}),
-		addFeedDialog(addFeedProps{
+		addFeedDialog(tr, addFeedProps{
 			open:         addOpen.Get(),
 			url:          addURL.Get(),
 			title:        addTitle.Get(),
@@ -4277,8 +4656,15 @@ func Reader(p readerProps) ui.Node {
 			onURLInput:   onAddInput,
 			onTitleInput: onAddTitleInput,
 			onNewInput:   onAddNewInput,
+			looking:      addLooking.Get(),
+			searched:     addSearched.Get(),
+			candidates:   addCands.Get(),
+			proposal:     addProposal.Get(),
+			smartOn:      smartSubscribe.Get(),
+			smartBusy:    addSmartBusy.Get(),
+			smartStatus:  addSmartStatus.Get(),
 		}),
-		categoryDialog(categoryProps{
+		categoryDialog(tr, categoryProps{
 			open:    catID.Get() != "",
 			id:      catID.Get(),
 			name:    folderName(folders.Get(), catID.Get()),
@@ -4289,7 +4675,7 @@ func Reader(p readerProps) ui.Node {
 			confirm: catConfirm.Get(),
 			onInput: onCatNameInput,
 		}),
-		tagSettings(tagSettingsProps{
+		tagSettings(tr, tagSettingsProps{
 			open: tsOpen.Get() != "",
 			// Read out of the rail's own list on every render, so the panel
 			// follows the tag rather than holding a snapshot of it: the feed
@@ -4301,14 +4687,14 @@ func Reader(p readerProps) ui.Node {
 			feeds:       feedsForTag(feeds.Get(), tagFeeds.Get(), tsOpen.Get()),
 			saving:      tsSaving.Get(),
 		}),
-		palette(paletteProps{
+		palette(tr, paletteProps{
 			open:   paletteOpen.Get(),
 			query:  paletteQuery.Get(),
 			active: paletteActive.Get(),
 			// Built only while it is open. This assembles 151 feeds plus the
 			// tags, streams and commands and then SORTS them — which was
 			// happening on every scroll frame for a dialog nobody had opened.
-			entries: paletteEntriesIf(paletteOpen.Get(), feeds.Get(), tags.Get(),
+			entries: paletteEntriesIf(tr, paletteOpen.Get(), feeds.Get(), tags.Get(),
 				paletteQuery.Get()),
 			onInput: onPaletteInput,
 		}),
@@ -4559,11 +4945,11 @@ func iconHostsOf(feeds []*pb.Feed) map[string]string {
 // Assembling and sorting ~170 entries is cheap once and absurd sixty times a
 // second, which is what it was costing while the reader scrolled the item list
 // with the dialog closed.
-func paletteEntriesIf(open bool, feeds []*pb.Feed, tags []*pb.Tag, q string) []paletteEntry {
+func paletteEntriesIf(tr i18n.Runtime, open bool, feeds []*pb.Feed, tags []*pb.Tag, q string) []paletteEntry {
 	if !open {
 		return nil
 	}
-	return filterPalette(buildPalette(feeds, tags), q)
+	return filterPalette(buildPalette(tr, feeds, tags), q)
 }
 
 // fsName resolves a source id to its title for the scope the action switches to.
@@ -4846,25 +5232,34 @@ func indexOf(list []*pb.Item, it *pb.Item) int {
 // relTime renders a timestamp the way a reader wants it: how long ago, not when.
 //
 // "3h" answers "is this new?" at a glance; "2026-07-26T15:04:05Z" does not.
-func relTime(rfc3339 string) string {
+func relTime(tr i18n.Runtime, rfc3339 string) string {
 	t, err := time.Parse(time.RFC3339Nano, rfc3339)
 	if err != nil {
 		if t, err = time.Parse(time.RFC3339, rfc3339); err != nil {
 			return ""
 		}
 	}
+	// The unit abbreviations are the same keys the settings screen uses, so
+	// "5m" here and "5m" there cannot drift into two different translations of
+	// the same idea.
+	unit := tr.NS("unit")
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
-		return "now"
+		return tr.T("time", "now")
 	case d < time.Hour:
-		return strconv.Itoa(int(d.Minutes())) + "m"
+		return unit.T("minutes", i18n.Args{"n": strconv.Itoa(int(d.Minutes()))})
 	case d < 24*time.Hour:
-		return strconv.Itoa(int(d.Hours())) + "h"
+		return unit.T("hours", i18n.Args{"n": strconv.Itoa(int(d.Hours()))})
 	case d < 7*24*time.Hour:
-		return strconv.Itoa(int(d.Hours()/24)) + "d"
+		return unit.T("days", i18n.Args{"n": strconv.Itoa(int(d.Hours() / 24))})
 	default:
-		return t.Format("2 Jan")
+		// NOT t.Format("2 Jan"). Go's layouts emit English month names in every
+		// locale, and this is the single most-rendered string in the app.
+		return tr.T("time", "dayMonth", i18n.Args{
+			"day":   strconv.Itoa(t.Day()),
+			"month": tr.T("month", strconv.Itoa(int(t.Month()))),
+		})
 	}
 }
 

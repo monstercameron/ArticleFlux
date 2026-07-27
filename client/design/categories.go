@@ -177,6 +177,106 @@ func categoriesCSS(r func(string, string) css.Rule) {
 	css.Global(".af-error", r("color", "var(--neg)"), r("font-size", "12.5px"))
 	css.Global(".af-warn", r("color", "var(--cc)"), r("font-size", "12.5px"))
 
+	// --- the ladder (§11) ----------------------------------------------------
+	//
+	// It is a WELL inside the dialog, not another card on top of it: what is
+	// happening is still "adding a feed", and a second raised surface would
+	// suggest a second task. Inset, hairlined, and set apart by an amber edge —
+	// the same mark the app uses everywhere else to say "this is the part that
+	// is about you right now".
+	css.Global(".af-ladder",
+		r("margin", "18px 0 4px"), r("padding", "14px 16px"),
+		r("background", "var(--sur-2)"),
+		r("border", "1px solid var(--line)"),
+		r("border-left", "3px solid var(--cc)"),
+		r("border-radius", "0 14px 14px 0"),
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "9px"),
+	)
+	css.Global(".af-ladder-title",
+		r("font-family", "var(--dsp)"),
+		r("font-variation-settings", `"SOFT" 55, "WONK" 1, "opsz" 32`),
+		r("font-size", "15px"), r("font-weight", "600"),
+		r("color", "var(--cream)"),
+	)
+	// The model's own sentence, and the server's explanations, set in the
+	// reading face: they are prose in an interface made of controls, and the
+	// difference in voice is worth marking.
+	css.Global(".af-note",
+		r("font-size", "12.5px"), r("color", "var(--soft)"),
+		r("font-family", "var(--rd)"), r("font-style", "italic"),
+	)
+
+	// A candidate feed: what it is, what is in it, and how it was found.
+	css.Global(".af-cand",
+		r("display", "flex"), r("align-items", "center"), r("gap", "12px"),
+		r("padding", "8px 0"), r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".af-cand-text",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "1px"),
+		r("flex", "1 1 auto"), r("min-width", "0"),
+	)
+	css.Global(".af-cand-title",
+		r("font-size", "13.5px"), r("color", "var(--cream)"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
+	)
+	css.Global(".af-cand-meta", r("font-size", "11.5px"), r("color", "var(--mute)"))
+	css.Global(".af-cand-go", r("flex", "none"), r("padding", "5px 12px"), r("font-size", "12px"))
+
+	// The consent and the spend, on one line and in that order.
+	css.Global(".af-smart",
+		r("display", "flex"), r("align-items", "center"), r("gap", "9px"),
+		r("flex-wrap", "wrap"), r("padding-top", "2px"),
+	)
+	// Pressed is the ON state and it wears the accent, because this is the one
+	// control in the dialog whose state costs money to be wrong about.
+	css.Global(".af-smart-toggle[aria-pressed='true']",
+		r("color", "var(--bg)"), r("background", "var(--cc)"), r("border-color", "var(--cc)"),
+	)
+	// A disabled primary is drawn as unavailable rather than hidden: the reader
+	// needs to see what turning the toggle on will let them do.
+	css.Global(".af-go[aria-disabled='true']",
+		r("opacity", ".45"), r("pointer-events", "none"),
+	)
+
+	// The samples. This is the evidence, so it is the biggest thing in the
+	// block: five real headlines pulled off the page say more about whether the
+	// rule is right than any amount of explanation.
+	css.Global(".af-samples",
+		r("display", "flex"), r("flex-direction", "column"),
+		r("border-top", "1px solid var(--hair)"),
+	)
+	css.Global(".af-sample",
+		r("display", "flex"), r("align-items", "baseline"), r("gap", "10px"),
+		r("padding", "5px 0"), r("border-bottom", "1px solid var(--hair)"),
+	)
+	css.Global(".af-sample-title",
+		r("flex", "1 1 auto"), r("min-width", "0"),
+		r("font-size", "13px"), r("color", "var(--soft)"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
+	)
+	css.Global(".af-sample-when",
+		r("flex", "none"), r("font-size", "11.5px"), r("color", "var(--mute)"),
+		r("font-variant-numeric", "tabular-nums"),
+	)
+
+	// The rule itself: the audit trail, deliberately the quietest thing here.
+	// Selectable, because someone checking it will want to copy it.
+	css.Global(".af-rule",
+		r("display", "flex"), r("align-items", "baseline"), r("gap", "8px"),
+		r("flex-wrap", "wrap"), r("padding-top", "2px"),
+	)
+	css.Global(".af-rule-label",
+		r("font-size", "10px"), r("letter-spacing", ".14em"),
+		r("text-transform", "uppercase"), r("color", "var(--mute)"), r("flex", "none"),
+	)
+	css.Global(".af-rule-code",
+		r("font-family", "ui-monospace, SFMono-Regular, Menlo, monospace"),
+		r("font-size", "11.5px"), r("color", "var(--soft)"),
+		r("overflow-wrap", "anywhere"), r("user-select", "all"),
+	)
+
 	// On a phone the dialog is the screen: the keyboard takes the bottom half the
 	// moment the URL field is focused, so a centred 82vh panel would put the
 	// actions under it.

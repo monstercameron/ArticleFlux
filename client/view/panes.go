@@ -45,18 +45,18 @@ func actionButton(action, class, label string) ui.Node {
 // dropped Wi-Fi, an unplugged server and an expired session at once — three
 // states with three different things for the reader to go and do. The word names
 // the state; the chip beside it offers the remedy.
-func connLabel(s data.ConnState) string {
+func connLabel(tr i18n.Runtime, s data.ConnState) string {
 	switch s {
 	case data.Live:
-		return i18n.T("list.connLive")
+		return tr.T("list", "connLive")
 	case data.Connecting:
-		return i18n.T("list.connConnecting")
+		return tr.T("list", "connConnecting")
 	case data.Offline:
-		return i18n.T("list.connOffline")
+		return tr.T("list", "connOffline")
 	case data.Blocked:
-		return i18n.T("list.connBlocked")
+		return tr.T("list", "connBlocked")
 	default:
-		return i18n.T("list.connDown")
+		return tr.T("list", "connDown")
 	}
 }
 
@@ -65,12 +65,12 @@ func connLabel(s data.ConnState) string {
 //
 // 230 wpm is the usual figure for adult silent reading of ordinary prose. It is
 // approximate by nature, so it rounds to a minute and never shows "0".
-func readingTime(words int32) string {
+func readingTime(tr i18n.Runtime, words int32) string {
 	mins := int(words) / 230
 	if mins < 1 {
 		mins = 1
 	}
-	return i18n.N("list.readingTime", mins)
+	return tr.T("list", "readingTime", i18n.Count(mins))
 }
 
 // Age thresholds for a list row.
@@ -132,7 +132,7 @@ func firstWords(s string, max int) string {
 // English, a period in German and a narrow space in French — and this is called
 // from every count in the app, so getting it from one place is what stops the
 // server screen and the list header disagreeing.
-func thousands(n int) string { return i18n.Number(n) }
+func thousands(tr i18n.Runtime, n int) string { return i18n.Number(tr.Locale(), n) }
 
 // Glyphs.
 //
@@ -190,6 +190,10 @@ const (
 	glyphClosed = "\u203a"
 	// Right-hand side only.
 	glyphExternal = "\u2197"
+	// The proxied page. A framed window rather than a globe: a globe says "the
+	// internet", and the thing this control actually offers is *the page in a
+	// frame here*, which is the distinction the reader is choosing between.
+	glyphPage = "\u25a3"
 )
 
 // lead renders a leading glyph. Hidden from assistive tech: the label beside it
@@ -283,12 +287,12 @@ func tagSources(tags []*pb.Tag, bySource map[string][]string, tagID string) []st
 // A button, not a bare div: it has to be reachable and operable from the
 // keyboard. A resize control that only responds to a pointer makes the layout
 // permanently whatever it happened to be for anyone who does not use a mouse.
-func grip(which string) ui.Node {
+func grip(tr i18n.Runtime, which string) ui.Node {
 	return html.Button(html.Props{
 		Class: "grip",
 		Raw:   map[string]any{"data-grip": which},
 		Aria: map[string]string{
-			"label":       i18n.T("rail.resizeGrip", i18n.Args{"pane": which}),
+			"label":       tr.T("rail", "resizeGrip", i18n.Args{"pane": which}),
 			"orientation": "vertical",
 		},
 		Role: "separator",
@@ -311,12 +315,19 @@ func grip(which string) ui.Node {
 // way, and one hunting a source wants the reverse. The collapse state is the
 // reader's answer to that, and it is remembered.
 func railPane(p railProps) ui.Node {
+	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
+	// top, unconditionally — GWC matches hooks positionally. It is threaded
+	// into the plain helpers below as a parameter rather than put on a props
+	// struct, because Runtime carries func fields and a props struct holding
+	// one compares unequal on every render, which would defeat the memo
+	// bailout this pane depends on.
+	tr := i18n.UseI18n()
 	// The masthead the mockup opens with. It says how many sources there are and
 	// whether anything is waiting — "all quiet" is a real state a reader should
 	// be able to see at a glance rather than infer from an absence of numbers.
-	quiet := i18n.T("rail.quiet")
+	quiet := tr.T("rail", "quiet")
 	if p.total > 0 {
-		quiet = i18n.N("rail.unreadCount", p.total)
+		quiet = tr.T("rail", "unreadCount", i18n.Count(p.total))
 	}
 	// One line, not two. The wordmark never changes and the count rarely does, so
 	// between them they were spending eighty pixels — two feeds' worth — on
@@ -324,35 +335,35 @@ func railPane(p railProps) ui.Node {
 	// and cost half as much.
 	head := []ui.Node{
 		html.Div(html.Props{Class: "masthead"},
-			html.Span(html.Props{Class: "masthead-mark"}, html.Text(i18n.T("rail.mark"))),
+			html.Span(html.Props{Class: "masthead-mark"}, html.Text(tr.T("rail", "mark"))),
 			html.Span(html.Props{Class: "masthead-sub"},
-				html.Text(i18n.T("rail.mastheadSub", i18n.Args{
-					"feeds": i18n.N("rail.feedCount", len(p.feeds)), "state": quiet}))),
+				html.Text(tr.T("rail", "mastheadSub", i18n.Args{
+					"feeds": tr.T("rail", "feedCount", i18n.Count(len(p.feeds))), "state": quiet}))),
 		),
 		// The "Streams" heading is back, and it earns its 22px now that it is
 		// the handle that folds the group away. It was removed when it was only
 		// a label on five self-evident rows; a label that also acts is a
 		// different object.
-		railBandToggle(glyphAll, i18n.T("rail.bandStreams"), actStreams, !p.streamsClosed, 0),
+		railBandToggle(glyphAll, tr.T("rail", "bandStreams"), actStreams, !p.streamsClosed, 0),
 	}
 	if !p.streamsClosed {
 		head = append(head,
-			specialRow(glyphAll, i18n.T("stream.all"), streamAll, p.total,
+			specialRow(glyphAll, tr.T("stream", "all"), streamAll, p.total,
 				p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
 					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && p.sel.TagID == ""),
-			specialRow(glyphUnread, i18n.T("stream.unread"), streamUnread, p.total, p.sel.Unread),
-			specialRow(glyphLater, i18n.T("stream.later"), streamLater, -1, p.sel.Later),
-			specialRow(glyphLiked, i18n.T("stream.liked"), streamLiked, -1, p.sel.Rating > 0),
+			specialRow(glyphUnread, tr.T("stream", "unread"), streamUnread, p.total, p.sel.Unread),
+			specialRow(glyphLater, tr.T("stream", "later"), streamLater, -1, p.sel.Later),
+			specialRow(glyphLiked, tr.T("stream", "liked"), streamLiked, -1, p.sel.Rating > 0),
 			// Liked is a stream; disliked is not. A list of things you decided
 			// were not worth your time is not somewhere anyone goes — the
 			// verdict's job is to feed ranking and to mark the row, and browsing
 			// it would only invite re-reading what you already rejected.
-			specialRow(glyphNotes, i18n.T("stream.notes"), streamNotes, -1, p.sel.Notes),
+			specialRow(glyphNotes, tr.T("stream", "notes"), streamNotes, -1, p.sel.Notes),
 		)
 	}
 
 	body := make([]ui.Node, 0, len(p.feeds)+len(p.tags)+4)
-	body = append(body, railFeedsHeader(p))
+	body = append(body, railFeedsHeader(tr, p))
 
 	// The streams above are known without asking the server, so they render at
 	// once; the subscription list is not, and its placeholders go here rather
@@ -372,7 +383,7 @@ func railPane(p railProps) ui.Node {
 				))
 			}
 		}
-		return railShell(head, body, railFoot(p), true)
+		return railShell(tr, head, body, railFoot(tr, p), true)
 	}
 
 	if !p.feedsClosed {
@@ -382,11 +393,11 @@ func railPane(p railProps) ui.Node {
 		if len(p.feeds) > 8 {
 			body = append(body, html.Div(html.Props{Class: "rail-filter"},
 				html.Input(html.Props{
-					Class: "field", Type: "search", Placeholder: i18n.T("rail.filterPlaceholder"),
+					Class: "field", Type: "search", Placeholder: tr.T("rail", "filterPlaceholder"),
 					Value:   p.filter,
 					OnInput: p.onFilterInput,
 					Data:    map[string]string{"role": "feed-filter"},
-					Aria:    map[string]string{"label": i18n.T("rail.filterAria")},
+					Aria:    map[string]string{"label": tr.T("rail", "filterAria")},
 				})))
 		}
 
@@ -407,36 +418,35 @@ func railPane(p railProps) ui.Node {
 			if p.unreadFeedsOnly && f.GetUnreadCount() == 0 && p.sel.SourceID != f.GetSourceId() {
 				continue
 			}
-			body = append(body, feedRow(f, p.sel.SourceID == f.GetSourceId(), false))
+			body = append(body, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), false))
 			shown++
 		}
 		switch {
 		case len(p.feeds) == 0:
 			body = append(body, html.Div(html.Props{Class: "rail-section"},
-				html.Text(i18n.T("rail.emptyNoFeeds"))))
+				html.Text(tr.T("rail", "emptyNoFeeds"))))
 		case shown == 0 && needle != "":
 			body = append(body, html.Div(html.Props{Class: "rail-section"},
-				html.Text(i18n.T("rail.emptyNoMatch",
-					i18n.Args{"query": strings.TrimSpace(p.filter)}))))
+				html.Text(tr.T("rail", "emptyNoMatch", i18n.Args{"query": strings.TrimSpace(p.filter)}))))
 		case shown == 0:
 			body = append(body, html.Div(html.Props{Class: "rail-section"},
-				html.Text(i18n.T("rail.emptyNoUnread"))))
+				html.Text(tr.T("rail", "emptyNoUnread"))))
 		}
 	}
 
-	body = append(body, railCategories(p)...)
+	body = append(body, railCategories(tr, p)...)
 
 	if len(p.tags) > 0 {
 		body = append(body,
-			railBandToggle(glyphTags, i18n.T("rail.bandTags"), actTags, !p.tagsClosed, len(p.tags)))
+			railBandToggle(glyphTags, tr.T("rail", "bandTags"), actTags, !p.tagsClosed, len(p.tags)))
 		if !p.tagsClosed {
 			for _, t := range p.tags {
-				body = append(body, tagRow(t, p.sel.TagID == t.GetId()))
+				body = append(body, tagRow(tr, t, p.sel.TagID == t.GetId()))
 			}
 		}
 	}
 
-	return railShell(head, body, railFoot(p), false)
+	return railShell(tr, head, body, railFoot(tr, p), false)
 }
 
 // railCategories is the Categories section: the same subscriptions as the list
@@ -451,7 +461,7 @@ func railPane(p railProps) ui.Node {
 //
 // Each category is itself a fold, because opening all of them at once is the
 // flat list again with headings in it.
-func railCategories(p railProps) []ui.Node {
+func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
 	if len(p.folders) == 0 && !hasUnfiled(p.feeds) {
 		// Nothing filed, no categories: the section would be a heading over an
 		// empty space. The way to get one is in the add-a-feed form and on the
@@ -466,30 +476,30 @@ func railCategories(p railProps) []ui.Node {
 	newCat := html.Button(html.Props{
 		Class: "rail-band-act",
 		Raw:   map[string]any{"data-action": actCatNew},
-		Aria:  map[string]string{"label": i18n.T("rail.addCategoryA")},
-	}, html.Text(i18n.T("rail.addCategory")))
+		Aria:  map[string]string{"label": tr.T("rail", "addCategoryA")},
+	}, html.Text(tr.T("rail", "addCategory")))
 
 	groups := feedsByFolder(p.feeds)
-	out := []ui.Node{railBandToggle(glyphCats, i18n.T("rail.bandCategories"), actCats, !p.catsClosed,
+	out := []ui.Node{railBandToggle(glyphCats, tr.T("rail", "bandCategories"), actCats, !p.catsClosed,
 		len(p.folders), newCat)}
 	if p.catsClosed {
 		return out
 	}
 
 	for _, f := range p.folders {
-		out = append(out, categoryRows(p, f.GetId(), f.GetName(), groups[f.GetId()], true)...)
+		out = append(out, categoryRows(tr, p, f.GetId(), f.GetName(), groups[f.GetId()], true)...)
 	}
 	// Unfiled last, and only when it has something in it. It is where feeds
 	// added in a hurry land, so it is a working queue rather than a category —
 	// and an empty one is not worth a row.
 	if rest := groups[unfiledID]; len(rest) > 0 {
-		out = append(out, categoryRows(p, unfiledID, i18n.T("stream.unfiled"), rest, false)...)
+		out = append(out, categoryRows(tr, p, unfiledID, tr.T("stream", "unfiled"), rest, false)...)
 	}
 	return out
 }
 
 // categoryRows is one category's header row plus, when it is open, its feeds.
-func categoryRows(p railProps, id, name string, feeds []*pb.Feed, editable bool) []ui.Node {
+func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Feed, editable bool) []ui.Node {
 	open := catOpen(p.openCats, id)
 	unread := 0
 	for _, f := range feeds {
@@ -507,7 +517,7 @@ func categoryRows(p railProps, id, name string, feeds []*pb.Feed, editable bool)
 			Raw:   map[string]any{"data-action": actCatToggle, "data-value": id},
 			Aria: map[string]string{
 				"expanded": strconv.FormatBool(open),
-				"label":    i18n.T("rail.showCategory", i18n.Args{"name": name}),
+				"label":    tr.T("rail", "showCategory", i18n.Args{"name": name}),
 			},
 		}, html.Text(glyphClosed)),
 		html.Button(html.Props{
@@ -515,7 +525,7 @@ func categoryRows(p railProps, id, name string, feeds []*pb.Feed, editable bool)
 			Raw:   map[string]any{"data-folder-id": id},
 			Aria: map[string]string{
 				"current": strconv.FormatBool(p.sel.FolderID == id),
-				"label":   i18n.N("rail.categoryAria", len(feeds), i18n.Args{"name": name}),
+				"label":   tr.T("rail", "categoryAria", i18n.CountWith(len(feeds), i18n.Args{"name": name})),
 			},
 		},
 			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
@@ -533,8 +543,8 @@ func categoryRows(p railProps, id, name string, feeds []*pb.Feed, editable bool)
 		kids = append(kids, html.Button(html.Props{
 			Class: "feed-gear cat-gear",
 			Raw:   map[string]any{"data-action": actCatOpen, "data-value": id},
-			Title: i18n.T("rail.editCategory", i18n.Args{"name": name}),
-			Aria:  map[string]string{"label": i18n.T("rail.editCategory", i18n.Args{"name": name})},
+			Title: tr.T("rail", "editCategory", i18n.Args{"name": name}),
+			Aria:  map[string]string{"label": tr.T("rail", "editCategory", i18n.Args{"name": name})},
 		}, html.Text("✎")))
 	}
 
@@ -550,10 +560,10 @@ func categoryRows(p railProps, id, name string, feeds []*pb.Feed, editable bool)
 	if len(feeds) == 0 {
 		return append(out, html.Div(html.Props{
 			Class: "rail-section cat-empty", Key: "cat-empty-" + id,
-		}, html.Text(i18n.T("rail.categoryEmpty"))))
+		}, html.Text(tr.T("rail", "categoryEmpty"))))
 	}
 	for _, f := range feeds {
-		out = append(out, feedRow(f, p.sel.SourceID == f.GetSourceId(), true))
+		out = append(out, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), true))
 	}
 	return out
 }
@@ -644,21 +654,21 @@ func toggleCat(openCats, id string) string {
 // exactly one thing — paste and press Enter — and the other two decisions a
 // reader makes while adding a feed, what to call it and where it goes, had
 // nowhere to happen. See addfeed.go for the trade that buys.
-func railFoot(_ railProps) []ui.Node {
+func railFoot(tr i18n.Runtime, _ railProps) []ui.Node {
 	return []ui.Node{
 		html.Div(html.Props{Class: "rail-add"},
 			html.Button(html.Props{
 				Class: "btn rail-add-btn",
 				Raw:   map[string]any{"data-action": actAddOpen},
-				Aria:  map[string]string{"label": i18n.T("rail.addFeed")},
-			}, lead(glyphAdd), html.Text(i18n.T("rail.addFeed"))),
+				Aria:  map[string]string{"label": tr.T("rail", "addFeed")},
+			}, lead(glyphAdd), html.Text(tr.T("rail", "addFeed"))),
 		),
 	}
 }
 
 // railShell assembles the three regions. Only the middle one scrolls.
-func railShell(head, body, foot []ui.Node, busy bool) ui.Node {
-	aria := map[string]string{"label": i18n.T("rail.feedsAria")}
+func railShell(tr i18n.Runtime, head, body, foot []ui.Node, busy bool) ui.Node {
+	aria := map[string]string{"label": tr.T("rail", "feedsAria")}
 	if busy {
 		aria["busy"] = "true"
 	}
@@ -693,14 +703,14 @@ const (
 // The name is the RESOLVED one and the mark is the chosen one — the two things
 // the settings panel exists to set. The plain dot is still the fallback: a tag
 // with no glyph is not a tag with no marker, it is a tag wearing the section's.
-func tagRow(t *pb.Tag, active bool) ui.Node {
+func tagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 	name := tagDisplay(t)
 	// The tooltip says both names when they differ. It is the cheapest possible
 	// answer to "what is this row actually tagged as", and it costs nothing on
 	// the majority of rows that were never renamed.
-	hint := i18n.T("rail.tagged", i18n.Args{"name": name})
+	hint := tr.T("rail", "tagged", i18n.Args{"name": name})
 	if l := t.GetLabel(); l != "" && l != t.GetName() {
-		hint = i18n.T("rail.taggedRenamed", i18n.Args{"label": name, "name": t.GetName()})
+		hint = tr.T("rail", "taggedRenamed", i18n.Args{"label": name, "name": t.GetName()})
 	}
 
 	return html.Div(html.Props{Class: "feed-slot", Key: "tag-" + t.GetId()},
@@ -722,8 +732,8 @@ func tagRow(t *pb.Tag, active bool) ui.Node {
 				"data-action":   actTagSettings,
 				"data-for-item": t.GetId(),
 			},
-			Title: i18n.T("rail.settingsFor", i18n.Args{"name": name}),
-			Aria:  map[string]string{"label": i18n.T("rail.settingsFor", i18n.Args{"name": name})},
+			Title: tr.T("rail", "settingsFor", i18n.Args{"name": name}),
+			Aria:  map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": name})},
 		}, html.Text(glyphSettings)),
 	)
 }
@@ -761,6 +771,9 @@ const (
 	actTags    = "toggle-rail-tags"
 	actCats    = "toggle-rail-categories"
 )
+
+// actFocus gives the reading pane the whole window.
+const actFocus = "toggle-focus"
 
 // The category controls: fold one open, make one, edit one. Distinct from
 // actCats, which folds the whole section — the section and a category in it are
@@ -837,10 +850,10 @@ func railBandToggle(glyph, label, action string, open bool, hidden int, extra ..
 // what the collapsed count is counting, and hiding the control that changes a
 // number you can still see is worse than the row it saves. It is skipped only
 // when there are no feeds for it to filter.
-func railFeedsHeader(p railProps) ui.Node {
-	label := i18n.T("rail.feedFilterAll")
+func railFeedsHeader(tr i18n.Runtime, p railProps) ui.Node {
+	label := tr.T("rail", "feedFilterAll")
 	if p.unreadFeedsOnly {
-		label = i18n.T("rail.feedFilterNew")
+		label = tr.T("rail", "feedFilterNew")
 	}
 	var extra []ui.Node
 	if len(p.feeds) > 0 {
@@ -849,11 +862,11 @@ func railFeedsHeader(p railProps) ui.Node {
 			Raw:   map[string]any{"data-action": "toggle-feed-filter"},
 			Aria: map[string]string{
 				"pressed": strconv.FormatBool(p.unreadFeedsOnly),
-				"label":   i18n.T("rail.showFeedFilter", i18n.Args{"label": label}),
+				"label":   tr.T("rail", "showFeedFilter", i18n.Args{"label": label}),
 			},
 		}, html.Text(strings.ToLower(label))))
 	}
-	return railBandToggle(glyphFeeds, i18n.T("rail.bandFeeds"), actFeeds,
+	return railBandToggle(glyphFeeds, tr.T("rail", "bandFeeds"), actFeeds,
 		!p.feedsClosed, len(p.feeds), extra...)
 }
 
@@ -892,18 +905,18 @@ func specialRow(glyph, label, id string, count int, active bool) ui.Node {
 // category, which needs its own key — the feed list and the Categories section
 // both draw it, in one scroller, and two siblings sharing a key is a reconciler
 // bug rather than a duplicate row.
-func feedRow(f *pb.Feed, active, nested bool) ui.Node {
+func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 	// A feed that has failed repeatedly is dormant, and the reader has to be
 	// able to say so — a dead feed and a quiet feed look identical otherwise.
 	dormant := f.GetConsecutiveFailures() >= 3
 	title := f.GetTitle()
 	if dormant {
-		title = i18n.T("rail.dormantSuffix", i18n.Args{"title": title})
+		title = tr.T("rail", "dormantSuffix", i18n.Args{"title": title})
 	}
 
 	children := []ui.Node{
 		feedIcon(f),
-		html.Span(html.Props{Class: "feed-name", Title: titleFor(f, dormant)},
+		html.Span(html.Props{Class: "feed-name", Title: titleFor(tr, f, dormant)},
 			html.Text(f.GetTitle())),
 	}
 	if n := f.GetUnreadCount(); n > 0 {
@@ -947,8 +960,8 @@ func feedRow(f *pb.Feed, active, nested bool) ui.Node {
 				"data-action":   "feed-settings",
 				"data-for-item": f.GetSourceId(),
 			},
-			Title: i18n.T("rail.settingsFor", i18n.Args{"name": f.GetTitle()}),
-			Aria:  map[string]string{"label": i18n.T("rail.settingsFor", i18n.Args{"name": f.GetTitle()})},
+			Title: tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()}),
+			Aria:  map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()})},
 		}, html.Text("\u2699")),
 	)
 }
@@ -1043,10 +1056,9 @@ func hostOf(raw string) string {
 	return strings.ToLower(h)
 }
 
-func titleFor(f *pb.Feed, dormant bool) string {
+func titleFor(tr i18n.Runtime, f *pb.Feed, dormant bool) string {
 	if dormant && f.GetLastError() != "" {
-		return i18n.T("rail.lastErrorHint",
-			i18n.Args{"title": f.GetTitle(), "err": f.GetLastError()})
+		return tr.T("rail", "lastErrorHint", i18n.Args{"title": f.GetTitle(), "err": f.GetLastError()})
 	}
 	return f.GetTitle()
 }
@@ -1098,10 +1110,16 @@ type listProps struct {
 	// comes off the transport's own attempt count.
 	connFix      string
 	connFixLabel string
+	// staleNote says the list came from the cache rather than the server, and
+	// how old it is. Empty when the server answered. §12.3 requires this to be
+	// unmistakable, and it is right to: a list that silently shows yesterday's
+	// articles during an outage is the failure the connection indicator exists
+	// to prevent, wearing a different hat.
+	staleNote string
 	unread       int
-	busy        string
-	notice      string
-	searchValue string
+	busy         string
+	notice       string
+	searchValue  string
 	// Handlers are created ONCE in Reader, at the top level, and passed down.
 	// They cannot be created here: listPane returns early in three places, and a
 	// hook behind an early return binds to the wrong slot.
@@ -1123,11 +1141,11 @@ type listProps struct {
 // where you are.
 const ItemRowHeight = 96.0
 
-func listPane(p listProps) ui.Node {
+func listPane(tr i18n.Runtime, p listProps) ui.Node {
 	// The header sits OUTSIDE the scroll container now. It used to be the first
 	// row inside it, which meant it scrolled away and, more importantly, that the
 	// virtualised list could not own its own scroller.
-	head := listHead(p)
+	head := listHead(tr, p)
 
 	// Before the socket is up there is nothing to place — the shape of what is
 	// coming is not known yet, so a skeleton here would be a guess. Once a fetch
@@ -1135,15 +1153,15 @@ func listPane(p listProps) ui.Node {
 	// belong.
 	if !p.connected {
 		return html.Div(html.Props{Class: "pane pane-list"}, head,
-			html.Div(html.Props{Class: "empty"}, html.Text(i18n.T("list.connecting"))))
+			html.Div(html.Props{Class: "empty"}, html.Text(tr.T("list", "connecting"))))
 	}
 	if p.loading && len(p.items) == 0 {
-		return html.Div(html.Props{Class: "pane pane-list"}, head, skeletonList())
+		return html.Div(html.Props{Class: "pane pane-list"}, head, skeletonList(tr))
 	}
 	if len(p.items) == 0 {
 		return html.Div(html.Props{Class: "pane pane-list"}, head,
-			actionButton("back-rail", "btn btn-ghost back", i18n.T("list.backToFeeds")),
-			emptyList(p))
+			actionButton("back-rail", "btn btn-ghost back", tr.T("list", "backToFeeds")),
+			emptyList(tr, p))
 	}
 
 	// The list is as long as the scope actually is, not as long as what has been
@@ -1158,6 +1176,23 @@ func listPane(p listProps) ui.Node {
 	// One extra row at the end carries the paging control, so it participates in
 	// the same scroll and appears when you actually reach the bottom.
 	count := rows + 1
+
+	// Where the cursor sits, as an index into the loaded prefix. -1 parks it.
+	//
+	// A scan rather than a value threaded down from Reader: `current` moves a few
+	// times a minute and this list is rebuilt on every scroll frame, so caching
+	// it would mean keeping two things in step to save a walk of a slice of
+	// pointers. If this ever shows up in a profile, the fix is to have openItem
+	// carry the index it already knows.
+	cursor := -1
+	if p.current != nil {
+		for i, it := range p.items {
+			if it.GetId() == p.current.GetId() {
+				cursor = i
+				break
+			}
+		}
+	}
 
 	return html.Div(html.Props{Class: "pane pane-list"},
 		head,
@@ -1211,7 +1246,7 @@ func listPane(p listProps) ui.Node {
 							step = spawnStaggerCap
 						}
 					}
-					return itemRow(it, p.current != nil && p.current.GetId() == it.GetId(),
+					return itemRow(tr, it, p.current != nil && p.current.GetId() == it.GetId(),
 						p.iconHosts, step)
 				case i < rows:
 					// A row that exists but has not arrived. Same box, same
@@ -1219,13 +1254,30 @@ func listPane(p listProps) ui.Node {
 					// what is not known yet.
 					return skeletonRow(i)
 				default:
-					return listTail(p)
+					return listTail(tr, p)
 				}
 			},
+			// The selection cursor rides on the SCROLLER, as one element that
+			// travels, rather than as a background that lights up on one row and
+			// goes out on another. Two rows cross-fading is two events; a mark
+			// that moves is one, and it is the difference between "something
+			// changed" and "you moved".
+			//
+			// It is a pseudo-element of the scroll container, positioned in the
+			// container's own CONTENT space — so its y is simply the row index
+			// times the row height, and it needs no scroll arithmetic and no
+			// re-render as the list scrolls underneath it.
 			Props: html.Props{
 				Class: "list-scroll",
 				Role:  "list",
 				Aria:  map[string]string{"label": p.sel.Title},
+				// FormatBool, not onOff: onOff returns LOCALISED words for a
+				// chip, and a data attribute a stylesheet matches on must not
+				// change when the reader changes language.
+				Data: map[string]string{"cursor": strconv.FormatBool(cursor >= 0)},
+				// A custom property, so it has to ride the style ATTRIBUTE:
+				// GWC's style map cannot set them at all (see hueVarFor).
+				Raw: map[string]any{"style": "--cursor:" + cursorY(cursor)},
 			},
 		}),
 	)
@@ -1242,6 +1294,17 @@ func listPane(p listProps) ui.Node {
 // has not arrived rather than as a loading graphic. Keying off the index also
 // means a given row keeps the same shape while you scroll past it, instead of
 // reshuffling every frame.
+// cursorY is the cursor's offset down the list, in the scroller's content space.
+// Parked at the top when there is no selection, where it waits behind opacity 0
+// — so the first selection of a session fades in on its way rather than sliding
+// the full height of the list from nowhere.
+func cursorY(index int) string {
+	if index < 0 {
+		return "0px"
+	}
+	return strconv.FormatFloat(float64(index)*ItemRowHeight, 'f', 0, 64) + "px"
+}
+
 func skeletonRow(i int) ui.Node {
 	titles := []string{"sk-w-90", "sk-w-70", "sk-w-90", "sk-w-45"}
 	metas := []string{"sk-w-45", "sk-w-30", "sk-w-30", "sk-w-45"}
@@ -1269,7 +1332,7 @@ func skeletonRow(i int) ui.Node {
 // Twelve rows: enough to fill any plausible viewport, few enough that it is
 // obviously a placeholder rather than content. The hue bar is left blank,
 // because which source this is, is exactly what is not known yet.
-func skeletonList() ui.Node {
+func skeletonList(tr i18n.Runtime) ui.Node {
 	rows := make([]ui.Node, 0, 12)
 	for i := 0; i < 12; i++ {
 		rows = append(rows, skeletonRow(i))
@@ -1278,7 +1341,7 @@ func skeletonList() ui.Node {
 	// from assistive tech, because twelve empty boxes are not information.
 	return html.Div(html.Props{
 		Class: "list-scroll", Role: "status",
-		Aria: map[string]string{"live": "polite", "label": i18n.T("list.loadingArticles")},
+		Aria: map[string]string{"live": "polite", "label": tr.T("list", "loadingArticles")},
 	}, rows...)
 }
 
@@ -1287,7 +1350,7 @@ func skeletonList() ui.Node {
 // Scrolling loads the next page; this is the visible, keyboard-reachable
 // equivalent. Infinite scroll alone strands anyone not scrolling with a pointer
 // and gives no way to tell "the end" from "still loading".
-func listTail(p listProps) ui.Node {
+func listTail(tr i18n.Runtime, p listProps) ui.Node {
 	switch {
 	case p.loadingMore:
 		// is-loading earns an indeterminate hairline in the accent (see
@@ -1295,37 +1358,37 @@ func listTail(p listProps) ui.Node {
 		// actually moving is evidence, and it is the difference between "still
 		// working" and "stopped working" on a slow feed.
 		return html.Div(html.Props{Class: "list-more is-loading"},
-			html.Text(i18n.T("list.loading")))
+			html.Text(tr.T("list", "loading")))
 	case p.hasMore:
-		return actionButton("more", "btn list-more", i18n.T("list.loadMore"))
+		return actionButton("more", "btn list-more", tr.T("list", "loadMore"))
 	default:
-		return html.Div(html.Props{Class: "list-more"}, html.Text(i18n.T("list.end")))
+		return html.Div(html.Props{Class: "list-more"}, html.Text(tr.T("list", "end")))
 	}
 }
 
 // listHead is the pane's header: what you are looking at, and the controls for
 // it. The chosen design has no top bar, so this is where search, refresh and the
 // connection indicator live.
-func listHead(p listProps) ui.Node {
-	sub := i18n.T("list.subNewest")
+func listHead(tr i18n.Runtime, p listProps) ui.Node {
+	sub := tr.T("list", "subNewest")
 	switch {
 	case p.sel.Search != "":
-		sub = i18n.T("list.subSearch")
+		sub = tr.T("list", "subSearch")
 	case p.sel.Later:
-		sub = i18n.T("list.subLater")
+		sub = tr.T("list", "subLater")
 	case p.sel.Rating > 0:
-		sub = i18n.T("list.subLiked")
+		sub = tr.T("list", "subLiked")
 	case p.sel.Rating < 0:
-		sub = i18n.T("list.subDisliked")
+		sub = tr.T("list", "subDisliked")
 	case p.unreadOnly:
-		sub = i18n.T("list.subUnread")
+		sub = tr.T("list", "subUnread")
 	case p.unread > 0:
-		sub = i18n.N("list.subUnreadCount", p.unread)
+		sub = tr.T("list", "subUnreadCount", i18n.Count(p.unread))
 	}
 
-	unreadLabel := i18n.T("list.unreadOnly")
+	unreadLabel := tr.T("list", "unreadOnly")
 	if p.unreadOnly {
-		unreadLabel = i18n.T("list.showingUnread")
+		unreadLabel = tr.T("list", "showingUnread")
 	}
 
 	status := p.notice
@@ -1349,13 +1412,22 @@ func listHead(p listProps) ui.Node {
 		// article was marked read — a subtitle flickering under the reader's hand
 		// on every press of j.
 		html.Div(html.Props{Class: "list-sub", Key: "ls-" + p.sel.Title}, html.Text(sub)),
+		// The cached-fallback badge (§12.3). Rendered in the subtitle line
+		// rather than as a toast because it describes the LIST, and it has to
+		// stay visible for as long as the list is the thing it describes — a
+		// notice that fades after four seconds would leave a reader scrolling
+		// yesterday's articles with nothing on screen saying so.
+		ui.If(p.staleNote != "", func() ui.Node {
+			return html.Div(html.Props{Class: "list-stale", Key: "lstale"},
+				html.Text(p.staleNote))
+		}),
 		html.Div(html.Props{Class: "list-tools"},
 			// Always-visible connection state: a reader that has silently stopped
 			// receiving looks identical to a quiet news day.
-			html.Span(html.Props{Class: "conn", Title: i18n.T("list.connTitle"),
+			html.Span(html.Props{Class: "conn", Title: tr.T("list", "connTitle"),
 				Data: map[string]string{"state": string(p.conn)}},
 				html.I(html.Props{Class: "conn-dot"}),
-				html.Text(connLabel(p.conn)),
+				html.Text(connLabel(tr, p.conn)),
 			),
 			// The remedy, when there is one a press can achieve.
 			//
@@ -1367,15 +1439,15 @@ func listHead(p listProps) ui.Node {
 			// the browser has already said it would fail.
 			connFix(p.connFix, p.connFixLabel),
 			html.Input(html.Props{
-				Class: "field", Type: "search", Placeholder: i18n.T("list.searchPlaceholder"),
+				Class: "field", Type: "search", Placeholder: tr.T("list", "searchPlaceholder"),
 				Value:   p.searchValue,
 				OnInput: p.onSearchInput, OnKeyDown: p.onSearchKey,
 				Data: map[string]string{"role": "search"},
-				Aria: map[string]string{"label": i18n.T("list.searchAria")},
+				Aria: map[string]string{"label": tr.T("list", "searchAria")},
 			}),
-			glyphChip("refresh", glyphRefresh, i18n.T("list.refresh"), false),
+			glyphChip("refresh", glyphRefresh, tr.T("list", "refresh"), false),
 			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly),
-			glyphChip("mark-all", glyphMarkRead, i18n.T("list.markAllRead"), false),
+			glyphChip("mark-all", glyphMarkRead, tr.T("list", "markAllRead"), false),
 			// Settings is reachable from the phone's tab bar and from a comma.
 			// Neither is discoverable on a desktop, so it also gets a gear here —
 			// beside the other controls that act on the whole app rather than on
@@ -1383,8 +1455,8 @@ func listHead(p listProps) ui.Node {
 			html.Button(html.Props{
 				Class: "chip chip-mini",
 				Raw:   map[string]any{"data-action": "open-settings"},
-				Title: i18n.T("list.settings"),
-				Aria:  map[string]string{"label": i18n.T("list.settings")},
+				Title: tr.T("list", "settings"),
+				Aria:  map[string]string{"label": tr.T("list", "settings")},
 			}, lead(glyphSettings)),
 			// The one visible pointer to the keyboard layer. Without it, an app
 			// whose best interface is its keys is keyboard-first for exactly one
@@ -1392,8 +1464,8 @@ func listHead(p listProps) ui.Node {
 			html.Button(html.Props{
 				Class: "chip chip-mini",
 				Raw:   map[string]any{"data-action": "help-open"},
-				Title: i18n.T("list.shortcuts"),
-				Aria:  map[string]string{"label": i18n.T("list.shortcuts")},
+				Title: tr.T("list", "shortcuts"),
+				Aria:  map[string]string{"label": tr.T("list", "shortcuts")},
 			}, lead(glyphHelp)),
 		),
 		ui.If(status != "", func() ui.Node {
@@ -1411,7 +1483,7 @@ func listHead(p listProps) ui.Node {
 					return html.Button(html.Props{
 						Class: "chip chip-mini banner-undo",
 						Raw:   map[string]any{"data-action": "undo-mark-all"},
-					}, html.Text(i18n.T("list.undo")))
+					}, html.Text(tr.T("list", "undo")))
 				}),
 			)
 		}),
@@ -1451,20 +1523,20 @@ func staticChip(label string) ui.Node {
 
 // emptyList gives direction rather than a shrug. Which direction depends on why
 // it is empty, and those are three different situations.
-func emptyList(p listProps) ui.Node {
+func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 	switch {
 	case p.sel.Search != "":
-		return emptyState("list.emptySearch", "list.emptySearchHint")
+		return emptyState(tr, "emptySearch", "emptySearchHint")
 	case p.unreadOnly:
-		return emptyState("list.emptyUnread", "list.emptyUnreadHint")
+		return emptyState(tr, "emptyUnread", "emptyUnreadHint")
 	case p.sel.Later:
-		return emptyState("list.emptyLater", "list.emptyLaterHint")
+		return emptyState(tr, "emptyLater", "emptyLaterHint")
 	case p.sel.Rating > 0:
-		return emptyState("list.emptyLiked", "list.emptyLikedHint")
+		return emptyState(tr, "emptyLiked", "emptyLikedHint")
 	case p.sel.Rating < 0:
-		return emptyState("list.emptyDisliked", "list.emptyDislikedHint")
+		return emptyState(tr, "emptyDisliked", "emptyDislikedHint")
 	default:
-		return emptyState("list.emptyNoArticles", "list.emptyNoArticlesHint")
+		return emptyState(tr, "emptyNoArticles", "emptyNoArticlesHint")
 	}
 }
 
@@ -1472,10 +1544,14 @@ func emptyList(p listProps) ui.Node {
 // helper because the shape is the point: the second line is the direction, and
 // six copies of the same two elements is six places for one of them to go
 // missing.
-func emptyState(titleKey, hintKey string) ui.Node {
+func emptyState(tr i18n.Runtime, titleKey, hintKey string) ui.Node {
+	// Bound to the list namespace once: both keys always come from it, and
+	// Runtime.NS exists precisely so a helper like this cannot pass the wrong
+	// positional namespace.
+	ns := tr.NS("list")
 	return html.Div(html.Props{Class: "empty"},
-		html.Strong(html.Props{}, html.Text(i18n.T(titleKey))),
-		html.Div(html.Props{}, html.Text(i18n.T(hintKey))))
+		html.Strong(html.Props{}, html.Text(ns.T(titleKey))),
+		html.Div(html.Props{}, html.Text(ns.T(hintKey))))
 }
 
 // spawnStaggerCap is how many 26ms steps an arriving page may be spread over.
@@ -1486,7 +1562,7 @@ const spawnStaggerCap = 9
 
 // itemRow builds one list row. spawn is the row's stagger step in an arriving
 // page, or -1 when the item was already in the list — see data-fresh below.
-func itemRow(it *pb.Item, active bool, hosts map[string]string, spawn int) ui.Node {
+func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string, spawn int) ui.Node {
 	// Title first. The mockup leads with the headline because that is what a
 	// reader scans; the dateline is what they check afterwards, so it sits
 	// beneath. Putting the metadata on top made every row start with the same
@@ -1504,7 +1580,7 @@ func itemRow(it *pb.Item, active bool, hosts map[string]string, spawn int) ui.No
 		sourceMark(it.GetSourceId(), hosts, "item-mark"),
 		html.Span(html.Props{Class: "item-source"}, html.Text(it.GetSourceTitle())),
 		html.I(html.Props{Class: "item-sep"}),
-		html.Span(html.Props{}, html.Text(relTime(it.GetPublishedAt()))),
+		html.Span(html.Props{}, html.Text(relTime(tr, it.GetPublishedAt()))),
 	}
 	// The age word, not just a colour. A dot alone does not survive being
 	// colour-blind or being glanced at, and "stale" is the one a reader most
@@ -1512,29 +1588,29 @@ func itemRow(it *pb.Item, active bool, hosts map[string]string, spawn int) ui.No
 	switch age {
 	case "new":
 		meta = append(meta, html.Span(html.Props{Class: "age-tag age-new"},
-			html.Text(i18n.T("list.ageNew"))))
+			html.Text(tr.T("list", "ageNew"))))
 	case "stale":
 		meta = append(meta, html.Span(html.Props{Class: "age-tag age-stale"},
-			html.Text(i18n.T("list.ageStale"))))
+			html.Text(tr.T("list", "ageStale"))))
 	}
 	if it.GetWordCount() >= 50 {
 		meta = append(meta,
 			html.I(html.Props{Class: "item-sep"}),
-			html.Span(html.Props{}, html.Text(readingTime(it.GetWordCount()))))
+			html.Span(html.Props{}, html.Text(readingTime(tr, it.GetWordCount()))))
 	}
 	// The verdict, if there is one. A liked row and a disliked row have to be
 	// distinguishable at a glance or the ratings are write-only.
 	if it.GetStarred() {
 		meta = append(meta, html.Span(html.Props{Class: "item-later",
-			Aria: map[string]string{"label": i18n.T("list.savedFor")}}, html.Text("⏱")))
+			Aria: map[string]string{"label": tr.T("list", "savedFor")}}, html.Text("⏱")))
 	}
 	switch {
 	case it.GetRating() > 0:
 		meta = append(meta, html.Span(html.Props{Class: "item-verdict verdict-up",
-			Aria: map[string]string{"label": i18n.T("list.liked")}}, html.Text("▲")))
+			Aria: map[string]string{"label": tr.T("list", "liked")}}, html.Text("▲")))
 	case it.GetRating() < 0:
 		meta = append(meta, html.Span(html.Props{Class: "item-verdict verdict-down",
-			Aria: map[string]string{"label": i18n.T("list.disliked")}}, html.Text("▼")))
+			Aria: map[string]string{"label": tr.T("list", "disliked")}}, html.Text("▼")))
 	}
 	children = append(children, html.Div(html.Props{Class: "item-meta"}, meta...))
 
@@ -1550,7 +1626,7 @@ func itemRow(it *pb.Item, active bool, hosts map[string]string, spawn int) ui.No
 	switch {
 	case it.GetNote() != "":
 		children = append(children, html.Div(html.Props{Class: "item-summary item-note"},
-			html.Strong(html.Props{Class: "note-flag"}, html.Text(i18n.T("list.noteFlag"))),
+			html.Strong(html.Props{Class: "note-flag"}, html.Text(tr.T("list", "noteFlag"))),
 			html.Text(firstWords(it.GetNote(), 90)),
 		))
 	case it.GetRankReason() != "":
@@ -1602,6 +1678,12 @@ func itemRow(it *pb.Item, active bool, hosts map[string]string, spawn int) ui.No
 // --- article -----------------------------------------------------------------
 
 type articleProps struct {
+	// focus is whether the reading pane has the window to itself. It is here
+	// rather than read from the shell because the button has to render its own
+	// pressed state, and a control that does not know what it is toggling is a
+	// control that can disagree with the layout.
+	focus bool
+
 	// stream is what the reading pane is showing, in list order.
 	//
 	// A slice rather than one item, because reading is continuous: scrolling off
@@ -1656,6 +1738,11 @@ type articleProps struct {
 	// thing stays one click away, and the clamp never applies to something you
 	// opened deliberately from the list.
 	expanded map[string]bool
+	// pageOpen is which articles have the proxied publisher page showing in the
+	// reading column (§10.1b). Absent is closed, like every other per-article
+	// disclosure in this stream: the control repeats once per article, so its
+	// resting state has to be the quiet one.
+	pageOpen map[string]bool
 	// noteOpen is which articles have their note panel opened out, keyed by item
 	// id. Closed is the default and the absent value, which is the point: in a
 	// continuous stream every article carries one of these, and a column of
@@ -1670,44 +1757,51 @@ type articleProps struct {
 // than the button would; above it, an unclamped article dominates the stream.
 const clampWords = 900
 
-func articlePane(p articleProps) ui.Node {
+func articlePane(tr i18n.Runtime, p articleProps) ui.Node {
 	if len(p.stream) == 0 {
+		// The toggle is here too: focus mode survives a scope change, and a
+		// reader who lands on an empty stream with the columns closed needs the
+		// way back to be on screen rather than remembered.
 		return html.Main(html.Props{Class: "pane pane-article"},
+			focusPerch(tr, p.focus),
 			html.Div(html.Props{Class: "empty"},
-				html.Strong(html.Props{}, html.Text(i18n.T("article.pickTitle"))),
-				html.Div(html.Props{}, html.Text(i18n.T("article.pickHint"))),
+				html.Strong(html.Props{}, html.Text(tr.T("article", "pickTitle"))),
+				html.Div(html.Props{}, html.Text(tr.T("article", "pickHint"))),
 			))
 	}
 
 	kids := make([]ui.Node, 0, len(p.stream)+3)
 
+	// Pinned to the top of the pane, ahead of everything that scrolls.
+	kids = append(kids, focusPerch(tr, p.focus))
+
 	// The back control belongs to the pane, not to any one article in it.
 	kids = append(kids, html.Div(html.Props{Class: "article-nav"},
-		actionButton("back-list", "btn btn-ghost back", i18n.T("article.backToList"))))
+		actionButton("back-list", "btn btn-ghost back", tr.T("article", "backToList"))))
 
 	switch {
 	case p.loadingAbove:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge is-loading"},
-			html.Text(i18n.T("article.loading"))))
+			html.Text(tr.T("article", "loading"))))
 	case p.atStart:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge"},
-			html.Text(i18n.T("article.streamTop"))))
+			html.Text(tr.T("article", "streamTop"))))
 	}
 
 	for _, it := range p.stream {
-		kids = append(kids, articleBlock(it, p))
+		kids = append(kids, articleBlock(tr, it, p))
 	}
 
 	switch {
 	case p.loadingBelow:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge is-loading"},
-			html.Text(i18n.T("article.loading"))))
+			html.Text(tr.T("article", "loading"))))
 	case p.atEnd:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge"},
-			html.Text(i18n.T("article.streamEnd"))))
+			html.Text(tr.T("article", "streamEnd"))))
 	default:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge"},
-			html.Text(i18n.T("article.streamMore"))))
+			html.Text(tr.T("article", "streamMore"))))
 	}
 
 	// tabindex -1 makes the scroll container focusable without putting it in the
@@ -1723,7 +1817,45 @@ func articlePane(p articleProps) ui.Node {
 // stream of five feeds is five visibly different articles rather than one long
 // undifferentiated column, and the id so the scroll handler can say which one is
 // being read without the view having to guess from a scroll offset.
-func articleBlock(it *pb.Item, p articleProps) ui.Node {
+// focusPerch is the full-width toggle, floating at the top right of the reading
+// pane.
+//
+// Top right rather than beside the back button on the left: the left of this
+// pane is where the reader LEAVES from, and this is the opposite gesture. It is
+// also the corner a reader's eye goes to for "make this bigger" in every other
+// application they use, which is the sort of borrowed expectation worth honouring.
+//
+// The icon is four corner brackets that move — see design/focus.go. There is no
+// text label because the button floats over prose and any word long enough to be
+// clear would be a plaque on the article; the accessible name carries the
+// meaning instead, and it says what pressing WILL do rather than what is true
+// now.
+func focusPerch(tr i18n.Runtime, on bool) ui.Node {
+	label := tr.T("article", "focusOn")
+	if on {
+		label = tr.T("article", "focusOff")
+	}
+	return html.Div(html.Props{Class: "focus-perch"},
+		html.Button(html.Props{
+			Class: "focus-btn",
+			Title: label,
+			Raw:   map[string]any{"data-action": actFocus},
+			Aria: map[string]string{
+				"pressed": strconv.FormatBool(on),
+				"label":   label,
+			},
+		},
+			html.I(html.Props{Class: "focus-box", Aria: map[string]string{"hidden": "true"}},
+				html.I(html.Props{Class: "fc-tl"}),
+				html.I(html.Props{Class: "fc-tr"}),
+				html.I(html.Props{Class: "fc-bl"}),
+				html.I(html.Props{Class: "fc-br"}),
+			),
+		),
+	)
+}
+
+func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	full := p.bodies[it.GetId()]
 	if full == nil {
 		full = it
@@ -1753,7 +1885,7 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 			sourceMark(it.GetSourceId(), p.iconHosts, "article-dot"),
 			html.Span(html.Props{Class: "item-source"}, html.Text(it.GetSourceTitle())),
 			html.I(html.Props{Class: "item-sep"}),
-			html.Span(html.Props{}, html.Text(relTime(it.GetPublishedAt()))),
+			html.Span(html.Props{}, html.Text(relTime(tr, it.GetPublishedAt()))),
 			// Only shown when it tells you something. Many feeds carry a
 			// one-word body ("Comments"), and "1 words" is both wrong and a
 			// reading-time estimate for text that is not the article.
@@ -1761,7 +1893,7 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 				return html.I(html.Props{Class: "item-sep"})
 			}),
 			ui.If(full.GetWordCount() >= 50, func() ui.Node {
-				return html.Span(html.Props{}, html.Text(readingTime(full.GetWordCount())))
+				return html.Span(html.Props{}, html.Text(readingTime(tr, full.GetWordCount())))
 			}),
 		),
 		// The headline is the link. It is the largest thing on screen and the
@@ -1785,11 +1917,10 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 		html.Div(html.Props{Class: "article-actions"},
 			ui.If(full.GetAuthor() != "", func() ui.Node {
 				return html.Span(html.Props{Class: "article-byline"},
-					html.Text(i18n.T("article.byline", i18n.Args{"author": full.GetAuthor()})))
+					html.Text(tr.T("article", "byline", i18n.Args{"author": full.GetAuthor()})))
 			}),
 			ui.If(full.GetWordCount() >= 50, func() ui.Node {
-				return staticChip(i18n.N("article.wordCount", int(full.GetWordCount()),
-					i18n.Args{"count": thousands(int(full.GetWordCount()))}))
+				return staticChip(tr.T("article", "wordCount", i18n.CountWith(int(full.GetWordCount()), i18n.Args{"count": thousands(tr, int(full.GetWordCount()))})))
 			}),
 			// A verdict, not a bookmark. Starring answers "keep this"; a
 			// two-way rating answers "was this worth my time", and the negative
@@ -1799,17 +1930,17 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 			// Glyphs rather than words carry it, with the word alongside: ▲ and ▼
 			// read instantly and are legible at any size, and the label is what
 			// makes them unambiguous the first time.
-			glyphItemChip("like", glyphLiked, i18n.T("article.like"), full.GetRating() > 0, it.GetId()),
-			glyphItemChip("dislike", glyphDisliked, i18n.T("article.dislike"),
+			glyphItemChip("like", glyphLiked, tr.T("article", "like"), full.GetRating() > 0, it.GetId()),
+			glyphItemChip("dislike", glyphDisliked, tr.T("article", "dislike"),
 				full.GetRating() < 0, it.GetId()),
 			// Read later and mark-unread are the two ways out of a stream that
 			// marks things read as you scroll past them. Without the second one
 			// there is no way back at all, which makes scrolling quickly feel
 			// like a commitment.
-			glyphItemChip("read-later", glyphLater, i18n.T("article.readLater"),
+			glyphItemChip("read-later", glyphLater, tr.T("article", "readLater"),
 				full.GetStarred(), it.GetId()),
 			ui.If(full.GetRead(), func() ui.Node {
-				return glyphItemChip("mark-unread", "○", i18n.T("article.markUnread"),
+				return glyphItemChip("mark-unread", "○", tr.T("article", "markUnread"),
 					false, it.GetId())
 			}),
 			ui.If(full.GetUrl() != "", func() ui.Node {
@@ -1820,29 +1951,104 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 					Raw: map[string]any{
 						"data-action": "open-original", "data-for-item": it.GetId(),
 					},
-				}, html.Text(i18n.T("article.openOriginal")),
+				}, html.Text(tr.T("article", "openOriginal")),
+					html.Span(html.Props{Class: "gl-trail",
+						Aria: map[string]string{"hidden": "true"}},
+						html.Text(glyphExternal)))
+			}),
+			// The two proxy entry points, offered together rather than one
+			// behind the other. They answer different questions — "show me the
+			// page here, next to what I was reading" and "give me the page,
+			// full width, on its own" — and a reader who wants the second
+			// should not have to open the first to find it.
+			//
+			// Both are absent, not disabled, when the instance does not proxy
+			// pages: proxy_url is empty and there is nothing to offer. A
+			// disabled control would advertise a feature the server refuses.
+			ui.If(full.GetProxyUrl() != "", func() ui.Node {
+				return glyphItemChip("toggle-page", glyphPage,
+					tr.T("article", "viewPage"), p.pageOpen[it.GetId()], it.GetId())
+			}),
+			ui.If(full.GetProxyUrl() != "", func() ui.Node {
+				// An anchor, not a button: opening a new tab is what a link
+				// does, and routing it through a click handler would break
+				// middle-click, ctrl-click and "open in new window" — three
+				// gestures a reader already knows.
+				return html.A(html.Props{
+					Class: "chip", Href: full.GetProxyUrl(),
+					Target: "_blank", Rel: "noopener noreferrer",
+				}, html.Text(tr.T("article", "viewPageFull")),
 					html.Span(html.Props{Class: "gl-trail",
 						Aria: map[string]string{"hidden": "true"}},
 						html.Text(glyphExternal)))
 			}),
 		),
-		listenBar(it, p),
-		ui.If(loading, skeletonArticle),
+		ui.If(p.pageOpen[it.GetId()] && full.GetProxyUrl() != "", func() ui.Node {
+			return pageFrame(tr, it.GetId(), full.GetProxyUrl())
+		}),
+		listenBar(tr, it, p),
+		ui.If(loading, func() ui.Node { return skeletonArticle(tr) }),
 		ui.If(!loading, func() ui.Node {
 			long := full.GetWordCount() > clampWords && !p.expanded[it.GetId()]
 			if !long {
-				return articleBody(it.GetId(), body)
+				return articleBody(tr, it.GetId(), body)
 			}
 			// The clamp is a wrapper, not a class on the body, so the reading
 			// column's own type and measure are untouched by it.
 			return html.Div(html.Props{Class: "article-clamp"},
-				articleBody(it.GetId(), body),
+				articleBody(tr, it.GetId(), body),
 				html.Div(html.Props{Class: "clamp-fade"}),
-				itemChip("expand", i18n.T("article.readTheRest",
-					i18n.Args{"time": readingTime(full.GetWordCount())}), false, it.GetId()),
+				itemChip("expand", tr.T("article", "readTheRest", i18n.Args{"time": readingTime(tr, full.GetWordCount())}), false, it.GetId()),
 			)
 		}),
-		articleNote(it, p),
+		articleNote(tr, it, p),
+	)
+}
+
+// pageFrame renders the publisher's page, proxied, inside the reading column.
+//
+// It is an iframe because that is the only way to give a whole foreign document
+// its own layout context: the page brings its own stylesheet, and inlining it
+// would put a stranger's CSS in the same cascade as the reader's own typography
+// settings, where `body{font-size:13px}` wins an argument it should not be in.
+//
+// The sandbox attribute is belt to the response header's braces. `/p` already
+// sends `Content-Security-Policy: sandbox`, which puts the document in an opaque
+// origin on its own; this repeats the guarantee at the embedding site, where it
+// is visible to anyone reading the markup and survives someone later changing
+// the header. `allow-popups` matches the header exactly — a link that opens in a
+// new tab keeps working, and the popup inherits the sandbox.
+//
+// Deliberately NOT `allow-scripts` and NOT `allow-same-origin`. Together those
+// two would let the framed document reach back into this application, and
+// nothing about showing a publisher's page requires either.
+func pageFrame(tr i18n.Runtime, id, src string) ui.Node {
+	return html.Div(html.Props{Class: "page-frame", Key: "pf-" + id},
+		html.Iframe(html.Props{
+			Class: "page-frame-doc",
+			Raw: map[string]any{
+				"src":     src,
+				"sandbox": "allow-popups",
+				"loading": "lazy",
+				"title":   tr.T("article", "viewPageFrameTitle"),
+				// The frame is a document, not a control: a reader tabbing
+				// through the article should not fall into it and have to tab
+				// back out. They reach it by clicking, which is how they got
+				// here.
+				"referrerpolicy": "no-referrer",
+			},
+		}),
+		// The way out lives under the frame as well as in it. The strip inside
+		// the proxied page scrolls away with the page; this does not, and a
+		// reader who has scrolled a long page needs the exit where they are.
+		html.Div(html.Props{Class: "page-frame-foot"},
+			html.Button(html.Props{
+				Class: "chip chip-mini",
+				Raw: map[string]any{
+					"data-action": "toggle-page", "data-for-item": id,
+				},
+			}, html.Text(tr.T("article", "viewPageClose"))),
+		),
 	)
 }
 
@@ -1855,35 +2061,35 @@ func articleBlock(it *pb.Item, p articleProps) ui.Node {
 // Only the article being spoken shows transport controls. Every other article
 // shows a single "Listen" button, so a stream of twenty does not become twenty
 // paused media players.
-func listenBar(it *pb.Item, p articleProps) ui.Node {
+func listenBar(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	speaking := p.speakID == it.GetId() && p.speakState != "" && p.speakState != "idle"
 
 	kids := []ui.Node{}
 	switch {
 	case !speaking:
 		kids = append(kids, glyphItemChip("listen", glyphListen,
-			i18n.T("article.listen"), false, it.GetId()))
+			tr.T("article", "listen"), false, it.GetId()))
 	case p.speakState == "loading":
 		// Named, not a spinner: Smart+ synthesis of a long article genuinely
 		// takes seconds, and a control that merely looks inert gets pressed
 		// again — which restarts it.
 		kids = append(kids,
 			html.Span(html.Props{Class: "chip chip-static"},
-				html.Text(i18n.T("article.preparing"))),
-			glyphItemChip("listen-stop", glyphStop, i18n.T("article.stop"), false, it.GetId()))
+				html.Text(tr.T("article", "preparing"))),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, it.GetId()))
 	case p.speakState == "paused":
 		kids = append(kids,
-			glyphItemChip("listen", glyphListen, i18n.T("article.resume"), false, it.GetId()),
-			glyphItemChip("listen-stop", glyphStop, i18n.T("article.stop"), false, it.GetId()))
+			glyphItemChip("listen", glyphListen, tr.T("article", "resume"), false, it.GetId()),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, it.GetId()))
 	case p.speakState == "error":
 		kids = append(kids,
 			html.Span(html.Props{Class: "chip chip-static"},
-				html.Text(i18n.T("article.playFailed"))),
-			glyphItemChip("listen", glyphListen, i18n.T("article.listenAgain"), false, it.GetId()))
+				html.Text(tr.T("article", "playFailed"))),
+			glyphItemChip("listen", glyphListen, tr.T("article", "listenAgain"), false, it.GetId()))
 	default:
 		kids = append(kids,
-			glyphItemChip("listen-pause", glyphPause, i18n.T("article.pause"), false, it.GetId()),
-			glyphItemChip("listen-stop", glyphStop, i18n.T("article.stop"), false, it.GetId()))
+			glyphItemChip("listen-pause", glyphPause, tr.T("article", "pause"), false, it.GetId()),
+			glyphItemChip("listen-stop", glyphStop, tr.T("article", "stop"), false, it.GetId()))
 	}
 
 	// The Smart+ switch sits beside the control it changes, because that is the
@@ -1893,9 +2099,9 @@ func listenBar(it *pb.Item, p articleProps) ui.Node {
 	kids = append(kids, html.Button(html.Props{
 		Class: "chip chip-mini",
 		Raw:   map[string]any{"data-action": "toggle-smart-voice"},
-		Title: i18n.T("article.smartTitle"),
+		Title: tr.T("article", "smartTitle"),
 		Aria:  map[string]string{"pressed": strconv.FormatBool(p.speakSmart)},
-	}, html.Text(i18n.T("article.smartVoice"))))
+	}, html.Text(tr.T("article", "smartVoice"))))
 
 	return html.Div(html.Props{Class: "listen-bar"}, kids...)
 }
@@ -1927,14 +2133,14 @@ func itemChip(action, label string, pressed bool, itemID string) ui.Node {
 // the first words of an existing note, the tags already filed, and the autosave
 // mark. Hiding those would make the panel dishonest — a reader would have to
 // open every article's note to find out whether they had written one.
-func articleNote(it *pb.Item, p articleProps) ui.Node {
+func articleNote(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	id := it.GetId()
 	draft := p.notes[id]
 	open := p.noteOpen[id]
 
-	kids := []ui.Node{noteSummary(it, p, open)}
+	kids := []ui.Node{noteSummary(tr, it, p, open)}
 	if open {
-		kids = append(kids, noteEditor(it, p, draft))
+		kids = append(kids, noteEditor(tr, it, p, draft))
 	}
 	return html.Div(html.Props{
 		Class: "article-note",
@@ -1945,16 +2151,16 @@ func articleNote(it *pb.Item, p articleProps) ui.Node {
 
 // noteSummary is the always-visible row: the toggle, what is already there, and
 // the autosave mark.
-func noteSummary(it *pb.Item, p articleProps, open bool) ui.Node {
+func noteSummary(tr i18n.Runtime, it *pb.Item, p articleProps, open bool) ui.Node {
 	id, src := it.GetId(), it.GetSourceId()
 	draft, tags := p.notes[id], p.feedTags[src]
 
 	// One caret in both states; the sheet rotates it. The label carries the rest,
 	// and says something different when there is nothing on the row to explain
 	// what the control is for.
-	label := i18n.T("note.label")
+	label := tr.T("note", "label")
 	if !open && draft == "" && len(tags) == 0 {
-		label = i18n.T("note.labelEmpty")
+		label = tr.T("note", "labelEmpty")
 	}
 
 	row := []ui.Node{
@@ -1988,17 +2194,17 @@ func noteSummary(it *pb.Item, p articleProps, open bool) ui.Node {
 	if len(tags) > 0 {
 		chips := make([]ui.Node, 0, len(tags))
 		for _, t := range tags {
-			chips = append(chips, tagChip(t, id))
+			chips = append(chips, tagChip(tr, t, id))
 		}
 		row = append(row, html.Div(html.Props{Class: "note-tagged"}, chips...))
 	}
 
-	row = append(row, noteSyncMark(p.sync[id]))
+	row = append(row, noteSyncMark(tr, p.sync[id]))
 	return html.Div(html.Props{Class: "note-summary"}, row...)
 }
 
 // noteEditor is everything you only need once you have decided to write.
-func noteEditor(it *pb.Item, p articleProps, draft string) ui.Node {
+func noteEditor(tr i18n.Runtime, it *pb.Item, p articleProps, draft string) ui.Node {
 	id, src := it.GetId(), it.GetSourceId()
 
 	// The fields carry their own identity rather than relying on being the only
@@ -2009,29 +2215,29 @@ func noteEditor(it *pb.Item, p articleProps, draft string) ui.Node {
 	return html.Div(html.Props{Class: "note-body"},
 		html.Textarea(html.Props{
 			Class:       "note-field",
-			Placeholder: i18n.T("note.placeholder"),
+			Placeholder: tr.T("note", "placeholder"),
 			Value:       draft,
 			Rows:        3,
 			Raw:         map[string]any{"data-note-id": id},
 			Data:        map[string]string{"role": "note"},
-			Aria:        map[string]string{"label": i18n.T("note.aria")},
+			Aria:        map[string]string{"label": tr.T("note", "aria")},
 		}),
 		// They are the FEED's tags, said plainly here, because a reader removing
 		// one from an article should not be surprised to find it gone from every
 		// article in the feed.
 		html.Div(html.Props{Class: "note-head"},
 			html.Span(html.Props{},
-				html.Text(i18n.T("note.tagHeading", i18n.Args{"source": it.GetSourceTitle()}))),
+				html.Text(tr.T("note", "tagHeading", i18n.Args{"source": it.GetSourceTitle()}))),
 		),
 		html.Div(html.Props{Class: "note-tags"},
 			html.Input(html.Props{
-				Class: "field", Type: "text", Placeholder: i18n.T("note.tagPlaceholder"),
+				Class: "field", Type: "text", Placeholder: tr.T("note", "tagPlaceholder"),
 				Value: p.tags[src],
 				Raw:   map[string]any{"data-tag-source": src},
 				Data:  map[string]string{"role": "tag"},
-				Aria:  map[string]string{"label": i18n.T("note.tagAria")},
+				Aria:  map[string]string{"label": tr.T("note", "tagAria")},
 			}),
-			itemChip("add-tag", i18n.T("note.addTag"), false, id),
+			itemChip("add-tag", tr.T("note", "addTag"), false, id),
 		),
 	)
 }
@@ -2047,16 +2253,16 @@ func noteEditor(it *pb.Item, p articleProps, draft string) ui.Node {
 // Failure is the one state that speaks: a glyph alone cannot tell a reader their
 // note is not on the server, and that is the only case where they might need to
 // do something (copy it out, try again) before leaving the page.
-func noteSyncMark(state string) ui.Node {
+func noteSyncMark(tr i18n.Runtime, state string) ui.Node {
 	if state == "" {
 		return nil
 	}
-	glyph, label := glyphSyncing, i18n.T("note.saving")
+	glyph, label := glyphSyncing, tr.T("note", "saving")
 	switch state {
 	case noteSyncSaved:
-		glyph, label = glyphSynced, i18n.T("note.saved")
+		glyph, label = glyphSynced, tr.T("note", "saved")
 	case noteSyncFailed:
-		glyph, label = glyphSyncFailed, i18n.T("note.notSaved")
+		glyph, label = glyphSyncFailed, tr.T("note", "notSaved")
 	}
 	return html.Span(html.Props{
 		Class: "note-sync",
@@ -2097,7 +2303,7 @@ type tagRef struct {
 // it: the × alone is a 12px target, and the chip is not a link to anywhere — a
 // tag's own stream is reached from the sidebar, which is where a reader goes
 // looking for it. One control, one meaning.
-func tagChip(t tagRef, itemID string) ui.Node {
+func tagChip(tr i18n.Runtime, t tagRef, itemID string) ui.Node {
 	// Waiting on the server. A SPAN, not a disabled button: a disabled control is
 	// still a control, and this is a statement — "this tag is going on" — for the
 	// second or two before it becomes one.
@@ -2111,9 +2317,9 @@ func tagChip(t tagRef, itemID string) ui.Node {
 		return html.Span(html.Props{
 			Class: "chip chip-mini tag-chip tag-chip-pending",
 			Key:   "tag-" + t.Name,
-			Title: i18n.T("note.tagAdding", i18n.Args{"tag": t.Label}),
+			Title: tr.T("note", "tagAdding", i18n.Args{"tag": t.Label}),
 			Aria: map[string]string{"busy": "true",
-				"label": i18n.T("note.tagAddingAria", i18n.Args{"tag": t.Label})},
+				"label": tr.T("note", "tagAddingAria", i18n.Args{"tag": t.Label})},
 		},
 			html.Span(html.Props{}, html.Text(t.Label)),
 			html.Span(html.Props{Class: "tag-wait",
@@ -2128,8 +2334,8 @@ func tagChip(t tagRef, itemID string) ui.Node {
 		Raw: map[string]any{
 			"data-action": "remove-tag", "data-for-item": itemID, "data-value": t.Name,
 		},
-		Title: i18n.T("note.tagRemove", i18n.Args{"tag": t.Label}),
-		Aria:  map[string]string{"label": i18n.T("note.tagRemoveAria", i18n.Args{"tag": t.Label})},
+		Title: tr.T("note", "tagRemove", i18n.Args{"tag": t.Label}),
+		Aria:  map[string]string{"label": tr.T("note", "tagRemoveAria", i18n.Args{"tag": t.Label})},
 	},
 		html.Span(html.Props{}, html.Text(t.Label)),
 		html.Span(html.Props{Class: "tag-x", Aria: map[string]string{"hidden": "true"}},
@@ -2144,7 +2350,7 @@ func tagChip(t tagRef, itemID string) ui.Node {
 // reads as a graphic and this reads as a paragraph that has not arrived. The
 // image placeholder holds a 16:9 box so the text below it does not jump down the
 // page when a picture lands mid-read.
-func skeletonArticle() ui.Node {
+func skeletonArticle(tr i18n.Runtime) ui.Node {
 	// The pattern is deliberately paragraph-shaped: three lines and a short
 	// closer, twice, with a picture between them.
 	widths := []string{"sk-w-90", "sk-w-90", "sk-w-70", "sk-w-45"}
@@ -2166,7 +2372,7 @@ func skeletonArticle() ui.Node {
 
 	return html.Div(html.Props{
 		Class: "article-body", Role: "status",
-		Aria: map[string]string{"live": "polite", "label": i18n.T("article.loadingBody")},
+		Aria: map[string]string{"live": "polite", "label": tr.T("article", "loadingBody")},
 	}, kids...)
 }
 
@@ -2182,11 +2388,11 @@ func skeletonArticle() ui.Node {
 // RawHTML sanitises and then rebuilds the markup through the same safe Tag/Text
 // constructors as hand-written nodes. There is no way to reopen the XSS hole
 // even by accident.
-func articleBody(id, raw string) ui.Node {
+func articleBody(tr i18n.Runtime, id, raw string) ui.Node {
 	nodes, empty := parsedBody(id, raw)
 	if empty {
 		return html.Div(html.Props{Class: "article-body"},
-			html.Text(i18n.T("article.noBody")))
+			html.Text(tr.T("article", "noBody")))
 	}
 	return html.Div(html.Props{Class: "article-body"}, nodes...)
 }
@@ -2246,7 +2452,7 @@ func parsedBody(id, raw string) ([]ui.Node, bool) {
 // Grouped by WHERE the key works rather than by what it does, because that is
 // the question a reader actually has ("I'm in the list, what can I press?").
 // An alphabetical table of thirty bindings is a reference; this is a map.
-func helpSheet(open bool) ui.Node {
+func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 	if !open {
 		return nil
 	}
@@ -2255,34 +2461,35 @@ func helpSheet(open bool) ui.Node {
 		title string
 		items []binding
 	}{
-		{i18n.T("help.groupAnywhere"), []binding{
-			{"Ctrl K", i18n.T("help.palette")},
-			{"?", i18n.T("help.toggleHelp")},
-			{"1 2 3", i18n.T("help.jumpPanes")},
-			{"/", i18n.T("help.search")},
-			{"f", i18n.T("help.filterFeeds")},
-			{"r", i18n.T("help.refresh")},
-			{"u", i18n.T("help.unreadOnly")},
-			{"Esc", i18n.T("help.escape")},
+		{tr.T("help", "groupAnywhere"), []binding{
+			{"Ctrl K", tr.T("help", "palette")},
+			{"?", tr.T("help", "toggleHelp")},
+			{"1 2 3", tr.T("help", "jumpPanes")},
+			{"/", tr.T("help", "search")},
+			{"f", tr.T("help", "filterFeeds")},
+			{"r", tr.T("help", "refresh")},
+			{"u", tr.T("help", "unreadOnly")},
+			{"Esc", tr.T("help", "escape")},
 		}},
-		{i18n.T("help.groupRail"), []binding{
-			{"\u2191 \u2193", i18n.T("help.moveFeeds")},
-			{"Enter", i18n.T("help.openFeed")},
+		{tr.T("help", "groupRail"), []binding{
+			{"\u2191 \u2193", tr.T("help", "moveFeeds")},
+			{"Enter", tr.T("help", "openFeed")},
 		}},
-		{i18n.T("help.groupList"), []binding{
-			{"\u2191 \u2193", i18n.T("help.moveAndOpen")},
-			{"j k", i18n.T("help.nextPrev")},
+		{tr.T("help", "groupList"), []binding{
+			{"\u2191 \u2193", tr.T("help", "moveAndOpen")},
+			{"j k", tr.T("help", "nextPrev")},
 		}},
-		{i18n.T("help.groupArticle"), []binding{
-			{"o", i18n.T("help.openOriginal")},
-			{"l", i18n.T("help.like")},
-			{"d", i18n.T("help.dislike")},
-			{"t", i18n.T("help.readLater")},
-			{"U", i18n.T("help.markUnread")},
+		{tr.T("help", "groupArticle"), []binding{
+			{"w", tr.T("help", "focusMode")},
+			{"o", tr.T("help", "openOriginal")},
+			{"l", tr.T("help", "like")},
+			{"d", tr.T("help", "dislike")},
+			{"t", tr.T("help", "readLater")},
+			{"U", tr.T("help", "markUnread")},
 			// Notes save on their own now, so this is an accelerator rather
 			// than a rule. It says so, because a shortcut list that reads like
 			// an obligation is how the old behaviour is remembered.
-			{"Ctrl Enter", i18n.T("help.saveNote")},
+			{"Ctrl Enter", tr.T("help", "saveNote")},
 		}},
 	}
 
@@ -2309,11 +2516,11 @@ func helpSheet(open bool) ui.Node {
 	},
 		html.Div(html.Props{Class: "help", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": i18n.T("help.title")}},
+			Aria: map[string]string{"modal": "true", "label": tr.T("help", "title")}},
 			html.Div(html.Props{Class: "help-head"},
-				html.Span(html.Props{Class: "help-mark"}, html.Text(i18n.T("help.mark"))),
+				html.Span(html.Props{Class: "help-mark"}, html.Text(tr.T("help", "mark"))),
 				html.Span(html.Props{Class: "help-sub"},
-					html.Text(i18n.T("help.sub"))),
+					html.Text(tr.T("help", "sub"))),
 			),
 			html.Div(html.Props{Class: "help-cols"}, cols...),
 		),
@@ -2338,7 +2545,7 @@ func helpSheet(open bool) ui.Node {
 // conditional in Go. Conditional rendering would need the viewport width in
 // component state, which means a resize listener re-rendering the tree — the
 // layout is CSS's job and this keeps it there.
-func tabBar(active view, sel scope) ui.Node {
+func tabBar(tr i18n.Runtime, active view, sel scope) ui.Node {
 	tab := func(action, glyph, label string, on bool) ui.Node {
 		return html.Button(html.Props{
 			Class: "tab",
@@ -2351,10 +2558,10 @@ func tabBar(active view, sel scope) ui.Node {
 	}
 	home := active != viewRail && active != viewSettings && !sel.Notes
 	return html.Nav(html.Props{Class: "tabbar",
-		Aria: map[string]string{"label": i18n.T("tabs.aria")}},
-		tab("tab-home", "◈", i18n.T("tabs.read"), home),
-		tab("tab-feeds", "≣", i18n.T("tabs.feeds"), active == viewRail),
-		tab("tab-notes", "✎", i18n.T("tabs.notes"), sel.Notes && active != viewSettings),
-		tab("tab-settings", "⚙", i18n.T("tabs.settings"), active == viewSettings),
+		Aria: map[string]string{"label": tr.T("tabs", "aria")}},
+		tab("tab-home", "◈", tr.T("tabs", "read"), home),
+		tab("tab-feeds", "≣", tr.T("tabs", "feeds"), active == viewRail),
+		tab("tab-notes", "✎", tr.T("tabs", "notes"), sel.Notes && active != viewSettings),
+		tab("tab-settings", "⚙", tr.T("tabs", "settings"), active == viewSettings),
 	)
 }

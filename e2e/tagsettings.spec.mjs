@@ -31,9 +31,19 @@ async function tagFirstArticle(page, name) {
   const panel = page.locator('.article-note').first();
   await panel.locator('[data-role="tag"]').first().fill(name);
   await panel.locator('[data-action="add-tag"]').first().click();
-  // The rail is the slower of the two to catch up — it is refetched, not
-  // patched — so waiting on it means the tag exists server-side before the
-  // panel is opened.
+
+  // Wait for the SERVER to have it, not merely for the screen to show it.
+  //
+  // The chip appears instantly now — adding is acknowledged optimistically, in a
+  // pending state — so a test that waits for a chip is satisfied before the RPC
+  // has left. Waiting for the pending state to CLEAR is the honest gate: it goes
+  // away only when the call has come back, which is the precondition everything
+  // below actually needs.
+  await expect(panel.locator('.tag-chip-pending')).toHaveCount(0, { timeout: 45_000 });
+  await expect(panel.locator('.tag-chip', { hasText: name })).toBeVisible({ timeout: 45_000 });
+
+  // And then the rail, which is refetched rather than patched and so is the last
+  // thing to catch up.
   const rail = await openRail(page);
   await expect(rail.locator('[data-tag-id]').filter({ hasText: name }))
     .toBeVisible({ timeout: 45_000 });

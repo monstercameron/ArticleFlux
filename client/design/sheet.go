@@ -102,6 +102,11 @@ func Sheet() {
 	glyphs(r)
 	mobile(r)
 	appearanceCSS(r)
+	// After responsive() would be wrong and before it is wrong too: focusCSS
+	// carries its own breakpoints and has to outrank the base layout at each of
+	// them, which specificity gives it (.shell[data-focus] .panes beats .panes)
+	// regardless of order. It sits here because it is a layout, not a motion.
+	focusCSS(r)
 	skeletons(r)
 	responsive(r)
 	// LAST, and it has to be: motion layers transitions onto rules the sections
@@ -497,6 +502,11 @@ func list(r func(string, string) css.Rule) {
 		r("flex", "1 1 auto"), r("min-height", "0"),
 		r("overflow-y", "auto"), r("overflow-x", "hidden"),
 		r("scrollbar-gutter", "stable"), r("overscroll-behavior", "contain"),
+		// The containing block for the selection cursor — see motion.go. An
+		// absolutely positioned child of a scroll container is laid out in the
+		// container's CONTENT space, which is exactly what makes the cursor
+		// scroll with the rows for free.
+		r("position", "relative"),
 	)
 
 	// The mockup's `.hello`: the list pane names what you are looking at in the
@@ -551,7 +561,15 @@ func list(r func(string, string) css.Rule) {
 		r("background", "var(--c, transparent)"),
 	)
 	css.Global(".item-row:hover", r("background", "var(--sur)"))
-	css.Global(".item-row[aria-current='true']", r("background", "var(--sur-2)"))
+	// The selected row paints NOTHING of its own: the highlight is one cursor
+	// that travels, drawn on the scroller underneath every row (motion.go). A
+	// per-row background cannot move between rows, and a selection that goes out
+	// here and comes on there is two events where the reader made one gesture.
+	//
+	// Hover has to stand down on the current row, or pointing at the row you are
+	// already on makes it darker — --sur is below --sur-2, so the hover would
+	// read as deselecting it.
+	css.Global(".item-row[aria-current='true']:hover", r("background", "transparent"))
 
 	// Titles are set in the DISPLAY face, not the reading face. This was the most
 	// visible thing the first pass got wrong: Fraunces at 17px/600 with WONK off
@@ -947,6 +965,14 @@ func chrome(r func(string, string) css.Rule) {
 	css.Global(".conn-fix",
 		r("padding", "2px 8px"), r("font-size", "12px"), r("line-height", "1.5"),
 	)
+	// The cached-list badge. Deliberately NOT styled as an error: nothing is
+	// broken, the reader is simply looking at what they last saw. It is a
+	// statement of fact and it has to read as one — an alarm here would train
+	// people to dismiss the row, and this is the row that must not be dismissed.
+	css.Global(".list-stale",
+		r("font-size", "12px"), r("color", "var(--mute)"),
+		r("padding", "2px 0 0"), r("font-style", "italic"),
+	)
 
 	css.Global(".field",
 		r("background", "var(--sur-2)"), r("color", "var(--cream)"),
@@ -1070,6 +1096,40 @@ func verdicts(r func(string, string) css.Rule) {
 	)
 	css.Global(".article-clamp .chip",
 		r("position", "absolute"), r("bottom", "0"), r("left", "0"), r("z-index", "1"),
+	)
+
+	// The proxied page (§10.1b). It breaks the reading measure deliberately:
+	// the article column is set to a comfortable line length for prose, and a
+	// whole website rendered into 34em of width is a column of broken layout.
+	// This is the one thing in the reading pane that wants all the room there
+	// is, because it is the only thing here that brought its own design.
+	css.Global(".page-frame",
+		r("margin", "18px 0 4px"),
+		r("border", "1px solid var(--line)"),
+		r("border-radius", "12px"),
+		r("overflow", "hidden"),
+		r("background", "var(--bg)"),
+		// Its own stacking context, so a publisher's fixed-position header
+		// cannot paint over the reading pane's own chrome.
+		r("isolation", "isolate"),
+	)
+	css.Global(".page-frame-doc",
+		r("display", "block"), r("width", "100%"),
+		// Tall enough to be a page rather than a peephole, capped so the
+		// article's own controls stay reachable without a long scroll back.
+		r("height", "min(78vh, 900px)"),
+		r("border", "0"),
+		// A white base regardless of theme: the page below carries its own
+		// background, and a dark frame showing through a site that assumes
+		// white is a stripe of the wrong colour down every margin.
+		r("background", "#fff"),
+		r("color-scheme", "light"),
+	)
+	css.Global(".page-frame-foot",
+		r("display", "flex"), r("justify-content", "flex-end"),
+		r("padding", "8px 10px"),
+		r("border-top", "1px solid var(--line)"),
+		r("background", "var(--bg)"),
 	)
 }
 

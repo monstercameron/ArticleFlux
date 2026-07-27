@@ -143,6 +143,42 @@
     }
   } catch (e) { /* storage unavailable; the house theme is already painted */ }
 
+  // The splash wears the language the reader last chose, by exactly the same
+  // mechanism and for exactly the same reason as the colours above.
+  //
+  // The catalog is Go, compiled into the module that has not loaded yet, so
+  // this frame cannot ask it for anything. The running application mirrors
+  // these five strings into localStorage whenever the language changes
+  // (client/view/theme.go, mirrorBootCopy) purely so this one frame can be
+  // right. Left alone, a reader running the interface in French would get an
+  // English splash on every single load.
+  //
+  // The English below is the fallback, not the source: it is what a first-ever
+  // load and a storage-refusing browser get, and it must stay in step with
+  // client/i18n/en_boot.go — bootpalette_test.go checks that it does.
+  const T = { loading: 'Loading…',
+              help: 'Reload to try again. If it keeps failing, check that the server is running.',
+              failed: "Couldn't start the reader: {err}",
+              progress: '{got} of {total}',
+              downloaded: '{got} downloaded' };
+  try {
+    const w = (localStorage.getItem('af.bootmsg') || '').split('|');
+    if (w.length === 5 && w.every(Boolean)) {
+      T.loading = w[0]; T.help = w[1]; T.failed = w[2];
+      T.progress = w[3]; T.downloaded = w[4];
+    }
+    const loc = localStorage.getItem('articleflux.locale');
+    if (loc) document.documentElement.setAttribute('lang', loc);
+  } catch (e) { /* storage unavailable; the English above is already in the markup */ }
+  // Applied to the markup, which still carries the English so a browser with no
+  // JavaScript at all shows something rather than an empty plate.
+  msg.textContent = T.loading;
+  help.textContent = T.help;
+  // One substitution helper. Not a template engine: these are five strings this
+  // application wrote itself, and the placeholders are the ones en_boot.go
+  // documents.
+  const fill = (t, vals) => t.replace(/\{(\w+)\}/g, (_, k) => (k in vals ? vals[k] : '{' + k + '}'));
+
   const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
   // Silent unless the load is slow enough to be worth explaining. On a warm
   // cache nobody should be handed a number about a wait they did not have.
@@ -175,8 +211,9 @@
         if (total && got > total) roam();
         if (total) bar.style.transform = 'scaleX(' + (got / total) + ')';
         if (chatty) {
-          msg.textContent = total ? mb(got) + ' of ' + mb(total)
-                                  : mb(got) + ' downloaded';
+          msg.textContent = total
+            ? fill(T.progress, { got: mb(got), total: mb(total) })
+            : fill(T.downloaded, { got: mb(got) });
         }
         ctrl.enqueue(chunk);
       },
@@ -209,7 +246,7 @@
   } catch (err) {
     clearTimeout(chatter);
     boot.classList.add('failed');
-    msg.textContent = "Couldn't start the reader: " + (err && err.message || err);
+    msg.textContent = fill(T.failed, { err: (err && err.message) || err });
     help.hidden = false;
   }
 })();

@@ -67,7 +67,7 @@ const (
 // lives somewhere else is a picker where clearing is a thing you have to find.
 const glyphNone = "__none__"
 
-func tagSettings(p tagSettingsProps) ui.Node {
+func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
 	if !p.open || p.t == nil {
 		return nil
 	}
@@ -81,32 +81,32 @@ func tagSettings(p tagSettingsProps) ui.Node {
 		// for the same reason.
 		html.Div(html.Props{Class: "fs", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": i18n.T("tagSettings.title")}},
+			Aria: map[string]string{"modal": "true", "label": tr.T("tagSettings", "title")}},
 			html.Div(html.Props{Class: "fs-head"},
 				lead(tagGlyphOf(p.t)),
 				html.Span(html.Props{Class: "fs-mark"}, html.Text(tagDisplay(p.t))),
 				ui.If(p.saving, func() ui.Node {
-					return html.Span(html.Props{Class: "fs-saving"}, html.Text(i18n.T("tagSettings.saving")))
+					return html.Span(html.Props{Class: "fs-saving"}, html.Text(tr.T("tagSettings", "saving")))
 				}),
-				actionButton(actTagSettingsClose, "btn btn-ghost fs-close", i18n.T("tagSettings.close")),
+				actionButton(actTagSettingsClose, "btn btn-ghost fs-close", tr.T("tagSettings", "close")),
 			),
-			html.Div(html.Props{Class: "fs-body"}, tagSettingsBody(p)...),
+			html.Div(html.Props{Class: "fs-body"}, tagSettingsBody(tr, p)...),
 		),
 	)
 }
 
-func tagSettingsBody(p tagSettingsProps) []ui.Node {
+func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 	t := p.t
 	id := t.GetId()
 
 	out := []ui.Node{
-		fsGroup(glyphYours, i18n.T("tagSettings.rowGroup"), i18n.T("tagSettings.rowGroupHint")),
+		fsGroup(glyphYours, tr.T("tagSettings", "rowGroup"), tr.T("tagSettings", "rowGroupHint")),
 
 		// The rename. Enter commits and so does the button, for the same reason
 		// the feed panel's does: a field whose only commit is a keystroke nobody
 		// mentioned is a field that looks broken.
-		fsRow(i18n.T("tagSettings.nameLabel"),
-			i18n.T("tagSettings.nameHint"),
+		fsRow(tr.T("tagSettings", "nameLabel"),
+			tr.T("tagSettings", "nameHint"),
 			html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
 					Class: "field fs-field", Type: "text",
@@ -114,9 +114,9 @@ func tagSettingsBody(p tagSettingsProps) []ui.Node {
 					Value:       p.draftLabel,
 					OnInput:     p.onLabelEdit,
 					Data:        map[string]string{"role": "tag-label"},
-					Aria:        map[string]string{"label": i18n.T("tagSettings.nameAria")},
+					Aria:        map[string]string{"label": tr.T("tagSettings", "nameAria")},
 				}),
-				itemChip(actTagRename, i18n.T("tagSettings.rename"), false, id),
+				itemChip(actTagRename, tr.T("tagSettings", "rename"), false, id),
 			)),
 
 		// The tag itself, stated as a FACT rather than as a disabled field.
@@ -126,26 +126,26 @@ func tagSettingsBody(p tagSettingsProps) []ui.Node {
 		// the question instead — and it is the only place in the app a reader
 		// can see both names side by side and understand that renaming the row
 		// left the tag where it was.
-		fsRow(i18n.T("tagSettings.tagLabel"),
-			i18n.T("tagSettings.tagHint"),
+		fsRow(tr.T("tagSettings", "tagLabel"),
+			tr.T("tagSettings", "tagHint"),
 			html.Div(html.Props{Class: "fs-tags"},
 				html.Span(html.Props{Class: "chip chip-static chip-mini"},
 					html.Text(t.GetName())))),
 
-		fsGroup(glyphTags, i18n.T("tagSettings.glyphGroup"),
-			i18n.T("tagSettings.glyphGroupHint")),
-		tagGlyphPicker(id, t.GetGlyph()),
+		fsGroup(glyphTags, tr.T("tagSettings", "glyphGroup"),
+			tr.T("tagSettings", "glyphGroupHint")),
+		tagGlyphPicker(tr, id, t.GetGlyph()),
 	}
 
 	// What is in the tag. Not a control — a tag's membership is edited from the
 	// article or the feed panel, where a reader is looking at the feed they mean
 	// — but a reader who has forgotten what they filed under a label should not
 	// have to click through the list to find out.
-	out = append(out, fsGroup(glyphFeeds, i18n.T("tagSettings.feedsGroup"), ""))
+	out = append(out, fsGroup(glyphFeeds, tr.T("tagSettings", "feedsGroup"), ""))
 	switch {
 	case len(p.feeds) == 0:
 		out = append(out, html.Div(html.Props{Class: "fs-note"},
-			html.Text(i18n.T("tagSettings.feedsEmpty"))))
+			html.Text(tr.T("tagSettings", "feedsEmpty"))))
 	default:
 		chips := make([]ui.Node, 0, len(p.feeds))
 		for _, f := range p.feeds {
@@ -156,7 +156,7 @@ func tagSettingsBody(p tagSettingsProps) []ui.Node {
 		out = append(out,
 			html.Div(html.Props{Class: "fs-tags"}, chips...),
 			html.Div(html.Props{Class: "fs-note"},
-				html.Text(i18n.T("tagSettings.feedsNote"))))
+				html.Text(tr.T("tagSettings", "feedsNote"))))
 	}
 	return out
 }
@@ -172,23 +172,23 @@ func tagSettingsBody(p tagSettingsProps) []ui.Node {
 //
 // Each button carries data-value, which is the same attribute the segmented
 // controls use, so no new plumbing: the delegated listener already reports it.
-func tagGlyphPicker(tagID, current string) ui.Node {
+func tagGlyphPicker(tr i18n.Runtime, tagID, current string) ui.Node {
 	rows := []ui.Node{
 		// "None" first and inside the grid, so restoring the default is one of
 		// the choices rather than an escape hatch beside them.
 		html.Div(html.Props{Class: "ts-glyph-row"},
-			tagGlyphButton(tagID, glyphNone, glyphTags, i18n.T("tagSettings.glyphDefault"), current == ""),
+			tagGlyphButton(tagID, glyphNone, glyphTags, tr.T("tagSettings", "glyphDefault"), current == ""),
 		),
 	}
 	for _, group := range tagglyph.Groups() {
 		kids := make([]ui.Node, 0, 12)
 		for _, g := range tagglyph.In(group) {
-			kids = append(kids, tagGlyphButton(tagID, g.Char, g.Char, g.Name, g.Char == current))
+			kids = append(kids, tagGlyphButton(tagID, g.Char, g.Char, glyphName(tr, g), g.Char == current))
 		}
 		rows = append(rows,
 			html.Div(html.Props{Class: "ts-glyph-group", Key: "tsg-" + group},
 				html.Span(html.Props{Class: "ts-glyph-title"},
-					html.Text(strings.ToUpper(group))),
+					html.Text(strings.ToUpper(glyphGroupName(tr, group)))),
 				html.Div(html.Props{Class: "ts-glyph-row"}, kids...),
 			))
 	}
@@ -259,4 +259,27 @@ func tagByID(tags []*pb.Tag, id string) *pb.Tag {
 		}
 	}
 	return nil
+}
+
+// glyphName and glyphGroupName resolve a mark's label out of the catalog,
+// keyed by the character and the group id respectively.
+//
+// Both fall back to internal/tagglyph's own English rather than rendering the
+// key: a glyph added to that package without a catalog entry should show a
+// slightly wrong language, not "glyph.◆" in a tooltip. Neither key is a
+// literal, so keycoverage cannot see them — which is precisely why the
+// fallback is here and why "glyph." and "glyphGroup." are listed in
+// dynamicPrefixes.
+func glyphName(tr i18n.Runtime, g tagglyph.Glyph) string {
+	if s := tr.T("glyph", g.Char); s != "glyph."+g.Char {
+		return s
+	}
+	return g.Name
+}
+
+func glyphGroupName(tr i18n.Runtime, group string) string {
+	if s := tr.T("glyphGroup", group); s != "glyphGroup."+group {
+		return s
+	}
+	return group
 }

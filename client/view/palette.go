@@ -74,7 +74,7 @@ type paletteProps struct {
 //
 // The Hints are keyboard shortcuts — key names the browser reports, not copy —
 // so they stay literal here.
-func paletteCommands() []paletteEntry {
+func paletteCommands(tr i18n.Runtime) []paletteEntry {
 	cmds := []struct{ id, hint string }{
 		{"refresh", "r"},
 		{"mark-all", ""},
@@ -93,7 +93,7 @@ func paletteCommands() []paletteEntry {
 	for _, c := range cmds {
 		out = append(out, paletteEntry{
 			Kind: paletteCommand, ID: c.id,
-			Label: i18n.T("palette.cmd." + c.id), Hint: c.hint,
+			Label: tr.T("palette", "cmd."+c.id), Hint: c.hint,
 		})
 	}
 	return out
@@ -109,7 +109,7 @@ func paletteCommands() []paletteEntry {
 //
 // Built once at init rather than on every keystroke: the set is a compile-time
 // constant, and paletteEntries already rebuilds enough per query.
-func themeCommands() []paletteEntry {
+func themeCommands(tr i18n.Runtime) []paletteEntry {
 	out := make([]paletteEntry, 0, len(design.Themes))
 	for _, t := range design.Themes {
 		out = append(out, paletteEntry{
@@ -117,8 +117,8 @@ func themeCommands() []paletteEntry {
 			// The runPalette dispatcher splits on the FIRST colon only, so the
 			// theme's name survives inside the command id.
 			ID:    "theme:" + t.Name,
-			Label: i18n.T("palette.cmd.theme", i18n.Args{"theme": themeLabel(t)}),
-			Hint:  themeBlurb(t),
+			Label: tr.T("palette", "cmd.theme", i18n.Args{"theme": themeLabel(tr, t)}),
+			Hint:  themeBlurb(tr, t),
 			Hue:   t.Accent,
 		})
 	}
@@ -127,25 +127,25 @@ func themeCommands() []paletteEntry {
 
 // paletteStreams are the fixed destinations, in the sidebar's own order so the
 // palette does not teach a second mental model of the same app.
-func paletteStreams() []paletteEntry {
+func paletteStreams(tr i18n.Runtime) []paletteEntry {
 	return []paletteEntry{
-		{Kind: paletteStream, ID: streamAll, Label: i18n.T("stream.all")},
-		{Kind: paletteStream, ID: streamUnread, Label: i18n.T("stream.unread")},
-		{Kind: paletteStream, ID: streamLater, Label: i18n.T("stream.later")},
-		{Kind: paletteStream, ID: streamLiked, Label: i18n.T("stream.liked")},
-		{Kind: paletteStream, ID: streamNotes, Label: i18n.T("stream.notes")},
+		{Kind: paletteStream, ID: streamAll, Label: tr.T("stream", "all")},
+		{Kind: paletteStream, ID: streamUnread, Label: tr.T("stream", "unread")},
+		{Kind: paletteStream, ID: streamLater, Label: tr.T("stream", "later")},
+		{Kind: paletteStream, ID: streamLiked, Label: tr.T("stream", "liked")},
+		{Kind: paletteStream, ID: streamNotes, Label: tr.T("stream", "notes")},
 	}
 }
 
 // buildPalette assembles every destination and command, unfiltered.
-func buildPalette(feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
-	streams, cmds, themes := paletteStreams(), paletteCommands(), themeCommands()
+func buildPalette(tr i18n.Runtime, feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
+	streams, cmds, themes := paletteStreams(tr), paletteCommands(tr), themeCommands(tr)
 	out := make([]paletteEntry, 0, len(feeds)+len(tags)+len(streams)+len(cmds)+len(themes))
 	out = append(out, streams...)
 	for _, f := range feeds {
 		hint := ""
 		if n := f.GetUnreadCount(); n > 0 {
-			hint = i18n.N("palette.hintUnread", int(n))
+			hint = tr.T("palette", "hintUnread", i18n.Count(int(n)))
 		}
 		out = append(out, paletteEntry{
 			Kind: paletteFeed, ID: f.GetSourceId(), Label: f.GetTitle(),
@@ -157,7 +157,7 @@ func buildPalette(feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
 		// types the name they can see. The tag's own name goes in the hint when
 		// the two differ — the palette is also how someone finds out what they
 		// filed something under.
-		hint := i18n.N("palette.hintFeeds", int(t.GetFeedCount()))
+		hint := tr.T("palette", "hintFeeds", i18n.Count(int(t.GetFeedCount())))
 		if l := t.GetLabel(); l != "" && l != t.GetName() {
 			hint = t.GetName() + " · " + hint
 		}
@@ -254,7 +254,7 @@ func wordPrefix(s, q string) bool {
 
 // palette renders the overlay. It returns nil when closed, so the whole subtree
 // costs nothing while it is not in use.
-func palette(p paletteProps) ui.Node {
+func palette(tr i18n.Runtime, p paletteProps) ui.Node {
 	if !p.open {
 		return nil
 	}
@@ -262,8 +262,7 @@ func palette(p paletteProps) ui.Node {
 	rows := make([]ui.Node, 0, len(p.entries)+1)
 	if len(p.entries) == 0 {
 		rows = append(rows, html.Div(html.Props{Class: "pal-empty"},
-			html.Text(i18n.T("palette.empty",
-				i18n.Args{"query": strings.TrimSpace(p.query)}))))
+			html.Text(tr.T("palette", "empty", i18n.Args{"query": strings.TrimSpace(p.query)}))))
 	}
 	for i, e := range p.entries {
 		mark := html.I(html.Props{Class: "pal-mark pal-mark-" + kindClass(e.Kind)})
@@ -284,7 +283,7 @@ func palette(p paletteProps) ui.Node {
 			ui.If(e.Hint != "", func() ui.Node {
 				return html.Span(html.Props{Class: "pal-hint"}, html.Text(e.Hint))
 			}),
-			html.Span(html.Props{Class: "pal-kind"}, html.Text(kindLabel(e.Kind))),
+			html.Span(html.Props{Class: "pal-kind"}, html.Text(kindLabel(tr, e.Kind))),
 		))
 	}
 
@@ -299,20 +298,20 @@ func palette(p paletteProps) ui.Node {
 		// attribute and a different listener, so this does not swallow them.
 		html.Div(html.Props{Class: "pal", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": i18n.T("palette.title")}},
+			Aria: map[string]string{"modal": "true", "label": tr.T("palette", "title")}},
 			html.Div(html.Props{Class: "pal-field"},
 				html.Input(html.Props{
 					Class: "pal-input", Type: "text",
-					Placeholder: i18n.T("palette.placeholder"),
+					Placeholder: tr.T("palette", "placeholder"),
 					Value:       p.query,
 					OnInput:     p.onInput,
 					Data:        map[string]string{"role": "palette"},
-					Aria:        map[string]string{"label": i18n.T("palette.searchAria")},
+					Aria:        map[string]string{"label": tr.T("palette", "searchAria")},
 				}),
 			),
 			html.Div(html.Props{Class: "pal-list", Role: "listbox"}, rows...),
 			html.Div(html.Props{Class: "pal-foot"},
-				html.Text(i18n.T("palette.foot"))),
+				html.Text(tr.T("palette", "foot"))),
 		),
 	)
 }
@@ -330,15 +329,15 @@ func kindClass(k paletteKind) string {
 	}
 }
 
-func kindLabel(k paletteKind) string {
+func kindLabel(tr i18n.Runtime, k paletteKind) string {
 	switch k {
 	case paletteFeed:
-		return i18n.T("palette.kindFeed")
+		return tr.T("palette", "kindFeed")
 	case paletteTag:
-		return i18n.T("palette.kindTag")
+		return tr.T("palette", "kindTag")
 	case paletteCommand:
-		return i18n.T("palette.kindCommand")
+		return tr.T("palette", "kindCommand")
 	default:
-		return i18n.T("palette.kindStream")
+		return tr.T("palette", "kindStream")
 	}
 }

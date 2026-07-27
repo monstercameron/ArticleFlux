@@ -109,6 +109,32 @@ func mirrorToBoot(t design.Theme) {
 	}, "|"))
 }
 
+// bootMsgKey is where the splash reads its WORDS from, as bootKey is where it
+// reads its colours. web/index.html is the only other place that knows either
+// name.
+const bootMsgKey = "af.bootmsg"
+
+// mirrorBootCopy writes the splash's four strings where the shim can reach them.
+//
+// The same trade mirrorToBoot makes, for the same reason and with the same
+// failure mode. The splash paints before the wasm module exists, so it cannot
+// ask this catalog for anything; a reader running the interface in French would
+// otherwise get an English splash on every load. Written on every language
+// change, read one frame before the real application takes over, and a browser
+// refusing storage simply gets the English baked into index.html.
+//
+// Pipe-separated, like the colours, and for the same reason: five fields parsed
+// by four lines of shim, where JSON.parse would be a failure mode for a string
+// this application wrote itself. The placeholders are left INTACT — {err},
+// {got}, {total} are substituted by the shim, which is the only code that has
+// those values.
+func mirrorBootCopy(at i18n.At) {
+	b := at.NS("boot")
+	platform.LocalSet(bootMsgKey, strings.Join([]string{
+		b.T("loading"), b.T("help"), b.T("failed"), b.T("progress"), b.T("downloaded"),
+	}, "|"))
+}
+
 // prefsMap is what gets written back to the server.
 //
 // All four keys every time, including the empty ones. SetPrefs is an upsert of a
@@ -155,22 +181,22 @@ func (a appearance) motionOn() bool {
 
 // --- the screen ------------------------------------------------------------------
 
-func settingsAppearance(p settingsProps) []ui.Node {
+func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 	a := p.look
 	t := a.resolve()
 
 	cards := make([]ui.Node, 0, len(design.Themes))
 	for _, th := range design.Themes {
-		cards = append(cards, themeCard(th, th.Name == t.Name, a.Accent))
+		cards = append(cards, themeCard(tr, th, th.Name == t.Name, a.Accent))
 	}
 
 	swatches := make([]ui.Node, 0, 8)
 	// "Theme's own" comes first and is the unset state, so the row reads left to
 	// right as "the default, then the alternatives" rather than as eight peers
 	// one of which is secretly special.
-	swatches = append(swatches, accentDot("", t.Accent, i18n.T("appearance.accentOwn"), a.Accent == ""))
+	swatches = append(swatches, accentDot("", t.Accent, tr.T("appearance", "accentOwn"), a.Accent == ""))
 	for _, s := range design.AccentsFor(t.Tone) {
-		swatches = append(swatches, accentDot(s.Name, s.Hex, accentLabel(s), a.Accent == s.Name))
+		swatches = append(swatches, accentDot(s.Name, s.Hex, accentLabel(tr, s), a.Accent == s.Name))
 	}
 
 	sizes := make([]ui.Node, 0, len(design.ReadingSizes))
@@ -181,56 +207,56 @@ func settingsAppearance(p settingsProps) []ui.Node {
 			Key:   "rdsize-" + s.Name,
 			Raw:   map[string]any{"data-action": "set-reading", "data-value": s.Name},
 			Aria:  map[string]string{"pressed": strconv.FormatBool(s.Name == cur.Name)},
-		}, html.Text(i18n.T("readingSize."+s.Name))))
+		}, html.Text(tr.T("readingSize", ""+s.Name))))
 	}
 
 	motionOn := a.motionOn()
-	motionLabel := i18n.T("appearance.motionReduced")
+	motionLabel := tr.T("appearance", "motionReduced")
 	if motionOn {
-		motionLabel = i18n.T("appearance.motionFull")
+		motionLabel = tr.T("appearance", "motionFull")
 	}
 
 	return []ui.Node{
-		fsGroup(glyphYours, i18n.T("appearance.themeGroup"),
-			i18n.T("appearance.themeGroupHint")),
+		fsGroup(glyphYours, tr.T("appearance", "themeGroup"),
+			tr.T("appearance", "themeGroupHint")),
 		html.Div(html.Props{Class: "thm-grid"}, cards...),
 
-		fsGroup(glyphAll, i18n.T("appearance.accentGroup"),
-			i18n.T("appearance.accentGroupHint")),
+		fsGroup(glyphAll, tr.T("appearance", "accentGroup"),
+			tr.T("appearance", "accentGroupHint")),
 		html.Div(html.Props{Class: "acc-row"}, swatches...),
 
-		fsGroup(glyphNotes, i18n.T("appearance.readingGroup"), ""),
-		setRow(i18n.T("appearance.readingLabel"), i18n.T("appearance.readingHint"),
+		fsGroup(glyphNotes, tr.T("appearance", "readingGroup"), ""),
+		setRow(tr.T("appearance", "readingLabel"), tr.T("appearance", "readingHint"),
 			html.Div(html.Props{Class: "fs-choices"}, sizes...)),
 		// Set in the reading face at the chosen size, so the control shows its own
 		// effect. A size picker whose sample is 13px UI text is a picker you have
 		// to leave the screen to evaluate.
 		html.P(html.Props{Class: "rd-sample"},
-			html.Text(i18n.T("appearance.readingSample"))),
+			html.Text(tr.T("appearance", "readingSample"))),
 
-		fsGroup(glyphAction, i18n.T("appearance.motionGroup"),
-			i18n.T("appearance.motionGroupHint")),
-		setRow(i18n.T("appearance.motionLabel"),
-			i18n.T("appearance.motionHint"),
+		fsGroup(glyphAction, tr.T("appearance", "motionGroup"),
+			tr.T("appearance", "motionGroupHint")),
+		setRow(tr.T("appearance", "motionLabel"),
+			tr.T("appearance", "motionHint"),
 			glyphChip("toggle-motion", glyphAction, motionLabel, motionOn)),
 		ui.If(a.Motion != "", func() ui.Node {
 			return html.Div(html.Props{Class: "set-actions"},
-				glyphChip("motion-system", glyphRefresh, i18n.T("appearance.motionFollow"), false))
+				glyphChip("motion-system", glyphRefresh, tr.T("appearance", "motionFollow"), false))
 		}),
 		ui.If(a.Motion == "", func() ui.Node {
 			return html.Div(html.Props{Class: "set-note"},
-				html.Text(systemMotionNote(motionOn)))
+				html.Text(systemMotionNote(tr, motionOn)))
 		}),
 	}
 }
 
 // systemMotionNote says which way the machine answered, because "following the
 // system" is only reassuring if you can see what the system said.
-func systemMotionNote(on bool) string {
+func systemMotionNote(tr i18n.Runtime, on bool) string {
 	if on {
-		return i18n.T("appearance.motionSystemOn")
+		return tr.T("appearance", "motionSystemOn")
 	}
-	return i18n.T("appearance.motionSystemOff")
+	return tr.T("appearance", "motionSystemOff")
 }
 
 // themeLabel, themeBlurb, accentLabel resolve a design-package option's copy.
@@ -241,23 +267,27 @@ func systemMotionNote(on bool) string {
 // not catch it — nothing here is a literal — so themeLabel falls back to the
 // design package's own Label rather than rendering "theme.newthing" at a
 // reader.
-func themeLabel(t design.Theme) string {
-	if s := i18n.T("theme." + t.Name); s != "theme."+t.Name {
+func themeLabel(tr i18n.Runtime, t design.Theme) string {
+	// The bundle's OnMissing renders an absent key as "namespace.key", which is
+	// what this compares against — a theme added to client/design without a
+	// catalog entry falls back to the design package's own Label rather than
+	// putting "theme.newthing" in front of a reader.
+	if s := tr.T("theme", t.Name); s != "theme."+t.Name {
 		return s
 	}
 	return t.Label
 }
 
-func themeBlurb(t design.Theme) string {
-	key := "theme." + t.Name + ".desc"
-	if s := i18n.T(key); s != key {
+func themeBlurb(tr i18n.Runtime, t design.Theme) string {
+	key := t.Name + ".desc"
+	if s := tr.T("theme", key); s != "theme."+key {
 		return s
 	}
 	return t.Blurb
 }
 
-func accentLabel(s design.Swatch) string {
-	if v := i18n.T("accent." + s.Name); v != "accent."+s.Name {
+func accentLabel(tr i18n.Runtime, s design.Swatch) string {
+	if v := tr.T("accent", s.Name); v != "accent."+s.Name {
 		return v
 	}
 	return s.Label
@@ -270,7 +300,7 @@ func accentLabel(s design.Swatch) string {
 // theme's colours tells you nothing about the theme it is labelling. It is the
 // one place in the app that sets colour inline, and it has to be — the values
 // belong to a theme that is not applied.
-func themeCard(t design.Theme, active bool, accentName string) ui.Node {
+func themeCard(tr i18n.Runtime, t design.Theme, active bool, accentName string) ui.Node {
 	// The card previews the accent the reader has chosen, resolved against THIS
 	// theme's tone — so picking a light theme does not show them an accent they
 	// would not actually get.
@@ -297,9 +327,9 @@ func themeCard(t design.Theme, active bool, accentName string) ui.Node {
 		Aria:  map[string]string{"pressed": strconv.FormatBool(active)},
 	},
 		html.Div(html.Props{Class: "thm-swatches"}, dots...),
-		html.Div(html.Props{Class: "thm-name"}, html.Text(themeLabel(t))),
+		html.Div(html.Props{Class: "thm-name"}, html.Text(themeLabel(tr, t))),
 		html.Div(html.Props{Class: "thm-blurb",
-			Raw: map[string]any{"style": "color:" + t.Soft}}, html.Text(themeBlurb(t))),
+			Raw: map[string]any{"style": "color:" + t.Soft}}, html.Text(themeBlurb(tr, t))),
 	)
 }
 

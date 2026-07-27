@@ -5,8 +5,6 @@ package view
 import (
 	"strconv"
 
-	"google.golang.org/grpc/status"
-
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
@@ -33,7 +31,7 @@ const (
 	actSmartModel    = "smart-model-save"
 	// actSmartLang carries the target locale in data-value. The empty value is
 	// English, which is a choice like any other rather than an absence.
-	actSmartLang      = "smart-language"
+	actSmartLang        = "smart-language"
 	actSmartRetranslate = "smart-retranslate"
 )
 
@@ -47,22 +45,22 @@ type smartProps struct {
 
 	// keyDraft and modelDraft are the two fields. Held by Reader like every
 	// other draft so typing survives the re-render a sibling control causes.
-	keyDraft   string
-	modelDraft string
-	onKeyEdit  ui.Handler
+	keyDraft    string
+	modelDraft  string
+	onKeyEdit   ui.Handler
 	onModelEdit ui.Handler
 
 	// busy is the locale currently being translated, empty when idle. A locale
 	// rather than a bool because the chip that was pressed is the one that
 	// should show the work, and a global spinner on a grid of sixteen chips
 	// says nothing about which.
-	busy   string
-	notice string
-	err    string
+	busy    string
+	notice  string
+	err     string
 	loading bool
 }
 
-func settingsSmart(p smartProps) []ui.Node {
+func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
 	if p.loading && p.cfg == nil {
 		return settingsSkeleton()
 	}
@@ -71,12 +69,12 @@ func settingsSmart(p smartProps) []ui.Node {
 	}
 
 	out := []ui.Node{
-		fsGroup(glyphShared, i18n.T("smart.introGroup"), i18n.T("smart.introHint")),
+		fsGroup(glyphShared, tr.T("smart", "introGroup"), tr.T("smart", "introHint")),
 	}
-	out = append(out, smartKeySection(p)...)
-	out = append(out, smartModelSection(p)...)
-	out = append(out, smartSpendSection(p)...)
-	out = append(out, smartLanguageSection(p)...)
+	out = append(out, smartKeySection(tr, p)...)
+	out = append(out, smartModelSection(tr, p)...)
+	out = append(out, smartSpendSection(tr, p)...)
+	out = append(out, smartLanguageSection(tr, p)...)
 
 	if p.notice != "" {
 		out = append(out, html.Div(html.Props{Class: "set-note", Role: "status",
@@ -89,38 +87,38 @@ func settingsSmart(p smartProps) []ui.Node {
 	return out
 }
 
-func smartKeySection(p smartProps) []ui.Node {
+func smartKeySection(tr i18n.Runtime, p smartProps) []ui.Node {
 	cfg := p.cfg
 
 	// The state chip reports what is TRUE, not what was submitted: a key that
 	// was saved but cannot be read back is "not configured", because that is
 	// what every Smart+ feature will find.
-	state := i18n.T("smart.stateNotConfigured")
+	state := tr.T("smart", "stateNotConfigured")
 	if cfg.GetConfigured() {
-		state = i18n.T("smart.stateConfigured")
+		state = tr.T("smart", "stateConfigured")
 		if h := cfg.GetKeyHint(); h != "" {
-			state += " · " + i18n.T("smart.keyEnding", i18n.Args{"hint": h})
+			state += " · " + tr.T("smart", "keyEnding", i18n.Args{"hint": h})
 		}
 	}
 
 	rows := []ui.Node{
-		fsGroup(glyphAction, i18n.T("smart.keyGroup"), i18n.T("smart.keyHint")),
-		setRow(i18n.T("smart.keyLabel"), state,
+		fsGroup(glyphAction, tr.T("smart", "keyGroup"), tr.T("smart", "keyHint")),
+		setRow(tr.T("smart", "keyLabel"), state,
 			html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
 					Class: "field fs-field", Type: "password",
-					Placeholder: i18n.T("smart.keyPlaceholder"),
+					Placeholder: tr.T("smart", "keyPlaceholder"),
 					Value:       p.keyDraft,
 					OnInput:     p.onKeyEdit,
 					Data:        map[string]string{"role": "smart-key"},
-					Aria:        map[string]string{"label": i18n.T("smart.keyAria")},
+					Aria:        map[string]string{"label": tr.T("smart", "keyAria")},
 					// A password field, and autocomplete off: a browser offering
 					// to save an API key into the reader's password manager
 					// under this site's name is a credential in a place nobody
 					// will think to revoke it from.
 					Raw: map[string]any{"autocomplete": "off", "spellcheck": "false"},
 				}),
-				actionButton(actSmartKeySave, "chip", i18n.T("smart.keySave")),
+				actionButton(actSmartKeySave, "chip", tr.T("smart", "keySave")),
 			)),
 	}
 
@@ -131,24 +129,24 @@ func smartKeySection(p smartProps) []ui.Node {
 			html.Button(html.Props{
 				Class: "chip fs-danger",
 				Raw:   map[string]any{"data-action": actSmartKeyClear},
-			}, html.Text(i18n.T("smart.keyClear")))))
+			}, html.Text(tr.T("smart", "keyClear")))))
 	}
 	if cfg.GetFromEnvironment() {
 		rows = append(rows, html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("smart.fromEnvironment"))))
+			html.Text(tr.T("smart", "fromEnvironment"))))
 	}
 	if !cfg.GetCanStoreSecrets() {
 		rows = append(rows, html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("smart.cannotStore"))))
+			html.Text(tr.T("smart", "cannotStore"))))
 	}
 	return rows
 }
 
-func smartModelSection(p smartProps) []ui.Node {
+func smartModelSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphYours, i18n.T("smart.modelGroup"), i18n.T("smart.modelHint")),
-		setRow(i18n.T("smart.modelLabel"),
-			i18n.T("smart.modelDefault", i18n.Args{"model": p.cfg.GetDefaultModel()}),
+		fsGroup(glyphYours, tr.T("smart", "modelGroup"), tr.T("smart", "modelHint")),
+		setRow(tr.T("smart", "modelLabel"),
+			tr.T("smart", "modelDefault", i18n.Args{"model": p.cfg.GetDefaultModel()}),
 			html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
 					Class: "field fs-field", Type: "text",
@@ -156,24 +154,24 @@ func smartModelSection(p smartProps) []ui.Node {
 					Value:       p.modelDraft,
 					OnInput:     p.onModelEdit,
 					Data:        map[string]string{"role": "smart-model"},
-					Aria:        map[string]string{"label": i18n.T("smart.modelAria")},
+					Aria:        map[string]string{"label": tr.T("smart", "modelAria")},
 					Raw:         map[string]any{"autocomplete": "off", "spellcheck": "false"},
 				}),
-				actionButton(actSmartModel, "chip", i18n.T("smart.modelSave")),
+				actionButton(actSmartModel, "chip", tr.T("smart", "modelSave")),
 			)),
 	}
 }
 
-func smartSpendSection(p smartProps) []ui.Node {
+func smartSpendSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphHealth, i18n.T("smart.spendGroup"), i18n.T("smart.spendReset")),
-		setFact(i18n.T("smart.spendIn"), thousands(int(p.cfg.GetInputTokens()))),
-		setFact(i18n.T("smart.spendOut"), thousands(int(p.cfg.GetOutputTokens()))),
-		setFact(i18n.T("smart.spendCalls"), thousands(int(p.cfg.GetRequests()))),
+		fsGroup(glyphHealth, tr.T("smart", "spendGroup"), tr.T("smart", "spendReset")),
+		setFact(tr.T("smart", "spendIn"), thousands(tr, int(p.cfg.GetInputTokens()))),
+		setFact(tr.T("smart", "spendOut"), thousands(tr, int(p.cfg.GetOutputTokens()))),
+		setFact(tr.T("smart", "spendCalls"), thousands(tr, int(p.cfg.GetRequests()))),
 	}
 }
 
-func smartLanguageSection(p smartProps) []ui.Node {
+func smartLanguageSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	current := p.locale
 	if current == "" {
 		current = i18n.DefaultLocale
@@ -183,60 +181,42 @@ func smartLanguageSection(p smartProps) []ui.Node {
 	// is written in — it needs no call, it cannot fail, and it is the way back
 	// from a translation someone cannot read.
 	chips := []ui.Node{
-		langChip("", i18n.T("smart.langEnglish"), "",
+		langChip("", tr.T("smart", "langEnglish"), "",
 			current == i18n.DefaultLocale, false, p.busy),
 	}
 	for _, l := range p.languages {
-		hint := i18n.T("smart.langCosts")
+		hint := tr.T("smart", "langCosts")
 		if l.GetCached() {
-			hint = i18n.T("smart.langCached")
+			hint = tr.T("smart", "langCached")
 		}
 		chips = append(chips, langChip(l.GetCode(), l.GetNativeName(), hint,
 			current == l.GetCode(), !p.cfg.GetConfigured(), p.busy))
 	}
 
 	out := []ui.Node{
-		fsGroup(glyphAll, i18n.T("smart.langGroup"), i18n.T("smart.langHint")),
+		fsGroup(glyphAll, tr.T("smart", "langGroup"), tr.T("smart", "langHint")),
 		html.Div(html.Props{Class: "fs-choices"}, chips...),
-		html.Div(html.Props{Class: "set-note"}, html.Text(i18n.T("smart.langSourceNote"))),
-		html.Div(html.Props{Class: "set-note"}, html.Text(i18n.T("smart.langReloadNote"))),
+		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("smart", "langSourceNote"))),
+		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("smart", "langReloadNote"))),
 	}
 	if !p.cfg.GetConfigured() {
 		out = append(out, html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("smart.langNeedsKey"))))
+			html.Text(tr.T("smart", "langNeedsKey"))))
 	}
 	if p.busy != "" {
 		out = append(out, html.Div(html.Props{Class: "set-note", Role: "status",
 			Aria: map[string]string{"live": "polite"}},
-			html.Text(i18n.T("smart.langWorking"))))
+			html.Text(tr.T("smart", "langWorking"))))
 	}
 	// Re-translating only makes sense while a translation is in force. Offering
 	// it in English would be offering to re-fetch the source.
 	if current != i18n.DefaultLocale && p.cfg.GetConfigured() {
 		out = append(out,
-			setRow(i18n.T("smart.langRetranslate"), i18n.T("smart.langRetranslateHint"),
+			setRow(tr.T("smart", "langRetranslate"), tr.T("smart", "langRetranslateHint"),
 				actionButton(actSmartRetranslate, "chip",
-					i18n.T("smart.langRetranslate"))))
+					tr.T("smart", "langRetranslate"))))
 	}
 	return out
-}
-
-// statusText pulls the human sentence out of a gRPC error.
-//
-// The server writes these for a person — "only an administrator can change
-// Smart+ settings", "Smart+ needs an OpenAI API key" — and gRPC's own String()
-// wraps them in `rpc error: code = PermissionDenied desc = …`, which turns a
-// clear instruction into something that reads like a crash.
-func statusText(err error) string {
-	if err == nil {
-		return ""
-	}
-	if st, ok := status.FromError(err); ok {
-		if m := st.Message(); m != "" {
-			return m
-		}
-	}
-	return err.Error()
 }
 
 // languageName resolves a locale to the name the reader chose it by.

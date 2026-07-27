@@ -64,7 +64,7 @@ var cacheChoices = []int32{0, 25, 100, 500}
 // unsubscribing is the other button, and conflating the two loses the archive.
 var muteChoices = []int{0, 24, 24 * 7, 24 * 30}
 
-func feedSettings(p feedSettingsProps) ui.Node {
+func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 	if !p.open {
 		return nil
 	}
@@ -82,10 +82,10 @@ func feedSettings(p feedSettingsProps) ui.Node {
 			}))
 		}
 	default:
-		body = feedSettingsBody(p)
+		body = feedSettingsBody(tr, p)
 	}
 
-	title := i18n.T("feedSettings.title")
+	title := tr.T("feedSettings", "title")
 	if p.s != nil {
 		title = p.s.GetResolvedTitle()
 	}
@@ -103,34 +103,34 @@ func feedSettings(p feedSettingsProps) ui.Node {
 		// it gets there, which is the delegated equivalent of stopPropagation.
 		html.Div(html.Props{Class: "fs", Role: "dialog",
 			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": i18n.T("feedSettings.title")}},
+			Aria: map[string]string{"modal": "true", "label": tr.T("feedSettings", "title")}},
 			html.Div(html.Props{Class: "fs-head"},
 				html.Span(html.Props{Class: "fs-mark"}, html.Text(title)),
 				ui.If(p.saving, func() ui.Node {
 					return html.Span(html.Props{Class: "fs-saving"},
-						html.Text(i18n.T("feedSettings.saving")))
+						html.Text(tr.T("feedSettings", "saving")))
 				}),
 				actionButton("feed-settings-close", "btn btn-ghost fs-close",
-					i18n.T("feedSettings.close")),
+					tr.T("feedSettings", "close")),
 			),
 			html.Div(html.Props{Class: "fs-body"}, body...),
 		),
 	)
 }
 
-func feedSettingsBody(p feedSettingsProps) []ui.Node {
+func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 	s := p.s
 	id := s.GetSourceId()
 
 	// --- yours ---------------------------------------------------------------
 	mine := []ui.Node{
-		fsGroup(glyphYours, i18n.T("feedSettings.yoursGroup"),
-			i18n.T("feedSettings.yoursGroupHint")),
+		fsGroup(glyphYours, tr.T("feedSettings", "yoursGroup"),
+			tr.T("feedSettings", "yoursGroupHint")),
 		// The rename commits on Enter AND on the button. Enter alone is the
 		// faster path and the one a keyboard reader will use, but a text field
 		// whose only commit is a keystroke nobody mentioned is a field that looks
 		// broken — you type, you click away, and your change is gone.
-		fsRow(i18n.T("feedSettings.nameLabel"), i18n.T("feedSettings.nameHint"),
+		fsRow(tr.T("feedSettings", "nameLabel"), tr.T("feedSettings", "nameHint"),
 			html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
 					Class: "field fs-field", Type: "text",
@@ -138,23 +138,23 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 					Value:       p.draftTitle,
 					OnInput:     p.onTitleEdit,
 					Data:        map[string]string{"role": "feed-title"},
-					Aria:        map[string]string{"label": i18n.T("feedSettings.nameAria")},
+					Aria:        map[string]string{"label": tr.T("feedSettings", "nameAria")},
 				}),
-				itemChip("fs-rename", i18n.T("feedSettings.rename"), false, id),
+				itemChip("fs-rename", tr.T("feedSettings", "rename"), false, id),
 			)),
 		// Filing sits directly under the name, because they are the same kind of
 		// decision — what this feed is called and where it lives — and both are
 		// things a reader changes when a subscription turns out to be something
 		// other than what they expected when they added it.
-		fsRow(i18n.T("feedSettings.categoryLabel"), i18n.T("feedSettings.categoryHint"),
-			fsFolders(id, p.folderID, p.folders)),
-		fsRow(i18n.T("feedSettings.megafeedLabel"), i18n.T("feedSettings.megafeedHint"),
+		fsRow(tr.T("feedSettings", "categoryLabel"), tr.T("feedSettings", "categoryHint"),
+			fsFolders(tr, id, p.folderID, p.folders)),
+		fsRow(tr.T("feedSettings", "megafeedLabel"), tr.T("feedSettings", "megafeedHint"),
 			fsToggle("fs-megafeed", id, s.GetInMegafeed(),
-				i18n.T("feedSettings.megafeedOn"), i18n.T("feedSettings.megafeedOff"))),
-		fsRow(i18n.T("feedSettings.muteLabel"), i18n.T("feedSettings.muteHint"),
-			fsChoices("fs-mute", id, muteFor(s.GetMutedUntil()), muteLabels())),
-		fsRow(i18n.T("feedSettings.cacheLabel"), i18n.T("feedSettings.cacheHint"),
-			fsChoices("fs-cache", id, int(s.GetCacheDepth()), cacheLabels())),
+				tr.T("feedSettings", "megafeedOn"), tr.T("feedSettings", "megafeedOff"))),
+		fsRow(tr.T("feedSettings", "muteLabel"), tr.T("feedSettings", "muteHint"),
+			fsChoices("fs-mute", id, muteFor(s.GetMutedUntil()), muteLabels(tr))),
+		fsRow(tr.T("feedSettings", "cacheLabel"), tr.T("feedSettings", "cacheHint"),
+			fsChoices("fs-cache", id, int(s.GetCacheDepth()), cacheLabels(tr))),
 	}
 	if len(p.tags) > 0 {
 		chips := make([]ui.Node, 0, len(p.tags))
@@ -162,7 +162,7 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 			chips = append(chips, html.Span(html.Props{Class: "chip chip-static chip-mini",
 				Key: "fs-tag-" + t}, html.Text(t)))
 		}
-		mine = append(mine, fsRow(i18n.T("feedSettings.tagsLabel"), i18n.T("feedSettings.tagsHint"),
+		mine = append(mine, fsRow(tr.T("feedSettings", "tagsLabel"), tr.T("feedSettings", "tagsHint"),
 			html.Div(html.Props{Class: "fs-tags"}, chips...)))
 	}
 
@@ -171,20 +171,20 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 	// reads this" and "n other people read this" are different facts, not two
 	// inflections of one.
 	others := s.GetSubscriberCount() - 1
-	shared := i18n.T("feedSettings.sharedNone")
+	shared := tr.T("feedSettings", "sharedNone")
 	if others > 0 {
-		shared = i18n.N("feedSettings.sharedCount", int(others))
+		shared = tr.T("feedSettings", "sharedCount", i18n.Count(int(others)))
 	}
 
 	source := []ui.Node{
 		// The warning is the heading, not a footnote under it. Someone changing
 		// a poll interval should read why before they change it, not after.
-		fsGroup(glyphShared, i18n.T("feedSettings.sharedGroup"),
-			shared+" "+i18n.T("feedSettings.sharedWarn")),
-		fsRow(i18n.T("feedSettings.urlLabel"), "",
+		fsGroup(glyphShared, tr.T("feedSettings", "sharedGroup"),
+			shared+" "+tr.T("feedSettings", "sharedWarn")),
+		fsRow(tr.T("feedSettings", "urlLabel"), "",
 			html.Div(html.Props{Class: "fs-url"}, html.Text(s.GetFeedUrl()))),
 		ui.If(s.GetSiteUrl() != "", func() ui.Node {
-			return fsRow(i18n.T("feedSettings.siteLabel"), "",
+			return fsRow(tr.T("feedSettings", "siteLabel"), "",
 				html.A(html.Props{Class: "fs-url fs-link", Href: s.GetSiteUrl(),
 					Target: "_blank", Rel: "noopener noreferrer"},
 					html.Text(s.GetSiteUrl()),
@@ -193,23 +193,22 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 						Aria: map[string]string{"hidden": "true"}},
 						html.Text(glyphExternal))))
 		}),
-		fsRow(i18n.T("feedSettings.pollLabel"), i18n.T("feedSettings.pollHint"),
-			fsChoices("fs-poll", id, int(s.GetFetchIntervalS()), pollLabels())),
+		fsRow(tr.T("feedSettings", "pollLabel"), tr.T("feedSettings", "pollHint"),
+			fsChoices("fs-poll", id, int(s.GetFetchIntervalS()), pollLabels(tr))),
 	}
 
 	// --- health --------------------------------------------------------------
 	health := []ui.Node{
-		fsGroup(glyphHealth, i18n.T("feedSettings.healthGroup"), ""),
-		fsFact(i18n.T("feedSettings.lastFetched"), relOrNever(s.GetLastFetchAt())),
-		fsFact(i18n.T("feedSettings.lastSucceded"), relOrNever(s.GetLastSuccessAt())),
-		fsFact(i18n.T("feedSettings.nextFetch"), relOrNever(s.GetNextFetchAt())),
+		fsGroup(glyphHealth, tr.T("feedSettings", "healthGroup"), ""),
+		fsFact(tr.T("feedSettings", "lastFetched"), relOrNever(tr, s.GetLastFetchAt())),
+		fsFact(tr.T("feedSettings", "lastSucceded"), relOrNever(tr, s.GetLastSuccessAt())),
+		fsFact(tr.T("feedSettings", "nextFetch"), relOrNever(tr, s.GetNextFetchAt())),
 		// Same shape as the server screen's Articles line, so the two agree.
-		fsFact(i18n.T("feedSettings.itemsHeld"), i18n.T("settings.itemsAndUnread",
-			i18n.Args{"items": thousands(int(s.GetItemCount())),
-				"unread": thousands(int(s.GetUnreadCount()))})),
+		fsFact(tr.T("feedSettings", "itemsHeld"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItemCount())),
+			"unread": thousands(tr, int(s.GetUnreadCount()))})),
 	}
 	if n := s.GetConsecutiveFailures(); n > 0 {
-		health = append(health, fsFact(i18n.T("feedSettings.failures"), thousands(int(n))))
+		health = append(health, fsFact(tr.T("feedSettings", "failures"), thousands(tr, int(n))))
 	}
 	if e := s.GetLastError(); e != "" {
 		// The publisher's error verbatim. It is the single most useful string
@@ -220,20 +219,20 @@ func feedSettingsBody(p feedSettingsProps) []ui.Node {
 
 	// --- actions -------------------------------------------------------------
 	actions := []ui.Node{
-		fsGroup(glyphAction, i18n.T("feedSettings.actionsGroup"), ""),
+		fsGroup(glyphAction, tr.T("feedSettings", "actionsGroup"), ""),
 		html.Div(html.Props{Class: "fs-actions"},
-			glyphItemChip("fs-refresh", glyphRefresh, i18n.T("feedSettings.fetchNow"), false, id),
-			glyphItemChip("fs-markall", glyphMarkRead, i18n.T("feedSettings.markAllRead"), false, id),
+			glyphItemChip("fs-refresh", glyphRefresh, tr.T("feedSettings", "fetchNow"), false, id),
+			glyphItemChip("fs-markall", glyphMarkRead, tr.T("feedSettings", "markAllRead"), false, id),
 			// Unsubscribe is separated and styled as destructive. It does not
 			// delete the source or the items — A22 — but it is the only control
 			// here that removes something from the reader's sidebar.
 			html.Button(html.Props{
 				Class: "chip fs-danger",
 				Raw:   map[string]any{"data-action": "fs-unsubscribe", "data-for-item": id},
-			}, lead("\u2715"), html.Text(i18n.T("feedSettings.unsubscribe"))),
+			}, lead("\u2715"), html.Text(tr.T("feedSettings", "unsubscribe"))),
 		),
 		html.Div(html.Props{Class: "fs-note"},
-			html.Text(i18n.T("feedSettings.unsubscribeNote"))),
+			html.Text(tr.T("feedSettings", "unsubscribeNote"))),
 	}
 
 	out := append([]ui.Node{}, mine...)
@@ -297,8 +296,8 @@ func fsToggle(action, id string, on bool, whenOn, whenOff string) ui.Node {
 // The feed is named on every chip through data-for-item, because this panel is
 // about one subscription and the delegated handler has to know which — the panel
 // being open is not something the click can see.
-func fsFolders(sourceID, current string, folders []*pb.Folder) ui.Node {
-	kids := []ui.Node{fsFolderChip(sourceID, "", i18n.T("feedSettings.noCategory"), current == "")}
+func fsFolders(tr i18n.Runtime, sourceID, current string, folders []*pb.Folder) ui.Node {
+	kids := []ui.Node{fsFolderChip(sourceID, "", tr.T("feedSettings", "noCategory"), current == "")}
 	for _, f := range folders {
 		kids = append(kids, fsFolderChip(sourceID, f.GetId(), f.GetName(), current == f.GetId()))
 	}
@@ -343,22 +342,29 @@ func fsChoices(action, id string, current int, choices []fsChoice) ui.Node {
 	return html.Div(html.Props{Class: "fs-choices"}, kids...)
 }
 
-func pollLabels() []fsChoice { return choicesFrom("feedSettings.poll.", int32sToInts(pollChoices)) }
-
-func cacheLabels() []fsChoice {
-	return choicesFrom("feedSettings.cache.", int32sToInts(cacheChoices))
+func pollLabels(tr i18n.Runtime) []fsChoice {
+	return choicesFrom(tr, "poll.", int32sToInts(pollChoices))
 }
 
-func muteLabels() []fsChoice { return choicesFrom("feedSettings.mute.", muteChoices) }
+func cacheLabels(tr i18n.Runtime) []fsChoice {
+	return choicesFrom(tr, "cache.", int32sToInts(cacheChoices))
+}
+
+func muteLabels(tr i18n.Runtime) []fsChoice {
+	return choicesFrom(tr, "mute.", muteChoices)
+}
 
 // choicesFrom pairs each value with its catalog label. The key is the value
 // itself, so adding an interval is a value here and a key there and nothing in
 // between — and a value with no key renders as the key, which is loud enough to
 // be caught the first time the panel is opened.
-func choicesFrom(prefix string, values []int) []fsChoice {
+func choicesFrom(tr i18n.Runtime, prefix string, values []int) []fsChoice {
+	// One Namespace handle rather than repeating "feedSettings" per lookup —
+	// Runtime.NS binds it once, which is the footgun the framework added it for.
+	ns := tr.NS("feedSettings")
 	out := make([]fsChoice, 0, len(values))
 	for _, v := range values {
-		out = append(out, fsChoice{i18n.T(prefix + strconv.Itoa(v)), v})
+		out = append(out, fsChoice{ns.T(prefix + strconv.Itoa(v)), v})
 	}
 	return out
 }
@@ -396,11 +402,11 @@ func muteFor(until string) int {
 
 // relOrNever formats a timestamp for the health block. "never" is a real answer
 // and a far more useful one than an empty cell.
-func relOrNever(ts string) string {
+func relOrNever(tr i18n.Runtime, ts string) string {
 	if strings.TrimSpace(ts) == "" {
-		return i18n.T("feedSettings.never")
+		return tr.T("feedSettings", "never")
 	}
-	if r := relTime(ts); r != "" {
+	if r := relTime(tr, ts); r != "" {
 		return r
 	}
 	return ts

@@ -118,7 +118,7 @@ type settingsProps struct {
 	smart smartProps
 }
 
-func settingsPane(p settingsProps) ui.Node {
+func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 	tabs := make([]ui.Node, 0, len(settingsTabs))
 	for _, t := range settingsTabs {
 		tabs = append(tabs, html.Button(html.Props{
@@ -128,37 +128,37 @@ func settingsPane(p settingsProps) ui.Node {
 				"data-action": "settings-tab", "data-value": string(t.id),
 			},
 			Aria: map[string]string{"current": strconv.FormatBool(t.id == p.tab)},
-		}, lead(t.glyph), html.Text(i18n.T("settings.tab."+string(t.id)))))
+		}, lead(t.glyph), html.Text(tr.T("settings", "tab."+string(t.id)))))
 	}
 
 	var body []ui.Node
 	switch p.tab {
 	case setAppearance:
-		body = settingsAppearance(p)
+		body = settingsAppearance(tr, p)
 	case setListening:
-		body = settingsListening(p)
+		body = settingsListening(tr, p)
 	case setSmart:
-		body = settingsSmart(p.smart)
+		body = settingsSmart(tr, p.smart)
 	case setFeeds:
-		body = settingsFeeds(p)
+		body = settingsFeeds(tr, p)
 	case setAccount:
-		body = settingsAccount(p)
+		body = settingsAccount(tr, p)
 	case setServer:
-		body = settingsServer(p)
+		body = settingsServer(tr, p)
 	case setActivity:
-		body = settingsActivity(p)
+		body = settingsActivity(tr, p)
 	case setSpeed:
-		body = settingsSpeed(p)
+		body = settingsSpeed(tr, p)
 	default:
-		body = settingsReading(p)
+		body = settingsReading(tr, p)
 	}
 
 	return html.Main(html.Props{Class: "pane pane-settings",
 		Raw: map[string]any{"tabindex": "-1"}},
 		html.Div(html.Props{Class: "set-head"},
-			html.H1(html.Props{}, html.Text(i18n.T("settings.title"))),
+			html.H1(html.Props{}, html.Text(tr.T("settings", "title"))),
 			html.Span(html.Props{Class: "set-sub"},
-				html.Text(i18n.T("settings.sub"))),
+				html.Text(tr.T("settings", "sub"))),
 		),
 		html.Div(html.Props{Class: "set-tabs", Role: "tablist"}, tabs...),
 		ui.If(p.busy != "", func() ui.Node {
@@ -175,108 +175,107 @@ func settingsPane(p settingsProps) ui.Node {
 
 // --- reading -------------------------------------------------------------------
 
-func settingsReading(p settingsProps) []ui.Node {
-	unreadLabel := i18n.T("settings.articlesAll")
+func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
+	unreadLabel := tr.T("settings", "articlesAll")
 	if p.unreadOnly {
-		unreadLabel = i18n.T("settings.articlesUnread")
+		unreadLabel = tr.T("settings", "articlesUnread")
 	}
-	railLabel := i18n.T("settings.railAll")
+	railLabel := tr.T("settings", "railAll")
 	if p.unreadFeeds {
-		railLabel = i18n.T("settings.railUnread")
+		railLabel = tr.T("settings", "railUnread")
 	}
-	markLabel := i18n.T("settings.markOnPast")
+	markLabel := tr.T("settings", "markOnPast")
 	if !p.markOnPast {
-		markLabel = i18n.T("settings.markOnOpen")
+		markLabel = tr.T("settings", "markOnOpen")
 	}
 	return []ui.Node{
-		fsGroup(glyphAll, i18n.T("settings.listGroup"), ""),
-		setRow(i18n.T("settings.articlesLabel"), i18n.T("settings.articlesHint"),
+		fsGroup(glyphAll, tr.T("settings", "listGroup"), ""),
+		setRow(tr.T("settings", "articlesLabel"), tr.T("settings", "articlesHint"),
 			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly)),
-		setRow(i18n.T("settings.railLabel"), i18n.T("settings.railHint"),
+		setRow(tr.T("settings", "railLabel"), tr.T("settings", "railHint"),
 			glyphChip("toggle-feed-filter", glyphFeeds, railLabel, p.unreadFeeds)),
 
-		fsGroup(glyphMarkRead, i18n.T("settings.readGroup"), ""),
-		setRow(i18n.T("settings.markLabel"), i18n.T("settings.markHint"),
+		fsGroup(glyphMarkRead, tr.T("settings", "readGroup"), ""),
+		setRow(tr.T("settings", "markLabel"), tr.T("settings", "markHint"),
 			glyphChip("toggle-mark-past", glyphMarkRead, markLabel, p.markOnPast)),
 		html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("settings.bulkMarkDisclaim"))),
+			html.Text(tr.T("settings", "bulkMarkDisclaim"))),
 	}
 }
 
 // --- listening -----------------------------------------------------------------
 
-func settingsListening(p settingsProps) []ui.Node {
+func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphListen, i18n.T("settings.voiceGroup"), ""),
-		setRow(i18n.T("settings.browserVoice"),
-			i18n.T("settings.browserVoiceHint"),
+		fsGroup(glyphListen, tr.T("settings", "voiceGroup"), ""),
+		setRow(tr.T("settings", "browserVoice"),
+			tr.T("settings", "browserVoiceHint"),
 			html.Span(html.Props{Class: "chip chip-static"},
-				html.Text(i18n.T("settings.alwaysAvailable")))),
+				html.Text(tr.T("settings", "alwaysAvailable")))),
 
-		fsGroup(glyphShared, i18n.T("settings.smartGroup"),
-			i18n.T("settings.smartGroupHint")),
-		setRow(i18n.T("settings.smartVoice"),
-			i18n.T("settings.smartVoiceHint"),
-			glyphChip("toggle-smart-voice", glyphListen, onOff(p.speakSmart), p.speakSmart)),
+		fsGroup(glyphShared, tr.T("settings", "smartGroup"),
+			tr.T("settings", "smartGroupHint")),
+		setRow(tr.T("settings", "smartVoice"),
+			tr.T("settings", "smartVoiceHint"),
+			glyphChip("toggle-smart-voice", glyphListen, onOff(tr, p.speakSmart), p.speakSmart)),
 		html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("settings.audioCacheNote"))),
+			html.Text(tr.T("settings", "audioCacheNote"))),
 	}
 }
 
 // --- feeds ---------------------------------------------------------------------
 
-func settingsFeeds(p settingsProps) []ui.Node {
+func settingsFeeds(tr i18n.Runtime, p settingsProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphFeeds, i18n.T("settings.subsGroup"), ""),
-		setFact(i18n.T("settings.factFeeds"), thousands(p.feeds)),
-		setFact(i18n.T("settings.factUnread"), thousands(p.unread)),
-		setFact(i18n.T("settings.factInList"), i18n.T("settings.loadedOfTotal",
-			i18n.Args{"loaded": thousands(p.loadedItems), "total": thousands(p.totalItems)})),
+		fsGroup(glyphFeeds, tr.T("settings", "subsGroup"), ""),
+		setFact(tr.T("settings", "factFeeds"), thousands(tr, p.feeds)),
+		setFact(tr.T("settings", "factUnread"), thousands(tr, p.unread)),
+		setFact(tr.T("settings", "factInList"), tr.T("settings", "loadedOfTotal", i18n.Args{"loaded": thousands(tr, p.loadedItems), "total": thousands(tr, p.totalItems)})),
 
-		fsGroup(glyphAction, i18n.T("settings.bulkGroup"), ""),
+		fsGroup(glyphAction, tr.T("settings", "bulkGroup"), ""),
 		html.Div(html.Props{Class: "set-actions"},
-			glyphChip("refresh", glyphRefresh, i18n.T("settings.fetchAll"), false),
-			glyphChip("mark-all", glyphMarkRead, i18n.T("settings.markListRead"), false),
+			glyphChip("refresh", glyphRefresh, tr.T("settings", "fetchAll"), false),
+			glyphChip("mark-all", glyphMarkRead, tr.T("settings", "markListRead"), false),
 		),
 		html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("settings.perFeedNote"))),
+			html.Text(tr.T("settings", "perFeedNote"))),
 	}
 }
 
 // --- account -------------------------------------------------------------------
 
-func settingsAccount(p settingsProps) []ui.Node {
+func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 	who := p.whoami
 	if who == "" {
-		who = i18n.T("settings.localAccount")
+		who = tr.T("settings", "localAccount")
 	}
 	return []ui.Node{
-		fsGroup("◑", i18n.T("settings.youGroup"), ""),
-		setFact(i18n.T("settings.factSignedIn"), who),
-		setFact(i18n.T("settings.factServer"), p.serverURL),
-		setFact(i18n.T("settings.factConnection"), connLabel(p.conn)),
+		fsGroup("◑", tr.T("settings", "youGroup"), ""),
+		setFact(tr.T("settings", "factSignedIn"), who),
+		setFact(tr.T("settings", "factServer"), p.serverURL),
+		setFact(tr.T("settings", "factConnection"), connLabel(tr, p.conn)),
 		// Reconnects and lost time, and only once there has been one: a row
 		// reading "0" on every healthy install is a row nobody reads, so when
 		// it does appear it carries information by existing (§20.19.10).
 		// Without it "it feels flaky" is unfalsifiable, and this screen is the
 		// only instrument a self-hosted reader has.
 		ui.If(p.reconnects > 0, func() ui.Node {
-			return setFact(i18n.T("settings.factReconnects"), p.connHealth)
+			return setFact(tr.T("settings", "factReconnects"), p.connHealth)
 		}),
 
 		// Said plainly rather than shown as a disabled form. A greyed-out
 		// "Change password" that never works is worse than an honest sentence:
 		// the reader spends time working out whether they are doing it wrong.
-		fsGroup(glyphShared, i18n.T("settings.notBuiltGroup"),
-			i18n.T("settings.notBuiltHint")),
+		fsGroup(glyphShared, tr.T("settings", "notBuiltGroup"),
+			tr.T("settings", "notBuiltHint")),
 		html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("settings.notBuiltNote"))),
+			html.Text(tr.T("settings", "notBuiltNote"))),
 	}
 }
 
 // --- server --------------------------------------------------------------------
 
-func settingsServer(p settingsProps) []ui.Node {
+func settingsServer(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if p.statsErr != "" {
 		return []ui.Node{html.Div(html.Props{Class: "fs-error"}, html.Text(p.statsErr))}
 	}
@@ -287,58 +286,56 @@ func settingsServer(p settingsProps) []ui.Node {
 
 	commit := s.GetCommit()
 	if commit == "" || commit == "unknown" {
-		commit = i18n.T("settings.localBuild")
+		commit = tr.T("settings", "localBuild")
 	}
 	return []ui.Node{
-		fsGroup(glyphHealth, i18n.T("settings.buildGroup"), ""),
-		setFact(i18n.T("settings.factVersion"), s.GetVersion()),
-		setFact(i18n.T("settings.factCommit"), commit),
-		setFact(i18n.T("settings.factSchema"), i18n.T("settings.migrationN",
-			i18n.Args{"n": int(s.GetSchemaVersion())})),
-		setFact(i18n.T("settings.factUptime"), humanDuration(s.GetUptimeS())),
-		setFact(i18n.T("settings.factStarted"), relOrNever(s.GetStartedAt())),
+		fsGroup(glyphHealth, tr.T("settings", "buildGroup"), ""),
+		setFact(tr.T("settings", "factVersion"), s.GetVersion()),
+		setFact(tr.T("settings", "factCommit"), commit),
+		setFact(tr.T("settings", "factSchema"), tr.T("settings", "migrationN", i18n.Args{"n": int(s.GetSchemaVersion())})),
+		setFact(tr.T("settings", "factUptime"), humanDuration(tr, s.GetUptimeS())),
+		setFact(tr.T("settings", "factStarted"), relOrNever(tr, s.GetStartedAt())),
 
-		fsGroup("⌸", i18n.T("settings.storageGroup"), ""),
-		setFact(i18n.T("settings.factDatabase"), humanBytes(s.GetDbBytes())),
+		fsGroup("⌸", tr.T("settings", "storageGroup"), ""),
+		setFact(tr.T("settings", "factDatabase"), humanBytes(tr, s.GetDbBytes())),
 		// The WAL is shown separately because it is the number that surprises
 		// people: it grows between checkpoints, and someone watching only the
 		// .db file concludes their storage is smaller than it is.
-		setFact(i18n.T("settings.factWAL"), humanBytes(s.GetWalBytes())),
-		setFact(i18n.T("settings.factPath"), s.GetDbPath()),
+		setFact(tr.T("settings", "factWAL"), humanBytes(tr, s.GetWalBytes())),
+		setFact(tr.T("settings", "factPath"), s.GetDbPath()),
 
-		fsGroup(glyphFeeds, i18n.T("settings.contentsGroup"), ""),
-		setFact(i18n.T("settings.factFeeds"), thousands(int(s.GetFeeds()))+
-			dormantSuffix(int(s.GetDormantFeeds()))),
-		setFact(i18n.T("settings.factArticles"), i18n.T("settings.itemsAndUnread",
-			i18n.Args{"items": thousands(int(s.GetItems())), "unread": thousands(int(s.GetUnread()))})),
-		setFact(i18n.T("settings.factNotes"), thousands(int(s.GetNotes()))),
-		setFact(i18n.T("settings.factTags"), thousands(int(s.GetTags()))),
-		setFact(i18n.T("settings.factRated"), thousands(int(s.GetRated()))),
-		setFact(i18n.T("settings.factSaved"), thousands(int(s.GetSaved()))),
+		fsGroup(glyphFeeds, tr.T("settings", "contentsGroup"), ""),
+		setFact(tr.T("settings", "factFeeds"), thousands(tr, int(s.GetFeeds()))+
+			dormantSuffix(tr, int(s.GetDormantFeeds()))),
+		setFact(tr.T("settings", "factArticles"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItems())), "unread": thousands(tr, int(s.GetUnread()))})),
+		setFact(tr.T("settings", "factNotes"), thousands(tr, int(s.GetNotes()))),
+		setFact(tr.T("settings", "factTags"), thousands(tr, int(s.GetTags()))),
+		setFact(tr.T("settings", "factRated"), thousands(tr, int(s.GetRated()))),
+		setFact(tr.T("settings", "factSaved"), thousands(tr, int(s.GetSaved()))),
 
-		fsGroup(glyphRefresh, i18n.T("settings.pollGroup"), ""),
-		setFact(i18n.T("settings.factEvery"), humanDuration(int64(s.GetPollIntervalS()))),
-		setFact(i18n.T("settings.factLastPoll"), relOrNever(s.GetLastPollAt())),
+		fsGroup(glyphRefresh, tr.T("settings", "pollGroup"), ""),
+		setFact(tr.T("settings", "factEvery"), humanDuration(tr, int64(s.GetPollIntervalS()))),
+		setFact(tr.T("settings", "factLastPoll"), relOrNever(tr, s.GetLastPollAt())),
 
-		fsGroup(glyphAction, i18n.T("settings.processGroup"), ""),
-		setFact(i18n.T("settings.factHeap"), humanBytes(s.GetHeapBytes())),
-		setFact(i18n.T("settings.factGoroutines"), thousands(int(s.GetGoroutines()))),
-		setFact(i18n.T("settings.factGC"), thousands(int(s.GetGcCycles()))),
+		fsGroup(glyphAction, tr.T("settings", "processGroup"), ""),
+		setFact(tr.T("settings", "factHeap"), humanBytes(tr, s.GetHeapBytes())),
+		setFact(tr.T("settings", "factGoroutines"), thousands(tr, int(s.GetGoroutines()))),
+		setFact(tr.T("settings", "factGC"), thousands(tr, int(s.GetGcCycles()))),
 		html.Div(html.Props{Class: "set-actions"},
-			glyphChip("settings-refresh", glyphRefresh, i18n.T("settings.refreshNumbers"), false)),
+			glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "refreshNumbers"), false)),
 	}
 }
 
-func dormantSuffix(n int) string {
+func dormantSuffix(tr i18n.Runtime, n int) string {
 	if n == 0 {
 		return ""
 	}
-	return i18n.N("settings.dormantSuffix", n)
+	return tr.T("settings", "dormantSuffix", i18n.Count(n))
 }
 
 // --- activity ------------------------------------------------------------------
 
-func settingsActivity(p settingsProps) []ui.Node {
+func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 	levels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
 	chips := make([]ui.Node, 0, len(levels))
 	cur := strings.ToUpper(p.logLevel)
@@ -355,11 +352,11 @@ func settingsActivity(p settingsProps) []ui.Node {
 	}
 
 	head := []ui.Node{
-		fsGroup("≡", i18n.T("settings.activityGroup"),
-			i18n.T("settings.activityHint")),
+		fsGroup("≡", tr.T("settings", "activityGroup"),
+			tr.T("settings", "activityHint")),
 		html.Div(html.Props{Class: "set-actions"},
 			html.Div(html.Props{Class: "fs-choices"}, chips...),
-			glyphChip("settings-refresh", glyphRefresh, i18n.T("settings.reload"), false),
+			glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "reload"), false),
 		),
 	}
 
@@ -371,7 +368,7 @@ func settingsActivity(p settingsProps) []ui.Node {
 			counts = append(counts, html.Span(html.Props{
 				Class: "chip chip-static chip-mini log-" + strings.ToLower(c.GetLevel()),
 				Key:   "lc-" + c.GetLevel(),
-			}, html.Text(strings.ToLower(c.GetLevel())+" "+thousands(int(c.GetCount())))))
+			}, html.Text(strings.ToLower(c.GetLevel())+" "+thousands(tr, int(c.GetCount())))))
 		}
 		head = append(head, html.Div(html.Props{Class: "set-counts"}, counts...))
 	}
@@ -381,7 +378,7 @@ func settingsActivity(p settingsProps) []ui.Node {
 	}
 	if len(p.logs) == 0 {
 		return append(head, html.Div(html.Props{Class: "set-note"},
-			html.Text(i18n.T("settings.activityEmpty"))))
+			html.Text(tr.T("settings", "activityEmpty"))))
 	}
 
 	rows := make([]ui.Node, 0, len(p.logs))
@@ -391,7 +388,7 @@ func settingsActivity(p settingsProps) []ui.Node {
 			Key:   "log-" + strconv.Itoa(i),
 			Data:  map[string]string{"level": strings.ToLower(r.GetLevel())},
 		},
-			html.Span(html.Props{Class: "log-time"}, html.Text(relOrNever(r.GetTime()))),
+			html.Span(html.Props{Class: "log-time"}, html.Text(relOrNever(tr, r.GetTime()))),
 			html.Span(html.Props{Class: "log-level"}, html.Text(strings.ToLower(r.GetLevel()))),
 			html.Div(html.Props{Class: "log-msg"},
 				html.Span(html.Props{Class: "log-text"}, html.Text(r.GetMessage())),
@@ -406,26 +403,26 @@ func settingsActivity(p settingsProps) []ui.Node {
 
 // --- speed ---------------------------------------------------------------------
 
-func settingsSpeed(p settingsProps) []ui.Node {
+func settingsSpeed(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if p.loading || p.stats == nil {
 		return settingsSkeleton()
 	}
 	methods := p.stats.GetMethods()
 	if len(methods) == 0 {
 		return []ui.Node{
-			fsGroup(glyphAction, i18n.T("settings.speedGroup"), ""),
+			fsGroup(glyphAction, tr.T("settings", "speedGroup"), ""),
 			html.Div(html.Props{Class: "set-note"},
-				html.Text(i18n.T("settings.speedEmpty"))),
+				html.Text(tr.T("settings", "speedEmpty"))),
 		}
 	}
 
 	rows := []ui.Node{
 		html.Div(html.Props{Class: "lat-row lat-head"},
-			html.Span(html.Props{Class: "lat-m"}, html.Text(i18n.T("settings.colCall"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(i18n.T("settings.colCount"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(i18n.T("settings.colP50"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(i18n.T("settings.colP95"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(i18n.T("settings.colMax"))),
+			html.Span(html.Props{Class: "lat-m"}, html.Text(tr.T("settings", "colCall"))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colCount"))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colP50"))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colP95"))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colMax"))),
 		),
 	}
 	for _, m := range methods {
@@ -437,16 +434,16 @@ func settingsSpeed(p settingsProps) []ui.Node {
 			Data:  map[string]string{"failing": strconv.FormatBool(m.GetErrors() > 0)},
 		},
 			html.Span(html.Props{Class: "lat-m"}, html.Text(m.GetMethod())),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(thousands(int(m.GetCalls())))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(m.GetP50Ms()))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(m.GetP95Ms()))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(m.GetMaxMs()))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(thousands(tr, int(m.GetCalls())))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetP50Ms()))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetP95Ms()))),
+			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetMaxMs()))),
 		))
 	}
 
 	out := []ui.Node{
-		fsGroup(glyphAction, i18n.T("settings.speedGroup"),
-			i18n.T("settings.speedHint")),
+		fsGroup(glyphAction, tr.T("settings", "speedGroup"),
+			tr.T("settings", "speedHint")),
 		html.Div(html.Props{Class: "lat-table"}, rows...),
 	}
 	var failing []ui.Node
@@ -455,16 +452,16 @@ func settingsSpeed(p settingsProps) []ui.Node {
 			failing = append(failing, html.Div(html.Props{Class: "set-fact"},
 				html.Span(html.Props{Class: "set-fact-name"}, html.Text(m.GetMethod())),
 				html.Span(html.Props{Class: "set-fact-value"},
-					html.Text(i18n.N("settings.failedCalls", int(m.GetErrors())))),
+					html.Text(tr.T("settings", "failedCalls", i18n.Count(int(m.GetErrors()))))),
 			))
 		}
 	}
 	if len(failing) > 0 {
-		out = append(out, fsGroup("⚠", i18n.T("settings.failingGroup"), ""))
+		out = append(out, fsGroup("⚠", tr.T("settings", "failingGroup"), ""))
 		out = append(out, failing...)
 	}
 	return append(out, html.Div(html.Props{Class: "set-actions"},
-		glyphChip("settings-refresh", glyphRefresh, i18n.T("settings.refreshNumbers"), false)))
+		glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "refreshNumbers"), false)))
 }
 
 // --- shared pieces --------------------------------------------------------------
@@ -493,64 +490,64 @@ func settingsSkeleton() []ui.Node {
 // ms renders a millisecond figure at the precision a person can act on: sub-10ms
 // to one decimal, above that to none. "0.4ms" and "1,204ms" are both readable;
 // "1204.37ms" is a machine talking to itself.
-func ms(v float64) string {
+func ms(tr i18n.Runtime, v float64) string {
 	switch {
 	case v <= 0:
-		return i18n.T("unit.none")
+		return tr.T("unit", "none")
 	case v < 10:
-		return i18n.T("unit.ms", i18n.Args{"n": strconv.FormatFloat(v, 'f', 1, 64)})
+		return tr.T("unit", "ms", i18n.Args{"n": strconv.FormatFloat(v, 'f', 1, 64)})
 	default:
-		return i18n.T("unit.ms", i18n.Args{"n": thousands(int(v + 0.5))})
+		return tr.T("unit", "ms", i18n.Args{"n": thousands(tr, int(v+0.5))})
 	}
 }
 
 // onOff is the two words a boolean chip wears. Lowercase, because it sits
 // inside a chip that is already labelled by the row above it.
-func onOff(v bool) string {
+func onOff(tr i18n.Runtime, v bool) string {
 	if v {
-		return i18n.T("settings.on")
+		return tr.T("settings", "on")
 	}
-	return i18n.T("settings.off")
+	return tr.T("settings", "off")
 }
 
 // humanBytes is the storage figure. Binary units, because that is what the file
 // system reports and a mismatch invites "why does my disk disagree".
-func humanBytes(n int64) string {
+func humanBytes(tr i18n.Runtime, n int64) string {
 	switch {
 	case n <= 0:
-		return i18n.T("unit.none")
+		return tr.T("unit", "none")
 	case n < 1024:
-		return i18n.T("unit.bytes", i18n.Args{"n": strconv.FormatInt(n, 10)})
+		return tr.T("unit", "bytes", i18n.Args{"n": strconv.FormatInt(n, 10)})
 	case n < 1024*1024:
-		return i18n.T("unit.kib", i18n.Args{"n": strconv.FormatFloat(float64(n)/1024, 'f', 1, 64)})
+		return tr.T("unit", "kib", i18n.Args{"n": strconv.FormatFloat(float64(n)/1024, 'f', 1, 64)})
 	case n < 1024*1024*1024:
-		return i18n.T("unit.mib", i18n.Args{"n": strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64)})
+		return tr.T("unit", "mib", i18n.Args{"n": strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64)})
 	default:
-		return i18n.T("unit.gib", i18n.Args{"n": strconv.FormatFloat(float64(n)/(1024*1024*1024), 'f', 2, 64)})
+		return tr.T("unit", "gib", i18n.Args{"n": strconv.FormatFloat(float64(n)/(1024*1024*1024), 'f', 2, 64)})
 	}
 }
 
 // humanDuration reads uptimes and intervals in the largest unit that still says
 // something. "2d 3h" beats "183,600s".
-func humanDuration(s int64) string {
+func humanDuration(tr i18n.Runtime, s int64) string {
 	switch {
 	case s <= 0:
-		return i18n.T("unit.none")
+		return tr.T("unit", "none")
 	case s < 60:
-		return i18n.T("unit.seconds", i18n.Args{"n": s})
+		return tr.T("unit", "seconds", i18n.Args{"n": s})
 	case s < 3600:
-		return i18n.T("unit.minutes", i18n.Args{"n": s / 60})
+		return tr.T("unit", "minutes", i18n.Args{"n": s / 60})
 	case s < 86400:
 		h, m := s/3600, (s%3600)/60
 		if m == 0 {
-			return i18n.T("unit.hours", i18n.Args{"n": h})
+			return tr.T("unit", "hours", i18n.Args{"n": h})
 		}
-		return i18n.T("unit.hoursMins", i18n.Args{"h": h, "m": m})
+		return tr.T("unit", "hoursMins", i18n.Args{"h": h, "m": m})
 	default:
 		d, h := s/86400, (s%86400)/3600
 		if h == 0 {
-			return i18n.T("unit.days", i18n.Args{"n": d})
+			return tr.T("unit", "days", i18n.Args{"n": d})
 		}
-		return i18n.T("unit.daysHours", i18n.Args{"d": d, "h": h})
+		return tr.T("unit", "daysHours", i18n.Args{"d": d, "h": h})
 	}
 }

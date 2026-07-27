@@ -469,6 +469,42 @@ func motionMarks(r func(string, string) css.Rule) {
 		r("transition", "background-color "+warm+", color "+warm+", box-shadow "+mark))
 	css.Global(".pal-row[aria-current='true']", r("box-shadow", "inset 3px 0 0 var(--cc)"))
 
+	// --- the list's travelling cursor ---
+	//
+	// The selection in the item list is ONE element that moves, not a background
+	// that lights up on one row and goes out on another. Two rows cross-fading is
+	// two events; a mark that slides is one, and it is the difference between
+	// "something changed over there" and "you moved". This is the gesture the
+	// reader performs most — j, j, j, k — so it is the one worth spending the
+	// most care on.
+	//
+	// It is a pseudo-element of the SCROLL CONTAINER rather than a real element,
+	// which buys the whole thing: an absolutely positioned child of a scroller is
+	// laid out in the scroller's content space, so its y is the row index times
+	// the row height and nothing has to be recomputed as the list scrolls. The
+	// index arrives as --cursor from Go.
+	css.Global(".list-scroll::before",
+		r("content", `""`), r("position", "absolute"),
+		r("left", "0"), r("right", "0"), r("top", "0"),
+		r("height", "var(--row)"),
+		r("background", "var(--sur-2)"),
+		r("transform", "translateY(var(--cursor, 0px))"),
+		r("transition", "transform "+move+", opacity "+warm),
+		// Hidden unless a list explicitly says otherwise. Opt-IN rather than
+		// opt-out because .list-scroll is also the skeleton list's class, and
+		// that one carries no cursor state at all — defaulting to visible put a
+		// selection highlight on the first placeholder row of every load.
+		r("opacity", "0"),
+		// Underneath the rows and out of the way of the pointer. The rows are
+		// position:relative with no z-index, so they paint after this in DOM
+		// order and their text sits on top of it.
+		r("z-index", "0"), r("pointer-events", "none"),
+	)
+	// Shown only for a list that has a selection. Parked at the top and
+	// invisible otherwise, so the first selection of a session fades in on its
+	// way rather than sliding the whole height of the list out of nowhere.
+	css.Global(".list-scroll[data-cursor='true']::before", r("opacity", "1"))
+
 	// On a phone the tab bar carries the same job as the rail's bar, and it is
 	// the glyph that grows: there is no room for a rule, and a 4px scale on a
 	// 17px glyph is legible at arm's length.

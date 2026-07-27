@@ -60,7 +60,8 @@ func TestEveryTokenReadIsAlsoDefined(t *testing.T) {
 	//	--ink          derived from --c; defined by the sheet, listed here because
 	//	               it is legitimately read where --c may be absent
 	runtime := map[string]bool{
-		"--c": true, "--acc": true, "--thm-accent": true, "--i": true,
+		"--c": true, "--acc": true, "--thm-accent": true,
+		"--i": true, "--cursor": true,
 	}
 
 	defined := map[string]bool{}
@@ -107,8 +108,9 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		"--t1": true, "--t2": true, "--t3": true,
 		"--e-out": true, "--e-io": true, "--e-mark": true,
 		"--c": true, "--ink": true, "--acc": true, "--thm-accent": true,
-		// The spawn stagger index, set per row from Go.
-		"--i": true,
+		// Set per element from Go: the spawn stagger index, and the list
+		// cursor's offset down the scroller.
+		"--i": true, "--cursor": true,
 	}
 
 	sheet := sheetText(t)
@@ -270,6 +272,12 @@ func TestNoLiteralColoursOutsideThemes(t *testing.T) {
 	// The :root block is where the theme's literals BELONG — it is
 	// Fanciful.Vars() written out. Everywhere else is what this test is about.
 	sheet = stripBlock(sheet, ":root{")
+	// The reader-mode iframe's base. It is white on every theme ON PURPOSE: the
+	// page inside it brings its own background, and a themed colour showing
+	// through a site that assumes white is a stripe of the wrong colour down
+	// every margin. Not a theme value, so not a token — stripped by NAME rather
+	// than allowlisting the hex, so a stray #fff anywhere else still fails.
+	sheet = stripBlock(sheet, ".page-frame-doc{")
 	// Strip the inline SVG noise texture, which is a data: URI containing #n as
 	// a filter reference rather than a colour.
 	if i := strings.Index(sheet, "data:image/svg+xml"); i >= 0 {

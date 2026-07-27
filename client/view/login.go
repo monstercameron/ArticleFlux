@@ -40,6 +40,13 @@ type loginProps struct {
 }
 
 func Login(p loginProps) ui.Node {
+	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
+	// top, unconditionally — GWC matches hooks positionally. It is threaded
+	// into the plain helpers below as a parameter rather than put on a props
+	// struct, because Runtime carries func fields and a props struct holding
+	// one compares unequal on every render, which would defeat the memo
+	// bailout this pane depends on.
+	tr := i18n.UseI18n()
 	// Prefilled on a loopback origin, empty everywhere else.
 	//
 	// The case this exists for: a server started WITHOUT -dev on a development
@@ -90,7 +97,7 @@ func Login(p loginProps) ui.Node {
 		}
 		u, pw := username.Get(), password.Get()
 		if u == "" || pw == "" {
-			errMsg.Set(i18n.T("login.errEmpty"))
+			errMsg.Set(tr.T("login", "errEmpty"))
 			return
 		}
 		busy.Set(true)
@@ -107,7 +114,7 @@ func Login(p loginProps) ui.Node {
 				if err != nil {
 					ui.PostAsync(func() {
 						busy.Set(false)
-						errMsg.Set(i18n.T("login.errDial", i18n.Args{"err": err.Error()}))
+						errMsg.Set(tr.T("login", "errDial", i18n.Args{"err": err.Error()}))
 					})
 					return
 				}
@@ -123,7 +130,7 @@ func Login(p loginProps) ui.Node {
 					// credential and specific for everything else (rate limiting,
 					// the ambiguous-tenant case), so it is shown as given rather
 					// than replaced with a guess about which one this was.
-					errMsg.Set(loginMessage(err))
+					errMsg.Set(loginMessage(tr, err))
 					// The password is cleared and the username is not. Retyping a
 					// username you got right is the small daily insult that makes
 					// a login screen feel hostile.
@@ -174,14 +181,14 @@ func Login(p loginProps) ui.Node {
 	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "login"}},
 		html.Form(html.Props{Class: "login-card", Role: "main",
 			Raw: map[string]any{"onsubmit": "return false"}},
-			html.Div(html.Props{Class: "login-mark"}, html.Text(i18n.T("login.mark"))),
+			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 			html.P(html.Props{Class: "login-lede"},
-				html.Text(i18n.T("login.lede"))),
+				html.Text(tr.T("login", "lede"))),
 
 			html.Div(html.Props{Class: "login-field"},
 				html.Label(html.Props{Class: "login-label",
 					Raw: map[string]any{"for": "login-username"}},
-					html.Text(i18n.T("login.username"))),
+					html.Text(tr.T("login", "username"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "text", ID: "login-username",
 					Value:   username.Get(),
@@ -202,7 +209,7 @@ func Login(p loginProps) ui.Node {
 			html.Div(html.Props{Class: "login-field"},
 				html.Label(html.Props{Class: "login-label",
 					Raw: map[string]any{"for": "login-password"}},
-					html.Text(i18n.T("login.password"))),
+					html.Text(tr.T("login", "password"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "password", ID: "login-password",
 					Value:   password.Get(),
@@ -226,13 +233,13 @@ func Login(p loginProps) ui.Node {
 				Type:     "button",
 				OnClick:  onSubmit,
 				Disabled: busy.Get(),
-			}, html.Text(submitLabel(busy.Get()))),
+			}, html.Text(submitLabel(tr, busy.Get()))),
 
 			// No trailing punctuation after the code chip. The chip is padded, so
 			// a period following it sits a visible gap away from the word and
 			// reads as a stray mark rather than the end of a sentence.
 			html.P(html.Props{Class: "login-foot"},
-				html.Text(i18n.T("login.footPrefix")),
+				html.Text(tr.T("login", "footPrefix")),
 				html.Code(html.Props{}, html.Text(adduserCommand))),
 		),
 	)
@@ -295,11 +302,11 @@ func isLoopbackOrigin(origin string) bool {
 	return false
 }
 
-func submitLabel(busy bool) string {
+func submitLabel(tr i18n.Runtime, busy bool) string {
 	if busy {
-		return i18n.T("login.working")
+		return tr.T("login", "working")
 	}
-	return i18n.T("login.submit")
+	return tr.T("login", "submit")
 }
 
 // errClass hides the error slot when there is nothing to say, rather than
@@ -312,32 +319,34 @@ func errClass(msg string) string {
 	return "login-error"
 }
 
-// loginMessage turns a gRPC error into something worth reading.
+// loginMessage turns a gRPC error into something worth reading, in the reader's
+// language.
 //
-// The server's own message is preferred where it has one — it is written for a
-// person and it distinguishes the cases that genuinely differ. The fallback
-// covers the transport failing, where the gRPC text is a description of a
-// connection and not of anything the reader did.
-func loginMessage(err error) string {
+// The server's own refusals now arrive with a catalog key attached (see
+// serverText), so "invalid username or password" is translated rather than
+// passed through as English. What is NOT translated, and cannot be, is a
+// transport failure: gRPC composes those itself and its text describes a socket
+// ("connection error: desc = transport is closing"), which tells a reader
+// nothing and looks like their password broke the server. Those two codes get
+// this app's own sentence instead.
+func loginMessage(tr i18n.Runtime, err error) string {
 	if err == nil {
 		return ""
 	}
 	st, ok := status.FromError(err)
 	if !ok {
-		return i18n.T("login.errGeneric")
+		return tr.T("login", "errGeneric")
 	}
 	switch st.Code() {
 	case codes.Unavailable, codes.DeadlineExceeded:
-		// A transport failure. gRPC's own text here describes a socket
-		// ("connection error: desc = transport is closing"), which tells a reader
-		// nothing and looks like their password broke the server.
-		return i18n.T("login.errUnreachable")
+		return tr.T("login", "errUnreachable")
 	case codes.Unauthenticated, codes.ResourceExhausted, codes.FailedPrecondition:
 		// The three the server writes for a person: the uniform bad-credential
-		// message, the rate limit, and the ambiguous-tenant case. Passed through
-		// as written.
-		return st.Message()
+		// message, the rate limit, and the ambiguous-tenant case. Resolved
+		// through the catalog when the server named a key, and passed through as
+		// its English when it did not.
+		return serverText(tr, err)
 	default:
-		return i18n.T("login.errGeneric")
+		return tr.T("login", "errGeneric")
 	}
 }
