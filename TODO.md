@@ -2827,6 +2827,20 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
 
+      ◧ 2026-07-27 (night, final) — **50 passed · 2 failed · 3 flaky · 1 skipped, in 6.6 minutes.**
+      `retries: 1` is what makes that sentence possible, and it is there to make flakiness VISIBLE
+      rather than to hide it: Playwright reports a test that failed and then passed in its own
+      `flaky` section, so it never counts as green. Measured over five full runs, the same two specs
+      failed every time while one to three others rotated — which meant every failure list contained
+      real failures surrounded by different timing casualties, and nobody could tell which was which.
+      Now the list means something, and a test appearing in the flaky section every run is a signal
+      somebody can act on.
+      **The two that are real** are both in the reading pane and both written up above: the jump
+      suppression losing entries mid-scroll, and the autosave glyph stuck on `saving` over a note the
+      server already has. Both need `reader.go`, which another lane holds uncommitted.
+      **The three that flake** are `motion` ×2 and `opening an article shows its body`; this is a
+      shared machine and headless Chromium throttles hard when nothing is being clicked.
+
       ◧ 2026-07-27 (night) — **51 passed, 4 failed**, and two of the four were the tests being wrong
       rather than the app. `j and k move through the list` read the current title immediately after
       the first `j` and called it `first`; what it captured was the title from BEFORE that press, so

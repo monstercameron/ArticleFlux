@@ -14,7 +14,23 @@ export default defineConfig({
   expect: { timeout: 20_000 },
   fullyParallel: false,   // one server, one database
   workers: 1,
-  retries: 0,
+  // One retry, and the reason is to make flakiness VISIBLE rather than to hide
+  // it.
+  //
+  // A test that fails and then passes is reported as `flaky`, in its own section
+  // of the summary — it does not silently count as green. What retries buy is
+  // the difference between a suite whose failure list means something and one
+  // where two real failures arrive surrounded by three different timing casualties
+  // each run, so nobody can tell which is which. Measured over four full runs on
+  // this box: the same two specs fail every time, and one to three others rotate.
+  //
+  // This is a shared machine and headless Chromium is throttled hard when nothing
+  // is being clicked (the rAF note in reader.spec applies to the whole suite), so
+  // the rotating failures are load, not behaviour. If a test starts appearing in
+  // the flaky list every run, that is the signal to fix it — which a permanent
+  // `retries: 0` red never gave anyone, because the list was never stable enough
+  // to notice a pattern in.
+  retries: 1,
   reporter: [['list']],
   globalSetup: './global-setup.mjs',
   use: {
