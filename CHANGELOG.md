@@ -11,6 +11,24 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Feeds can be filed: folders, end to end** — store, service, five RPCs, and an OPML importer that
+  finally keeps the categories it had been parsing and discarding. A subscription has one folder and
+  any number of tags, which is not an arbitrary asymmetry: a folder answers *where does this live*
+  (one answer, or the reader has not decided), a tag answers *what is this about* (as many as they
+  like). Per-user, capped at 200, names capped at the width the rail can draw. `repo.Subscribe` now
+  takes a `NewSubscription` struct rather than four positional strings.
+- **A tag has a rail label and a glyph** (migration 0008). The identity (`rust`) and the destination
+  (`Systems programming`) want different names, and one string made the reader choose which job to
+  do badly. Empty means "use the name", the same override idiom as `subscriptions.title`. The glyph
+  is stored as the character, not an index into the catalogue, so retiring an entry can never
+  silently rewrite someone's tags; the catalogue itself lives in `internal/tagglyph` because the
+  browser offers the choice and the server enforces it, and two lists would let a picker offer what
+  a save refuses.
+- **The D7 extraction bake-off** (`internal/extract/bakeoff`, its own module): twelve real pages —
+  including a README and an MDN page, which are not articles and which a library should decline
+  rather than hallucinate a body out of — compared across trafilatura, dom-distiller and
+  readability. It stays in the tree because "why aren't we using X?" deserves a command anyone can
+  re-run, not a paragraph nobody can check.
 - **Undo for mark-all-read.** `MarkAllRead` returns a token identifying exactly the rows it flipped,
   and `UndoMarkAllRead` puts them back. The token is the batch's `rev` — server-assigned and
   monotonic per user — so there is no journal table and no server-side session state to expire; a
