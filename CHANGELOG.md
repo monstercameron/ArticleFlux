@@ -56,6 +56,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Newsletters parse** (`internal/mailparse`, TODO 4.8) — MIME in, a normalised item out, no IMAP
+  and no network. `net/mail` parses headers and stops there, so this adds the three things every real
+  newsletter needs: multipart tree walking, quoted-printable and base64 transfer decoding, and RFC
+  2047 encoded-word headers (undecoded, `=?UTF-8?Q?...?=` becomes the item's title verbatim). Within
+  a `multipart/alternative` the **last** part wins, because RFC 2046 orders alternatives
+  worst-to-best and a first-wins reader takes the "view this in your browser" fallback on every
+  message that has one. The body leaves under `sanitize.Newsletter`, so **every remote image is
+  dropped — pixel and photograph alike** — and the item records that it happened, since a newsletter
+  rendering without its illustrations looks broken unless the reader is told it was deliberate.
+  `NaturalKey` is the one correct way to build the per-user source key (§6.4): global keying would
+  merge two people's private mail into one row, which is a privacy failure rather than a bug.
+  Attachments never reach the body, nesting is depth-bounded, and a missing Message-ID falls back to
+  a stable content hash so re-polling stays idempotent.
+
 - **Scraped sources** (`internal/scrapesel`, TODO 4.7) — a scrape rule plus a page of HTML becomes
   items in the same shape a feed produces, so ingest, dedup, health, rules, ranking and search all
   work on a site with no feed without knowing it was scraped. Pure, so the rule editor can preview
