@@ -59,6 +59,8 @@ feature is one nobody can decide to keep. Each has its section; this is the inde
 | **Themes, accents and the motion system** — every paintable value is a token, and the Appearance surface writes them at runtime | §20.16, **A39** |
 | **The splash** — real download progress, in the reader's own theme, before the module exists | §20.20 |
 | **Focus mode** — the reading pane takes the window; the columns close rather than vanish | §20.21 |
+| **The filmstrip** — below 1220px the panes slide instead of hiding each other | §20.22 |
+| **Dialogs that leave** — all six overlays animate in both directions, and are untabbable closed | §20.23 |
 | **`internal/sanitize`** — five named policies over GWC's engine | §21, TODO 2.9 |
 | **The D7 extraction bake-off** — 12 committed pages, three libraries, one command | §25.1 D7 |
 
@@ -1131,6 +1133,31 @@ limiting exists), refresh-token families with reuse detection, recovery codes, a
 tokens, sudo mode, the breached-password check, per-box Argon2id tuning, and the capability map (§7.4 —
 `role` is carried on the `Scope` but no static per-method map fails closed yet).
 
+### 7.1c Boot order — what the splash is actually for
+
+`Root` holds the screen for two round trips, not one: **`WhoAmI` and `GetPrefs`**. The second one is
+there because of A30 (§20.13) — where you were is account state — and account state has to be
+*fetched*, which means it cannot be a component's initial value unless something holds the screen
+while it arrives. Something already does.
+
+Before this, the saved view was the reader's own opening effect: it mounted with its defaults, painted
+the All stream with an expanded rail and the house theme, and snapped into the saved feed a round trip
+later. Reported as *"after the splash it is instantly the default view and then flashes to the past
+state."*
+
+The rule the boot sequence now follows, and the reason it is written here rather than left in the code:
+
+| What | Where it must happen |
+|---|---|
+| Anything on `documentElement` — theme, accent, reading size, motion, pane widths | **Before the phase flips.** These are custom properties, so applying them costs no render and applying them late costs a repaint of the whole app |
+| Anything that is a component's initial state — scope, filters, rail folds | **As a `UseState` initial value**, from the prop `Root` passes down. A hook's initial value is read once, on mount, which is the only moment restoring is free |
+| The saved article, and the first list fetch | **After mount**, in the effect — they need the list, and the list needs the scope that was just restored |
+
+The login path does the same, so signing in on a second machine lands in the view you left rather than
+assembling it afterwards. The reader keeps its own fetch for when the prop is absent: that is the old
+behaviour, flash included, and it is the correct fallback — a flash is a blemish, and a reader dropped
+back to All every morning is the feature not working.
+
 ### 7.1b The client half — `Root`, `Login`, and the token
 
 `client/data/auth.go` · `client/view/{root,login}.go`. Built immediately after §7.1a, because a server
@@ -1856,6 +1883,134 @@ decision), *and* the request carried the flag the button sets. Neither implies t
 
 **robots.txt is checked before the model, not after** — asking permission after spending the request
 is asking rhetorically. Fetch failures mean allowed; a missing robots.txt is the common case.
+
+### 11.2a The selector language, and what a rule looks like
+
+A rule is eight fields. `item_selector` finds the CONTAINER of one entry; everything else is
+evaluated **inside** a container match, so a selector that reaches the page header is a bug the
+extractor cannot see.
+
+| Field | Required | What it holds |
+|---|---|---|
+| `item_selector` | ✅ | the repeated container — `article.post`, `ul#_listUl li` |
+| `title_selector` | ✅ | the entry's own heading, inside the container |
+| `link_selector` | ✅ | **must end in `@href`** |
+| `date_selector` · `date_layout` | — | see below; getting this wrong is the silent failure |
+| `summary_selector` · `image_selector` · `author_selector` | — | `""` when the page does not carry one |
+
+**`@attr` is ours, not CSS.** `cascadia` matches selectors against an `x/net/html` tree and has no
+concept of reading an attribute, so `internal/attrsel` splits on `@`: `h2 a@href` is "run `h2 a`,
+then read `href`". Without the suffix you get the element's text.
+
+**Dates are the field most often got wrong and the only one that fails silently.** An unparseable
+date becomes "now" at first ingest, which is stable (published_at is never rewritten) but puts a
+five-year-old entry at the top of the reader. Prefer an attribute — `time@datetime` — and leave
+`date_layout` empty. For human text, set both, with the layout written against Go's reference date:
+
+```
+"Jun 1, 2026"       → Jan 2, 2006
+"01/06/2026"        → 02/01/2006
+"2026-06-01 14:03"  → 2006-01-02 15:04
+```
+
+A relative date ("3 days ago") has no layout. The prompt tells the model to leave both fields empty
+rather than guess, because first-seen is a better wrong answer than a parsed-wrong one.
+
+**Worked example — a chapter list** (verified 2026-07-27 with `pagescan`, 9 of 9 extracted):
+
+```
+url    https://www.webtoons.com/en/action/omniscient-reader/list?title_no=2154
+item   ul#_listUl li._episodeItem
+title  span.subj
+link   a.detail_list_link@href
+date   span.date          layout: Jan 2, 2006
+```
+
+The outline that produced it shows why: `ul#_listUl.detail_list` with `li#episode_309._episodeItem`
+followed by `… x 8 more li._episodeItem`. Note the trap the prompt now names explicitly — the id on
+the `li` encodes ONE episode, so a rule built on `li#episode_309` matches one row today and none
+tomorrow. The class, or the list container plus a child, is what generalises.
+
+### 11.2b The counterexample: pages with nothing in them
+
+`https://hni-scantrad.net/comics/hajime-no-ippo` is 7.5 KB of HTML containing a navbar, a logo, the
+word "Loading", and `<router-view>`. The chapters are fetched by the site's Vue app from its own JSON
+API after the page loads. **No selector can find them, because they are not there.**
+
+This is detected before the model is called (`smart.ClientRendered`) and reported as its own status,
+`js_rendered`, rather than as a failure to retry. Two reasons, and the second is the important one:
+
+1. It costs nothing to notice, and a model call to be told the same thing costs money.
+2. **A model handed an app shell does not come back empty-handed.** It finds the most list-shaped
+   thing in the markup — the navigation — and proposes selectors for it. Those compile, they match,
+   and they produce a "feed" of menu items. The validation gate catches most of that, but "we
+   refused its answer" and "there was never an answer" are different facts and only the second has a
+   remedy a reader can act on.
+
+The detector is deliberately conservative: an app-shell mount point (`#app`, `#root`, `#__next`,
+`<router-view>`, `data-reactroot`) **and** a body carrying under 800 characters of text. A
+server-rendered page inside `#__next` has its text and is not flagged — that case has a test, because
+flagging it would refuse most of the modern web.
+
+### 11.2b(i) …and what to do about them: follow the data, not the page
+
+The entries are not missing. They are one request away, and that request is a plain GET returning
+plain JSON to the same origin — so the answer for a client-rendered page is not "no", it is a second
+dialect of rule. `internal/jsonsel` is `scrapesel`'s sibling: dotted paths instead of CSS selectors,
+the same Item out the other end, so ingest, dedup, health, ranking and search cannot tell which
+extractor produced a source.
+
+**The rule that follows the site above** (verified end to end on 2026-07-27 — 170 chapters
+subscribed, stored with real titles and dates, second poll added nothing):
+
+```
+page   https://hni-scantrad.net/comics/hajime-no-ippo
+data   https://hni-scantrad.net/api/comics/hajime-no-ippo   ← found by probing /api + the page path
+items  comic.chapters          (170 entries)
+title  full_title              "Round1515: Loneliness at the Top"
+link   url                     "/read/hajime-no-ippo/en/ch/1515" → resolved against the PAGE
+date   published_on            ISO 8601
+id     slug_lang_vol_ch_sub    "en-N-1515-N"
+```
+
+**Discovery is four GETs, not a crawl**: `/api` + the page's path, the path + `.json`, `/api/v1` +
+the path, and the section index. Each candidate is fetched, parsed, and rejected unless it contains
+an array of at least two objects — the same "the parser disposes" rule the feed rungs follow. The
+longest array of objects is passed to the model as a *hint*, not as the answer: a response carrying a
+list of entries also carries arrays of genres, teams and related titles, and the field names are what
+settle it.
+
+**Three things are enforced rather than assumed**, because this rule holds an address the server will
+fetch hourly forever:
+
+- **Same site.** `SubscribeJSON` refuses a data address on another host. Without that the RPC is an
+  open proxy a client can point anywhere.
+- **robots.txt**, checked against the data address, on subscribe and on every poll.
+- **A stable id when the response has one** (`id_selector`). It is what "have I seen this?" reads, so
+  an API that renumbers its URLs cannot re-deliver its whole archive as new.
+
+**Why not render the page instead.** `chromedp` is already in the module graph, so it is a small step
+technically and a large one otherwise: executing a stranger's JavaScript server-side bypasses every
+SSRF rule this application has, because netguard lives in Go's transport and a browser's network
+stack does not consult it. That reopens §21's hole for every scraped source, on a self-hosted box, to
+obtain an array that one GET already returns — with the types (`chapter` as a number, `published_on`
+as a timestamp) that rendering would have thrown away. Headless stays available as a later rung
+behind an operator's explicit opt-in, for sites that have no API at all.
+
+**Still owed**: §14.2's `url_template` forward-probing, GraphQL endpoints, and APIs behind
+authentication.
+
+### 11.2c pagescan: the bench
+
+`go run ./internal/tools/pagescan <url>` prints what the model would receive — the distilled outline,
+verbatim — and, with `-rule 'item|title|link|date|summary|image'`, runs a rule against the live page
+and prints what it extracted. `-feeds` climbs rungs 1-3.
+
+It exists because two failures look identical from the outside: a proposal that missed the list
+because the outline never showed it, and a proposal that read fine and extracts nothing. Without a
+way to see the outline the temptation is to reword the prompt until something works, which is how a
+prompt turns into superstition. It fetches over the network, which is why it is a tool and not a
+test — nothing in CI should depend on a stranger's homepage.
 
 ### 11.3 What a scraped source costs
 
@@ -3062,6 +3217,16 @@ covers a failure that is invisible in a screenshot of either half alone:
   fifth fails the test rather than quietly joining the exemption. And **no literal colour**, with
   `:root` and the reader-mode iframe's deliberately-white base stripped by name — so a stray hex
   anywhere else still fails.
+- **A readability floor for `--ink`, in the browser** (`e2e/appearance.spec.mjs`). The Go floor cannot
+  reach it: `--ink` does not exist until an engine resolves a `color-mix()` against a hue the server
+  assigned at runtime, so Go only ever sees the expression. On the light theme that mix put the amber
+  source at **4.45:1** — below AA, on the source name of every row — and it was invisible to
+  everything: the Go floor passed, the screenshots looked plausible, no ratio anywhere was wrong. The
+  measurement now happens in the shipping engine, read back as real sRGB bytes off a canvas, because
+  `getComputedStyle` returns `oklab()` for a color-mix and parsing those three numbers as RGB is how
+  the first version of the check reported 18:1 for a colour that was failing. A second case asserts the
+  seven hues are still *distinguishable* afterwards, since the floor alone is satisfiable by painting
+  every source the same near-black.
 - **A readability floor.** Every theme's text tokens are checked against all three grounds they can
   land on — the page, a hovered row, and the selected row a reader sits on for as long as they are
   reading it — at 4.5:1, the accent in the direction it is actually used (a *fill*, carrying `--bg`).
@@ -3592,6 +3757,67 @@ because a solid chip punches a hole in the paragraph behind it.
 It is a **persisted preference** (`ui.focus`), which is only safe because the way out never leaves the
 screen: the control stays pinned, and `Escape` peels focus mode first — "back to the list" is a dead
 key while the list is closed.
+
+### 20.22 The filmstrip (§20.11, ≤1220px)
+
+Below 1220px the reading pane replaces the list, and below 900px one column holds
+whichever pane the tab bar has chosen. Both were `display: none` — **a hard cut on
+the most-used navigation in the application.** On a phone, opening an article,
+going back to the list and reaching the rail are the entire interaction, and every
+one of them was a frame-to-frame replacement with nothing to say which direction
+the reader had gone. Two panes swapping instantly is indistinguishable from the
+application having been replaced.
+
+The panes are a strip now: rail, list, article, in the order they are already in,
+so the direction of travel carries the meaning without anyone being taught it —
+deeper moves left, back moves right, the same as a stack of paper. Each pane knows
+its own position (`--pane`), the shell knows which position is showing
+(`--strip`), and every offset is one expression: `(--pane - --strip) * 100%`.
+
+Three things follow that are worth stating because each was a decision:
+
+- **They are laid out at every width now**, because a transform cannot animate an
+  element that is not being laid out. On a phone the rail lays out its 151 rows
+  while the reader is in an article — the same work the desktop does at every
+  width, once rather than per frame, after which the strip is a compositor
+  transform. In exchange the panes **keep their scroll positions across a switch**,
+  which `display: none` does not reliably do, and which is the difference between
+  returning to the list where you left it and returning to the top of it.
+- **`visibility`, with a delay equal to the slide.** A pane that is merely
+  translated off-screen is still in the accessibility tree — a screen reader would
+  read all three as one long page. Delaying the hide until the slide finishes is
+  what lets the outgoing pane stay drawn for its own exit.
+- **Three rules, not one.** The layout already redefines the columns at 1220px and
+  900px, and a five-track value against a three-track layout does not interpolate.
+  Each breakpoint gets a value with its own track count.
+
+### 20.23 Dialogs, which are the only gesture that has to run backwards
+
+All six overlays — palette, shortcut sheet, per-feed panel, tag panel, add-a-feed,
+category editor — answered `if !open { return nil }`. That is correct, and it is
+also why they could only ever animate in one direction: an element unmounted the
+instant it closes has nothing left to animate. Six dialogs, six hard cuts, on the
+key a reader presses to *get out* of something.
+
+The scrim is rendered at all times now and carries `data-open`
+(`client/view/modal.go`). Because the transition a browser runs is always the one
+belonging to the state being moved **to**, the entrance and the exit can differ
+without a line of Go knowing about it — and they do: arriving takes its time
+(0.18s/0.3s), leaving is brisk (0.11s/0.18s). A dialog that lingers on dismissal
+feels like the application is reluctant to let go.
+
+`visibility: hidden` rather than `opacity: 0` alone, so a closed dialog is out of
+the accessibility tree and out of the tab order. Two consequences worth writing
+down, because both bit on the way in:
+
+- **`.pal-scrim` is no longer a unique selector.** Six of them are in the document
+  at all times, so a bare `.pal-scrim` resolves to whichever comes first.
+- **Anything that focuses a field inside a dialog must retry until the focus
+  LANDS, not until the element exists.** `.focus()` on anything inside
+  `visibility: hidden` is a silent no-op, so `platform.FocusField` found the
+  palette's input on the first frame, focused nothing, and stopped — and the
+  palette opened without a cursor in it, which killed Escape and the arrow keys,
+  because the palette owns those only while its own field has focus.
 
 ---
 
