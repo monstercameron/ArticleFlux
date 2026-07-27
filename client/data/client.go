@@ -23,7 +23,7 @@ import (
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
-	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // ConnState is what the always-visible indicator shows.

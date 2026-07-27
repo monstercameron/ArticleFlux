@@ -20,7 +20,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/platform"
-	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // view names which pane is on screen on a phone. On a wide screen all three are

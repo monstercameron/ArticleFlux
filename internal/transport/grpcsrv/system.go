@@ -3,7 +3,7 @@ package grpcsrv
 import (
 	"context"
 
-	pb "github.com/monstercameron/ArticleFlux/internal/pb/ArticleFlux/v1"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
