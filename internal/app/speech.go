@@ -52,7 +52,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.tts == nil || !a.tts.Configured() {
+	if a.tts == nil || !a.tts.Configured(r.Context()) {
 		// 501 rather than 500: the server is working correctly and simply has no
 		// key. "Not implemented on this instance" is exactly what that means.
 		http.Error(w, "speech is not configured on this server", http.StatusNotImplemented)

@@ -69,27 +69,47 @@ const (
 // UI can say "turn this on in settings" rather than "something went wrong".
 var ErrNotConfigured = errors.New("tts: no OpenAI API key configured")
 
+// KeyFunc returns the API key at call time.
+//
+// A function rather than a captured string because the key is a persisted
+// SETTING now (store.KeyOpenAIAPIKey), changeable from the Settings screen
+// while the process runs. This is the same shape internal/llm uses, and
+// deliberately so: **one key drives every Smart+ feature.** Two independent key
+// sources would mean an instance where the voice works and translation does
+// not, with nothing on screen to explain the difference.
+type KeyFunc func(context.Context) string
+
 // Client speaks text. The zero value is not usable; use New.
 type Client struct {
-	key      string
+	keyOf    KeyFunc
 	cacheDir string
 	http     *http.Client
 }
 
 // New returns a client, or one that reports ErrNotConfigured from every call.
 //
-// The key comes from the environment rather than from a flag, so it does not
-// appear in a process listing on a shared machine.
-func New(cacheDir string) *Client {
+// keyOf may be nil, in which case the key comes from the environment — which is
+// what a test or a caller that has no settings store wants, and what this
+// package did unconditionally before the setting existed.
+func New(cacheDir string, keyOf KeyFunc) *Client {
+	if keyOf == nil {
+		keyOf = func(context.Context) string {
+			// From the environment rather than a flag, so it does not appear in
+			// a process listing on a shared machine.
+			return strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		}
+	}
 	return &Client{
-		key:      strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+		keyOf:    keyOf,
 		cacheDir: cacheDir,
 		http:     &http.Client{Timeout: requestTimeout},
 	}
 }
 
 // Configured reports whether this instance can egress at all.
-func (c *Client) Configured() bool { return c != nil && c.key != "" }
+func (c *Client) Configured(ctx context.Context) bool {
+	return c != nil && strings.TrimSpace(c.keyOf(ctx)) != ""
+}
 
 // Speak returns MP3 audio for text, from cache when possible.
 //
@@ -97,7 +117,9 @@ func (c *Client) Configured() bool { return c != nil && c.key != "" }
 // the model and voice, so changing either produces a new file rather than
 // serving yesterday's voice from cache.
 func (c *Client) Speak(ctx context.Context, key, text, model, voice string) ([]byte, error) {
-	if !c.Configured() {
+	// apiKey, not key: `key` is this function's cache identifier.
+	apiKey := strings.TrimSpace(c.keyOf(ctx))
+	if apiKey == "" {
 		return nil, ErrNotConfigured
 	}
 	if model == "" {
@@ -144,7 +166,7 @@ func (c *Client) Speak(ctx context.Context, key, text, model, voice string) ([]b
 	if req.URL.Hostname() != allowedHost {
 		return nil, fmt.Errorf("tts: refusing to send article text to %q", req.URL.Hostname())
 	}
-	req.Header.Set("Authorization", "Bearer "+c.key)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	res, err := c.http.Do(req)
