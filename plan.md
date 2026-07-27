@@ -88,6 +88,7 @@ drift and drifted facts get implemented.
 | **`TODO.md`** | **Build order.** Dependency-ordered tiers, the five gates, and the page / settings / component / flow inventories (Appendices A–D) | Decisions. It *cites* them by id |
 | **`FLOWS.md`** | **Behaviour of the nine paths that are easy to get subtly wrong**, drawn so the wrong version is visibly wrong | Anything it doesn't draw |
 | **`docs/FEATURES.md`** | **Behaviour.** Every feature and capability from the outside — what happens when a reader touches it — and whether it is shipped, partial, engine-only or planned | Decisions, build order, or schema. It *describes*; it never settles anything |
+| **`docs/COMPETITORS.md`** | **The field.** The shipped feature set against ten hosted and self-hosted readers, with prices, and where we win and lose (§28) | Anything about our own behaviour that `FEATURES.md` does not already own. It *compares*; it settles nothing |
 | **`design/`** | Visual spec — palette, type, layout, interaction. **Mockups, not source** (see `design/README.md`) | Implementation. It is hand-written CSS/JS on purpose; A26 governs the real thing |
 
 **Precedence.** `plan.md` wins. If `TODO.md` or `FLOWS.md` contradicts it, they are wrong and get
@@ -100,7 +101,8 @@ them mechanically:
 
 | Id | Meaning | Defined in |
 |---|---|---|
-| `A1`–`A41` | Settled decisions | §2, §18.1a for A34–A35, §27.14 for A41 |
+| `A1`–`A42` | Settled decisions | §2, §18.1a for A34–A35, §27.14 for A41 |
+| `F1`–`F40` | Competitive-gap backlog | `TODO.md` "The field, audited", scoped by §28 |
 | `D0`–`D23` | Open decisions | §25, and §27.14 for D23 |
 | `R0`–`R23` | Risks | §25, and §27.14 for R23 |
 | `M0`–`M29` | Milestones | §24, and §27.14 for M29 |
@@ -235,6 +237,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 | **A38** | **A tag has an identity and a presentation, and only one of them is editable** | `tags.name` is the handle — what you type, what the chip says, what `SetFeedTag` takes — and nothing renames it. `label` and `glyph` are the rail row's, empty meaning "use the name", the same override idiom as `subscriptions.title` over `sources.title` (§6.6). |
 | **A39** | **Every paintable value is a token, and motion is one of them** | No literal colour outside a `design.Theme`; a theme is a set of custom-property values, so a new theme costs one list and not a rule per sheet. Every duration is written `calc(var(--mo) * t)` — `--mo: 0` makes reduced motion *absent* rather than suppressed, and there is no way to author an animation that escapes the gate (§20.16). |
 | **A40** | **The connection is a state machine, not a boolean** | Five states — `live` · `connecting` · `offline` · `down` · `blocked` — driven by four inputs: gRPC connectivity, a **client-side keepalive verdict**, browser lifecycle events, and the code of the last RPC. **Retry is not the answer to every failure.** Most errors say nothing about the connection at all, and a few — a version-skew refusal, a revoked session, a deleted tenant — are *terminal*: the loop must stop and name a remedy, because retrying a permanent refusal is a loop that never recovers and never says why. And **retry is not durability** — what survives an outage is the outbox (§12.4), not the reconnect (§20.19). |
+| **A42** | **Nobody but OpenAI.** A feature may depend on the reader's own server, the publisher's own site, and OpenAI — and on nothing else. No mail provider, no push vendor, no app store, no archive service, no other company's account, on either side of the boundary. This is not a privacy posture, it is a *liveness* one: every third party is a service that can price us, rate-limit us, deprecate us, or vanish, and a self-hosted reader whose features die when someone else's product does is not self-hosted. OpenAI is the single, named, replaceable exception (A11–A12), it is gated per user, it is billed to the reader's own key, and the whole product works without it. Where a capability genuinely requires a third party, the answer is to ship the **primitive** the reader can point wherever they like — a webhook rather than a Slack integration, an Atom feed rather than a share button (§28). |
 
 ---
 
@@ -2777,14 +2780,130 @@ weight with a live preview of the reordering before saving, and — the honest o
 hide from me?" view** listing what the ranker suppressed and why, because a filter you cannot audit is
 one you cannot trust.
 
-## 19. Screensaver / slideshow mode
+## 19. Slideshow mode
 
-Fullscreen headline slideshow from any `ViewSpec` (homepage ranking by default). One headline in large
-type, source + favicon + relative time, optional `media:thumbnail` background with a scrim. Cross-fade;
-Ken Burns drift **only when `prefers-reduced-motion` is unset**. Auto-advance (default 12s), `←`/`→`,
-`space` pause, `Enter` opens, `Esc` exits. **Wake lock** via `navigator.wakeLock`, released on exit.
-**Idle auto-start** after N minutes, off by default. **Works offline** from the trip pack — and it's
-the most likely place you'd notice a broken offline path.
+> **As built, 2026-07-27.** `client/view/slideshow.go` and `client/design/slideshow.go`, started with
+> `s` or from the chip beside Mark all read. What follows is the shipped design; where it departs from
+> the sketch this section used to carry, the departure is argued rather than noted.
+
+**It is watched from across a room, or half-watched for an hour, and every decision follows from that.**
+That single fact rules out most of what a slideshow normally is: nothing here is small enough to need
+leaning in for, nothing blinks, nothing waits for a pointer, and nothing has to be dismissed.
+
+### What it shows
+
+One story at a time, from **the feed the reader is already looking at** — not the homepage ranking,
+which was the sketch's default and is the wrong one: the reader chose a scope, and starting the display
+somewhere else is the app disagreeing with them about where they are. It opens on the story they were
+on, not the top of the list.
+
+Each story runs as a **title card that rises into a header**. The card holds for 2.6s with the source,
+the time, the running order and the headline in the largest type in the application; then the track
+above it collapses to zero, the type rises, the article fades in underneath, and the column scrolls
+slowly for the rest of the slide. Rising rather than cross-fading, because a dissolve between two sizes
+of the same headline says "these are alternatives" and the rise says "that was the title of this".
+
+### Three departures from the sketch, each for a reason
+
+- **No thumbnail background.** `media:thumbnail` behind the type is the templated answer and it fights
+  the one real idea this design has: every source owns a hue (§ HueFor). Instead **the whole screen
+  carries the source's colour**, washed up from the bottom edge and changed per story. From four metres
+  the fill of a progress bar is unreadable and a colour change is not, so the ornament carries the
+  information: someone across the room knows the story changed and roughly who wrote it.
+- **Auto-advance is not 12 seconds.** 12s shows a headline; this shows the *story*, so the default is
+  **automatic** — the card, the cross-fade and the body at about 215 words a minute, bounded to
+  [20s, 60s]. Fixed paces of 20/30/45/60/90s are offered (`slides.dwell`). Twelve seconds was a
+  headline-slideshow number and this is not one.
+- **`Enter` does not open the article.** There is nothing to open *to*: the article is already on
+  screen, in full. The key is unbound rather than repurposed.
+
+### The signature: one rule across the foot of the screen
+
+Full width, 2px, in the source's hue, filling left to right over the life of the slide. It is the
+progress meter, the on-air light, and — in read-to-me mode — literally the audio playhead. One element,
+three jobs, all true. Its **fill is a keyed element** so it starts each story at zero rather than
+gliding visibly backwards through the seam.
+
+### The scroll, and the number that makes it readable
+
+`--fill` (how far through the slide) and `--scan` (how far through the scroll) are written from Go
+several times a second; the transform is `shift × scan` and CSS smooths between the writes. Two numbers
+because the scroll starts after the card and finishes before the slide leaves, so the last paragraph is
+still on screen during the cross-fade.
+
+**A slide never scrolls faster than it can be read** (`slideScrollRate`, 18px/s ≈ one line every two
+seconds). Fitting a four-thousand-word essay into a forty-second slide would scroll it past too fast to
+follow, which is worse than no text at all — so a long article simply does not finish, and the reader
+gets its opening at a pace they can take in. The travel distance is measured from the laid-out DOM,
+never estimated from the word count: what overflows depends on the window, the reading size and the
+pictures the article brought.
+
+### Read to me: the visual and the audio on one clock
+
+`slides.readToMe` hands the pacing to the narrator. It is built **on top of** Keep playing rather than
+beside it — the same tickets, the same prefetch, the same mark-as-read when a track ends — and with
+`tts.podcast` on (§10.7) the segments hand over to each other, so what comes out is a broadcast rather
+than a queue read in a row.
+
+`--fill` then comes from the `<audio>` element's own playhead, which is the whole point: estimating a
+segment's length from its word count drifts within one article and is wrong by a paragraph by the third,
+because synthesis speed depends on the voice, the punctuation and how many numbers are in the text.
+Reading the element's clock means the text is where the voice is **by construction**. The picture cuts
+to the next title card the moment the queue advances, not when its audio arrives — the server can take
+several seconds to write a segment, and "Writing the segment" in the corner is what makes that wait read
+as the broadcast working.
+
+**The clock is the default and the narrator takes it away; read-to-me does not switch the clock off.**
+That ordering is not a detail — the first version had it backwards, and the consequence was the feature
+appearing not to work at all. With the clock disabled whenever read-to-me was on, a narrator that never
+started left *nothing* to drive the display: it froze on its first title card, the headline never opened
+onto the story, the scroll never ran, and the browser's own synthesiser read the article underneath it.
+Nothing had errored, so nothing said anything. Now the voice must prove it is playing — an actual
+`timeupdate` with a known duration, not a `play()` having been issued — before it is allowed to pace
+anything, and after `slideVoiceWait` (20s) with no sound the clock takes the story back.
+
+**Read-to-me refuses the browser voice rather than degrading to it.** `speechSynthesis` reads what is in
+the DOM, so it cannot speak a written segment, cannot hand over between stories, and reports no position
+for the display to follow; starting it anyway produces a voice reading story one while the picture is on
+story two. So when `tts.smartPlus` is off, read-to-me says so **on the slide** — under the headline,
+naming the switch — and the show runs silently on the clock. It does **not** turn Smart+ on for the
+reader: that is an egress decision, and taking it because someone asked to be read to is exactly the
+consent this application does not help itself to. The reader's ordinary notice banner cannot serve here,
+because it renders underneath this overlay.
+
+### Keeping the screen, and giving it back
+
+`navigator.wakeLock` on the way in, released on the way out and **re-acquired on `visibilitychange`**,
+because the browser drops the lock whenever the tab is hidden. Fullscreen is requested on
+`documentElement` so the layout does not change — only the browser's chrome leaves.
+
+Both are requests and both may be refused, per §22.13: the mode is correct without either. Two things
+this cost, both worth recording because neither symptom resembled its cause:
+
+- **Taking the screen happens in the action, not in an effect.** GWC effect dependencies are a hint,
+  not a guarantee; an effect that requested fullscreen on the way in and *released it in its cleanup*
+  exited fullscreen on any re-run — which fired `fullscreenchange`, which stopped the slideshow. The
+  mode closed itself two seconds after opening, every time.
+- **The surface takes focus when it opens.** A `<button>` keeps focus after a click and Space activates
+  a focused button, so with focus left on the control that started the show, pressing Space to pause it
+  pressed that button again and silently restarted the mode. Occlusion does not help: keyboard
+  activation does not care what is on top.
+
+### The rest of the keys
+
+`space` pause, `←`/`→` (and `j`/`k`, `n`/`p`) step, `v` toggles read-to-me, `Esc` leaves. **While it
+runs it owns the keyboard entirely** — including `Ctrl-K` — because a dialog opening behind a fullscreen
+overlay is a control the reader cannot get back to. Escape is handled here *and* on the fullscreen
+event, because the browser swallows Escape while it owns the screen and does not when the request was
+refused.
+
+**It loops.** Reaching the end of the feed and stopping means the display turned itself off at some
+point during the afternoon, and what the reader finds when they look up is a dark screen with no
+explanation. The running order in the slug says which time round it is. Read-to-me does not loop: the
+narrator's session has its own end, and starting again from the top would re-read what was just heard.
+
+**Still to do.** Idle auto-start after N minutes (off by default), and the offline path from the trip
+pack — which remains the place a broken one would be most visible.
 
 ---
 
@@ -6100,3 +6219,183 @@ correct behaviour and it is already the behaviour).
 | **R23** | **A wrong chip is worse than no chip.** Classification is the most visible surface in the app and the only one that is confidently wrong in public. Mitigated by refusing to classify (§27.3b), the corpus ratchet (§27.11), removals-as-evidence (§27.5), and shipping categories on / auto-tags off (§27.3e) |
 | **T24** | **`TestTaxonomyPrecision`** — the corpus ratchet (§27.11) |
 | **M29** | **Classification and the item pipeline.** §27. `internal/classify` · `internal/pipeline` · `0021` · `JobAnalyze` · fan-out reordering · Settings → Classification · the Unsorted view. Depends on M17 (Smart+ egress harness) for §27.4e and on nothing else |
+
+---
+
+## 28. The field, and what we owe against it
+
+Written 2026-07-27, after putting the shipped feature set against ten other readers — Feedly,
+Inoreader, NewsBlur, Feedbin, Readwise Reader, Folo, FreshRSS, Miniflux, Tiny Tiny RSS and
+NetNewsWire. The comparison itself lives in `docs/COMPETITORS.md` and is not repeated here; this
+section owns only the things a comparison can *settle*: the boundary (A42), the order of work, and
+what the exercise revealed about our own documents.
+
+### 28.1 The finding: the gap is reach, not capability
+
+Four of the five capabilities paid competitors actually charge for — rules, ranking,
+recommendations, preservation — were **already written and tested** when the comparison ran. One of
+them (ranking) turned out to be shipped end to end and recorded as unbuilt (§28.4). Meanwhile the
+two things a new reader meets *first* — bringing their subscriptions in, and reading on a phone —
+do not exist at all.
+
+That asymmetry is the whole result, and it has a cause worth naming: **engine work is legible to the
+person writing it and surface work is not.** A scorer with a test suite feels like progress in a way
+that an import dialog does not, so the backlog fills with the former. The correction is not a
+resolution to care more about UI; it is this section, and the order below.
+
+### 28.2 The order
+
+> **F1 import → F3 rules → F20 sync API → F2 the event pump → F4a the tuning panel.**
+
+- **F1 · Import.** There is no supported way to bring 151 feeds in. The OPML engine round-trips both
+  directions and nothing calls it. Every user this product will ever have is migrating from
+  somewhere, so this is the first screen, not a data-tab afterthought.
+- **F3 · Rules.** The matcher is complete; every screen is missing. This is the largest single body
+  of finished work with no way in, and rules are what two paid competitors gate their tier on.
+- **F20 · The sync API (A18, §15.1).** The cheap answer to "no mobile app": ship the protocol and
+  NetNewsWire, Reeder and Unread become our clients. No store, no Swift, no second product. This is
+  the highest-leverage item in the backlog and it is already a settled decision — it has simply
+  never been scheduled.
+- **F2 · The event pump.** `WatchEvents` is on the wire, rate-limited, concurrency-capped, and the
+  client implements the full pump with coalescing — and **nothing calls it**. Live updates do not
+  arrive. This is a call site.
+- **F4a · Tuning and the suppressed view.** My Feed ships with its reasons; what it lacks is the
+  half of §18.9 that lets a reader *disagree* with a judgement rather than merely read it.
+
+The first four are wiring. Only the fifth is a product decision.
+
+### 28.3 A42 in practice — the boundary, and what it excludes
+
+A42 settles what may be depended on. The consequences are specific enough to write down, because
+each of these is a feature a competitor has and we are choosing not to build in that form:
+
+| Not built | Would depend on | What we ship instead |
+|---|---|---|
+| Newsletters into the reader (§14.1, M22) | A mail provider — the IMAP client points at somebody's mailbox | Nothing yet. `internal/mailparse` and the credential storage stay; the decision to point them at a provider is not made here |
+| Wayback fallback for dead originals (§10.6) | The Internet Archive | Our own tiered archive, and a banner that says which copy you are reading (F7) |
+| Web Push (§17.1) | Apple/Google/Mozilla push endpoints | In-app notifications and the browser's own `Notification` while a tab is open, plus quiet hours (F27) |
+| Native iOS / Android apps | Apple and Google review, accounts, fees | The sync API (F20) for other people's clients, and an installable PWA (F30) for ours |
+| Send-to Pocket / Instapaper / Notion / Slack (§17.2) | Those services | An outbound webhook (F28) the reader points wherever they like |
+| A community / curation layer (Folo's model) | Other people's servers, and a moderation obligation | Public Atom at `/pub/:slug` (F29) — federation by the protocol we already speak |
+| Additional model providers | Nothing — this one is scope, not dependency | `internal/llm` stays the only LLM path (A11–A12). Widening it is a decision to make deliberately, not a gap to close |
+
+**The pattern in the right-hand column is the point.** Where a capability needs a third party, ship
+the primitive rather than the integration: a webhook rather than a Slack button, an Atom feed rather
+than a share sheet, a protocol rather than an app. The primitive is smaller to build, it cannot be
+deprecated by anyone but us, and it composes into the integrations we declined to write.
+
+### 28.4 What the audit found about our own documents
+
+The comparison was compiled from `docs/FEATURES.md`, and the resulting backlog was then checked
+against the source. **Six tickets were wrong, every one of them claiming something was missing that
+ships** — and the two causes are worth separating, because only one is the documents' fault.
+
+**The catalogue was wrong about two things, and they are the two biggest:**
+
+- **Ranking is not engine-only.** `LIST_SCOPE_MEGAFEED`, `rank_slot` (top · explore · cluster_head),
+  `rank_tier`, `rank_reasons`, `rank_reason_terms` and `rank_topic` are all on the wire; the chips
+  render in `client/view/panes.go`; `internal/seedread` exists so a fresh instance can show it.
+  `FEATURES.md` said there was "no wire surface at all".
+- **Roles are enforced.** `AuthzUnary` is in the chain at `internal/app/app.go:906`, with
+  `AuthzStream` beside it. `FEATURES.md` said, in bold, that roles were "stored and not enforced
+  today" — which read as a security gap and was filed as one. **A shipped security control recorded
+  as absent is the most expensive kind of documentation error**: the cheapest response to reading it
+  is to build the control again.
+
+**The other four were the reading, not the writing.** Podcast mode (§22a), the digest (§21) and
+classification (§78) were all recorded correctly, and were mis-filed anyway — each from a *package
+listing* rather than a call graph: `internal/smart/podcast.go` exists, therefore assume nothing calls
+it. Which yields the more portable rule of the two:
+
+1. **The existence of a package says nothing about its reachability. The import edge does.**
+   `internal/pipeline` is the clean example — analyzers, a calibrated lexicon, tests, and no importer
+   outside its own tests, so the analysis pass A41 describes does not run in the app today. The check
+   is one line and it is symmetric: it catches the engine mistaken for a feature *and* the feature
+   mistaken for an engine.
+2. **Shipped-state is read from the proto and the import graph, never from `plan.md` or `TODO.md`.**
+   Both of those are statements of intent; a feature is shipped when there is a wire surface and a
+   call site, and that is a question only the source can answer. `docs/FEATURES.md` names the proto
+   and the client source among its inputs already and still got the two rows above wrong — so this is
+   a rule about *precedence between its inputs*, not a reminder to consult them.
+3. **`TODO.md` Tier 8b — "shipped, but never planned" — is a standing practice, not a one-off.** It
+   stopped being maintained while the thing it documents carried on. A second sweep — packages, HTTP
+   routes, RPCs, CLI subcommands, preference keys, migrations and the keymap, rather than packages
+   alone — found:
+   - `internal/seedread`, `internal/telemetry`, `internal/buildstatus`, `internal/envfile`,
+     `internal/clientaddr` and two benchmark binaries, with no trace in either document (F40);
+   - three HTTP surfaces in no security section — `/metrics` **unauthenticated**, `/debug/pprof/*`,
+     `/debug/reset-state` (F38);
+   - **`import` and `export` as working CLI subcommands** (OPML both directions), named in no
+     document, which is the only migration path this product has (F41) — and `seed-reading`, which
+     writes fabricated engagement and ships in the production binary;
+   - **a consent key that exists in the spec and not in the code**: §11.2 and §27.4 gate Smart+
+     follow on `smart.subscribe`; the code says `smart.follow`, spelled out twice as two separate
+     constants either side of the wire (F42). §27.4 cites the former as its *precedent*, so this
+     section is currently building on a name that was never implemented;
+   - five preference keys in no document, two of which gate egress (F43);
+   - and §20.14's keymap missing `,`, `w`, `s` and `v`, all of which ship and two of which
+     `docs/FEATURES.md` already documents (F44).
+
+   **The shape of that list is the lesson.** Every one was found by enumerating a *surface* — the
+   route table, the flag set, the key set, the keymap — and diffing it against the prose. None would
+   have been found by reading the prose. Any surface the program enumerates at runtime can be
+   diffed against this document mechanically, and until that check exists this section will need
+   rewriting every few months.
+
+One of those is more than bookkeeping. **§22.16's zero-hardcoded-copy guarantee is intact only
+because the strings moved to the server**: ranking prose is generated in Go, in English, and the
+proto comment states outright that it "evades the hardcoded-copy lint precisely because the literal
+is not in the client". The remedy is already half-built — `rank_reason_terms` are machine keys the
+catalogue can be keyed on — and it is F39.
+
+### 28.5 Where the backlog attaches to this document
+
+The F-list re-specifies nothing. Every item is an existing section that has no surface:
+
+| Ticket | Owned by |
+|---|---|
+| F1 · import UI | §15.7 |
+| F2 · event pump | §12.4, §20.3, §20.19 |
+| F3 · rules UI | §13, A19 |
+| F4a · tuning, suppressed view | §18.4, §18.9 |
+| F5 · topics | §18.2, §18.3 |
+| F6 · recommendations | §18.7 |
+| F7 · preservation surfaces | §10.6 |
+| F8 · item tags UI | §6.6, A21 |
+| F9 · notes and archive search | §5.10 |
+| F10 · settings registry | §8, A16 |
+| F12 · job visibility | §22.7 |
+| F13 · degrade ladder voice | §22.6 |
+| F14 · article translation | §10.5 |
+| F15 · a written briefing | new — the spoken forms are §10.4/§10.7 |
+| F17 · ask about this article | new |
+| F18 · discovery rung 4 | §11.1 |
+| F20 · sync API | §15.1, A18 |
+| F21 · bookmarks and archive UI | §6.7, M9 |
+| F22 · highlights | §18.5 |
+| F23 · enclosure player | §10.4 |
+| F24 · render-ladder controller | §10.1, §10.1-R |
+| F25 · platform rules | §11.1 |
+| F26 · saved searches | §5.10, §13 |
+| F27 · notifications | §17.1 |
+| F28 · webhooks | §17.2 |
+| F29 · public feeds | §7.8 |
+| F30 · PWA and trip packs | §12, §12.3 |
+| F31 · bookmarklet | §14.2 |
+| F32 · trends and feed health | §16 |
+| F33 · admin console | §9 |
+| F34 · revisions UI | §10.3 |
+| F35 · WebSub | §15.6 |
+| F36 · retention, stated | §10.6, §22.6 |
+| F37–F40 · the audit itself | §28.4 |
+
+Two of these change milestone shape rather than filling one in: **F1 belongs before M9**, because
+import is how a reader arrives, and **F20 is a milestone of its own** that A18 has been carrying as
+an intention since rev 1.
+
+### 28.6 What the comparison does not license
+
+It is a map of the field, not a specification. Nothing in `docs/COMPETITORS.md` settles anything —
+if a competitor has a feature and we have decided against it, the decision here wins, and A42 is the
+first place to check whether we already decided. The failure mode this section exists to prevent is
+a backlog assembled by reading somebody else's pricing page.

@@ -91,6 +91,35 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **A query that died halfway would have silently deleted the reader's own topic labels.**
+  `sql.Rows.Next` returns false both when the rows run out and when the iteration fails, and it does
+  not distinguish them. The loop in `interest.go` that reads back the labels worth preserving —
+  the ones a reader typed themselves, and the clusters they chose to suppress — never checked
+  `rows.Err()`, so a partial read would have looked like a complete one and the rewrite below it
+  would have restored the missing clusters under machine-generated labels, with nothing reporting an
+  error. Two test-side instances are fixed with it, and one of them mattered on its own: the schema
+  guard that asserts every `*_id` column has a declared foreign key was reading its column list
+  through the same unchecked loop, so a short read would have made it pass while examining fewer
+  columns than it claimed to.
+- **Five methods in `internal/store/settings.go` documented an API that does not exist.** The
+  comments described `Get`, `Set`, `GetSecret`, `SetSecret` and `Delete`; the methods are
+  `SystemValue`, `SetSystemValue`, `SystemSecret`, `SetSystemSecret` and `DeleteSystemValue`. A
+  rename had moved the code and left the prose, which is worse than an undocumented method — it
+  sends a reader looking for a function that was never there. Found by asking staticcheck which doc
+  comments do not begin with the name of the thing they document; the rest of that list was corrected
+  at the same time.
+- **`go doc` was empty for two client packages under a native build.** `client/data` and
+  `client/platform` kept their package documentation in files behind `//go:build js && wasm`, so the
+  description existed under one build and not the other — and the empty one is the build a person
+  runs when they want to read the code without setting up a wasm toolchain first. Both now carry an
+  unconstrained `doc.go`, which also gave the platform split somewhere to explain itself. The
+  generated protobuf package gained one too: it is where a reader lands the first time they follow a
+  `*pb.Item`, and it was the one place in the tree saying nothing at all about being generated.
+- **Six file comments were impersonating package documentation.** A comment block touching `package
+  x` with no blank line between them IS the package doc, so `go doc ./internal/smart` opened with
+  "Digest turns an article into something worth HEARING" — an accurate description of one file and a
+  misleading one of the package. Separated by a blank line, which demotes them to what they always
+  were.
 - **The rate limiter sat behind authorization, so a caller who could not authenticate was never
   limited.** Refusing an unauthorised call first sounds tidier — nothing you cannot do should cost
   you anything — and it hands exactly the wrong caller an unlimited channel: every request is
@@ -227,6 +256,63 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Performance
 
+- **The sidebar re-rendered all 151 rows on every painted frame of a scroll, and that is the flicker
+  in the leftmost column.** `railPane` is a component specifically so GWC can bail out of
+  re-rendering it, and a lot of design rests on that: the three fold-away sections are booleans
+  rather than a map because "a map field would compare by identity and defeat that on every render",
+  `openCats` is a comma-joined string rather than a set for the same stated reason. Nothing checked
+  the predicate, and it was false. `railProps` carried `onFilterInput ui.Handler`, added under a
+  comment reading *"a ui.Handler is a value and compares fine; a func field would defeat the bailout
+  on every render"*. The first half is true and the second half is the trap: `ui.Handler` is
+  `struct{ value any }` — a value whose contents are the handler function. `railProps` has slice
+  fields, so it is not `reflect.Type.Comparable`, so GWC's `fastEqual` takes its last branch and
+  calls `reflect.DeepEqual`, which recurses into unexported fields and holds that *"Func values are
+  deeply equal if both are nil; otherwise they are not deeply equal."* Identical props carrying the
+  **same** handler compared unequal, every time, so the rail never bailed out once. The list pane
+  writes `scrollTop` once per painted frame while scrolling, each write re-renders `Reader`, and
+  each of those rebuilt the whole sidebar — sixty times a second, for a column whose data had not
+  changed. The handler is now held through a `ui.Ref`, which works because `Ref[T]` is
+  `struct{ raw *runtime.RefValue }` and DeepEqual short-circuits on pointer equality before it
+  descends; it is also the idiom already used for the scroll listener itself ("through the Ref,
+  never the closure"). Two tests now assert the property the design assumed — one that identical
+  props compare equal, one that a bare `ui.Handler` does not, so re-adding one fails instead of
+  silently costing a re-render of 151 rows per frame.
+- **Search on the real database was spending 1.4 seconds building excerpts nobody displays.** The
+  50,000-row synthetic fixture said `snippet()` was free, and it was — on documents fourteen bytes
+  long. The development database has 4,138 real articles averaging **5,611 bytes of `content_html`**,
+  and `snippet(items_fts, -1, ...)` means "excerpt whichever column matched best", which is almost
+  always the body. `snippet()` on an external-content FTS5 table re-fetches and re-tokenises the
+  original document for every row it is evaluated on, and SQLite evaluates it before `LIMIT` can
+  discard anything — so searching "the", which matches 3,375 of 4,138 items, processed nineteen
+  megabytes of article text to produce fifty excerpts:
+
+  | | |
+  |---|---|
+  | match only | 2.9ms |
+  | + bm25 ranking and `LIMIT 50` | 9.7ms |
+  | + snippet over `summary` | 14.8ms |
+  | + snippet over `content_html` | 1,011ms |
+  | + snippet auto-selected (`-1`) | 1,496ms |
+
+  The excerpt now comes from `summary`, and **searching "the" went from 1,422ms to 55ms, "google"
+  from 321ms to 27ms, "sqlite" from 34ms to 5.3ms**. The rows and their order are untouched — MATCH
+  and bm25 still read every column, so what matches and how it ranks is exactly what it was.
+  This is the one deliberate behaviour change in the pass: `SearchResponse.snippets` now carries a
+  different string. It has no consumer outside `client/demodata`, and what it carried before was raw
+  publisher markup with `<mark>` spliced into the middle of it — a fragment no client could render
+  as HTML without inheriting an XSS surface, or as text without showing tag soup. An item matching
+  only in its body no longer gets its match highlighted; that is the cost, and it is why this is
+  recorded as a decision rather than as a cleanup. Restoring exact `-1` behaviour costs ~226ms even
+  when the surviving fifty rowids are seeked individually, because FTS5 re-runs the match per seek.
+- **The same shape in bookmark search, measured and deliberately left alone.** `SearchBookmarks` has
+  the identical `snippet(-1)` over a column set containing `archived_text` — the whole saved page.
+  On a fixture of 400 archived bookmarks at 6KB each it costs 37ms against 2.7ms for an excerpt cut
+  from `description`. It stays as it is: the two-phase shape that fixed item search is *slower* here
+  (49ms — the corpus is small enough that re-stating MATCH costs more than the snippets it avoids),
+  and the cheap option throws away the thing that search is for. `MatchedArchive` exists to say "the
+  phrase is buried on page four" and is worth much less without the fragment beside it. The cost is
+  linear in archived bookmarks — 4,000 would be ~370ms — so it is now written down next to the query
+  with a benchmark that measures it, rather than waiting to be discovered.
 - **Topic derivation was cubic, and nothing capped its input.** `AgglomerativeCluster` recomputed the
   similarity of every surviving pair after every merge, which is roughly n³/3 cosine comparisons —
   not as a worst case but as the ordinary one. Measured on 400-word documents: 140ms at n=50, 1.27s
@@ -300,6 +386,28 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **A theme you describe, and one that follows what you read** (§20.16.3). Smart+ writes a palette
+  from a sentence — "a cold library at 2am" — and every colour is checked for legibility before it
+  is used, so the model's job is taste and never contrast: the one thing a generated theme must not
+  break is the one thing a model is worst at guaranteeing. Separately, the theme can *attune*,
+  drifting toward a room built from what you actually read, one step a day for about three weeks.
+  The drift is stored as two ends plus a step count rather than a current position, because without
+  the `From` snapshot a change of target would jump the interface by however far it had already
+  travelled. An explicitly chosen accent still outranks anything derived — a feature that computes a
+  colour must lose to a reader who said what they wanted.
+- **Retention that says what it keeps** (`internal/retention`, migration 0023, §22.6). Every
+  self-hosted competitor promises items never expire and this application evicts, correctly, and had
+  never said so anywhere a reader could see — a retention policy nobody states is a data-loss policy
+  nobody consented to. The default is *forever*, deliberately; the sweep reports what it would
+  remove before removing it; and nothing anybody starred, annotated, tagged, rated or archived is
+  ever swept, counted separately so "removed 4,000, kept 112 you had annotated" reads as the policy
+  working rather than as loss.
+- **One model read per article, shared out** (§27.2b, §27.4b, migration 0024). Classification,
+  entities and the digest's framing were three round trips and three bills to answer three questions
+  about one text. Contributors declare what they want from a single read and get it back typed.
+  0024 gives the model's verdict its own row, because a model's answer is not a pure function of the
+  lexicon the way the free tier's is: it cost money, it will not be identical next time, and a
+  re-run must not silently rewrite history.
 - **One analysis pass per item, for the whole instance** (`internal/pipeline`, migration 0021,
   §27.2, A41). Classification, tags and the vector were each re-derived by whatever needed them;
   they are computed once now and everything downstream reads the row. The affordability is entirely
@@ -358,6 +466,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
   allocation is deterministic: a benchmark whose timings swing while its `allocs/op` holds exactly is
   measuring the room, not the code. `perf` now ends with that verdict instead of leaving forty lines
   of plausible numbers on screen.
+- **Benchmarks against the real development database, not only the synthetic fixture**
+  (`BenchmarkDevQueries`, skipped when there is no such database). The two answer different
+  questions and each hides what the other shows. The G3 fixture is built to order — 50,000 items,
+  every body the string `<p>A body.</p>` — which is the right instrument for scale and index
+  selectivity and a useless one for what a query costs, because every column it returns is tiny and
+  uniform. The real database has fewer rows and every one of them a real article. The 1.4-second
+  search above was invisible in the fixture by exactly that much: fourteen bytes of body against
+  5,611. A benchmark suite with only synthetic inputs will keep reporting that everything is fine.
 - **Benchmarks on the four paths that get slower with a real database** — feed parsing, sanitizing,
   the store's hot queries, and the vectoriser. Plus `searchplan_test`, which pins the index the
   search query drives, because a query plan is the thing that regresses silently.
@@ -977,6 +1093,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Changed
 
+- **`client/view/reader.go` comes apart along the seams it already had.** It had passed seven
+  thousand lines with a single six-thousand-line component in the middle. The types and the callback
+  table moved first — a type and a constant cannot misbehave — then the click dispatch, the keyboard
+  map, the resume logic and the add-feed wiring. No behaviour moved with them: a refactor and a
+  change in one commit is a refactor nobody can review. The existing tests pass unchanged, and the
+  pieces that were previously unreachable from a test now have their own.
+- **Smart+ features take an interface, not a concrete client.** Every one of them held an
+  `*llm.Client`, so exercising the digest, the podcast, a scrape proposal or a translation meant a
+  real key and a real bill — which is why none of them were tested. With one fake in the test
+  package, the things that were previously only asserted by reading are asserted: a truncated
+  response is reported as truncation rather than returned as content, a refusal is not retried into
+  a bill, and each feature sends what its comment claims it sends.
 - **Full motion is the default, on every machine.** The sheet carried a
   `(prefers-reduced-motion: reduce)` rule that zeroed `--mo` for anyone who had never opened the
   Appearance screen, so on those machines the default experience was an application whose every

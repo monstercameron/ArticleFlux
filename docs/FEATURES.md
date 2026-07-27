@@ -691,6 +691,33 @@ is loaded, and says so — *"That's the end of the list"* is the queue working, 
 with either voice. Called "Keep playing" rather than autoplay, which is a word people associate with
 something being done to them.
 
+## 22a. Join the stories up
+
+| | |
+|---|---|
+| **Status** | ✅ |
+| **Spec** | §10.7, §19 |
+
+Keep playing gives you a queue. This makes it a **programme**.
+
+Six summaries played back to back are six essays with a hard cut between each — no handover, no sense
+of an order, nothing at the seam to say one thing ended and another began. Every news bulletin ever
+made fixes that the same way, with a sentence or two of connective tissue, and it is the entire
+difference between a playlist and something you would leave on.
+
+So each article is rewritten as **its slot in a running broadcast**: it opens by handing over from the
+story just played, naming the real relation between the two where there is one, and then tells the
+story. The model is given the previous article's source and headline — not its text, which is what
+keeps a two-hour session costing what a two-hour queue of summaries costs.
+
+It **replaces** the summary rather than layering on it: a broadcast segment is already the short form,
+and there is no coherent summary of one. Charged once per *pair* of articles and then cached — the same
+story after a different story is a different recording, because the handover names what came before.
+
+What it will never do, because every one of these is what a model reaches for unprompted: invent a
+programme name or a host, greet you, tease a story it has not been shown, or sign off at the end of
+every segment so that a forty-minute session ends forty times.
+
 ---
 
 # Part V — How it looks, and how it moves
@@ -805,6 +832,58 @@ geometry that no character says as plainly.
 
 It is a **persisted preference**, which is only safe because the way out never leaves the screen: the
 control stays pinned, and `Escape` peels focus mode first.
+
+## 25a. The slideshow
+
+| | |
+|---|---|
+| **Status** | ✅ |
+| **Spec** | §19 |
+
+`s`, or the chip beside *Mark all read*. Where focus mode gives the article the window, this gives it
+the screen — and then keeps going by itself.
+
+**It is meant to be left running**, across a room or in the corner of your eye for an hour, and every
+decision follows from that. Nothing is small enough to need leaning in for, nothing blinks, nothing
+waits for a pointer, and nothing has to be dismissed.
+
+**Each story arrives as a title card that rises into a header.** The source, the time, the running
+order and the headline hold on their own for a moment; then the card lifts, the article fades in
+underneath it, and the column scrolls slowly for the rest of the slide. Rising rather than
+cross-fading, because a dissolve between two sizes of the same headline says *these are alternatives*
+and the rise says *that was the title of this*.
+
+**The screen takes the source's colour.** Not a thumbnail behind the type — that fights the one real
+idea in this design, which is that every publication owns a hue. Washed up from the bottom edge and
+changed with every story, so that from four metres away, where no text is legible, the colour changing
+is what tells you the story changed and roughly who wrote it.
+
+**One hairline across the foot of the screen** fills as the story runs. It is the progress meter, the
+on-air light, and — when the voice is driving — the audio playhead. One element, three jobs.
+
+**The pace is yours, and the default is *automatic*:** each story gets the time it takes to read,
+between twenty seconds and a minute. Fixed paces of 20 / 30 / 45 / 60 / 90 seconds are there if you
+would rather have a rhythm.
+
+**A slide never scrolls faster than it can be read.** Fitting a four-thousand-word essay into a
+forty-second slide would move the text past too fast to follow, which is more irritating than no text
+at all — so a long article simply does not finish, and you get its opening at a pace you can take in.
+The whole thing is one keystroke away in the reader.
+
+**Read to me** hands the pacing to the voice. Each story stays up until it has been read out, and the
+page scrolls in step with the narrator — driven by the audio's own clock, not by an estimate, so the
+text is where the voice is. With *Join the stories up* (§22a) on, the segments hand over to each other
+and what you get is a newscast rather than a queue.
+
+**The screen is kept awake** while it runs, and released the moment it stops. Both that and fullscreen
+are requests the browser may refuse; the mode is correct either way rather than gated on them.
+
+`space` pauses, `←`/`→` step, `v` switches the voice on, `Escape` leaves. While it runs it owns the
+keyboard entirely — a dialog opening behind a fullscreen display is a control you cannot get back to.
+
+**It loops.** Reaching the end of the feed and stopping would mean the display turned itself off some
+time during the afternoon, and what you would find when you looked up is a dark screen with no
+explanation. The running order tells you which time round it is.
 
 ## 26. The filmstrip, and the phone
 
@@ -1142,9 +1221,9 @@ and there is no dashboard.** The person running it is the person reading it.
 
 | Tab | Answers | Contents |
 |---|---|---|
-| **Reading** | what the list shows me next | Articles: everything / unread only · Feeds in the sidebar: all / with unread · Mark read: when you scroll past / only when you open · the bulk-read-is-neutral disclaimer |
+| **Reading** | what the list shows me next | Articles: everything / unread only · Feeds in the sidebar: all / with unread · Mark read: when you scroll past / only when you open · the bulk-read-is-neutral disclaimer · **Slideshow**: how long each story stays up, and whether the voice sets the pace |
 | **Appearance** | what it looks like | Five theme cards drawn in their own colours · seven accents plus "the theme's own" · three reading sizes with a live specimen · motion: full / reduced / follow the system |
-| **Listening** | what it sounds like, and what leaves the machine | Browser voice (always available) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Keep playing** · the caching note |
+| **Listening** | what it sounds like, and what leaves the machine | Browser voice (always available) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Join the stories up** · **Keep playing** · the caching note |
 | **Smart+** | what it costs | The OpenAI key (stored encrypted, never returned, last four shown) · the model · **tokens in / out / requests since the process started** · the interface-language picker |
 | **Feeds** | my subscriptions as a whole | Feed count, unread, "N of M loaded" · **Fetch every feed now** · **Mark this list read** · a pointer to the per-feed gear |
 | **Account** | who I am on this server | Signed in as · server · connection · **reconnects**, shown only once one has happened |
@@ -1265,7 +1344,14 @@ or a theft, and since the server cannot tell those apart it revokes the **whole 
 
 `init` (creates the first tenant and superadmin; **refuses to run twice** — on a live box that is
 nearly always somebody re-running the setup steps) · `adduser` · `passwd` (break-glass; revokes every
-session) · `migrate` · `backup` · `seed` · `poll` · `version`.
+session) · `migrate` · `backup` · `seed` · `poll` · `serve` · `version`.
+
+**Corrected 2026-07-27 — this list was missing two features.** `articleflux import -file feeds.opml
+[-fetch]` and `articleflux export [-file feeds.opml]` both work: OPML in and out, from the shell.
+That is the *only* way to migrate a subscription list into this product today — there is no RPC and
+no data tab (`TODO.md` F1), so a reader who is not the operator cannot do it at all. `seed-reading`
+is also live and undocumented; it fabricates a reading history so My Feed has something to rank, and
+it ships in the production binary (F41).
 
 Passwords resolve flag → environment → terminal prompt, so one never has to appear in a process
 listing or a shell history.
@@ -1338,13 +1424,13 @@ milestone suggests.
 | # | Capability | What exists | What is missing |
 |---|---|---|---|
 | 44 | **Rules engine** ⚙ | The pure matcher (every operator, ordering, stop-processing), per-subscriber fan-out as a queued job, mute as a reversible flag, rule-hit logging | Every screen: the list, the editor, the live preview, retroactive apply, undo, the `/muted` view |
-| 45 | **Ranking and topics** ⚙ | The scorer with its reason list, volume penalty, per-source half-life, highlights-mode scoring, TF-IDF topic clustering, the derivation job | Any wire surface at all — there is no home service, no ranked stream, no tuning panel, no explanation line |
+| 45 | **Ranking and topics** ◧ | **Corrected 2026-07-27 — this row said "any wire surface at all" was missing, and that was false.** My Feed ships: `LIST_SCOPE_MEGAFEED`, `rank_slot` (top · explore · cluster_head), `rank_tier` (smart / smart_plus), `rank_reasons` as ordered clauses with `rank_reason_terms` as their machine keys, `rank_topic` as the cold-start signal, the rail count, chips rendered in `client/view/panes.go`, and `internal/seedread` so a fresh instance can show it | The **tuning panel** and the **suppressed view** — a reader can read why an item ranked and cannot say that reason is wrong. Topic ids have no list to resolve against (that is Trends). See `TODO.md` F4a, F5 |
 | 46 | **Recommendations** ⚙ | Outlink harvesting, aggregator pass-through, the health gate, evidence strings, scoring | The `/discover` surface, dismissal, trial subscriptions and their verdicts |
 | 47 | **Preservation** ⚙ | Tiered archival, the distress sweep when a source starts failing, eviction that can never drop an archive whose origin is dead | The reader-facing banner (*"the original is gone; this is the copy saved on 12 March"*), the Wayback fallback, source lifecycle transitions |
 | 48 | **Item-level tags** ⚙ | Store and repository | Every UI |
 | 49 | **Mailboxes** ⚙ | Encrypted credential storage, scheduling columns, poller exclusion | The IMAP client itself, and any screen |
 | 50 | **Settings registry** ⚙ | Typed registry with three-layer resolution that reports which layer supplied a value | The RPC and the self-rendering UI |
-| 51 | **Capability authorization** ⚙ | A static per-method map that fails closed, plus a boot check that refuses to start on an unmapped RPC | Wiring into the interceptor. **Roles are stored and not enforced today.** |
+| 51 | **Capability authorization** ✅ | **Corrected 2026-07-27 — this row said roles were "stored and not enforced today", in bold, and that was false.** The static per-method map fails closed, the boot check refuses to start on an unmapped RPC, `grpcsrv.AuthzUnary` is in the interceptor chain (`internal/app/app.go:906`) with `AuthzStream` beside it on the stream chain, and denials are recorded | — |
 | 52 | **Job queue** ⚙ | Durable, restart-survivable, per-kind concurrency caps | Any visibility |
 | 53 | **Event ring buffers** ⚙ | Per-tenant, replay from a sequence, resync signalling | The streaming RPC and the client pump — live updates do not arrive today |
 | 54 | **Disk degrade ladder** ⚙ | Four watermarks, shedding audio and packs first and keeping read state alive longest | A banner, and wiring the asset cache into it |
@@ -1512,15 +1598,19 @@ Publishers silently edit, and the detection already runs — the revision write 
 since the first migration precisely so the feature does not launch with no history to show. The UI:
 mark the item **"edited 2h ago"** and offer an inline diff. **An edit never resets read state.**
 
-## 72. Screensaver ○
+## 72. Screensaver — **built, as §25a "The slideshow"** ✅
 
-Fullscreen headline slideshow from any view. One headline in large type, source, favicon, relative
-time, an optional image background with a scrim. Auto-advance at 12 seconds, arrows to move, space to
-pause, Enter to open, Escape out. Ken Burns drift **only** when reduced motion is unset. A wake lock
-where the browser has one, degrading to *"the screen may sleep"* rather than failing.
+What shipped is not what this entry described, and the differences are argued in §19 of plan.md
+rather than glossed here: it plays the feed you are *looking at* rather than any view, the auto-advance
+default is the time the story takes to read rather than twelve seconds, `Enter` is unbound because the
+article is already on screen in full, and the image-with-a-scrim background was dropped for a wash of
+the source's own colour — which carries information a thumbnail does not.
 
-**It works offline from the trip pack** — and it is the most likely place you would notice a broken
-offline path.
+**Two parts of this entry remain unbuilt**, and they are the ones that were never about the display:
+
+- **Idle auto-start** after N minutes, off by default.
+- **Working offline from the trip pack.** Still the most likely place you would notice a broken
+  offline path, and still untested.
 
 ## 73. Sharing ○
 
@@ -1770,9 +1860,15 @@ render ladder (no controller) · live view (view-only) · page proxy (no externa
 UI) · deployment (unproven) · import/export (no UI) · extraction (no switcher) · keep-offline (no
 consumer) · plus the five defects above.
 
-**Engine only.** Rules · ranking · topics · recommendations · preservation · item tags ·
-mailboxes · settings registry · capability enforcement · the job queue · event rings · the degrade
-ladder · notes/bookmark search · quota accounting.
+**Engine only.** Rules · recommendations · preservation · item tags · mailboxes · settings
+registry · the job queue · the degrade ladder · notes/bookmark search · quota accounting · **the
+analysis pipeline** (`internal/pipeline` has no importer outside its own tests).
+
+*Corrected 2026-07-27:* **ranking and capability enforcement were listed here and both ship** —
+see entries 45 and 51. **Event rings** are shipped on both ends and unreached by one missing call
+site (`client/data/stream_wasm.go`'s pump has no caller), which is a third state this legend does
+not have a mark for and is the more honest description of it. **Topics** reach the wire as ids with
+nothing to resolve them against.
 
 **Planned.** Bookmarks · archiving UI · dead-link view · the bookmarklet · trip packs ·
 leader election · conflict resolution · the sync API · token management · notifications · quiet
