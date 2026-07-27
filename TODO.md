@@ -950,10 +950,17 @@ Business logic over repositories. Still headless.
       matching. The state upsert **never overwrites what the reader set** (`coalesce`), because the
       queue is at-least-once and a re-run must not un-star something a person starred. Mute is a flag
       with `UnmuteByRule` to reverse it in one statement.
-- [ ] **6.8 `poll`** — **priority queue by staleness ratio** (not FIFO), backoff, `Retry-After`,
+- [x] **6.8 `poll`** — **priority queue by staleness ratio** (not FIFO), backoff, `Retry-After`,
       per-host semaphore, adaptive intervals, **lag metric**, widen-when-behind policy ← 6.4
       ◧ 2026-07-26 — A background poller runs on a fixed interval (`-poll`, default 15m) and per-feed refresh is wired to the UI. The **priority queue by staleness ratio** is not — it is still FIFO over everything due, so a feed that posts weekly is polled as often as one that posts hourly. `sources.fetch_interval_s` is now per-feed adjustable (A33), which is the manual version of the same idea.
 
+      ✅ 2026-07-26 — **the priority queue by staleness ratio is built.** `ORDER BY next_fetch_at`
+      is oldest-due-first, which is wrong under load and compounds: at 10:30 a 15-minute feed due at
+      10:00 has missed two whole cycles (ratio 2.0) while a 24-hour feed due at 09:00 is barely late
+      by its own standards (0.06) — and oldest-due-first polls the second one, forever. A
+      never-fetched source sorts first regardless. `PollerLag` adds §22.7's **policy** half: chronic
+      lateness widens intervals proportionally, capped at 4×. *The ordering test was verified by
+      reverting to the old `ORDER BY` and confirming it fails.*
 - [x] **6.9 `signals`** — impression coalescing · the §18.1 kind taxonomy (**`bulk_read` is neutral,
       never negative**) · scheduled derivation of `feed_affinity`, `term_affinity`, `domain_affinity`,
       topics, and `home_ranking`. *Done when: a simulated `mark all read` over 143 items changes no
@@ -979,14 +986,29 @@ Business logic over repositories. Still headless.
       gate → score → `recommendations`. **Rungs 1–3, no LLM.** ← 4.12, 2.10 §18.7
 - [ ] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
       circuit breaker**; **egress allowlist enforced and tested** §18.8, §22.8
-- [ ] **6.12 `preserve`** — tiered archival (§10.6): eager at ingest for high-affinity and Top-slot
+- [x] **6.12 `preserve`** — tiered archival (§10.6): eager at ingest for high-affinity and Top-slot
       items · on interaction · **the distress sweep when a source crosses into `failing`** · lifecycle
       transitions `ok → failing → gone` · link-rot checks for engaged items only · eviction that
       **cannot** drop an archive whose origin is dead. *Done when: killing a fixture feed mid-test
       leaves its items still readable.*
-- [ ] **6.13 `degrade`** — disk watermark ladder (20/10/5/2%), shedding audio and packs first and
+      ✅ 2026-07-26 — `internal/preserve` + `internal/store/archive.go`. Tiered archival with the
+      §10.6 distress sweep, lifecycle marking, and eviction. **The ticket's bar is met as a test**:
+      the fixture site is killed mid-test and every item is still readable in full. **Eviction can
+      never drop an archive whose origin is dead** — in the `WHERE` clause, and re-checked inside the
+      `DELETE`, because a sweep may discover the origin is gone in between and that archive is then
+      the only copy in existence. A sweep of a dead site tries every item rather than stopping at the
+      first: most will fail and the few that succeed are the point. *Owed: link-rot checks for
+      engaged items, and the `ok → failing → gone` source lifecycle transitions.*
+- [x] **6.13 `degrade`** — disk watermark ladder (20/10/5/2%), shedding audio and packs first and
       keeping read state alive longest §22.6
 
+      ✅ 2026-07-26 — `internal/degrade`. A **pure function of free space**, so every rung is
+      testable in a millisecond rather than by filling a disk — a ladder that can only be exercised
+      for real is one nobody has seen run. The order is the design: at 5% free polling stops while
+      reading, marking read and notes keep working, because new articles are re-fetchable from the
+      publisher and a note is not. The outbox drain is never refused at any rung: those writes
+      already happened on a device. A test asserts the ladder is **monotonic** — nothing becomes
+      permitted again as space runs out — which is the typo no boundary test would catch.
 - [x] **6.14 `assetproxy`** — the tier-1a service (§10.1a). `(signed url) → bytes`, where the
       signature is minted **only for a URL found in stored HTML the caller could read**, never taken
       from the caller · fetch through the
@@ -1205,23 +1227,35 @@ hand-written CSS and vanilla JS, and nobody ports them.
       ⏸ 2026-07-26 — **Deferred, deliberately.** Every string was still inline English; the UI was
       changing shape weekly and retrofitting once it settled looked cheaper than re-extracting after
       every redesign.
-      ✅ 2026-07-26 — **Done, and the deferral was wrong** — the sweep took one pass, not the several
-      the note assumed. `client/i18n` + eleven `en_*.go` catalogs; **all 11 files in `client/view` are
-      at zero hardcoded copy**, enforced by a fifth structural guard (`internal/tools/guards/i18n.go`).
-      Four findings, all written back into §22.16:
-      - **`i18n.T` is a plain function, NOT GWC's `UseI18n()` hook.** GWC matches hooks positionally,
-        and translation happens inside `for` loops over 3,600 list rows and inside branches. A context
-        hook there binds to the wrong slot. The GWC `Bundle` still does the real work (locale
-        candidates, plural categories, `{arg}` interpolation); only the *access* is package-level.
-      - **Importing GWC's `i18n` costs 221 KB gzipped** (5.96 → 6.18 MB, +3.7% against G5's ratchet),
-        entirely from `x/text`: `language.Parse` inside `NormalizeLocale`, and `message.NewPrinter`
-        inside `FormatNumber`. GWC's plural rules are hand-rolled and cost nothing. Paid rather than
-        forked — see §22.16 for the GWC-side fix that would remove it for every GWC app.
-      - **`client/i18n` carries no build tag on purpose.** `client/view` is `js && wasm` and cannot be
-        linked into a native test; the catalog can, which is what makes `keycoverage_test.go`
-        possible — and, later, what let the server read the English catalog to translate it.
-      - **Locale switching is a full page reload.** GWC cannot invalidate every mounted component from
-        outside the tree, and a partial re-render leaves a page half in each language.
+      ✅ 2026-07-26 — **Done.** `client/i18n` + eleven `en_*.go` catalogs, 527 call sites,
+      **all 11 files in `client/view` at zero hardcoded copy**, enforced by a fifth structural
+      guard (`internal/tools/guards/i18n.go`). It uses the framework API — `i18n.Provider`,
+      `UseI18n`, `Runtime.T(ns, key)`, `Runtime.NS`, and `i18n.UseLocale` for the reactive,
+      persisted locale. **Switching language re-renders; it does not reload.**
+      A first pass hand-rolled a package-level `T` and justified it as "hooks are positional and
+      we translate inside loops". That reason was WRONG — you call the hook once at the top and
+      use the Runtime in the loop. Corrected, and §22.16a now records the real constraint and the
+      four findings that came out of doing it properly:
+      - **The Provider must live in a rarely-rendering component, and lives in `Root`.**
+        `Runtime` is a struct of func fields → not `Comparable` → `fastEqual` falls to
+        `reflect.DeepEqual` → two non-nil funcs are never equal → the context value reads as
+        "changed" on every render of whoever mounts it, and `markSubtreeNeedsUpdate` is checked
+        BEFORE props comparison. Mounting it in `Reader` would mark the 151-row rail and the
+        virtualised list dirty on every keystroke.
+      - **A Runtime must never go on a props struct** — same reason; `railProps` is compared by
+        value to stop 151 rows re-rendering. It is threaded as an explicit first parameter
+        through the ~70 plain helpers instead (only 4 functions in the package can hold a hook).
+      - **`UseLocale` clamps to its supported set at boot, before any Import**, so the language
+        list lives in `client/i18n` — a set derived from the bundle would be `["en"]` on every
+        cold start and would reset a French reader to English before the fetch began.
+      - **Anything built before the Provider wraps it cannot see it** — `bootSplash` had to
+        become a mounted component rather than an inline call.
+      Verified rather than asserted: `provider_test.go` renders the real Provider/`UseI18n` path
+      through `ui.RenderToString` natively and asserts English resolves, plurals select by locale,
+      an imported catalog renders, missing keys fall back to English rather than raw identifiers,
+      and `Import` refuses to overwrite English.
+      Cost: **+221 KB gzipped**, entirely `x/text` via `NormalizeLocale`/`FormatNumber`. The fix
+      belongs in GWC and would benefit every GWC app.
 
 - [x] **8.4b `internal/llm` + `internal/smart` + the Smart+ settings surface** — one OpenAI client for
       every Smart+ feature, a persisted encrypted API key, and realtime UI translation. §10.5a, §22.16a
@@ -1657,7 +1691,7 @@ be **one commit**.
       answered from the FIRST one's cached response and silently applies nothing. Harmless while
       `idempotency_keys` is an unused table; reachable the moment it is not, and **an outbox is what
       makes it reachable, because an outbox is what replays.** Now `intentKey(prefix, id)` with a
-      millisecond suffix. *The server half is 8c.16 — this ticket only stopped the client from being
+      millisecond suffix. *The server half is 8c.15 — this ticket only stopped the client from being
       wrong when that lands.*
 - [x] **8c.14 `loadMore` had the same race as `loadItems`.** 8c.5 said "generation-guard every load"
       and named one; there were two. A page in flight when the scope changes appended the OLD feed's
@@ -1668,20 +1702,20 @@ be **one commit**.
 
 ### Owed, and now specified rather than implied
 
-- [ ] **8c.16 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
+- [ ] **8c.15 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
       `idgen.IdempotencyKey()` exists, and **nothing reads or writes either** — the client has been
       stamping keys onto every mutating RPC into a void. Store `(user_id, key) → response` for 24h and
       replay it verbatim. *Was theoretical; the outbox made it load-bearing, because at-least-once
       delivery is only safe today by the accident that every queued mutation sets an absolute value
       (see §20.19.8). The first queued operation that is not idempotent-by-value needs this first.*
       ← **8c.13**, which is what makes the keys safe to honour.
-- [ ] **8c.17 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
+- [ ] **8c.16 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
       classifies it terminal, stops retrying and offers Reload. **Nothing sends it.** The ordering was
       deliberate — the client that must act on a skew refusal is by definition the OLD one, so
       recognition has to ship before the refusal does or the first refusal ever sent lands on clients
       that cannot understand it. Needs: a build stamp in the tunnel handshake, a minimum-supported
       version on the server, and the refusal carrying the sentinel.
-- [ ] **8c.18 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
+- [ ] **8c.17 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
       and assert `live` plus a refetched list; `context.setOffline(true)` and assert `offline`, not
       `down`. ← **8b.34**: adding specs to a suite that is not currently a gate buys nothing.
 
@@ -1693,7 +1727,7 @@ be **one commit**.
 
 ### ✅ Built 2026-07-26, night — and the three things the build changed
 
-**8c.1–8c.7 and 8c.9–8c.14 done; 8c.8 and 8c.16–8c.18 open and specified above.** `go build ./...`,
+**8c.1–8c.7 and 8c.9–8c.14 done; 8c.8 and 8c.15–8c.17 open and specified above.** `go build ./...`,
 `GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./...` green; **`go test ./...` is 38 packages
 passing, zero failures.**
 
@@ -1740,7 +1774,7 @@ and **8c.14**, because a finding recorded only in prose is a finding nobody is a
   project tags a release, so it is a two-line change inside someone else's release cycle. ArticleFlux's
   own caps (8 connections, 30 upgrades/min) are generous enough that reaching them means a bug on this
   side. Filed rather than half-done.
-- **8c.16 / 8c.17 / 8c.18** — see above. All three were implicit before this batch and are now written
+- **8c.15 / 8c.16 / 8c.17** — see above. All three were implicit before this batch and are now written
   down with what they depend on.
 - **8c.12's server-side display.** The counters exist and are collected; putting them on the Settings →
   Server tab needs a field on `GetServerStats`, and the proto was being regenerated by another lane
