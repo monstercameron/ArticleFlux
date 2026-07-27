@@ -11,6 +11,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **The rest of the §6 schema** (migrations 0009–0013, TODO 3.1): 40 tables taking the database from
+  the reading core to the whole specification — identity and invites, item tags (A21), item
+  revisions, bookmarks and their archives, saved views, the rules engine, scraped sources, mailboxes,
+  the derived interest layer, the job queue, settings, idempotency, offline packs, notifications and
+  webhooks. Two conventions differ from the DDL sketched in §6.8 and both are forced: ids are TEXT
+  because every shipped table uses `idgen`'s sortable ids, and **a foreign key whose type does not
+  match its referent is not a foreign key** — SQLite accepts the DDL and then never matches a row.
+  Three new tests: every specified table exists by name (a count would pass a rename), every
+  FK-shaped column carries a `REFERENCES` or an explicit exemption with a reason, and `notes_fts` /
+  `bookmarks_fts` track inserts, updates *and* deletes — FTS5 external content does not observe base
+  table writes on its own, so without triggers the index is correct once and then drifts silently.
 - **Reader mode has an extractor** (`internal/extract`, TODO 4.4). D7 is **resolved: go-shiori/
   go-readability**, decided by the bake-off rather than by reputation. All three candidates worked on
   all twelve pages; the split was on two things a character count hides. Trafilatura's text
