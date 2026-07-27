@@ -2471,6 +2471,10 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
 
+      **Full desktop suite: 39 passed, 14 failed** (53 tests, 9.5 min) — against the 21/20 below,
+      and against "does not finish" an hour before that. `appearance` and `tagsettings` are entirely
+      green. The 14 are design-parity 6, reader 5, responsive 2, motion 1.
+
       **reader.spec is now 16 passed / 5 failed** (from "cannot complete"). Selectors fixed at the
       helpers — `railRow`, `currentArticle`, `openStream` — because the next control added to a row
       would otherwise break every call site again. The vocabulary moved too: "star" is Read later
