@@ -38,6 +38,19 @@ import (
 type Cap string
 
 const (
+	// CapSelfAccount is "this caller is somebody, acting on their own account".
+	//
+	// It exists so self-service operations — whoami, changing your own password,
+	// regenerating your own recovery sheet, setting your own display preferences
+	// — have a capability that says what they mean. The alternative was to reuse
+	// CapReadItems, which every role happens to hold, and that is a lie that
+	// works: the day a role appears that may change its password but not read a
+	// feed, the map would silently give it the wrong answer.
+	//
+	// Every role has it, INCLUDING viewer. A viewer is read-only with respect to
+	// somebody else's data; their own password is not somebody else's data.
+	CapSelfAccount Cap = "self.account"
+
 	// Reading — what every account can do.
 	CapReadItems  Cap = "items.read"
 	CapWriteState Cap = "items.state"
@@ -82,21 +95,21 @@ const (
 // counts.
 var roleCaps = map[Role][]Cap{
 	RoleViewer: {
-		CapReadItems,
+		CapSelfAccount, CapReadItems,
 	},
 	RoleMember: {
-		CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
+		CapSelfAccount, CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
 		CapSubscribe, CapManageFeeds, CapManageRules, CapManageViews,
 		CapImportData, CapExportData,
 	},
 	RoleAdmin: {
-		CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
+		CapSelfAccount, CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
 		CapSubscribe, CapManageFeeds, CapManageRules, CapManageViews,
 		CapImportData, CapExportData,
 		CapInviteUsers, CapManageUsers, CapTenantSettings, CapReadAudit,
 	},
 	RoleSuperadmin: {
-		CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
+		CapSelfAccount, CapReadItems, CapWriteState, CapWriteNotes, CapManageTags,
 		CapSubscribe, CapManageFeeds, CapManageRules, CapManageViews,
 		CapImportData, CapExportData,
 		CapInviteUsers, CapManageUsers, CapTenantSettings, CapReadAudit,
@@ -213,6 +226,15 @@ func (m *Map) Public(methods ...string) *Map {
 	}
 	return m
 }
+
+// IsPublic reports whether a method needs no credential at all.
+//
+// The interceptor asks this BEFORE resolving one, which is not an optimisation:
+// Login must work when the caller has no credential, and a malformed or expired
+// token presented to it would otherwise become an authentication failure on the
+// one endpoint whose job is to issue a good one — locking out exactly the person
+// trying to fix their own session.
+func (m *Map) IsPublic(method string) bool { return m.public[method] }
 
 // ErrNotMapped means a method has no entry. Distinguished from a plain denial so
 // the log can say "someone added an RPC and forgot the map" rather than

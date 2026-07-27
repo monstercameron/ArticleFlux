@@ -28,6 +28,7 @@ import (
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
+	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/derive"
@@ -77,6 +78,13 @@ type Config struct {
 	// deployment silently served the first user's superadmin scope to the whole
 	// internet. A bind address describes network topology, not who is calling.
 	DevMode bool
+
+	// Profiling mounts /debug/pprof and turns the block and mutex profilers on.
+	//
+	// Off by default and gated in cmd/articleflux the same way -dev is —
+	// loopback bind AND not behind a proxy — because the reasons are the same.
+	// See internal/app/pprof.go for what the surface costs and discloses.
+	Profiling bool
 
 	// ProxyImages turns the §10.1a asset proxy on for the instance.
 	//
@@ -250,7 +258,11 @@ type App struct {
 	// tel is the metric and trace surface (§22.11). Always non-nil — every call
 	// site records unconditionally, so a nil here would be a panic on the first
 	// request rather than a quiet absence of data.
-	tel     *telemetry.Telemetry
+	tel *telemetry.Telemetry
+	// policy is the per-method capability map the authz interceptors enforce
+	// (§7.5). Always non-nil: a nil policy would make every Check unreachable and
+	// every RPC allowed, which is precisely the state this field exists to end.
+	policy  *authz.Map
 	grpc    *grpc.Server
 	handler http.Handler
 	stopPo  chan struct{}
@@ -376,6 +388,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log, bus: bus,
 		ring: ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
+		policy: grpcsrv.DefaultPolicy(),
 		icons:  favicon.New(cfg.AllowPrivateFeeds),
 		stopPo: make(chan struct{})}
 
@@ -842,6 +855,19 @@ func (a *App) buildHandler() {
 			// recognition had to be in the field before the first refusal was
 			// ever sent.
 			skew.Unary(a.skewPolicy()),
+			// Authorization (§7.5), and its position is the design.
+			//
+			// AFTER skew, because a client too old to understand the answer should
+			// be told to reload rather than told it lacks a permission. BEFORE the
+			// rate limiter and idem, because a call this refuses must cost the
+			// caller nothing they can spend: a denied request that consumed a rate
+			// budget lets an unauthorised caller degrade an authorised one, and a
+			// denied request that reserved an idempotency key lets them burn a key
+			// the legitimate client is about to retry with.
+			//
+			// It is one enforcement point for the whole surface. Before this, the
+			// model was "each handler remembers", and `ListLogs` did not.
+			grpcsrv.AuthzUnary(a.policy, a.scopeFromContext, a.log, a.recordDenial),
 			// The §20.7 limits (TODO 7.3d). Before idem, because reserving an
 			// idempotency key for a call that is then refused burns it — the
 			// client retries with the same key and meets its own reservation.
@@ -911,6 +937,16 @@ func (a *App) buildHandler() {
 		// tuned to exactly 30s would only ever be violated by jitter in our own
 		// favour. If this option is ever removed as unused, the idle-soak test
 		// (T21c) is what fails.
+		// Authorization for STREAMS, which the unary chain above does not see.
+		//
+		// This is not belt-and-braces. A stream RPC bypasses UnaryServerInterceptor
+		// entirely, so with only the unary chain wired, WatchEvents — the one
+		// long-lived per-scope subscription in the API — would be the single
+		// endpoint on the server with no authorization at all, on a build whose
+		// tests and metrics all reported authorization as enforced.
+		grpc.ChainStreamInterceptor(
+			grpcsrv.AuthzStream(a.policy, a.scopeFromContext, a.log, a.recordDenial),
+		),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             keepaliveMinTime,
 			PermitWithoutStream: true,
@@ -990,6 +1026,21 @@ func (a *App) buildHandler() {
 	// say when somebody reads. Bind to loopback and let the reverse proxy decide
 	// who reaches it, exactly as with the rest of the surface.
 	mux.Handle("/metrics", a.tel.Handler)
+	// The profiling surface (internal/app/pprof.go). Registered ONLY when asked
+	// for, unlike /speech and /asset beside it which register unconditionally
+	// and refuse inside.
+	//
+	// That difference is deliberate. Those two gate on a per-user preference and
+	// answer 501 or 403 so that "why is listening missing?" is answerable from
+	// the response. There is no reader-facing question this endpoint answers, so
+	// there is nothing to gain from its 404 being informative — and an operator
+	// who did not ask for it is better served by the path simply not existing.
+	if a.cfg.Profiling {
+		registerPprof(mux)
+		enableProfiling()
+		a.log.Warn("pprof is enabled at /debug/pprof — block and mutex profiling are on, " +
+			"which costs measurable time; do not leave this on")
+	}
 	mux.HandleFunc("/favicon", a.serveFavicon)
 	// Registered unconditionally, and gated inside: the handler itself reports
 	// 501 with no key and 403 without the per-user opt-in. Registering it only
@@ -1153,6 +1204,13 @@ func hasExt(p string) bool { return filepath.Ext(p) != "" }
 // one-at-a-time boot loop is a miserable way to find that out.
 func (a *App) Preflight(ctx context.Context) error {
 	var problems []error
+
+	// Authorization coverage, first: an instance whose policy does not cover its
+	// own API is one where some feature is silently 403 for everybody, and that
+	// is worth refusing to start over rather than discovering from a bug report.
+	if err := a.checkPolicyCoverage(); err != nil {
+		problems = append(problems, err)
+	}
 
 	if !a.cfg.DevMode {
 		n, err := a.repo.CountUsers(ctx)
@@ -1385,6 +1443,27 @@ func (a *App) NudgeDerive(sc store.Scope) {
 			a.log.Warn("nudging derive", "user", sc.UserID, "err", err)
 		}
 	}()
+}
+
+// DeriveNow runs a derivation for one user synchronously, in the calling goroutine.
+//
+// For commands, not for the server. Everything else enqueues and lets the pool drain, which
+// is right for a running instance and wrong for a CLI: a command that returns before the
+// work happens forces the operator to guess whether it did, and `seed-reading` exists
+// precisely so they can SEE the interest layer that their fabricated history produced.
+//
+// It does not need the pool started, which is the other half of why it is separate — a
+// command should not have to spin up workers to do one job.
+func (a *App) DeriveNow(ctx context.Context, sc store.Scope) {
+	res, err := a.deriver.RunReporting(ctx, sc, time.Now().UTC())
+	if err != nil {
+		a.log.Error("deriving", "err", err)
+		return
+	}
+	a.log.Info("derived the interest layer",
+		"feeds", res.Feeds, "terms", res.Terms, "entities", res.Entities,
+		"topics", res.Topics, "ranked", res.Ranked,
+		"cold_start", res.ColdStart, "smart_plus", res.SmartPlus)
 }
 
 // StartPoller runs the background fetch loop until Close.
