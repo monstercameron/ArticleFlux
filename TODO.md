@@ -82,6 +82,16 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       still has.
       ~~Original ticket:~~ Family, friends, or public signup. Decides self-signup,
       abuse handling, quota enforcement, deletion obligations, uptime promises. *Blocks 6.1.*
+- [ ] **D20 · The proxy origin.** Separate hostname (`proxy.<instance>`) or a sandboxed iframe on the
+      app's own origin? Plan §10.1b argues the hostname, and §25.0 proposes it. **This is the one
+      choice here that is expensive to defer**: signed proxy URLs get minted, cached and stored, so
+      splitting the origin afterwards is a migration of every artifact rather than a config change.
+      *Blocks 7.12.*
+- [ ] **D19 · Does the renderer ship, and where does the browser run?** §25.0 proposes yes, on the
+      reference box, one render at a time, flag-gated off. Edge is already installed and `chromedp`
+      attaches to an existing Chromium, so this is not a new host — but it is a browser process on the
+      box that also serves reading, and on the fanless machine repeated renders throttle. *Blocks 6.14;
+      does **not** block 4.13, 6.15 or 7.12, which are the static half and stand alone.*
 
 ---
 
@@ -96,6 +106,15 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       means there is no WSL or Docker to borrow one from — a Makefile nobody here can run, next to
       the script everyone actually runs, is two build systems one of which is a lie. Verb names are
       kept identical so a Makefile stays cheap to add if it ever earns its place.
+      ✅ 2026-07-26 (night) — **it earned its place, and the original reasoning is untouched.** That
+      reasoning was about the DEVELOPMENT box; it does not extend to the deployment target, which has
+      `make`, has no PowerShell, and has to build and run this (A9). So there is now a `Makefile`
+      alongside `make.ps1` with the **same verbs, one for one** — the "two build systems, one of which
+      is a lie" hazard is only a hazard if they disagree, so anything added to one goes in the other.
+      It adds three deployment verbs the PowerShell script has no use for: `linux`, `install-service`,
+      `backup`. `Makefile text eol=lf` is pinned in `.gitattributes`: a recipe line arriving with CRLF
+      makes GNU make hand a trailing `\r` to the shell, which fails as `command not found: go\r` and
+      sends people hunting a broken toolchain.
 - [x] **1.5** Build `gwc.exe` from the GWC checkout; pin the command in the Makefile
 - [x] **1.6** `.gitignore` — `bin/ web/bin/ *.db *.db-wal *.db-shm backups/`
 - [x] **1.7** `cmd/articleflux/main.go` — `version` prints and exits; **`serve` is the default and runs
@@ -501,11 +520,21 @@ reader's tags with nothing in the data to show it happened.
 self-hosted app owes its operator: nobody is tailing a log file behind this and there is no dashboard,
 so "is it healthy", "what just happened" and "why is it slow" are answerable there or nowhere.
 
-**9. Themes and motion** (A39) — five themes as sets of custom-property values, and every duration
-written `calc(var(--mo) * t)` so reduced motion makes an animation *absent* rather than suppressed. The
-previous mechanism was a `* { transition: none }` rule at the bottom of the sheet, which is a broom: it
-works until someone writes a transition with `!important`, in a later layer, or on a pseudo-element,
-and nothing fails loudly when it stops working. **Built but not reachable** — see 8b.31.
+**9. Themes and motion** (A39) — five themes as sets of custom-property values, seven accents (with a
+separate light set), three reading sizes, and every duration written `calc(var(--mo) * t)` so reduced
+motion makes an animation *absent* rather than suppressed. The previous mechanism was a
+`* { transition: none }` rule at the bottom of the sheet, which is a broom: it works until someone
+writes a transition with `!important`, in a later layer, or on a pseudo-element, and nothing fails
+loudly when it stops working. The Appearance tab applies all four prefs by writing tokens onto
+`documentElement.style`, so **no component re-renders when the theme changes** — switching themes with
+151 rail rows and 3,600 virtualised items on screen costs a paint, not a reconciliation.
+
+**12. The login screen** — `client/view/{root,login}.go` + `client/data/auth.go`. `Root` is now the
+mount point and `Reader` is its child, so an unauthenticated page never *constructs* the reader: doing
+otherwise would fetch a feed list the caller is not entitled to and paint the furniture of an account
+nobody has proven they own. Three phases, and `checking` is the one that earns its place — without it a
+page with a good token flashes the login screen for a few hundred milliseconds, which trains people to
+start typing a password they do not need.
 
 **10. `internal/sanitize`** (TODO 2.9) — five named policies over GWC's engine, because GWC has no
 opinion about *where the HTML came from* and that is the whole question. The `Newsletter` policy drops
@@ -516,16 +545,15 @@ message was opened.
 module** so the two libraries that lose do not enter the server's dependency graph forever. The
 decision is still open; what exists is the evidence and a command to re-run it.
 
-> ### Two things this batch left broken, and they are the top of the list
+> **Verified 2026-07-26, 21:35:** `go build ./...`, `GOOS=js GOARCH=wasm go build ./client/...` and
+> `go test ./...` all green.
 >
-> - **The wasm client does not compile.** `GOOS=js GOARCH=wasm go build ./client/...` fails in
->   `client/view/reader.go` — the rail's category section and the add-feed dialog are written and their
->   props are half-wired. Native build and `go test ./...` are both green, which is the point worth
->   remembering: **`go build ./...` does not compile the client**, so a green suite is not evidence the
->   app runs. Restoring the wasm build to CI's *default* path is 8b.32.
-> - **Auth has no client half.** Nothing in `client/` calls `Login`, stores a token, or sends
->   `authorization` metadata, so every RPC falls through to `devScope` and a server started without
->   `-dev` serves a reader that cannot get a session. The server is deployable; the client is not.
+> **One lesson from the middle of this batch, worth more than the batch.** The wasm build was broken
+> for a stretch — the rail's category props were half-wired while `railProps` had already changed — and
+> nothing said so, because **`go build ./...` does not compile the client**. The native build stayed
+> green, every Go test stayed green, and the app did not build at all. A green Go suite is not evidence
+> that the client compiles, let alone runs. Putting the wasm build on CI's default path is **8b.32**,
+> and until it is there this will happen again.
 
 ---
 
@@ -575,6 +603,12 @@ these, and each one is genuinely small.
       (strictest — pixels, remote CSS), `archived`, `public` (excerpt). *Done when: an XSS corpus is
       neutralised under every policy.*
       ✅ 2026-07-26 — `internal/sanitize` — **five** policies, not four: `Feed` · `Newsletter` · `Archived` · `Public` · `Note` (the reader's own text, still sanitised because people paste). GWC's engine is not reimplemented — it owns the parse, the allowlist walk, the scheme check and the mutation-XSS hardening. What it has no opinion about is *where the HTML came from*, which is the whole question: `Feed` keeps images because a hardware review is mostly photographs, and `Newsletter` **drops remote images outright** rather than proxying them, since proxying a tracking pixel still tells the sender the message was opened. The XSS corpus is built: **48 real vectors × 5 policies**, checked by substring rather than by parsing, because a parser in the test would share assumptions with the parser in the sanitizer and a shared wrong assumption is the bug being hunted. A policy added later inherits the whole corpus; a policy loosened later has to survive it; an unmapped policy value fails closed to `Public`. Two things the allowlist cannot express live in a pre-pass over the parse tree: every link gains `rel="noopener noreferrer"` (without it `target=_blank` hands the opened page a handle to navigate ours — one attribute in a publisher's own feed buys them a phishing primitive), and tracking pixels are dropped on a deliberately narrow heuristic. *Owed: the `client/view` call sites still invoke GWC directly rather than going through a policy.*
+      ⊕ **Owed at M27: a sixth policy, `Snapshot`** (§10.1b) — a whole fetched page rather than an
+      article fragment, so it keeps layout CSS and drops script, iframe, form and every event
+      attribute. It inherits the 48-vector corpus by construction, which is the argument for the
+      named-policy shape paying for itself the first time it is extended. **`Newsletter` is explicitly
+      not affected**: 4.13's rewrite hook is per-policy, so the asset proxy cannot quietly turn
+      dropped tracking pixels back into proxied ones.
 
 - [x] **2.10 `outlinks`** — extract and normalise links out of article HTML → domains, skipping
       self-links and nav chrome. Pure. **This is §18.7 rung 1, the best recommendation signal, and it
@@ -594,12 +628,22 @@ these, and each one is genuinely small.
 
 Build the safety rails **before** the first repository, so every repo is born correct.
 
-- [ ] **3.1** `migrations/0001_init.sql` — **all ~49 tables**: §6.2 core, §6.3 A22 rules, §6.6 tags,
+- [x] **3.1** `migrations/0001_init.sql` — **all ~49 tables**: §6.2 core, §6.3 A22 rules, §6.6 tags,
       §6.7 identity + interest, **§6.8 the rest** (folders, notes, bookmarks, engagements, jobs,
       settings, auth, offline, notifications). `REFERENCES` on every FK-shaped column, the three §6.5
       indexes, and the folder depth `CHECK`s ← G1
       ◧ 2026-07-26 — **9 tables, not ~49.** `0001_init` covers the reading core (tenants, users, sessions, sources, subscriptions, folders, items, user_item_state, items_fts + triggers); 0002–0008 add prefs, favicons, tags, notes, ratings, engagements and tag style (`label` + `glyph`, A38). The rules, bookmarks, mailbox and interest-layer tables are not written yet — they arrive with the tiers that use them, which is cheaper than a 49-table migration nothing reads. **`folders` was in 0001 and unused until the rail needed it** (§6.10) — the one case where writing the column early paid off, since categories shipped with no migration at all.
 
+      ✅ 2026-07-26 — **55 tables**, in migrations 0009–0013 grouped by concern rather than by
+      tier. Two conventions differ from §6.8's DDL sketch and both are forced: ids are TEXT because
+      every shipped table uses `idgen`'s sortable ids, and **a foreign key whose type does not match
+      its referent is not a foreign key** — SQLite accepts the DDL and then never matches a row.
+      Cascades are the part to review: `user_id` cascades everywhere, `item_id` almost never does
+      (items are global, A22, so a source cleanup must not delete a note, a tag or a bookmark), and
+      `rule_hits` is the deliberate exception because a hit is a statement *about* an item rather
+      than user work. Three tests: every specified table exists **by name** (a count would pass a
+      rename plus an addition), every FK-shaped column has a `REFERENCES` or a stated exemption, and
+      both new FTS indexes track inserts, updates *and* deletes.
 - [x] **3.2 `store/migrate`** — numbered, forward-only, in a transaction, `schema_migrations` with a
       **checksum guard that aborts startup on drift**, and an **automatic snapshot before applying**.
       No down-migrations; the rollback path is restore. (A23) §22.1
@@ -626,11 +670,22 @@ Build the safety rails **before** the first repository, so every repo is born co
       repo test built after this uses it.
       ✅ 2026-07-26 — `TestTenantIsolation` — two tenants over overlapping sources with disjoint user state; the second tenant's reads return nothing of the first's.
 
-- [ ] **3.7 G2 · The leak-test harness** — reflect over exported repository methods; assert none
+- [x] **3.7 G2 · The leak-test harness** — reflect over exported repository methods; assert none
       returns a B-owned row under an A scope. **Fails on any method added without coverage.**
       *Done when: it passes with zero repositories and would fail the moment a bad one is added.*
       ◧ 2026-07-26 — Not started. Guard 4 enforces that a Scope is *taken*; nothing yet asserts it is *used* in the WHERE clause. `TestTenantIsolation` covers the current methods by hand, which does not scale to the next twenty.
 
+      ✅ 2026-07-26 — `internal/store/leak_test.go`. It does not test methods, it **enumerates**
+      them: reflection walks every exported repository method, and each one taking a `Scope` is
+      called under tenant A's scope while being handed tenant B's identifiers — the shape of the
+      real attack, a valid session plus someone else's id. **38 scoped methods swept**, every row
+      tenant B owns carries a canary, and any appearance of it at any depth in any return value is a
+      leak. The other half is what keeps it valuable: a method taking no `Scope` must appear in
+      `unscopedByDesign` **with a stated reason** or the test fails, so a new method cannot arrive
+      uncovered (18 listed — bootstrap, authentication, and the global A14 rows). Guard 4 proved the
+      Scope was *taken*; this proves it reaches the `WHERE`. **Verified by deliberately breaking
+      `ListFeeds`' tenant filter**: the harness failed, named the method and printed the leaked feed
+      title.
 - [x] **3.8 Build-time check** — fails if `db.Query`/`db.Exec` appear outside `internal/store` §6.1
       ✅ 2026-07-26 — `internal/tools/guards` — `no SQL outside internal/store`, 45 files checked, run in CI and locally. Three sibling guards ride with it: no `syscall/js` outside `client/platform`, no `.css` files (A26), and 3.5's Scope check.
 
@@ -679,22 +734,99 @@ Composites of Tier 2. Bytes in, structs out. Still no database.
 - [x] **4.5 `opml`** — nested OPML 2.0 both ways. *Done when: out → in → identical.*
       ✅ 2026-07-26 — `internal/opml` — nested OPML 2.0 both directions, round-trip asserted. Cam's live FreshRSS export (151 feeds) imported through it.
 
-- [ ] **4.6 `netscape`** — Netscape bookmark HTML both ways + Chrome JSON in. *Done when: our export
+- [x] **4.6 `netscape`** — Netscape bookmark HTML both ways + Chrome JSON in. *Done when: our export
       imports cleanly into a real Chrome.*
-- [ ] **4.7 `scrapesel`** — rule + HTML → items ← 2.8, cascadia
-- [ ] **4.8 `mailparse`** — MIME → normalised item; prefer `text/html`, fall back to `text/plain`,
+      ✅ 2026-07-26 — `internal/netscape`. Read with an HTML5 parser (the format's unclosed `<DT>`
+      and implied nesting is exactly the soup tree construction exists for) and **written in the same
+      malformed shape on purpose**, because browsers parse it by convention and a tidy file is one
+      some importers get wrong. Two bugs the tests found: sibling folders sharing a path slice, where
+      the second overwrites the first's name in every bookmark already collected; and `ADD_DATE`
+      units, where a 16-digit value fell into the milliseconds branch and produced the year 425014.
+      *Owed: the ticket's actual bar — importing our export into a real Chrome — is not automated;
+      there is no Chrome profile on this box.*
+- [x] **4.7 `scrapesel`** — rule + HTML → items ← 2.8, cascadia
+      ✅ 2026-07-26 — `internal/scrapesel`. `Compile` holds every refusable error (including a link
+      selector reading text instead of `@href`, which yields a feed of unopenable items); `Extract`
+      never fails on content, because a site can serve anything and an empty poll is a health signal.
+      It reports `Matched` and `Skipped`, which is what separates **a redesign that broke the
+      selector from a site that stopped publishing** — identical from the item count alone, opposite
+      responses. Summary reads inner HTML, identity keeps the URL fragment, content goes through
+      `sanitize.Feed`, and extraction is capped at 200 while still reporting the true match count.
+- [x] **4.8 `mailparse`** — MIME → normalised item; prefer `text/html`, fall back to `text/plain`,
       hand off to the `newsletter` sanitiser. ← 2.9 §14.1
-- [ ] **4.9 `rules`** — **pure**: `(item, []Rule) → []Action`. Ops, ordering, `stop_processing`. No DB,
+      ✅ 2026-07-26 — `internal/mailparse`. Adds the three things `net/mail` does not do and every
+      real newsletter needs: multipart walking, quoted-printable/base64 transfer decoding, and RFC
+      2047 encoded-words. **The last `multipart/alternative` part wins**, because RFC 2046 orders
+      them worst-to-best and first-wins takes the "view this in your browser" line on every message
+      that has one. `NaturalKey` is the single correct way to build §6.4's per-user key — global
+      keying would merge two people's private mail, a privacy failure rather than a bug.
+- [x] **4.9 `rules`** — **pure**: `(item, []Rule) → []Action`. Ops, ordering, `stop_processing`. No DB,
       no side effects. *Done when: a table test covers every op and precedence case.* §13.1
-- [ ] **4.10 `topics`** — **pure**: vectors → clusters with centroids, top terms, deterministic labels.
+      ✅ 2026-07-26 — `internal/rules`. Pure, and `now` is a parameter, so §13.4's dry-run preview is
+      *the same code* as the apply — a separately-implemented preview eventually lies about what the
+      rule will do. Three decisions worth arguing with: an empty condition set matches **nothing**
+      (empty-AND is conventionally true, and true here means a half-finished rule mutes the feed);
+      the **earlier** rule wins on conflict, or moving a rule up the list stops changing its
+      precedence; and `not_contains` over tags means "no tag matches". ~2µs per item per subscriber.
+- [x] **4.10 `topics`** — **pure**: vectors → clusters with centroids, top terms, deterministic labels.
       Works on TF-IDF vectors alone; embeddings just make it better. ← 2.11 §18.2
-- [ ] **4.11 `rank`** — **pure**: `(signals, item) → (score, []Reason)`. Includes `TopicMatch`,
+      ✅ 2026-07-26 — `internal/topics`. Clusters TF-IDF vectors, so Smart needs no model and no
+      network. Labels are deterministic and dull on purpose: one that changes on recomputation
+      renames the reader's interests nightly. Input is sorted before clustering so tie-breaks cannot
+      depend on row order. Clusters under three members are reported **unclustered** rather than
+      promoted — a model that forces every article into a topic invents interests. Plus `Nearest`,
+      `Starved` (Explore's under-served slot) and `Concentration`; under 50 items it reports cold
+      start.
+- [x] **4.11 `rank`** — **pure**: `(signals, item) → (score, []Reason)`. Includes `TopicMatch`,
       `VolumePenalty`, per-source half-life, and **the alternate firehose scoring** that drops
       `FeedAffinity` in highlights mode. *Done when: the golden fixture passes and a deliberately
       lopsided-volume fixture proves a firehose can't dominate.* §18.4–18.5
-- [ ] **4.12 `recommend`** — **pure**: candidates + evidence → scored list, with the **health gate**
+      ✅ 2026-07-26 — `internal/rank`. **The score is literally the sum of its reasons**, asserted,
+      because §18.9 shows them verbatim and a drifted reason list is a lie that looks like
+      transparency. `VolumePenalty` is logarithmic and clamped to 1 (linear effectively mutes feeds
+      the reader chose; unbounded means the weights stop describing relative influence). Highlights
+      mode **drops the feed term entirely** and redistributes it, and the threshold is set as a rate
+      — "about 3 a week" — because nobody can reason about "score > 0.62". Golden fixture with each
+      score's term breakdown recorded, plus the ticket's test: a weekly essayist still reaches the
+      top ten against 94 items a day, and the firehose is not muted out of it either.
+- [x] **4.12 `recommend`** — **pure**: candidates + evidence → scored list, with the **health gate**
       (no feed / silent 6 months / >20 per day → rejected). *Done when: a dead site and a firehose are
       both refused, and every survivor carries a human-readable evidence string.* §18.7
+
+      ✅ 2026-07-26 — `internal/recommend`. The health gate refuses a dead site and a firehose for
+      opposite reasons, plus no-feed, unreachable, aggregator, undated, subscribed, muted and
+      dismissed. Every survivor carries the §18.7 evidence sentence assembled from the same fields
+      that produced the score. Distinct referring writers outweigh raw link count, and links are
+      weighted by engagement with the *linking* article. Adjacent candidates get reserved slots —
+      they score lower by construction, so a plain top-N drops them and the anti-filter-bubble
+      guardrail becomes a comment. Rejections are returned with reasons: a gate nobody can inspect is
+      a gate nobody can fix.
+- [x] **4.13 `rewrite`** — **pure**: HTML in, HTML out, with every subresource URL rewritten through a
+      caller-supplied `func(absURL string) string`. Resolves against a base URL, and covers the whole
+      surface rather than the obvious quarter: `img/@src` · `@srcset` (both `img` and `source`, with
+      the descriptor syntax preserved) · `video/@poster` · `link[rel=stylesheet]` · `@import` and
+      `url()` **inside inline `<style>` and inside fetched CSS**, recursively · `a/@href` · `<base>`.
+      Strips `integrity` (the bytes change, so SRI would fail every asset it protects) and any
+      `<meta http-equiv="Content-Security-Policy">`. ← 2.4 §10.1b
+      *Done when: a fixture page with a relative `srcset`, a nested `@import` two levels deep, and a
+      protocol-relative `//cdn` URL all come out pointing at the proxy — and a second pass over the
+      output is a no-op.*
+      **Cheap and self-contained. This is the piece 1a, 2 and 2r all share, and it is the one that
+      quietly grows a long tail of formats, so it gets a table test from the first line.**
+      ✅ 2026-07-26 — `internal/rewrite`. Fragments and documents are told apart rather than
+      configured, because feed content is a run of `<p>` and parsing that as a document silently welds
+      an `<html><body>` wrapper onto every article. `<base href>` is honoured **and then removed** —
+      honouring it is correctness, removing it is the security half, since a surviving `<base>` points
+      anything we missed straight back at the origin; inside a *fragment* it is dropped without being
+      honoured at all, or one feed item could retarget every relative URL in the reading pane.
+      CSS is scanned, not parsed: the question is only where the URLs are, and a scanner cannot be
+      defeated by a shorthand property nobody thought to enumerate. Idempotence is a test, not a
+      hope. **Two bugs the table found before any of it shipped:** `ParseFragment` rejects a context
+      node whose `Data` and `DataAtom` disagree, and a node dropped at fragment top level has no
+      parent to be removed from — the meta-CSP strip silently did nothing in exactly the case that
+      matters. *Deviation: `srcset="a.png,b.png"` is one candidate, not two. That is what the WHATWG
+      algorithm says and what browsers do; splitting it would rewrite two URLs the browser never
+      requests and miss the one it does.*
 
 > *Done when:* the whole tier is unit-tested with **zero database and zero network**.
 
@@ -811,6 +943,71 @@ Business logic over repositories. Still headless.
 - [ ] **6.13 `degrade`** — disk watermark ladder (20/10/5/2%), shedding audio and packs first and
       keeping read state alive longest §22.6
 
+- [x] **6.14 `assetproxy`** — the tier-1a service (§10.1a). `(signed url) → bytes`, where the
+      signature is minted **only for a URL found in stored HTML the caller could read**, never taken
+      from the caller · fetch through the
+      2.7 guard · cap to image content-types and a few MB · cache to disk keyed by URL hash, beside the
+      database like the speech cache so a data-directory backup carries it · negative-cache failures so
+      a missing image costs one request a month, not one per render. ← 2.7, 2.9, 4.13, 5.3 §10.1a
+      *Done when: an article renders its images with the **origin blocked at the client** and reachable
+      only from the server — which is the whole feature, and is untestable if you only ever run both
+      halves on one machine.*
+      **Ships with M9 and is pullable to now.** It repairs an article that renders wrong today, and it
+      is what makes an archive survive its publisher instead of keeping a manifest of dead image URLs.
+      ⚠ **Do not let this re-enable newsletter images.** `sanitize.Newsletter` drops them deliberately
+      — proxying a tracking pixel still confirms the open, only from a different IP. The rewrite hook
+      is per-policy, not global.
+      ✅ 2026-07-26 — `internal/assetproxy` + `internal/app/asset.go` + the `GetItem` seam.
+      **The endpoint is unauthenticated and that is the same decision as `/speech`'s, not its
+      opposite:** an `<img src>` cannot send an `Authorization` header, so the choice was never
+      header-vs-query, it was capability-or-nothing. The URL *is* the capability — HMAC over
+      `("asset", url, exp)` with the expiry **inside** the signature, 12h TTL, `secret.Sign`, key
+      persisted at `<datadir>/proxy.key` 0600 so URLs on an open page survive a restart.
+      *Deviation from §10.1b as written: the capability signs the URL rather than an item id + asset
+      index.* The index cost a DB read and a full HTML parse **per image** — forty per article — and
+      is positional, so a publisher edit shifts it and serves the wrong picture. It never enforced
+      anything the mint gate does not: a caller who wants an arbitrary URL in item HTML can subscribe
+      to a feed they control. Reasoning recorded in plan.md §10.1b.
+      Content-type is allowlisted to images, and a generic `application/octet-stream` is **sniffed
+      rather than passed through** — we send `nosniff`, so forwarding the origin's vagueness would
+      turn a working JPEG into a blank box. Size cap enforced while reading, never from
+      `Content-Length`, which is a claim by the server we are defending against. Failures are
+      negative-cached for 6h: a dead image is re-read constantly, and without it every read is another
+      request to a publisher who may already be rate-limiting us. Cache is one file per asset (header
+      line + bytes, one atomic rename — two files would have a window where metadata and body
+      disagree), fanned out by the first two hex characters.
+      Default **on**, per-user opt-out via the `proxy.images` pref, instance switch `-proxy-images` /
+      `ARTICLEFLUX_PROXY_IMAGES`. Rewriting happens at serve time in `GetItem` only: list responses
+      carry no article body, and minting forty capabilities for HTML nobody has scrolled to would
+      expire before use.
+      *Owed:* the §22.6 watermark ladder does not yet shed this cache (6.13's job), and there is no
+      per-user rate limit on the endpoint (7.3d's).
+      ⚠ **Noticed while wiring:** `netguard.Get` always applies the **strict** `CheckURL`, so a client
+      built with `AllowPrivate: true` is still refused a LAN address through that helper. `feed` and
+      `extract` each work around it with the same four-line branch; this is the third copy, and the
+      point at which the branch should move into `netguard` rather than being written a fourth time.
+
+- [ ] **6.15 `pageproxy`** — the tier-2 service (§10.1b). item → guarded fetch (4.3's client) →
+      `charsetdec` → 4.13 rewrite pointing at 6.14 → a new **`sanitize.Snapshot` policy** (2.9: no
+      script, no iframe, no form, no event attributes; keeps layout CSS) → disk cache → serve. Carries
+      the **escalation hook** 6.16 plugs into: if the fetched body is empty or implausibly short for
+      the item's word count, the page needs a browser.
+      *Done when: a saved fixture page renders with **zero requests leaving our origin** — asserted
+      against a request log, not by eye, because "it looked right" is how a `url()` in a background
+      shorthand survives for a year.*
+
+- [ ] **6.16 `render`** — the headless browser pool (§10.1c). `chromedp` attached to the installed
+      Chromium · a **disposable profile with no access to the data directory** · exactly one render at
+      a time through 6.4's queue · hard timeout · wait for network-idle, then one scroll-to-bottom pass
+      so lazy images resolve · returns `outerHTML` **and** a full-page screenshot from the same
+      session, because the screenshot is the fallback artifact when the DOM comes out unusable.
+      ← D19, 6.4, 6.15 §10.1c
+      *Done when: a JS-only fixture (an empty `#root` plus a script that fills it) comes back filled,
+      and killing the browser mid-render **fails the job rather than hanging it** — a renderer that
+      wedges is worse than one that refuses.*
+      **Never a background sweep.** On demand, cached forever after. A preservation pass that shells
+      out to a browser per item would cook the box and read as an attack from the publisher's side.
+
 > *Done when:* an integration test polls a fixture feed end-to-end and **two users get correct,
 > independent state** — with no server and no UI in the picture.
 
@@ -872,6 +1069,37 @@ Business logic over repositories. Still headless.
 
 - [x] **7.10** `articleflux admin reset-password` break-glass §7.2
       ✅ 2026-07-26 (night) — spelled **`articleflux passwd -user … -password …`**, plus `adduser` for a second account. Both validate the role against the four the column documents (an account created as `"admins"` fails closed on every check with no clue why) and enforce a **12-character minimum with no composition rules** — length is the only property that reliably costs an attacker anything, and "must contain a symbol" reliably costs the user a password they write down somewhere worse. `passwd` revokes **every** session for that user, which is the point of a break-glass reset.
+- [ ] **7.12 Proxy endpoints** — `GET /asset` (6.14) and `GET /p/…` (6.15), both on the **separate
+      proxy hostname** of D20, never the app's. Each takes a **signed short-TTL capability** over
+      `(scope, item, asset, exp)` — `secret.Sign` already exists — minted by an authenticated RPC and
+      verified here. **No free-text URL parameter anywhere.** Responses carry a
+      `default-src 'none'`-class CSP, `nosniff`, `Cache-Control: private`, and no `Authorization` is
+      ever read from the query string (§10.1b, the `/speech` rule). ← D20, 6.14, 6.15 §21
+      *Done when: a capability for item A cannot fetch item B's assets, an expired one is refused, and
+      a request for the proxy path arriving on the **app** hostname is refused outright rather than
+      served — the origin split is only a control if it is enforced on both sides.*
+      ◧ 2026-07-26 — **`/asset` shipped; `/p/…` has not, and D20 is why.** The image half needs no
+      origin split: an image served with `nosniff` and `default-src 'none'; sandbox` is not a document
+      and cannot reach the session. HTML is, and can. So `Config.ProxyOrigin` /
+      `ARTICLEFLUX_PROXY_ORIGIN` exists **now**, unused by the asset path beyond moving its URLs, so
+      that the page proxy inherits a configured split rather than needing one retrofitted after
+      capabilities are minted and cached. Covered: signature required, tampered target refused,
+      extended expiry refused (the expiry is inside the signature), expired → 410, blocked address
+      refused even with a valid signature, 501 when unconfigured, conditional GET → 304, HEAD carries
+      no body, key survives a restart.
+      *Owed:* the `/p/…` half, per-user rate limits (7.3d), and the both-sides hostname enforcement,
+      which cannot be written until D20 is answered.
+
+- [ ] **7.13 `StreamPage`** — tiers 3–4 (§10.1d). A **bidi** RPC, which the tunnel already carries:
+      screencast frames down, input events up. Server side: `Page.startScreencast` → ack every frame →
+      diff consecutive frames into **64×64 tiles** and send only what changed → `Input.dispatchMouseEvent`
+      / `dispatchKeyEvent` / `Input.synthesizeScrollGesture` on the way back. **One session per user,
+      hard idle timeout, and the browser dies with the stream.** ← 6.16, 7.1 §10.1d
+      *Done when: a static page costs ~one frame and then silence (the damage-driven property is the
+      entire performance argument — if it is emitting at a fixed rate, it is misconfigured), and a
+      dropped connection leaves no orphaned browser behind.*
+      **Flag-gated, off by default, per R22.**
+
 - [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
       ◧ 2026-07-26 — `slog` is wired through the app and leveled, and §22.11's never-log rule is observed — the OpenAI TTS error path logs the provider message and returns a safe string, because provider errors can echo the user's article. Request-id threading is not done.
@@ -1000,6 +1228,25 @@ hand-written CSS and vanilla JS, and nobody ports them.
       46px targets, swipe-back through 8.3's touch primitives
       ✅ 2026-07-26 — Sticky four-tab bottom bar (Read · Feeds · Notes · Settings) as a grid row, `env(safe-area-inset-bottom)`, 48px targets, phone-only Settings pane. *Not yet: swipe-back.*
 
+- [ ] **8.20 `PageView` + the render-mode switcher** — the `RenderModeSwitcher` (C3) stops being a
+      placeholder and gains its two new positions: **Page** (tier 2 / 2r) and **Live** (tier 3). Page
+      renders 7.12's URL in an iframe with `sandbox` carrying neither `allow-scripts` nor
+      `allow-same-origin`, sized to the reading column, with the §10.1 fallback chain made visible —
+      *didn't load → try Reader* — because a blank box is the failure mode this whole area is prone to
+      and the user must always have somewhere to go. ← 7.12, M13's switcher §10.1b
+      *Done when: every mode degrades to the one below it on failure, and no mode can leave the pane
+      empty with no explanation.*
+
+- [ ] **8.21 `RemotePage`** — the tier-3 client (§10.1d). Holds the tile grid, composites 7.13's
+      changed 64×64 blocks onto a canvas, forwards pointer/key/scroll events back up the stream, and
+      shows connection and cost state honestly: this mode holds a live browser open on the server.
+      **A one-time explainer before first use** covering what it does and R22's traffic signature —
+      not a legal notice, a sentence — because switching this on is a different act from picking a
+      font. ← 7.13, 8.20
+      *Done when: input round-trips, a lost connection tears the session down visibly rather than
+      freezing on the last frame, and leaving the view stops the stream.*
+      **Flag-gated, off by default.**
+
 > *Done when:* you can read a feed in a browser **and on a phone**, from another machine, over TLS —
 > and `grep -rn "syscall/js" client/ | grep -v platform/` returns nothing. **Plan M4.**
 
@@ -1121,29 +1368,183 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       rest of the debounce is how autosave loses writing. `platform.Listener` grew an `extra` closure
       so one Listener can release a second event, a second target, or an interval.
 
-**Built but not reachable — and that is the interesting part of the list**
+**Appearance and identity, client-side**
 
-- [ ] **8b.31 The theming engine and the motion system** — A39, §20.16. Five themes and three durations
-      exist in `client/design/{theme,motion}.go`, and the sheet emits `Fanciful.Vars()` +
-      `MotionVars()` at first paint, so the tokens are live. **Nothing writes them at runtime**: there
-      is no applier on `documentElement.style`, no picker in Settings, and no `theme` / `motion` pref.
-      Four of the five themes are therefore unreachable and `--mo` is only ever set by the
-      `prefers-reduced-motion` block. *Done when: switching themes twice repaints correctly and the
-      choice survives a reload on another machine (A30 applies — it is account state, not browser
-      state).*
-- [ ] **8b.32 Restore the wasm build.** `GOOS=js GOARCH=wasm go build ./client/...` **fails** —
-      `client/view/reader.go` has seven declared-and-unused state hooks from the category and add-feed
-      work, and still passes `addValue` / `onAddInput` / `onAddKey` to a `railProps` that no longer has
-      them. **`go build ./...` does not compile the client**, so the native build and all Go tests are
-      green while the app does not build at all. *Done when: the wasm build is in CI's default path,
-      which is the only thing that stops this recurring.*
-- [ ] **8b.33 The client half of authentication.** The server mints sessions (§7.1a) and nothing in
-      `client/` calls `Login`, stores a token, or sends `authorization` metadata — so every RPC falls
-      through to `devScope`, and an instance started **without `-dev` serves a reader that cannot get a
-      session**. Needs: a login screen, token storage that survives a reload, the metadata on every
-      call, `WhoAmI` on connect to choose between the reader and the login screen, a visible banner
-      when `dev_mode` is true, and a path back to the login screen on `Unauthenticated`. *This is what
-      makes A9 (remote deployment) reachable, and it is the top of the list.*
+- [x] **8b.31 The theming engine, and the Appearance tab that drives it** — A39, §20.16. Five themes,
+      seven accents (a **separate light set**, taken down to where a hue can carry white — the same
+      tone problem as `--ink`), three reading sizes, three durations. `applyAppearance` writes token
+      values onto `documentElement.style`, which outranks the `:root` block the sheet emitted, so
+      **nothing re-renders when the theme changes**. The four prefs are server-side (A30): the look of
+      the reader travels with the account, not the browser. Every stored value keeps *unset*
+      distinguishable from *set to the default*, which is what lets the screen offer a way back to
+      following the system.
+- [x] **8b.33 The client half of authentication** — §7.1b. `Root` mounts either `Login` or `Reader`,
+      never both, so an unauthenticated page never constructs the reader. Token in namespaced,
+      versioned local storage; a **client interceptor** attaches `authorization: Bearer` to every call
+      and routes `Unauthenticated` back to `Root` — **except on `Login` itself**, which answers
+      `Unauthenticated` for a wrong password and must not read as an expired session. `device_id`
+      survives sign-out on purpose: it identifies the browser, not the session.
+
+**Owed**
+
+- [ ] **8b.32 Put the wasm build on CI's default path.** `go build ./...` does not compile the client,
+      and during this batch the wasm build was broken for a stretch while the native build and every Go
+      test stayed green. *Done when: a broken `GOOS=js GOARCH=wasm go build ./client/...` fails CI on
+      the same run that a broken `go test` would.*
+- [ ] **8b.34 Refresh the e2e suite for the login, and get it green.** Four specs now
+      (`reader` · `design-parity` · `responsive` · `tagsettings`), and **the last run failed** — a
+      categories test (`a feed … the rail groups it`). Every spec also drives a server that used to
+      need no credential and now goes through `Root`, and several still assert pre-transcription
+      behaviour (see 8b.24). *Until it is green the suite is not a gate, which is the state a suite
+      must not quietly be left in.*
+
+---
+
+## The connection, audited — what a retry loop cannot fix (2026-07-26, night)
+
+Spec: **A40**, **§20.19**, **R5** (rewritten), **T21–T22**. Prompted by a plain question — *"how are we
+handling idling the WebSocket, unstable connections, retry and backoff?"* — which turned out to have a
+good answer for the third part and no answer at all for the first two.
+
+**What was already right, and should not be touched:** the backoff shape (500 ms → ×1.6 → 20 s cap,
+jitter 0.2, no attempt limit ever), the server's 30 s WS ping / 90 s idle reaper, `Watch`'s `Idle`
+kick, `WaitForReady(true)` connection-wide with `Subscribe`/`Refresh` opting out, and the recovery
+refetch that reloads the rail and the list but never the open article. That is a better starting point
+than most projects have, and it is why the two real findings were invisible: **everything that fails
+loudly was handled, so what remained was everything that fails silently.**
+
+**Finding 1 — the client has no liveness probe (F3).** A half-open socket — CGNAT reclaim, VPN drop,
+Wi-Fi vanishing without an RST — leaves the browser's `WebSocket` open and gRPC in `READY`, so the
+indicator says **live** forever. The server notices in 90 s because it pings; the client never does,
+because nothing pings from its side. The one job of the indicator is that "silently disconnected" must
+never look like "a quiet news day", and this is the case where it cannot tell.
+
+**Finding 2 — a refused call is read as a broken connection (F7).** `Client.track` marks the connection
+`down` on *any* non-nil error, so an application `NotFound` from a perfectly healthy server paints the
+indicator red. **8b.33 landed mid-audit and fixed the case that mattered most** — the auth interceptor
+clears the token on `Unauthenticated` and routes to `Login` — but it did so a layer above the
+connection, which still misreads it on the way past. That half is now cosmetic. The half that is not:
+**version skew refuses at the handshake** (§22.10), and a refusal the client cannot tell from an outage
+is retried on the backoff schedule forever. §22.10 has promised "rather than retrying forever" since
+rev 8 with nothing implementing it.
+
+**The ordering rule for this batch:** 8c.1 and 8c.2 are bug fixes and go first; 8c.1's two halves must
+be **one commit**.
+
+### The two that are bugs
+
+- [ ] **8c.1 Client keepalive — and the server option that must ship with it.** §20.19.3.
+      `grpctunnel.WithTunnelKeepalive(30s, 10s)` on the dial, **and**
+      `grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 20s, PermitWithoutStream:
+      true})` on `grpc.NewServer` in `internal/app/app.go`. **Shipping the client half alone makes
+      things worse, not better:** `ApplyTunnelKeepalivePolicy` sets `PermitWithoutStream: true`, the
+      server currently runs the gRPC defaults (`MinTime: 5m`, `PermitWithoutStream: false`), and an
+      idle client pinging every 30 s earns two ping strikes and a **`GOAWAY ENHANCE_YOUR_CALM
+      (too_many_pings)`** — converting a silent half-open bug into a visible flap every ~60 s. `MinTime`
+      sits below the client interval on purpose: a throttled ping arrives late, never early.
+      *Done when: a blackholed connection (accept, then stop forwarding) is declared `down` within 40 s,
+      and a 30-minute idle connection reconnects **zero** times — T21(b) and T21(c).*
+- [ ] **8c.2 Classify the error before believing it.** §20.19.6. A `classify(err)` in `client/data`
+      returning transport / application / terminal, and `track` acting on the class instead of on
+      `err != nil`. `Unavailable`/`DeadlineExceeded` → `down` and keep retrying · `Unauthenticated` and
+      version skew → **`blocked`, stop retrying** · `PermissionDenied`/`NotFound`/`InvalidArgument`/
+      `Aborted`/`ResourceExhausted` → **the connection is fine, do not touch the indicator** ·
+      `Canceled` → our own teardown, nothing. Plus: honour `retry_after_s` from a `ResourceExhausted`
+      **instead of** the schedule. ← *8b.33's interceptor already owns the `Unauthenticated`
+      **remedy**; this owns the **classification**, and the two must not be merged — routing the
+      screen and describing the connection are different jobs, and the interceptor cannot see the
+      transport.* **The case with no owner at all is version skew.**
+      *Done when: the §20.7 code table is a passing table test, and a server returning `NotFound` never
+      turns the indicator red — T21(a).*
+
+### The three that are missing reflexes
+
+- [ ] **8c.3 Lifecycle kicks.** §20.19.5. `platform.OnNetworkChange` / `OnResume` in the `syscall/js`
+      quarantine, and `Client.Kick()` calling **`conn.ResetConnectBackoff()`** — `conn.Connect()` is a
+      no-op in `TRANSIENT_FAILURE`, so today nothing can shorten a wait even when the OS has just said
+      the network is back. Wired to `online`, `visibilitychange`→visible, and `pageshow` with
+      `persisted: true` (a bfcache restore closes the socket underneath us). `offline` does the reverse:
+      paint the offline state and stop the countdown. **Background-tab throttling is accepted, not
+      fought** — a hidden tab makes no promises and a tab becoming visible verifies before it renders.
+      *Done when: closing and reopening the lid reconnects in about a second rather than up to twenty.*
+- [ ] **8c.4 Five states, a countdown, and a Retry now.** §20.19.2. `offline` and `blocked` join
+      `live`/`connecting`/`down`, because one red dot currently means "your Wi-Fi is off", "the box is
+      unplugged" and "your session expired" — three different sentences the reader needs. Plus
+      hysteresis in one direction only: `connecting` suppressed for the first second and `down` held
+      until the first redial fails or 3 s pass, so a 500 ms redeploy stays invisible; `blocked` and
+      `live` paint instantly, because delaying good news only confuses. **The countdown plus Retry now
+      is what earns the 20 s cap its headroom** — a visible, skippable wait is not a hang, which is why
+      the cap does not get tuned down into hammering a server that is still booting.
+      *Done when: pulling the network shows "You're offline" and killing the server shows "Can't reach
+      the server · retrying in Ns", and they are not the same screen.*
+- [ ] **8c.5 Recovery must not storm.** §20.19.7. Every `READY` transition currently fires four RPCs;
+      on a flapping tunnel that is a refetch storm at the moment the server can least serve one, and the
+      storm is what keeps the recovered connection saturated. Coalesce on a 2 s trailing window, at most
+      one refetch per 5 s, **skip entirely when the outage was under 2 s**, and **generation-guard every
+      load** so a superseded response cannot win by arriving last. Same discipline as the note
+      autosave's withheld tick: *a response may only land if it is still the answer to the current
+      question.*
+      *Done when: ten recoveries in five seconds produce one refetch — T21(d).*
+
+### What the server owes the connection
+
+- [ ] **8c.6 Readiness-gate the upgrade.** `/readyz` exists and **nothing consults it**, so `/grpc`
+      accepts a WebSocket into an instance that cannot serve reads — producing a client that connects
+      successfully, fails every call, classifies as `down`, and retries hard against a server that is
+      already struggling. Refuse the upgrade with **503 + `Retry-After`**, which is a reconnecting
+      client's honest instruction to wait. Small, local, and it makes 8c.2's classification correct
+      during a boot rather than accidentally right.
+- [ ] **8c.7 Close cleanly on shutdown.** `srv.Shutdown` **does not wait for hijacked connections** and
+      a WebSocket upgrade is one, so a deploy currently severs live tunnels mid-call via
+      `a.grpc.Stop()`. `GracefulStop` under the existing 5 s deadline, then `Stop`, and a `1001 going
+      away` close frame. The payoff is specific: an in-flight `SetItemState` at redeploy time presently
+      rolls back the optimistic UI and shows "Couldn't save that" for a server that is coming straight
+      back.
+- [ ] **8c.8 ⬆ Upstream: `Retry-After` on a refused upgrade.** GoGRPCBridge answers a breached
+      `WithMaxUpgradesPerClientPerMinute` / `WithMaxConnectionsPerClient` cap with a bare `429` and no
+      header (`server.go`), so a client that hits it backs off on a schedule unrelated to when it would
+      be welcome back. **Not fixable in this repo.** Low priority — ArticleFlux's caps (8 conns, 30
+      upgrades/min) are generous enough that hitting them means a bug on our side — but file it while
+      the context is fresh.
+
+### Durability — the half a retry loop does not cover
+
+- [ ] **8c.9 The mutation outbox (§12.4, A25).** Specified in rev 8, unbuilt, and now the sharpest gap
+      in this area. `SetItemState` and friends are direct RPCs with `WaitForReady(true)` and a 20 s
+      deadline, so marking an article read during an outage **hangs for twenty seconds, rolls the
+      optimistic UI back, and discards the write** — the one thing a reader assumes is safe. The
+      idempotency keys are already being sent; what is missing is the IndexedDB queue that makes them
+      worth something, plus `rev` compare-and-set on drain. **Bigger than everything above it and it
+      should be scheduled as its own batch, not smuggled into this one.**
+      *Done when: five articles marked read while disconnected are all read after a reconnect — T22.*
+- [ ] **8c.10 Persist the signals buffer.** `client/track` holds up to 500 events **in RAM**, and its
+      `pagehide` flush cannot succeed while disconnected — so closing the tab at the end of an offline
+      session loses the entire session. A34 calls it an outbox and §12.4 puts outboxes in IndexedDB;
+      the signals half belongs in the same store with the same cap and the same oldest-drop. Rides
+      along with 8c.9's store rather than building a second one.
+
+### Proof, and making flakiness falsifiable
+
+- [ ] **8c.11 T21 · the connection suite.** Five parts, and (b) is the one that needs building rather
+      than writing: a **blackhole TCP relay** in `internal/testnet` that accepts and then silently stops
+      forwarding, because that is the only honest way to reproduce a half-open socket — Playwright
+      cannot make a browser do it. (c) the 30-minute idle soak is the `too_many_pings` regression test,
+      and it is what fails the day someone deletes the server's enforcement policy as an unused option.
+      (e) is Playwright, **Windows-native per the standing rule**, using `context.setOffline(true)` for
+      the offline path — ← **8b.34**, since adding specs to a suite that is not currently a gate buys
+      nothing. (a)–(d) are native and do not wait on it, which is the argument for that split: **the
+      two findings this audit turned up are both provable without a browser.**
+- [ ] **8c.12 Count the reconnects.** §20.19.10. Server → §22.15 and Settings → Server: upgrades
+      accepted/refused, closes by reason, idle reaps, ping-write failures, live tunnel count. Client →
+      the §20.3 ring and Settings → Activity: reconnect count, cumulative downtime, time since the last
+      successful RPC. **"It feels flaky" is unfalsifiable without these**, and this app has no dashboard
+      behind it. One reconnect an hour is a network; forty is a bug, and today neither is visible.
+
+> **The transferable rule from this audit, and it is the reason it is written down rather than just
+> fixed:** *a retry loop is a latency optimisation; an outbox is a durability guarantee.* They are not
+> substitutes, and shipping a good retry loop makes the missing outbox **harder** to notice, not
+> easier — the system now recovers so smoothly from the failures it can see that nobody goes looking
+> for the ones it cannot.
 
 ---
 
@@ -1159,7 +1560,7 @@ brief for that milestone: which plan sections define it, which pages (Appendix A
 | **M6** | Rules engine UI (matcher already pure at 4.9) | §13 | `/settings/rules` `/muted` | C6 all | 2 | T6 |
 | **M7** | Organise · subscribe · discovery rungs 1–3 · **all interchange** | §11, §15.7 | `/settings/sources` `/settings/data` | C3 `FolderNode` | 6 | T5 |
 | **M8** | `ViewSpec` · density · saved views · typography · palette · onboarding **← first daily driver** | §10.2, §20.2, §20.5 | `/settings` shell, `/settings/appearance` `/reading` | C1, C2, `CommandPalette` | — | — |
-| **M9** | Bookmarks + archiving + dead links + bookmarklet | §12 | `/b` `/b/unread` `/b/dead` `/b/:id` | C4 all | 9 | — |
+| **M9** | Bookmarks + archiving + dead links + bookmarklet + **the asset proxy (6.14)** | §12, §10.1a | `/b` `/b/unread` `/b/dead` `/b/:id` | C4 all | 9 | T23 |
 | **M10** | **Offline trip packs** · leader election · outbox | §12 (offline), §22.10 | `/settings/offline`, version-skew screen | C8 all | 7 | T10, T11, T12 |
 | **M11** | **GReader sync API** + capped tokens + event parity | §15.1, §15.2 | `/settings/apps` | C7 `TokenRow` `CopyField` | 8 | T5, T4 |
 | **M12** | **Notifications** + **Trends** + contextual nudges | **§16**, **§17** | `/trends/*` `/settings/notifications` | C5 `TrendChart` `Heatmap` | — | — |
@@ -1177,6 +1578,8 @@ brief for that milestone: which plan sections define it, which pages (Appendix A
 | **M24** | Article revisions UI + diffs (data since M1) | §10.3 | article overlay | C3 | 1 | — |
 | **M25** | Scraped feeds + AI rule drafting | §14.2 | `/settings/sources` | C6 `RulePreview` | 6 | — |
 | **M26** | Discovery rung 4 · WebSub · **screensaver** | §11, §15.6, **§19** | `/screensaver` | — | 6 | T20 |
+| **M27** | **Page proxy** — asset rewriting · `snapshot` policy · the proxy origin · signed URLs | §10.1b | article pane, `Page` mode | C3 `RenderModeSwitcher` **`PageView`** | — | T23 |
+| **M28** | **Headless renderer** (2r) + **frame stream** (tiers 3–4), flag-gated off | §10.1c–d | article pane, `Live` mode | C3 **`RemotePage`** | — | T23 |
 
 **⚠ `/shared` and `/discover` are new routes** surfaced by Appendix D that predate no plan section —
 `/shared` is specified in Appendix D5, `/discover` in §18.7.
@@ -1292,6 +1695,14 @@ leaderboard, queue depth, storage by table, LLM spend + circuit state, ring dept
 `/setup` (first-run wizard after `articleflux init`) · `/404` · **the version-skew screen** (client below
 minimum: purge SW cache and hard reload, §22.10) · **the offline screen** (tunnel down, mirror empty).
 
+> **As built, 2026-07-26.** There is **no router** — the client is one mounted tree, and `Root` chooses
+> between `Login` and `Reader` (§7.1b). So "the login page" exists as a *component*, not a route, and
+> the rest of this appendix's routes are surfaces reached inside the reader: Settings is a pane with
+> seven tabs (§20.17), per-feed and per-tag settings are dialogs, add-a-feed is a dialog. Routing
+> arrives with M8's `ViewSpec` and saved views; until then a route in this table is a page that will
+> exist, not a URL that does. `/recover`, `/enroll/:token` and `/setup` have no counterpart at all —
+> `articleflux init` is a shell command, deliberately (§22.3).
+
 ---
 
 ## Appendix B — Settings registry
@@ -1303,10 +1714,27 @@ capability required. `GET` returns the resolved value **and which layer supplied
 
 Scope key: **S** system · **T** tenant · **U** user · **F** per-source (on `subscriptions`).
 
+> **As built, 2026-07-26 — there is no registry yet.** `user_prefs` is a flat per-user key/value table
+> behind `GetPrefs` / `SetPrefs`, and the client owns the key names. What exists:
+>
+> | Key | What it holds |
+> |---|---|
+> | `pane.rail` · `pane.list` | Pane widths (§20 — layout is account state, not browser state) |
+> | `rail.filter` · `rail.closed.*` | Unread-only toggle; which rail sections and categories are folded |
+> | `read.kind` · `read.value` · `read.item` · `read.title` | A30 resume: scope, its argument, the open article and its title |
+> | `ui.theme` · `ui.accent` · `ui.reading` · `ui.motion` | A39 appearance (§20.16) |
+>
+> Missing versus §8: types, defaults, ranges, the **system → tenant → user** resolution, the capability
+> per setting, and `GetResolved` returning *which layer supplied the value*. That last one is what makes
+> "why is this 30 minutes?" answerable, and nothing can answer it today. **The UI does not render itself
+> from data** — each of the settings above is a hand-written control, which is affordable at twelve keys
+> and is exactly what stops being affordable at ninety (6.3, M8).
+
 | Group | Settings | Scope |
 |---|---|---|
 | **Appearance** | theme (light/dark/sepia/high-contrast/auto) · density (compact/comfortable/card) · reading font · size · line height · measure (ch) · paragraph spacing · alignment · direction (auto/ltr/rtl) · image display (full/constrained/hidden) · per-source hue on/off · reduced motion (follow/force) | T,U |
-| **Reading** | default render mode (auto/feed/reader/snapshot) · mark read on open · mark read on scroll · keep-unread override · next-unread wraps feeds · restore scroll per feed · confirm mark-all-read · open original in new tab · timestamps (relative/absolute) | T,U |
+| **Reading** | default render mode (auto/feed/reader/**page**/**live**) · mark read on open · mark read on scroll · keep-unread override · next-unread wraps feeds · restore scroll per feed · confirm mark-all-read · open original in new tab · timestamps (relative/absolute) | T,U |
+| **Proxy & rendering** | proxy images through the server (§10.1a) · page proxy enabled · **renderer enabled** (D19) · **live view enabled** (flag, off) · render escalation (auto/never) · snapshot retention days · max renders per day · proxy hostname (S, read-only — set at deploy) | S,T,U |
 | **List** | default sort · launch scope · show muted · hide read · page size | U |
 | **Fetch timing** | global default interval · interval mode (auto/fixed/manual) · adaptive floor · adaptive ceiling · quiet hours start/end · pause all polling | S,T,U,F |
 | **Fetch limits** | scraped-feed minimum interval · per-host concurrency · max redirects · body cap · request timeout · honour robots.txt | S |
@@ -1362,7 +1790,10 @@ sidebar) · `BottomTabs` · `ActionBar` (mobile article) · `ScrollArea` · `Sti
 height is a structural constant, not a style* · **`ItemList`** (`html.VirtualList` wrapper, keyed,
 memoised) · `SlotHeader` (Top / Explore / Clusters) · **`ReasonLine`** (explainability + meter) ·
 `ClusterCard` · `ArticleHeader` (hue wash, eyebrow, facts) · `ArticleBody` (sanitised) ·
-`RenderModeSwitcher` · `ReadingProgress` · **`NoteEditor`** (markdown, debounced autosave, explicit
+`RenderModeSwitcher` (five positions from M27: auto · feed · reader · **page** · **live**) ·
+**`PageView`** (sandboxed iframe over the proxy origin, with the visible fallback chain) ·
+**`RemotePage`** (tile compositor + input forwarding, flag-gated) ·
+`ReadingProgress` · **`NoteEditor`** (markdown, debounced autosave, explicit
 saved tick) · `TagPicker` · `FeedHealthNudge` · **`ConnectionBadge`** · **`CommandPalette`** ·
 `ShortcutSheet` · `SearchBar` · `SearchResult` (with snippet).
 
@@ -1390,6 +1821,14 @@ forms. If you find yourself writing a second settings form, the registry is wron
 `SettingsGroup` · **`ResolvedLayerBadge`** ("set at tenant level") · `DeviceRow` · `TokenRow` ·
 `QuotaMeter` · `AuditRow` · **`ImpersonationBanner`** · `HealthTile` · `ErrorLeaderboardRow` ·
 `UserRow` · `TenantRow` · `InviteCodeCard` · **`DeletionPreview`** (blast radius before confirm).
+
+> **As built, 2026-07-26.** The components that exist do **not** come from this inventory, because the
+> reader was built from use rather than from the list. What is in the tree: `Root` · `Login` ·
+> `settingsPane` (seven tabs) · `settingsAppearance` (theme / accent / reading size / motion) ·
+> `feedSettings` · `tagSettings` · `addFeed` · `railCategories` + `categoryRows` · the palette · the
+> shortcut sheet. Two gaps this makes concrete — **`SettingsField` does not exist**, every control
+> above is hand-built (affordable at twelve prefs, not at ninety — see Appendix B), and **`Page` does
+> not exist**, so the four states are re-implemented per surface rather than baked in.
 
 ### C8 · Offline and platform
 
@@ -1488,7 +1927,9 @@ surface at once.
 | **M10** | `OfflineService` |
 | **M11** | `AuthService.MintApiToken` / `ListApiTokens` / `RevokeApiToken` + the REST surface |
 | **M12** | `NotifyService` · `StatsService` |
-| **M13** | `RenderService` |
+| **M13** | `RenderService.GetArticle` (the switcher only) |
+| **M27** | `RenderService.MintProxyURL` |
+| **M28** | `RenderService.RenderPage` · `StreamPage` (bidi) |
 | **M14** | `HomeService` · `TopicService` |
 | **M16** | `RecommendService` |
 | **M18** | `AudioService` · `TranslateService` |
@@ -1545,6 +1986,13 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 | **A24** WAL + single writer | 3.3 · T14 |
 | **A25** server `rev` ordering | 8.17 outbox · T10 |
 | **A26** Go all the way down | **CI: no `.css`, no `syscall/js` outside `platform`** (1.8) |
+| **A27**–**A32** verdicts, stream, true-length list, resume, listening, keyboard | 8b.1–8b.20 · e2e |
+| **A33** settings labelled by owner | 8b.21 · one transaction across both tables |
+| **A34/A35** client outbox, analytics never degrades reading | `client/track` · 6.9 |
+| **A36** auth is not inferred from topology | **`-dev` refused off loopback** (7.7) · `Preflight` · guards' unscoped-by-design list · *owed: a test that a non-loopback bind with `-dev` exits non-zero* |
+| **A37** folders exclusive, tags not | 5.11 · `subscriptions.folder_id` is a single column, which is the enforcement |
+| **A38** tag identity vs presentation | 5.12 · **`UpdateTagRequest` has no `name` field** — the wire shape is the enforcement |
+| **A39** every value is a token | 8b.31 · *owed: a guard that fails on a hex literal outside `client/design/theme.go` and on a duration not written `calc(var(--mo) * …)` — until it exists this is a convention, not a decision* |
 
 **A2 and A8 are framing, not enforceable** — scope and vocabulary. Listed so the absence is deliberate.
 
@@ -1562,7 +2010,8 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 | **R7** storage growth | 6.12 · 6.13 ladder · §6.9 | **R18** impressions prerequisite | 6.9 with M14 |
 | **R8** irreplaceable data | §6.8 `rev` cols · M7 export · T8 | **R19** bad recommendations | 4.12 health gate · trial verdict |
 | **R9** sync drift | T5 real-client smoke, **every release** | **R20** outlink SSRF | 2.7 guard · 6.10 per-run cap |
-| **R10** filter bubble | 4.11 explore slot · T17 | | |
+| **R10** filter bubble | 4.11 explore slot · T17 | **R21** proxy is an egress proxy | 6.14/6.15 item-id-only · 7.12 caps · T23 |
+| | | **R22** tier 3 traffic signature | 7.13 flag-off · tile diff · 8.21 explainer |
 
 ### E5 · Open decisions → what they block
 
@@ -1583,16 +2032,19 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 | **D15** GReader scope | M11 | before M11 |
 | **D16** public feed republishing | M21 | before M21 |
 | **D17** quota accounting | 5.2 | before Tier 5 |
+| **D19** renderer: ships? where? | 6.14 | before M28 — *not before 4.13 / 6.15 / 7.12, which stand alone* |
+| **D20** proxy origin | 7.12 | **before the first signed URL is minted** — splitting the origin later is a migration of every cached artifact |
 
 **D3, D4, D6 are resolved** and carried only for the record.
 
 > **Three block Tier 1 or earlier: D0, D2, D5.** D5 is the one most likely to be waved through and
 > most annoying to fix later — the module path bakes the name into every import in the repo.
 
-**Ten of these are choices, not discoveries**, and §25.0 drafts all ten with reasoning so they close in
-one sign-off pass: D5, D8, D9, D10, D11, D12, D14, D15, D16, D17. **D12 is the one that removes work
-rather than adding it** — invite-only deletes the entire registration, CAPTCHA, email-verification and
-abuse-tooling surface.
+**Twelve of these are choices, not discoveries**, and §25.0 drafts all twelve with reasoning so they
+close in one sign-off pass: D5, D8, D9, D10, D11, D12, D14, D15, D16, D17, **D19, D20**. **D12 is the
+one that removes work rather than adding it** — invite-only deletes the entire registration, CAPTCHA,
+email-verification and abuse-tooling surface. **D20 is the one with a deadline rather than a
+dependency**: it is free today and a migration of every cached artifact once signed URLs exist.
 
 The remaining five — **D0, D1, D2, D7, D13** — require executing something and stay open by necessity.
 They are the reason this plan is not fully waterfall and cannot be: you cannot know a wasm bundle's
