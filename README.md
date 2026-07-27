@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <a href="https://monstercameron.github.io/ArticleFlux/"><img alt="Live demo — the real client, no install" src="https://img.shields.io/badge/demo-try%20it%20in%20your%20browser-2EA44F?logo=webassembly&logoColor=white"></a>
+  <a href="https://github.com/monstercameron/ArticleFlux/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/monstercameron/ArticleFlux/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/monstercameron/ArticleFlux/actions/workflows/pages.yml"><img alt="Demo deployment status" src="https://github.com/monstercameron/ArticleFlux/actions/workflows/pages.yml/badge.svg?branch=main"></a>
+</p>
+
+<p align="center">
   <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white">
   <img alt="Client: Go to WebAssembly" src="https://img.shields.io/badge/client-Go%20%E2%86%92%20WebAssembly-654FF0?logo=webassembly&logoColor=white">
   <img alt="Transport: gRPC over WebSocket" src="https://img.shields.io/badge/transport-gRPC%20over%20WebSocket-2EA44F">
