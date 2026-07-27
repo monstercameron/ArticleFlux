@@ -1,4 +1,12 @@
-// Command probe runs one derivation and reports corroboration behaviour.
+// Command probe runs one derivation and reports what it did.
+//
+//	probe <db> [hist]
+//
+// With no second argument it runs the derivation and reports corroboration
+// behaviour. With `hist` it also prints the pairwise-similarity distribution
+// among unread candidates, which is how SameStoryThreshold gets chosen from
+// data rather than guessed. That is a separate word because it is O(n²) over
+// 600 items and nobody wants it on every run.
 package main
 
 import (
@@ -33,6 +41,9 @@ func main() {
 			continue
 		}
 		terms(ctx, repo, sc)
+		if len(os.Args) > 2 && os.Args[2] == "hist" {
+			hist(ctx, repo, sc)
+		}
 		ranked, _ := repo.HomeRanking(ctx, sc, 200)
 		fmt.Printf("home_ranking: %d rows\n", len(ranked))
 
