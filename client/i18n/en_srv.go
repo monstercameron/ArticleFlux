@@ -82,6 +82,12 @@ func init() {
 		"unsupportedLanguage":   "“{locale}” is not one of the offered languages",
 		"alreadySourceLanguage": "the interface is already in English",
 
+		// §7.5's authorization map. "Not allowed" rather than "denied", and the
+		// same words whether the method is unknown to the map or the role is too
+		// low: a message that distinguishes them lets a caller map the server's
+		// own policy one refusal at a time.
+		"notAllowed": "your account is not allowed to do that",
+
 		// --- sudo mode (§7.3)
 		//
 		// A password confirmation in front of the few actions that change who can
