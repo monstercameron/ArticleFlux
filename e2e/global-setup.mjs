@@ -177,6 +177,17 @@ export default async function globalSetup() {
 
   await waitForHealthy(`http://127.0.0.1:${APP_PORT}/healthz`);
 
+  // What a WORKER needs to restart this server (8c.17).
+  //
+  // globalSetup runs in the main process and specs run in workers, which are
+  // separate processes — so the handle above is not reachable from a test. The
+  // environment is the only channel the two halves share, and workers inherit
+  // it, so the binary and the database go through it. The same database
+  // matters: the point of T21(e)'s restart is that the reader's list comes
+  // BACK, not that a fresh empty one appears.
+  process.env.AF_E2E_BIN = bin;
+  process.env.AF_E2E_DB = DB;
+
   return async () => {
     // The slot goes back first, so a run that fails to tear the server down
     // still frees the port for the next one.

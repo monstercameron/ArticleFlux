@@ -2964,9 +2964,30 @@ be **one commit**.
 
       `Check` returns the converted status rather than the pre-conversion error, so its documented
       promise is true of what it actually returns.
-- [ ] **8c.17 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
+- [x] **8c.17 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
       and assert `live` plus a refetched list; `context.setOffline(true)` and assert `offline`, not
       `down`. ← **8b.34**: adding specs to a suite that is not currently a gate buys nothing.
+
+      ✅ 2026-07-27 — `e2e/connection.spec.mjs` + `e2e/server.mjs`, both cases green, three runs in a
+      row (20s / 29s / 15s). Unblocked by 8b.34 reaching 49/4.
+
+      **A worker cannot reach globalSetup's server handle** — they are different processes — so the
+      setup exports the binary and the database path through the environment, which workers inherit,
+      and `server.mjs` acts on that. The same database is the point of the restart half: what has to
+      come back is the reader's list, not a fresh empty one.
+
+      **Killed, not shut down.** The state under test is a server that went away, not one that said
+      goodbye — a clean shutdown closes the tunnel politely and the client would learn through a
+      channel a crash does not have. Killed by PID from netstat, never by image name, which would
+      take out the other agent's run too.
+
+      **`afterEach` restarts unconditionally.** A test that fails midway must not leave the suite
+      without a server: every later file would fail on `reset-state` and the real failure would be
+      buried under fifty ECONNREFUSEDs — which is exactly how this session spent an hour earlier.
+
+      The offline case is the one worth having. `down` there would put a countdown in front of
+      somebody whose wifi is off, ticking toward a reconnect that cannot happen until they do
+      something the countdown does not mention. It passes: the client distinguishes them.
 
 > **The transferable rule from this audit, and it is the reason it is written down rather than just
 > fixed:** *a retry loop is a latency optimisation; an outbox is a durability guarantee.* They are not
