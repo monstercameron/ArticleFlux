@@ -11,6 +11,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/ArticleFlux/client/platform"
@@ -114,6 +116,16 @@ func authInterceptor(ctx context.Context, method string, req, reply any,
 	if t := Token(); t != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+t)
 	}
+	// The build stamp, on EVERY call including the unauthenticated ones
+	// (§22.10, TODO 7.8). Attached here rather than in a handshake because there
+	// is no handshake — the tunnel multiplexes ordinary RPCs and which one is
+	// first varies — and attached unconditionally because the client that most
+	// needs to be identified as stale is the one that cannot log in.
+	//
+	// This is a constant compiled into the bundle, so a Service Worker still
+	// serving last month's wasm announces last month's version, which is exactly
+	// what the server needs to know.
+	ctx = metadata.AppendToOutgoingContext(ctx, buildver.ClientStampHeader, buildver.Version)
 	err := invoker(ctx, method, req, reply, cc, opts...)
 
 	// Unauthenticated means "the credential you sent is not good". For a reader

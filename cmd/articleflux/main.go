@@ -25,11 +25,14 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/app"
+	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/opml"
 )
 
-const version = "0.1.0-dev"
+// The single build constant, shared with the wasm client so the two cannot
+// disagree about what version they are (§22.10). See internal/buildver.
+const version = buildver.Version
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -255,7 +258,6 @@ func serve(log *slog.Logger, args []string) error {
 		if _, err := a.EnsureDevUser(ctx, *user, *pass); err != nil {
 			return fmt.Errorf("creating the local account: %w", err)
 		}
-		log.Warn("DEV MODE: every request is served as the local superadmin, with no login")
 	}
 
 	// Refuse to listen if this instance cannot work. See app.Preflight for why
@@ -280,6 +282,8 @@ func serve(log *slog.Logger, args []string) error {
 		// No WriteTimeout: the gRPC tunnel is a long-lived WebSocket, and a write
 		// deadline would sever it on a timer.
 	}
+
+	logPosture(log, dev, *addr, splitList(*origin), *behindProxy)
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -517,6 +521,65 @@ func envBoolDefault(key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// logPosture states, in one line at boot, which of the two ways this instance
+// can run it is actually running in.
+//
+// There is deliberately no `-prod` flag. Production is the DEFAULT and `-dev` is
+// the opt-out, because the alternative polarity — a mode you must remember to
+// turn on to be safe — is one that eventually does not get turned on, and the
+// failure is silent and total. That is the same reasoning that removed DevMode's
+// dependence on the bind address in the first place.
+//
+// But a default that is never stated is a default nobody checks. `dev=false` in
+// the listening line is technically the answer and is easy to read past, so the
+// posture is said out loud in the terms that matter: whether a password is
+// required, and what is standing between this socket and the internet.
+func logPosture(log *slog.Logger, dev bool, addr string, origins []string, behindProxy bool) {
+	if dev {
+		// Warn, not Info. This line describes a server anyone who can reach the
+		// port owns, and it should not read like routine startup chatter.
+		log.Warn("MODE=development — NO LOGIN; every request is the local superadmin",
+			"addr", addr,
+			"debug_endpoints", "/debug/reset-state",
+			"ssrf_guard", "relaxed (private addresses reachable)")
+		return
+	}
+
+	log.Info("MODE=production — login required",
+		"addr", addr,
+		"origin_allowlist", originSummary(origins),
+		"trusts_forwarded_for", behindProxy)
+
+	// Production-only checks. These are warnings rather than refusals: each one
+	// describes an instance that works and is weaker than it looks, and refusing
+	// to start would be a worse trade than saying so — especially for someone
+	// mid-deploy at midnight.
+	if !isLoopback(addr) && len(origins) == 0 {
+		log.Warn("no -origin set on a public bind: the tunnel falls back to the "+
+			"WebSocket library's same-origin policy, which compares Origin against Host and "+
+			"therefore holds only as long as whatever is in front forwards Host faithfully",
+			"fix", "-origin https://your.domain (no trailing slash)")
+	}
+	// A loopback bind with no proxy declared is the shape of a local server; a
+	// loopback bind WITH a proxy declared is the shipped deployment. The gap
+	// between them — proxied but not declared — means client addresses in the log
+	// are all 127.0.0.1, which is the difference between "who is hammering the
+	// login" being answerable and not.
+	if isLoopback(addr) && !behindProxy && len(origins) > 0 {
+		log.Warn("an origin allowlist is set on a loopback bind but -behind-proxy is not: " +
+			"if a reverse proxy is in front, every client address in the log will be the proxy's")
+	}
+}
+
+// originSummary renders the allowlist for the boot line without pretending an
+// empty list is a safe default.
+func originSummary(origins []string) string {
+	if len(origins) == 0 {
+		return "(unset — same-origin fallback)"
+	}
+	return strings.Join(origins, ",")
 }
 
 // splitList parses a comma-separated flag into a trimmed, non-empty slice.

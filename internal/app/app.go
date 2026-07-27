@@ -22,6 +22,7 @@ import (
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
+	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
@@ -35,6 +36,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
+	"github.com/monstercameron/ArticleFlux/internal/skew"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
@@ -472,6 +474,25 @@ func (a *App) whenReady(next http.Handler) http.Handler {
 	})
 }
 
+// skewPolicy reads the minimum client version this build serves.
+//
+// `RefuseUnstamped` stays FALSE. A request without the header is either a
+// client older than the header — genuinely too old — or something that is not
+// the wasm client at all: a curl, a test, the sync API. Nothing in the request
+// tells those apart, and the cost of guessing wrong in the strict direction is
+// locking a non-browser client out of the instance with no obvious cause.
+func (a *App) skewPolicy() skew.Policy {
+	min, ok := skew.Parse(buildver.MinClient)
+	if !ok {
+		// An unparseable minimum disables the check rather than refusing
+		// everybody. A typo in a version constant must not be an outage.
+		a.log.Warn("the minimum client version does not parse; skew checking is off",
+			"min", buildver.MinClient)
+		return skew.Policy{}
+	}
+	return skew.Policy{Min: min}
+}
+
 func (a *App) buildHandler() {
 	// Three interceptors, and the ORDER is the design.
 	//
@@ -501,6 +522,17 @@ func (a *App) buildHandler() {
 				// to ask the log about somebody else.
 				return handler(reqid.With(ctx, ""), req)
 			},
+			// Version skew (§22.10, TODO 7.8/8c.16), ahead of everything that
+			// does work. A client below the minimum is refused before its
+			// request touches the database, which is the point: the reason to
+			// refuse it is that it may not understand what it is asking for.
+			//
+			// The client half — recognising the sentinel and offering Reload
+			// instead of retrying — shipped first, deliberately. The client that
+			// has to act on a skew refusal is by definition the OLD one, so
+			// recognition had to be in the field before the first refusal was
+			// ever sent.
+			skew.Unary(a.skewPolicy()),
 			// The missing half of a contract already in use: the client stamps a
 			// key onto every mutating RPC and nothing on the server read one
 			// (TODO 8c.15). Survivable only because every queued mutation sets

@@ -595,6 +595,25 @@ func (c *Client) GetItem(parent context.Context, id string) (*pb.Item, error) {
 	return res.GetItem(), nil
 }
 
+// ScrollLiveView scrolls a §10.1d live view, reporting whether it is still
+// running.
+//
+// Deliberately NOT queued when offline, unlike every mutation in this file. A
+// scroll is a gesture at a live thing: replaying one after the connection comes
+// back would move a page the reader stopped looking at minutes ago, and the
+// session it named is long gone anyway. Dropped is the correct outcome.
+func (c *Client) ScrollLiveView(parent context.Context, sessionID string, dx, dy float64) (bool, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.ScrollLiveView(ctx, &pb.ScrollLiveViewRequest{
+		SessionId: sessionID, DeltaX: dx, DeltaY: dy,
+	})
+	if err := c.track(err); err != nil {
+		return false, err
+	}
+	return res.GetLive(), nil
+}
+
 // SetItemState marks read/starred. Nil leaves a flag alone.
 // It never discards the write. When the connection is not working the change is
 // queued and ErrQueued is returned, which callers must NOT treat as a failure —
