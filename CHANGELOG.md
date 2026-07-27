@@ -56,6 +56,22 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Recommendations** (`internal/recommend`, TODO 4.12) — pure scoring over harvested candidates,
+  with the §18.7 health gate that **refuses a dead site and a firehose for opposite reasons**, plus
+  no-feed, unreachable, aggregator, undated, already-subscribed, muted, and dismissed. The asymmetry
+  is deliberate: a missed recommendation costs one unshown card, a bad one costs trust in the whole
+  feature, after which the good ones go unshown too. Every survivor carries the evidence sentence
+  §18.7 shows verbatim — *"3 writers you read linked here 11 times · you saved 4 of its articles via
+  Hacker News · matches your Npu Inference reading · posts ~7 a week"* — assembled from the same
+  fields that produced the score, because this is the one place the reader is asked to act on the
+  system's say-so and an unexplained recommendation is indistinguishable from an advert. Distinct
+  referring writers outweigh raw link count (three people linking once each beats one linking six
+  times, or the scorer just finds whoever links most), and links are weighted by engagement with the
+  *linking* article. Adjacent candidates get reserved slots, because they score lower by construction
+  and a plain top-N drops them every time — which would make §18.7's anti-filter-bubble guardrail a
+  comment rather than a behaviour. Rejections are returned with reasons rather than discarded: a
+  health gate nobody can inspect is one nobody can fix.
+
 - **Interest topics** (`internal/topics`, TODO 4.10) — pure clustering over TF-IDF vectors, so Smart
   needs no model and no network. §18.2's argument holds: a single interest vector is the average of
   your interests and matches none of them, and someone reading SQLite internals, NPU inference and
