@@ -109,7 +109,7 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 
       *No longer blocks 7.12:* the endpoints can be built against a configured origin, and refuse
       without one.
-- [ ] **D21 · How does the ladder know which rung it is on?** §10.1-R orders the runtime path
+- [x] **D21 · How does the ladder know which rung it is on?** §10.1-R orders the runtime path
       **real page → (blocked) frame stream → (bandwidth) compressed rendered HTML → reader text**, and
       both arrows are detections. "Blocked" is close to undetectable from the client: a blocked fetch,
       a DNS failure, a captive portal and plain offline are one opaque error, and a refused iframe is
@@ -117,11 +117,53 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
       the ladder — with automatic escalation waiting on a real probe. The bandwidth arrow is the
       easier half and should be *measured* from the stream's own throughput, not predicted from
       `navigator.connection`. *Blocks the automatic half of 8.22; blocks nothing else.*
-- [ ] **D19 · Does the renderer ship, and where does the browser run?** §25.0 proposes yes, on the
+
+      ✅ **DECIDED 2026-07-27 — §25.0's proposal, signed off: manual in v1.**
+
+      The argument that settles it is that guessing wrong is not symmetric. A blocked fetch, a DNS
+      failure, a captive portal and plain offline arrive as one opaque error, and a refused iframe is
+      indistinguishable from a loading one — so an automatic escalation built on that would drop a
+      reader onto a live browser they did not need every time their train went through a tunnel. The
+      cost of the manual switcher is a click; the cost of a wrong automatic decision is a rung that
+      is slower, heavier and occasionally blank, chosen on their behalf and not explained.
+
+      **Nothing has to be removed to adopt this**, which is worth recording: there is no automatic
+      escalation in the tree today, and nothing reads `navigator.connection` (checked). So this
+      decision costs nothing now and its whole value is forward — it says what the automatic half
+      must be built on when somebody builds it.
+
+      **The bandwidth arrow, when it lands, is measured from the stream's own throughput.**
+      `navigator.connection` is a hint, is missing on Safari and Firefox, and reports the radio rather
+      than the path — a reader on 5G behind a saturated hotel router is exactly the case it gets
+      wrong, and it is exactly the case that needs the rung.
+
+      *Still blocks the automatic half of 8.22, by design: that half waits on a real probe — does the
+      client reach a known-good origin, does the SERVER reach one the client cannot — which is design
+      work rather than a heuristic, and faking it is what this decision refuses.*
+- [x] **D19 · Does the renderer ship, and where does the browser run?** §25.0 proposes yes, on the
       reference box, one render at a time, flag-gated off. Edge is already installed and `chromedp`
       attaches to an existing Chromium, so this is not a new host — but it is a browser process on the
       box that also serves reading, and on the fanless machine repeated renders throttle. *Blocks 6.14;
       does **not** block 4.13, 6.15 or 7.12, which are the static half and stand alone.*
+
+      ✅ **DECIDED 2026-07-27 — §25.0's proposal, signed off: yes, on the reference box, one at a
+      time, flag-gated off.** And it is already built that way, which is why this was cheap to sign:
+
+      - **one at a time** — `render.Options.MaxSessions` defaults to 1 (`render.go`), and the comment
+        there gives the same reason: each session is a browser tab holding a live page, and this is a
+        reader on a home box rather than a rendering farm.
+      - **off by default** — `Config.ProxyStream`, and its comment already refuses to inherit the
+        flag from `-proxy-images`: this is the one rung that runs a browser, and its SSRF story is
+        weaker than everything else here because the browser dials for itself, so netguard's
+        socket-level guard never sees it. An operator opts into that specifically.
+      - **not a new host** — `chromedp` attaches to the installed Chromium/Edge.
+
+      **The thermal caveat is real and is not a footnote.** The reference box is fanless ARM64;
+      repeated renders throttle it, and the machine that throttles is the one also serving reading.
+      Sustained rendering is out of budget — the §22.7 queue is what keeps a burst from being felt,
+      and it is not a substitute for the box being able to do this all day, because it cannot.
+
+      *No longer blocks 6.14.*
 
 ---
 
