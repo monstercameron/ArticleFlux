@@ -56,6 +56,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **The poller is a priority queue by staleness ratio** (TODO 6.8, §22.7), not oldest-due-first. The
+  distinction only shows under load and then compounds: at 10:30, a 15-minute feed due at 10:00 has
+  missed two whole cycles (ratio 2.0) while a 24-hour feed due at 09:00 is barely late by its own
+  standards (0.06) — and oldest-due-first polls the second one. Under a backlog the slow feeds keep
+  winning on absolute lateness and the fast ones fall further behind forever, which is §22.7's "one
+  slow batch permanently penalising everything behind it". A never-fetched source sorts first
+  regardless, because a feed someone just subscribed to showing nothing for fifteen minutes is the
+  worst first impression available. Plus `PollerLag`, which is a **policy** rather than a metric:
+  chronic lateness widens intervals proportionally (capped at 4×) instead of falling further behind
+  silently. The ordering test was verified by reverting to the old `ORDER BY` and confirming it fails.
+
 - **The live-update bus** (`internal/events`, TODO 6.5) — **per-tenant** ring buffers, which is the
   entire design: one shared buffer means a tenant importing 400 feeds evicts everyone else's events
   and their clients are told to resynchronise because of an import in an account they have nothing to

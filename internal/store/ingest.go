@@ -169,33 +169,134 @@ func (r *ReaderRepo) RecordFetch(ctx context.Context, o FetchOutcome) error {
 	return err
 }
 
-// DueSources returns sources whose next_fetch_at has passed, for the scheduler.
+// DueSources returns sources to poll next, ordered by STALENESS RATIO
+// (TODO 6.8, plan.md §22.7).
+//
+// # Why not next_fetch_at
+//
+// The obvious ordering is oldest-due-first, and it is wrong in a way that only
+// shows up under load. Consider two overdue feeds at 10:30:
+//
+//	A: 15-minute interval, due at 10:00 —  30 minutes late, ratio 2.0
+//	B: 24-hour  interval, due at 09:00 —  90 minutes late, ratio 0.06
+//
+// Oldest-due-first polls B, because its due time is earlier in absolute terms.
+// But B is a weekly-ish feed that is barely late by its own standards, and A has
+// now missed two entire cycles. Under a backlog this compounds: the slow feeds
+// keep winning on absolute lateness, and the fast ones fall further behind
+// forever. §22.7 calls it "one slow batch permanently penalising everything
+// behind it", and the fix is to measure lateness in units of the feed's own
+// interval.
+//
+// A source that has never been fetched sorts first regardless. A feed someone
+// just subscribed to showing nothing for fifteen minutes is the worst first
+// impression the application can make.
 func (r *ReaderRepo) DueSources(ctx context.Context, limit int) ([]SourceRow, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// The ratio is seconds-late over the source's own interval. `max(...,60)`
+	// guards against a zero or absurdly small interval turning into a division by
+	// zero and pinning one feed at the top forever.
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT id, feed_url, COALESCE(etag,''), COALESCE(last_modified,'')
+		SELECT id, feed_url, COALESCE(etag,''), COALESCE(last_modified,''),
+		       CASE
+		         WHEN next_fetch_at IS NULL THEN 1e9
+		         ELSE (julianday(?) - julianday(next_fetch_at)) * 86400.0
+		              / max(fetch_interval_s, 60)
+		       END AS staleness
 		  FROM sources
 		 WHERE deactivated_at IS NULL
 		   AND (next_fetch_at IS NULL OR next_fetch_at <= ?)
-		 ORDER BY next_fetch_at
-		 LIMIT ?`,
-		time.Now().UTC().Format(time.RFC3339Nano), limit)
+		 ORDER BY staleness DESC, id ASC
+		 LIMIT ?`, now, now, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []SourceRow
 	for rows.Next() {
 		var s SourceRow
-		if err := rows.Scan(&s.ID, &s.FeedURL, &s.ETag, &s.LastModified); err != nil {
+		if err := rows.Scan(&s.ID, &s.FeedURL, &s.ETag, &s.LastModified, &s.Staleness); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// PollerLag reports how far behind the poller is (§22.7, §9).
+//
+// Two numbers, because they answer different questions. `Due` is how many feeds
+// are waiting, which is a queue depth. `WorstStaleness` is how overdue the worst
+// one is in units of its own interval, which is the one that says whether the
+// instance is coping: a hundred feeds one minute late is fine, and one feed
+// fifty intervals late is not.
+//
+// §22.7 asks for a POLICY rather than only observability — widen intervals
+// proportionally when chronically behind rather than falling further behind
+// silently. WidenFactor is that policy's input, and it is computed here so the
+// number the poller acts on and the number the status screen shows cannot drift.
+func (r *ReaderRepo) PollerLag(ctx context.Context) (PollLag, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	var lag PollLag
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT count(*),
+		       COALESCE(max(CASE
+		         WHEN next_fetch_at IS NULL THEN 0
+		         ELSE (julianday(?) - julianday(next_fetch_at)) * 86400.0
+		              / max(fetch_interval_s, 60)
+		       END), 0)
+		  FROM sources
+		 WHERE deactivated_at IS NULL
+		   AND (next_fetch_at IS NULL OR next_fetch_at <= ?)`,
+		now, now).Scan(&lag.Due, &lag.WorstStaleness)
+	if err != nil {
+		return PollLag{}, err
+	}
+
+	lag.WidenFactor = widenFactor(lag.WorstStaleness)
+	return lag, nil
+}
+
+// PollLag describes how far behind polling is.
+type PollLag struct {
+	// Due is how many sources are waiting to be polled.
+	Due int
+	// WorstStaleness is the worst overdue-ness in units of that source's own
+	// interval. 1.0 means "one full interval late".
+	WorstStaleness float64
+	// WidenFactor is what to multiply intervals by to catch up. 1.0 means the
+	// instance is keeping up and nothing should change.
+	WidenFactor float64
+}
+
+// Behind reports whether the poller is chronically behind rather than briefly
+// busy. Two full intervals is the line: one is an ordinary overrun, two means
+// the schedule is not being met.
+func (l PollLag) Behind() bool { return l.WorstStaleness >= 2 }
+
+// widenFactor turns staleness into an interval multiplier.
+//
+// Capped at 4. Beyond that the instance is not going to catch up by polling
+// less often — it has more feeds than it can serve — and quadrupling every
+// interval already means a 15-minute feed checks hourly, which is the point at
+// which someone should be told rather than accommodated further.
+func widenFactor(worst float64) float64 {
+	switch {
+	case worst < 2:
+		return 1
+	case worst < 4:
+		return 1.5
+	case worst < 8:
+		return 2
+	default:
+		return 4
+	}
 }
 
 // nullify turns "" into a SQL NULL, so absent values are NULL rather than empty

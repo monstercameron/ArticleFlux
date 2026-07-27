@@ -792,6 +792,11 @@ type SourceRow struct {
 	FeedURL      string
 	ETag         string
 	LastModified string
+	// Staleness is how overdue this source is in units of its OWN fetch
+	// interval — 2.0 means it has missed two whole cycles. Returned by
+	// DueSources so a caller can log why it chose this order, and so §9 can show
+	// the worst offender rather than only a queue depth.
+	Staleness float64
 }
 
 // encodeCursor packs the keyset position as base64url, per §20.7.
