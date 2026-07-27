@@ -193,8 +193,19 @@ func guardNoCSSFiles(root string) *guard {
 // quietly forgot its Scope.
 var unscopedByDesign = map[string]string{
 	"IngestItems": "writes global items (A14); no tenant owns them",
-	"RecordFetch": "updates global source health (A14)",
-	"DueSources":  "the scheduler polls for every tenant at once (A14)",
+	// item_analysis (§27.2, TODO 10.5). Global for the same reason `items` is:
+	// one analysis per ITEM, not per subscriber, or classifying an article a
+	// hundred people follow costs a hundred times what the article did. The
+	// table carries no tenant_id and no user_id, so there is nothing to scope
+	// to. Reasons mirrored from internal/store/leak_test.go so the two lists
+	// cannot say different things about the same method.
+	"UpsertAnalysis":   "writes global analysis rows; per-user labeling is fanout's job, same split as IngestItems",
+	"AnalysisByIDs":    "reads global analysis rows; nothing per-user is returned, same as ItemsByID",
+	"StaleAnalysis":    "the backfill's queue over global items and their (possibly absent) analysis rows",
+	"ClearAnalysis":    "the repair tool for a fully derived global table (§27.2c); no per-user slice exists to scope to",
+	"PendingSmartPlus": "the Smart+ retry queue over global analysis rows, keyed by llm_at alone",
+	"RecordFetch":      "updates global source health (A14)",
+	"DueSources":       "the scheduler polls for every tenant at once (A14)",
 	// A scrape rule belongs to the SOURCE, which is global: it is the site's
 	// selectors, not anybody's preference, and the poller that reads it has no
 	// user. The WRITE path (PutScrapeRule) does take a Scope and checks the
