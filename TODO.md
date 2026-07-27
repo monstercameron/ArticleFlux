@@ -1491,7 +1491,7 @@ Business logic over repositories. Still headless.
       unrewritten relative references leaks exactly what the rewrite prevents. The page renders
       unstyled instead of un-proxied, which is the smaller loss.
 
-- [ ] **6.16 `render`** — the headless browser pool (§10.1c). `chromedp` attached to the installed
+- [x] **6.16 `render`** — the headless browser pool (§10.1c). `chromedp` attached to the installed
       Chromium · a **disposable profile with no access to the data directory** · exactly one render at
       a time through 6.4's queue · hard timeout · wait for network-idle, then one scroll-to-bottom pass
       so lazy images resolve · returns `outerHTML` **and** a full-page screenshot from the same
@@ -1508,9 +1508,39 @@ Business logic over repositories. Still headless.
       streams from never pays 300 MB for the option. `FindBrowser` auto-detects Edge→Chrome→Chromium
       on Windows and google-chrome→chromium→edge on Linux, so the same config works on the laptop and
       the Ubuntu box; `-browser-path` overrides and does **not** fall back if the override is wrong.
-      *Owed for tier 2r:* `outerHTML` after network-idle, the scroll-to-bottom pass for lazy images,
-      the escalate-on-empty rule, and compression to a byte budget. The pool that all of that needs
-      now exists.
+      ✅ 2026-07-27 — **the snapshot half.** `render.Snapshot` returns `outerHTML`, a full-page
+      screenshot from the same session, the title and the final URL, through the same one-at-a-time
+      slot as `Stream`.
+      *Network-idle is Chrome's own signal, tied to the navigation's **loader id**.* Lifecycle events
+      are enabled before navigating and `page.Navigate` is called by hand for that id, so an idle
+      report from the blank page that preceded us — or from a later in-page navigation — is not
+      mistaken for this one. Events are **recorded rather than signalled**, because a local fixture can
+      go idle before the loader id has been stored and a signal sent to nobody is a signal lost. Capped
+      at 8s and **reaching the cap is not an error**: analytics heartbeats, websockets and long-polls
+      mean a large share of real pages never report idle, disproportionately the heavy commercial ones
+      this rung exists for.
+      *Escalate-on-empty counts TEXT, and drops `<script>`/`<style>`/`<noscript>`/`<template>`/`<svg>`
+      bodies first.* That is not a refinement — their contents are text *between* tags, so a
+      tag-stripper counts the framework bundle and the JSON-LD block, and every unmounted shell looks
+      full. `ErrEmptyRender` is returned **with** the artifacts, because the screenshot is exactly what
+      the reader gets when the DOM is unusable.
+      *The budget (§10.1c) is enforced against the **compressed** size*, gzipped once at render and
+      kept — HTML is the most compressible thing here, so a raw-size budget degrades pages that would
+      have arrived comfortably. `ErrOverBudget` names the number. The two artifacts are **alternatives,
+      not a sum**: nothing sends both. The empty check runs **before** the budget check, or a blank
+      page — which compresses to nothing — passes as comfortably within budget and never escalates.
+      **Two wedges found and fixed, both the exact failure this ticket names.** `Snapshot` built its
+      run context from the *tab* rather than from the caller's, so a caller who gave up waited out the
+      renderer's own budget while holding the single slot; and `Stream` guarded its frame loop with the
+      caller's context but ran `Navigate` on the tab's, so a server that accepts and never answers
+      wedged upstream of the code that would have noticed. Both now cancel through
+      `context.AfterFunc`, and both report the **caller's** error rather than a bare `context.Canceled`
+      — one of those is worth retrying and the other is not. Pinned by
+      `TestKillingTheBrowserFailsTheRenderRatherThanHanging` and
+      `TestStreamStopsWhileStillNavigating`.
+      *Still owed, and not part of this ticket:* images downscaled to WebP through the §10.1a proxy,
+      and the caller that turns `ErrOverBudget` into an actual degrade — the ladder controller (8.22)
+      owns that decision.
       ⚠ **The one place this is weaker than everything else in the codebase**, recorded in
       `render.Stream`: `CheckURL` runs before navigation and stops the obvious attempt, but the
       browser dials for itself, so netguard's socket-level `Control` never sees it. A page that

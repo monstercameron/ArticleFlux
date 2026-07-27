@@ -88,6 +88,11 @@ type Options struct {
 	MaxSessions int
 	// IdleTimeout ends a session that has produced nothing. Zero means 3m.
 	IdleTimeout time.Duration
+	// MaxBytes is the wire budget for one snapshot (§10.1c). Zero means
+	// DefaultMaxBytes. Exceeding it is not a failure — it is the signal to
+	// degrade to the text rung, which is why it is reported rather than silently
+	// truncated.
+	MaxBytes int
 }
 
 // Renderer owns the browser.
@@ -342,6 +347,17 @@ func (r *Renderer) Stream(ctx context.Context, key, rawURL string, vp Viewport, 
 	tabCtx, cancelTab := chromedp.NewContext(alloc)
 	defer cancelTab()
 
+	// The caller's cancellation reaches the TAB, not just the frame loop below.
+	//
+	// The loop already watches `runCtx`, which made this look handled — but the
+	// navigate and screencast-start calls ahead of it run on `tabCtx`, and a
+	// server that accepts the connection and never answers blocks there. The
+	// reader has closed the view, their context is cancelled, and the session
+	// holds the single render slot anyway, because the code that would notice is
+	// downstream of the call that is stuck.
+	stopTab := context.AfterFunc(ctx, cancelTab)
+	defer stopTab()
+
 	// Registered for the tab's whole life and removed on the way out, so input
 	// arriving a moment after the reader closed the view is an honest
 	// ErrNoSession rather than a panic on a dead context.
@@ -398,6 +414,9 @@ func (r *Renderer) Stream(ctx context.Context, key, rawURL string, vp Viewport, 
 		emulation.SetDeviceMetricsOverride(int64(vp.Width), int64(vp.Height), 1, false),
 		chromedp.Navigate(rawURL),
 	); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return fmt.Errorf("render: %w", cerr)
+		}
 		return fmt.Errorf("render: navigate: %w", err)
 	}
 

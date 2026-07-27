@@ -70,6 +70,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **The renderer could wedge holding the only render slot** (`internal/render`, TODO 6.16). Two
+  places, the same mistake: the context argument was accepted and then not used for the work.
+  `Snapshot` built its run context from the browser tab rather than from the caller's, so a reader
+  who navigated away waited out the *renderer's* timeout — minutes — while every other request got
+  `ErrBusy` for a render nobody wanted. `Stream` guarded its frame loop with the caller's context but
+  ran the navigation on the tab's, so a server that accepts a connection and never answers blocked
+  upstream of the code that would have noticed. The tab cannot simply *be* a child of the caller —
+  chromedp carries the browser allocator in the context — so both now cancel through
+  `context.AfterFunc`, and both report the **caller's** deadline rather than a bare
+  `context.Canceled`: one of those is worth retrying and the other is not.
+
 - **CI could not build the project at all, publicly.** `go.mod` replaces `GoWebComponents/v5` with a
   sibling checkout, and the branch it names did not exist on the remote — so every job died at its
   second step, before building or testing anything. Alongside it: `actions/checkout` refuses a
@@ -153,6 +164,29 @@ The full reasoning behind any entry lives in the commit message; this file is th
   denormalisation existed*.
 
 ### Added
+
+- **Rendered snapshots — a real browser runs the page and we keep what it made** (`render.Snapshot`,
+  TODO 6.16, §10.1c, tier 2r). Tier 2 fetches HTML and gets `<div id="root"></div>` on anything
+  built in the browser; this rung runs the scripts first. It returns `outerHTML`, a full-page
+  screenshot from the *same* session, the title and the final URL — the screenshot because the HTML
+  is what fails: a framework that rendered into a shadow root, a page that detected automation, an
+  article inside a canvas all return well-formed markup with nothing in it. It waits for Chrome's own
+  network-idle signal — matched to the navigation's loader id, so an earlier blank page's idle report
+  is not mistaken for this one — then scrolls to the bottom and back so lazy images resolve. Capped
+  at 8 seconds, and **reaching the cap is not an error**: analytics heartbeats and open websockets
+  mean a large share of real pages never go quiet, disproportionately the heavy ones this rung exists
+  for. One render at a time, sharing the slot with the live view. On demand, never a background
+  sweep.
+- **Three outcomes, because the ladder does three different things with them.** A snapshot can
+  succeed, come back *empty* (`ErrEmptyRender` — escalate), or come back *too large*
+  (`ErrOverBudget` — degrade to text). Emptiness is measured in **text**, after `<script>`, `<style>`,
+  `<noscript>`, `<template>` and `<svg>` bodies are dropped: their contents are text *between* tags,
+  so counting them makes every unmounted shell look full — the framework bundle and the JSON-LD block
+  alone clear any threshold. The budget is measured on the **compressed** artifact, gzipped once at
+  render and kept (§10.1c, the same trade §7.6 makes for the wasm bundle); judging by raw size would
+  degrade pages that compress to a tenth of it and arrive comfortably. Both errors return the
+  artifacts alongside, because a screenshot is exactly what the reader gets when the DOM is unusable,
+  and because a caller with its own budget should not pay for the render twice.
 
 - **An interest layer that can be thrown away and rebuilt** (`internal/derive`, TODO 6.9, §18,
   D18). Feed, term and domain affinity plus topics, derived from the engagement log in two stages

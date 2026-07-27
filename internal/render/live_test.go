@@ -78,6 +78,44 @@ func TestStreamStopsWhenContextEnds(t *testing.T) {
 	}
 }
 
+// The same property, one step earlier: cancelled DURING navigation.
+//
+// The test above cancels a session that is already streaming, which only
+// exercises the frame loop — and the loop was never the risk. The navigate and
+// screencast-start calls ahead of it run on the tab's own context, so a server
+// that accepts the connection and never answers blocks there with the reader
+// long gone and the single render slot still held.
+func TestStreamStopsWhileStillNavigating(t *testing.T) {
+	if FindBrowser("") == "" {
+		t.Skip("no chromium-family browser installed")
+	}
+	// Accepts, then never answers. Refusing the connection would fail the
+	// navigation on its own and prove nothing about cancellation.
+	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		<-req.Context().Done()
+	}))
+	defer hang.Close()
+
+	r := New(Options{AllowPrivate: true, IdleTimeout: 10 * time.Minute})
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- r.Stream(ctx, "hanging-session", hang.URL+"/", Viewport{}, make(chan Frame, 4)) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a navigation that never completed reported success")
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("Stream did not return while navigating — the reader is gone and " +
+			"the render slot is still held, so every later view gets ErrBusy")
+	}
+}
+
 func TestStreamRefusesBlockedAddress(t *testing.T) {
 	r := New(Options{})
 	defer r.Close()
