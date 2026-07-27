@@ -962,8 +962,15 @@ Business logic over repositories. Still headless.
       > **D12 now arrives as an outage rather than as a leak.** Usernames are unique *per tenant*, so login is unambiguous only while there is one tenant; two matches return `FailedPrecondition` and say so. A second tenant needs a tenant hint (subdomain or explicit field) before it can exist.
 - [ ] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
-- [ ] **6.3 `settingsreg`** — typed registry + **system → tenant → user** resolution, returning the
+- [x] **6.3 `settingsreg`** — typed registry + **system → tenant → user** resolution, returning the
       value *and which layer supplied it* ← 5.8
+      ✅ 2026-07-26 — `internal/settingsreg` + `internal/store/settingslayers.go`. **system → tenant
+      → user**, first hit wins, returning the value **and which layer supplied it** — "why is this
+      off for me" has two very different answers and a screen that cannot tell them apart shows a
+      control that silently does nothing. A misspelt key is refused rather than silently reading as
+      the default, and a default that violates its own bounds is caught at registration. A setting's
+      `Scope` is the lowest layer it may be written at, so "the admin decides" is structural. A
+      corrupt stored value is **skipped and reported** and resolution continues to the next layer.
 - [x] **6.4 `jobs`** — durable queue (`jobs` table), **per-kind concurrency caps** so pack building
       can't starve rule fan-out, retry, restart-survivable §22.7
       ✅ 2026-07-26 — `internal/store/jobs.go` + `internal/jobs`. In SQLite, so enqueueing and the
@@ -1169,15 +1176,26 @@ Business logic over repositories. Still headless.
       safe to display. *Done when: T1 asserts the code, not just the empty result.*
       ◧ 2026-07-26 — The taxonomy is implemented — `grpcsrv.toStatus` maps cross-tenant to `NotFound`, never `PermissionDenied` — but it lives in the transport package rather than in `internal/apierr`, and there is no structured detail payload yet.
 
-- [ ] **7.3b `internal/page`** — opaque keyset cursors, `spec_hash`-bound so a cursor from a different
+- [x] **7.3b `internal/page`** — opaque keyset cursors, `spec_hash`-bound so a cursor from a different
       `ViewSpec` is `InvalidArgument` rather than silently-wrong results §20.7
       ◧ 2026-07-26 — Keyset cursors are base64url and exact (published, id) tuples, in `internal/store`. They are **not** `spec_hash`-bound, so a cursor from one scope replayed against another returns plausible wrong rows rather than `InvalidArgument`.
 
-- [ ] **7.3c `internal/idem`** — `(user_id, key) → response`, 24h TTL, verbatim replay. **Required for
+      ✅ 2026-07-26 — cursors now carry a 12-character hash of the query's filters, and a mismatch
+      is **`InvalidArgument`, never an empty page**: an empty page means "you have reached the end",
+      and a client reading a stale cursor that way stops paging and shows a truncated list with no
+      error anywhere. The `Scope` is deliberately **not** in the hash — cross-tenant protection is
+      the `WHERE` clause's job, and a cursor is not a capability.
+- [x] **7.3c `internal/idem`** — `(user_id, key) → response`, 24h TTL, verbatim replay. **Required for
       every outbox-replayed mutation** — a partial drain that reconnects mid-flight must not
       double-apply §12.4, §20.7
       ◧ 2026-07-26 — `SetItemState` accepts an `idempotency_key` and every caller sends a deterministic one, but nothing stores or replays it. Harmless today because there is no offline outbox to drain; required before there is (§12.4).
 
+      ✅ 2026-07-26 — `internal/store/idem.go`. `(user, key)` → the response, replayed **verbatim**
+      for 24h. The stored bytes rather than a recomputed answer, because a client receiving a
+      *different* response to the same request cannot tell a replay from a second effect. A key
+      reused for a genuinely different request (method or body) is a **conflict** — returning the
+      first one's answer for the second one's write drops the write *and* reports success. *Owed:
+      the interceptor that calls it; the storage and the semantics are here.*
 - [ ] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
       ◧ 2026-07-26 (night) — **login only**, in `grpcsrv/auth.go`: 10/minute per username and per client address, in memory. Nothing else is limited, and the per-IP half is largely fictional — every RPC arrives over one WebSocket, so behind a proxy the peer address is `127.0.0.1` for every user on the instance. **A real per-IP limit requires the forwarded address to be threaded through the tunnel handshake**, which is this item's first piece of work.
 - [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
