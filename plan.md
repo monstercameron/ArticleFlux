@@ -947,7 +947,7 @@ the DDL above:
 | `visibility ∈ {private, tenant, shared}` | `private` only | Sharing is M20 |
 | — | `MaxFolderName = 48`, `MaxFoldersPerUser = 200` | The width the rail draws before it ellipsises, and the same cap `tags` carries. A control that silently truncates is worse than one that says no |
 
-Six RPCs: `ListFolders` · `CreateFolder` · `RenameFolder` · `DeleteFolder` · `SetFeedFolder`, plus
+Five RPCs: `ListFolders` · `CreateFolder` · `RenameFolder` · `DeleteFolder` · `SetFeedFolder`, plus
 `folder_id` on `Subscribe` so a feed can be filed at the moment it is added (§20.18). Four rules that
 each close a way this goes wrong:
 
@@ -3199,9 +3199,23 @@ config change.
 
 **D11 — Smart+ model IDs.** Config-driven, validated on save.
 
-**D12 — Who are the other tenants? ⚠ Still the biggest open question.** Family, friends, or strangers
-with signups? It decides self-signup, abuse handling, quota enforcement, deletion obligations, and
-uptime promises. **Answer before M2.**
+**D12 — Who are the other tenants? RESOLVED 2026-07-26: invite-only, family and friends, no
+self-signup.** Taken as drafted in §25.0. *Recorded as an assumption made to unblock 5.1 and 6.1
+rather than as a preference of mine — it is Cam's call, and it is one sentence to override.* The
+reason it was safe to take: it is the only open decision that **removes** work, and reversing it is
+purely additive.
+
+What it deletes from the build: registration flow, CAPTCHA, email verification, abuse tooling,
+adversarial quota enforcement, and any legal deletion obligation. Quotas become **advisory** —
+`tenants.quota_subscriptions` already carries the comment saying so — and uptime is best-effort.
+
+What it constrains: 6.1 builds invites (a superadmin mints a code) and not registration. 7.9's
+`articleflux init` produces exactly one superadmin and the server refuses to serve without one, which
+is coherent only because nobody else can create an account. Rate limiting and lockout stay, because
+those defend against someone who has the login page, and an invite-only instance still has one.
+
+**If this changes**, the additive path is a `tenants.self_signup` flag plus a registration surface;
+nothing built under this decision has to be undone.
 
 **D13 — Pack transport.** Confirm the plain-HTTPS split at M10 with a real 30 MB pack.
 
@@ -3221,6 +3235,21 @@ unenforceable free-riding. *Recommendation: quota on **subscription count** (una
 per-tenant bytes), and exclude shared source/item storage from quota entirely.* Decide before M18
 builds the usage display.
 
+**RESOLVED 2026-07-26 as recommended.** Taken to unblock 5.2, and cheap to take because D12 made
+quotas advisory rather than adversarial — the number's job is to warn a friend that they have
+subscribed to nine hundred feeds, not to stop an attacker.
+
+Consequences that are worth stating plainly because they look like bugs otherwise:
+
+- **A tenant subscribing to 500 popular feeds costs almost no storage quota.** That is correct under
+  A14 and it will still surprise whoever reads the usage display first, so §9's display names the two
+  numbers separately rather than summing them into one misleading "MB used".
+- **Deactivating a source frees nothing**, because the bytes were never charged to anyone.
+- Quota is therefore two independent counters, not one: `subscriptions` rows (already trivially
+  countable) and a `tenant_bytes` figure summed over the exclusive tables as they arrive. Nothing in
+  `sources` or `items` participates, which is why `sources` needs no accounting columns — the open
+  question TODO 5.2 flagged, now answered: **none**.
+
 **D18 — Do passive signals and explicit verdicts belong in the same sum? NEW, 2026-07-26.** §18.4
 blends every term into one linear score. The problem this raises, now that the signals themselves are
 being collected: dwell, completion and click-through all correlate strongly with **ease of
@@ -3233,6 +3262,27 @@ order the candidate set (recall); verdicts and the deliberate acts — notes, ta
 calibrate a re-rank over it (precision), rather than being one more weighted term in the sum.* This is
 a change to §18.4 rather than to §18.1, so the log being written now is correct either way — which is
 the argument for deciding it late rather than guessing now. **Blocks 6.9 and the M12 scorer.**
+
+**RESOLVED 2026-07-26 as recommended: two stages, not one sum.** Taken to unblock 6.9's derivation
+job. The shape 6.9 now builds:
+
+1. **Recall.** Passive signals — dwell, completion, scroll-past, open rate, feed and term affinity —
+   generate and order the candidate set. This is where volume lives, and it is allowed to be
+   correlated with ease of consumption because its only job is to not miss things.
+2. **Precision.** The deliberate acts — A27 verdicts, notes, tags, click-throughs to the source —
+   calibrate a re-rank over that set. These are sparse *because* they cost the reader something, and
+   that cost is exactly what makes them evidence of worth rather than of stickiness.
+
+The failure this avoids is specific and invisible: a single linear score over passive terms converges
+on the most trivially clickable thing published that day, and the page still looks full while it
+happens. Nothing in the interface would show it. Explore's 20% does not help — that is a defence
+against topic monoculture, not against quality collapse.
+
+**Two consequences for 6.9.** `feed_affinity`, `term_affinity` and `domain_affinity` are recall-stage
+tables and derive from passive signals as §18.1 already specifies. `home_ranking` is the re-ranked
+output and must therefore be derived *after* them in the same job, reading verdicts separately —
+which means it is not simply another weighted column alongside the affinities, and the table comment
+says so. `bulk_read` remains neutral in both stages.
 
 **R0 — One factor on a public service.** §7.3's controls are the mitigation, not optional polish. If
 this ever holds other people's data, revisit TOTP (a day, $0) before any other feature.

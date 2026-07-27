@@ -29,7 +29,7 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 | **G1** | Tier 0 | Does `ncruces/go-sqlite3` FTS5 work in *our* build? | D2 |
 | **G2** | 3.7 | Can a repository method leak across tenants? | T1 |
 | **G3** | 5.4 | What do the three hot-query shapes actually cost at 50k × 3? | §6.5, R2 |
-| **G4** | 7.9 | Does `articleflux init` produce exactly one superadmin, once? | §22.3 |
+| **G4** | 7.9 | Does `articleflux init` produce exactly one superadmin, once? | §22.3 — ✅ **passed 2026-07-26**: yes, and it refuses to run on a populated instance |
 | **G5** | 8.2 | How big is `app.wasm`? | R4 — this decides whether A5 stays affordable |
 
 ---
@@ -45,16 +45,42 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 - [ ] **D0 · Tag GWC v5.0.0.** CHANGELOG says `v5.0.0 - 2026-07-25`; there is no git tag and the proxy
       returns nothing. Tag and push, or accept `replace => ../GoWebComponents` and that the project
       can't build off this machine — which A9 (remote deploy) makes an actual problem. *Blocks 1.2.*
-- [ ] **D7 · Pick an extraction library.** Evaluate 2–3 Go readability ports against 10 saved articles;
+- [x] **D7 · Pick an extraction library.** ✅ **RESOLVED 2026-07-26 — `go-shiori/go-readability`.**
+      Twelve pages, three libraries, and the scoreboard did not decide it: all three extracted all
+      twelve and found a title on all twelve. Two things it does not show did. **Text quality** —
+      trafilatura's serialiser inserts spaces around inline elements ("The Room , Troll 2 ,"), 199
+      artefacts to readability's 5, and three of the five consumers read the plain text while one
+      reads it aloud. **Content retention** — on a photo-heavy review readability kept 34 images to
+      trafilatura's 8, out of 117. *The metric that nearly decided it wrongly:* readability's 5.8×
+      markup bulk turned out to be 38 KB of `srcset`, which is data and which 2.9 strips before
+      storage — a real measurement of something that does not survive to storage.
+      ~~Original ticket:~~ Evaluate 2–3 Go readability ports against 10 saved articles;
       judge by eyeball, the only metric that counts. **Five consumers depend on it** — reader mode,
       bookmark archiving, offline text, ranking text, TTS. *Blocks 4.4, which is now Phase 1.*
-- [ ] **D1 · Confirm `gofeed` coverage.** Decision is made (gofeed + our own normalisation layer on
+      ◧ 2026-07-26 (night) — **the harness is built, the eyeball pass is not.** `internal/extract/testdata/articles/` holds **12 committed pages** with their source URLs (Ars Technica, The Verge, Eurogamer, Substack, Wikipedia, MDN, a GitHub README, the Go blog, Paul Graham, Dan Luu, Simon Willison, CNX Software), and `internal/extract/bakeoff/` scores **go-readability · trafilatura · domdistiller** on characters kept, title found, wall time and **boilerplate hits** — a fixed list of phrases ("Subscribe", "Cookie", "Related Stories", "Skip to content") none of which belongs in a reading pane, which is the best automatic proxy available for the judgement a person has to make.
+      > It is a **separate Go module** on purpose: two of the three lose, and keeping them in the root `go.mod` would drag wazero, a WASM-compiled re2, zerolog and a date parser into the dependency graph of a server that uses none of them, permanently, to preserve a comparison that runs about once a year. It stays in the tree rather than being deleted because **D7 gets re-litigated**, and the cheapest answer to "why aren't we using X?" is a command anyone can re-run: `cd internal/extract/bakeoff && go test -run TestBakeoff -v`, or `BAKEOFF_DUMP=<dir> … -run TestBakeoffDump` to read the actual output.
+      > **Nothing is wired into the app** — `internal/extract` has no non-test Go file — so the §10.1 ladder's tier 2 is still unbuilt and all five consumers are still waiting. *(`go-readability` shows up as `// indirect` in the root `go.mod`; that is bake-off fallout, not an adoption.)*
+- [x] **D1 · Confirm `gofeed` coverage.** ✅ **RESOLVED 2026-07-26 by the 4.2 corpus.** gofeed's
+      parsing was never the problem — our layer around it was, and the corpus found three shipped
+      bugs on its first run, each in a seam between two packages that were individually correct and
+      individually tested. See plan.md §25.1 D1.
+      ~~Original ticket:~~ Decision is made (gofeed + our own normalisation layer on
       top). Verify against 20 real feeds incl. one RSS 1.0/RDF and one Atom 0.3, and confirm
       `content:encoded`, `dc:`, `media:`, `itunes:`. *Blocks 4.1.*
-- [ ] **D17 · Quota accounting shape.** Sources and items are global and deduplicated, so "storage MB
+- [x] **D17 · Quota accounting shape.** ✅ **RESOLVED 2026-07-26 as recommended** — subscription
+      count + tenant-exclusive bytes; shared source/item storage excluded entirely. **Answers 5.2's
+      open question directly: `sources` carries no accounting columns at all.** Cheap to take because
+      D12 made quotas advisory rather than adversarial.
+      ~~Original ticket:~~ Sources and items are global and deduplicated, so "storage MB
       per tenant" is undefined. Recommendation in the plan: subscription count + tenant-exclusive
       bytes only. *Blocks 5.2 — `sources` should carry whatever accounting needs.*
-- [ ] **D12 · Who are the other tenants?** Family, friends, or public signup. Decides self-signup,
+- [x] **D12 · Who are the other tenants?** ✅ **RESOLVED 2026-07-26: invite-only, family and friends,
+      no self-signup.** Taken as an assumption to unblock 5.1/6.1 — Cam's call, one sentence to
+      override, and safe to take because it is the only decision that *removes* work and reversing it
+      is purely additive. Deletes registration, CAPTCHA, email verification and abuse tooling from the
+      build; keeps rate limiting and lockout, which defend the login page an invite-only instance
+      still has.
+      ~~Original ticket:~~ Family, friends, or public signup. Decides self-signup,
       abuse handling, quota enforcement, deletion obligations, uptime promises. *Blocks 6.1.*
 
 ---
@@ -418,6 +444,91 @@ without holding one. **No remote, and none is to be added.**
 
 ---
 
+## A login, categories, and the things a token can't be inferred from (2026-07-26, night)
+
+Spec entries: **A36–A39**, §6.10, §7.1a, §20.16–20.18, §22.3–22.5. This batch is mostly *deployability*
+— the reader was usable and not hostable, and the gap between those two was one flag.
+
+**1. The `-dev` hole, and what it says about inferring security from topology.** `DevMode` — which
+serves the single local account with **no login at all** — was `isLoopback(bindAddr)`. Every
+reverse-proxy deployment terminates TLS on :443 and forwards to `127.0.0.1:9000`, so the standard way
+to host this was also the way to publish someone's entire reading history to whoever typed the domain,
+and the more carefully the operator bound to loopback the more exposed they were. It is now an explicit
+`-dev`, default off, **refused on any bind but loopback** — belt and braces, because the flag alone
+would eventually be pasted into a systemd unit by someone who wanted to skip a login screen once.
+
+> **The transferable rule:** a bind address is a fact about network topology and cannot tell you who is
+> on the other end of a connection. Nothing that cannot answer "who is calling" may decide whether to
+> ask for a password.
+
+**2. `AuthService`** — `Login` / `Logout` / `WhoAmI`, hashed revocable sessions, per-username and
+per-client attempt limiting, an Argon2id **decoy** hash so a missing username costs the same as a real
+one (a uniform error message does not close a timing oracle; the work has to actually happen), and a
+loud `FailedPrecondition` when a username exists in two tenants rather than a silent wrong-tenant
+login. Full detail in plan §7.1a, including the six things §7.1 still owes.
+
+**3. The operator CLI** (`cmd/articleflux/admin.go`) — a login needs something to log in as, so the
+replacement for `EnsureDevUser` had to land in the same change: `init` (refuses to run twice),
+`adduser`, `passwd`, `migrate`, `backup`. Password from flag → `ARTICLEFLUX_PASSWORD` → terminal
+prompt, so it never has to appear in a process listing.
+
+**4. `Preflight` + `/readyz`.** The server now refuses to listen when it cannot work — no account, no
+built client, unwritable data directory — and reports **all** the failures at once, because someone
+setting up a droplet usually has more than one wrong and a one-at-a-time boot loop is a miserable way
+to find out. The writability check *writes and removes a file* rather than stat-ing: a directory can be
+listable and not writable, and SQLite needs to create the `-wal` and `-shm` siblings.
+
+**5. Backups** (`store.Backup`, TODO 3.4) — `VACUUM INTO` + `PRAGMA integrity_check` + `.partial` +
+rename + retention. `cp` of a live WAL database produces a file that opens cleanly, passes a smoke
+test, and is missing a transaction.
+
+**6. Categories** (A37) — folders were in `0001_init` from the start and nothing used them. Six RPCs,
+flat, per-user; deleting one **unfiles its feeds and unsubscribes nothing**; creating one that exists
+returns it rather than erroring, because that call comes from the add-a-feed form where "Tech" and
+"tech" are one intent. The rail shows them *as well as* the flat list — the flat list answers "where is
+that feed", the categories answer "what have I got on this subject", and a 151-row flat list cannot
+answer the second at all.
+
+**7. A tag's name and a tag's row are different things** (A38, `0008_tag_style.sql`). `name` is the
+handle — what you type, what the chip says, what `SetFeedTag` takes — and it is now never edited;
+`label` and `glyph` are the rail row's, empty meaning "use the name", the same override idiom as
+`subscriptions.title` over `sources.title`. `internal/tagglyph` is the fifty-mark catalogue, in
+`internal/` so the picker and the validator read one list, and the **character is stored, not an
+index** — an index is a promise never to reorder the list, and breaking it silently changes every
+reader's tags with nothing in the data to show it happened.
+
+**8. The settings surface** — seven tabs, and the last three (Server / Activity / Speed) are what a
+self-hosted app owes its operator: nobody is tailing a log file behind this and there is no dashboard,
+so "is it healthy", "what just happened" and "why is it slow" are answerable there or nowhere.
+
+**9. Themes and motion** (A39) — five themes as sets of custom-property values, and every duration
+written `calc(var(--mo) * t)` so reduced motion makes an animation *absent* rather than suppressed. The
+previous mechanism was a `* { transition: none }` rule at the bottom of the sheet, which is a broom: it
+works until someone writes a transition with `!important`, in a later layer, or on a pseudo-element,
+and nothing fails loudly when it stops working. **Built but not reachable** — see 8b.31.
+
+**10. `internal/sanitize`** (TODO 2.9) — five named policies over GWC's engine, because GWC has no
+opinion about *where the HTML came from* and that is the whole question. The `Newsletter` policy drops
+remote images outright rather than proxying them: proxying a tracking pixel still tells the sender the
+message was opened.
+
+**11. The D7 corpus** — twelve committed article pages and a three-library bake-off, in a **separate Go
+module** so the two libraries that lose do not enter the server's dependency graph forever. The
+decision is still open; what exists is the evidence and a command to re-run it.
+
+> ### Two things this batch left broken, and they are the top of the list
+>
+> - **The wasm client does not compile.** `GOOS=js GOARCH=wasm go build ./client/...` fails in
+>   `client/view/reader.go` — the rail's category section and the add-feed dialog are written and their
+>   props are half-wired. Native build and `go test ./...` are both green, which is the point worth
+>   remembering: **`go build ./...` does not compile the client**, so a green suite is not evidence the
+>   app runs. Restoring the wasm build to CI's *default* path is 8b.32.
+> - **Auth has no client half.** Nothing in `client/` calls `Login`, stores a token, or sends
+>   `authorization` metadata, so every RPC falls through to `devScope` and a server started without
+>   `-dev` serves a reader that cannot get a session. The server is deployable; the client is not.
+
+---
+
 ## Tier 2 — Pure atoms
 
 Leaf packages. No ArticleFlux imports, no DB, no network, table-driven tests. Everything above is made of
@@ -460,10 +571,10 @@ these, and each one is genuinely small.
       attribute syntax.** §14.2
       ✅ 2026-07-26 — `internal/attrsel` — `h2 a@href` → (selector, attr). Ours, because cascadia has no concept of an attribute target.
 
-- [ ] **2.9 `sanitize`** — wrapper over GWC `sanitize` with **named policies**: `feed`, `newsletter`
+- [x] **2.9 `sanitize`** — wrapper over GWC `sanitize` with **named policies**: `feed`, `newsletter`
       (strictest — pixels, remote CSS), `archived`, `public` (excerpt). *Done when: an XSS corpus is
       neutralised under every policy.*
-      ◧ 2026-07-26 — **Sanitising happens, the WRAPPER does not.** `client/view` calls GWC `sanitize` directly on feed HTML, and GWC has no innerHTML sink on the render path at all, so the XSS hole cannot be reopened by accident. What is missing is the named-policy layer (`feed` / `newsletter` / `note`), which matters once newsletters (A20) arrive and need a different allowlist from feeds.
+      ✅ 2026-07-26 — `internal/sanitize` — **five** policies, not four: `Feed` · `Newsletter` · `Archived` · `Public` · `Note` (the reader's own text, still sanitised because people paste). GWC's engine is not reimplemented — it owns the parse, the allowlist walk, the scheme check and the mutation-XSS hardening. What it has no opinion about is *where the HTML came from*, which is the whole question: `Feed` keeps images because a hardware review is mostly photographs, and `Newsletter` **drops remote images outright** rather than proxying them, since proxying a tracking pixel still tells the sender the message was opened. The XSS corpus is built: **48 real vectors × 5 policies**, checked by substring rather than by parsing, because a parser in the test would share assumptions with the parser in the sanitizer and a shared wrong assumption is the bug being hunted. A policy added later inherits the whole corpus; a policy loosened later has to survive it; an unmapped policy value fails closed to `Public`. Two things the allowlist cannot express live in a pre-pass over the parse tree: every link gains `rel="noopener noreferrer"` (without it `target=_blank` hands the opened page a handle to navigate ours — one attribute in a publisher's own feed buys them a phishing primitive), and tracking pixels are dropped on a deliberately narrow heuristic. *Owed: the `client/view` call sites still invoke GWC directly rather than going through a policy.*
 
 - [x] **2.10 `outlinks`** — extract and normalise links out of article HTML → domains, skipping
       self-links and nav chrome. Pure. **This is §18.7 rung 1, the best recommendation signal, and it
@@ -487,7 +598,7 @@ Build the safety rails **before** the first repository, so every repo is born co
       §6.7 identity + interest, **§6.8 the rest** (folders, notes, bookmarks, engagements, jobs,
       settings, auth, offline, notifications). `REFERENCES` on every FK-shaped column, the three §6.5
       indexes, and the folder depth `CHECK`s ← G1
-      ◧ 2026-07-26 — **9 tables, not ~49.** `0001_init` covers the reading core (tenants, users, sessions, sources, subscriptions, folders, items, user_item_state, items_fts + triggers); 0002–0006 add prefs, favicons, tags, notes and ratings. The rules, bookmarks, mailbox, engagement and interest-layer tables are not written yet — they arrive with the tiers that use them, which is cheaper than a 49-table migration nothing reads.
+      ◧ 2026-07-26 — **9 tables, not ~49.** `0001_init` covers the reading core (tenants, users, sessions, sources, subscriptions, folders, items, user_item_state, items_fts + triggers); 0002–0008 add prefs, favicons, tags, notes, ratings, engagements and tag style (`label` + `glyph`, A38). The rules, bookmarks, mailbox and interest-layer tables are not written yet — they arrive with the tiers that use them, which is cheaper than a 49-table migration nothing reads. **`folders` was in 0001 and unused until the rail needed it** (§6.10) — the one case where writing the column early paid off, since categories shipped with no migration at all.
 
 - [x] **3.2 `store/migrate`** — numbered, forward-only, in a transaction, `schema_migrations` with a
       **checksum guard that aborts startup on drift**, and an **automatic snapshot before applying**.
@@ -503,9 +614,9 @@ Build the safety rails **before** the first repository, so every repo is born co
       `SQLITE_BUSY`, **and a `MATCH` succeeds on a connection drawn from each pool**.* (A24) §22.2
       ✅ 2026-07-26 — `internal/store.Open` — `driver.Open(dsn, fts5.Register)` on BOTH pools, never `sql.Open` (G1). WAL, `busy_timeout`, `foreign_keys=1`, and `_txlock=immediate` on the single writer (A24). `verify()` probes each pool at boot; `TestFTS5OnEveryPooledConnection` and `TestPragmasAreActuallySet` keep it honest.
 
-- [ ] **3.4 `store/backup`** — `VACUUM INTO` + `PRAGMA integrity_check` + retention. *Done when: a
+- [x] **3.4 `store/backup`** — `VACUUM INTO` + `PRAGMA integrity_check` + retention. *Done when: a
       backup taken under concurrent writes restores and opens.* §22.5
-      ◧ 2026-07-26 — Not started. WAL + a single writer makes a hot copy unsafe without it, so this is the gap between *running* and *deployable* (A9).
+      ✅ 2026-07-26 — `store.Backup` / `store.BackupName` / `store.PruneBackups`, driven by `articleflux backup -out <file|dir> [-keep N]`. `VACUUM INTO` holds one read transaction, so the copy is a single point in time; the result is then **opened and integrity-checked**, because an unverified backup is a belief about a file and the moment you need it is the worst moment to test the belief. Written to `<dst>.partial` in the same directory and renamed, so an interrupted run cannot leave a truncated file under the name of a good one for the retention sweep to preserve. *Owed: the automatic pre-migration snapshot §22.1 promises, anything that schedules this, and the restore drill (T8).*
 
 - [x] **3.5 `store.Scope`** — `{TenantID, UserID, Caps}`, the **first parameter of every repository
       method**. In the signature, so it cannot be forgotten.
@@ -538,7 +649,15 @@ Composites of Tier 2. Bytes in, structs out. Still no database.
       on top** so swapping it is one file ← 2.5, 2.6, D1
       ✅ 2026-07-26 — `internal/feed` — gofeed underneath with our own normalisation on top: identity, `DupeKey`, published-date clamping, word counts, image extraction.
 
-- [ ] **4.2 `feed/testdata/corpus`** — 25+ real feeds covering every §15.3 format, **saved verbatim
+- [x] **4.2 `feed/testdata/corpus`** ✅ 2026-07-26 — **27 fixtures**: 21 fetched verbatim from live
+      publishers, 6 hand-written for the formats nobody serves any more (RSS 0.91, Atom 0.3, JSON
+      Feed, a genuinely Windows-1252 document, the guid ladder, seventeen date layouts). Marked
+      `binary` in `.gitattributes`, because `text=auto` would rewrite line endings inside files whose
+      only job is byte-identity and one of them is not valid UTF-8 at all. Grown by
+      `go run ./internal/tools/corpus -add <url> -slug <name>`. **Found three shipped bugs on its
+      first run** (see D1). Includes a feed that parses cleanly and contains zero items — dead since
+      2021, still served — because "this site went quiet" and "we are broken" must not look alike.
+      ~~Original ticket:~~ — 25+ real feeds covering every §15.3 format, **saved verbatim
       including the broken ones**. Grows forever: every future bug adds a fixture before it gets a fix.
       ◧ 2026-07-26 — `internal/feed/testdata` is empty. The parser has been exercised against 151 real feeds in the dev database, which is better than nothing and worse than a committed corpus: nothing in CI would catch a regression on a format nobody is subscribed to today.
 
@@ -546,7 +665,15 @@ Composites of Tier 2. Bytes in, structs out. Still no database.
       honest UA · **`Retry-After`** · **301 reports the new canonical URL** ← 2.7 §15.4
       ✅ 2026-07-26 — Conditional GET (`If-None-Match` / `If-Modified-Since`, 304 handled), gzip, a body cap with `LimitReader`, timeouts, and the 2.7 SSRF guard on every request. *Deviation: the caps are 32 MB / 30s rather than the 5 MB / 15s the plan names — real feeds exceeded 5 MB. Lives inside `internal/feed` rather than its own package.*
 
-- [ ] **4.4 `extract`** — readability → clean HTML + plain text ← 4.3, 2.9, D7.
+- [x] **4.4 `extract`** ✅ 2026-07-26 — `internal/extract`: `Fetch` (SSRF-guarded, 8 MiB cap, resolves
+      relative links against the post-redirect URL) and `FromBytes`, returning sanitised HTML **and**
+      plain text from one pass, because deriving text at four call sites produces four word counts and
+      the one used for ranking is the one nobody checks. Output goes through `sanitize.Archived`.
+      Below `MinWords` (25) it returns `ErrNoContent` rather than an empty success — readability hands
+      back the navigation on a section index, and a reading pane reading "Home About Contact" is worse
+      than an honest fallback to the feed's own content. **It parses the DOM itself and hands
+      readability a document**, because `go-shiori/dom` re-guesses the charset from bytes and
+      double-decodes; see D7. ~~Original:~~ readability → clean HTML + plain text ← 4.3, 2.9, D7.
       **Phase 1, not Phase 3** — five features depend on it and rev 7 had it scheduled after two of
       them.
 - [x] **4.5 `opml`** — nested OPML 2.0 both ways. *Done when: out → in → identical.*
@@ -580,6 +707,8 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 - [ ] **5.1** `tenants` · `users` · `roles` · `user_roles` · `invites` · `devices` · **`api_tokens`
       (scope is a fixed enum, never inherited from the owner's role)** · `shares` · `public_shares`
       ◧ 2026-07-26 — `tenants`, `users` and `sessions` exist and `ScopeForSession` resolves a token hash into a Scope. `roles`, `user_roles`, `invites`, `devices` and `api_tokens` are not — they belong with 6.1/6.2, and there is one local account until then.
+      ◧ 2026-07-26 (night) — the **session lifecycle** landed with 6.1's first half: `UserForLogin` (loud on a username that exists in two tenants, rather than a silent wrong-tenant login), `CreateSession` (session row + `last_login_at` in one transaction, so the account screen cannot lie about "was that me?"), `RevokeSession`, `RevokeAllSessions`, `PurgeExpiredSessions` (run by the poller, revoked rows kept a week), `Identity`, `CountUsers`, `SetPasswordHash`, `AddUser`, `FirstTenantID`. All ten are **unscoped by design** and registered as such in `internal/tools/guards` with a reason each — the guard's exemption list is now where "why does this method not take a Scope" is answered. Note what is *not* exempt: `Identity` takes a Scope, because "who am I" is a question about an authenticated caller.
+      > `SetPasswordHash` deliberately does **not** revoke sessions. Two callers want opposite things: the break-glass reset is a password *change* and must revoke everything, while a login that re-hashes under stronger Argon2id parameters changed no password and must revoke nothing. Bundling the revoke made the first login after a parameter bump log the reader straight back out.
 
 - [x] **5.2** `sources` · `subscriptions` — **soft-deactivate, never delete** (A22) · `natural_key`
       **per-user for `kind='mailbox'`** (§6.4) · `home_mode` and the highlights fields ← D17
@@ -613,6 +742,14 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 - [ ] **5.10** FTS5 triggers for `items_fts`, `notes_fts`, `bookmarks_fts`, and a search repo over them
       ◧ 2026-07-26 — `items_fts` with its three triggers and a `Search` repo over it, verified by `TestSearchFindsASeededItem` and `TestSearchIndexTracksUpdates`. `notes_fts` and `bookmarks_fts` are not built.
 
+- [x] **5.11 `folders`** — categories: list · create · rename · delete · file a feed. **Per-user, flat,
+      one folder per subscription** (A37, §6.10). *Added to the tier after the fact: the table shipped
+      in `0001_init` and the repository is what was missing.*
+      ✅ 2026-07-26 — `internal/store/folders.go` + `folders_test.go`. Flat by choice — nothing writes `parent_id`, and the `depth < 8` CHECK stays so nesting is a migration nobody has to write. `MaxFolderName = 48` (the width the rail draws before it ellipsises) and `MaxFoldersPerUser = 200` (the cap `tags` already carries). Delete **unfiles and never unsubscribes**; create is idempotent on a case-insensitive name, because the caller is the add-a-feed form and an error there is a dead end mid-task. Ordered `position, name` — position alone leaves unarranged rows in whatever order SQLite returns, which reads as a sidebar that shuffles itself.
+
+- [x] **5.12 tag style** — `tags.label` + `tags.glyph` (`0008_tag_style.sql`, A38) and `UpdateTag`.
+      ✅ 2026-07-26 — the identity/presentation split: `name` is never edited, `label` and `glyph` are the rail row's, empty meaning "use the underlying name" — the same override idiom as `subscriptions.title` over `sources.title`, so there is one rename idiom in the schema and not two. `store.TagPatch` is tri-state per field. Covered by `internal/store/tags_test.go`. `internal/tagglyph` holds the fifty-mark catalogue (server-validated, count asserted by a test rather than trusted to a comment) — see 8b.28.
+
 > *Done when:* every repo has a leak test, 5.9's rebuild test passes, and **5.4's numbers are written
 > into `plan.md` §6.5**.
 
@@ -625,6 +762,9 @@ Business logic over repositories. Still headless.
 - [ ] **6.1 `authn`** — login (hash always run, uniform errors) · **rate limiting + lockout** per-user
       *and* per-IP · refresh families with **reuse detection → revoke the family** · recovery codes ·
       reset tokens · sudo mode ← 2.3, 5.1, D12
+      ◧ 2026-07-26 (night) — **about a third of it, and it is the floor for the public internet rather than the ceiling** (plan §7.1a, A36). Built *ahead of its milestone* because `DevMode` was derived from a loopback bind, which made the standard reverse-proxy deployment an open reader. What exists: `AuthService.Login/Logout/WhoAmI`, the hash **always** running against a boot-computed Argon2id decoy on an unknown username, one uniform error for missing/wrong/deactivated, a fixed-window limiter at 10/minute on **both** the username and the client address, SHA-256-stored 30-day sessions with real revocation, opportunistic re-hash on login, and `device_id` grouping. What is owed, all of it still: **lockout** (the limiter is not one), refresh families and reuse detection, recovery codes, reset tokens, sudo mode, the breached-password check, and per-box Argon2id tuning.
+      > **Two honest caveats, both recorded in the code.** RPCs arrive multiplexed over one WebSocket, so the peer address is the tunnel's — behind nginx that is `127.0.0.1` for everyone, and the per-IP key **collapses to one bucket in exactly the deployment where it matters most**. The per-username limiter carries the weight; a real per-IP limit needs the forwarded address threaded through the tunnel handshake (7.3d). And the limiter is in memory, so a restart clears it — persistent lockout state needs a table, which is this item's job and not the transport's.
+      > **D12 now arrives as an outage rather than as a leak.** Usernames are unique *per tenant*, so login is unambiguous only while there is one tenant; two matches return `FailedPrecondition` and say so. A second tenant needs a tenant hint (subdomain or explicit field) before it can exist.
 - [ ] **6.2 `authz`** — capability set, **static per-method map, fails closed on unmapped**. Serves
       both the tunnel and the REST sync API — one model, not two. §7.5
 - [ ] **6.3 `settingsreg`** — typed registry + **system → tenant → user** resolution, returning the
@@ -680,6 +820,7 @@ Business logic over repositories. Still headless.
 
 - [x] **7.1** `proto/articleflux/v1/` — start with `Auth`, `Feed`, `Item`, `Event`. Grow per milestone.
       ✅ 2026-07-26 — `proto/articleflux/v1/{reader,system}.proto` — ReaderService now carries feeds, items, state, search, prefs, tags, notes, and per-feed settings. Additive-only within v1, which `buf breaking` enforces in CI.
+      ✅ 2026-07-26 (night) — **`auth.proto`** (`Login` · `Logout` · `WhoAmI`) is the third service, registered **unconditionally including in DevMode**: an instance that starts on a laptop and later gets a domain must not need a different binary, and a client that can always call `Login` has one code path instead of two. ReaderService gained folders (`ListFolders` · `CreateFolder` · `RenameFolder` · `DeleteFolder` · `SetFeedFolder`), `folder_id` on `Subscribe`, and `UpdateTag` + `Tag.label` / `Tag.glyph`. All additive. *There is deliberately no `GetTagSettings` — `ListTags` already returns everything that panel shows, so fetching it again would be a round trip for data the client is holding, and the dialog opens with its content instead of a spinner.*
 
 - [x] **7.2** `buf generate` wired into `make gen`; commit `internal/pb`
       ✅ 2026-07-26 — `./scripts/make.ps1 gen` runs `buf generate`; `internal/pb` is committed.
@@ -703,26 +844,34 @@ Business logic over repositories. Still headless.
       ◧ 2026-07-26 — `SetItemState` accepts an `idempotency_key` and every caller sends a deterministic one, but nothing stores or replays it. Harmless today because there is no offline outbox to drain; required before there is (§12.4).
 
 - [ ] **7.3d Rate limiters** — the §20.7 table, at the interceptor, per-user and per-IP
+      ◧ 2026-07-26 (night) — **login only**, in `grpcsrv/auth.go`: 10/minute per username and per client address, in memory. Nothing else is limited, and the per-IP half is largely fictional — every RPC arrives over one WebSocket, so behind a proxy the peer address is `127.0.0.1` for every user on the instance. **A real per-IP limit requires the forwarded address to be threaded through the tunnel handshake**, which is this item's first piece of work.
 - [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
       (a deliberate tightening; the library default is 16 MiB) · `WithKeepalive` · the three
       connection/upgrade caps · `WithAuthorize` ← 6.2
       ✅ 2026-07-26 — `grpctunnel.Wrap` with `WithReadLimitBytes(4<<20)` (tightened from the library's 16 MiB default), keepalive, and the two connection caps. *Not yet: `WithAllowedOrigins`, which needs the real deployment origin, and `WithAuthorize`, which needs 6.2.*
+      ✅ 2026-07-26 (night) — `WithAllowedOrigins` is wired to `serve -origin a,b,c` and **applied only when set**, because an empty allowlist would reject every browser rather than fall back to the library's same-origin default. That default compares `Origin` against `Host`, which holds *as long as the proxy forwards `Host` faithfully* — so production sets `-origin` explicitly rather than depending on someone else's nginx. `WithAuthorize` still needs 6.2.
 
 - [x] **7.5** `/healthz` + `/readyz` — **unauthenticated, status code only, deliberately
       information-free** §22.4
       ✅ 2026-07-26 — `/healthz` — unauthenticated, status code and one word. *`/readyz` still to come.*
+      ✅ 2026-07-26 (night) — `/readyz` shipped, and the difference between the two is the whole reason they are separate endpoints rather than one convenient probe: **`/healthz` never touches the database** (a liveness probe that fails on a slow query gets the process killed and restarted into the same slow query), while `/readyz` runs `SchemaVersion` under a 2-second timeout and answers `503 unready`. One word each — a readiness probe is unauthenticated by definition, so anything it says is said to everyone.
 
 - [x] **7.6** Static serving + `web/` layout
       ✅ 2026-07-26 — Static serving from the assembled `bin/web`, with precompressed `.gz` siblings preferred and the `application/wasm` content type `instantiateStreaming` requires.
 
 - [ ] **7.7** `cmd/articleflux` — config load, **validate-and-fail-loudly at boot** (TLS readable, bind vs
       credentials, storage writable, LLM keys well-formed, IMAP reachable), graceful shutdown
+      ◧ 2026-07-26 (night) — **`app.Preflight`** covers three of the five and the server refuses to listen without them: an account exists (unless `-dev`), `webRoot/index.html` exists, and the data directory is writable. It returns a **joined** error rather than the first, because someone setting up a droplet usually has several wrong at once and a one-at-a-time boot loop is a miserable way to find that out. The writability check **writes and removes a probe file** rather than stat-ing the directory — a directory can be listable and not writable, and SQLite must create the `-wal` and `-shm` siblings, not just open the database. `-dev` off a loopback bind is refused here too, which is the bind-vs-credentials check in its only form that currently applies. Graceful shutdown is wired (`signal.NotifyContext`). *Owed: TLS files, LLM key shape, IMAP reachability — none of which have a configuration to validate yet.*
+
 - [ ] **7.8** **Version-skew handshake** — client build stamp in the tunnel handshake, server minimum
       version, refusal below it. The SW-cached wasm makes this inevitable, not hypothetical. §22.10
-- [ ] **7.9 G4 · `articleflux init`** — create tenant 1 + the first superadmin, or print a one-time
+- [x] **7.9 G4 · `articleflux init`** — create tenant 1 + the first superadmin, or print a one-time
       15-minute enrolment token. **The server refuses to serve while no superadmin exists.**
       *Done when: it runs once, is audited, and cannot be re-run.* §22.3
-- [ ] **7.10** `articleflux admin reset-password` break-glass §7.2
+      ✅ **G4 PASSED 2026-07-26 (night)** — `articleflux init -user … -password …` creates exactly one tenant and one superadmin, and **refuses on a populated instance** (`CountUsers > 0`), pointing at `adduser` / `passwd` instead: `init` on a live box is nearly always someone re-running the setup steps, and silently adding a second superadmin is worse than an error. `app.Preflight` is the other half — the server will not listen with zero accounts unless `-dev`. **No enrolment token**, deliberately: it is a second bootstrap path to secure, and filesystem access is already the proof of ownership every rung of §7.2 rests on. Password resolves flag → `ARTICLEFLUX_PASSWORD` → terminal prompt, so it need never appear in a process listing. *Owed: the audit row — there is no `audit` table yet, so "is audited" is not met.*
+
+- [x] **7.10** `articleflux admin reset-password` break-glass §7.2
+      ✅ 2026-07-26 (night) — spelled **`articleflux passwd -user … -password …`**, plus `adduser` for a second account. Both validate the role against the four the column documents (an account created as `"admins"` fails closed on every check with no clue why) and enforce a **12-character minimum with no composition rules** — length is the only property that reliably costs an attacker anything, and "must contain a symbol" reliably costs the user a password they write down somewhere worse. `passwd` revokes **every** session for that user, which is the point of a break-glass reset.
 - [ ] **7.11** `internal/log` — `slog`, leveled, request-id threaded through handlers **and jobs**.
       **Never log** secrets, note bodies, article bodies, or LLM payloads. §22.11
       ◧ 2026-07-26 — `slog` is wired through the app and leveled, and §22.11's never-log rule is observed — the OpenAI TTS error path logs the provider message and returns a safe string, because provider errors can echo the user's article. Request-id threading is not done.
@@ -940,6 +1089,61 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 > before the design transcription, the verdict change and the 96px row. Until they are updated their
 > output means nothing, so the suite is currently **not** a gate — which is exactly the state a test
 > suite must not be left in quietly.
+
+**Organisation** *(2026-07-26, night)*
+
+- [x] **8b.25 Categories in the rail** — A37, §6.10. Folders as a repository, six RPCs and a rail
+      section, all per-user and flat. Shown **as well as** the flat feed list: the flat list answers
+      "where is that feed", the categories answer "what have I got on this subject", and 151 rows
+      cannot answer the second. Each category folds; the open set travels as a **comma-joined string**,
+      not a map, because `railProps` is compared by value and a map field compares by identity — it
+      would defeat the re-render bailout for the whole rail.
+- [x] **8b.26 The rail is head / scroll / foot** — the five streams and the masthead are pinned, the
+      scroll starts at the Feeds band, add-a-feed sits at the foot. Six rows paid for once beats
+      scrolling back to them. All three groups fold, and the state is remembered.
+- [x] **8b.27 The add-a-feed dialog** — §20.18. URL, name, category, and nothing else. Poll interval,
+      cache depth and mute belong to a feed you already have an opinion about, and putting them here
+      would make adding a feed a configuration exercise.
+- [x] **8b.28 Tag identity vs presentation** — A38, `0008_tag_style.sql`, `internal/tagglyph`,
+      `UpdateTag`, and a per-tag panel behind the same gear the feed rows use. Fifty marks in seven
+      groups, **text presentation only** so they inherit the row's colour and weight — a rail of emoji
+      reads as stickers stuck onto the design, and the one tag wearing one outshouts the 150 feeds
+      above it. The **character is stored, not an index into the list**.
+
+**Configuration and the operator**
+
+- [x] **8b.29 The settings surface** — §20.17. Seven tabs, and the last three exist because a
+      self-hosted app has no dashboard behind it: **Server** ("is it healthy"), **Activity** (the log
+      ring — "what just happened"), **Speed** (per-RPC latency — "why is it slow").
+- [x] **8b.30 `OnDelegatedBlur`** — `focusout`, not `blur`, because blur does not bubble and a
+      delegated listener on a stable container never sees it. This is the debounced note's safety net:
+      a reader who types and immediately clicks away has finished with that field, and waiting out the
+      rest of the debounce is how autosave loses writing. `platform.Listener` grew an `extra` closure
+      so one Listener can release a second event, a second target, or an interval.
+
+**Built but not reachable — and that is the interesting part of the list**
+
+- [ ] **8b.31 The theming engine and the motion system** — A39, §20.16. Five themes and three durations
+      exist in `client/design/{theme,motion}.go`, and the sheet emits `Fanciful.Vars()` +
+      `MotionVars()` at first paint, so the tokens are live. **Nothing writes them at runtime**: there
+      is no applier on `documentElement.style`, no picker in Settings, and no `theme` / `motion` pref.
+      Four of the five themes are therefore unreachable and `--mo` is only ever set by the
+      `prefers-reduced-motion` block. *Done when: switching themes twice repaints correctly and the
+      choice survives a reload on another machine (A30 applies — it is account state, not browser
+      state).*
+- [ ] **8b.32 Restore the wasm build.** `GOOS=js GOARCH=wasm go build ./client/...` **fails** —
+      `client/view/reader.go` has seven declared-and-unused state hooks from the category and add-feed
+      work, and still passes `addValue` / `onAddInput` / `onAddKey` to a `railProps` that no longer has
+      them. **`go build ./...` does not compile the client**, so the native build and all Go tests are
+      green while the app does not build at all. *Done when: the wasm build is in CI's default path,
+      which is the only thing that stops this recurring.*
+- [ ] **8b.33 The client half of authentication.** The server mints sessions (§7.1a) and nothing in
+      `client/` calls `Login`, stores a token, or sends `authorization` metadata — so every RPC falls
+      through to `devScope`, and an instance started **without `-dev` serves a reader that cannot get a
+      session**. Needs: a login screen, token storage that survives a reload, the metadata on every
+      call, `WhoAmI` on connect to choose between the reader and the login screen, a visible banner
+      when `dev_mode` is true, and a path back to the login screen on `Unauthenticated`. *This is what
+      makes A9 (remote deployment) reachable, and it is the top of the list.*
 
 ---
 
