@@ -9,7 +9,64 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Security
+
+- **A reverse-proxied instance no longer served an unauthenticated superadmin session.** `DevMode`
+  — which serves the first account with no login and registers an unauthenticated
+  `POST /debug/reset-state` — was *derived* from a loopback bind. The reasoning was that loopback
+  cannot be reached from outside the machine, which is true of the socket and false of the
+  deployment: every reverse-proxy setup, including the nginx site now in `deploy/`, terminates TLS
+  on `:443` and forwards to `127.0.0.1:9000`. So the canonical way to host this was also the way to
+  publish an entire reading history to anyone who typed the domain. A bind address describes network
+  topology and cannot tell you who is on the other end of a connection; nothing that cannot tell you
+  that may decide whether to ask for a password. It is now an explicit `-dev` flag, defaulting off
+  and **refused on any non-loopback bind**.
+
 ### Added
+
+- **A login** (`AuthService`, TODO 6.1 in part): `Login`/`Logout`/`WhoAmI` over the tunnel, a
+  `/login` screen in the app's own vocabulary, and a bearer token attached by **one client
+  interceptor** rather than by each of the thirty-odd RPC methods — the per-method version's failure
+  mode is that someone adds the thirty-first and it silently runs unauthenticated. The password hash
+  **always runs**, against a boot-computed Argon2id decoy when the username does not exist, so a
+  missing account cannot be told from a wrong password with a stopwatch; there is one uniform error
+  for missing, wrong, and deactivated. Sessions are stored as SHA-256 and are revocable, so a
+  database dump is not a set of live sessions. Counting **failures only** in the rate limiter was the
+  second attempt: the first cleared the counter on success, and because the client key is shared by
+  everyone behind a proxy, one household's typos locked out the instance.
+- **`init`, `adduser`, `passwd`, `migrate`, and `backup` subcommands.** `init` (TODO 7.9) refuses to
+  run on a populated instance; `passwd` (7.10) revokes every session for the account, which is the
+  point of a break-glass reset. `make.ps1` had been calling a `migrate` verb that did not exist.
+- **Verified backups** (`store.Backup`, TODO 3.4): `VACUUM INTO` plus `PRAGMA integrity_check` on the
+  copy. Not `cp` — in WAL mode an unknown amount of committed data lives in the `-wal` file, so
+  copying the three files copies them at three different instants and a concurrent writer produces a
+  backup that opens cleanly and is missing a transaction. It restores, it passes a smoke test, and it
+  is wrong. Pinned by a test that backs up *under concurrent writes*.
+- **Boot-time refusals** (`app.Preflight`, TODO 7.7 in part): no account, missing web root, or an
+  unwritable data directory stops the server starting, with all the failures reported at once rather
+  than one boot-loop at a time. Each otherwise surfaces hours later while `/healthz` reports green.
+- **`/readyz`** (TODO 7.5), which touches the database — unlike `/healthz`, which deliberately does
+  not, because a liveness probe that fails on a slow query gets the process killed and restarted into
+  the same slow query.
+- **A deployment**: `deploy/` ships a hardened systemd unit, an nginx site, a nightly backup timer,
+  and a runbook that takes a bare Ubuntu droplet to a reader on TLS. Plus a `Makefile` mirroring
+  `scripts/make.ps1` verb for verb — 1.4's reasoning ("no `make` on this box") was about the
+  development box and does not extend to the deployment target, which has make and no PowerShell.
+- **`serve -origin`** finishes TODO 7.4's `WithAllowedOrigins`, and **`serve -behind-proxy`** makes
+  `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
+  header, so trusting it unconditionally lets any client write whatever address it likes into the log.
+
+- **The cross-tenant leak harness** (`internal/store/leak_test.go`, TODO 3.7 / G2 / T1) — the test
+  the plan calls the highest-value one in the project. It does not test methods, it **enumerates**
+  them: 38 scoped repository methods swept automatically, each called under tenant A's `Scope` while
+  being handed tenant B's identifiers, which is the shape of the real attack — a valid session plus
+  someone else's id. Every row tenant B owns carries a canary string, and any appearance of it at any
+  depth in any return value is a leak. A method that takes no `Scope` must be listed in
+  `unscopedByDesign` with a stated reason or the test fails, so a new method cannot quietly arrive
+  uncovered. Guard 4 already proved a `Scope` was *taken*; this is what proves it reaches the `WHERE`
+  clause, and a method that accepts a Scope and ignores it is exactly as leaky as one that never
+  asked while looking correct in review. Verified by deliberately breaking `ListFeeds`' tenant filter
+  and confirming the harness names the method and prints the leaked value.
 
 - **The rest of the §6 schema** (migrations 0009–0013, TODO 3.1): 40 tables taking the database from
   the reading core to the whole specification — identity and invites, item tags (A21), item
