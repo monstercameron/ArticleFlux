@@ -11,6 +11,24 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Reader mode has an extractor** (`internal/extract`, TODO 4.4). D7 is **resolved: go-shiori/
+  go-readability**, decided by the bake-off rather than by reputation. All three candidates worked on
+  all twelve pages; the split was on two things a character count hides. Trafilatura's text
+  serialiser inserts spaces around inline elements — "The Room , Troll 2 ," — 199 artefacts against
+  readability's 5, and three of the five consumers read the text while one reads it aloud. And on a
+  photo-heavy hardware review readability kept 34 images to trafilatura's 8, which is losing the
+  article. Readability's one apparent weakness, 5.8× markup bulk on WordPress, turned out to be 38 KB
+  of `srcset` — data, not cruft, and removed by the sanitizer's allowlist regardless. The measurement
+  that looked decisive was measuring something that does not survive to storage. Returns HTML and
+  plain text from one pass, because deriving text at four call sites yields four different word
+  counts and the one used for ranking is the one nobody checked.
+- **A third double-decode, and a structural fix for the class.** `go-shiori/dom` runs *statistical*
+  charset detection over whatever it is handed, so correct UTF-8 that is mostly ASCII with a few
+  accented words gets re-read as Latin-1: "café" → "cafÃ©". `charsetdec` now also retags HTML `<meta
+  charset>` and `http-equiv` declarations, but the real fix is that `extract` parses the DOM itself
+  and hands readability a document — nobody downstream gets a second chance to decode. It hid well:
+  a short page gives the detector too little signal and comes through clean, so it only appears at
+  realistic article length.
 - **Sanitisation has named policies** (`internal/sanitize`, TODO 2.9). GWC's sanitizer stays the
   engine; what it lacks is an opinion about where the HTML came from, and that turns out to be the
   whole question. Four sources, four threat models: a feed keeps its photographs because a hardware
