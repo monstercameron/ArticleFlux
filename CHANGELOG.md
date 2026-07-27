@@ -56,6 +56,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Bookmark interchange** (`internal/netscape`, TODO 4.6) — the Netscape bookmark format both ways
+  plus Chrome's JSON in. The format is thirty years old, has no specification, and is what every
+  browser imports; its defining property is that `<DT>` and `<p>` are never closed and nesting comes
+  from document order. Read with an HTML5 parser, which handles exactly that soup — and **written in
+  the same malformed shape on purpose**, because browsers parse it by convention and a tidy
+  well-formed file is one some importers get wrong. `javascript:` entries are refused on both paths:
+  a bookmarklet is code, and importing one as a link produces an entry that executes when clicked.
+  Two bugs the tests caught: sibling folders sharing a path slice, where the second overwrites the
+  first's name in every bookmark already collected (invisible until a file has two folders at one
+  depth, which is every real file); and `ADD_DATE` units, where a 16-digit value fell into the
+  milliseconds branch and produced the year 425014. Four epoch units are now discriminated by
+  magnitude, with the boundary between unix-µs and WebKit-µs — the only pair within one order of
+  magnitude — placed deliberately rather than at a round number. Chrome's localised root names are
+  keyed off the stable map key, so a German profile imports the same as an English one.
+
 - **Recommendations** (`internal/recommend`, TODO 4.12) — pure scoring over harvested candidates,
   with the §18.7 health gate that **refuses a dead site and a firehose for opposite reasons**, plus
   no-feed, unreachable, aggregator, undated, already-subscribed, muted, and dismissed. The asymmetry
