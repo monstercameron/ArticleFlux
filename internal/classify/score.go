@@ -187,24 +187,34 @@ func (lx *Lexicon) accumulate(present map[string]uint8) map[int32]*labelAcc {
 	return accs
 }
 
-// mergeFields records the best field a term was seen in.
+// fieldRank orders fields by how SPECIFIC the evidence is, best first.
 //
-// Best is by multiplier RANK rather than by the strategy's numbers, because the
-// numbers are user-tunable and a reader who sets body above title has said
-// something about weighting, not about which evidence is more specific. The rank
-// is fixed: title, then url, then summary, then body, and source last because it
-// is a statement about the feed rather than about the article.
+// Fixed, and deliberately not the strategy's multipliers: those are user-tunable,
+// and a reader who raises the body weight above the title has said something
+// about how much each field counts, not about which one is the more specific
+// place for a term to have appeared. Source is last because it is a statement
+// about the feed rather than about the article.
+var fieldRank = [...]Field{FieldTitle, FieldURL, FieldSummary, FieldBody, FieldSource}
+
+func rankOf(f Field) int {
+	for i, r := range fieldRank {
+		if r == f {
+			return i
+		}
+	}
+	return len(fieldRank)
+}
+
+// mergeFields records the best field a term was seen in.
 func mergeFields(ta *termAcc, fields uint8) {
-	order := [...]Field{FieldTitle, FieldURL, FieldSummary, FieldBody, FieldSource}
-	for _, f := range order {
+	for i, f := range fieldRank {
 		if fields&fieldBit(f) == 0 {
 			continue
 		}
-		if !ta.seen {
+		if !ta.seen || i < rankOf(ta.bestField) {
 			ta.seen = true
 			ta.bestField = f
 			ta.sourceOnly = f == FieldSource
-			return
 		}
 		return
 	}
@@ -288,12 +298,12 @@ func assemble(lx *Lexicon, accs map[int32]*labelAcc, st Strategy, norm float64) 
 		// The cap is applied to the bucket, not per term, because the thing being
 		// bounded is how much the feed's identity may say about one article — and
 		// six weak source matches are the same overreach as one strong one.
-		cap := st.SourceCap
-		if cap <= 0 {
-			cap = DefaultStrategy().SourceCap
+		srcCap := st.SourceCap
+		if srcCap <= 0 {
+			srcCap = DefaultStrategy().SourceCap
 		}
-		if sourceBucket > cap {
-			sourceBucket = cap
+		if sourceBucket > srcCap {
+			sourceBucket = srcCap
 		}
 		total := positive + sourceBucket
 
@@ -338,16 +348,25 @@ func assemble(lx *Lexicon, accs map[int32]*labelAcc, st Strategy, norm float64) 
 		return res
 	}
 
+	// Floors resolved once rather than searched per score: a label's own MinScore
+	// overrides the strategy's, and the strategy's overrides the shipped default.
+	def := st.MinScore
+	if def <= 0 {
+		def = DefaultStrategy().MinScore
+	}
+	floors := make(map[string]float64, len(lx.labels))
+	for _, l := range lx.labels {
+		if l.MinScore > 0 {
+			floors[l.Slug] = l.MinScore
+			continue
+		}
+		floors[l.Slug] = def
+	}
 	floor := func(slug string) float64 {
-		for _, l := range lx.labels {
-			if l.Slug == slug && l.MinScore > 0 {
-				return l.MinScore
-			}
+		if v, ok := floors[slug]; ok {
+			return v
 		}
-		if st.MinScore > 0 {
-			return st.MinScore
-		}
-		return DefaultStrategy().MinScore
+		return def
 	}
 
 	top := res.Scores[0]

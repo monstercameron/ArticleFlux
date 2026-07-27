@@ -117,6 +117,15 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// The article's own gutter, so a full-bleed child can reach back out to
 		// the pane edge. A measurement, and one the reader changes by resizing.
 		"--art-pad": true,
+		// The slideshow (§19). Its four durations belong with --t1/--t2/--t3
+		// above — motion, not palette — and its gutter belongs with --art-pad.
+		"--t-slide": true, "--t-head": true, "--t-glide": true, "--t-catch": true,
+		"--slide-gut": true,
+		// The two numbers Go writes onto the running slide several times a
+		// second: how far this article has to travel, and how far through it we
+		// are. Per-element state, like --i and --cursor, and the one pair here
+		// that would be actively wrong for a theme to be able to reach.
+		"--shift": true, "--fill": true,
 	}
 
 	sheet := sheetText(t)

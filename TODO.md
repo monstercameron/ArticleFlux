@@ -1683,6 +1683,32 @@ Business logic over repositories. Still headless.
       per refusal at the worst moment. Two deliberate fail-open choices: a misconfigured rule permits
       everything, and a full key table evicts rather than denying. *Owed: wiring it into the
       interceptor.*
+
+      ✅ 2026-07-27 — **both halves, and the package finally has a caller.** `grep -r
+      internal/ratelimit` had returned the package and its own tests: everything behind a session
+      was unbounded, which is Smart+ and translation spending money per call and the proxy fetching
+      on a reader's behalf.
+      (a) **The forwarded address, through the tunnel.** Behind `deploy/nginx.conf` every per-client
+      control keyed on `127.0.0.1`, and two of the three were not merely weakened — the tunnel's
+      `WithMaxConnectionsPerClient(8)` capped the WHOLE INSTANCE at eight, so the ninth reader was
+      refused with a message about "a client" that was nine people. Rewriting `r.RemoteAddr` fixes
+      the caps; the login limiter needed the **hijacked socket** wrapped too, because RPCs are
+      synthesised by an HTTP/2 server reading the WebSocket and take their address from the
+      connection. `internal/clientaddr` is now the single rule — there had been two spellings that
+      disagreed in exactly this deployment, and `clientKey` was truncating a bare IPv6 peer at the
+      last colon.
+      (b) **The unary interceptor**, after skew and before idem — reserving an idempotency key for a
+      call that is then refused burns it, and the client retries into its own reservation. Keyed on
+      the **hashed credential, not the user id**: resolving the session is a database query taken
+      before deciding whether to do any work, so under exactly the flood this sheds, every refusal
+      would still buy the caller a lookup. Off in DevMode, where there is no credential and every
+      tab would collapse into one bucket.
+      (c) **`/asset` and `/p`** (6.14 and 6.15's owed line). The rate is §20.7's backstop; the
+      **burst was measured, not chosen** — the real rewriter over all 3,878 article bodies:
+      35% mint any assets, mean 3, p90 6, p95 13, p99 43, **max 396**. A burst on the p99 would have
+      worked for a year and then broken the one long article somebody wanted. 500 clears the corpus
+      maximum; the measured max is pinned in a test so lowering it fails with the reason attached.
+      *Still owed: the STREAM chain — see P1.*
 - [x] **7.4** `grpctunnel.Wrap` hardened: `WithAllowedOrigins` (exact) · `WithReadLimitBytes(4<<20)`
       (a deliberate tightening; the library default is 16 MiB) · `WithKeepalive` · the three
       connection/upgrade caps · `WithAuthorize` ← 6.2
@@ -2708,7 +2734,7 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       reader from an arriving article. `bodyLanded` now calls `KeepScrollAnchored` when the landing
       article sits above the current one, which is the same tool `retreat` already uses for a prepend.
 
-- [ ] **8b.52 The topmost-article handler is not running.** Found while testing 8b.49, and it is
+- [x] **8b.52 The topmost-article handler is not running.** Found while testing 8b.49, and it is
       bigger than what it was found by: scrolling through three articles changes **neither
       `document.title` nor the highlighted row**, so `focusArticle` never fires — A28's central rule
       (*which article is being read is a scroll position, not a click*) is not in effect. Marking read
@@ -2741,6 +2767,24 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 
       Fixed in `client/platform`, not in `client/view/reader.go`: the bug was never in the view, so
       the file this ticket said not to touch did not have to be touched.
+
+      ✅ 2026-07-27 (night) — **both halves of the Done-when are green.** Two fixes on top of the
+      listener move:
+      **the guard now ends when the TRAVEL ends.** `ScrollChildToTop` reports when the scroll has
+      stopped (polled for the smooth case — `scrollend` is not available everywhere, and a fixed delay
+      is a guess that is wrong on a slow machine in the direction that matters), and the reading pane
+      disarms on that instead of waiting for its target to report topmost. It could wait forever: a
+      container at its maximum cannot bring its last child to the top.
+      **and the topmost rule is right at the bottom of a stream.** At maximum scroll the LAST child is
+      the answer — otherwise the last article can never be the one being read, and the reader sitting
+      at the end of the stream is recorded as reading the one before it. Only when the container
+      actually scrolls; a pane whose content fits has no bottom to be at.
+      **plus a reporter that re-announces on demand** (`platform.RefreshTopmost`). It speaks only on
+      CHANGE, which it must, and the cost is that a report the caller *discarded* still counted as
+      said — so the article that sat at the top through a whole travel was announced once, into the
+      void, and never again. Scrolling back up to it changed nothing, because from the reporter's side
+      nothing had changed.
+      `scrolling back into a skipped article does mark it read` is un-`fixme`d and passing.
 
       ◧ 2026-07-27 (evening, second look) — **the sibling failure is FLAKY, not constant**, which
       narrows it: `jumping down the list does not read what it jumped over` passes in isolation and
@@ -3033,12 +3077,29 @@ be **one commit**.
       away` close frame. The payoff is specific: an in-flight `SetItemState` at redeploy time presently
       rolls back the optimistic UI and shows "Couldn't save that" for a server that is coming straight
       back.
-- [ ] **8c.8 ⬆ Upstream: `Retry-After` on a refused upgrade.** GoGRPCBridge answers a breached
+- [x] **8c.8 ⬆ Upstream: `Retry-After` on a refused upgrade.** GoGRPCBridge answers a breached
       `WithMaxUpgradesPerClientPerMinute` / `WithMaxConnectionsPerClient` cap with a bare `429` and no
       header (`server.go`), so a client that hits it backs off on a schedule unrelated to when it would
       be welcome back. **Not fixable in this repo.** Low priority — ArticleFlux's caps (8 conns, 30
       upgrades/min) are generous enough that hitting them means a bug on our side — but file it while
       the context is fresh.
+
+      ✅ 2026-07-27 — **done upstream**, in the GoGRPCBridge checkout: `pkg/grpctunnel/retry_after.go`
+      and `pkg/bridge/retry_after.go`, 5 tests. Both entry points carry it — the two packages keep
+      separate copies of the abuse guard — and the header is set **before** `http.Error`, since a
+      header written after the status is a header nobody receives.
+      **Only where the answer is actually known.** The upgrade-rate cap is a fixed window, so its
+      reopening is arithmetic and is reported exactly; a test waits precisely as long as it was told
+      and gets in. The CONNECTION caps report nothing, deliberately: a slot frees when some other
+      client disconnects, which is not a schedule, and a number invented for it would be worse than
+      silence — a client that trusted it would come back at a time nothing was promised about.
+      Seconds round **up** and floor at one: `Retry-After: 0` invites an immediate retry into a closed
+      door, and rounding down moves load rather than reducing it.
+      *Not yet consumed here:* ArticleFlux depends on the released `v1.1.1`, so this arrives when the
+      bridge is tagged and `go.mod` moves. Nothing in this repo needs to change for it.
+      *Noted while there:* `TestSessionMaxLifetime_ForcesReauthorization` fails about two runs in
+      three — verified flaky at pristine HEAD in a throwaway worktree, so it is theirs and it predates
+      this.
 
 ### Durability — the half a retry loop does not cover
 
@@ -4056,7 +4117,7 @@ why 6.1 was built ahead of its milestone rather than after it.
 
 ### Open, and it is not a UI bug
 
-- [ ] **H11 · An async state write does not repaint when nothing else changed.** After H10, an empty
+- [x] **H11 · An async state write does not repaint when nothing else changed.** After H10, an empty
       feed no longer shows the wrong articles — it shows a **loading skeleton that never resolves**,
       for a request that succeeded. Traced end to end: the RPC is sent with the correct scope, returns
       without error, the response lands not-stale with `n=0`, and `itemsLoading` is set false and
@@ -4133,6 +4194,14 @@ why 6.1 was built ahead of its milestone rather than after it.
       overlaps a pass becomes a second one. GWC was restored to exactly its prior state and its suite
       is green; the diagnosis is the deliverable, not the patch.
 
+      ✅ 2026-07-27 (night) — **fixed in GWC, in `inbox.go`, and the app is fixed with it.**
+      `DrainAsyncInbox` now defers itself while `wipRoot != nil`, which is the contract `PostAsync`
+      already documented and was not keeping. Every async write therefore lands BETWEEN passes, where
+      the existing machinery is already correct — so nothing had to be taught a new case, and GWC's
+      whole runtime suite stays green including the two batching tests the first attempt broke.
+      *Verified from this end:* the autosave glyph reaches `saved` (it sat on `saving` indefinitely
+      before), and both note specs pass. 8b.34's remaining real failure went with it.
+
       **The fix worth trying next is one level up, in `inbox.go`.** `PostAsync`'s own contract says
       the write is "queued and applied at the next drain instead of landing at an arbitrary point
       relative to the in-flight tree" — and the measurement above is that it lands inside a pass
@@ -4176,15 +4245,45 @@ in the plan; the decision is Cam's, and it is one i18n string plus a `docs/FEATU
 taken — and a rename of a Go package, a proto message and a settings tab if deferred until after
 10.9.
 
-- [ ] **10.1 · `internal/classify` — the scorer, pure.** `(Item, Lexicon, Strategy) → Scores`. No
+- [x] **10.1 · `internal/classify` — the scorer, pure.** `(Item, Lexicon, Strategy) → Scores`. No
       database, no clock, no network, exactly as `internal/rules` is pure and for the same reason:
       §27.6's live preview must be **the same code** as the apply, or the preview lies. Tokenise via
-      `textvec.Tokenize`/`Phrases` — reused rather than reimplemented so a term the interest layer
-      calls noise is noise here too. **Lexicon match is a hash lookup over the token stream, not a
-      regex per term** (§27.3a): one pass, O(tokens), independent of category count.
+      `textvec` — reused rather than reimplemented so a term the interest layer calls noise is noise
+      here too. **Lexicon match is a hash lookup over the token stream, not a regex per term**
+      (§27.3a): one pass, O(tokens), independent of category count.
       *Done when: `TestDeterministic` and `TestClassifyThroughput` pass — 10,000 items through the
       deterministic pass under the wall-clock floor, so the scorer cannot quietly become
       O(categories × terms).* §27.3a–b
+
+      ✅ 2026-07-27 — `internal/classify` (`classify.go` · `lexicon.go` · `score.go`, 24 tests) plus
+      `textvec.Scan`. **Measured: 10,000 items in 885ms (88µs/item) against a 26 × 70 lexicon, and
+      20× the labels costs 0.94× the time** — `TestAddingLabelsIsNearlyFree` asserts that ratio,
+      because the property worth protecting is that a reader defining forty of their own categories
+      does not slow the poll down, and a naive implementation would land near 20×.
+
+      **Three spec corrections, all made in `plan.md` rather than worked around:**
+      1. **§27.3a's tokenizer was wrong.** `textvec.Tokenize` drops everything under three
+         characters — `ai`, `ev`, `ui`, `5g`, `f1` — and drops stopwords, which turns the term "war
+         on drugs" into "war drugs". `textvec.Phrases` only emits *capitalised* bigrams, so every
+         lowercase multi-word term is invisible to it. Added `textvec.Scan`: the same scanner,
+         exported, unfiltered. One split, two filters, and `TestScanAgreesWithTokenizeOnTheSplit`
+         asserts they can only ever disagree about the second.
+      2. **§27.3b's saturation divisor was backwards** — it penalised breadth, which is evidence,
+         rather than repetition, which is not. Replaced with "each distinct term counts once, at its
+         best field", which removes the long-article bias outright instead of attenuating it and
+         needs no tuning constant. Length normalisation survives with a narrower job: it changes what
+         `MinScore` means, and it provably cannot reorder labels.
+      3. **§27.3b's margin refused too much.** As a *requirement* for the primary it meant a CVE in a
+         game engine (8.0 security vs 7.0 software) got no category at all. It now sets
+         `Result.Ambiguous` and nothing else — which is exactly the signal §27.4a's escalation
+         already wanted, so the margin became a routing decision rather than an assignment one.
+
+      Also here and not in the ticket: `Explain()` returns the terms behind an assignment, ordered
+      stably, because §18.9's "explainability is the product" applies hardest to a chip — and because
+      it is the only practical way to debug a lexicon from the settings screen. `Compile` is strict
+      (duplicate slugs, four-word terms that could never match, duplicate terms, negative weights,
+      over-long prompts, the 32-regex cap) for `rules.Validate`'s reason: scoring must never fail on
+      one bad item, and authoring must fail loudly on the one bad term.
 
 - [ ] **10.2 · The default taxonomy, in Go.** 26 categories, `internal/classify/lexicon/*.go`, one
       file per category, each term with its weight and its guards. **Code, not SQL** (§27.3f) — it
@@ -4334,3 +4433,58 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
 starved *category* · a category histogram on Trends · search facets · per-category digests · a genre
 UI. All of them are §27.8 rows, all of them are cheap once 10.5 exists, and none of them is a reason
 to widen M29.
+
+---
+
+## Production-readiness audit (2026-07-27)
+
+Found by measuring rather than reading: the full gate set (`scripts/run-checks.sh`), a real
+`-behind-proxy` binary, and two attempts at the desktop e2e suite. Four things fell out that no
+existing item covers. Two of them are the same shape — a control that exists and does not reach the
+surface that needs it.
+
+- [ ] **P1 · Streaming RPCs are outside every limit the unary chain applies.** `grpc.ChainStreamInterceptor`
+      carries `grpcsrv.AuthzStream` and nothing else. The unary chain has a request id, version skew,
+      the §20.7 rate limit and the telemetry span; the stream chain has none of the four, so a
+      streaming call is unmetered, untimed, unversioned and unlimited.
+      `WatchEvents` is why this is now live rather than theoretical: by its own comment it "holds a
+      goroutine and a subscription for as long as a tab is open", and nothing bounds how many a
+      client opens. The tunnel's `WithMaxConnectionsPerClient(8)` is not that bound — it counts
+      WebSockets, and every stream multiplexes over one of them, so eight tunnels times unbounded
+      streams is the real ceiling.
+      *Done when: the N+1th stream from one credential is refused the way the N+1th unary call is,
+      a refused stream shows up in the same metrics a refused unary call does, and a stream carries
+      a request id into the log like everything else.* §20.7, 7.3d
+
+- [ ] **P2 · `TestAPageThatNeverGoesIdleStillRenders` fails on a busy machine, not a broken one.**
+      Measured 2026-07-27: it passes alone in 11–16s and failed at **52.5s against an 8s cap**
+      during `go test ./...` while two other sessions were building on the same box. The cap is
+      wall-clock, and wall-clock on a shared machine measures the machine.
+      This matters more than one red test. A gate that goes red on load is a gate people learn to
+      re-run rather than read, and the next real failure gets waved through with it. The Windows CI
+      runner is not idle either.
+      *Done when: the cap is expressed in work rather than wall-clock, or the test declares that it
+      needs an idle machine and leaves the default run.* §22.14
+
+- [ ] **P3 · `tts.Usage()` is written and nobody reads it.** `internal/tts` now bounds concurrency at
+      `MaxInFlight` and meters paid requests, characters and cache hits — but nothing calls `Usage()`.
+      `internal/llm`'s `BreakerState` reaches §9's status screen; this does not.
+      §22.8 asks that "AI features are off" be answerable rather than mysterious. "Speech has cost
+      this instance N characters, and M% of listens came from cache" is the same question about the
+      other paid surface, and the cache-hit ratio is the number that says whether `speech-cache` is
+      earning its disk.
+      *Done when: the status screen shows speech spend and the cache-hit ratio beside the LLM
+      breaker.* §9, §22.8
+
+- [ ] **P4 · Two e2e runs still cannot share this machine, and a killed run reports product failures.**
+      Two full desktop runs on 2026-07-27 died mid-suite: tests passing normally, then
+      `ECONNREFUSED` on every remaining one. The app server's log ends abruptly with no shutdown
+      line, and this happened with `ports.mjs`'s per-run slots in place and the run holding its own
+      slot — so it is not the port collision 8b.34 already fixed.
+      The reporting is the worse half. The first run showed **16 passed, 39 failed**; every one of
+      those 39 was the same dead socket, and read as thirty-nine product bugs. The measured desktop
+      baseline is **48 passed / 6 failed of 54**, and it took three attempts to learn that.
+      8b.34's premise is that this suite becomes a gate. A suite that cannot run to completion while
+      anyone else is working cannot be one.
+      *Done when: two suites started a second apart both finish; and a run whose server dies says
+      "the server went away" once, instead of reporting every remaining test as a failure.* 8b.34

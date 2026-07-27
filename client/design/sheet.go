@@ -102,6 +102,11 @@ func Sheet() {
 	// them, which specificity gives it (.shell[data-focus] .panes beats .panes)
 	// regardless of order. It sits here because it is a layout, not a motion.
 	focusCSS(r)
+	// The slideshow shares nothing with the layout above it — it is a fixed
+	// overlay with its own type scale and its own breakpoints — so its position
+	// here is only about being before motion(), which is the rule the comment at
+	// the bottom of this function states.
+	slideshowCSS(r)
 	skeletons(r)
 	responsive(r)
 	// LAST, and it has to be: motion layers transitions onto rules the sections

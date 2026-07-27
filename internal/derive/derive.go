@@ -72,6 +72,18 @@ const MaxTerms = 2000
 // MaxRanked is how many items the materialised homepage holds.
 const MaxRanked = 200
 
+// MaxCandidates is how many unread items the ranking considers.
+//
+// Two thousand. Far more than MaxRanked, because the content gate rejects most of what it
+// sees — an item needs a topic or a followed brand to qualify — so the candidate set has to
+// be much larger than the page for the page to fill at all.
+//
+// The bound exists because scoring is O(n) with an O(n²) corroboration pass inside it, and a
+// reader with fifty thousand unread items should not have their poll cycle spent proving that
+// none of the oldest forty thousand are recommendations. Candidates arrive newest-first, so
+// the cut falls on the least likely to be worth showing.
+const MaxCandidates = 2000
+
 // Payload is a derive job.
 type Payload struct {
 	TenantID string `json:"tenant_id"`
@@ -897,12 +909,26 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 	// The candidate set is what recall produced: unread items from subscribed
 	// feeds. Ranking read items would be re-ordering a page the reader has
 	// already been through.
-	candidates, _, err := s.repo.ListItems(ctx, sc, store.ListQuery{
-		UnreadOnly: true,
-		Limit:      MaxRanked * 3,
-	})
-	if err != nil {
-		return 0, err
+	// PAGED. ListItems silently clamps its limit to store.MaxLimit, so asking for
+	// MaxRanked*3 returned 200 rows and no error — this considered 200 of 3,558 unread
+	// items and looked like it had considered them all.
+	//
+	// It mattered far more once the content gate landed: with only 200 candidates, six
+	// passed. The gate was blamed for being too strict when the candidate set was the
+	// problem, which is exactly how a silent clamp costs an afternoon.
+	var candidates []store.Item
+	for cursor := ""; len(candidates) < MaxCandidates; {
+		page, next, err := s.repo.ListItems(ctx, sc, store.ListQuery{
+			UnreadOnly: true, Limit: store.MaxLimit, Cursor: cursor,
+		})
+		if err != nil {
+			return 0, err
+		}
+		candidates = append(candidates, page...)
+		if next == "" || len(page) == 0 {
+			break
+		}
+		cursor = next
 	}
 	if len(candidates) == 0 {
 		return 0, s.repo.ReplaceHomeRanking(ctx, sc, nil)
@@ -988,6 +1014,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			SourceID:        it.SourceID,
 			PublishedAt:     published,
 			TopicScore:      topicScore,
+			TopicLabel:      topicLabelAt(topicSet, topicIdx),
 			Entities:        namedIn(it.Title, followed),
 			TargetDomain:    host,
 			ManualWeight:    1,
@@ -1017,6 +1044,21 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		// a recommendation list rather than the unread list reordered — see
 		// hasContentMatch.
 		if !hasContentMatch(r) {
+			continue
+		}
+		// One card per story (§18.4). A near-duplicate of a story already represented is
+		// dropped, not merely demoted.
+		//
+		// The duplicate PENALTY alone is not enough and the screenshot proved it: the same
+		// Lilbits story arrived from Liliputing, Linux Smartphones and mobiputing, all three
+		// with identical titles, and all three sat in the visible top ten. A 0.8 deduction
+		// off a score of 2.5 reorders them; it does not stop the reader seeing one article
+		// three times, which on a page of recommendations is the single most obvious defect
+		// available.
+		//
+		// The penalty still earns its place: it applies to items that are SIMILAR without
+		// being the same story, which is the graded case this threshold does not catch.
+		if st.duplicateOf >= SameStoryThreshold {
 			continue
 		}
 		r = applyDeliberate(r, itemSignals[it.ID])
@@ -1151,6 +1193,36 @@ func hasContentMatch(r rank.Result) bool {
 		}
 	}
 	return false
+}
+
+// topicLabelAt names a topic by index in a form that fits a sentence, or empty when there is
+// no match.
+//
+// # Why the stored label cannot be used as-is
+//
+// topics.Label joins the top terms with a middle dot — "Projector · Depth review · Depth" —
+// which is right for the Trends list, where it is a heading and the terms are the evidence.
+// Dropped into "close to your ___ reading" it produces exactly that string mid-sentence,
+// which is what the first version shipped and which reads as a bug.
+//
+// So the first segment only. It is the heaviest term in the cluster, so it is the best single
+// word available, and one word in a sentence beats three separated by punctuation. The full
+// term list stays on the topic itself, where a reader who wants the evidence can see it.
+//
+// Bounds-checked rather than trusted: topics.Nearest returns -1 for "no topic at all", and a
+// caller that indexed with it would panic a background job on the most ordinary input there
+// is — a reader with no topics yet.
+func topicLabelAt(ts []topics.Topic, idx int) string {
+	if idx < 0 || idx >= len(ts) {
+		return ""
+	}
+	label := ts[idx].Label
+	// A Smart+ label is already written as a phrase and must survive intact; only the
+	// deterministic term-joined form is trimmed. The separator is what distinguishes them.
+	if head, _, found := strings.Cut(label, " · "); found {
+		return head
+	}
+	return label
 }
 
 // namedIn returns the followed entities whose names appear in a headline.

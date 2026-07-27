@@ -1702,11 +1702,16 @@ func chip(action, label string, pressed bool) ui.Node {
 // the stylesheet can mark them without spending any of the reason's width.
 // MaxBlurbReasons is how many clauses the rationale states.
 //
-// Two. The line is one row deep and the reasons arrive sorted by contribution, so two names
-// the factors that actually decided the placement. A third clause pushes the sentence past
-// the row and adds a term whose influence was, by construction, smaller than the two above
-// it — the rest stay reachable on hover.
-const MaxBlurbReasons = 2
+// One, and it was two until a screenshot settled it. The list pane is around 350px, and the
+// clauses are sentences — "about Ally X20, Asus ROG and more that you follow" is most of a
+// line by itself. Two of them rendered as the first clause plus "clo…", so the second
+// contributed a truncation and nothing else.
+//
+// One clause is enough because leadWithContent puts the CONTENT reason first: the line answers
+// "why this article" rather than "what else was true about it". The rest are on hover, which
+// is the right place for detail that does not fit — §18.9 wants the explanation reachable, not
+// crammed.
+const MaxBlurbReasons = 1
 
 // rankBlurb is the rationale, as a sentence, on its own line.
 //
@@ -1818,45 +1823,6 @@ func smartPlusMark(tr i18n.Runtime, it *pb.Item) ui.Node {
 		Class: "item-plus",
 		Title: tr.T("list", "smartPlusTitle"),
 	}, html.Text(tr.T("list", "smartPlusMark")))
-}
-
-// rankReasonLabel is the short, localised label for one reason.
-//
-// Keyed on the scoring TERM rather than on the server's prose, for two reasons that
-// arrive from different directions and both matter.
-//
-// The prose is built in Go, in English, and shipping it to the screen is the one path in
-// this UI that walks past the message catalogue. The hardcoded-copy lint cannot see it,
-// because the literal is not in this package — it comes over the wire. Keying on the
-// term puts the words back under i18n where every other string in the client already is.
-//
-// The prose is also a clause from a longer sentence, so at list width it becomes "from a
-// feed you rea…" and the reader learns nothing at all. A term lets the catalogue hold a
-// label sized for the space that exists.
-//
-// Falls back to the server's prose for an unrecognised term, which is what makes adding
-// a scoring factor a one-sided change: a newer server can send a term this build has
-// never heard of and the row still says something true, just longer.
-func rankReasonLabel(tr i18n.Runtime, it *pb.Item, i int) string {
-	reasons, terms := it.GetRankReasons(), it.GetRankReasonTerms()
-	if i >= len(reasons) {
-		return ""
-	}
-	if i < len(terms) {
-		// A miss renders as "namespace.key" (see i18n.bundle's OnMissing), so that
-		// exact string is the miss test.
-		//
-		// The obvious test — label != term — is WRONG, and wrong in a way that hides
-		// itself: several labels are legitimately the same word as their term, so
-		// `fresh` resolving correctly to "fresh" looked like a failed lookup and fell
-		// back to the server's prose. Every reason then rendered as a truncated English
-		// clause with the i18n path silently unused, and it took a screenshot of the
-		// running app to notice.
-		if label := tr.T("reason", terms[i]); label != "" && label != "reason."+terms[i] {
-			return label
-		}
-	}
-	return reasons[i]
 }
 
 // staticChip reports a fact rather than offering an action.

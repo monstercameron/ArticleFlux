@@ -62,6 +62,28 @@ stating that something forwards to this process, which is exactly the fact the b
 supply. A stale `.env` setting `ARTICLEFLUX_DEV` on a server therefore fails to start rather than
 quietly serving an open reader.
 
+### Authorization is one map and one interceptor, and it fails closed
+
+Every RPC has an entry in `grpcsrv.DefaultPolicy` naming the capability it needs.
+An interceptor resolves the credential and checks that entry **before the handler runs** — for
+streams as well as unary calls, since a stream RPC bypasses the unary chain entirely.
+
+Three properties make it hold rather than merely exist:
+
+- **A method with no entry is denied.** Forgetting to map a new RPC is a loud 403 in development,
+  not a silent grant to everyone.
+- **Boot refuses an uncovered API.** `Preflight` compares the map against gRPC's own service info,
+  so a method registered without a policy entry stops the process at startup and names itself,
+  rather than surfacing as a bug report weeks later.
+- **Capabilities, not roles, at the call site.** Handlers ask "may this caller read diagnostics",
+  not "is this an admin", so policy can change without touching them.
+
+This replaced an enforcement model of "each handler remembers", and it did not remember:
+`ListLogs` and `GetServerStats` required only a valid session. The log ring is instance-wide and
+contains `login failed username=… client=<ip>` for every account, so any member could read other
+people's usernames and addresses — around the tenant isolation the store layer enforces
+structurally. Both now require `system.diagnostics`, which only superadmin holds.
+
 ### The app document carries a content security policy
 
 The session token lives in `localStorage` rather than a cookie, because it travels as a gRPC metadata

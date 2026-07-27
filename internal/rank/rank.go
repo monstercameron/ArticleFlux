@@ -114,6 +114,14 @@ type Item struct {
 	// TopicScore is the cosine similarity to the reader's nearest topic
 	// centroid, 0..1. Computed by 4.10, not here.
 	TopicScore float64
+	// TopicLabel names that topic, for the reason line. Empty falls back to generic prose.
+	//
+	// §18.2 is explicit that this is the payoff of clustering into topics rather than
+	// keeping one interest vector: "matches your NPU inference reading" instead of
+	// "matches your interests". The label was available at the call site all along and the
+	// reason said the generic thing, which threw away the specificity the topic model
+	// exists to produce.
+	TopicLabel string
 	// Entities are the reader's followed brands, products or organisations that this
 	// item's headline names — display labels, for the reason line.
 	//
@@ -236,7 +244,7 @@ func Score(item Item, sig Signals, w Weights, now time.Time) Result {
 			// item-level signal available, so it takes the largest share.
 			d += w.Feed * 0.5 * item.TopicScore
 		}
-		add("topic", "close to a topic you read", d)
+		add("topic", topicText(item.TopicLabel), d)
 	}
 
 	// A named thing the reader follows, in the headline. The most specific and most
@@ -463,6 +471,23 @@ func volumeText(perDay float64) string {
 // screen before and is still unread — rather than the inference. A reader who has
 // been saving it for the weekend reads that and understands the demotion instead of
 // being told they are not interested in something they fully intend to read.
+// topicText names the matched topic, when there is a name for it.
+//
+// §18.2's stated payoff for clustering into topics rather than keeping one interest vector is
+// that the explanation gets SPECIFIC: "matches your NPU inference reading" instead of
+// "matches your interests". A generic phrase throws that away and leaves the reader nothing
+// to correct — which is the failure §18.9 is about, since a reason that names no subject
+// cannot be disagreed with.
+//
+// Falls back to the generic wording for an unlabelled cluster, which is honest: a topic whose
+// label is empty has nothing to say about itself yet.
+func topicText(label string) string {
+	if label == "" {
+		return "close to a topic you read"
+	}
+	return "close to your " + label + " reading"
+}
+
 // entityText names the followed things this headline mentions.
 //
 // It NAMES them rather than counting them, and that is the whole value of the term: "about
