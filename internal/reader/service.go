@@ -16,9 +16,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/discover"
+	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
+	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
 )
@@ -27,6 +30,12 @@ import (
 type Service struct {
 	repo    *store.ReaderRepo
 	fetcher *feed.Fetcher
+	// The optional half, wired by WithSiteAnalysis: page discovery, full-text
+	// extraction and the Smart+ analyser. Every one of them is nil on an
+	// instance that has not opted in, and every path that uses them says so.
+	pages    *discover.Fetcher
+	extract  *extract.Extractor
+	analyzer *smart.SiteAnalyzer
 }
 
 // New returns a Service.
@@ -222,6 +231,13 @@ func (s *Service) Refresh(ctx context.Context, sc store.Scope, sourceIDs []strin
 func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+
+	// A scraped source's feed_url is an index PAGE. Handing it to the feed
+	// parser produces "not a recognisable feed" on every poll forever, which is
+	// how a feature like this silently never works.
+	if src.Kind == "scrape" {
+		return s.pollScrape(ctx, src)
+	}
 
 	parsed, err := s.fetcher.Fetch(ctx, src.FeedURL,
 		feed.Conditional{ETag: src.ETag, LastModified: src.LastModified})

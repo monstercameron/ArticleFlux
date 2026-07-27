@@ -232,7 +232,17 @@ type Item struct {
 	// A signed number rather than two booleans because the two are mutually
 	// exclusive by definition, and a pair of flags makes "liked AND disliked"
 	// representable — a state every consumer would then need a policy for.
-	Rating        int32 `protobuf:"varint,16,opt,name=rating,proto3" json:"rating,omitempty"`
+	Rating int32 `protobuf:"varint,16,opt,name=rating,proto3" json:"rating,omitempty"`
+	// A short-TTL signed URL that serves this article's page through our own
+	// proxy (plan.md §10.1b). GetItem only, and empty whenever the instance has
+	// the page proxy off or the item has no URL to fetch.
+	//
+	// It is a field rather than an RPC because the client needs it at exactly the
+	// moment it already has the article: a separate MintProxyURL call would be a
+	// round trip on every article open to produce a string the server had already
+	// computed everything for. It expires in hours, which is why it is minted per
+	// GetItem rather than stored.
+	ProxyUrl      string `protobuf:"bytes,17,opt,name=proxy_url,json=proxyUrl,proto3" json:"proxy_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -377,6 +387,13 @@ func (x *Item) GetRating() int32 {
 		return x.Rating
 	}
 	return 0
+}
+
+func (x *Item) GetProxyUrl() string {
+	if x != nil {
+		return x.ProxyUrl
+	}
+	return ""
 }
 
 type ListFeedsRequest struct {
@@ -1256,6 +1273,597 @@ func (*UnsubscribeResponse) Descriptor() ([]byte, []int) {
 	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{17}
 }
 
+type AnalyzeSiteRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The address the reader typed. A site, a blog index, or an article — the
+	// last one is the interesting case, because "I am reading this and want more
+	// of it" is how most people arrive, and the page they are on is rarely the
+	// one the feed is declared on.
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// smart asks for the model. Off means rungs 1-3 only, which cost nothing and
+	// leave nothing.
+	Smart         bool `protobuf:"varint,2,opt,name=smart,proto3" json:"smart,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnalyzeSiteRequest) Reset() {
+	*x = AnalyzeSiteRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnalyzeSiteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnalyzeSiteRequest) ProtoMessage() {}
+
+func (x *AnalyzeSiteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnalyzeSiteRequest.ProtoReflect.Descriptor instead.
+func (*AnalyzeSiteRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *AnalyzeSiteRequest) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *AnalyzeSiteRequest) GetSmart() bool {
+	if x != nil {
+		return x.Smart
+	}
+	return false
+}
+
+// FeedCandidate is a feed that was found AND parsed. Nothing is offered on the
+// strength of a URL pattern alone: `item_count` is how many entries came out of
+// it, and a candidate that parsed to zero is not a feed the reader wants.
+type FeedCandidate struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Url       string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Title     string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	ItemCount int32                  `protobuf:"varint,3,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
+	// How it was found: "declared" (a <link rel="alternate">) or "probed" (a
+	// conventional path). Shown, because "we found this where the site says it is"
+	// and "we guessed this address" are different claims.
+	How           string `protobuf:"bytes,4,opt,name=how,proto3" json:"how,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FeedCandidate) Reset() {
+	*x = FeedCandidate{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FeedCandidate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FeedCandidate) ProtoMessage() {}
+
+func (x *FeedCandidate) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FeedCandidate.ProtoReflect.Descriptor instead.
+func (*FeedCandidate) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *FeedCandidate) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *FeedCandidate) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *FeedCandidate) GetItemCount() int32 {
+	if x != nil {
+		return x.ItemCount
+	}
+	return 0
+}
+
+func (x *FeedCandidate) GetHow() string {
+	if x != nil {
+		return x.How
+	}
+	return ""
+}
+
+// ScrapeRule is §14.2's selector set, on the wire so the reader can see it and
+// so the client can send back exactly what it was shown.
+//
+// It is deliberately readable rather than opaque: a reader who knows CSS can
+// tell at a glance whether `article.post h2 a@href` is plausible, and one who
+// does not can still see the samples underneath it. An opaque blob would ask
+// them to trust the model with no way to check it.
+type ScrapeRule struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ItemSelector  string                 `protobuf:"bytes,1,opt,name=item_selector,json=itemSelector,proto3" json:"item_selector,omitempty"`
+	TitleSelector string                 `protobuf:"bytes,2,opt,name=title_selector,json=titleSelector,proto3" json:"title_selector,omitempty"`
+	LinkSelector  string                 `protobuf:"bytes,3,opt,name=link_selector,json=linkSelector,proto3" json:"link_selector,omitempty"`
+	DateSelector  string                 `protobuf:"bytes,4,opt,name=date_selector,json=dateSelector,proto3" json:"date_selector,omitempty"`
+	// date_layout is a Go time layout for dates that are not machine-readable.
+	// Empty means the value parses on its own.
+	DateLayout      string `protobuf:"bytes,5,opt,name=date_layout,json=dateLayout,proto3" json:"date_layout,omitempty"`
+	SummarySelector string `protobuf:"bytes,6,opt,name=summary_selector,json=summarySelector,proto3" json:"summary_selector,omitempty"`
+	ImageSelector   string `protobuf:"bytes,7,opt,name=image_selector,json=imageSelector,proto3" json:"image_selector,omitempty"`
+	AuthorSelector  string `protobuf:"bytes,8,opt,name=author_selector,json=authorSelector,proto3" json:"author_selector,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ScrapeRule) Reset() {
+	*x = ScrapeRule{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScrapeRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScrapeRule) ProtoMessage() {}
+
+func (x *ScrapeRule) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScrapeRule.ProtoReflect.Descriptor instead.
+func (*ScrapeRule) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ScrapeRule) GetItemSelector() string {
+	if x != nil {
+		return x.ItemSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetTitleSelector() string {
+	if x != nil {
+		return x.TitleSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetLinkSelector() string {
+	if x != nil {
+		return x.LinkSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetDateSelector() string {
+	if x != nil {
+		return x.DateSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetDateLayout() string {
+	if x != nil {
+		return x.DateLayout
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetSummarySelector() string {
+	if x != nil {
+		return x.SummarySelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetImageSelector() string {
+	if x != nil {
+		return x.ImageSelector
+	}
+	return ""
+}
+
+func (x *ScrapeRule) GetAuthorSelector() string {
+	if x != nil {
+		return x.AuthorSelector
+	}
+	return ""
+}
+
+// ScrapeSample is one item the proposed rule actually produced, from the page as
+// it is today. Samples are the evidence: a rule is accepted or rejected on what
+// it extracted, not on how confident anything claims to be.
+type ScrapeSample struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Title         string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	PublishedAt   string                 `protobuf:"bytes,3,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
+	Summary       string                 `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScrapeSample) Reset() {
+	*x = ScrapeSample{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScrapeSample) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScrapeSample) ProtoMessage() {}
+
+func (x *ScrapeSample) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScrapeSample.ProtoReflect.Descriptor instead.
+func (*ScrapeSample) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ScrapeSample) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ScrapeSample) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ScrapeSample) GetPublishedAt() string {
+	if x != nil {
+		return x.PublishedAt
+	}
+	return ""
+}
+
+func (x *ScrapeSample) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+type ScrapeProposal struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	IndexUrl string                 `protobuf:"bytes,1,opt,name=index_url,json=indexUrl,proto3" json:"index_url,omitempty"`
+	Rule     *ScrapeRule            `protobuf:"bytes,2,opt,name=rule,proto3" json:"rule,omitempty"`
+	Samples  []*ScrapeSample        `protobuf:"bytes,3,rep,name=samples,proto3" json:"samples,omitempty"`
+	// found is how many items the rule matched on the page, which can exceed the
+	// samples returned.
+	Found int32 `protobuf:"varint,4,opt,name=found,proto3" json:"found,omitempty"`
+	// notes is the model's one-line account of what it keyed on, in its own words.
+	Notes         string `protobuf:"bytes,5,opt,name=notes,proto3" json:"notes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScrapeProposal) Reset() {
+	*x = ScrapeProposal{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScrapeProposal) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScrapeProposal) ProtoMessage() {}
+
+func (x *ScrapeProposal) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScrapeProposal.ProtoReflect.Descriptor instead.
+func (*ScrapeProposal) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ScrapeProposal) GetIndexUrl() string {
+	if x != nil {
+		return x.IndexUrl
+	}
+	return ""
+}
+
+func (x *ScrapeProposal) GetRule() *ScrapeRule {
+	if x != nil {
+		return x.Rule
+	}
+	return nil
+}
+
+func (x *ScrapeProposal) GetSamples() []*ScrapeSample {
+	if x != nil {
+		return x.Samples
+	}
+	return nil
+}
+
+func (x *ScrapeProposal) GetFound() int32 {
+	if x != nil {
+		return x.Found
+	}
+	return 0
+}
+
+func (x *ScrapeProposal) GetNotes() string {
+	if x != nil {
+		return x.Notes
+	}
+	return ""
+}
+
+type AnalyzeSiteResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// page_title is the site's own <title>, so the dialog can name what it found
+	// rather than echoing a URL back.
+	PageTitle string           `protobuf:"bytes,1,opt,name=page_title,json=pageTitle,proto3" json:"page_title,omitempty"`
+	Feeds     []*FeedCandidate `protobuf:"bytes,2,rep,name=feeds,proto3" json:"feeds,omitempty"`
+	Scrape    *ScrapeProposal  `protobuf:"bytes,3,opt,name=scrape,proto3" json:"scrape,omitempty"`
+	// smart_status says why there is no proposal, so the dialog can offer the fix
+	// rather than a shrug:
+	//
+	//	"" ...........  a proposal is present, or none was asked for
+	//	"not_asked" ..  rungs 1-3 found nothing and smart was off
+	//	"no_key" ....   this instance has no OpenAI key (an admin adds one)
+	//	"refused" ...   robots.txt asks us not to read this page
+	//	"failed" ....   the model answered and the parser rejected what it said
+	SmartStatus   string `protobuf:"bytes,4,opt,name=smart_status,json=smartStatus,proto3" json:"smart_status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnalyzeSiteResponse) Reset() {
+	*x = AnalyzeSiteResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnalyzeSiteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnalyzeSiteResponse) ProtoMessage() {}
+
+func (x *AnalyzeSiteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnalyzeSiteResponse.ProtoReflect.Descriptor instead.
+func (*AnalyzeSiteResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *AnalyzeSiteResponse) GetPageTitle() string {
+	if x != nil {
+		return x.PageTitle
+	}
+	return ""
+}
+
+func (x *AnalyzeSiteResponse) GetFeeds() []*FeedCandidate {
+	if x != nil {
+		return x.Feeds
+	}
+	return nil
+}
+
+func (x *AnalyzeSiteResponse) GetScrape() *ScrapeProposal {
+	if x != nil {
+		return x.Scrape
+	}
+	return nil
+}
+
+func (x *AnalyzeSiteResponse) GetSmartStatus() string {
+	if x != nil {
+		return x.SmartStatus
+	}
+	return ""
+}
+
+type SubscribeScrapeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IndexUrl      string                 `protobuf:"bytes,1,opt,name=index_url,json=indexUrl,proto3" json:"index_url,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	FolderId      string                 `protobuf:"bytes,3,opt,name=folder_id,json=folderId,proto3" json:"folder_id,omitempty"`
+	Rule          *ScrapeRule            `protobuf:"bytes,4,opt,name=rule,proto3" json:"rule,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeScrapeRequest) Reset() {
+	*x = SubscribeScrapeRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeScrapeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeScrapeRequest) ProtoMessage() {}
+
+func (x *SubscribeScrapeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeScrapeRequest.ProtoReflect.Descriptor instead.
+func (*SubscribeScrapeRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SubscribeScrapeRequest) GetIndexUrl() string {
+	if x != nil {
+		return x.IndexUrl
+	}
+	return ""
+}
+
+func (x *SubscribeScrapeRequest) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *SubscribeScrapeRequest) GetFolderId() string {
+	if x != nil {
+		return x.FolderId
+	}
+	return ""
+}
+
+func (x *SubscribeScrapeRequest) GetRule() *ScrapeRule {
+	if x != nil {
+		return x.Rule
+	}
+	return nil
+}
+
+type SubscribeScrapeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Feed  *Feed                  `protobuf:"bytes,1,opt,name=feed,proto3" json:"feed,omitempty"`
+	// items is how many the first poll ingested, so the dialog can say "added, 12
+	// articles" rather than leaving the reader to guess whether it worked.
+	Items         int32 `protobuf:"varint,2,opt,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeScrapeResponse) Reset() {
+	*x = SubscribeScrapeResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeScrapeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeScrapeResponse) ProtoMessage() {}
+
+func (x *SubscribeScrapeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeScrapeResponse.ProtoReflect.Descriptor instead.
+func (*SubscribeScrapeResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SubscribeScrapeResponse) GetFeed() *Feed {
+	if x != nil {
+		return x.Feed
+	}
+	return nil
+}
+
+func (x *SubscribeScrapeResponse) GetItems() int32 {
+	if x != nil {
+		return x.Items
+	}
+	return 0
+}
+
 type RefreshRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Empty means every subscribed source.
@@ -1266,7 +1874,7 @@ type RefreshRequest struct {
 
 func (x *RefreshRequest) Reset() {
 	*x = RefreshRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[18]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1278,7 +1886,7 @@ func (x *RefreshRequest) String() string {
 func (*RefreshRequest) ProtoMessage() {}
 
 func (x *RefreshRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[18]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1291,7 +1899,7 @@ func (x *RefreshRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshRequest.ProtoReflect.Descriptor instead.
 func (*RefreshRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{18}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *RefreshRequest) GetSourceIds() []string {
@@ -1312,7 +1920,7 @@ type RefreshResponse struct {
 
 func (x *RefreshResponse) Reset() {
 	*x = RefreshResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[19]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1324,7 +1932,7 @@ func (x *RefreshResponse) String() string {
 func (*RefreshResponse) ProtoMessage() {}
 
 func (x *RefreshResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[19]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1337,7 +1945,7 @@ func (x *RefreshResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshResponse.ProtoReflect.Descriptor instead.
 func (*RefreshResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{19}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *RefreshResponse) GetSourcesPolled() int32 {
@@ -1372,7 +1980,7 @@ type SearchRequest struct {
 
 func (x *SearchRequest) Reset() {
 	*x = SearchRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[20]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1384,7 +1992,7 @@ func (x *SearchRequest) String() string {
 func (*SearchRequest) ProtoMessage() {}
 
 func (x *SearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[20]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1397,7 +2005,7 @@ func (x *SearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
 func (*SearchRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{20}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SearchRequest) GetQuery() string {
@@ -1437,7 +2045,7 @@ type SearchResponse struct {
 
 func (x *SearchResponse) Reset() {
 	*x = SearchResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[21]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1449,7 +2057,7 @@ func (x *SearchResponse) String() string {
 func (*SearchResponse) ProtoMessage() {}
 
 func (x *SearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[21]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1462,7 +2070,7 @@ func (x *SearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
 func (*SearchResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{21}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SearchResponse) GetItems() []*Item {
@@ -1494,7 +2102,7 @@ type GetPrefsRequest struct {
 
 func (x *GetPrefsRequest) Reset() {
 	*x = GetPrefsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[22]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1506,7 +2114,7 @@ func (x *GetPrefsRequest) String() string {
 func (*GetPrefsRequest) ProtoMessage() {}
 
 func (x *GetPrefsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[22]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1519,7 +2127,7 @@ func (x *GetPrefsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPrefsRequest.ProtoReflect.Descriptor instead.
 func (*GetPrefsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{22}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{30}
 }
 
 type GetPrefsResponse struct {
@@ -1531,7 +2139,7 @@ type GetPrefsResponse struct {
 
 func (x *GetPrefsResponse) Reset() {
 	*x = GetPrefsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[23]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1543,7 +2151,7 @@ func (x *GetPrefsResponse) String() string {
 func (*GetPrefsResponse) ProtoMessage() {}
 
 func (x *GetPrefsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[23]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1556,7 +2164,7 @@ func (x *GetPrefsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPrefsResponse.ProtoReflect.Descriptor instead.
 func (*GetPrefsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{23}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetPrefsResponse) GetPrefs() map[string]string {
@@ -1575,7 +2183,7 @@ type SetPrefsRequest struct {
 
 func (x *SetPrefsRequest) Reset() {
 	*x = SetPrefsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[24]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1587,7 +2195,7 @@ func (x *SetPrefsRequest) String() string {
 func (*SetPrefsRequest) ProtoMessage() {}
 
 func (x *SetPrefsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[24]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1600,7 +2208,7 @@ func (x *SetPrefsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPrefsRequest.ProtoReflect.Descriptor instead.
 func (*SetPrefsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{24}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SetPrefsRequest) GetPrefs() map[string]string {
@@ -1618,7 +2226,7 @@ type SetPrefsResponse struct {
 
 func (x *SetPrefsResponse) Reset() {
 	*x = SetPrefsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[25]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1630,7 +2238,7 @@ func (x *SetPrefsResponse) String() string {
 func (*SetPrefsResponse) ProtoMessage() {}
 
 func (x *SetPrefsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[25]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1643,7 +2251,7 @@ func (x *SetPrefsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPrefsResponse.ProtoReflect.Descriptor instead.
 func (*SetPrefsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{25}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{33}
 }
 
 type Tag struct {
@@ -1671,7 +2279,7 @@ type Tag struct {
 
 func (x *Tag) Reset() {
 	*x = Tag{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[26]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1683,7 +2291,7 @@ func (x *Tag) String() string {
 func (*Tag) ProtoMessage() {}
 
 func (x *Tag) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[26]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1696,7 +2304,7 @@ func (x *Tag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Tag.ProtoReflect.Descriptor instead.
 func (*Tag) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{26}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *Tag) GetId() string {
@@ -1742,7 +2350,7 @@ type ListTagsRequest struct {
 
 func (x *ListTagsRequest) Reset() {
 	*x = ListTagsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[27]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1754,7 +2362,7 @@ func (x *ListTagsRequest) String() string {
 func (*ListTagsRequest) ProtoMessage() {}
 
 func (x *ListTagsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[27]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1767,7 +2375,7 @@ func (x *ListTagsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTagsRequest.ProtoReflect.Descriptor instead.
 func (*ListTagsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{27}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{35}
 }
 
 type ListTagsResponse struct {
@@ -1781,7 +2389,7 @@ type ListTagsResponse struct {
 
 func (x *ListTagsResponse) Reset() {
 	*x = ListTagsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[28]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1793,7 +2401,7 @@ func (x *ListTagsResponse) String() string {
 func (*ListTagsResponse) ProtoMessage() {}
 
 func (x *ListTagsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[28]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1806,7 +2414,7 @@ func (x *ListTagsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTagsResponse.ProtoReflect.Descriptor instead.
 func (*ListTagsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{28}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ListTagsResponse) GetTags() []*Tag {
@@ -1833,7 +2441,7 @@ type TagIDs struct {
 
 func (x *TagIDs) Reset() {
 	*x = TagIDs{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[29]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1845,7 +2453,7 @@ func (x *TagIDs) String() string {
 func (*TagIDs) ProtoMessage() {}
 
 func (x *TagIDs) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[29]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1858,7 +2466,7 @@ func (x *TagIDs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TagIDs.ProtoReflect.Descriptor instead.
 func (*TagIDs) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{29}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *TagIDs) GetIds() []string {
@@ -1879,7 +2487,7 @@ type SetFeedTagRequest struct {
 
 func (x *SetFeedTagRequest) Reset() {
 	*x = SetFeedTagRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[30]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1891,7 +2499,7 @@ func (x *SetFeedTagRequest) String() string {
 func (*SetFeedTagRequest) ProtoMessage() {}
 
 func (x *SetFeedTagRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[30]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1904,7 +2512,7 @@ func (x *SetFeedTagRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFeedTagRequest.ProtoReflect.Descriptor instead.
 func (*SetFeedTagRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{30}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SetFeedTagRequest) GetSourceId() string {
@@ -1937,7 +2545,7 @@ type SetFeedTagResponse struct {
 
 func (x *SetFeedTagResponse) Reset() {
 	*x = SetFeedTagResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[31]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1949,7 +2557,7 @@ func (x *SetFeedTagResponse) String() string {
 func (*SetFeedTagResponse) ProtoMessage() {}
 
 func (x *SetFeedTagResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[31]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1962,7 +2570,7 @@ func (x *SetFeedTagResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFeedTagResponse.ProtoReflect.Descriptor instead.
 func (*SetFeedTagResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{31}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SetFeedTagResponse) GetTag() *Tag {
@@ -1994,7 +2602,7 @@ type UpdateTagRequest struct {
 
 func (x *UpdateTagRequest) Reset() {
 	*x = UpdateTagRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2006,7 +2614,7 @@ func (x *UpdateTagRequest) String() string {
 func (*UpdateTagRequest) ProtoMessage() {}
 
 func (x *UpdateTagRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[32]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2019,7 +2627,7 @@ func (x *UpdateTagRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateTagRequest.ProtoReflect.Descriptor instead.
 func (*UpdateTagRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{32}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *UpdateTagRequest) GetTagId() string {
@@ -2052,7 +2660,7 @@ type UpdateTagResponse struct {
 
 func (x *UpdateTagResponse) Reset() {
 	*x = UpdateTagResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2064,7 +2672,7 @@ func (x *UpdateTagResponse) String() string {
 func (*UpdateTagResponse) ProtoMessage() {}
 
 func (x *UpdateTagResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[33]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2077,7 +2685,7 @@ func (x *UpdateTagResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateTagResponse.ProtoReflect.Descriptor instead.
 func (*UpdateTagResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{33}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *UpdateTagResponse) GetTag() *Tag {
@@ -2107,7 +2715,7 @@ type Folder struct {
 
 func (x *Folder) Reset() {
 	*x = Folder{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2119,7 +2727,7 @@ func (x *Folder) String() string {
 func (*Folder) ProtoMessage() {}
 
 func (x *Folder) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[34]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2132,7 +2740,7 @@ func (x *Folder) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Folder.ProtoReflect.Descriptor instead.
 func (*Folder) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{34}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *Folder) GetId() string {
@@ -2164,7 +2772,7 @@ type ListFoldersRequest struct {
 
 func (x *ListFoldersRequest) Reset() {
 	*x = ListFoldersRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2176,7 +2784,7 @@ func (x *ListFoldersRequest) String() string {
 func (*ListFoldersRequest) ProtoMessage() {}
 
 func (x *ListFoldersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[35]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2189,7 +2797,7 @@ func (x *ListFoldersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFoldersRequest.ProtoReflect.Descriptor instead.
 func (*ListFoldersRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{35}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{43}
 }
 
 type ListFoldersResponse struct {
@@ -2201,7 +2809,7 @@ type ListFoldersResponse struct {
 
 func (x *ListFoldersResponse) Reset() {
 	*x = ListFoldersResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2213,7 +2821,7 @@ func (x *ListFoldersResponse) String() string {
 func (*ListFoldersResponse) ProtoMessage() {}
 
 func (x *ListFoldersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[36]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2226,7 +2834,7 @@ func (x *ListFoldersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFoldersResponse.ProtoReflect.Descriptor instead.
 func (*ListFoldersResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{36}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListFoldersResponse) GetFolders() []*Folder {
@@ -2251,7 +2859,7 @@ type CreateFolderRequest struct {
 
 func (x *CreateFolderRequest) Reset() {
 	*x = CreateFolderRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2263,7 +2871,7 @@ func (x *CreateFolderRequest) String() string {
 func (*CreateFolderRequest) ProtoMessage() {}
 
 func (x *CreateFolderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[37]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2276,7 +2884,7 @@ func (x *CreateFolderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFolderRequest.ProtoReflect.Descriptor instead.
 func (*CreateFolderRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{37}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CreateFolderRequest) GetName() string {
@@ -2295,7 +2903,7 @@ type CreateFolderResponse struct {
 
 func (x *CreateFolderResponse) Reset() {
 	*x = CreateFolderResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2307,7 +2915,7 @@ func (x *CreateFolderResponse) String() string {
 func (*CreateFolderResponse) ProtoMessage() {}
 
 func (x *CreateFolderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[38]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2320,7 +2928,7 @@ func (x *CreateFolderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateFolderResponse.ProtoReflect.Descriptor instead.
 func (*CreateFolderResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{38}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *CreateFolderResponse) GetFolder() *Folder {
@@ -2340,7 +2948,7 @@ type RenameFolderRequest struct {
 
 func (x *RenameFolderRequest) Reset() {
 	*x = RenameFolderRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2352,7 +2960,7 @@ func (x *RenameFolderRequest) String() string {
 func (*RenameFolderRequest) ProtoMessage() {}
 
 func (x *RenameFolderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[39]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2365,7 +2973,7 @@ func (x *RenameFolderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameFolderRequest.ProtoReflect.Descriptor instead.
 func (*RenameFolderRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{39}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RenameFolderRequest) GetFolderId() string {
@@ -2391,7 +2999,7 @@ type RenameFolderResponse struct {
 
 func (x *RenameFolderResponse) Reset() {
 	*x = RenameFolderResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2403,7 +3011,7 @@ func (x *RenameFolderResponse) String() string {
 func (*RenameFolderResponse) ProtoMessage() {}
 
 func (x *RenameFolderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[40]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2416,7 +3024,7 @@ func (x *RenameFolderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameFolderResponse.ProtoReflect.Descriptor instead.
 func (*RenameFolderResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{40}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *RenameFolderResponse) GetFolder() *Folder {
@@ -2435,7 +3043,7 @@ type DeleteFolderRequest struct {
 
 func (x *DeleteFolderRequest) Reset() {
 	*x = DeleteFolderRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2447,7 +3055,7 @@ func (x *DeleteFolderRequest) String() string {
 func (*DeleteFolderRequest) ProtoMessage() {}
 
 func (x *DeleteFolderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[41]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2460,7 +3068,7 @@ func (x *DeleteFolderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFolderRequest.ProtoReflect.Descriptor instead.
 func (*DeleteFolderRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{41}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *DeleteFolderRequest) GetFolderId() string {
@@ -2478,7 +3086,7 @@ type DeleteFolderResponse struct {
 
 func (x *DeleteFolderResponse) Reset() {
 	*x = DeleteFolderResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2490,7 +3098,7 @@ func (x *DeleteFolderResponse) String() string {
 func (*DeleteFolderResponse) ProtoMessage() {}
 
 func (x *DeleteFolderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[42]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2503,7 +3111,7 @@ func (x *DeleteFolderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFolderResponse.ProtoReflect.Descriptor instead.
 func (*DeleteFolderResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{42}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{50}
 }
 
 // SetFeedFolderRequest files one feed.
@@ -2520,7 +3128,7 @@ type SetFeedFolderRequest struct {
 
 func (x *SetFeedFolderRequest) Reset() {
 	*x = SetFeedFolderRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2532,7 +3140,7 @@ func (x *SetFeedFolderRequest) String() string {
 func (*SetFeedFolderRequest) ProtoMessage() {}
 
 func (x *SetFeedFolderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[43]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2545,7 +3153,7 @@ func (x *SetFeedFolderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFeedFolderRequest.ProtoReflect.Descriptor instead.
 func (*SetFeedFolderRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{43}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SetFeedFolderRequest) GetSourceId() string {
@@ -2570,7 +3178,7 @@ type SetFeedFolderResponse struct {
 
 func (x *SetFeedFolderResponse) Reset() {
 	*x = SetFeedFolderResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2582,7 +3190,7 @@ func (x *SetFeedFolderResponse) String() string {
 func (*SetFeedFolderResponse) ProtoMessage() {}
 
 func (x *SetFeedFolderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[44]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2595,7 +3203,7 @@ func (x *SetFeedFolderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetFeedFolderResponse.ProtoReflect.Descriptor instead.
 func (*SetFeedFolderResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{44}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{52}
 }
 
 type SetNoteRequest struct {
@@ -2608,7 +3216,7 @@ type SetNoteRequest struct {
 
 func (x *SetNoteRequest) Reset() {
 	*x = SetNoteRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2620,7 +3228,7 @@ func (x *SetNoteRequest) String() string {
 func (*SetNoteRequest) ProtoMessage() {}
 
 func (x *SetNoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[45]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2633,7 +3241,7 @@ func (x *SetNoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNoteRequest.ProtoReflect.Descriptor instead.
 func (*SetNoteRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{45}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SetNoteRequest) GetItemId() string {
@@ -2658,7 +3266,7 @@ type SetNoteResponse struct {
 
 func (x *SetNoteResponse) Reset() {
 	*x = SetNoteResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2670,7 +3278,7 @@ func (x *SetNoteResponse) String() string {
 func (*SetNoteResponse) ProtoMessage() {}
 
 func (x *SetNoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[46]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2683,7 +3291,7 @@ func (x *SetNoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNoteResponse.ProtoReflect.Descriptor instead.
 func (*SetNoteResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{46}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{54}
 }
 
 type ListNotesRequest struct {
@@ -2695,7 +3303,7 @@ type ListNotesRequest struct {
 
 func (x *ListNotesRequest) Reset() {
 	*x = ListNotesRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2707,7 +3315,7 @@ func (x *ListNotesRequest) String() string {
 func (*ListNotesRequest) ProtoMessage() {}
 
 func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[47]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2720,7 +3328,7 @@ func (x *ListNotesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesRequest.ProtoReflect.Descriptor instead.
 func (*ListNotesRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{47}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ListNotesRequest) GetLimit() int32 {
@@ -2739,7 +3347,7 @@ type ListNotesResponse struct {
 
 func (x *ListNotesResponse) Reset() {
 	*x = ListNotesResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2751,7 +3359,7 @@ func (x *ListNotesResponse) String() string {
 func (*ListNotesResponse) ProtoMessage() {}
 
 func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[48]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2764,7 +3372,7 @@ func (x *ListNotesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNotesResponse.ProtoReflect.Descriptor instead.
 func (*ListNotesResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{48}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ListNotesResponse) GetItems() []*Item {
@@ -2783,7 +3391,7 @@ type GetFeedSettingsRequest struct {
 
 func (x *GetFeedSettingsRequest) Reset() {
 	*x = GetFeedSettingsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2795,7 +3403,7 @@ func (x *GetFeedSettingsRequest) String() string {
 func (*GetFeedSettingsRequest) ProtoMessage() {}
 
 func (x *GetFeedSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[49]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2808,7 +3416,7 @@ func (x *GetFeedSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeedSettingsRequest.ProtoReflect.Descriptor instead.
 func (*GetFeedSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{49}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetFeedSettingsRequest) GetSourceId() string {
@@ -2831,7 +3439,7 @@ type GetFeedSettingsResponse struct {
 
 func (x *GetFeedSettingsResponse) Reset() {
 	*x = GetFeedSettingsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2843,7 +3451,7 @@ func (x *GetFeedSettingsResponse) String() string {
 func (*GetFeedSettingsResponse) ProtoMessage() {}
 
 func (x *GetFeedSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[50]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2856,7 +3464,7 @@ func (x *GetFeedSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFeedSettingsResponse.ProtoReflect.Descriptor instead.
 func (*GetFeedSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{50}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *GetFeedSettingsResponse) GetSettings() *FeedSettings {
@@ -2875,7 +3483,7 @@ type UpdateFeedSettingsResponse struct {
 
 func (x *UpdateFeedSettingsResponse) Reset() {
 	*x = UpdateFeedSettingsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2887,7 +3495,7 @@ func (x *UpdateFeedSettingsResponse) String() string {
 func (*UpdateFeedSettingsResponse) ProtoMessage() {}
 
 func (x *UpdateFeedSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[51]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2900,7 +3508,7 @@ func (x *UpdateFeedSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFeedSettingsResponse.ProtoReflect.Descriptor instead.
 func (*UpdateFeedSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{51}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *UpdateFeedSettingsResponse) GetSettings() *FeedSettings {
@@ -2951,7 +3559,7 @@ type FeedSettings struct {
 
 func (x *FeedSettings) Reset() {
 	*x = FeedSettings{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2963,7 +3571,7 @@ func (x *FeedSettings) String() string {
 func (*FeedSettings) ProtoMessage() {}
 
 func (x *FeedSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[52]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2976,7 +3584,7 @@ func (x *FeedSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeedSettings.ProtoReflect.Descriptor instead.
 func (*FeedSettings) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{52}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *FeedSettings) GetSourceId() string {
@@ -3123,7 +3731,7 @@ type UpdateFeedSettingsRequest struct {
 
 func (x *UpdateFeedSettingsRequest) Reset() {
 	*x = UpdateFeedSettingsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3135,7 +3743,7 @@ func (x *UpdateFeedSettingsRequest) String() string {
 func (*UpdateFeedSettingsRequest) ProtoMessage() {}
 
 func (x *UpdateFeedSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[53]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3148,7 +3756,7 @@ func (x *UpdateFeedSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateFeedSettingsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateFeedSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{53}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *UpdateFeedSettingsRequest) GetSourceId() string {
@@ -3235,7 +3843,7 @@ type Engagement struct {
 
 func (x *Engagement) Reset() {
 	*x = Engagement{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3855,7 @@ func (x *Engagement) String() string {
 func (*Engagement) ProtoMessage() {}
 
 func (x *Engagement) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[54]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3868,7 @@ func (x *Engagement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Engagement.ProtoReflect.Descriptor instead.
 func (*Engagement) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{54}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *Engagement) GetId() string {
@@ -3335,7 +3943,7 @@ type RecordEngagementsRequest struct {
 
 func (x *RecordEngagementsRequest) Reset() {
 	*x = RecordEngagementsRequest{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3347,7 +3955,7 @@ func (x *RecordEngagementsRequest) String() string {
 func (*RecordEngagementsRequest) ProtoMessage() {}
 
 func (x *RecordEngagementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[55]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3360,7 +3968,7 @@ func (x *RecordEngagementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordEngagementsRequest.ProtoReflect.Descriptor instead.
 func (*RecordEngagementsRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{55}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *RecordEngagementsRequest) GetEvents() []*Engagement {
@@ -3385,7 +3993,7 @@ type RecordEngagementsResponse struct {
 
 func (x *RecordEngagementsResponse) Reset() {
 	*x = RecordEngagementsResponse{}
-	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3397,7 +4005,7 @@ func (x *RecordEngagementsResponse) String() string {
 func (*RecordEngagementsResponse) ProtoMessage() {}
 
 func (x *RecordEngagementsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_reader_proto_msgTypes[56]
+	mi := &file_articleflux_v1_reader_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3410,7 +4018,7 @@ func (x *RecordEngagementsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordEngagementsResponse.ProtoReflect.Descriptor instead.
 func (*RecordEngagementsResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{56}
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *RecordEngagementsResponse) GetAccepted() int32 {
@@ -3444,7 +4052,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\xad\x03\n" +
+	" \x01(\tR\tlastError\"\xca\x03\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -3464,7 +4072,8 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x04note\x18\x0f \x01(\tR\x04note\x12\x1f\n" +
 	"\vrank_reason\x18\x0e \x01(\tR\n" +
 	"rankReason\x12\x16\n" +
-	"\x06rating\x18\x10 \x01(\x05R\x06rating\"\x12\n" +
+	"\x06rating\x18\x10 \x01(\x05R\x06rating\x12\x1b\n" +
+	"\tproxy_url\x18\x11 \x01(\tR\bproxyUrl\"\x12\n" +
 	"\x10ListFeedsRequest\"b\n" +
 	"\x11ListFeedsResponse\x12*\n" +
 	"\x05feeds\x18\x01 \x03(\v2\x14.articleflux.v1.FeedR\x05feeds\x12!\n" +
@@ -3523,7 +4132,52 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x0esource_existed\x18\x02 \x01(\bR\rsourceExisted\"1\n" +
 	"\x12UnsubscribeRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"\x15\n" +
-	"\x13UnsubscribeResponse\"/\n" +
+	"\x13UnsubscribeResponse\"<\n" +
+	"\x12AnalyzeSiteRequest\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
+	"\x05smart\x18\x02 \x01(\bR\x05smart\"h\n" +
+	"\rFeedCandidate\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1d\n" +
+	"\n" +
+	"item_count\x18\x03 \x01(\x05R\titemCount\x12\x10\n" +
+	"\x03how\x18\x04 \x01(\tR\x03how\"\xbe\x02\n" +
+	"\n" +
+	"ScrapeRule\x12#\n" +
+	"\ritem_selector\x18\x01 \x01(\tR\fitemSelector\x12%\n" +
+	"\x0etitle_selector\x18\x02 \x01(\tR\rtitleSelector\x12#\n" +
+	"\rlink_selector\x18\x03 \x01(\tR\flinkSelector\x12#\n" +
+	"\rdate_selector\x18\x04 \x01(\tR\fdateSelector\x12\x1f\n" +
+	"\vdate_layout\x18\x05 \x01(\tR\n" +
+	"dateLayout\x12)\n" +
+	"\x10summary_selector\x18\x06 \x01(\tR\x0fsummarySelector\x12%\n" +
+	"\x0eimage_selector\x18\a \x01(\tR\rimageSelector\x12'\n" +
+	"\x0fauthor_selector\x18\b \x01(\tR\x0eauthorSelector\"s\n" +
+	"\fScrapeSample\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12!\n" +
+	"\fpublished_at\x18\x03 \x01(\tR\vpublishedAt\x12\x18\n" +
+	"\asummary\x18\x04 \x01(\tR\asummary\"\xc1\x01\n" +
+	"\x0eScrapeProposal\x12\x1b\n" +
+	"\tindex_url\x18\x01 \x01(\tR\bindexUrl\x12.\n" +
+	"\x04rule\x18\x02 \x01(\v2\x1a.articleflux.v1.ScrapeRuleR\x04rule\x126\n" +
+	"\asamples\x18\x03 \x03(\v2\x1c.articleflux.v1.ScrapeSampleR\asamples\x12\x14\n" +
+	"\x05found\x18\x04 \x01(\x05R\x05found\x12\x14\n" +
+	"\x05notes\x18\x05 \x01(\tR\x05notes\"\xc4\x01\n" +
+	"\x13AnalyzeSiteResponse\x12\x1d\n" +
+	"\n" +
+	"page_title\x18\x01 \x01(\tR\tpageTitle\x123\n" +
+	"\x05feeds\x18\x02 \x03(\v2\x1d.articleflux.v1.FeedCandidateR\x05feeds\x126\n" +
+	"\x06scrape\x18\x03 \x01(\v2\x1e.articleflux.v1.ScrapeProposalR\x06scrape\x12!\n" +
+	"\fsmart_status\x18\x04 \x01(\tR\vsmartStatus\"\x98\x01\n" +
+	"\x16SubscribeScrapeRequest\x12\x1b\n" +
+	"\tindex_url\x18\x01 \x01(\tR\bindexUrl\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1b\n" +
+	"\tfolder_id\x18\x03 \x01(\tR\bfolderId\x12.\n" +
+	"\x04rule\x18\x04 \x01(\v2\x1a.articleflux.v1.ScrapeRuleR\x04rule\"Y\n" +
+	"\x17SubscribeScrapeResponse\x12(\n" +
+	"\x04feed\x18\x01 \x01(\v2\x14.articleflux.v1.FeedR\x04feed\x12\x14\n" +
+	"\x05items\x18\x02 \x01(\x05R\x05items\"/\n" +
 	"\x0eRefreshRequest\x12\x1d\n" +
 	"\n" +
 	"source_ids\x18\x01 \x03(\tR\tsourceIds\"m\n" +
@@ -3684,7 +4338,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x12LIST_SCOPE_STARRED\x10\x03\x12\x17\n" +
 	"\x13LIST_SCOPE_MEGAFEED\x10\x04\x12\x14\n" +
 	"\x10LIST_SCOPE_LIKED\x10\x05\x12\x17\n" +
-	"\x13LIST_SCOPE_DISLIKED\x10\x062\x89\x11\n" +
+	"\x13LIST_SCOPE_DISLIKED\x10\x062\xc5\x12\n" +
 	"\rReaderService\x12P\n" +
 	"\tListFeeds\x12 .articleflux.v1.ListFeedsRequest\x1a!.articleflux.v1.ListFeedsResponse\x12P\n" +
 	"\tListItems\x12 .articleflux.v1.ListItemsRequest\x1a!.articleflux.v1.ListItemsResponse\x12J\n" +
@@ -3693,7 +4347,9 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x0fUndoMarkAllRead\x12&.articleflux.v1.UndoMarkAllReadRequest\x1a'.articleflux.v1.UndoMarkAllReadResponse\x12V\n" +
 	"\vMarkAllRead\x12\".articleflux.v1.MarkAllReadRequest\x1a#.articleflux.v1.MarkAllReadResponse\x12P\n" +
 	"\tSubscribe\x12 .articleflux.v1.SubscribeRequest\x1a!.articleflux.v1.SubscribeResponse\x12V\n" +
-	"\vUnsubscribe\x12\".articleflux.v1.UnsubscribeRequest\x1a#.articleflux.v1.UnsubscribeResponse\x12J\n" +
+	"\vUnsubscribe\x12\".articleflux.v1.UnsubscribeRequest\x1a#.articleflux.v1.UnsubscribeResponse\x12V\n" +
+	"\vAnalyzeSite\x12\".articleflux.v1.AnalyzeSiteRequest\x1a#.articleflux.v1.AnalyzeSiteResponse\x12b\n" +
+	"\x0fSubscribeScrape\x12&.articleflux.v1.SubscribeScrapeRequest\x1a'.articleflux.v1.SubscribeScrapeResponse\x12J\n" +
 	"\aRefresh\x12\x1e.articleflux.v1.RefreshRequest\x1a\x1f.articleflux.v1.RefreshResponse\x12G\n" +
 	"\x06Search\x12\x1d.articleflux.v1.SearchRequest\x1a\x1e.articleflux.v1.SearchResponse\x12M\n" +
 	"\bGetPrefs\x12\x1f.articleflux.v1.GetPrefsRequest\x1a .articleflux.v1.GetPrefsResponse\x12M\n" +
@@ -3726,7 +4382,7 @@ func file_articleflux_v1_reader_proto_rawDescGZIP() []byte {
 }
 
 var file_articleflux_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
+var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
 var file_articleflux_v1_reader_proto_goTypes = []any{
 	(ListScope)(0),                     // 0: articleflux.v1.ListScope
 	(*Feed)(nil),                       // 1: articleflux.v1.Feed
@@ -3747,48 +4403,56 @@ var file_articleflux_v1_reader_proto_goTypes = []any{
 	(*SubscribeResponse)(nil),          // 16: articleflux.v1.SubscribeResponse
 	(*UnsubscribeRequest)(nil),         // 17: articleflux.v1.UnsubscribeRequest
 	(*UnsubscribeResponse)(nil),        // 18: articleflux.v1.UnsubscribeResponse
-	(*RefreshRequest)(nil),             // 19: articleflux.v1.RefreshRequest
-	(*RefreshResponse)(nil),            // 20: articleflux.v1.RefreshResponse
-	(*SearchRequest)(nil),              // 21: articleflux.v1.SearchRequest
-	(*SearchResponse)(nil),             // 22: articleflux.v1.SearchResponse
-	(*GetPrefsRequest)(nil),            // 23: articleflux.v1.GetPrefsRequest
-	(*GetPrefsResponse)(nil),           // 24: articleflux.v1.GetPrefsResponse
-	(*SetPrefsRequest)(nil),            // 25: articleflux.v1.SetPrefsRequest
-	(*SetPrefsResponse)(nil),           // 26: articleflux.v1.SetPrefsResponse
-	(*Tag)(nil),                        // 27: articleflux.v1.Tag
-	(*ListTagsRequest)(nil),            // 28: articleflux.v1.ListTagsRequest
-	(*ListTagsResponse)(nil),           // 29: articleflux.v1.ListTagsResponse
-	(*TagIDs)(nil),                     // 30: articleflux.v1.TagIDs
-	(*SetFeedTagRequest)(nil),          // 31: articleflux.v1.SetFeedTagRequest
-	(*SetFeedTagResponse)(nil),         // 32: articleflux.v1.SetFeedTagResponse
-	(*UpdateTagRequest)(nil),           // 33: articleflux.v1.UpdateTagRequest
-	(*UpdateTagResponse)(nil),          // 34: articleflux.v1.UpdateTagResponse
-	(*Folder)(nil),                     // 35: articleflux.v1.Folder
-	(*ListFoldersRequest)(nil),         // 36: articleflux.v1.ListFoldersRequest
-	(*ListFoldersResponse)(nil),        // 37: articleflux.v1.ListFoldersResponse
-	(*CreateFolderRequest)(nil),        // 38: articleflux.v1.CreateFolderRequest
-	(*CreateFolderResponse)(nil),       // 39: articleflux.v1.CreateFolderResponse
-	(*RenameFolderRequest)(nil),        // 40: articleflux.v1.RenameFolderRequest
-	(*RenameFolderResponse)(nil),       // 41: articleflux.v1.RenameFolderResponse
-	(*DeleteFolderRequest)(nil),        // 42: articleflux.v1.DeleteFolderRequest
-	(*DeleteFolderResponse)(nil),       // 43: articleflux.v1.DeleteFolderResponse
-	(*SetFeedFolderRequest)(nil),       // 44: articleflux.v1.SetFeedFolderRequest
-	(*SetFeedFolderResponse)(nil),      // 45: articleflux.v1.SetFeedFolderResponse
-	(*SetNoteRequest)(nil),             // 46: articleflux.v1.SetNoteRequest
-	(*SetNoteResponse)(nil),            // 47: articleflux.v1.SetNoteResponse
-	(*ListNotesRequest)(nil),           // 48: articleflux.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),          // 49: articleflux.v1.ListNotesResponse
-	(*GetFeedSettingsRequest)(nil),     // 50: articleflux.v1.GetFeedSettingsRequest
-	(*GetFeedSettingsResponse)(nil),    // 51: articleflux.v1.GetFeedSettingsResponse
-	(*UpdateFeedSettingsResponse)(nil), // 52: articleflux.v1.UpdateFeedSettingsResponse
-	(*FeedSettings)(nil),               // 53: articleflux.v1.FeedSettings
-	(*UpdateFeedSettingsRequest)(nil),  // 54: articleflux.v1.UpdateFeedSettingsRequest
-	(*Engagement)(nil),                 // 55: articleflux.v1.Engagement
-	(*RecordEngagementsRequest)(nil),   // 56: articleflux.v1.RecordEngagementsRequest
-	(*RecordEngagementsResponse)(nil),  // 57: articleflux.v1.RecordEngagementsResponse
-	nil,                                // 58: articleflux.v1.GetPrefsResponse.PrefsEntry
-	nil,                                // 59: articleflux.v1.SetPrefsRequest.PrefsEntry
-	nil,                                // 60: articleflux.v1.ListTagsResponse.BySourceEntry
+	(*AnalyzeSiteRequest)(nil),         // 19: articleflux.v1.AnalyzeSiteRequest
+	(*FeedCandidate)(nil),              // 20: articleflux.v1.FeedCandidate
+	(*ScrapeRule)(nil),                 // 21: articleflux.v1.ScrapeRule
+	(*ScrapeSample)(nil),               // 22: articleflux.v1.ScrapeSample
+	(*ScrapeProposal)(nil),             // 23: articleflux.v1.ScrapeProposal
+	(*AnalyzeSiteResponse)(nil),        // 24: articleflux.v1.AnalyzeSiteResponse
+	(*SubscribeScrapeRequest)(nil),     // 25: articleflux.v1.SubscribeScrapeRequest
+	(*SubscribeScrapeResponse)(nil),    // 26: articleflux.v1.SubscribeScrapeResponse
+	(*RefreshRequest)(nil),             // 27: articleflux.v1.RefreshRequest
+	(*RefreshResponse)(nil),            // 28: articleflux.v1.RefreshResponse
+	(*SearchRequest)(nil),              // 29: articleflux.v1.SearchRequest
+	(*SearchResponse)(nil),             // 30: articleflux.v1.SearchResponse
+	(*GetPrefsRequest)(nil),            // 31: articleflux.v1.GetPrefsRequest
+	(*GetPrefsResponse)(nil),           // 32: articleflux.v1.GetPrefsResponse
+	(*SetPrefsRequest)(nil),            // 33: articleflux.v1.SetPrefsRequest
+	(*SetPrefsResponse)(nil),           // 34: articleflux.v1.SetPrefsResponse
+	(*Tag)(nil),                        // 35: articleflux.v1.Tag
+	(*ListTagsRequest)(nil),            // 36: articleflux.v1.ListTagsRequest
+	(*ListTagsResponse)(nil),           // 37: articleflux.v1.ListTagsResponse
+	(*TagIDs)(nil),                     // 38: articleflux.v1.TagIDs
+	(*SetFeedTagRequest)(nil),          // 39: articleflux.v1.SetFeedTagRequest
+	(*SetFeedTagResponse)(nil),         // 40: articleflux.v1.SetFeedTagResponse
+	(*UpdateTagRequest)(nil),           // 41: articleflux.v1.UpdateTagRequest
+	(*UpdateTagResponse)(nil),          // 42: articleflux.v1.UpdateTagResponse
+	(*Folder)(nil),                     // 43: articleflux.v1.Folder
+	(*ListFoldersRequest)(nil),         // 44: articleflux.v1.ListFoldersRequest
+	(*ListFoldersResponse)(nil),        // 45: articleflux.v1.ListFoldersResponse
+	(*CreateFolderRequest)(nil),        // 46: articleflux.v1.CreateFolderRequest
+	(*CreateFolderResponse)(nil),       // 47: articleflux.v1.CreateFolderResponse
+	(*RenameFolderRequest)(nil),        // 48: articleflux.v1.RenameFolderRequest
+	(*RenameFolderResponse)(nil),       // 49: articleflux.v1.RenameFolderResponse
+	(*DeleteFolderRequest)(nil),        // 50: articleflux.v1.DeleteFolderRequest
+	(*DeleteFolderResponse)(nil),       // 51: articleflux.v1.DeleteFolderResponse
+	(*SetFeedFolderRequest)(nil),       // 52: articleflux.v1.SetFeedFolderRequest
+	(*SetFeedFolderResponse)(nil),      // 53: articleflux.v1.SetFeedFolderResponse
+	(*SetNoteRequest)(nil),             // 54: articleflux.v1.SetNoteRequest
+	(*SetNoteResponse)(nil),            // 55: articleflux.v1.SetNoteResponse
+	(*ListNotesRequest)(nil),           // 56: articleflux.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),          // 57: articleflux.v1.ListNotesResponse
+	(*GetFeedSettingsRequest)(nil),     // 58: articleflux.v1.GetFeedSettingsRequest
+	(*GetFeedSettingsResponse)(nil),    // 59: articleflux.v1.GetFeedSettingsResponse
+	(*UpdateFeedSettingsResponse)(nil), // 60: articleflux.v1.UpdateFeedSettingsResponse
+	(*FeedSettings)(nil),               // 61: articleflux.v1.FeedSettings
+	(*UpdateFeedSettingsRequest)(nil),  // 62: articleflux.v1.UpdateFeedSettingsRequest
+	(*Engagement)(nil),                 // 63: articleflux.v1.Engagement
+	(*RecordEngagementsRequest)(nil),   // 64: articleflux.v1.RecordEngagementsRequest
+	(*RecordEngagementsResponse)(nil),  // 65: articleflux.v1.RecordEngagementsResponse
+	nil,                                // 66: articleflux.v1.GetPrefsResponse.PrefsEntry
+	nil,                                // 67: articleflux.v1.SetPrefsRequest.PrefsEntry
+	nil,                                // 68: articleflux.v1.ListTagsResponse.BySourceEntry
 }
 var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	1,  // 0: articleflux.v1.ListFeedsResponse.feeds:type_name -> articleflux.v1.Feed
@@ -3798,76 +4462,86 @@ var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	2,  // 4: articleflux.v1.SetItemStateResponse.item:type_name -> articleflux.v1.Item
 	0,  // 5: articleflux.v1.MarkAllReadRequest.scope:type_name -> articleflux.v1.ListScope
 	1,  // 6: articleflux.v1.SubscribeResponse.feed:type_name -> articleflux.v1.Feed
-	2,  // 7: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
-	58, // 8: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
-	59, // 9: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
-	27, // 10: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
-	60, // 11: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
-	27, // 12: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
-	27, // 13: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
-	35, // 14: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
-	35, // 15: articleflux.v1.CreateFolderResponse.folder:type_name -> articleflux.v1.Folder
-	35, // 16: articleflux.v1.RenameFolderResponse.folder:type_name -> articleflux.v1.Folder
-	2,  // 17: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
-	53, // 18: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	53, // 19: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
-	55, // 20: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
-	30, // 21: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
-	3,  // 22: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
-	5,  // 23: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
-	7,  // 24: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
-	9,  // 25: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
-	12, // 26: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
-	11, // 27: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
-	15, // 28: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
-	17, // 29: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
-	19, // 30: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
-	21, // 31: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
-	23, // 32: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
-	25, // 33: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
-	28, // 34: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
-	31, // 35: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
-	33, // 36: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
-	36, // 37: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
-	38, // 38: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
-	40, // 39: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
-	42, // 40: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
-	44, // 41: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
-	46, // 42: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
-	48, // 43: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
-	50, // 44: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
-	54, // 45: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
-	56, // 46: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
-	4,  // 47: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
-	6,  // 48: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
-	8,  // 49: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
-	10, // 50: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
-	13, // 51: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
-	14, // 52: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
-	16, // 53: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
-	18, // 54: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
-	20, // 55: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
-	22, // 56: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
-	24, // 57: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
-	26, // 58: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
-	29, // 59: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
-	32, // 60: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
-	34, // 61: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
-	37, // 62: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
-	39, // 63: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
-	41, // 64: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
-	43, // 65: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
-	45, // 66: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
-	47, // 67: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
-	49, // 68: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
-	51, // 69: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
-	52, // 70: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
-	57, // 71: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
-	47, // [47:72] is the sub-list for method output_type
-	22, // [22:47] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	21, // 7: articleflux.v1.ScrapeProposal.rule:type_name -> articleflux.v1.ScrapeRule
+	22, // 8: articleflux.v1.ScrapeProposal.samples:type_name -> articleflux.v1.ScrapeSample
+	20, // 9: articleflux.v1.AnalyzeSiteResponse.feeds:type_name -> articleflux.v1.FeedCandidate
+	23, // 10: articleflux.v1.AnalyzeSiteResponse.scrape:type_name -> articleflux.v1.ScrapeProposal
+	21, // 11: articleflux.v1.SubscribeScrapeRequest.rule:type_name -> articleflux.v1.ScrapeRule
+	1,  // 12: articleflux.v1.SubscribeScrapeResponse.feed:type_name -> articleflux.v1.Feed
+	2,  // 13: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
+	66, // 14: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
+	67, // 15: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
+	35, // 16: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
+	68, // 17: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
+	35, // 18: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
+	35, // 19: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
+	43, // 20: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
+	43, // 21: articleflux.v1.CreateFolderResponse.folder:type_name -> articleflux.v1.Folder
+	43, // 22: articleflux.v1.RenameFolderResponse.folder:type_name -> articleflux.v1.Folder
+	2,  // 23: articleflux.v1.ListNotesResponse.items:type_name -> articleflux.v1.Item
+	61, // 24: articleflux.v1.GetFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	61, // 25: articleflux.v1.UpdateFeedSettingsResponse.settings:type_name -> articleflux.v1.FeedSettings
+	63, // 26: articleflux.v1.RecordEngagementsRequest.events:type_name -> articleflux.v1.Engagement
+	38, // 27: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
+	3,  // 28: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
+	5,  // 29: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
+	7,  // 30: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
+	9,  // 31: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
+	12, // 32: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
+	11, // 33: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
+	15, // 34: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
+	17, // 35: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
+	19, // 36: articleflux.v1.ReaderService.AnalyzeSite:input_type -> articleflux.v1.AnalyzeSiteRequest
+	25, // 37: articleflux.v1.ReaderService.SubscribeScrape:input_type -> articleflux.v1.SubscribeScrapeRequest
+	27, // 38: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
+	29, // 39: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
+	31, // 40: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
+	33, // 41: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
+	36, // 42: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
+	39, // 43: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
+	41, // 44: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
+	44, // 45: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
+	46, // 46: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
+	48, // 47: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
+	50, // 48: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
+	52, // 49: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
+	54, // 50: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
+	56, // 51: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
+	58, // 52: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
+	62, // 53: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
+	64, // 54: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
+	4,  // 55: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
+	6,  // 56: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
+	8,  // 57: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
+	10, // 58: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
+	13, // 59: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
+	14, // 60: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
+	16, // 61: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
+	18, // 62: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
+	24, // 63: articleflux.v1.ReaderService.AnalyzeSite:output_type -> articleflux.v1.AnalyzeSiteResponse
+	26, // 64: articleflux.v1.ReaderService.SubscribeScrape:output_type -> articleflux.v1.SubscribeScrapeResponse
+	28, // 65: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
+	30, // 66: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
+	32, // 67: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
+	34, // 68: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
+	37, // 69: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
+	40, // 70: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
+	42, // 71: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
+	45, // 72: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
+	47, // 73: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
+	49, // 74: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
+	51, // 75: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
+	53, // 76: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
+	55, // 77: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
+	57, // 78: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
+	59, // 79: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
+	60, // 80: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
+	65, // 81: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
+	55, // [55:82] is the sub-list for method output_type
+	28, // [28:55] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_reader_proto_init() }
@@ -3876,15 +4550,15 @@ func file_articleflux_v1_reader_proto_init() {
 		return
 	}
 	file_articleflux_v1_reader_proto_msgTypes[8].OneofWrappers = []any{}
-	file_articleflux_v1_reader_proto_msgTypes[32].OneofWrappers = []any{}
-	file_articleflux_v1_reader_proto_msgTypes[53].OneofWrappers = []any{}
+	file_articleflux_v1_reader_proto_msgTypes[40].OneofWrappers = []any{}
+	file_articleflux_v1_reader_proto_msgTypes[61].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_reader_proto_rawDesc), len(file_articleflux_v1_reader_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   60,
+			NumMessages:   68,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

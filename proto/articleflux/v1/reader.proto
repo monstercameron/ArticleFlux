@@ -48,6 +48,29 @@ service ReaderService {
   // Unsubscribe removes the subscription. It never deletes the source (A22).
   rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
 
+  // AnalyzeSite answers "can I follow this page?" for an address that is not
+  // itself a feed — the subscribe ladder of §11, deterministic first.
+  //
+  // Rungs 1-3 are free and always run: <link rel="alternate">, then a short
+  // list of conventional paths, each candidate FETCHED AND PARSED before it is
+  // offered. The LLM proposes and the parser disposes, which here means no
+  // candidate reaches the reader on a model's say-so.
+  //
+  // Rung 5 — a scrape rule written by the model — runs only when `smart` is set,
+  // which the client sends only when the reader pressed the button that says
+  // what it costs. It sends the page's markup to OpenAI (§18.8), so it is
+  // per-request consent rather than a setting somebody turned on last month.
+  rpc AnalyzeSite(AnalyzeSiteRequest) returns (AnalyzeSiteResponse);
+
+  // SubscribeScrape subscribes to a page that has no feed, using a rule
+  // AnalyzeSite produced and the reader accepted.
+  //
+  // Separate from Subscribe rather than a mode of it: this one carries a rule,
+  // creates a source with kind='scrape', and is the only path that can write
+  // scrape_rules. One RPC that meant two different things would have to accept
+  // an empty rule and decide what that meant.
+  rpc SubscribeScrape(SubscribeScrapeRequest) returns (SubscribeScrapeResponse);
+
   // Refresh polls sources now instead of waiting for the scheduler.
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
 
@@ -187,6 +210,16 @@ message Item {
   // exclusive by definition, and a pair of flags makes "liked AND disliked"
   // representable — a state every consumer would then need a policy for.
   int32 rating = 16;
+  // A short-TTL signed URL that serves this article's page through our own
+  // proxy (plan.md §10.1b). GetItem only, and empty whenever the instance has
+  // the page proxy off or the item has no URL to fetch.
+  //
+  // It is a field rather than an RPC because the client needs it at exactly the
+  // moment it already has the article: a separate MintProxyURL call would be a
+  // round trip on every article open to produce a string the server had already
+  // computed everything for. It expires in hours, which is why it is minted per
+  // GetItem rather than stored.
+  string proxy_url = 17;
 }
 
 message ListFeedsRequest {}
@@ -296,6 +329,101 @@ message SubscribeResponse {
 
 message UnsubscribeRequest { string source_id = 1; }
 message UnsubscribeResponse {}
+
+message AnalyzeSiteRequest {
+  // The address the reader typed. A site, a blog index, or an article — the
+  // last one is the interesting case, because "I am reading this and want more
+  // of it" is how most people arrive, and the page they are on is rarely the
+  // one the feed is declared on.
+  string url = 1;
+  // smart asks for the model. Off means rungs 1-3 only, which cost nothing and
+  // leave nothing.
+  bool smart = 2;
+}
+
+// FeedCandidate is a feed that was found AND parsed. Nothing is offered on the
+// strength of a URL pattern alone: `item_count` is how many entries came out of
+// it, and a candidate that parsed to zero is not a feed the reader wants.
+message FeedCandidate {
+  string url = 1;
+  string title = 2;
+  int32 item_count = 3;
+  // How it was found: "declared" (a <link rel="alternate">) or "probed" (a
+  // conventional path). Shown, because "we found this where the site says it is"
+  // and "we guessed this address" are different claims.
+  string how = 4;
+}
+
+// ScrapeRule is §14.2's selector set, on the wire so the reader can see it and
+// so the client can send back exactly what it was shown.
+//
+// It is deliberately readable rather than opaque: a reader who knows CSS can
+// tell at a glance whether `article.post h2 a@href` is plausible, and one who
+// does not can still see the samples underneath it. An opaque blob would ask
+// them to trust the model with no way to check it.
+message ScrapeRule {
+  string item_selector = 1;
+  string title_selector = 2;
+  string link_selector = 3;
+  string date_selector = 4;
+  // date_layout is a Go time layout for dates that are not machine-readable.
+  // Empty means the value parses on its own.
+  string date_layout = 5;
+  string summary_selector = 6;
+  string image_selector = 7;
+  string author_selector = 8;
+}
+
+// ScrapeSample is one item the proposed rule actually produced, from the page as
+// it is today. Samples are the evidence: a rule is accepted or rejected on what
+// it extracted, not on how confident anything claims to be.
+message ScrapeSample {
+  string title = 1;
+  string url = 2;
+  string published_at = 3;
+  string summary = 4;
+}
+
+message ScrapeProposal {
+  string index_url = 1;
+  ScrapeRule rule = 2;
+  repeated ScrapeSample samples = 3;
+  // found is how many items the rule matched on the page, which can exceed the
+  // samples returned.
+  int32 found = 4;
+  // notes is the model's one-line account of what it keyed on, in its own words.
+  string notes = 5;
+}
+
+message AnalyzeSiteResponse {
+  // page_title is the site's own <title>, so the dialog can name what it found
+  // rather than echoing a URL back.
+  string page_title = 1;
+  repeated FeedCandidate feeds = 2;
+  ScrapeProposal scrape = 3;
+  // smart_status says why there is no proposal, so the dialog can offer the fix
+  // rather than a shrug:
+  //   "" ...........  a proposal is present, or none was asked for
+  //   "not_asked" ..  rungs 1-3 found nothing and smart was off
+  //   "no_key" ....   this instance has no OpenAI key (an admin adds one)
+  //   "refused" ...   robots.txt asks us not to read this page
+  //   "failed" ....   the model answered and the parser rejected what it said
+  string smart_status = 4;
+}
+
+message SubscribeScrapeRequest {
+  string index_url = 1;
+  string title = 2;
+  string folder_id = 3;
+  ScrapeRule rule = 4;
+}
+
+message SubscribeScrapeResponse {
+  Feed feed = 1;
+  // items is how many the first poll ingested, so the dialog can say "added, 12
+  // articles" rather than leaving the reader to guess whether it worked.
+  int32 items = 2;
+}
 
 message RefreshRequest {
   // Empty means every subscribed source.

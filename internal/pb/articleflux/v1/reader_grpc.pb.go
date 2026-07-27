@@ -27,6 +27,8 @@ const (
 	ReaderService_MarkAllRead_FullMethodName        = "/articleflux.v1.ReaderService/MarkAllRead"
 	ReaderService_Subscribe_FullMethodName          = "/articleflux.v1.ReaderService/Subscribe"
 	ReaderService_Unsubscribe_FullMethodName        = "/articleflux.v1.ReaderService/Unsubscribe"
+	ReaderService_AnalyzeSite_FullMethodName        = "/articleflux.v1.ReaderService/AnalyzeSite"
+	ReaderService_SubscribeScrape_FullMethodName    = "/articleflux.v1.ReaderService/SubscribeScrape"
 	ReaderService_Refresh_FullMethodName            = "/articleflux.v1.ReaderService/Refresh"
 	ReaderService_Search_FullMethodName             = "/articleflux.v1.ReaderService/Search"
 	ReaderService_GetPrefs_FullMethodName           = "/articleflux.v1.ReaderService/GetPrefs"
@@ -86,6 +88,27 @@ type ReaderServiceClient interface {
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (*SubscribeResponse, error)
 	// Unsubscribe removes the subscription. It never deletes the source (A22).
 	Unsubscribe(ctx context.Context, in *UnsubscribeRequest, opts ...grpc.CallOption) (*UnsubscribeResponse, error)
+	// AnalyzeSite answers "can I follow this page?" for an address that is not
+	// itself a feed — the subscribe ladder of §11, deterministic first.
+	//
+	// Rungs 1-3 are free and always run: <link rel="alternate">, then a short
+	// list of conventional paths, each candidate FETCHED AND PARSED before it is
+	// offered. The LLM proposes and the parser disposes, which here means no
+	// candidate reaches the reader on a model's say-so.
+	//
+	// Rung 5 — a scrape rule written by the model — runs only when `smart` is set,
+	// which the client sends only when the reader pressed the button that says
+	// what it costs. It sends the page's markup to OpenAI (§18.8), so it is
+	// per-request consent rather than a setting somebody turned on last month.
+	AnalyzeSite(ctx context.Context, in *AnalyzeSiteRequest, opts ...grpc.CallOption) (*AnalyzeSiteResponse, error)
+	// SubscribeScrape subscribes to a page that has no feed, using a rule
+	// AnalyzeSite produced and the reader accepted.
+	//
+	// Separate from Subscribe rather than a mode of it: this one carries a rule,
+	// creates a source with kind='scrape', and is the only path that can write
+	// scrape_rules. One RPC that meant two different things would have to accept
+	// an empty rule and decide what that meant.
+	SubscribeScrape(ctx context.Context, in *SubscribeScrapeRequest, opts ...grpc.CallOption) (*SubscribeScrapeResponse, error)
 	// Refresh polls sources now instead of waiting for the scheduler.
 	Refresh(ctx context.Context, in *RefreshRequest, opts ...grpc.CallOption) (*RefreshResponse, error)
 	// Search runs a full-text query (FTS5, G1).
@@ -246,6 +269,26 @@ func (c *readerServiceClient) Unsubscribe(ctx context.Context, in *UnsubscribeRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UnsubscribeResponse)
 	err := c.cc.Invoke(ctx, ReaderService_Unsubscribe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) AnalyzeSite(ctx context.Context, in *AnalyzeSiteRequest, opts ...grpc.CallOption) (*AnalyzeSiteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnalyzeSiteResponse)
+	err := c.cc.Invoke(ctx, ReaderService_AnalyzeSite_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) SubscribeScrape(ctx context.Context, in *SubscribeScrapeRequest, opts ...grpc.CallOption) (*SubscribeScrapeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubscribeScrapeResponse)
+	err := c.cc.Invoke(ctx, ReaderService_SubscribeScrape_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -462,6 +505,27 @@ type ReaderServiceServer interface {
 	Subscribe(context.Context, *SubscribeRequest) (*SubscribeResponse, error)
 	// Unsubscribe removes the subscription. It never deletes the source (A22).
 	Unsubscribe(context.Context, *UnsubscribeRequest) (*UnsubscribeResponse, error)
+	// AnalyzeSite answers "can I follow this page?" for an address that is not
+	// itself a feed — the subscribe ladder of §11, deterministic first.
+	//
+	// Rungs 1-3 are free and always run: <link rel="alternate">, then a short
+	// list of conventional paths, each candidate FETCHED AND PARSED before it is
+	// offered. The LLM proposes and the parser disposes, which here means no
+	// candidate reaches the reader on a model's say-so.
+	//
+	// Rung 5 — a scrape rule written by the model — runs only when `smart` is set,
+	// which the client sends only when the reader pressed the button that says
+	// what it costs. It sends the page's markup to OpenAI (§18.8), so it is
+	// per-request consent rather than a setting somebody turned on last month.
+	AnalyzeSite(context.Context, *AnalyzeSiteRequest) (*AnalyzeSiteResponse, error)
+	// SubscribeScrape subscribes to a page that has no feed, using a rule
+	// AnalyzeSite produced and the reader accepted.
+	//
+	// Separate from Subscribe rather than a mode of it: this one carries a rule,
+	// creates a source with kind='scrape', and is the only path that can write
+	// scrape_rules. One RPC that meant two different things would have to accept
+	// an empty rule and decide what that meant.
+	SubscribeScrape(context.Context, *SubscribeScrapeRequest) (*SubscribeScrapeResponse, error)
 	// Refresh polls sources now instead of waiting for the scheduler.
 	Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error)
 	// Search runs a full-text query (FTS5, G1).
@@ -571,6 +635,12 @@ func (UnimplementedReaderServiceServer) Subscribe(context.Context, *SubscribeReq
 }
 func (UnimplementedReaderServiceServer) Unsubscribe(context.Context, *UnsubscribeRequest) (*UnsubscribeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Unsubscribe not implemented")
+}
+func (UnimplementedReaderServiceServer) AnalyzeSite(context.Context, *AnalyzeSiteRequest) (*AnalyzeSiteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AnalyzeSite not implemented")
+}
+func (UnimplementedReaderServiceServer) SubscribeScrape(context.Context, *SubscribeScrapeRequest) (*SubscribeScrapeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubscribeScrape not implemented")
 }
 func (UnimplementedReaderServiceServer) Refresh(context.Context, *RefreshRequest) (*RefreshResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Refresh not implemented")
@@ -784,6 +854,42 @@ func _ReaderService_Unsubscribe_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ReaderServiceServer).Unsubscribe(ctx, req.(*UnsubscribeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_AnalyzeSite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnalyzeSiteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).AnalyzeSite(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_AnalyzeSite_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).AnalyzeSite(ctx, req.(*AnalyzeSiteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_SubscribeScrape_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubscribeScrapeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).SubscribeScrape(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_SubscribeScrape_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).SubscribeScrape(ctx, req.(*SubscribeScrapeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1132,6 +1238,14 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Unsubscribe",
 			Handler:    _ReaderService_Unsubscribe_Handler,
+		},
+		{
+			MethodName: "AnalyzeSite",
+			Handler:    _ReaderService_AnalyzeSite_Handler,
+		},
+		{
+			MethodName: "SubscribeScrape",
+			Handler:    _ReaderService_SubscribeScrape_Handler,
 		},
 		{
 			MethodName: "Refresh",
