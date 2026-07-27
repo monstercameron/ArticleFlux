@@ -2742,12 +2742,34 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       Fixed in `client/platform`, not in `client/view/reader.go`: the bug was never in the view, so
       the file this ticket said not to touch did not have to be touched.
 
-      *Still owed, and it is the second half of the Done-when:* `scrolling back into a skipped
-      article does mark it read` is still `fixme`, because the assertion it shares with `jumping down
-      the list does not read what it jumped over` still fails — `rows.nth(1)` comes back
-      `data-read=true`. That failure **predates this fix** (it is in the run logs from before the
-      handler was revived), so 8b.49's suppression is incomplete on some path, and finding which
-      needs edits inside `reader.go` while another session has uncommitted changes there.
+      ◧ 2026-07-27 (evening, second look) — **the sibling failure is FLAKY, not constant**, which
+      narrows it: `jumping down the list does not read what it jumped over` passes in isolation and
+      fails perhaps one run in two. Both open paths do populate the suppression — the in-stream jump
+      marks every article before the target index, and the re-seeded path rebuilds the map from the
+      seed — so the map is correct when the scroll STARTS. Something clears or replaces `skipPast`
+      while a smooth scroll is still travelling, and the scrolled-past handler then sees an empty
+      map for the articles still in flight. That is the shape to look for; it is not a missing case
+      in either open path, which is where the previous note pointed.
+
+      ◧ 2026-07-27 (evening) — **the second half is blocked one layer in, and it is now measured
+      rather than suspected.** Un-fixme'ing the scroll-back test and instrumenting the handler shows
+      the suppression is not the problem: opening an article arms `expectFocus` with its id, and the
+      handler ignores every article until THAT one reports as topmost. **Row 2 is the last article,
+      so the pane runs out of scroll before its top reaches the fold** — it can never be topmost, the
+      gate is never disarmed, and every scroll for the rest of the session is ignored.
+      *The trace:* after clicking row 2 the handler fires with row 1's id while waiting for row 2's;
+      after wheeling back up it fires with row 0's id while STILL waiting for row 2's. Both return
+      early. So the test does not fail because scrolling-back marking was lost — it fails because
+      nothing is listening by the time it scrolls.
+      **This is worse than one test.** A gate that never disarms means the title, the highlighted row
+      and the saved reading position stop following a scroll after the first click of any session —
+      A28's rule is in effect for exactly one article at a time.
+      *Two candidate fixes, both inside `reader.go`, which another lane holds uncommitted:* disarm
+      the gate when the scroll settles anywhere at or past the target, or give the stream enough
+      trailing space that its last article can reach the top — which the reading model needs anyway,
+      since an article that cannot become topmost cannot be the one A28 says is being read.
+      The fixme is restored with that written into it, so the next person starts from the mechanism
+      rather than from the symptom.
 
 - [x] **8b.49 A jump no longer reads what it jumped over** — §20.9. Cam: *"click n then click n+2 and
       n, n+1 and n+2 are all marked read — isn't granular enough."* Both the seeded predecessor on an
@@ -2804,6 +2826,15 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
       still listed. And it did not clear `user_prefs`, so once one test selected the Read later
       stream, **every later test booted into an empty stream and failed as though the data were
       gone** — thirteen failures, none of them about data.
+
+      ◧ 2026-07-27 (night) — **51 passed, 4 failed**, and two of the four were the tests being wrong
+      rather than the app. `j and k move through the list` read the current title immediately after
+      the first `j` and called it `first`; what it captured was the title from BEFORE that press, so
+      `k` was then asserted to land one article further back than it should. Instrumenting the
+      keydown registration proved the app moves exactly one article per key and registers exactly one
+      listener — the assertion was off by one. Its `t` step had the same shape of error, scoping
+      `read-later` to `.first()` in a pane that is a STREAM, so it checked a different article's
+      button than the one the key acted on. Both fixed; the app was not touched.
 
       ◧ 2026-07-27 (evening) — **the suite was not a gate, and the reason was not in the specs.**
       A full run reported 30 failures while every one of those files passed ALONE. The cascade came

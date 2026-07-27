@@ -187,15 +187,28 @@ test.describe('reading', () => {
       .toHaveAttribute('data-read', 'false');
   });
 
-  // FIXME (see TODO 8b.50): this cannot pass while the topmost-article handler is
-  // dead, and it is dead in the current build — scrolling through three articles
-  // changes neither `document.title` nor the highlighted row, so `focusArticle`
-  // is never running. Marking read still works because the OTHER handler
-  // (scrolled-past) is alive, which is what makes the breakage easy to miss.
+  // FIXME (TODO 8b.52). Still fixme, but for a different reason than before, and
+  // the new one is measured rather than suspected.
   //
-  // Left in the file rather than deleted: it is the assertion that says the jump
-  // suppression is temporary, and the day the handler is fixed this is how we
-  // find out whether it stayed temporary.
+  // The topmost-article handler is alive again — it was bound to the `#app` node
+  // GWC's Render replaces, and it listens on the document now. What blocks this
+  // is one layer in: opening an article arms `expectFocus` with its id and the
+  // handler ignores every article until THAT one reports as topmost. Row 2 is
+  // the LAST article, so the pane runs out of scroll before its top reaches the
+  // fold — it can never be topmost, the gate is never disarmed, and from then on
+  // every scroll in the session is ignored.
+  //
+  // Instrumented directly: after clicking row 2 the handler fires with row 1's
+  // id while waiting for row 2's, and after wheeling back up it fires with row
+  // 0's id while STILL waiting for row 2's. Both return early. So this test does
+  // not fail because scrolling-back marking was lost — it fails because nothing
+  // is listening by the time it scrolls.
+  //
+  // Two candidate fixes, both inside `reader.go`, which another lane holds:
+  // disarm the gate when the scroll settles anywhere at or past the target, or
+  // give the stream enough trailing space that its last article can reach the
+  // top — which the reading model needs anyway, since an article that cannot
+  // become topmost cannot be the one A28 says is being read.
   test.fixme('scrolling back into a skipped article does mark it read', async ({ page }) => {
     await boot(page);
     await openAlpha(page);
@@ -502,24 +515,37 @@ test.describe('keyboard', () => {
   test('j and k move through the list, t saves for later', async ({ page }) => {
     await boot(page);
 
-    await page.locator('body').press('j');
-    await expect(currentArticle(page).locator('h1')).toBeVisible();
-    const first = await currentArticle(page).locator('h1').textContent();
+    // Boot lands on the first article, so there is already a current one before
+    // any key is pressed. That is the value every step below is measured
+    // against.
+    const title = currentArticle(page).locator('h1');
+    await expect(title).toBeVisible();
+    const atBoot = await title.textContent();
 
-    // Waited for, not read. `press` returns as soon as the key is delivered,
-    // and the pane re-renders asynchronously — reading the title straight after
-    // reads the OLD one and the comparison fails on a race rather than on
-    // behaviour.
+    // Waited for, not read — `press` returns as soon as the key is delivered and
+    // the pane re-renders asynchronously. This test used to read the title
+    // immediately after the FIRST press and call it `first`; what it actually
+    // captured was the title from before that press, so `k` was then asserted to
+    // land one article further back than it should. The app was moving exactly
+    // one article per key the whole time; the assertion was off by one.
     await page.locator('body').press('j');
-    await expect(currentArticle(page).locator('h1')).not.toHaveText(first);
-    const second = await currentArticle(page).locator('h1').textContent();
+    await expect(title).not.toHaveText(atBoot);
+    const first = await title.textContent();
+
+    await page.locator('body').press('j');
+    await expect(title).not.toHaveText(first);
+    const second = await title.textContent();
     expect(second).not.toBe(first);
 
+    // And back, to exactly where `j` left off — one article, not two.
     await page.locator('body').press('k');
-    await expect(currentArticle(page).locator('h1')).toHaveText(first);
+    await expect(title).toHaveText(first);
 
+    // Scoped to the CURRENT article, not to the first button in the pane. The
+    // article pane is a stream, so `.first()` is whichever article happens to be
+    // at the top of it — which after two js and a k is not the one `t` acts on.
     await page.locator('body').press('t');
-    await expect(page.locator('.pane-article [data-action="read-later"]').first())
+    await expect(currentArticle(page).locator('[data-action="read-later"]').first())
       .toHaveAttribute('aria-pressed', 'true');
   });
 
