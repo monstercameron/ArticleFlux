@@ -169,22 +169,24 @@ func TestCorpusIsWellFormed(t *testing.T) {
 // habit this test cannot survive.
 const (
 	// minAccuracy: of items that HAVE a correct category, the share whose primary
-	// we got exactly right. Measured 0.578.
-	minAccuracy = 0.55
+	// we got exactly right. Measured 0.594 after the 2026-07-27 corpus-driven
+	// expansion (was 0.578 at the first calibration).
+	minAccuracy = 0.57
 
 	// minTopHit: the share where the correct category came back as the primary OR
 	// a secondary. Softer than accuracy and it measures something different — a
 	// gold answer sitting in second place is a lexicon that knows what the article
 	// is about and disagrees about the section, which is a much smaller problem
-	// than one that has no idea. Measured 0.613.
-	minTopHit = 0.58
+	// than one that has no idea. Measured 0.637 (was 0.613).
+	minTopHit = 0.61
 
 	// maxFalseAssignment: of items with NO correct category, the share we gave one
 	// to anyway. **The R23 metric**, and the one to drive down first when there is
 	// a choice, because it is what a reader experiences as the feature being WRONG
 	// rather than as the feature being incomplete. Measured 0.130 — six of the
-	// forty-six unsortable items.
-	maxFalseAssignment = 0.18
+	// forty-six unsortable items — unchanged across the expansion, which is the
+	// result that mattered: 110 terms were added and precision did not move.
+	maxFalseAssignment = 0.16
 
 	// minPrecision is the per-category floor, applied only where the corpus has
 	// enough support to mean anything. Measured minimum 0.600 (science, software).

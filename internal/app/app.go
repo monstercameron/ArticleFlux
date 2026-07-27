@@ -498,6 +498,10 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// on the next poll. See reader.WithSignalHook for why the callback is a func, and
 	// NudgeDerive for the rate limit that makes it safe to call on every batch.
 	svc.WithSignalHook(a.NudgeDerive)
+	// The Smart+ opt-in goes to ForceDerive rather than NudgeDerive: the reader is
+	// waiting on this one, so it must not be dropped by the rate limit that exists to
+	// tame the signal path above.
+	svc.WithRankPrefHook(a.ForceDerive)
 	// And the live-update announcement (§20.3). Wired here rather than inside
 	// reader.New for the reason the signal hook is: the service layer must not
 	// know how anybody is told, or the sync surface and the offline-pack channel

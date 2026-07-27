@@ -14,6 +14,24 @@ func hardware() classify.Label {
 		Slug: "hardware",
 		Name: "Hardware & Chips",
 		Terms: []classify.Term{
+			// Semiconductor and fab vocabulary, restored 2026-07-27.
+			//
+			// These were deleted to fit consumer-device brands under a 110-term cap
+			// that has since been raised. The trade was forced and it was a real
+			// loss: this feed set is consumer-heavy, so cutting them barely moved
+			// the measured coverage, and a reader who follows silicon and fab news
+			// lost the vocabulary their reading is made of. A default taxonomy has
+			// to serve a reader the development corpus does not contain.
+			{Text: "wafer", Weight: 2.2},
+			{Text: "lithography", Weight: 2.2},
+			{Text: "chip fab", Weight: 2.2},
+			{Text: "die shrink", Weight: 2.2},
+			{Text: "process node", Weight: 2.0},
+			{Text: "vram", Weight: 1.8},
+			{Text: "x86", Weight: 1.6},
+			{Text: "instruction set", Weight: 1.6},
+			{Text: "heat sink", Weight: 1.5},
+
 			{Text: "tsmc", Weight: 2.4},
 			{Text: "snapdragon", Weight: 2.2},
 			{Text: "vision pro", Weight: 2.0},

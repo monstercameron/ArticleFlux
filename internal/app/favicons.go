@@ -63,6 +63,15 @@ func (a *App) serveFavicon(w http.ResponseWriter, r *http.Request) {
 	// request at all for icons it already has.
 	w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(faviconMaxAge)+", immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Defense in depth, matching serveAsset (internal/app/asset.go): the
+	// content-type this endpoint serves is a label we ourselves derived by
+	// sniffing bytes at fetch time (internal/favicon.sniffAllowedImage), not
+	// something the remote site gets to choose — but this header costs
+	// nothing and means a mistake in that trust chain, now or in a future
+	// change, still cannot turn into a document loaded with this origin's
+	// authority. Harmless for the PNG/ICO/GIF/JPEG/WebP bytes that make up
+	// everything this endpoint actually serves.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox; base-uri 'none'")
 
 	if len(row.Bytes) == 0 {
 		w.Header().Set("Content-Type", "image/png")

@@ -218,28 +218,20 @@ func TestFetch_RedirectToSVGRefused(t *testing.T) {
 	}
 }
 
-// TestFetch_ContentTypeLieIsTrustedNotSniffed documents — rather than
-// asserts a security property that does not exist in the code — the actual
-// behaviour of get() in favicon.go: it decides purely from the Content-Type
-// HEADER (favicon.go:169-172) and never inspects the bytes. A server that
-// serves real SVG (with an inline <script>) but CLAIMS "image/png" is
-// therefore accepted and stored as a "png".
+// TestFetch_MislabeledSVGRefused pins the headline security property this
+// package exists to provide: a hostile server that serves a script-bearing
+// SVG but CLAIMS an allowed image Content-Type ("image/png") must still be
+// refused. The decision is made from the bytes (looksLikeSVG, checked before
+// sniffAllowedImage in get()), never from the header — because the header is
+// the attacker's own claim about itself.
 //
-// This is not exploitable end-to-end today only because the sole consumer,
-// internal/app/favicons.go, echoes back the SAME claimed Content-Type it
-// received (never the sniffed/actual type) together with
-// "X-Content-Type-Options: nosniff" on every response — so a browser loading
-// the icon is told, and forced to honour, "image/png" and will not render or
-// execute the SVG/script inside. If any future caller ever re-sniffs the
-// bytes, or serves them without nosniff, or trusts a DIFFERENT content-type
-// than the one that was validated here, this becomes a live stored-XSS path.
-// Pinned so a future change to this trust model is a deliberate decision,
-// not a silent one.
-func TestFetch_ContentTypeLieIsTrustedNotSniffed(t *testing.T) {
+// This test is the whole point of the fix: it must fail (accept the icon) if
+// get()'s bytes-based check is removed and header trust is restored.
+func TestFetch_MislabeledSVGRefused(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", http.NotFound)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		// Real SVG bytes, mislabeled as an allowed image type.
+		// Real SVG bytes carrying a script, labelled as an allowed image type.
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte(svgPayload))
 	})
@@ -248,14 +240,34 @@ func TestFetch_ContentTypeLieIsTrustedNotSniffed(t *testing.T) {
 
 	f := newFetcher(true)
 	icon, err := fetch(t, f, srv, 5*time.Second)
+	if err != ErrNoIcon || icon != nil {
+		t.Fatalf("SVG mislabeled as image/png: Fetch() = %v, %v; want (nil, ErrNoIcon) — the bytes, not the label, must decide", icon, err)
+	}
+}
+
+// TestFetch_LabelLiesButBytesWin is the mirror image: a server mislabels a
+// perfectly legitimate PNG as "image/gif". Because the decision is made from
+// the bytes, it is still accepted, and the ContentType recorded is the
+// SNIFFED truth ("image/png"), not the server's claim — proving the fix
+// does not simply add a stricter header allowlist, it stops consulting the
+// header for this decision at all.
+func TestFetch_LabelLiesButBytesWin(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", http.NotFound)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/gif") // lies; bytes are PNG
+		_, _ = w.Write(png1x1)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := newFetcher(true)
+	icon, err := fetch(t, f, srv, 5*time.Second)
 	if err != nil {
-		t.Fatalf("current behaviour: mislabeled content is accepted; got err %v instead", err)
+		t.Fatalf("a mislabeled but genuinely-PNG icon should be accepted, got err %v", err)
 	}
 	if icon.ContentType != "image/png" {
-		t.Errorf("ContentType = %q, want the claimed %q (header is trusted verbatim)", icon.ContentType, "image/png")
-	}
-	if !strings.Contains(string(icon.Bytes), "<script>") {
-		t.Error("expected the raw SVG/script bytes to have been stored unchanged")
+		t.Errorf("ContentType = %q, want the sniffed %q, not the claimed image/gif", icon.ContentType, "image/png")
 	}
 }
 
@@ -347,7 +359,11 @@ func TestFetch_OversizedIconRefused(t *testing.T) {
 }
 
 func TestFetch_ExactlyMaxBytesAccepted(t *testing.T) {
-	exact := make([]byte, MaxBytes)
+	// Must start with real PNG magic: acceptance is now decided from the
+	// bytes, not the Content-Type header, so an all-zero payload of the right
+	// length would no longer pass (correctly — it isn't a real image).
+	exact := append([]byte{}, png1x1[:8]...)
+	exact = append(exact, make([]byte, MaxBytes-8)...)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", http.NotFound)
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {

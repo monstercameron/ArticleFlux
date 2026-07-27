@@ -113,6 +113,11 @@ const (
 	ReasonMidGround = "midGround"
 	// ReasonWashClamped: the article wash was outside 0–40%.
 	ReasonWashClamped = "washClamped"
+	// ReasonSourceHue: the primary text colour was darkened so that a SOURCE's
+	// hue, mixed toward it, is still readable as type (see fixInk). Its own reason
+	// because the sentence a reader needs is different: this one is not about the
+	// text they were looking at, it is about the feed names in the list.
+	ReasonSourceHue = "sourceHue"
 )
 
 // ErrNotAPalette is returned when a theme cannot be repaired because it is not a
@@ -390,7 +395,7 @@ func colourFields(t *Theme) []colourField {
 // pass, which pushed six tokens to pure white and reported success while --cream
 // measured 2.32:1 on the row.
 func fixGround(t Theme, lighten bool, reps *[]Repair) Theme {
-	if groundHeadroom(t, lighten) >= groundFloor {
+	if groundOK(t, lighten, 1) {
 		return t
 	}
 	down := !lighten
@@ -402,7 +407,7 @@ func fixGround(t Theme, lighten bool, reps *[]Repair) Theme {
 		cand.Sunk = Toward(t.Sunk, down, step)
 		cand.Line = Toward(t.Line, down, step)
 		cand.Hair = Toward(t.Hair, down, step)
-		if groundHeadroom(cand, lighten) < groundFloor*1.02 {
+		if !groundOK(cand, lighten, 1.02) {
 			continue
 		}
 		*reps = append(*reps, Repair{
@@ -412,6 +417,97 @@ func fixGround(t Theme, lighten bool, reps *[]Repair) Theme {
 	// Unreachable in practice — pure black gives light text 21:1 and pure white
 	// gives dark text the same, so the loop always lands. Left as a fallthrough
 	// rather than a panic because Sanitize's final assertion is the real backstop.
+	return t
+}
+
+// groundOK reports whether a ground family can carry BOTH the text tokens and the
+// source hues.
+//
+// # The second condition is why this is not just groundHeadroom
+//
+// Text can be moved. `--ink` — a source's hue where it carries type — mostly
+// cannot: on a dark theme it IS the hue, unchanged, and the hue belongs to the
+// source rather than to the theme (HueFor). So the only lever a dark theme has over
+// the legibility of every source name in the list is its own ground, and if that
+// ground is too pale for a colour picked at 78% lightness, no repair anywhere else
+// in the palette will help.
+//
+// On a light theme there is a lever — the mix runs toward `--cream`, which fixInk
+// darkens — so what is checked here is whether the ground is reachable with the
+// BEST cream available, which is black. Checking it with the cream the model
+// actually returned would move the ground for a palette whose text was simply too
+// pale, and moving a ground is the most visible repair there is.
+//
+// `slack` is 1 for the "is this already fine" test and 1.02 for the "is this
+// candidate good enough to stop at" test, which is what keeps the repair
+// idempotent.
+func groundOK(t Theme, lighten bool, slack float64) bool {
+	if groundHeadroom(t, lighten) < groundFloor*slack {
+		return false
+	}
+	best := t
+	if t.Tone == ToneLight {
+		best.Cream = "#000000"
+	}
+	// The bar is fixInk's TARGET, not the floor, and the difference is not
+	// pedantry: this predicate's job is to guarantee that fixInk can land. Asking
+	// only for AAFloor here accepts a ground whose best possible ink is 4.50, and
+	// fixInk then aims for 4.55, cannot reach it, gives up, and Sanitize refuses a
+	// palette that every earlier pass had reported as repaired. The sweep found
+	// exactly that on round 365 — a bright magenta ground whose amber source name
+	// landed at 1.93:1.
+	if w, _ := worstInk(best, best.Ground); w < (AAFloor+repairMargin)*slack {
+		return false
+	}
+	return true
+}
+
+// fixInk makes the source hues legible as TYPE by darkening `--cream`.
+//
+// # What this covers that nothing else did
+//
+// `--ink` is computed by the browser from `--c` and `--cream` (see oklab.go and the
+// sheet's rule), so it is not a token any theme declares and no Go check could see
+// it. That was fine for five hand-written palettes measured once in a real engine
+// (`e2e/appearance.spec.mjs`); it is not fine for a palette a model wrote thirty
+// seconds ago, whose `--cream` and whose ground are both values nobody has looked
+// at. A composed light theme can put every source name in the list at 2.5:1 and
+// pass every other check in this file.
+//
+// Only light themes are repairable here, and only through `--cream`: on a dark
+// theme `--ink` is the hue itself and the ground is the only lever, which is why
+// that case lives in groundOK instead.
+//
+// # Measured against the page, not against the rows
+//
+// Deliberately the same surface `e2e/appearance.spec.mjs` measures. A floor here
+// that were stricter than the established one would put the two in disagreement,
+// and the disagreement that fires is the one nobody reviewed — which is exactly the
+// bug raiseTo's two-number signature exists to record. Extending both to the
+// hovered and selected rows is a real improvement and a separate change: it would
+// re-open the shipped themes, and Daylight's values are recorded in theme.go as
+// having been tuned against measured contrast.
+func fixInk(t Theme, reps *[]Repair) Theme {
+	if worst, _ := worstInk(t, t.Ground); worst >= AAFloor {
+		return t
+	}
+	if t.Tone != ToneLight {
+		// Unreachable: groundOK has already refused any dark ground that cannot
+		// carry the hues, and nothing after it lightens the ground. Left as a return
+		// rather than a panic because Sanitize's final assertion is the backstop.
+		return t
+	}
+	from := t.Cream
+	for i := 1; i <= repairSteps; i++ {
+		cand := t
+		cand.Cream = Toward(from, false, float64(i)*repairStep)
+		if w, _ := worstInk(cand, cand.Ground); w >= AAFloor+repairMargin {
+			*reps = append(*reps, Repair{
+				Token: "cream", From: from, To: cand.Cream, Why: ReasonSourceHue,
+			})
+			return cand
+		}
+	}
 	return t
 }
 
@@ -551,6 +647,12 @@ func worstFailure(t Theme) string {
 	}
 	if r := ContrastRatio(t.Accent, t.Ground); r < AAFloor {
 		return fmt.Sprintf("--cc is %.2f:1 against the ground, so text on an accent fill is illegible", r)
+	}
+	// The one the build could not see before oklab.go: what a SOURCE's hue becomes
+	// when it is a word rather than a shape.
+	if r, hue := worstInk(t, t.Ground); r < AAFloor {
+		return fmt.Sprintf("--ink for %s is %.2f:1 against the page, so that source's "+
+			"name is illegible in every row it appears in", hue, r)
 	}
 	return ""
 }

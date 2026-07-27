@@ -95,6 +95,17 @@ func (s *Service) WithSignalHook(f func(store.Scope)) *Service {
 	return s
 }
 
+// WithRankPrefHook installs the callback fired when a ranking preference is written.
+//
+// Separate from WithSignalHook, and wired to a different method on the App, because the
+// two arrive differently: signals come in a stream nobody asked for and want throttling,
+// while a preference change is one deliberate act with somebody watching for the result.
+// One hook serving both would have to choose, and either choice is wrong for one caller.
+func (s *Service) WithRankPrefHook(f func(store.Scope)) *Service {
+	s.onRankPrefs = f
+	return s
+}
+
 // WithIngestHook installs the callback fired when a poll produces new items.
 //
 // Optional in the same way, and for the same reason: an instance with nobody

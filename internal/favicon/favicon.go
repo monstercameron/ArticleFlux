@@ -9,6 +9,7 @@
 package favicon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -62,14 +63,100 @@ func New(allowPrivate bool) *Fetcher {
 	})}
 }
 
-// allowedTypes are the image types worth storing.
+// utf8BOM is the three-byte UTF-8 byte-order mark a saved XML/SVG document may
+// carry. It has to be stripped before sniffing for the same reason a real XML
+// parser strips it: otherwise a BOM-prefixed <svg> reads as three bytes of
+// noise followed by markup, and a prefix check never fires.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// looksLikeSVG reports whether the ACTUAL BYTES are — or resolve to — an SVG
+// document, independent of whatever Content-Type a server claims for them.
 //
-// SVG is excluded deliberately. It is a document format that can carry script,
-// and this content is served back from our own origin — an SVG favicon would be
-// a stored-XSS vector wearing an icon's clothes.
-var allowedTypes = map[string]bool{
-	"image/png": true, "image/x-icon": true, "image/vnd.microsoft.icon": true,
-	"image/jpeg": true, "image/gif": true, "image/webp": true,
+// This is the load-bearing check. The remote site is the party this package
+// defends against, and a Content-Type header is that party's own claim about
+// itself: a hostile server can label a script-bearing SVG "image/png" and a
+// header-only check would never see it. The bytes are not something it gets
+// to relabel.
+//
+// A real SVG may legally begin with a BOM, leading whitespace, an XML
+// declaration, one or more comments, and a DOCTYPE before the <svg> element
+// itself — every one of which a naive bytes.HasPrefix(b, []byte("<svg"))
+// would miss, and every one of which a hostile server has every incentive to
+// use to slip past a naive check. This walks past all of them before making
+// the call.
+func looksLikeSVG(b []byte) bool {
+	b = bytes.TrimPrefix(b, utf8BOM)
+	for i := 0; i < 32; i++ { // bounded: no input can make this loop forever
+		trimmed := bytes.TrimLeft(b, " \t\r\n\f")
+		switch {
+		case len(trimmed) >= 2 && trimmed[0] == '<' && trimmed[1] == '?': // <?xml ... ?>
+			idx := bytes.Index(trimmed, []byte("?>"))
+			if idx < 0 {
+				return false
+			}
+			b = trimmed[idx+2:]
+			continue
+		case bytes.HasPrefix(trimmed, []byte("<!--")): // <!-- ... -->
+			idx := bytes.Index(trimmed, []byte("-->"))
+			if idx < 0 {
+				return false
+			}
+			b = trimmed[idx+3:]
+			continue
+		case len(trimmed) >= 2 && trimmed[0] == '<' && trimmed[1] == '!': // <!DOCTYPE ...>
+			idx := bytes.IndexByte(trimmed, '>')
+			if idx < 0 {
+				return false
+			}
+			b = trimmed[idx+1:]
+			continue
+		default:
+			b = trimmed
+		}
+		break
+	}
+	b = bytes.TrimLeft(b, " \t\r\n\f")
+	if len(b) < 4 || !bytes.EqualFold(b[:4], []byte("<svg")) {
+		return false
+	}
+	if len(b) == 4 {
+		return true // the whole body is exactly "<svg" — degenerate, still svg-shaped
+	}
+	switch b[4] {
+	case ' ', '\t', '\r', '\n', '\f', '>', '/':
+		return true
+	}
+	return false // e.g. "<svgfoo>", a different element entirely
+}
+
+// sniffAllowedImage reports a favicon's true type from its bytes, and whether
+// that type is one of the handful this package will store. Nothing here reads
+// a header — that is the point.
+//
+// This mirrors the small set of raster formats a favicon realistically comes
+// in. SVG is handled separately by looksLikeSVG and is never in this list: it
+// is a document format that can carry script, and this content is served back
+// from our own origin (internal/app/favicons.go) — a stored SVG favicon would
+// be a stored-XSS vector wearing an icon's clothes, however it got labelled.
+func sniffAllowedImage(b []byte) (string, bool) {
+	switch {
+	case len(b) >= 8 && bytes.Equal(b[:8], []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}):
+		return "image/png", true
+	case len(b) >= 6 && bytes.Equal(b[:3], []byte("GIF")) &&
+		(bytes.Equal(b[3:6], []byte("87a")) || bytes.Equal(b[3:6], []byte("89a"))):
+		return "image/gif", true
+	case len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF:
+		return "image/jpeg", true
+	case len(b) >= 12 && bytes.Equal(b[0:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("WEBP")):
+		return "image/webp", true
+	case len(b) >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 1 && b[3] == 0:
+		// The ICO/CUR family header: reserved(2 bytes) = 0, type(2 bytes) = 1
+		// for an icon (2 would be a cursor, which a favicon never legitimately
+		// is).
+		return "image/x-icon", true
+	default:
+		return "", false
+	}
 }
 
 // Fetch finds the best icon for a site.
@@ -166,12 +253,22 @@ func (f *Fetcher) get(ctx context.Context, raw string) (*Icon, error) {
 		return nil, ErrNoIcon
 	}
 
-	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
-	if !allowedTypes[ct] {
-		return nil, ErrNoIcon
-	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBytes+1))
 	if err != nil || len(body) == 0 || len(body) > MaxBytes {
+		return nil, ErrNoIcon
+	}
+
+	// The decision is made from the bytes, never from the Content-Type header.
+	// The header is the remote site's own claim about itself, and the remote
+	// site is exactly who this check exists to defend against: a hostile
+	// server can serve a script-bearing SVG labelled "image/png" and a
+	// header-only check would wave it through. See looksLikeSVG and
+	// sniffAllowedImage.
+	if looksLikeSVG(body) {
+		return nil, ErrNoIcon
+	}
+	ct, ok := sniffAllowedImage(body)
+	if !ok {
 		return nil, ErrNoIcon
 	}
 	return &Icon{Bytes: body, ContentType: ct, ETag: resp.Header.Get("ETag")}, nil
