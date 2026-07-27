@@ -1,4 +1,4 @@
-# Everything generated lives under bin/ — the binaries, the wasm bundle, and the
+# Everything generated lives under bin/ â€” the binaries, the wasm bundle, and the
 # assembled web root. One ignored directory instead of build output scattered
 # through the tree, so "is this file source?" is answerable from its path alone.
 /bin/
@@ -11,7 +11,7 @@
 /backups/
 
 # Synthesised speech. Every file here is one of the reader's articles read aloud
-# and cached on disk — the same privacy class as the database, in a directory
+# and cached on disk â€” the same privacy class as the database, in a directory
 # nobody thinks of as data.
 /speech-cache/
 *.mp3
@@ -20,11 +20,15 @@
 # the database.
 /favicon-cache/
 
-# Proxied article images (§10.1a). Same privacy class as speech-cache: every
+# Proxied article images (Â§10.1a). Same privacy class as speech-cache: every
 # file in here is an image from something the reader opened, keyed by URL hash,
 # so the directory listing alone is a reading history. It is also unbounded and
 # regenerable, which is the other half of why it is not source.
 /asset-cache/
+
+# Proxied whole pages (§10.1b). Same reasoning as asset-cache: every entry is a
+# page the reader opened, and the cache is regenerable.
+/page-cache/
 
 # OPML exports. Not a secret, but a complete list of what someone reads is the
 # most personal file in a feed reader after the database itself.
@@ -32,16 +36,16 @@
 
 # One exception, and it is deliberately spelled out in full rather than written
 # as a testdata glob. The import parser needs a full-size export to test against,
-# so that fixture is SYNTHESISED and checked in — every hazard of a real export,
+# so that fixture is SYNTHESISED and checked in â€” every hazard of a real export,
 # nobody's reading list. Naming the single file keeps the rule above in force for
 # everything else: drop a real freshrss.real.opml next to it and it stays ignored.
 #
 # This is here because the rule above silently swallowed that fixture, and the
-# test called t.Skip rather than failing — so CI was green while the only
+# test called t.Skip rather than failing â€” so CI was green while the only
 # real-world parse in the suite never ran once.
 !internal/opml/testdata/freshrss.opml
 
-# The wasm baseline IS checked in — CI ratchets the bundle size against it. The
+# The wasm baseline IS checked in â€” CI ratchets the bundle size against it. The
 # bundle itself is not.
 *.wasm
 *.wasm.gz
@@ -61,7 +65,7 @@
 
 # Local configuration and secrets.
 #
-# The negation must come AFTER the pattern that would otherwise catch it — git
+# The negation must come AFTER the pattern that would otherwise catch it â€” git
 # applies these in order, so `!.env.example` above `.env.*` would be silently
 # undone by the line below it.
 .env
