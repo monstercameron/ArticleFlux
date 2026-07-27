@@ -538,18 +538,22 @@ func TestCursorY(t *testing.T) {
 	cases := []struct {
 		name  string
 		index int
+		h     float64
 		want  string
 	}{
-		{"no selection parks at the top", -1, "0px"},
-		{"a more negative index still parks at the top", -100, "0px"},
-		{"first row", 0, "0px"},
-		{"fifth row (5 * 96px)", 5, "480px"},
-		{"a big index", 1000, "96000px"},
+		{"no selection parks at the top", -1, ItemRowHeight, "0px"},
+		{"a more negative index still parks at the top", -100, ItemRowHeight, "0px"},
+		{"first row", 0, ItemRowHeight, "0px"},
+		{"fifth row (5 * 96px)", 5, ItemRowHeight, "480px"},
+		{"a big index", 1000, ItemRowHeight, "96000px"},
+		// The reason the height is a parameter at all: My Feed's rows are taller,
+		// and a cursor computed against the standard row lands between two of them.
+		{"My Feed's taller row", 5, MyFeedRowHeight, "660px"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := cursorY(c.index); got != c.want {
-				t.Errorf("cursorY(%d) = %q, want %q", c.index, got, c.want)
+			if got := cursorY(c.index, c.h); got != c.want {
+				t.Errorf("cursorY(%d, %v) = %q, want %q", c.index, c.h, got, c.want)
 			}
 		})
 	}

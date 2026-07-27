@@ -1733,7 +1733,7 @@ func rankBlurb(tr i18n.Runtime, it *pb.Item) ui.Node {
 	if len(reasons) == 0 {
 		return nil
 	}
-	shown := reasons
+	shown := leadWithContent(reasons, it.GetRankReasonTerms())
 	if len(shown) > MaxBlurbReasons {
 		shown = shown[:MaxBlurbReasons]
 	}
@@ -1750,6 +1750,51 @@ func rankBlurb(tr i18n.Runtime, it *pb.Item) ui.Node {
 		html.Span(html.Props{Class: "why-mark"}, html.Text(glyphMyFeed)),
 		html.Text(strings.Join(shown, " · ")),
 	)
+}
+
+// contentReasonTerms are the scoring factors that say what an item is ABOUT.
+//
+// Mirrors derive.contentTerms, which is the gate deciding whether an item reaches My Feed at
+// all. Duplicated across the wire boundary on purpose: the server decides eligibility and
+// the client decides emphasis, and coupling them would mean a display tweak needed a deploy
+// of both halves. The terms themselves are a documented part of the contract (see
+// Item.rank_reason_terms in reader.proto), so the two lists agreeing is a checkable fact
+// rather than a coincidence.
+var contentReasonTerms = map[string]bool{
+	"topic": true, "entity": true, "corroboration": true, "manual": true,
+}
+
+// leadWithContent reorders the reasons so the one that answers "why THIS article" comes
+// first.
+//
+// # Why the server's order is wrong for this line
+//
+// The reasons arrive sorted by absolute contribution to the score, which is exactly right
+// for deciding placement and exactly wrong for explaining it. Freshness has the largest
+// coefficient in the formula, so the strongest contributor is almost always "published
+// today" — and a rationale that opens with that reads as though the article was chosen for
+// being new. The measured result: "published today · about Google Maps, which you follow",
+// where the second clause is the answer and the first is filler.
+//
+// So content reasons lead. Everything else keeps its relative order behind them, because
+// among circumstances the score's own ranking IS the right one.
+//
+// Stable, not sorted: a stable partition keeps two content reasons in contribution order
+// relative to each other, so the strongest content reason still leads the line.
+func leadWithContent(reasons, terms []string) []string {
+	if len(terms) == 0 {
+		return reasons
+	}
+	lead := make([]string, 0, len(reasons))
+	rest := make([]string, 0, len(reasons))
+	for i, why := range reasons {
+		if i < len(terms) && contentReasonTerms[terms[i]] {
+			lead = append(lead, why)
+			continue
+		}
+		rest = append(rest, why)
+	}
+	return append(lead, rest...)
 }
 
 // smartPlusMark labels a row the paid tier actually moved.

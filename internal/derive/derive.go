@@ -162,6 +162,10 @@ type NamedEntity struct {
 type scoredItem struct {
 	item store.Item
 	res  rank.Result
+	// topicID is the stored id of the topic this item matched, or empty. Carried on the
+	// scored item rather than looked up again at write time, because the match was decided
+	// during scoring and re-deriving it from the score would be a second, divergent answer.
+	topicID string
 }
 
 // entityAcc accumulates the evidence for one named thing across engaged items.
@@ -1016,7 +1020,11 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			continue
 		}
 		r = applyDeliberate(r, itemSignals[it.ID])
-		out = append(out, scoredItem{item: it, res: r})
+		topicID := ""
+		if topicIdx >= 0 && topicIdx < len(topicIDs) {
+			topicID = topicIDs[topicIdx]
+		}
+		out = append(out, scoredItem{item: it, res: r, topicID: topicID})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {

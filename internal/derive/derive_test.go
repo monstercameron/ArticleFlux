@@ -857,7 +857,7 @@ func snapshotTopics(t *testing.T, f *fixture) string {
 	}
 	// nil enhancer: this asserts the free tier's clustering, and a model relabelling the
 	// clusters would be testing something else.
-	topicSet, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, nil, engaged, vectors, now)
+	topicSet, _, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, nil, engaged, vectors, now)
 	if err != nil {
 		t.Fatal(err)
 	}

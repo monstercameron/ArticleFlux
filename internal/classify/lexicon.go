@@ -317,6 +317,7 @@ func (lx *Lexicon) addTerms(label int32, slug string, terms []Term, negative boo
 			for _, r := range t.Requires {
 				if k := normalise(r); k != "" && strings.Count(k, " ")+1 <= MaxTermWords {
 					g = append(g, k)
+					lx.wanted[k] = struct{}{}
 					if gn := strings.Count(k, " ") + 1; gn > lx.maxN {
 						// A guard is looked up in the same n-gram set the terms
 						// are, so a three-word guard forces trigram generation
@@ -342,6 +343,7 @@ func (lx *Lexicon) addTerms(label int32, slug string, terms []Term, negative boo
 		lx.index[key] = append(lx.index[key], posting{
 			label: label, term: int32(i), negative: negative, guard: guard,
 		})
+		lx.wanted[key] = struct{}{}
 	}
 	return nil
 }

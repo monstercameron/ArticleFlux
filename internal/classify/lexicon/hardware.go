@@ -1,0 +1,111 @@
+package lexicon
+
+import "github.com/monstercameron/ArticleFlux/internal/classify"
+
+// hardware is the Hardware & Chips category (plan.md §27.3d #3).
+//
+// `apple` and `amazon` are both guarded here for the same shape of reason as
+// everywhere else they appear: unguarded, "Apple picking season" and "the
+// Amazon is burning" both read as hardware. The guard list is the company's
+// device line, not the company name itself, because the device line is what
+// actually distinguishes a hardware story from a business or climate one.
+func hardware() classify.Label {
+	return classify.Label{
+		Slug: "hardware",
+		Name: "Hardware & Chips",
+		Terms: []classify.Term{
+			{Text: "tsmc", Weight: 2.4},
+			{Text: "snapdragon", Weight: 2.2},
+			{Text: "vision pro", Weight: 2.0},
+			{Text: "risc-v", Weight: 2.0},
+			{Text: "npu", Weight: 2.0},
+			{Text: "silicon wafer", Weight: 2.0},
+			{Text: "teardown", Weight: 2.0},
+			{Text: "chip shortage", Weight: 1.9},
+			{Text: "ryzen", Weight: 1.9},
+			{Text: "die shrink", Weight: 1.8},
+			{Text: "nanometer", Weight: 1.8},
+			{Text: "overclock", Weight: 1.8},
+			{Text: "thermal throttling", Weight: 1.8},
+			{Text: "semiconductor", Weight: 1.8},
+			{Text: "motherboard", Weight: 1.8},
+			{Text: "arm64", Weight: 1.8},
+			{Text: "chip fab", Weight: 1.8},
+			{Text: "raspberry pi", Weight: 1.8},
+			{Text: "arduino", Weight: 1.7},
+			{Text: "lithography", Weight: 1.6},
+			{Text: "iphone", Weight: 1.6},
+			{Text: "macbook", Weight: 1.6},
+			{Text: "airpods", Weight: 1.6},
+			{Text: "ipad", Weight: 1.6},
+			{Text: "graphics card", Weight: 1.6},
+			{Text: "qualcomm", Weight: 1.6},
+			{Text: "mediatek", Weight: 1.6},
+			{Text: "samsung galaxy", Weight: 1.6},
+			{Text: "foldable phone", Weight: 1.6},
+			{Text: "google pixel", Weight: 1.6},
+			{Text: "x86", Weight: 1.5},
+			{Text: "chipset", Weight: 1.5},
+			{Text: "transistor", Weight: 1.4},
+			{Text: "bios", Weight: 1.4},
+			{Text: "heatsink", Weight: 1.4},
+			{Text: "nvme", Weight: 1.4},
+			{Text: "thunderbolt", Weight: 1.4},
+			{Text: "vram", Weight: 1.4},
+			{Text: "refresh rate", Weight: 1.4},
+			{Text: "megapixel", Weight: 1.4},
+			{Text: "kindle", Weight: 1.4},
+			{Text: "amazon echo", Weight: 1.4},
+			{Text: "ring doorbell", Weight: 1.4},
+			{Text: "fire tv", Weight: 1.4},
+			{Text: "foundry", Weight: 1.4},
+			{Text: "firmware", Weight: 1.3},
+			{Text: "soc", Weight: 1.3},
+			{Text: "oled", Weight: 1.2},
+			{Text: "display panel", Weight: 1.2},
+			{Text: "camera sensor", Weight: 1.2},
+			{Text: "gigahertz", Weight: 1.2},
+			{Text: "processor", Weight: 1.1},
+			{Text: "alexa", Weight: 1.1},
+			{Text: "cpu", Weight: 1.1},
+			{Text: "gpu", Weight: 1.1},
+			{Text: "amd", Weight: 1.1},
+			{Text: "nvidia", Weight: 1.1},
+			{Text: "wafer", Weight: 1.1},
+			{Text: "smartwatch", Weight: 1.1},
+			{Text: "charging speed", Weight: 1.1},
+			{Text: "battery life", Weight: 1.0},
+			{Text: "ssd", Weight: 1.0},
+			{Text: "usb-c", Weight: 1.0},
+			{Text: "wearable", Weight: 0.9},
+			{Text: "3d printer", Weight: 1.2},
+			{Text: "earbuds", Weight: 0.9},
+			{Text: "drone", Weight: 0.8},
+			{Text: "intel", Weight: 0.8},
+			{Text: "benchmark", Weight: 0.7},
+			{Text: "laptop", Weight: 0.7},
+			{Text: "smartphone", Weight: 0.7},
+			{Text: "ram", Weight: 0.7},
+			{Text: "headphones", Weight: 0.6},
+			{Text: "monitor", Weight: 0.5},
+			{Text: "android", Weight: 0.5},
+			{Text: "apple", Weight: 1.0, Requires: []string{
+				"iphone", "ipad", "mac", "ios", "macos", "app store",
+				"cupertino", "tim cook", "vision pro", "airpods",
+			}},
+			{Text: "amazon", Weight: 0.7, Requires: []string{
+				"kindle", "echo", "alexa", "ring", "fire tv", "amazon devices", "echo dot",
+			}},
+		},
+		Exclude: []classify.Term{
+			{Text: "apple orchard", Weight: 2.5},
+			{Text: "apple picking", Weight: 2.5},
+			{Text: "apple pie", Weight: 2.0},
+			{Text: "rainforest", Weight: 2.0},
+		},
+		MinScore: 0,
+		Prompt: "Assign for consumer and industrial hardware: chips, devices, components, " +
+			"teardowns, benchmarks. Not for the software running on the device, and not for a " +
+			"chipmaker's earnings or stock (see Business & Companies).",
+	}
+}
