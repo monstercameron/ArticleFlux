@@ -1768,13 +1768,59 @@ Rungs: (1) `<link rel="alternate">` ~60–70% · (2) path probes ~20% more · (3
 Reddit, GitHub, Substack, Mastodon) · (4) **LLM proposer** for the tail · (5) **no feed → offer a
 scrape rule** (§14.2) · (6) **still nothing → offer newsletter subscription** (§14.1).
 
-**Implementation** (`internal/discover`): **`claude-opus-5`** via `anthropic-sdk-go` ·
-**`effort: "low"`** · **leave adaptive thinking on** (the default on Opus 5); do *not* set
-`thinking: disabled`, which on this model can emit tool calls as plain text and leak `<thinking>` tags
-· **structured output** (`json_schema` → `{candidates:[{url, title, kind, confidence}]}`) ·
-**prompt caching** — fixed system prompt, and Opus 5's minimum cacheable prefix is **512 tokens** (down
-from 1024 on 4.8), so it caches from the first repeat; page HTML goes after the cached prefix ·
-**`web_search_20260209`** for the typed-a-name case · keys server-side only · **off by default.**
+### 11.1 As built — 2026-07-26
+
+**The provider is OpenAI, not Anthropic.** Rev 8 specified `claude-opus-5` via `anthropic-sdk-go`
+here, and the code went the other way on purpose: `internal/llm` is **the one egress boundary** — one
+endpoint to audit, one key in Settings, one budget meter, one breaker — and a second SDK would have
+meant a second of each, plus a second key an operator has to know to configure before the feature
+works. The plan is corrected rather than the code. If a second provider is ever wanted, it belongs
+behind `internal/llm`, not beside it.
+
+| Rung | Built? | Where |
+|---|---|---|
+| 1 `<link rel="alternate">` | ✅ | `internal/discover` — candidates are FETCHED AND PARSED; a declaration pointing at a 404 is never offered |
+| 2 path probes | ✅ | six paths, the typed directory before the site root, and only when the page declared nothing |
+| 3 platform rules | — | YouTube/Reddit/Substack shapes are still owed |
+| 4 LLM feed proposer | — | the tail; rung 5 turned out to cover most of what it was for |
+| 5 **scrape rule from the page** | ✅ | `internal/smart` proposes, `internal/scrapesel` disposes (§14.2, §11.2) |
+| 6 newsletter | — | §14.1, M22 |
+
+### 11.2 Rung 5: the model writes a scrape rule
+
+`smart.SiteAnalyzer.Propose` sends a **distilled outline** of the page — tags, ids, classes, a few
+attributes, repeated siblings collapsed to `… x N more` — and never the page. On a typical blog index
+that is 6–12 KB against 300–800 KB of HTML, and the collapse is not only a size trick: the repeated
+block IS the answer to "where is the list", written down.
+
+**Nothing the model says is trusted.** The proposed selectors are compiled and run against the page
+before the reader sees anything, and the answer is refused when: nothing matches, no container yields
+a link, only one item comes out (the selector found the hero post, not the list), or every item shares
+a title (the title selector reached outside the container). One retry, given the specific failure as
+input. Two attempts, then `ErrNoRule` — a third is spending someone's money on the same guess.
+
+The reader is shown the extracted items, the count, the model's one-line note, and the rule itself.
+There is deliberately **no confidence score**: a number a model assigns to its own answer is not
+evidence, and five real headlines pulled off the page are.
+
+**Consent is two conditions, both checked at the RPC** (§18.8): `smart.subscribe` is on for this user
+(default off, its own key rather than sharing `tts.smartPlus` — different content, different
+decision), *and* the request carried the flag the button sets. Neither implies the other.
+
+**robots.txt is checked before the model, not after** — asking permission after spending the request
+is asking rhetorically. Fetch failures mean allowed; a missing robots.txt is the common case.
+
+### 11.3 What a scraped source costs
+
+Polled on a **one-hour floor** (`reader.ScrapeInterval`), and full text is fetched for **new items
+only, at most five per poll** (`reader.MaxFullTextPerPoll`). §14.2 says "one request per poll, no
+crawling"; this is the exception, with a number rather than a silent one — without it a scraped item
+is a headline and a link, which is a bookmark list rather than a reader. `store.KnownGUIDs` exists for
+exactly this: "new" has to be decided before ingest, because after it everything looks equally
+present.
+
+A rule that matches nothing increments `scrape_rules.empty_polls` and writes the reason onto the
+source's health, which is what makes a redesign distinguishable from a site that went quiet.
 
 ---
 
@@ -3688,37 +3734,48 @@ Two costs, both accepted:
   `Reader` cannot reach. It is a repair action taken almost never, so one reload beats
   plumbing a revision counter up through the component that exists to re-render rarely.
 
-**Four things a reader sees are NOT in the catalog, and each is a decision rather than
-an oversight** (audited 2026-07-26 after the guard reported zero — the guard only sees
-`client/view`, so "zero" was never the same as "everything"):
+**The audit that followed "zero hardcoded copy" (2026-07-26).** The guard reported
+zero and that was never the same as "everything": it only sees `client/view`. A sweep
+of every surface a reader can read found four gaps, all now closed.
 
-- **`web/index.html`** — the pre-wasm bootstrap: the wordmark, "Loading…", and the
-  failure line. It runs before the wasm module exists, so it cannot reach a Go catalog
-  at all. Translating it means either JS beyond the ~15-line bootstrap A26 permits, or
-  the server templating it from a locale it does not know (the choice lives in the
-  browser's localStorage). Left English on purpose; it is three strings and two of them
-  are a brand name.
-- **gRPC status messages shown verbatim.** `loginMessage` passes the server's text
-  straight through for Unauthenticated/ResourceExhausted/FailedPrecondition, and the
-  Smart+ screen's `statusText` does the same for everything. These are written for a
-  person and are often the only actionable part — but they are English regardless of
-  locale. Fixing it properly means the server returning a key plus arguments instead of
-  prose, which is a protocol change, not a sweep. Same shape as CashFlux's C362 debt.
-- **`{err}` interpolations.** The sentence around a failure is translated; the
-  transport's own text inside it is not. Deliberate, and stated where the keys are
-  defined: the provider's message is the actionable half and paraphrasing it helps
-  nobody.
-- **Feed content.** Titles, summaries, authors, article bodies. That is §10.5's job and
-  a different machine entirely.
+- **`relTime`** — the most-rendered string in the app, on every list row and every
+  article eyebrow — was `t.Format("2 Jan")`. **Go's layouts are not locale-aware and
+  never will be**, so month names were English in every language. Now `month.1`–`.12`
+  plus a `time.dayMonth` pattern, so a locale that writes the month first can reorder
+  it. The unit abbreviations reuse the `unit.*` keys the settings screen already uses,
+  so "5m" cannot become two different translations of one idea.
+- **`internal/tagglyph`'s fifty glyph names and seven group headings** — the
+  `aria-label` and tooltip on every cell of a grid of *unlabelled symbols*, which makes
+  them matter most to exactly the readers who cannot tell ◆ from ◈ at 13px. Keyed by
+  the character, because the character is the stable identity; `tagglyph` keeps its Name
+  field as the fallback.
+- **`web/index.html`'s splash** — five strings shown *before the wasm module exists*, so
+  they cannot read a Go catalog at the moment they are needed. Solved by the mechanism
+  this file already established for the theme: the running app mirrors them into
+  localStorage on every language change (`mirrorBootCopy`), and the shim reads them one
+  frame before Go takes over. The English stays in the markup as the fallback for a
+  first-ever load, a storage-refusing browser, and no-JS.
+- **gRPC status messages** — every refusal the reader saw was prose composed on the
+  server and rendered verbatim, and **the server cannot translate them**: the language
+  is a per-device choice in localStorage that the server never sees. So the server now
+  sends a KEY plus arguments in an `articleflux.v1.ErrorDetail` alongside the English,
+  and `view.serverText` resolves it against the same catalog as everything else. The
+  English message stays on the status on purpose — it is what the two consumers with no
+  catalog get, the Google Reader sync API (§20.7) and curl.
 
-Two gaps found in the same audit WERE real oversights and are fixed: `relTime` — the
-most-rendered string in the app, on every list row — was emitting `t.Format("2 Jan")`,
-and Go's layouts are not locale-aware, so month names were English in every language;
-and `internal/tagglyph`'s fifty glyph names plus seven group headings, which are the
-accessible name on every cell of a grid of unlabelled symbols and therefore matter most
-to exactly the readers who cannot see the difference between them.
+Two contracts follow, and both are tested rather than trusted. `TestEveryServerErrorKeyExists`
+walks `internal/transport/grpcsrv` for `errKey` calls and fails if a key is missing from
+the catalog or outside the `srv` namespace — the key crosses the wire as a string, so
+nothing in the type system connects the two halves. `TestServerErrorKeysMatchTheirEnglishFallback`
+fails if the wire's English and the catalog's English drift, because each half is
+correct on its own and the divergence is otherwise invisible.
 
-**`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and
+What stays untranslated, and is not a gap: **feed content** — titles, summaries, authors,
+bodies. That is §10.5's job and a different machine. And **`{err}` interpolations**: the
+sentence around a transport failure is translated, gRPC's own socket text inside it is
+not, because paraphrasing the actionable half helps nobody.
+
+**`client/i18n` carries no build tag, deliberately.****`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and
 cannot be linked into a native test binary; the catalog can, which is what makes
 `keycoverage_test.go` and `provider_test.go` possible — and, unplanned but decisive,
 what lets the *server* read the English catalog in order to translate it (§10.5a).
