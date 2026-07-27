@@ -52,11 +52,21 @@ export default async function globalSetup() {
   //      a blanket kill by image name — that would take out unrelated servers)
   //   2. name the database uniquely per run, so a lock we failed to clear is an
   //      orphaned file rather than a broken suite
-  // Both ports: the fixture feed server lives in a Node process that a killed
-  // run leaves behind just as readily as the app server, and EADDRINUSE on
-  // 9011 is the same class of failure as a locked database file.
+  // The APP port only.
+  //
+  // The feed port is deliberately NOT killed, and that asymmetry is the whole
+  // point. The app server is a child process this run spawned, so a stale one is
+  // our own corpse holding our own database open — killing it is cleanup. The
+  // fixture feed server runs INSIDE the Playwright process, so anything holding
+  // that port is somebody's live test runner, and killing it does not free a
+  // port: it destroys a run, silently, with no summary and no error, because the
+  // process that dies is the one that would have reported.
+  //
+  // That is what kept happening. The port lock (ports.mjs) is what prevents the
+  // collision; not swinging at the feed port is what makes a collision survivable
+  // if the lock is ever bypassed — an uncoordinated run and a locked one now both
+  // fail loudly on EADDRINUSE instead of one quietly killing the other.
   await killListener(APP_PORT);
-  await killListener(FEED_PORT);
   for (const suffix of ['', '-wal', '-shm']) {
     const p = DB + suffix;
     try { if (existsSync(p)) rmSync(p); } catch { /* superseded by the unique name */ }
@@ -90,7 +100,22 @@ export default async function globalSetup() {
     res.writeHead(200, { 'Content-Type': hit[0] });
     res.end(hit[1]);
   });
-  await new Promise((ok) => feedServer.listen(FEED_PORT, '127.0.0.1', ok));
+  await new Promise((ok, fail) => {
+    feedServer.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        fail(new Error(
+          `the fixture feed port ${FEED_PORT} is already in use.
+` +
+          'Another suite holds this slot. It is NOT killed on purpose: that ' +
+          'server lives inside the other Playwright process, so killing ' +
+          'it would destroy that run rather than free a port. Wait for it, or ' +
+          'set AF_E2E_APP_PORT / AF_E2E_FEED_PORT.'));
+        return;
+      }
+      fail(err);
+    });
+    feedServer.listen(FEED_PORT, '127.0.0.1', ok);
+  });
 
   // --- 2. build + seed ----------------------------------------------------
   const bin = join(repo, 'bin', 'articleflux.exe');

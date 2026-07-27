@@ -583,6 +583,15 @@ func OnScrollMetrics(rootSelector, matchSelector string, fn func(scrollTop, view
 		if m := t.Get("matches"); !m.Truthy() || !t.Call("matches", matchSelector).Bool() {
 			return nil
 		}
+		// `rootSelector` still scopes the match rather than the binding: the
+		// scroller has to be INSIDE it. Listening on the document without this
+		// would report a scroll in any matching element anywhere on the page —
+		// a settings pane, a dialog — as if it were the reading stream.
+		if rootSelector != "" {
+			if c := t.Get("closest"); !c.Truthy() || !t.Call("closest", rootSelector).Truthy() {
+				return nil
+			}
+		}
 		el = t
 		if pending {
 			return nil
@@ -784,11 +793,31 @@ func KeepScrollAnchored(selector string) {
 // top edge: the one the reader has scrolled into, rather than the one peeking in
 // from below.
 func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value string)) Listener {
+	// Bound to the DOCUMENT, not to the root element (8b.52).
+	//
+	// It used to `querySelector(rootSelector)` and listen on that node, and the
+	// node it found did not stay the node the reader scrolled. GWC's Render
+	// REPLACES its mount point, so a listener registered against `#app` outlives
+	// the `#app` it was registered on — attached to a detached node, receiving
+	// nothing, for the life of the session.
+	//
+	// The failure was silent in the worst way: marking-read kept working, because
+	// that comes from a different scroll handler, so the only symptom was that the
+	// title and the highlighted row never followed a scroll. A28's central rule —
+	// which article is being read is a scroll position, not a click — was simply
+	// not in effect, and nothing said so. A probe counted scroll events reaching
+	// `#app` while this callback never fired, which is what a listener on the
+	// previous `#app` looks like from the outside.
+	//
+	// `document` cannot be replaced, so this cannot happen again. Scroll events do
+	// not bubble, but capture-phase listeners on ancestors do receive them, which
+	// is why this was already a capture listener and why moving it up costs
+	// nothing.
 	doc := js.Global().Get("document")
-	root := doc.Call("querySelector", rootSelector)
-	if !root.Truthy() {
+	if !doc.Truthy() {
 		return Listener{}
 	}
+	root := doc
 	pending := false
 	last := ""
 	var el js.Value
