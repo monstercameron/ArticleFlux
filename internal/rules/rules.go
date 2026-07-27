@@ -174,14 +174,27 @@ func Evaluate(item Item, ruleSet []Rule, now time.Time) Result {
 	// Sorted by position, then id. Order is user-visible and load-bearing:
 	// stop_processing only means anything if the order is stable, and insertion
 	// order is invisible in the UI and unstable across a restore.
-	ordered := make([]Rule, len(ruleSet))
-	copy(ordered, ruleSet)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].Position != ordered[j].Position {
-			return ordered[i].Position < ordered[j].Position
-		}
-		return ordered[i].ID < ordered[j].ID
-	})
+	//
+	// The copy and the sort are skipped when the caller already handed them over
+	// in that order, which in this application is always: store.RulesFor selects
+	// `ORDER BY position ASC, id ASC`, the same order as below. Evaluate is
+	// called once per ITEM, and fanout hands it the same slice for every item of
+	// every poll — so the version without this check copied and re-sorted an
+	// identical rule set sixty times for a twenty-item poll across three
+	// subscribers, and threw away sixty identical results.
+	//
+	// The check is a linear scan against the same comparator, so an unsorted
+	// caller pays one extra pass and is otherwise unaffected. Skipping is exactly
+	// equivalent rather than approximately so: a stable sort of an
+	// already-sorted slice is the identity, and nothing below writes through
+	// `ordered` — the action loop mutates its own copy of each Action, not the
+	// rule's.
+	ordered := ruleSet
+	if !sort.SliceIsSorted(ordered, func(i, j int) bool { return ruleBefore(ordered[i], ordered[j]) }) {
+		ordered = make([]Rule, len(ruleSet))
+		copy(ordered, ruleSet)
+		sort.SliceStable(ordered, func(i, j int) bool { return ruleBefore(ordered[i], ordered[j]) })
+	}
 
 	var out Result
 	for _, rule := range ordered {
@@ -211,6 +224,18 @@ func Evaluate(item Item, ruleSet []Rule, now time.Time) Result {
 
 	out.Actions = dedupe(out.Actions)
 	return out
+}
+
+// ruleBefore is the evaluation order, in one place.
+//
+// One function rather than two identical closures, because the sortedness check
+// and the sort MUST agree: a check that is stricter than the sort would do the
+// work anyway, and one that is looser would skip a sort the order needed.
+func ruleBefore(a, b Rule) bool {
+	if a.Position != b.Position {
+		return a.Position < b.Position
+	}
+	return a.ID < b.ID
 }
 
 func hasStop(actions []Action) bool {

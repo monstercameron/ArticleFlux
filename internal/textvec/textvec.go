@@ -187,6 +187,47 @@ func scan(s string) []token {
 	return out
 }
 
+// TitleCaseRatio is the share of capitalised words above which a line is treated as Title
+// Case, and therefore as carrying no proper-noun signal.
+//
+// Sixty percent, measured over the words that COULD be capitalised meaningfully — short
+// function words are excluded, because Title Case leaves "of", "the" and "in" lowercase and
+// counting them would make no headline reach the threshold.
+//
+// Sentence case with two or three real names in it stays below: "Qualcomm and MediaTek both
+// shipped a Snapdragon rival" is three of eight. A Title Case headline is at or near 100%.
+// The gap between those two populations is wide, so the exact cut matters little — what
+// matters is that it exists.
+const TitleCaseRatio = 0.6
+
+// isTitleCase reports whether capitalisation in this line is a house style rather than a
+// statement about particular words.
+func isTitleCase(toks []token) bool {
+	eligible, capped := 0, 0
+	for _, t := range toks {
+		// Short words and stopwords are left lowercase by every Title Case convention, so
+		// including them would drag the ratio below the threshold for genuinely
+		// title-cased headlines and defeat the check.
+		if t.digits || len(t.text) < MinTermLen || stopwords[t.text] {
+			continue
+		}
+		eligible++
+		if t.capitalised {
+			capped++
+		}
+	}
+	// Under five eligible words there is not enough evidence either way.
+	//
+	// Four is too few, measured: "Announced Pixel Fold today" has three of four capitalised
+	// and is plainly sentence case with a product name in it — the exact thing this must not
+	// reject. A real Title Case headline is six to ten words, so the floor costs nothing and
+	// protects the short-headline case the feature exists for ("Apple Watch Series 12").
+	if eligible < 5 {
+		return false
+	}
+	return float64(capped)/float64(eligible) >= TitleCaseRatio
+}
+
 // MaxPhraseDigits bounds the numeric half of a product name.
 //
 // Three digits. "Switch 2", "Pixel 10" and "RTX 5090" are product names; "2026" is a
@@ -242,6 +283,23 @@ const MaxPhraseDigits = 3
 // degrades rather than disappearing.
 func Phrases(s string) []string {
 	toks := scan(s)
+	// Title Case carries no proper-noun signal, so it yields no phrases.
+	//
+	// This is the failure mode that produced the worst entity list yet measured. Many
+	// publishers write headlines in Title Case — "The Best In-Depth Review Of This LCD
+	// Projector" — and in one every word is capitalised, so a rule looking for two adjacent
+	// capitalised words matches EVERY adjacent pair. The observed result on a real corpus:
+	// `Depth Review`, `LCD Projector`, `MC03 Google` presented to the reader as brands they
+	// follow.
+	//
+	// The heuristic depends entirely on capitalisation being a CHOICE the writer made about
+	// a particular word. In Title Case it is a choice about the whole headline, so the
+	// signal is absent rather than weak — and a rule with no signal should return nothing
+	// instead of guessing. Sentence-case headlines, which is where the real names are
+	// legible, are unaffected.
+	if isTitleCase(toks) {
+		return nil
+	}
 	var out []string
 	for i := 0; i+1 < len(toks); i++ {
 		a, b := toks[i], toks[i+1]

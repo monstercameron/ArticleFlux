@@ -114,6 +114,11 @@ func TestPhrasesRejectNonNames(t *testing.T) {
 		"battery life is great",
 		// A capitalised stopword leading, which is what a sentence start looks like.
 		"The Battery lasted",
+		// Title Case: capitalisation is a house style, so it says nothing about any
+		// particular word. This is the case that produced `Depth Review`, `LCD Projector`
+		// and `MC03 Google` as "brands you follow" on a real corpus.
+		"The Best In-Depth Review Of This LCD Projector",
+		"Everything We Know About The Next Big Console Launch",
 		// A sentence boundary between two names must not join them.
 		"I use the Pixel. Samsung makes the screen",
 		// Structural punctuation in feed markup separates fragments.

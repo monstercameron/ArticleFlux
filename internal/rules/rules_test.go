@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -377,5 +378,47 @@ func BenchmarkEvaluate(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = Evaluate(item, set, now)
+	}
+}
+
+// TestEvaluateDoesNotMutateTheCallersRuleSet.
+//
+// Evaluate skips its defensive copy when the rule set already arrives in
+// evaluation order, which in this application is always — store.RulesFor selects
+// `ORDER BY position ASC, id ASC`. That makes the copy pure waste on the hot
+// path (once per item, per subscriber, per poll) and it makes the caller's slice
+// reachable from inside Evaluate for the first time.
+//
+// Nothing in there writes to it today. This is the test that says so out loud,
+// because the failure mode is silent and shared: fanout hands the SAME slice to
+// every item of a poll, so a rule mutated while evaluating item 1 would change
+// how items 2 through 20 are evaluated, and the effect would depend on
+// arrival order.
+func TestEvaluateDoesNotMutateTheCallersRuleSet(t *testing.T) {
+	hit := Condition{FieldTitle, OpContains, "rust"}
+	sorted := []Rule{
+		rule("aaa", 1, hit, Action{Kind: ActionMarkRead}, Action{Kind: ActionTag, Value: "x"}),
+		rule("bbb", 2, hit, Action{Kind: ActionStar}),
+	}
+	before := fmt.Sprintf("%+v", sorted)
+
+	// Twice, because a mutation that only shows on the second pass — an action
+	// stamped with a RuleID on the first — is exactly the shape this guards.
+	_ = Evaluate(sample(), sorted, now)
+	res := Evaluate(sample(), sorted, now)
+
+	if after := fmt.Sprintf("%+v", sorted); after != before {
+		t.Errorf("Evaluate modified the rule set it was given:\n before %s\n after  %s", before, after)
+	}
+	// And the result is still the one the sorting path produces.
+	if len(res.Hits) != 2 || res.Hits[0].RuleID != "aaa" {
+		t.Errorf("hits = %+v, want aaa then bbb", res.Hits)
+	}
+	// The same set, shuffled, must evaluate identically — that is the branch the
+	// fast path skips, and it has to keep agreeing with the one that does not.
+	shuffled := []Rule{sorted[1], sorted[0]}
+	other := Evaluate(sample(), shuffled, now)
+	if len(other.Hits) != len(res.Hits) || other.Hits[0].RuleID != res.Hits[0].RuleID {
+		t.Errorf("sorted and unsorted input disagree:\n sorted   %+v\n unsorted %+v", res.Hits, other.Hits)
 	}
 }

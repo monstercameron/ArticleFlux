@@ -272,6 +272,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
   tracking pixels and a removed node's `NextSibling` is nil. Reading the successor before descending
   is the same defence for nothing: `RemoveChild` cannot clear a pointer already held. 84 fewer
   allocations per article.
+- **The rules engine re-sorted the whole rule set once per item.** `Evaluate` copied and sorted its
+  input before evaluating, which is the right defence and the wrong place for it: `Evaluate` runs
+  once per ITEM and fan-out hands it the same slice for every item of every poll, so a twenty-item
+  poll across three subscribers copied and sorted an identical rule set sixty times and threw away
+  sixty identical results. It now checks first, and the check passes always — `store.RulesFor` selects
+  `ORDER BY position ASC, id ASC`, the same order `Evaluate` wanted. An unsorted caller pays one
+  linear scan and is otherwise unaffected. 2,041B and 20 allocations per evaluation → **1,401B and
+  16**. Skipping the copy makes the caller's slice reachable from inside `Evaluate` for the first
+  time, so there is now a test asserting it is never written through: fan-out shares one slice across
+  a poll, and a rule mutated while evaluating item 1 would change how items 2 through 20 are
+  evaluated.
 - **The most-issued query in the application rebuilt its own text on every request** — 700 bytes of
   constant SQL concatenated around the index hint, then copied again into the builder it was handed
   to. The constant halves are constants now. The gRPC list, feed, search and tag responses size their

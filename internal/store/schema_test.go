@@ -137,6 +137,24 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 		},
 		"settings":         {"scope_id": "polymorphic: system has none, tenant and user differ"},
 		"notification_log": {},
+		// 0021, §27.3f. Most category assignments name one of the 26 BUILT-INS,
+		// which ship in Go (internal/classify/lexicon) and have no row: the
+		// `categories` table holds only a reader's delta, so someone who never
+		// edited `security` has nothing there to point at. The column therefore
+		// holds either a categories.id or a built-in slug.
+		//
+		// The alternative was seeding 26 rows per user at signup, and it was
+		// rejected for the reason the delta table exists at all: those rows would
+		// be copies, and a copy freezes that reader's taxonomy at the version they
+		// were created from — so a lexicon improvement never reaches them.
+		"item_categories": {"category_id": "a categories.id OR a built-in slug; the 26 built-ins ship in code and have no row"},
+		// Same column, one level up, plus the reason this table exists at all: a
+		// removal must OUTLIVE the label it is about. A reader who deletes a
+		// custom category and later recreates one with the same name should not
+		// have the old removals silently reattach — but neither should a cascade
+		// hand back every label they ever removed the moment a row is tidied.
+		// Keeping it unreferenced makes the ledger's independence structural.
+		"label_removals": {"label_id": "the instruction outlives the label; a cascade here would re-apply what the reader removed"},
 		"devices": {
 			"family_id": "a grouping label shared by a token chain, not a row in any table — " +
 				"revoking a family is one UPDATE over this column",
