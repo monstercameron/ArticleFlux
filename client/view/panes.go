@@ -151,6 +151,14 @@ func thousands(tr i18n.Runtime, n int) string { return i18n.Number(tr.Locale(), 
 // Text glyphs rather than icons: they inherit colour and weight, they scale with
 // the type, they need no sprite sheet, and A26 has no room for an icon build step.
 const (
+	// My Feed — a four-pointed sparkle, and the one mark in this set that says
+	// "chosen" rather than "contains".
+	//
+	// It has to read as different in KIND from the rows beneath it: those are places
+	// items ARE — everything, unread, saved — and this is a judgement ABOUT them. A
+	// third circle or another list glyph would file the ranked stream alongside the
+	// containers and lose exactly the distinction that makes it worth a row.
+	glyphMyFeed = "✦"
 	glyphAll      = "\u25c8" // all feeds — everything, one object
 	glyphUnread   = "\u25cf" // unread — a thing waiting
 	glyphLater    = "\u23f1" // read later — time set aside
@@ -353,9 +361,15 @@ func railPane(p railProps) ui.Node {
 	}
 	if !p.streamsClosed {
 		head = append(head,
+			// First, and above "All feeds", because it is the answer to a different
+			// question: the rows below are "show me everything / the unread / the ones
+			// I saved", and this one is "show me what is worth reading". A reader who
+			// wants that wants it before they want a list.
+			specialRow(glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, -1, p.sel.MyFeed),
 			specialRow(glyphAll, tr.T("stream", "all"), streamAll, p.total,
 				p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
-					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && p.sel.TagID == ""),
+					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && !p.sel.MyFeed &&
+					p.sel.TagID == ""),
 			specialRow(glyphUnread, tr.T("stream", "unread"), streamUnread, p.total, p.sel.Unread),
 			specialRow(glyphLater, tr.T("stream", "later"), streamLater, -1, p.sel.Later),
 			specialRow(glyphLiked, tr.T("stream", "liked"), streamLiked, -1, p.sel.Rating > 0),
@@ -688,7 +702,12 @@ func railShell(tr i18n.Runtime, head, body, foot []ui.Node, busy bool) ui.Node {
 // matches on, so "All feeds" and "Liked" travel the same path as a real feed
 // instead of needing their own hooks.
 const (
-	streamAll      = "__all__"
+	streamAll = "__all__"
+	// streamMyFeed selects the ranked stream. Like the others it travels the
+	// delegated data-source-id path, so My Feed needs no hook of its own — but unlike
+	// the others it resolves to a different QUERY rather than a filter (see
+	// scope.MyFeed).
+	streamMyFeed   = "__myfeed__"
 	streamUnread   = "__unread__"
 	streamLater    = "__later__"
 	streamLiked    = "__liked__"
@@ -1208,6 +1227,17 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 		return html.Div(html.Props{Class: "pane pane-list"}, head, emptyList(tr, p))
 	}
 
+	// The cold-start band (§18.4): an honest "learning your reading" rather than a
+	// confident wrong answer.
+	//
+	// A band above the list rather than a state instead of it. The ranking IS useful
+	// before topics exist — freshness and feed affinity are real signals and the page
+	// is worth reading — so hiding it would be the wrong correction. What is missing
+	// is the topic term, and the reader is told exactly that.
+	if band := learningBand(tr, p); band != nil {
+		head = html.Fragment(head, band)
+	}
+
 	// The list is as long as the scope actually is, not as long as what has been
 	// fetched. The server's count wins when it is bigger; len(items) wins when it
 	// is (a stale count after a refresh brought in new items, say), so the two
@@ -1583,9 +1613,95 @@ func chip(action, label string, pressed bool) ui.Node {
 	}, html.Text(label))
 }
 
+// MaxReasonChips is how many reason chips fit a list row.
+//
+// Two. The row is a fixed 96px (see ItemRowHeight) and the reasons occupy the third
+// line, so this is a width budget rather than a taste: a third chip wraps, the line
+// grows, and every row below it is mispositioned because VirtualList is placing them
+// by arithmetic. The reasons arrive sorted by contribution, so the two kept are the
+// two that actually decided the placement.
+const MaxReasonChips = 2
+
+// rankReasonRow explains a My Feed pick as chips rather than a sentence.
+//
+// # Why chips and not the prose line
+//
+// The single-line version reads as one run-on clause — "published today from a feed
+// you read closely points at engadget.com, which you keep opening" — because it is
+// four independent judgements concatenated. Separating them is not decoration: §18.9
+// makes explainability the product, and the reader can only act on a judgement they
+// can pick out. "This feed is not one I read closely" and "I do not care that other
+// feeds carried it" are different corrections to different terms, and a sentence
+// offers nowhere to aim.
+//
+// # Why it replaces the summary rather than joining it
+//
+// The row height is fixed and already spoken for. The existing rank_reason case made
+// the same trade for the same reason, with the same justification: a reason is
+// actionable and a publisher's summary is not. This only changes the shape of what
+// occupies that slot, not which slot it occupies.
+//
+// The full set rides along in a title attribute, so nothing is actually lost when
+// there were more than two — it is one hover away rather than gone.
+func rankReasonRow(it *pb.Item) ui.Node {
+	reasons := it.GetRankReasons()
+	shown := reasons
+	if len(shown) > MaxReasonChips {
+		shown = shown[:MaxReasonChips]
+	}
+	chips := make([]ui.Node, 0, len(shown))
+	for _, r := range shown {
+		chips = append(chips, staticChip(r))
+	}
+	return html.Div(html.Props{
+		Class: "item-summary item-reasons",
+		// The tier is on the row rather than in a chip: it is a fact about the whole
+		// pick, not one of the judgements, and spending one of two chip slots on
+		// "smart" would push out something the reader could act on. The stylesheet can
+		// mark a Smart+ pick from here without costing any width.
+		Raw: map[string]any{
+			"data-rank-tier": it.GetRankTier(),
+			"data-rank-slot": it.GetRankSlot(),
+			"title":          strings.Join(reasons, " · "),
+		},
+	}, chips...)
+}
+
 // staticChip reports a fact rather than offering an action.
 func staticChip(label string) ui.Node {
 	return html.Span(html.Props{Class: "chip chip-static"}, html.Text(label))
+}
+
+// learningBand says so when the ranking has no topic model to rank with yet.
+//
+// # How cold start is detected, and why not by counting
+//
+// The signal is that NO ranked item cites a topic. Topics need roughly 50–100 engaged
+// items to mean anything (§18.4), and until they exist the score is freshness, feed
+// affinity, domain affinity and volume — a real ordering, missing its most personal
+// term.
+//
+// Detected from the rows rather than from a count of engagements, because the count is
+// not the question. A reader can have two hundred engagements spread so thinly that no
+// cluster reaches MinMembers, and another can have sixty on one subject and get three
+// good topics; a threshold on the count would be confidently wrong for both. "Did any
+// topic actually contribute?" is the question the band answers, and the rows are where
+// that answer is.
+//
+// Returns nil rather than an empty node so the caller can decide not to wrap anything,
+// which keeps a no-op band out of the tree entirely.
+func learningBand(tr i18n.Runtime, p listProps) ui.Node {
+	if !p.sel.MyFeed || len(p.items) == 0 {
+		return nil
+	}
+	for _, it := range p.items {
+		if it.GetRankTopic() != "" {
+			return nil
+		}
+	}
+	return html.Div(html.Props{Class: "list-learning"},
+		html.Span(html.Props{Class: "learning-mark"}, html.Text(glyphMyFeed)),
+		html.Text(tr.T("stream", "myFeedLearning")))
 }
 
 // emptyList gives direction rather than a shrug. Which direction depends on why
@@ -1594,6 +1710,11 @@ func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 	switch {
 	case p.sel.Search != "":
 		return emptyState(tr, "emptySearch", "emptySearchHint")
+	case p.sel.MyFeed:
+		// Before the unreadOnly case, which would otherwise claim this: My Feed is
+		// unread-only by construction, so "All caught up — press u to show everything
+		// again" would offer a key that does nothing on this stream.
+		return emptyState(tr, "emptyMyFeed", "emptyMyFeedHint")
 	case p.unreadOnly:
 		return emptyState(tr, "emptyUnread", "emptyUnreadHint")
 	case p.sel.Later:
@@ -1696,6 +1817,8 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 			html.Strong(html.Props{Class: "note-flag"}, html.Text(tr.T("list", "noteFlag"))),
 			html.Text(firstWords(it.GetNote(), 90)),
 		))
+	case len(it.GetRankReasons()) > 0:
+		children = append(children, rankReasonRow(it))
 	case it.GetRankReason() != "":
 		children = append(children,
 			html.Div(html.Props{Class: "item-summary"}, html.Text(it.GetRankReason())))
