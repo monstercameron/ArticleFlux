@@ -75,6 +75,127 @@ func TestDeriveRunsThroughThePool(t *testing.T) {
 	}
 }
 
+// My Feed reads the materialised ranking, in rank order, and drops what no longer
+// belongs on it.
+//
+// The ordering assertion is the load-bearing one. RankedItems could have been written
+// as HomeRanking plus ItemsByID, which returns no order at all — and the result would
+// be a page that looks personalised, is arbitrary, and passes any test that only counts
+// rows.
+func TestMyFeedServesTheRankingInOrder(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "myfeed.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	sc := seedReader(t, a)
+	a.StartWorkers(ctx)
+	a.DeriveDue(ctx)
+	waitUntil(t, 30*time.Second, func() bool { return countRanked(t, a, sc) > 0 })
+
+	ranked, items, err := a.svc.ListRanked(ctx, sc, 0, 50)
+	if err != nil {
+		t.Fatalf("ListRanked: %v", err)
+	}
+	if len(ranked) == 0 {
+		t.Fatal("My Feed is empty after a successful derivation")
+	}
+	if len(ranked) != len(items) {
+		t.Fatalf("ranking and items disagree: %d vs %d", len(ranked), len(items))
+	}
+	for i := 1; i < len(ranked); i++ {
+		if ranked[i-1].Rank >= ranked[i].Rank {
+			t.Fatalf("out of rank order at %d: %d then %d", i, ranked[i-1].Rank, ranked[i].Rank)
+		}
+	}
+	// The rows must line up with their items, or every reason line is attached to the
+	// wrong article — a failure that looks like a bad ranker rather than a bad join.
+	for i := range ranked {
+		if ranked[i].ItemID != items[i].ID {
+			t.Fatalf("row %d: ranking is for %s but the item is %s",
+				i, ranked[i].ItemID, items[i].ID)
+		}
+	}
+	// Every ranked row carries an explanation. §18.9 makes this the product, and an
+	// unexplained pick is one the reader cannot correct.
+	for _, r := range ranked {
+		if len(r.Reasons) == 0 {
+			t.Errorf("ranked item %s has no reason", r.ItemID)
+		}
+		if r.Tier == "" {
+			t.Errorf("ranked item %s has no tier", r.ItemID)
+		}
+	}
+
+	// Reading one removes it. A homepage that keeps offering what you have read is
+	// broken in a way that is obvious to everyone except the code.
+	before := len(ranked)
+	if _, _, err := a.svc.SetItemState(ctx, sc, ranked[0].ItemID, store.StateChange{
+		Read: boolPtr(true),
+	}); err != nil {
+		t.Fatalf("SetItemState: %v", err)
+	}
+	after, _, err := a.svc.ListRanked(ctx, sc, 0, 50)
+	if err != nil {
+		t.Fatalf("ListRanked after read: %v", err)
+	}
+	if len(after) != before-1 {
+		t.Errorf("after reading one item My Feed had %d rows, want %d", len(after), before-1)
+	}
+	for _, r := range after {
+		if r.ItemID == ranked[0].ItemID {
+			t.Error("a read item is still on My Feed")
+		}
+	}
+}
+
+// A feed the reader took off their front page must not appear on it.
+//
+// in_megafeed has existed in the schema and in feed settings from the start, and the
+// ranking ignored it — so the control was visibly present and did nothing.
+func TestMyFeedHonoursTheMegafeedOptOut(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "optout.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	sc := seedReader(t, a)
+	feeds, err := a.repo.ListFeeds(ctx, sc)
+	if err != nil || len(feeds) == 0 {
+		t.Fatalf("ListFeeds: %v (%d feeds)", err, len(feeds))
+	}
+	// Take the first feed off the front page.
+	excluded := feeds[0].SourceID
+	no := false
+	if _, err := a.repo.UpdateFeedSettings(ctx, sc, excluded,
+		store.FeedSettingsPatch{InMegafeed: &no}); err != nil {
+		t.Fatalf("UpdateFeedSettings: %v", err)
+	}
+
+	a.StartWorkers(ctx)
+	a.DeriveDue(ctx)
+	waitUntil(t, 30*time.Second, func() bool { return countRanked(t, a, sc) > 0 })
+
+	_, items, err := a.svc.ListRanked(ctx, sc, 0, 200)
+	if err != nil {
+		t.Fatalf("ListRanked: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("excluding one of two feeds emptied My Feed entirely")
+	}
+	for _, it := range items {
+		if it.SourceID == excluded {
+			t.Fatalf("item %s from an opted-out feed is on My Feed", it.ID)
+		}
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 // A reader with no affinity-bearing engagement must not schedule a derivation.
 //
 // This is not tidiness: derive is a TF-IDF pass over ninety days of engaged

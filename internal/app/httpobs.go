@@ -1,6 +1,9 @@
 package app
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -40,12 +43,34 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
-//
-// Without it, wrapping breaks flushing and hijacking — which here would break
-// the WebSocket upgrade the whole client depends on, and the streamed responses
-// /stream serves. A middleware that silently disables Hijack turns the tunnel
-// into a 500 with no explanation, so this is load-bearing rather than tidy.
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Hijack and Flush are declared explicitly, and Unwrap above is not enough.
+//
+// EMBEDDING AN INTERFACE PROMOTES ONLY THAT INTERFACE'S METHODS. A
+// statusRecorder embedding http.ResponseWriter therefore does NOT satisfy
+// http.Hijacker, no matter what the value inside it is — and the WebSocket
+// upgrade asserts for http.Hijacker directly rather than going through
+// http.ResponseController, so Unwrap is never consulted. The result was a
+// tunnel that could not upgrade at all: every client sat in TRANSIENT_FAILURE,
+// which reads as "the server is down" and was in fact "the metrics middleware
+// took the socket away".
+//
+// Two keepalive tests caught it. They are the only tests in the tree that dial
+// the tunnel end to end, which is exactly why they are worth their runtime.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("app: %T does not support hijacking", r.ResponseWriter)
+	}
+	return h.Hijack()
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
 
 // httpMetrics records a count and a duration for every response.
 //

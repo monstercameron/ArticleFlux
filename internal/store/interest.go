@@ -710,7 +710,7 @@ func (r *ReaderRepo) RankedItems(ctx context.Context, s Scope, after, limit int)
 		       i.title, COALESCE(i.author,''), COALESCE(i.url,''),
 		       COALESCE(i.summary,''), i.published_at, i.word_count,
 		       COALESCE(i.image_url,''),
-		       COALESCE(uis.starred,0), COALESCE(uis.rating,0)
+		       uis.starred_at IS NOT NULL, COALESCE(uis.rating,0)
 		  FROM home_ranking hr
 		  JOIN items i ON i.id = hr.item_id
 		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = hr.user_id
