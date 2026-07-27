@@ -43,7 +43,7 @@ jobs:
     # The slowest step here is a wasm build; the whole job is minutes. A cap
     # turns a hung runner into a failure somebody sees the same hour instead of
     # a job that sits for six.
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,14 +104,21 @@ jobs:
       # installed. So this line is not belt-and-braces for obs; it is the only
       # place that check will ever run.
       #
-      # `internal/store` exercises the wasm-backed SQLite FTS5 implementation.
-      # Under -race that package normally finishes close to Go's 10-minute
-      # default test timeout and has crossed it on an otherwise healthy runner.
-      # Give the package a real diagnostic ceiling rather than making runner
-      # variance look like a race failure; the job-level cap still catches a
-      # genuinely wedged suite.
       - name: go test -race (concurrency-carrying packages)
-        run: go test -race -timeout=20m ./internal/jobs/... ./internal/store/... ./internal/obs/...
+        run: |
+          # These packages are concurrent by construction and small enough to
+          # run in full under the detector.
+          go test -race -timeout=5m ./internal/jobs/... ./internal/obs/...
+
+          # `internal/store` has 179 tests, most of which are sequential query
+          # and FTS5 correctness checks already covered by the ordinary suite.
+          # Running all of them under -race makes wasm-backed FTS5 merging take
+          # about ten minutes without exercising another concurrent call site.
+          # Keep the detector on the tests that actually start goroutines
+          # against the repository and its connection pools.
+          go test -race -timeout=5m \
+            -run '^(TestConcurrentUseOfOneRecoveryCodeBurnsItOnce|TestBackupUnderConcurrentWritesRestoresAndOpens|TestNoJobIsClaimedTwiceUnderConcurrency|TestFTS5OnEveryPooledConnection|TestConcurrentWritersDoNotGetBusy|TestReadsProceedDuringAWrite)$' \
+            ./internal/store/...
 
       - name: staticcheck
         run: |
