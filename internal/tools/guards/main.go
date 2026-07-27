@@ -1,4 +1,4 @@
-// Command guards enforces the four structural decisions that a plausible-looking
+// Command guards enforces the five structural decisions that a plausible-looking
 // change could otherwise violate silently (TODO 1.8, plan.md §22.14).
 //
 // Why this exists at Tier 1, before there is anything to guard: under
@@ -197,6 +197,7 @@ var unscopedByDesign = map[string]string{
 	"ScrapeRuleFor":        "a global source's extraction rule; the poller has no tenant (A14)",
 	"RecordScrapeOutcome":  "rule health on a global source, written by the poller (A14)",
 	"KnownGUIDs":           "reads global item guids for one global source (A14)",
+	"RecordOutlinks":       "outlinks are a property of a global item (A14); one extraction serves every subscriber",
 	"RetireUnusableSource": "deactivates a global source nobody subscribes to (A14/A22)",
 	"PollerLag":            "instance-wide polling health over global sources (A14)",
 	// Archives (6.12). Of GLOBAL items (A14): one copy serves every subscriber,

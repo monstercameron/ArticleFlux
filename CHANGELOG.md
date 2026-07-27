@@ -56,6 +56,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Recommendations actually run** (`internal/recommendjob` + `internal/store/outlinks.go`, TODO
+  6.10) — harvest → validate → gate → score → store, rungs 1–3, no LLM. Outlinks are §18.7's rung 1
+  and the best signal in the system: the links inside articles the reader engaged with, costing a URL
+  parse and explaining themselves. **Validation happens before scoring, not after** — cheaper the
+  other way round, and wrong, because the health gate's inputs *are* the validation, so a candidate
+  scored without it is scored on evidence nobody checked. Dismissed and already-subscribed domains
+  are filtered **before** the validating fetch: §18.7's guardrails are also a politeness budget, and
+  fetching a site to score a recommendation the reader already refused is a request nobody wanted
+  made. Re-extracting an item replaces its outlinks rather than appending, or the "linked here 11
+  times" evidence climbs on its own.
+
 - **Rate limits** (`internal/ratelimit`, TODO 7.3d) — §20.7's table as code, with a test asserting the
   numbers still match the document. Token buckets rather than fixed windows: a fixed window lets a
   client send 60 at 11:59:59 and 60 more at 12:00:00, twice the limit in one second, and a polling
