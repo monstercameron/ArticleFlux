@@ -2,9 +2,8 @@ package grpcsrv
 
 import (
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
-	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"github.com/monstercameron/ArticleFlux/internal/apierr"
 )
 
 // errKey builds a status that a client can TRANSLATE.
@@ -21,15 +20,55 @@ import (
 // the key the wasm client looks up in the same catalog every other string comes
 // from.
 //
-// If attaching the detail fails, the plain status is returned rather than an
-// error about an error. A reader seeing the English is a small loss; a reader
-// seeing "failed to marshal error detail" is the app breaking while explaining
-// that something broke.
+// # Why this now goes through internal/apierr
+//
+// §20.7's taxonomy is shared by three transports, and it used to be implemented
+// in this package — which is one of them. A taxonomy living inside one
+// transport is one the other two re-derive, and the way that gets discovered is
+// a client handling a 404 from the tunnel and a 403 from the sync API for the
+// same condition. `apierr` owns the table and the detail payload; this stays as
+// the call-site-friendly shape the twenty-odd handlers already use.
+//
+// New classifications belong in `apierr` as named constructors, not here: a
+// code passed inline is a decision nobody can find later.
 func errKey(c codes.Code, key, msg string, args map[string]string) error {
-	st := status.New(c, msg)
-	withDetail, err := st.WithDetails(&pb.ErrorDetail{Key: key, Args: args})
-	if err != nil {
-		return st.Err()
+	e := apierr.New(kindOf(c), key, msg)
+	if len(args) > 0 {
+		e = e.WithArgs(args)
 	}
-	return withDetail.Err()
+	return apierr.Status(e)
+}
+
+// kindOf maps a gRPC code back to §20.7's kind.
+//
+// The reverse direction exists only for these legacy call sites. It is not
+// exported and should not grow users: a Kind carries what a handler MEANT and a
+// code carries only what the wire says, so going kind→code loses nothing while
+// code→kind is a guess that happens to be unambiguous today.
+//
+// An unrecognised code becomes Internal, which is the same fail-safe default
+// apierr applies to an unrecognised error.
+func kindOf(c codes.Code) apierr.Kind {
+	switch c {
+	case codes.Unauthenticated:
+		return apierr.KindUnauthenticated
+	case codes.PermissionDenied:
+		return apierr.KindPermissionDenied
+	case codes.NotFound:
+		return apierr.KindNotFound
+	case codes.InvalidArgument:
+		return apierr.KindInvalidArgument
+	case codes.FailedPrecondition:
+		return apierr.KindFailedPrecondition
+	case codes.ResourceExhausted:
+		return apierr.KindResourceExhausted
+	case codes.Aborted:
+		return apierr.KindAborted
+	case codes.Unavailable:
+		return apierr.KindUnavailable
+	case codes.Unimplemented:
+		return apierr.KindUnimplemented
+	default:
+		return apierr.KindInternal
+	}
 }

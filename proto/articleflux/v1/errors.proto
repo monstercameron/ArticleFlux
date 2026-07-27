@@ -27,4 +27,31 @@ message ErrorDetail {
   // identifiers only: never the reader's own content, which does not belong in
   // an error the server composed.
   map<string, string> args = 2;
+
+  // §20.7's structured detail, so a client can render something better than a
+  // toast. Added after the key/args pair rather than instead of it: the key is
+  // what makes an error translatable, and these say what the error is ABOUT.
+  //
+  // All optional. A client that ignores every one of them still renders the
+  // translated message correctly, which is what keeps this additive.
+
+  // Field names the request field at fault, for a validation error. It is what
+  // lets a form put the message next to the input rather than at the top,
+  // which is the difference between "something was wrong" and a fixable form.
+  string field = 3;
+
+  // Quota is the limit that was hit, when one was. Named rather than numeric —
+  // "daily_llm_tokens", "subscriptions" — because the number without the name
+  // is not actionable and the name without the number still is.
+  string quota = 4;
+
+  // RetryAfterS is how long to wait, in seconds, for a ResourceExhausted or
+  // Unavailable. Zero means "no useful estimate", which is honest and is what
+  // a client should treat as "back off on your own schedule" rather than as
+  // "retry immediately".
+  int32 retry_after_s = 5;
+
+  // DocRef points at documentation for a failure a person has to act on —
+  // typically a configuration or setup problem the UI cannot fix by itself.
+  string doc_ref = 6;
 }

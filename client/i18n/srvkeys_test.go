@@ -23,7 +23,17 @@ import (
 // keycoverage does with client/view: source is the thing under test, and a
 // parse needs no build tags.
 
-const grpcsrvDir = "../../internal/transport/grpcsrv"
+// Both places the server names a catalog key.
+//
+// apierr was added by TODO 7.3a and is where §20.7's taxonomy now lives, which
+// makes it the source of most of the keys that used to be written inline in
+// grpcsrv. Scanning only grpcsrv after that move would leave this test passing
+// while checking a shrinking fraction of what the server can send — the failure
+// this file exists to prevent, arriving in its own blind spot.
+var serverKeyDirs = []string{
+	"../../internal/transport/grpcsrv",
+	"../../internal/apierr",
+}
 
 func TestEveryServerErrorKeyExists(t *testing.T) {
 	registered := registeredKeys()
@@ -99,38 +109,87 @@ func walkErrKey(t *testing.T) map[string][2]string {
 	// keyed by key, value {message, position}
 	found := map[string][2]string{}
 
-	entries, err := os.ReadDir(grpcsrvDir)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", grpcsrvDir, err)
-	}
 	fset := token.NewFileSet()
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
+	for _, dir := range serverKeyDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("cannot read %s: %v", dir, err)
 		}
-		f, perr := parser.ParseFile(fset, filepath.Join(grpcsrvDir, e.Name()), nil, 0)
-		if perr != nil {
-			t.Fatalf("cannot parse %s: %v", e.Name(), perr)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+			if perr != nil {
+				t.Fatalf("cannot parse %s: %v", e.Name(), perr)
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				keyArg, msgArg := keyAndMessageArgs(call)
+				if keyArg == nil {
+					return true
+				}
+				key, ok := literal(keyArg)
+				if !ok {
+					return true
+				}
+				msg := ""
+				if msgArg != nil {
+					msg, _ = concatLiteral(msgArg)
+				}
+				found[key] = [2]string{msg, fset.Position(keyArg.Pos()).String()}
+				return true
+			})
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			id, ok := call.Fun.(*ast.Ident)
-			if !ok || id.Name != "errKey" || len(call.Args) < 3 {
-				return true
-			}
-			key, ok := literal(call.Args[1])
-			if !ok {
-				return true
-			}
-			msg, _ := concatLiteral(call.Args[2])
-			found[key] = [2]string{msg, fset.Position(call.Args[1].Pos()).String()}
-			return true
-		})
 	}
 	return found
+}
+
+// keyAndMessageArgs recognises the shapes that carry a catalog key.
+//
+// Listed by name rather than inferred, because "any call whose second argument
+// looks like srv.something" would match a comparison as readily as a
+// construction, and a test that matches too much is one people disable.
+func keyAndMessageArgs(call *ast.CallExpr) (key, msg ast.Expr) {
+	name := ""
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		name = fn.Name
+	case *ast.SelectorExpr:
+		name = fn.Sel.Name
+	default:
+		return nil, nil
+	}
+
+	switch name {
+	case "errKey":
+		// errKey(code, key, msg, args)
+		if len(call.Args) >= 3 {
+			return call.Args[1], call.Args[2]
+		}
+	case "New", "Precondition", "Unimplemented":
+		// apierr.New(kind, key, msg) and (key, msg)
+		if len(call.Args) == 3 {
+			return call.Args[1], call.Args[2]
+		}
+		if len(call.Args) == 2 {
+			return call.Args[0], call.Args[1]
+		}
+	case "Invalid":
+		// apierr.Invalid(field, key, msg)
+		if len(call.Args) == 3 {
+			return call.Args[1], call.Args[2]
+		}
+	case "Unavailable":
+		// apierr.Unavailable(key, msg, retryAfter)
+		if len(call.Args) == 3 {
+			return call.Args[0], call.Args[1]
+		}
+	}
+	return nil, nil
 }
 
 // concatLiteral flattens `"a" + "b"`, which is how a long fallback is wrapped.

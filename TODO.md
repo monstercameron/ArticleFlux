@@ -1373,11 +1373,45 @@ Business logic over repositories. Still headless.
 - [x] **7.3** gRPC service impls — **thin**: authz → validate → call Tier 6 → map to pb. No logic here.
       ✅ 2026-07-26 — `internal/transport/grpcsrv` — translation and the §20.7 taxonomy only. Every clamp and every tenant check lives in the repository, where a second caller cannot bypass it.
 
-- [ ] **7.3a `internal/apierr`** — the §20.7 taxonomy in one place. **Cross-tenant returns `NotFound`,
+- [x] **7.3a `internal/apierr`** — the §20.7 taxonomy in one place. **Cross-tenant returns `NotFound`,
       never `PermissionDenied`** — the latter confirms the object exists, which is a tenant leak with
       good manners. Structured detail `{code,message,field,quota,retry_after_s}`; `message` is always
       safe to display. *Done when: T1 asserts the code, not just the empty result.*
       ◧ 2026-07-26 — The taxonomy is implemented — `grpcsrv.toStatus` maps cross-tenant to `NotFound`, never `PermissionDenied` — but it lives in the transport package rather than in `internal/apierr`, and there is no structured detail payload yet.
+
+      ✅ 2026-07-27 — `internal/apierr` (+ `domain.go`), 16 tests, `ErrorDetail` extended.
+
+      **The move is the point.** The taxonomy lived in `grpcsrv`, which is one of the **three**
+      transports that share it — the tunnel, the Google Reader sync API (§15.1) and the proxy
+      endpoints. A taxonomy owned by one transport is one the other two re-derive, and that gets
+      discovered when a client handles a 404 from one surface and a 403 from another for the same
+      condition. `toStatus` and `errKey` now both route through `apierr`, so the detail payload and
+      the fail-safe default have one implementation rather than a copy per transport.
+
+      **`CrossTenant()` is a named constructor**, and that is the whole design: a handler thinking
+      about permissions will reach for `PermissionDenied` because it is the honest answer — and it
+      confirms the object exists. A test asserts a cross-tenant refusal and a genuine miss are
+      identical in code, message **and detail payload**, including that the cross-tenant one carries
+      no args, since anything said about the object is the thing that must not be said.
+
+      **§20.7's structured detail** is additive on `ErrorDetail` (fields 3-6) rather than replacing
+      the key/args pair: the key is what makes a message translatable, and `field`/`quota`/
+      `retry_after_s`/`doc_ref` say what the error is *about*. A client ignoring all four still
+      renders correctly. The retry hint **rounds up** — rounding down produces a hint that expires
+      before the limit does, so a client obeying it exactly retries into the same refusal and learns
+      the hint lies. Rate limits and quotas carry different keys because they are the same code with
+      different remedies: one means "wait", the other means "this is as much as you get".
+
+      **`KindUnimplemented` was added rather than folded into Internal.** Two `errKey` call sites
+      send `Unimplemented`, and mapping it to Internal would have silently changed the wire code —
+      "the server broke" and "this deployment does not have the thing" are different facts, and a
+      client can hide a control for one and must not for the other.
+
+      **The i18n key scanner was scanning the wrong place after the move.** `srvkeys_test.go` walks
+      the server source for catalog keys; it knew only about `grpcsrv`, so after most keys moved to
+      `apierr` it would have kept passing while checking a shrinking fraction of what the server can
+      send — this test's own blind spot. It now scans both, and recognises the `apierr` constructors
+      by name rather than by shape. All ten new keys were caught by it and registered.
 
 - [x] **7.3b `internal/page`** — opaque keyset cursors, `spec_hash`-bound so a cursor from a different
       `ViewSpec` is `InvalidArgument` rather than silently-wrong results §20.7
@@ -3057,6 +3091,29 @@ why 6.1 was built ahead of its milestone rather than after it.
       there claiming the loading flag prevented "one frame showing the previous feed's rows" — it
       never could, because the branch it guarded was unreachable. A comment asserting a guarantee the
       code does not provide is worse than no comment.*
+
+- [x] **H12 · The posture is stated at boot.** Asked directly — *"we have a dev mode but is there a
+      prod mode???"* — and the answer is **no, deliberately: production is the DEFAULT and `-dev` is
+      the opt-out.** A mode you must remember to turn ON to be safe is one that eventually does not
+      get turned on, and that failure is silent and total; it is the same reasoning that took DevMode
+      off the bind address. But a default that is never stated is a default nobody checks, and
+      `dev=false` buried in the listening line is technically the answer while being easy to read
+      past. So the server now says which of the two it is in the terms that matter — whether a
+      password is required, and what stands between the socket and the internet — and dev says it at
+      WARN, because that line describes a server owned by anyone who can reach the port.
+      > Two production-only checks came with it, as warnings rather than refusals: each describes an
+      > instance that WORKS and is weaker than it looks, and refusing to start would be the worse
+      > trade for someone mid-deploy at midnight. A public bind with no `-origin` falls back to
+      > same-origin, which holds only while whatever is in front forwards `Host` faithfully. An
+      > origin allowlist on a loopback bind WITHOUT `-behind-proxy` means every client address in the
+      > log is the proxy's, which is the difference between "who is hammering the login" being
+      > answerable and not.
+      >
+      > `DevMode` gates exactly four things and it is worth having the list in one place: the
+      > unauthenticated `/debug/reset-state` route, `devScope`'s first-user fallback, Preflight's
+      > "an account must exist" check, and `WhoAmIResponse.dev_mode`. `AllowPrivateFeeds` rides along
+      > from `cmd/` — dev relaxes the SSRF guard so a locally-served fixture feed can be subscribed
+      > to, which is the one gate that is not in `internal/app` and the one most easily forgotten.
 
 ### Open, and it is not a UI bug
 

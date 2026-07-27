@@ -78,6 +78,17 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **`internal/apierr` — §20.7's error taxonomy in one place** (TODO 7.3a). It lived in `grpcsrv`,
+  which is one of the three transports that share it; a taxonomy owned by one transport is one the
+  other two re-derive, and you find out they derived it differently when a client sees a 404 from
+  one surface and a 403 from another for the same condition. **Cross-tenant access returns
+  `NotFound`, never `PermissionDenied`** — the latter confirms the object exists — and that is now a
+  named constructor, with a test asserting a cross-tenant refusal is byte-identical to a genuine
+  miss in code, message and detail payload. `ErrorDetail` gains §20.7's structured fields
+  (`field`, `quota`, `retry_after_s`, `doc_ref`), additively, so a client that ignores all four still
+  renders correctly; retry hints round **up**, because a hint that expires before the limit does
+  teaches clients to ignore hints.
+
 - **Lockout, recovery codes, reset tokens and sudo policy** (`internal/authn` + `store` ledger, TODO
   6.1 in part). The previous limiter lived in memory, so a restart cleared it — fine for a limiter,
   whose job is to blunt a burst, and exactly wrong for a lockout, whose job is to survive one. The
@@ -144,6 +155,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
   switch as `-dev`, which is why `-dev` is now refused alongside `-behind-proxy`: a proxy in front of
   a loopback bind is a published instance, and without that refusal the original vulnerability walks
   back in through a development `.env` copied to a server.
+- **The server states its posture at boot** (TODO H12). There is no `-prod` flag and there will not
+  be one: production is the default and `-dev` is the opt-out, because a mode you must remember to
+  turn on to be safe is one that eventually does not get turned on. But a default that is never
+  stated is a default nobody checks, so `serve` now logs `MODE=production — login required` with the
+  origin allowlist and whether forwarded addresses are trusted, or `MODE=development — NO LOGIN` at
+  WARN along with the debug endpoints and relaxed SSRF guard that come with it. Two production-only
+  warnings ride along: a public bind with no `-origin`, and an origin allowlist on a loopback bind
+  without `-behind-proxy`. Warnings rather than refusals — each describes an instance that works and
+  is weaker than it looks.
 - **Dev mode no longer asks for a password**, and the login screen prefills `cam` /
   `articleflux-dev` on a loopback origin (TODO H6, H7). Whether a credential is required is a fact
   about the server, so the client asks it rather than assuming from local storage. The prefill is

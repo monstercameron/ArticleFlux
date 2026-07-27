@@ -44,7 +44,23 @@ type ErrorDetail struct {
 	// Placeholder values for the message, already stringified. Server-side
 	// identifiers only: never the reader's own content, which does not belong in
 	// an error the server composed.
-	Args          map[string]string `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Args map[string]string `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Field names the request field at fault, for a validation error. It is what
+	// lets a form put the message next to the input rather than at the top,
+	// which is the difference between "something was wrong" and a fixable form.
+	Field string `protobuf:"bytes,3,opt,name=field,proto3" json:"field,omitempty"`
+	// Quota is the limit that was hit, when one was. Named rather than numeric —
+	// "daily_llm_tokens", "subscriptions" — because the number without the name
+	// is not actionable and the name without the number still is.
+	Quota string `protobuf:"bytes,4,opt,name=quota,proto3" json:"quota,omitempty"`
+	// RetryAfterS is how long to wait, in seconds, for a ResourceExhausted or
+	// Unavailable. Zero means "no useful estimate", which is honest and is what
+	// a client should treat as "back off on your own schedule" rather than as
+	// "retry immediately".
+	RetryAfterS int32 `protobuf:"varint,5,opt,name=retry_after_s,json=retryAfterS,proto3" json:"retry_after_s,omitempty"`
+	// DocRef points at documentation for a failure a person has to act on —
+	// typically a configuration or setup problem the UI cannot fix by itself.
+	DocRef        string `protobuf:"bytes,6,opt,name=doc_ref,json=docRef,proto3" json:"doc_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -93,14 +109,46 @@ func (x *ErrorDetail) GetArgs() map[string]string {
 	return nil
 }
 
+func (x *ErrorDetail) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *ErrorDetail) GetQuota() string {
+	if x != nil {
+		return x.Quota
+	}
+	return ""
+}
+
+func (x *ErrorDetail) GetRetryAfterS() int32 {
+	if x != nil {
+		return x.RetryAfterS
+	}
+	return 0
+}
+
+func (x *ErrorDetail) GetDocRef() string {
+	if x != nil {
+		return x.DocRef
+	}
+	return ""
+}
+
 var File_articleflux_v1_errors_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_errors_proto_rawDesc = "" +
 	"\n" +
-	"\x1barticleflux/v1/errors.proto\x12\x0earticleflux.v1\"\x93\x01\n" +
+	"\x1barticleflux/v1/errors.proto\x12\x0earticleflux.v1\"\xfc\x01\n" +
 	"\vErrorDetail\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x129\n" +
-	"\x04args\x18\x02 \x03(\v2%.articleflux.v1.ErrorDetail.ArgsEntryR\x04args\x1a7\n" +
+	"\x04args\x18\x02 \x03(\v2%.articleflux.v1.ErrorDetail.ArgsEntryR\x04args\x12\x14\n" +
+	"\x05field\x18\x03 \x01(\tR\x05field\x12\x14\n" +
+	"\x05quota\x18\x04 \x01(\tR\x05quota\x12\"\n" +
+	"\rretry_after_s\x18\x05 \x01(\x05R\vretryAfterS\x12\x17\n" +
+	"\adoc_ref\x18\x06 \x01(\tR\x06docRef\x1a7\n" +
 	"\tArgsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01BPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"

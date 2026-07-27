@@ -32,6 +32,39 @@ func init() {
 		// a client reading that as "the end" silently truncates (§20.7).
 		"staleCursor": "this page cursor is out of date; reloading the list",
 
+		// --- §20.7's taxonomy (internal/apierr, TODO 7.3a)
+		//
+		// These are the refusals the shared taxonomy composes, so they are the
+		// ones every transport sends. Note what is NOT here and never will be:
+		// a message for a cross-tenant access. That resolves to `notFound`,
+		// identical to a genuine miss, because a distinct message is the
+		// tenant leak arriving through the translation layer.
+		"permissionDenied": "you do not have permission to do that",
+		// A limit that waiting fixes...
+		"rateLimited": "too many requests; please slow down",
+		// ...and one it does not. Same code on the wire, different remedy, so
+		// the reader is told which of "wait" and "this is as much as you get"
+		// applies rather than being left to guess from a retry that never works.
+		"quotaExceeded": "you have reached a limit on this account",
+		// A25: somebody else changed this between the read and the write. Named
+		// as a fact about the data rather than as an error, because it is not
+		// one — the client reloads and the reader carries on.
+		"revConflict":         "this changed somewhere else; reloading",
+		"idempotencyConflict": "this request was already used for something else",
+		// Expired, spent and never-existed are deliberately one message: the
+		// difference tells somebody holding a guess whether it named something
+		// real.
+		"inviteInvalid":     "that invitation is not valid",
+		"resetTokenInvalid": "that reset link is not valid",
+		// D12. An outage rather than a leak, and phrased so the reader knows it
+		// is the server's problem and not their password.
+		"ambiguousUser": "this account name exists in more than one workspace",
+		// §22.8's breaker is open. "Paused" and "recovers" rather than "failed",
+		// because it resumes on its own and a reader told something failed will
+		// go looking for a setting to fix.
+		"smartUnavailable": "Smart features are paused while the provider recovers",
+		"noEncryptionKey":  "this server cannot store credentials until an encryption key is configured",
+
 		// --- Smart+
 		"badApiKeyShape":       "that does not look like an OpenAI API key — they begin with sk-",
 		"saveModelFailed":      "couldn't save the model",

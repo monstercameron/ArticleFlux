@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/rewrite"
@@ -39,6 +40,8 @@ type ReaderServer struct {
 	// mintStream turns an article URL into a §10.1d live-view URL. Nil means
 	// the instance does not run a browser, and the client offers no Live toggle.
 	mintStream func(absURL string) string
+	// scrollLive delivers a wheel event to a running live view.
+	scrollLive func(sessionID string, dx, dy float64) error
 }
 
 // NewReaderServer wires a service to gRPC.
@@ -66,10 +69,39 @@ func (s *ReaderServer) WithPageProxy(mint func(absURL string) string) *ReaderSer
 	return s
 }
 
-// WithLiveView offers the §10.1d browser stream alongside the page proxy.
-func (s *ReaderServer) WithLiveView(mint func(absURL string) string) *ReaderServer {
+// WithLiveView offers the §10.1d browser stream alongside the page proxy, and
+// the input path that makes it more than a poster.
+func (s *ReaderServer) WithLiveView(
+	mint func(absURL string) string,
+	scroll func(sessionID string, dx, dy float64) error,
+) *ReaderServer {
 	s.mintStream = mint
+	s.scrollLive = scroll
 	return s
+}
+
+// ScrollLiveView moves a running live view (§10.1d).
+//
+// Authorisation is possession of the session id, which IS the stream URL's
+// signature — the same proof that authorised opening the view. So there is no
+// separate check here, and deliberately no lookup of who owns the session:
+// there is nothing to look up, because the capability is the whole claim.
+//
+// A dead session answers `live: false` rather than an error. The client is
+// sending these from a wheel handler at speed; turning an expired view into a
+// stream of red errors would say "something is broken" about the ordinary,
+// expected end of a session.
+func (s *ReaderServer) ScrollLiveView(ctx context.Context, req *pb.ScrollLiveViewRequest) (*pb.ScrollLiveViewResponse, error) {
+	if _, err := s.scopeOf(ctx); err != nil {
+		return nil, toStatus(err)
+	}
+	if s.scrollLive == nil {
+		return &pb.ScrollLiveViewResponse{Live: false}, nil
+	}
+	if err := s.scrollLive(req.GetSessionId(), req.GetDeltaX(), req.GetDeltaY()); err != nil {
+		return &pb.ScrollLiveViewResponse{Live: false}, nil
+	}
+	return &pb.ScrollLiveViewResponse{Live: true}, nil
 }
 
 // toStatus maps a domain error to the §20.7 taxonomy.
@@ -77,26 +109,19 @@ func (s *ReaderServer) WithLiveView(mint func(absURL string) string) *ReaderServ
 // The rule that matters: a row belonging to another tenant returns NotFound, not
 // PermissionDenied. PermissionDenied on item 4711 confirms item 4711 exists,
 // which is a tenant-isolation leak dressed as good manners.
+// toStatus turns a domain error into §20.7's wire form.
+//
+// The table it used to hold moved to `internal/apierr` (TODO 7.3a). It lived
+// here, and here is one of the THREE transports that share the taxonomy — a
+// mapping owned by one transport is one the other two re-derive, and that gets
+// discovered when a client sees a 404 from the tunnel and a 403 from the sync
+// API for the same condition.
+//
+// What has not changed: an unrecognised error becomes Internal with a fixed
+// safe message, and the original goes to the log with a request id (§22.11).
+// The client never sees a wrapped database error.
 func toStatus(err error) error {
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, store.ErrNotFound):
-		return errKey(codes.NotFound, "srv.notFound", "not found", nil)
-	case errors.Is(err, store.ErrNoScope):
-		return errKey(codes.Unauthenticated, "srv.notAuthenticated", "not authenticated", nil)
-	case errors.Is(err, store.ErrCursorSpecMismatch), errors.Is(err, store.ErrBadCursor):
-		// §20.7 / TODO 7.3b: InvalidArgument, never an empty page. An empty page
-		// means "you have reached the end", and a client that reads a stale
-		// cursor as the end stops paging and shows a truncated list with no error
-		// anywhere. This tells it to restart from the top.
-		return errKey(codes.InvalidArgument, "srv.staleCursor",
-			"this page cursor is out of date; reloading the list", nil)
-	default:
-		// The message is internal and stays internal (§22.11): the client gets a
-		// safe string, the log gets the detail with a request id.
-		return errKey(codes.Internal, "srv.internal", "internal error", nil)
-	}
+	return apierr.Status(apierr.FromDomain(err))
 }
 
 func (s *ReaderServer) ListFeeds(ctx context.Context, _ *pb.ListFeedsRequest) (*pb.ListFeedsResponse, error) {
