@@ -8,7 +8,7 @@ require (
 	github.com/monstercameron/GoWebComponents/v5 v5.0.0-00010101000000-000000000000
 	github.com/ncruces/go-sqlite3 v0.35.0
 	golang.org/x/crypto v0.54.0
-	golang.org/x/net v0.56.0
+	golang.org/x/net v0.57.0
 	golang.org/x/term v0.45.0
 	golang.org/x/text v0.40.0
 	google.golang.org/grpc v1.82.1
