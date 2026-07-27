@@ -1935,11 +1935,55 @@ report as bugs:
   item being spoken, so the worst a forged value achieves is a handover from an
   article the reader could already read.
 
-The prompt's prohibitions are the feature, and each names something a model asked
-for "a podcast segment" produces unprompted and audibly: an invented show name, a
-"welcome back" to a listener who has not been anywhere, a sign-off at the end of
-every segment so a forty-minute session ends forty times, and — the damaging one
-— "coming up next", followed by a story the model has never seen.
+**A manner, not an identity (`tts.podcastVibe`, prompt v2).** The first version's
+segments were accurate and inert — a competent transcription of a headline and a
+body, which is exactly what a listener does not need, because they can already
+read. So the narrator has a **vibe**: calm (default), brisk, warm or dry. Each is
+a paragraph in the prompt describing how to say true things, and each changes
+sentence length and what gets emphasised rather than adding a character. That
+distinction is the whole design:
+
+> A manner is a way of saying true things. A character is a person who does not
+> exist. "Calm" is the first; *"this is Sarah with your morning update"* is the
+> second, and it is a fabricated human being introduced by software the reader
+> owns.
+
+So the prompt gives the narrator a personality and explicitly withholds a name,
+and the unknown-value path resolves through `smart.VibeFor` rather than passing a
+stored string into a system prompt.
+
+**The narrator may judge, and may not invent.** This is the line the whole
+feature rests on and it is stated in the prompt in both directions: it *may* say
+a result is surprising, a claim is thin, a number is smaller than the headline
+suggests, or that this mostly matters if you use the thing in question — that
+judgement is why anyone would listen to a person instead of a feed reader. It
+*may not* produce a fact, number, quote, date or attribution that is not in the
+text, with a test a model can actually apply — **if you could not point at the
+sentence that supports it, do not say it** — and it may never attribute its own
+judgement to the publication.
+
+**The opening.** The first segment of a broadcast greets: part of the day, the
+date, and how much is queued, varied rather than recited. Two facts make it work:
+
+- **It follows the LISTENER'S clock.** `&now=<RFC3339 with offset>` and `&n=<count>`
+  ride on the first request, because this server may be three timezones from the
+  person listening to it and being wished good morning at ten at night is the most
+  obviously wrong thing this feature could say. A missing or unparseable value
+  falls back to the server's clock rather than dropping the greeting.
+- **The server decides where the top of the show is**, by whether there is a
+  predecessor — so a client that sends the opening parameters on every request
+  still gets exactly one greeting per broadcast.
+
+The greeting is given to the model as FACTS rather than as a sentence to read
+out, which is what makes the wording vary between broadcasts instead of the same
+line arriving every morning like a recording. The opening's date is part of the
+cache key, so restarting an hour later costs nothing and tomorrow opens fresh.
+
+The remaining prohibitions each name something a model asked for "a podcast
+segment" produces unprompted and audibly: an invented show name, a sign-off at
+the end of every segment so a forty-minute session ends forty times, and — the
+damaging one — "coming up next", followed by a story the model has never seen.
+Saying how MANY stories are left is allowed, because it was told the number.
 
 Audio is keyed by `(item, mode, model, voice)`. The mode is not optional: without
 it, turning the digest on serves yesterday's full-article audio and turning it
@@ -3505,6 +3549,181 @@ covers a failure that is invisible in a screenshot of either half alone:
   on the selected one** — transcribed verbatim from `design/03-fanciful.html`, so that one is a
   decision about the mockup and not a value to nudge (**D22**, TODO 8b.44). It is recorded with its measured ratios and
   ratcheted: it may not get worse, and no new theme inherits the exception.
+
+#### 20.16.3 A theme you describe, and a theme that follows what you read
+
+Two Smart+ features on one engine, and they are the same operation at two speeds. Both produce a
+**target palette**; the difference is `design.Blend`'s `t`.
+
+- **Compose** — the reader types "a cold library at 2am" and arrives at the palette immediately.
+- **Attune** — the reader's own topics (§18.2) produce the target and they arrive over about three
+  weeks, one step a day.
+
+That framing is the whole design. §20.16 already said a theme nobody anticipated — *a reader's own* —
+costs exactly what a built-in one does, because a theme is a set of token values and nothing in the
+engine cares where the values came from. This is the way in, and it needed no new mechanism in the
+applier at all: `applyAppearance` writes `Theme.Vars()` onto `documentElement.style` exactly as
+before.
+
+**What a model is allowed to author is a type, not a prompt instruction.** Twelve hex colours and one
+integer (`design.GeneratedTokens`). It may not author `Tone`, which is read off the ground by
+`design.ToneOf` — a model naming the mood it was *asked for* is not describing the palette it
+*produced*, and `--ink` and `color-scheme` are both derived from the answer, so a theme of paper
+claiming to be dark keeps a dark caret in every text field. It may not author `Wash`, which is
+rendered from an integer here. And it may not author **`Shadow`**, which is the one token whose value
+is a whole CSS declaration and which is written onto `documentElement.style`: that is the only place
+in this application where model output would reach a CSS parser, so it is derived from the tone and
+`checkShadow` refuses anything else — a character whitelist *and* a function-name whitelist, because
+the first version passed `0 0 0 var(--x)` and `url(http://x/y)` on the grounds that `v`, `a`, `r` and
+`(` are every bit as legal in `rgba(0,0,0,.55)`. The letters were never the problem; the call was.
+
+##### The floor is enforced at runtime, and it is the SAME floor
+
+`TestEveryThemeIsReadable` checks the five shipped palettes at build time. A palette written thirty
+seconds ago cannot be checked then, and the failure mode is specific and ugly: something beautiful in
+the picker with 3.6:1 datelines on the row the reader is sitting on. *Asking* a model for accessible
+colours is not a control; it is a hope, and it fails in the direction that looks fine.
+
+So `design.Sanitize` enforces it at runtime and **repairs rather than refuses** — refusing makes the
+feature useless, because a palette that misses one token by a tenth of a point is not something
+anybody wants to iterate on. What it moved is **reported**, not swallowed: a palette that came back a
+little different from the one described is a thing the reader is told.
+
+Three properties hold it together, and each one is a bug that was found by writing the test:
+
+- **The runtime floor is exactly the build floor.** `raiseTo` takes a trigger *and* a destination,
+  because collapsing them into one number made Sanitize "repair" Ledger's and Daylight's `--mute` —
+  two tokens that pass the shipped guard at 4.52 and 4.51. A runtime check stricter than the build
+  check is not a stricter product, it is two checks that disagree, and the one that fires is the one
+  nobody reviewed.
+- **It is idempotent.** It runs on every decode, which is every boot. A pass that crept by one 4%
+  step would walk a stored theme to white over a month, and the reader would have no way to describe
+  what was happening.
+- **The passes do not fight.** A ground near mid-grey cannot carry AA text in either direction, so
+  moving text is not the repair — moving the ground is, in the direction *away* from the text, and
+  the surfaces have to move with it or the page separates from its own rows. The structure pass then
+  repairs edges away from the text too, for the same reason: written the other way it undid the
+  ground pass, and Sanitize failed its own idempotence test every boot.
+
+A thousand random palettes are swept per run. A bounded repair loop cannot be tested by example — the
+interesting inputs are the ones nobody would think to write down, and "a theme like a thunderstorm"
+produces exactly that class of thing.
+
+##### `--ink`, and the check no build could make until now
+
+`--ink` is a source's hue where it carries **text** rather than filling a shape, and on a light theme
+the sheet computes it: `color-mix(in oklab, var(--c), var(--cream) 62%)`. So it is not a token any
+theme declares — it is resolved by the browser, from a hue assigned at runtime and a theme token, and
+§20.16.2 records that this is why `e2e/appearance.spec.mjs` exists and why Go only ever saw the
+expression.
+
+That arrangement was sound for five hand-written palettes measured once in a real engine. **A
+generated theme breaks it.** The mix lands wherever that theme's `--cream` is, over whatever ground it
+chose, and a perfectly ordinary "old paper under a lamp" — warm off-white ground, warm dark brown
+text, 9:1 against each other — puts every source name in the list at **4.34:1** while passing every
+other check in the file.
+
+So `client/design/oklab.go` reproduces the mix in Go, and Sanitize gained a pass for it. On a light
+theme the lever is `--cream`, darkened until the mix clears. On a **dark** theme `--ink` *is* the hue,
+unmixed, and the hue belongs to the source rather than to the theme — so the ground is the only lever
+and the condition lives in `groundOK`, which refuses a ground too pale to carry a colour picked at 78%
+lightness. `groundOK` asks for `fixInk`'s *target* rather than the floor, because its job is to
+guarantee `fixInk` can land: asking only for AA accepted a ground whose best possible ink was 4.50,
+after which `fixInk` aimed at 4.55, could not reach it, and Sanitize refused a palette every earlier
+pass had reported as repaired. The sweep found that on round 365.
+
+Reimplementing a browser operation is worth exactly as much as the evidence that it matches, so
+`e2e/appearance.spec.mjs` pins four (ground, cream) pairs against the value the shipping engine
+paints, read back as real sRGB bytes off a canvas. It is measured against **the page**, matching the
+surface that test already measured — a floor stricter than the established one would put the two in
+disagreement, which is the same defect as the first bullet above. Extending both to the hovered and
+selected rows is a real improvement and a separate change, because it re-opens the shipped themes.
+
+##### Attune: why the drift is safe, and why it is a rhythm rather than a timer
+
+WCAG contrast is a function of relative luminance and nothing else. So `design.TintHolding` — which
+changes a colour's hue and puts its luminance back — changes every ratio in a palette by
+approximately nothing. **That is the mechanism that makes an automatically changing theme shippable**:
+the room takes on the colour of what somebody reads and the 11.5px datelines stay exactly as legible
+as the day the theme was written. Tinting freely and repairing what fell through was tried first, and
+it is worse in a way that is easy to miss — the repair moves *text*, so a drift that was supposed to
+be imperceptible produces a visible step in the type every few days, on whichever token crossed the
+line that morning.
+
+Two tokens are deliberately **not** tinted. `--pos` and `--neg` mean something — liked, disliked,
+destructive — and the whole design rests on colour carrying information; a verdict pulled toward the
+interface's mood is harder to read as a verdict. And a token within a fiftieth of a point of AA keeps
+its exact shipped value rather than a rounding's worth of loss, which is what `tintWithin`'s second
+condition is for.
+
+- **One step per day the reader actually opens the app**, keyed on the local date so two tabs and a
+  reload cannot each advance it. Not the calendar: somebody away for a month comes back to the room
+  they left, which is the right surprise to offer — none. Not a timer either, which would tie the
+  rate to how much the reader uses the app and repaint the interface visibly over a heavy week.
+- **Twenty-four steps.** A single step moves a field by at most six 8-bit levels out of 255, which is
+  under anything comparable against a day-old memory. The **accent** is allowed twenty-four, because
+  attuning *replaces* it — the marker that says "you are here" becoming the colour of what you read
+  is the claim of the feature — and it is spent on a 3px rule rather than a quarter of the screen.
+- **Stored as two ends plus a step count**, not as a current position. `From` is a *snapshot* of what
+  was on screen when the target was set, and it is the one piece of genuinely non-derived state here:
+  without it, a change of target jumps the interface by however far the previous drift had travelled.
+- **A tone boundary is not a line that can be walked.** Halfway between a near-black ground and a
+  paper one is mid-grey, where no text colour clears AA in either direction, so `Blend` refuses the
+  pair and the drift reports itself as absent rather than as present and stuck.
+- **An explicitly chosen accent outranks the attuned one**, applied last in `resolve()`. That is the
+  reason the accent is a separate preference at all (§20.16): a feature that derives a colour must
+  lose to a reader who said what they wanted.
+- **Picking a theme restarts the walk.** Somebody who presses Daylight expects Daylight, not a
+  fortnight of Ink still showing through it.
+
+##### The ladder, the egress, and who is allowed to spend
+
+The ladder is §11's and §18.7's, unchanged: **deterministic first, model last.** With no key, the
+target is the reader's own theme tinted toward the hue of their largest *rising* topic — computed in
+Go, costing nothing, leaving the machine not at all. With a key *and* consent it is a palette written
+for those subjects. Every failure falls through to the deterministic answer and the screen says which
+one it is, because a reader who switched Smart+ off and watched the interface keep moving would
+reasonably conclude the switch does nothing.
+
+**Rising before large, and dormant not at all.** `Topics` returns largest first, which is right for a
+Trends screen and wrong here: a drifting interface answers "what are you moving toward", and §18.3's
+premise is that interests expire. A theme still tuned to a topic somebody stopped reading in March is
+the app being confidently out of date about its owner. A **suppressed** topic is dropped outright —
+marking one "not an interest" is a reader telling the app it is wrong about them, and painting their
+interface in its colours would be the app arguing.
+
+**The egress is a third named allowlist** (`llm.ThemeKeys`), not an addition to §18.8's. `prompt`
+already means something else in `ClassifyKeys` — a per-label instruction, bounded differently and
+gated on a different consent — and one shared list could not express that: it would have one entry and
+both callers would inherit whichever set of reasons was written down first. A theme prompt is not
+reading history; it is a sentence typed into a box that says it is sent to a model, and the disclosure
+*is* the request. Attune sends topic **labels** and not the terms behind them: a label is two to four
+words naming an interest, and the terms are a much sharper fingerprint of one person's reading for no
+gain when the question is what colour a subject feels like.
+
+**These are the first non-owner RPCs on `SmartService`**, and the line is the one the Smart+ voice
+drew: a member may spend on their own reading experience, and may not read the key, change the model,
+see the spend counters, or start a translation. Refusing them would make the feature nonsense on any
+instance with more than one account. The control is `ratelimit.ThemePerUser` — twenty an hour, burst
+of four — sized for **iteration**, because somebody composing a theme presses the button eight times
+in two minutes and that is the feature working. Consent for a model-written drift is its own
+preference (`ui.attune.smart`), because storing a key is not consent to spend it and agreeing to one
+egress is not agreeing to the next.
+
+**Ten preferences, and the split between them is not cosmetic.** `prefsMap` is everything a reader
+pressed; `attunePrefs` is bookkeeping the app does to itself, written once when a target is set and
+once a day after. Folding them together would rewrite six rows every time somebody tried a different
+accent. The generated palette is stored **encoded** (`Theme.Encode`) rather than as a prompt to
+re-run, so it costs nothing to switch away and back, and the encoding's field order *is* `Vars()` —
+the engine's single ordered list — so the storage format cannot disagree with the applier about what a
+field means. It is re-validated on decode: the client cannot trust a preference for the same reason
+the server cannot trust a provider, and the cost is a few dozen float operations against the cost of
+painting an interface nobody can read.
+
+**When a target is asked for, and when it is not.** Only when there is nowhere to walk to or the walk
+has finished — so on an ordinary boot, in the middle of a three-week drift, no call is made at all.
+That comparison, against a signature of the taste the target came from, is what keeps a feature which
+repaints every day from being a request every day.
 
 ### 20.17 The settings surface
 

@@ -714,9 +714,29 @@ It **replaces** the summary rather than layering on it: a broadcast segment is a
 and there is no coherent summary of one. Charged once per *pair* of articles and then cached — the same
 story after a different story is a different recording, because the handover names what came before.
 
+**It has a manner, and you choose it.** Calm, brisk, warm or dry. All four say the same facts and
+differ in pace, in sentence length, and in how much they tell you what a story is worth.
+
+**It tells you what things mean.** A listener cannot skim, re-read a line, or check a chart — so a
+segment gives you the finding, then why it matters, then how much weight to put on it. It is allowed
+to say a result is surprising, a claim is thin, a number is smaller than the headline suggested, or
+that this mostly matters if you use the thing in question. That judgement is the reason to listen to
+this rather than to a robot reading titles.
+
+**It is not allowed to make anything up.** No fact, number, quote, date or attribution that is not in
+the article, with a rule it can actually apply: *if you could not point at the sentence that supports
+it, do not say it.* And its opinions are its own — never attributed to the publication.
+
+**It opens like a broadcast.** The first story of a session starts with the time of day, the date and
+how much is queued — *"Good morning. It's Monday the twenty-seventh of July, and here's what's
+happening"* — worded a little differently each time rather than recited. The greeting follows **your**
+clock, not the server's, so a reader whose server lives three timezones away is not wished good
+morning at ten at night.
+
 What it will never do, because every one of these is what a model reaches for unprompted: invent a
-programme name or a host, greet you, tease a story it has not been shown, or sign off at the end of
-every segment so that a forty-minute session ends forty times.
+programme name or a host — it has a manner, not a name, and *"this is Sarah with your morning update"*
+is a person who does not exist — tease a story it has not been shown, or sign off at the end of every
+segment so that a forty-minute session ends forty times.
 
 ---
 
@@ -763,6 +783,61 @@ makes it instant with 151 rail rows and 3,600 virtualised items on screen.
 dangling variable, no token a theme cannot reach, no literal colour outside a theme, and a
 readability floor at 4.5:1 against all three grounds a row can land on — the page, a hovered row, and
 the selected row a reader sits on for as long as they are reading.
+
+### 23a. A theme you describe
+
+| | |
+|---|---|
+| **Status** | ✅ Smart+ |
+| **Spec** | §20.16.3 |
+
+Describe a room — *"a cold library at 2am"* — and Smart+ writes the palette. It appears as a sixth
+card in the picker, drawn in its own colours like the other five, labelled with the sentence you
+typed rather than the name the model gave it: you know what you asked for, and that is what tells you
+which of your themes this is.
+
+**The model's job is taste, and never contrast.** Every colour it returns is checked against the same
+4.5:1 floor the five shipped themes pass, and anything that fails is moved until it clears — including
+the one value no build could see before, which is what a *source's* hue becomes when it is used as
+the name of a feed rather than as a coloured bar. What was adjusted is said out loud: *"two colours
+were adjusted so the text stays legible"*. A palette that came back a little different from the one
+you described is a thing you are told, not left to suspect.
+
+The theme is stored as a palette rather than as a prompt to re-run, so switching away and back costs
+nothing. *Forget this theme* removes it.
+
+### 23b. A theme that follows what you read
+
+| | |
+|---|---|
+| **Status** | ✅ (Smart+ optional) |
+| **Spec** | §20.16.3, §18.2 |
+
+Switch **Attune** on and the reader slowly takes on the colour of whatever you actually read. Your
+theme stays your theme — it drifts toward a room built for your interests, **one small step per day**,
+arriving in about three weeks. A single step moves the page by about six parts in 255, which is under
+anything you could compare against yesterday.
+
+**It never changes how legible anything is.** The tint changes hue and puts the brightness back, and
+contrast depends only on brightness — so the room can move and the 11.5px datelines stay exactly as
+readable as the day the theme was written. The two verdict colours are left alone entirely: *liked*
+and *disliked* mean something, and a verdict pulled toward the room's mood is harder to read as one.
+
+**It says what it is following:** *"About a third of the way to a room built around your NPU
+inference reading."* Interests you are reading MORE of lead; ones you have stopped reading are
+dropped, not faded; and a topic you marked *not an interest* steers nothing.
+
+Two rungs, and the free one is complete:
+
+| | What happens | What leaves the machine |
+|---|---|---|
+| **Off** (default) | The room is tinted toward your top interest's own colour, worked out on this machine | Nothing |
+| **Let Smart+ choose the colours** | A palette is written for the subjects you read | The interest names, and light-or-dark. Never the articles, the terms behind the topics, or the sources |
+
+Steps are taken on the days you open the reader, not on the calendar: away for a month, you come back
+to the room you left. Picking a different theme starts the walk again from there, and *Start over*
+puts you back to the theme you picked without switching the feature off — stopping here and going
+back are different requests.
 
 ## 24. Motion
 

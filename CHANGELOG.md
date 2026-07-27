@@ -91,6 +91,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **Two migrations claimed version 0024, so every `migrate` failed on a UNIQUE constraint** — the
+  store tests could not open a database at all. The version is the number in the filename; the
+  uncommitted one moved to 0025 and the model verdict landed at 0026. A migration that has shipped
+  keeps its number, because renumbering one is how a database ends up disagreeing with its own
+  ledger.
+- **The classifier probe carried its own `SELECT`**, which is the drift the "no SQL outside
+  `internal/store`" guard exists to prevent: the schema gets a second place that understands it, and
+  that place is the one nobody updates when a column moves. It reads through `RecentItemIDs` and
+  `ItemsByID` now — the pair `internal/analyze` uses — so the probe exercises the real path rather
+  than an imitation of it. `store.Options.ReadOnly` preserves the one property it had that was worth
+  keeping: a probe that perturbs what it measures is not a probe.
+- **Three catalog keys had no callers** (`addFeed.followed`, `reader.errAnalyzeSite`,
+  `reader.errFollowPage`) after the subscribe path moved onto the shared server-error catalog. An
+  unused key is copy nobody maintains and a translator's wasted afternoon.
 - **A query that died halfway would have silently deleted the reader's own topic labels.**
   `sql.Rows.Next` returns false both when the rows run out and when the iteration fails, and it does
   not distinguish them. The loop in `interest.go` that reads back the labels worth preserving —
@@ -386,6 +400,25 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Categories reach the reader** (§27) — a surface that shows which labels an article was given and
+  on what evidence, a filter, and a per-category preference. Automatic classification quietly
+  decides what somebody sees, so the screen exists to be argued with: a label a reader cannot
+  disagree with is one they have to work around. `store.CategoryRead` keeps the read path per-user
+  while the analysis stays global — the assignment is the reader's, the scores are the instance's,
+  which is the split §27.2 spent a migration establishing and the easiest thing to undo by accident
+  on the read side.
+- **Installable** — a web manifest, a launch surface, and icons *drawn from the design tokens*
+  (`internal/appicon`). A PWA needs four real rasters, and four binaries checked into a repository
+  are four files whose relationship to the design is a claim nobody can verify: the mark drifts, the
+  icons do not, and the first person to notice is a stranger looking at a home screen. They are
+  generated instead, so the tokens stay the single source of what this application looks like.
+- **A backfill for the analyzer** (`internal/analyze/backfill`) — an instance that has been running
+  for months should not end up with a classifier that only knows what arrived after it shipped. It
+  runs at the pipeline's footing: once per item, whoever subscribes.
+- **`e2eproof`** — the real analysis path over a copy of a real database. Fixtures answer whether
+  the code does what it says; they do not answer whether 3,600 real articles classify into something
+  a person would recognise, which is the question that decides whether the feature is worth having.
+  A copy, because a tool that measures a live instance must not be able to change it.
 - **A theme you describe, and one that follows what you read** (§20.16.3). Smart+ writes a palette
   from a sentence — "a cold library at 2am" — and every colour is checked for legibility before it
   is used, so the model's job is taste and never contrast: the one thing a generated theme must not

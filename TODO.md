@@ -2690,6 +2690,39 @@ to remove. Each carries the decision it became, so the reasoning is findable fro
 
       `web/index.html`'s boot fallback carries it too and moved with them, or the splash would have
       spent one frame in the old colour.
+- [x] **8b.57 A theme you describe, and one that follows what you read** — §20.16.3. Two Smart+
+      features on one engine, and they are the same operation at two speeds: both produce a **target
+      palette**, and the difference is `design.Blend`'s `t`. Compose arrives immediately; attune
+      arrives over about three weeks, one step per day the reader actually opens the app. No new
+      mechanism in the applier — a theme is a set of token values and the engine never cared where
+      they came from (§20.16).
+
+      **The interesting half is the validation, and four of its five properties were found by writing
+      the test rather than by writing the code.**
+
+      | Found | What it was |
+      |---|---|
+      | trigger ≠ destination | one 4.55 for both made the runtime floor *stricter* than the build guard, so Sanitize "repaired" Ledger's and Daylight's `--mute` — two tokens that pass at 4.52 and 4.51 |
+      | ground repair direction | it pushed the ground *toward* the text, closing the gap it was opening; symptom was `--cream is 1.76:1` reported by the assertion after a repair pass had claimed success |
+      | rows are grounds too | checking only `--bg` passed a palette whose selected row was pale, then drove six text tokens to pure white against it |
+      | structure vs ground | edges repaired toward the text undid the ground pass, so Sanitize failed its own idempotence test **every boot** |
+      | `var(` in a shadow | a character whitelist passes `0 0 0 var(--x)` and `url(http://x/y)`, because `v`, `a`, `r` and `(` are all legal in `rgba(0,0,0,.55)`. The letters were never the problem; the call was |
+
+      **And one the build could not have found at all: `--ink`.** A source's hue as *type* is
+      `color-mix(in oklab, var(--c), var(--cream) 62%)` — resolved by the browser, from a hue assigned
+      at runtime and a theme token, which is why §20.16.2 records it as e2e-only. That held for five
+      hand-written palettes. A perfectly ordinary generated "old paper under a lamp" — 9:1 text on its
+      own ground — puts **every source name in the list at 4.34:1** and passes every other check.
+      `client/design/oklab.go` reproduces the mix in Go so `Sanitize` can see it; light themes repair
+      through `--cream`, dark themes through the ground (there `--ink` *is* the hue, and the ground is
+      the only lever). `e2e/appearance.spec.mjs` pins four (ground, cream) pairs against what the
+      shipping engine actually paints, because a reimplementation of a browser operation is worth
+      exactly as much as the evidence that it matches.
+
+      *Done when:* a thousand random palettes sweep clean per run, `Sanitize` leaves all five shipped
+      themes byte-identical, one drift step moves a field by ≤6/255, and every attuned theme needs no
+      repair — a repair there would mean the drift moved a **text** token, which is the visible step
+      the whole mechanism exists to avoid. ✅ **All five hold.**
 - [x] **8b.46 Focus mode and the list cursor, driven in the running app.** Both had only ever been
       verified against the emitted stylesheet in a harness. Measured for real: the cursor steps
       `0px → 384px` over four presses of `j` — exactly four rows of 96 — with the 0.18s/0.11s
@@ -3687,6 +3720,9 @@ Scope key: **S** system · **T** tenant · **U** user · **F** per-source (on `s
 > | `rail.filter` · `rail.closed.*` | Unread-only toggle; which rail sections and categories are folded |
 > | `read.kind` · `read.value` · `read.item` · `read.title` | A30 resume: scope, its argument, the open article and its title |
 > | `ui.theme` · `ui.accent` · `ui.reading` · `ui.motion` | A39 appearance (§20.16) |
+> | `ui.theme.custom` · `ui.theme.prompt` | The generated palette, encoded, and the sentence that made it (§20.16.3) |
+> | `ui.attune` · `ui.attune.smart` | The drift, and the separate consent for a model-written target |
+> | `ui.attune.from` · `.target` · `.step` · `.day` · `.why` · `.sig` · `.bysmart` | The drift's own bookkeeping — written once when a target is set and once a day after, which is why it is a separate map from the eight above |
 >
 > Missing versus §8: types, defaults, ranges, the **system → tenant → user** resolution, the capability
 > per setting, and `GetResolved` returning *which layer supplied the value*. That last one is what makes
@@ -4531,7 +4567,7 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       because renaming "Film & TV" must not re-analyse a database. Sorted before hashing, so
       reordering `Categories()` does not either.
 
-- [ ] **10.6 · `JobAnalyze`, and fan-out moves downstream of it.** New job kind, cap 2, enqueued by
+- [x] **10.6 · `JobAnalyze`, and fan-out moves downstream of it.** New job kind, cap 2, enqueued by
       ingest; **it** enqueues `JobFanout` on completion. This is the one behavioural change to an
       existing path (6.7) and the reason for it is that a rule matching `category = software` must not
       race the thing that decides the category. `deliver()` **stays inside the ingest transaction** —
@@ -4582,7 +4618,7 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       *Done when: accepting a suggestion creates exactly one tag and backfills it without touching
       `label_removals` entries.* §27.3e
 
-- [ ] **10.12 · `llm.ClassifyPayload` + the §18.8 amendment.** ◧ **PARTIAL** — ← M17's egress harness. New payload
+- [x] **10.12 · `llm.ClassifyPayload` + the §18.8 amendment.** ← M17's egress harness. New payload
       type with fields only for what may leave; `AuditEgress` runs against the **assembled** body in a
       test, not the template. Two consent keys — `smart.classify` (owner) and `feed.smartPlusLabels`
       (per user) — and neither implies the other or `feed.smartPlus`.
@@ -4659,7 +4695,7 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       and `classify`'s own determinism test — which had a 1e-12 tolerance and could not see it — now
       compares exactly.
 
-- [ ] **10.14 · The shared read + the `Contributor` registry.** ◧ **PARTIAL** — One request **per item**
+- [x] **10.14 · The shared read + the `Contributor` registry.** One request **per item**
       (not per batch — a batch of ten comes back suspiciously uniform, and one truncation loses ten
       answers). Union schema, one top-level property per contributor, duplicate names panic at `init`,
       per-slice failure isolation, `MaxOutputTokens` = Σ declared + reasoning headroom.
@@ -4719,7 +4755,7 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       (`TestNoUserVocabularyInGlobalRead`), and `TestBudgetExhaustionFallsBack` shows free-tier labels
       written with `llm_at` NULL and no error surfaced to the reader.* §27.4d, §27.4f
 
-- [ ] **10.17 · Staleness and the trickle backfill.** Stale-but-valid on version or lexicon-hash
+- [x] **10.17 · Staleness and the trickle backfill.** Stale-but-valid on version or lexicon-hash
       change — labels stand until recomputed, because the alternative is a deploy that blanks every
       chip in the app until a backfill finishes. 500/hour, newest first, below every other kind in
       `DefaultCaps`, with progress on §9's status screen: a silent multi-day backfill is
@@ -4736,6 +4772,219 @@ taken — and a rename of a Go package, a proto message and a settings tab if de
       being recomputed after every poll and every engagement batch.
       *Done when: `category = security AND genre = release → tag "patch"` evaluates in the rules
       preview, and derive's own tests pass unchanged against vectors it did not build.* §27.8
+
+---
+
+### Tier 10 — where it stands, 2026-07-27
+
+**Ten of eighteen done. The engine runs end to end on real data.** Proven by running 1,196 real
+articles from the development database through the actual path — poll → ingest → queue → `JobAnalyze`
+→ pipeline → `item_analysis` — with 100% of them getting a row, real categories and real genres. Not a
+fixture: the same code a poll runs.
+
+| | |
+|---|---|
+| ✅ done | 10.1 scorer · 10.2 lexicon · 10.3 corpus+ratchet · 10.4 migration · 10.5 pipeline+store · 10.6 job+wiring · 10.12 egress payload · 10.13 escalation gate · 10.14 shared read · 10.17 backfill |
+| ⬜ left | 10.7 · 10.8 · 10.9 · 10.10 · 10.11 · 10.15 · 10.16 · 10.18, plus 10.19–10.24 below |
+
+**What a reader can actually see today: nothing.** The categories are computed and stored; no RPC
+returns them and no surface draws them. That is 10.9/10.10 and the two in flight below, and it is the
+whole distance between "working" and "shipped".
+
+**Measured, so the next person does not have to rediscover it:** the free tier leaves **44.8%** of a
+real 3,000-item sample with no category (down from 66.4%). Precision is fine — false assignment 0.130
+— so the gap is coverage, and §27.4a's escalation is the designed answer for it.
+
+---
+
+### Tier 10a — what building it uncovered
+
+*Filed 2026-07-27. Every one of these came out of making the thing run rather than out of the plan,
+which is why none of them were in the original eighteen.*
+
+- [ ] **10.19 · ⚠ FAN-OUT IS NOT WIRED, AND NEVER WAS.** ← **not a classification bug; found while
+      wiring one.** `internal/fanout` is built, tested and documented, and **`internal/app` registers
+      no handler for `store.JobFanout` and nothing ever calls `fanout.Service.Enqueue`.** The only
+      job kind the pool handled before 10.6 was `JobDerive`.
+      **This means no user rule has ever run in this application.** Every rule someone writes is
+      stored, displayed, and never applied — `rule_hits` is empty because nothing fires. The mute
+      view has nothing in it for the same reason.
+      It is filed here because 10.7 depends on it: per-user labelling is specified to live *inside*
+      fan-out (§27.2a), and there is no fan-out to live inside.
+      *Done when: a rule that mutes a term actually mutes it, end to end, asserted against a real
+      pool.* §13.2
+
+- [ ] **10.20 · The "why" line cannot be built from what is stored.** `item_analysis.category_scores`
+      holds slug→score and nothing about WHICH TERMS produced it, so `Result.Explain()` — the thing
+      §18.9 calls the product — is unavailable on the read path. Re-running the scorer per rendered
+      row to recover it would re-tokenise every article on every page.
+      The fix is to store the top few matched terms per assigned category at analysis time. It is a
+      column and a small write; it is filed rather than done because it changes `0021`'s shape and
+      wants deciding alongside 10.7's `item_categories`.
+      *Done when: an item's chip can say "matched `ransomware` in the title" without a query.* §18.9
+
+- [ ] **10.21 · Smart+ has never spoken to a real provider.** Everything up to the socket is proven —
+      consent, payload assembly, the egress audit, the union schema, the reply split, fail-soft, and
+      a strict-mode keyword check that caught two schemas which would have 400'd. What is unproven is
+      whether OpenAI returns *good* answers to these prompts. There is no key on this instance
+      (`OPENAI_API_KEY` unset, no `smart.*` settings row).
+      *Done when: one live run against a real key, with the reply recorded as a fixture so the next
+      person does not need a key to see what the shape actually is.* §27.4
+
+- [ ] **10.22 · Coverage is 44.8% unsorted and the cheap wins are gone.** Nine mining rounds took it
+      from 66.4%; the tail is now genuine — repeated mining returns stopwords and RSS furniture at the
+      top, which is the signal that the safe diagnostic vocabulary is close to exhausted for this
+      corpus. Further gains need one of: per-label `MinScore` on the diffuse categories (`politics`
+      0.125 and `science` 0.273 are still on `weakRecall`), embedding-based matching (§18.8a, and it
+      would be a second implementation — see §27.13), or accepting that Smart+ handles the tail.
+      **Do not chase this by lowering `MinScore`.** That was measured: the trade is roughly one extra
+      wrong chip per extra right chip, which R23 says is a losing one.
+      *Done when: a decision is recorded, not necessarily a number improved.* §27.3b, §27.11
+
+- [ ] **10.23 · `item_categories` and `label_removals` are schema with no writer.** Both shipped in
+      `0021` and the read path derives categories on the fly instead (which is correct for v1 —
+      always current with the reader's settings, nothing to keep in sync). They become necessary the
+      moment a reader can CORRECT a category, because a correction and a removal are decisions that
+      must outlive a re-analysis (§27.5) and cannot be derived from anything.
+      *Done when: removing a category makes it stay removed across three re-analyses — the test
+      `store/fanout.go` already earned once and this table exists to not re-learn.* §27.5, and it is
+      10.7's other half.
+
+- [ ] **10.24 · ⚠ The live development database will not start.** Not caused by this tier's work and
+      not fixable from inside it. `articleflux.db` recorded `0024 item_revisions` with checksum
+      `d2033097`; the file on disk is now `0025_item_revisions.sql` with checksum `9ba7c11e` — an
+      applied migration was renumbered **and** edited after the fact, so the runner tries to reapply
+      it and hits `duplicate column name: content_hash`.
+      The fix is one row in `schema_migrations`, and it is a data edit on somebody's live file rather
+      than a code change, so it wants a person to agree to it. Fresh databases are unaffected and
+      migrate cleanly through `0026`.
+      **The rule worth keeping**: a migration that has been applied anywhere is immutable — renaming
+      one is the same act as editing it, because the version is part of its identity.
+
+---
+
+### Tier 10b — the rest of the specified feature, and the research it needs
+
+*Filed 2026-07-27 alongside 10a. 10a is what building it uncovered; this is what §27 specifies and
+nobody has started, plus the questions that have to be answered before parts of it can be.*
+
+#### The half of the feature that is missing entirely
+
+- [ ] **10.25 · ⚠ AUTOMATIC TAGGING DOES NOT EXIST.** Half of what §27 specifies, and the half with
+      no ticket in the original eighteen — an omission, not a decision. `tag_rules` shipped in `0021`
+      and **has no reader anywhere in the tree**; `item_tags.source`/`.score` shipped in `0024` and
+      nothing ever writes anything but `'user'`.
+      What is specified and unbuilt (§27.3e): matching a reader's tag vocabulary against
+      `item_analysis`, the **5-per-item cap**, the higher confidence bar than categories, the
+      **off-by-default toggle whose first click opens a dry run** over the last 200 items before a
+      single row is written, and the starter packs (Systems · Web · AI · Security · Markets · Space ·
+      Motorsport, ~250 terms).
+      The classifier's `ModelTags` are already stored by `0026` and read by nobody.
+      *Done when: turning auto-tagging on shows what it WOULD tag before it tags anything, and the
+      cap holds.* §27.3e
+
+- [ ] **10.26 · The budget ceiling and the meter have not been built.** §27.4f specifies a
+      per-instance daily token budget shared with translation and speech, and a per-user daily
+      request cap so one reader with 300 custom labels cannot spend the instance's budget before
+      anyone else's poll runs. Neither exists: `smart.Classifier.Available` checks consent and a key
+      and **nothing checks spend**, so today the only thing bounding cost is the escalation gate.
+      Also owed: hitting either ceiling must be **a line in the UI**, not a silent degradation —
+      "Smart+ classification is paused until tomorrow; 1,340 items were classified by the free tier"
+      is actionable and an unexplained quality drop is not.
+      *Done when: an exhausted budget stops requests, says so, and the free tier carries on.* §27.4f
+
+- [ ] **10.27 · "Reclassify everything", and the per-label edit that triggers it.** `Backfill` exists
+      and sweeps on version/lexicon change; §27.9's other two triggers do not. Editing a label must
+      re-run **that label** over the retained window immediately — that is the entire feedback loop
+      of §27.6, and without it a reader edits terms and sees nothing change. The full button needs a
+      count, a confirmation, and it must respect `label_removals` (10.23), which is precisely the
+      case where a reader would otherwise get every label they ever removed handed back at once.
+      *Done when: editing a term changes a visible count without a restart.* §27.9
+
+- [ ] **10.28 · Orphaned analysis rows are never swept.** `item_analysis.item_id` references
+      `items(id)` **with no cascade**, deliberately (`0021` explains why: the row is derived and
+      therefore safe to discard, unlike `item_tags`). The migration says "the retention sweep may
+      delete it freely" — and the retention sweep that landed today does not know the table exists.
+      Every item retention removes leaves an analysis row behind, at ~1–3 KB each, forever.
+      *Done when: retention deletes analysis alongside the items it retires, and a test asserts the
+      count goes to zero.* §27.10, and it interacts with whatever `0023_retention` settles on.
+
+#### The §27.8 consumers — cheap now that the pipeline exists, none started
+
+- [ ] **10.29 · `rules.FieldCategory` and `FieldGenre`.** Nine lines in `rules.go` plus validation.
+      `category = security AND genre = release → tag "patch"` is a rule people actually want.
+      **Blocked by 10.19** — there is no point adding a field to an engine that never runs.
+- [ ] **10.30 · `derive` reads the stored vector.** The payoff A41 was written for: the interest
+      layer currently re-tokenises every engaged item on every derivation, and a derivation fires
+      after every poll and every engagement batch. `item_analysis.vector` holds the term-frequency
+      half; derive keeps its own IDF (see §27.7's correction). Measure before and after — this is the
+      one consumer with a number attached to it.
+- [ ] **10.31 · Category affinity in ranking, and the Explore slot serving a starved CATEGORY.**
+      §18.4's Explore currently serves a starved topic cluster; "you have read no Science in three
+      weeks" is legible in a way a cluster label never is.
+- [ ] **10.32 · The trends histogram, search facets, and per-category digests.** Three separate
+      surfaces, all now one query each. §16, §15, §18.5.
+- [ ] **10.33 · The genre column has no consumer, by design — pick the first one.** Populated since
+      day one precisely so a feature would find history waiting (§27.1a). The obvious candidates: a
+      "skip the roundups" filter, a reader-mode hint, a digest that leads with analysis. Choosing one
+      is the point; the data is three months ahead of it.
+
+#### Research and open questions — answer before building the tickets they gate
+
+- [ ] **10.34 · ⚠ D23 IS STILL OPEN AND IT BLOCKS THE SETTINGS SCREEN.** The rail calls a `folders`
+      row a "Category" (`docs/FEATURES.md` §10) and this feature needs the word for the article axis.
+      Recommendation on the table since the plan was written: rename the rail's to **Folders**, which
+      is its schema name and an accurate description — one i18n string and one heading. The
+      alternative is calling the new axis **Sections**.
+      Everything built so far says `Category` in Go regardless, so nothing is stuck *yet* — but
+      10.9/10.10 put the word in front of a reader and cannot ship with two controls named the same
+      thing. **This is a decision, not research: it needs a person, not an investigation.** §27.0a
+
+- [ ] **10.35 · Where do per-user overrides get applied — read time or write time?**
+      `store.CategoriesFor` resolves categories on READ from the global scores, which is right for v1
+      (always current with the reader's settings, no assignment table to keep in sync) and it
+      currently **ignores the `categories` table entirely**. The moment a reader adds a term to a
+      built-in, that user's scores are no longer the global ones and the read-time resolve has to
+      re-score — per item, per page render.
+      The question is where that cost lands: re-score on read for users who have overrides, or
+      materialise `item_categories` for them. Measure both before choosing; the answer likely differs
+      for a reader with two overrides and one with forty. §27.3f, and it decides the shape of 10.7.
+
+- [ ] **10.36 · Does the model actually beat the lexicon, and on which items?** The escalation gate
+      assumes it does, and nothing has measured it. The experiment is cheap once a key exists
+      (10.21): take the corpus items the free tier got WRONG, send them, and compare against the gold
+      labels. If the model does not clearly beat 0.594 accuracy on exactly that set, the ambiguity
+      gate is buying nothing and `escalate: never` should be the default.
+      **This is the experiment that decides whether Smart+ classification is worth shipping at all**,
+      and it has not been run. §27.4a
+
+- [ ] **10.37 · Non-English items escalate and nothing checks the result.** 1.5% of a live sample is
+      non-English and the gate sends every one of them (`ReasonNotEnglish`), on the reasoning that a
+      model has no English-only limitation. Plausible and unverified. If the model classifies German
+      tech news badly, that is spend with no return and the gate should stop sending them.
+      *Done when: a handful of non-English items are checked against a human read.* §27.13
+
+- [ ] **10.38 · Throughput of the whole job, not the scorer.** `TestClassifyThroughput` measures the
+      SCORER at 88µs/item. Nobody has measured the job: SQLite reads, `sanitize.Text` over full
+      bodies, JSON marshalling and the upsert, against the poller competing for the same single
+      writer. The 1,196-item backfill run is the only datapoint and it was not timed.
+      Matters because `BackfillPerSweep`/`BackfillInterval` were picked from §27.9's "500/hour"
+      rather than from anything measured. §27.10
+
+#### Housekeeping owed by this tier
+
+- [ ] **10.39 · `docs/FEATURES.md` entries 76–79 still say ○ planned.** They are ◧ partial: the
+      engine runs, the API serves categories, no surface draws them. That file's own rule is that a
+      feature moving state is corrected **in the same change**, and this one moved several times
+      today. Also add automatic tagging as its own entry — 10.25 shows it is a separate feature and
+      the catalogue currently implies it ships with categories.
+- [ ] **10.40 · No e2e spec covers classification.** `e2e/` has Playwright specs per surface and
+      classification has none. Owed once 10.10 draws something: a chip appears, an unsorted item
+      shows none, the settings tab loads.
+- [ ] **10.41 · CHANGELOG has no entry for any of this.** Everything from 10.1 to 10.17 is unrecorded
+      there.
+
+---
 
 **Owed by this tier and not in it:** category affinity as a ranking term · the Explore slot serving a
 starved *category* · a category histogram on Trends · search facets · per-category digests · a genre
@@ -5189,6 +5438,41 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       the telling is missing.
       *Done when: an edited article says it was edited and can show what changed.*
 
+      **Built but NOT committed — the tree is dirty with all of the below.** Work stopped here on
+      request, mid-ticket, with one known failure outstanding (F34a).
+
+      - Noticing: `migrations/0025_item_revisions.sql` (renumbered from 0024 by the collision fix in
+        `4d176cf`), `internal/store/ingest.go` hashing title+summary+body and filing the version it
+        replaces, `IngestResult.Edited`, `internal/store/revisions.go` with the subscriber-scoped
+        `ItemRevisions`, and `internal/store/revisions_test.go` (6 tests, passing: unchanged re-poll
+        is free, an edit keeps what it replaced, a headline-only correction counts, a revert does
+        not duplicate a version, a non-subscriber reads nothing).
+      - Telling, server: `store.Item.Revision`/`EditedAt` threaded through the list and detail
+        queries, `Item.revision = 40` / `edited_at = 41` and `GetItemRevisions` in `reader.proto`
+        (numbered clear of the classifier lane at 25–29), the handler in `grpcsrv/reader.go` — which
+        runs old bodies through the same image proxy as the current one — `reader.Service.
+        ItemRevisions` with a 10-revision ceiling, and the policy entry in `authzmap.go`.
+      - Telling, client: `data.Client.ItemRevisions`, the `edited-mark` button in the article
+        dateline, the `article-revisions` disclosure panel, `toggleRevisions`/`revisionsLanded`
+        through the action Ref, the styles in `design/sheet.go`, and eight `article.*` strings.
+        Three states are kept apart deliberately — absent means still loading, present-and-empty
+        means no earlier copy was kept, and failed is its own third thing.
+
+      Still owed on the ticket itself: an e2e proof, a CHANGELOG entry, and the commit.
+
+- [ ] **F34a · The dev database's ledger disagrees with the migration filenames.**
+      `TestPagingAtRealScale` and `TestMarkAllReadAtRealScale` fail against a copy of
+      `articleflux.db` with *"migration 0025_item_revisions: duplicate column name: content_hash"*.
+      The cause is bookkeeping, not schema: the running instance applied this migration while it was
+      still numbered 0024, `4d176cf` renumbered it to 0025 to settle a collision with
+      `0026_model_verdict`, and `schema_migrations` still records the work under version 24 — so the
+      migrator sees 25 as new and re-runs an `ALTER TABLE` that already happened. A fresh database is
+      unaffected, which is why the package's own tests pass.
+      *Done when: the dev database's ledger names the migration that actually ran, and the two
+      real-scale tests pass again. Worth deciding at the same time whether a renumbered migration
+      should be detectable rather than only discoverable by a failing test — every developer with a
+      long-lived database hits this the same way.*
+
 - [ ] **F35 · WebSub subscriber.** M26 has it. The hub belongs to the publisher — the same relationship
       we already have with the feed — so this is not a third-party dependency in the sense this list
       excludes, but it **does** require a publicly reachable callback, which is a deployment
@@ -5362,3 +5646,123 @@ Each of these fails the one rule this list has. They are recorded so nobody re-d
 | Share to Pocket / Instapaper / Notion / Slack | Those services. F28's webhook is the primitive that lets a reader wire any of them up themselves. |
 | A community/curation layer (Folo's model) | Other people's servers, and a moderation obligation we should not take on. F29's public feeds are the federated-by-Atom version. |
 | Non-OpenAI model providers | Not a dependency problem — a scope one. `internal/llm` is the only LLM path by design, and widening it is a decision, not a gap. Inoreader shipped BYOAI across three providers in April 2026 if that changes. |
+
+## The testing campaign — what it left open (2026-07-27)
+
+A campaign across all four test types: unit, component (Go/WASM under a node harness),
+integration, and e2e. It ended at **1,670 test functions across 223 test files**, plus **123 e2e
+cases in 14 spec files**. Determinism was measured, not assumed: 61 packages, two runs each, under
+`-shuffle=on` — zero flakes.
+
+**26 defects found, 25 fixed.** The remainder are below. They are filed against one rule: a ticket
+here either names something a test can be made to catch, or names a decision only Cam can make.
+Nothing here is "add more tests" in the abstract.
+
+The campaign's own central finding is worth carrying forward, because it changes how the numbers
+above should be read: **the dangerous test is not the failing one, it is the passing one that cannot
+fail.** Three of the four tests the section "The four tests to write early and never let go red"
+designates as load-bearing could not detect the failure they were named for. Two SSRF guard tests in
+different packages passed with the guard deleted, because a dial timeout also produces an error.
+`TestCapabilitiesDoNotCrossRungs` ran against an unconfigured handler and asserted nothing.
+`TestHelpSheetListsEveryGroup` survived deletion of a whole group. Every fix in this campaign was
+therefore mutation-tested — break the property, watch the test go red, revert, confirm the file is
+byte-identical — and any new test added to this repo should be.
+
+### Blocking the e2e suite from being a CI gate
+
+- [ ] **Q1 · The "jumping down" race in `e2e/reader.spec.mjs` (~line 144).** Fails roughly **1 run in
+      3**. Measured 4/6 passes across two separate isolated 3-run batches, with the **identical**
+      symptom both times: **row 1 falsely reads `data-read=true`**. An earlier agent ran it 2/2 clean
+      and concluded it did not reproduce — that was a sample-size artifact, and it is the reason this
+      sat open once already. Do not re-close it on a small clean sample.
+      **The question to settle first, before touching anything:** is this **(a)** a real product race
+      — the reader genuinely marks the wrong row read under some interleaving, which is a
+      user-visible data bug far larger than a flaky test — or **(b)** a racy test that observes the
+      DOM before the app has settled? The two have opposite fixes and the wrong one hides the bug.
+      Suspected area is the `skipPast` / topmost-detection timing in `client/view/reader.go`. Two bug
+      shapes already found in that file this session are worth checking first: a `ui.PostAsync` issued
+      from a goroutine spawned *inside* an already-executing `PostAsync` callback never schedules a
+      render; and a `ui.State` read inside a callback created by a mount-only effect returns
+      first-render values (plan.md §20.10).
+      **Status when work stopped:** a fixer had just reproduced it and was reading its debug log. That
+      diagnosis was not captured — it starts again from here.
+      **Forbidden fixes**, because each converts a race into a slower race or a hidden one:
+      `waitForTimeout`/sleeps, `test.skip`/`test.fixme`, and retries. If it is an observation problem
+      it is fixed by waiting on a specific attribute reaching a specific value; if it is a product
+      race it is fixed in the product.
+      *Done when: (a) or (b) is settled with evidence; the fix is in whichever layer is actually
+      wrong; the single test passes 10 consecutive runs; and if it was a product race, a deterministic
+      Go-level regression test in `client/view` covers it — that is worth more than the probabilistic
+      e2e one.*
+
+- [ ] **Q2 · e2e port locks are repo-relative, so they do not guarantee machine-wide exclusivity.**
+      `e2e/ports.mjs` locks per run against a path inside the repo. Two checkouts, or one checkout
+      reached by two different paths, can therefore both believe they hold the same port.
+      This was **not** merely theoretical during the campaign: e2e ran throughout under genuine
+      multi-session contention — simultaneous listeners on 94xx ports from different PIDs, spec files
+      appearing and vanishing mid-run — and the locking held. That is real evidence it works, but it
+      is evidence for the same-checkout case only, which is the case it was designed for.
+      *Done when: the lock namespace is machine-global (a fixed temp path or a named OS primitive)
+      rather than repo-relative.*
+
+- [ ] **Q3 · Two `test.fail()` markers now assert behaviour that has since been fixed.** An e2e agent
+      pinned two live bugs as `test.fail()` so the suite would stay green while flipping to an alarm
+      once fixed — the correct move at the time. Both bugs were then fixed in the same campaign, but
+      Playwright could not be re-run to confirm (another session held the browsers).
+      The markers are in `e2e/dialogs.spec.mjs` (tag settings dialog exit animation) and
+      `e2e/emptystates.spec.mjs` (the rail's Unread empty-state copy).
+      *Done when: someone runs Playwright, confirms both now pass, and removes the two markers. Until
+      then the suite reports these two as expected-failures that are in fact expected passes.*
+
+### Decisions only Cam can make — each is blocking something concrete
+
+- [ ] **Q4 · The Disliked scope is unreachable, and two pinned tests say so.** The constant and three
+      catalog strings exist; nothing routes to it. `TestPaletteNeverOffersTheDislikedStream` and
+      `TestResumeScopeNeverRestoresADislikedScope` are deliberately pinned EXPECTED TO FAIL to
+      document it. **These two are the only red left in the `client/view` wasm suite** — everything
+      else there is green. So this decision is what stands between that suite and a clean run.
+      *Done when: either the scope is wired up, or the constant and its three catalog strings are
+      deleted — and in both cases the two pinned tests are unpinned and made to pass.*
+
+- [ ] **Q5 · The boot page is dead code, and its tier parser lies.** `internal/httpx` has **zero
+      non-test importers**. Separately, the regex at `buildstatus.go:65` folds **"Tier 8b" into
+      "Tier 8"**, so the page under-reports build progress by an entire tier — and Tier 8b is
+      specifically the "shipped, but never planned" tier, i.e. the one whose whole purpose is to be
+      visible.
+      *Done when: the pair is deleted, or the parser is fixed. Fixing a regex in a page nobody serves
+      is the worse of the two, so decide the deletion question first.*
+
+- [ ] **Q6 · `item_revisions` has a schema, a content hash, a dedupe index — and has never had a row
+      written to it.** The table is fully built and entirely unused. Either a feature is missing its
+      write path, or the table is speculative schema that should not be carrying indexes.
+      *Done when: something writes to it and a test asserts the dedupe actually dedupes, or it is
+      dropped in a migration.*
+
+- [ ] **Q7 · The flood guard (§15.5 / T13) was specified in detail and never built.** A feed that
+      suddenly emits thousands of items has nothing standing between it and the reader's database.
+      This is the only item in this section that is a missing *feature* rather than a cleanup, and it
+      is the one with a user-visible failure mode.
+      *Done when: the guard exists as specified, with a test that drives a feed past the threshold and
+      asserts what the guard does — not merely that it was called.*
+
+### Not ours, recorded so nobody re-diagnoses them
+
+- **`internal/classify/lexicon` — 3 failing tests, another session's work in progress.** These tests
+  are working correctly: they are catching real taxonomy data errors, including a term that could
+  never match anything. They are the reason `go test ./...` returns non-zero at the tree's current
+  state, and none of the reasons are defects in the code this campaign touched. Left alone
+  deliberately.
+
+- **Transient build failures from concurrent sessions.** Several were seen and none were ours:
+  `internal/derive`'s `LabelBudget` and `Pick` mid-refactor, `internal/app/share.go`'s `PublishedAt`,
+  `internal/app/retention.go`'s `a.settings.TenantSetting`. All self-resolved. The lesson worth
+  keeping: **a single `go test ./...` on this working tree can catch a half-written file**, so a green
+  local full-suite run is weaker evidence than the same run in CI against a committed tree. That is an
+  argument for the gate living in `.github/workflows/ci.yml`, which is where it already is.
+
+### Noticed and deliberately left alone
+
+- **`internal/assetproxy` allows a truthfully-labelled `image/svg+xml` through**, unlike favicon,
+  which now refuses SVG on the bytes. This is not the same defect: that endpoint already carries the
+  CSP-sandbox hardening that makes permissiveness safe there. Flagged for awareness only — filing it
+  as a bug would be wrong.
