@@ -63,12 +63,27 @@ func TestJobsRunAndComplete(t *testing.T) {
 
 	waitFor(t, "all jobs to run", func() bool { return atomic.LoadInt64(&done) == n })
 
+	// Waited on, not asserted immediately. The counter is incremented by the
+	// HANDLER, and the pool marks the job complete after the handler returns —
+	// so the last job or two are still `running` at the instant the count
+	// reaches n. Asserting here directly is a race that fails a few percent of
+	// the time and reads as a queue bug, which is worse than no assertion:
+	// it teaches whoever sees it that this test is flaky rather than that the
+	// queue is broken.
+	waitFor(t, "the queue to drain", func() bool {
+		depth, err := repo.QueueDepth(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return depth[store.JobFanout].Queued == 0 && depth[store.JobFanout].Running == 0
+	})
+
 	depth, err := repo.QueueDepth(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if depth[store.JobFanout].Queued != 0 || depth[store.JobFanout].Running != 0 {
-		t.Errorf("queue not drained: %+v", depth[store.JobFanout])
+	if depth[store.JobFanout].Dead != 0 {
+		t.Errorf("%d jobs died in a run where every handler succeeded", depth[store.JobFanout].Dead)
 	}
 }
 
