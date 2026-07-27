@@ -239,16 +239,19 @@ var unscopedByDesign = map[string]string{
 	// thing that ends one. Note what is NOT here: Identity takes a Scope, because
 	// "who am I" is a question about an authenticated caller and answering it
 	// unscoped would let any session read any user's row.
-	"UserForLogin":         "produces the identity a Scope is built from; there is none yet",
-	"CreateSession":        "creates the credential a Scope is resolved from",
-	"RevokeSession":        "the token hash IS the authorisation to revoke it",
-	"PurgeExpiredSessions": "maintenance over every tenant's dead rows",
-	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
-	"Audit":                "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
-	"CountUsers":           "asked at boot, before any Scope can exist",
-	"RevokeAllSessions":    "the CLI break-glass reset has no session of its own",
-	"SetPasswordHash":      "the CLI break-glass reset has no session",
-	"AddUser":              "the operator creating an account has no session",
+	"UserForLogin":           "produces the identity a Scope is built from; there is none yet",
+	"CreateSession":          "creates the credential a Scope is resolved from",
+	"RevokeSession":          "the token hash IS the authorisation to revoke it",
+	"SessionAuthenticatedAt": "reads one session's sudo stamp by token hash; the hash IS the session, exactly as for RevokeSession",
+	"StampAuthenticated":     "records a re-authentication against the token hash the caller just proved it holds",
+	"RevokeOtherSessions":    "the token hash IS the session being kept; the user id comes from the scope it resolved to",
+	"PurgeExpiredSessions":   "maintenance over every tenant's dead rows",
+	"PurgeIdempotency":       "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
+	"Audit":                  "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
+	"CountUsers":             "asked at boot, before any Scope can exist",
+	"RevokeAllSessions":      "the CLI break-glass reset has no session of its own",
+	"SetPasswordHash":        "the CLI break-glass reset has no session",
+	"AddUser":                "the operator creating an account has no session",
 	// System settings (§6.3, scope='system'). Instance configuration, not user
 	// data: the OpenAI API key, the Smart+ model, the translated UI catalogs.
 	// Global rows in the same sense sources and items are global under A14.

@@ -1,0 +1,26 @@
+-- 0020_session_authenticated_at — when this session last PROVED who it is (TODO 6.1, §7.3).
+--
+-- Sudo mode already exists as a policy: `internal/authn` knows which operations
+-- need fresh authentication, how long fresh lasts, and refuses an unknown action.
+-- What it had nowhere to read was the one fact it is a policy about — the moment
+-- the person at the keyboard last typed their password.
+--
+-- `created_at` cannot stand in for it. A session lives thirty days by design
+-- (that trade is argued at `SessionTTL`), so on day nine a stolen cookie would
+-- carry a creation stamp that says nothing about whether anyone has authenticated
+-- recently — and using it would make sudo either permanently satisfied or
+-- permanently impossible, depending on which side of the window the session
+-- happened to fall. `last_seen_at` is worse: it is refreshed by ordinary traffic,
+-- so an attacker holding the session refreshes it themselves, and the control
+-- meant to demand a password would be satisfied by reading articles.
+--
+-- So a column of its own, written at login and at each re-authentication, and by
+-- nothing else.
+--
+-- NULLABLE, and it stays that way. A session minted before this migration has no
+-- honest answer, and NULL is that answer — `authn.SudoFresh` already refuses a
+-- zero time, so an old session simply has to re-authenticate once. Defaulting to
+-- the migration's own timestamp would silently hand every session on the instance
+-- a fresh sudo window at the moment of a deploy, which is precisely the state
+-- this column exists to prevent anyone from being in by accident.
+ALTER TABLE sessions ADD COLUMN authenticated_at TEXT;

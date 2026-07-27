@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // NewTenant is the payload for bootstrapping an instance.
@@ -135,6 +136,14 @@ type NewSession struct {
 	UserAgent string
 	Now       string
 	ExpiresAt string
+	// AuthenticatedAt is when the person at the keyboard last proved who they
+	// are, for sudo mode (§7.3). Separate from Now, and deliberately so: a
+	// session minted by a REFRESH is a continuation of a login that happened
+	// days ago, and stamping it with the current time would let a stolen refresh
+	// token mint itself a fresh sudo window — which is the one thing the whole
+	// control exists to prevent. Empty means "never", which `authn.SudoFresh`
+	// already refuses.
+	AuthenticatedAt string
 }
 
 // CreateSession stores a session and stamps the user's last login.
@@ -152,10 +161,10 @@ func (r *ReaderRepo) CreateSession(ctx context.Context, s NewSession) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO sessions
 			   (id,user_id,tenant_id,token_hash,device_id,user_agent,
-			    created_at,last_seen_at,expires_at)
-			 VALUES (?,?,?,?,?,?,?,?,?)`,
+			    created_at,last_seen_at,expires_at,authenticated_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 			s.SessionID, s.UserID, s.TenantID, s.TokenHash, s.DeviceID, s.UserAgent,
-			s.Now, s.Now, s.ExpiresAt); err != nil {
+			s.Now, s.Now, s.ExpiresAt, s.AuthenticatedAt); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
@@ -254,6 +263,115 @@ func (r *ReaderRepo) SetPasswordHash(ctx context.Context, userID, hash string) e
 		return ErrNotFound
 	}
 	return nil
+}
+
+// PasswordHashFor returns the stored hash for the scope's own user.
+//
+// Scoped, unlike `UserForLogin` — this one is for a caller who is ALREADY
+// authenticated and is re-proving it (sudo mode, a password change), so the
+// identity comes from the session rather than from anything the request said.
+// Going through `UserForLogin` instead would mean taking a username off the
+// wire, which is how a re-authentication ends up being performed against
+// somebody else's account.
+func (r *ReaderRepo) PasswordHashFor(ctx context.Context, s Scope) (string, error) {
+	if !s.Valid() {
+		return "", ErrNoScope
+	}
+	var hash string
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT password_hash FROM users
+		 WHERE id = ? AND tenant_id = ? AND deactivated_at IS NULL`,
+		s.UserID, s.TenantID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return hash, err
+}
+
+// SessionAuthenticatedAt reports when this session last proved who it is.
+//
+// The zero time means never — an old session from before the column existed, or
+// one minted by a refresh, which is a continuation of an authentication rather
+// than one of its own. `authn.SudoFresh` already treats zero as stale, so the
+// caller does not have to special-case it.
+//
+// Revocation and expiry are checked here for the same reason `ScopeForSession`
+// checks them: a sudo stamp read off a dead session would be a stamp nobody can
+// use, and a query that returns one invites a caller to try.
+//
+// Unscoped by design — the token hash IS the session, exactly as it is for
+// RevokeSession.
+func (r *ReaderRepo) SessionAuthenticatedAt(ctx context.Context, tokenHash string) (time.Time, error) {
+	var at sql.NullString
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT authenticated_at
+		  FROM sessions
+		 WHERE token_hash = ?
+		   AND revoked_at IS NULL
+		   AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
+		tokenHash).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !at.Valid || at.String == "" {
+		return time.Time{}, nil
+	}
+	t, perr := time.Parse(time.RFC3339Nano, at.String)
+	if perr != nil {
+		// An unparseable stamp is not fresh. Returning the error instead would
+		// make a corrupt row fail the request rather than fail the SUDO check,
+		// and those deserve different answers: one is an outage, the other is a
+		// password prompt.
+		return time.Time{}, nil
+	}
+	return t, nil
+}
+
+// StampAuthenticated records that this session just proved who it is.
+//
+// Called on a successful re-authentication and nowhere else. In particular it is
+// NOT called by ordinary traffic: a control that demanded a password would
+// otherwise be satisfied by reading articles, which is what `last_seen_at` would
+// have done had it been reused for this.
+//
+// Unscoped by design — same as RevokeSession, the token hash is the session.
+func (r *ReaderRepo) StampAuthenticated(ctx context.Context, tokenHash, now string) error {
+	res, err := r.db.Write.ExecContext(ctx,
+		`UPDATE sessions SET authenticated_at = ?
+		  WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RevokeOtherSessions retires every live session for a user EXCEPT one.
+//
+// The exception is the point. A password change must end every session a thief
+// might be holding — that is most of what changing a password is for — but
+// ending the caller's own session too means the person who just did the right
+// thing is logged out for it, on the screen where they were most likely to be
+// mid-task. Keeping theirs alive is the difference between a security action
+// and a punishment for taking one.
+//
+// Unscoped by design — same as RevokeSession: the caller has just proved it
+// holds this session's token, and the user id comes from the scope that token
+// resolved to.
+func (r *ReaderRepo) RevokeOtherSessions(ctx context.Context, userID, keepTokenHash, now string) (int64, error) {
+	res, err := r.db.Write.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = ?
+		  WHERE user_id = ? AND token_hash <> ? AND revoked_at IS NULL`,
+		now, userID, keepTokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // RevokeAllSessions retires every live session for a user.

@@ -194,6 +194,12 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		UserAgent: userAgent(ctx),
 		Now:       now.Format(time.RFC3339Nano),
 		ExpiresAt: expires.Format(time.RFC3339Nano),
+		// A login IS an authentication, so the sudo window opens here (§7.3).
+		// The refresh path below deliberately leaves this empty: a refresh is a
+		// continuation of a login that may have happened weeks ago, and a
+		// stolen refresh token that could mint itself a fresh sudo window would
+		// walk straight past the control.
+		AuthenticatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {
 		s.log.Error("creating session", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)

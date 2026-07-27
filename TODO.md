@@ -1124,7 +1124,7 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 
 Business logic over repositories. Still headless.
 
-- [ ] **6.1 `authn`** — login (hash always run, uniform errors) · **rate limiting + lockout** per-user
+- [x] **6.1 `authn`** — login (hash always run, uniform errors) · **rate limiting + lockout** per-user
       *and* per-IP · refresh families with **reuse detection → revoke the family** · recovery codes ·
       reset tokens · sudo mode ← 2.3, 5.1, D12
       ◧ 2026-07-26 (night) — **about a third of it, and it is the floor for the public internet rather than the ceiling** (plan §7.1a, A36). Built *ahead of its milestone* because `DevMode` was derived from a loopback bind, which made the standard reverse-proxy deployment an open reader. What exists: `AuthService.Login/Logout/WhoAmI`, the hash **always** running against a boot-computed Argon2id decoy on an unknown username, one uniform error for missing/wrong/deactivated, a fixed-window limiter at 10/minute on **both** the username and the client address, SHA-256-stored 30-day sessions with real revocation, opportunistic re-hash on login, and `device_id` grouping. What is owed, all of it still: **lockout** (the limiter is not one), refresh families and reuse detection, recovery codes, reset tokens, sudo mode, the breached-password check, and per-box Argon2id tuning.
@@ -1180,6 +1180,53 @@ Business logic over repositories. Still headless.
       ◧ 2026-07-27 (later) — **the lockout is wired into `Login`, the breached-password check exists,
       and Argon2id tunes itself.** *Still owed: refresh-family wiring (the repo methods have existed
       since 5.1) and sudo mode's enforcement at the handlers that need it.*
+
+      ✅ 2026-07-27 (evening) — **sudo mode is enforced, and 6.1 is closed.** Refresh families were
+      already wired (`RefreshSession` rotates and revokes on reuse — the rollback bug in that path was
+      found and fixed earlier the same day), so this was the last owed piece.
+
+      **The policy had no caller, which is the difference between a control and a document.**
+      `internal/authn` has known since it was written which operations need fresh authentication, how
+      long fresh lasts, and that an unclassified action must fail closed. Nothing consulted it. Three
+      pieces make it real: `sessions.authenticated_at` (migration 0020) records when the person at the
+      keyboard last proved who they are, `Reauthenticate` is the one call whose job is to ask again,
+      and `requireSudo` is the single place gated handlers check.
+
+      **Ordinary traffic deliberately does not refresh the stamp**, and this is the trap the design
+      avoids rather than a detail. `last_seen_at` was sitting right there and every request already
+      updates it — reusing it would make a control that demands a password satisfiable by *reading
+      articles*, which is exactly what a thief holding the session does anyway. Pinned by
+      `TestReadingDoesNotKeepSudoAlive`.
+
+      **A refresh is not an authentication.** Refresh mints a session, sessions carry the stamp, so
+      stamping it there is the obvious thing to write — and it would hand a stolen refresh token a
+      permanent way to open the window the control exists to keep shut, up to and including changing
+      the password. `NewSession.AuthenticatedAt` is therefore separate from `Now`, and
+      `TestARefreshedSessionDoesNotInheritSudo` is the test that would catch it coming back.
+
+      **Refusal is `PermissionDenied`, never `Unauthenticated`.** They mean opposite things to a
+      client: one is "your session is no good, show the login screen", the other is "your session is
+      fine, ask for the password over the top of what they were doing". A client that conflates them
+      signs somebody out for trying to protect their account. A caller with *no* session gets
+      Unauthenticated, because being asked to re-enter a password you never entered is a dead end.
+
+      **What it gates:** `ChangePassword` (which also ends every OTHER session and keeps the caller's
+      — ending theirs too punishes the person who just did the right thing) and
+      `RegenerateRecoveryCodes`. `recovery.regenerate` is a new entry in the action list: it would
+      have been caught by the fail-closed default, but the list is meant to be the one thing you read
+      to know what is protected, and it was quietly missing the operation that decides who can get
+      back in *without* a password. The other five actions — role changes, suspension, impersonation,
+      deletion, full export — have no RPCs in this application yet; when they arrive they call
+      `requireSudo` and nothing else changes.
+
+      **The stamp fails CLOSED** where the login ledger fails open, which looks inconsistent and is
+      not: an unreadable ledger would lock every user out of the instance, while an unreadable stamp
+      costs one password prompt on operations somebody performs a few times a year.
+
+      *One invented assertion, corrected rather than loosened:* a test claimed the password policy
+      refuses a password built from the username. It refuses one built from a username of **four or
+      more** characters, and the fixture's user is "cam" — so the assertion was testing a rule that
+      does not exist. Replaced with three that each trip a different rule.
 
       **The lockout now bites at 4 failures where the limiter allowed 10**, which changed behaviour
       and broke a test asserting the old threshold. The test was right about its property — a

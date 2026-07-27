@@ -11,6 +11,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Security
 
+- **Sudo mode is enforced** (`AuthService.Reauthenticate` · `ChangePassword` ·
+  `RegenerateRecoveryCodes`, TODO 6.1, §7.3). The policy existed — which operations need fresh
+  authentication, how long fresh lasts, that an unclassified action fails closed — and nothing
+  consulted it. A session now records **when its holder last proved who they are**, ordinary traffic
+  deliberately does not refresh that stamp (reusing `last_seen_at` would make a control that demands
+  a password satisfiable by reading articles), and a session minted by a **refresh** does not inherit
+  it — otherwise a stolen refresh token could open the window the control exists to keep shut, and
+  change the password with it. Refusal is `PermissionDenied`, never `Unauthenticated`: one means
+  "show the login screen" and the other means "ask for the password over the top of what they were
+  doing", and a client that conflates them signs somebody out for trying to protect their account.
+  Changing a password ends every **other** session and keeps the caller's own. Regenerating recovery
+  codes joined the protected list explicitly — it decides who can get back in without a password,
+  and relying on the fail-closed default would have left the list that documents the control quietly
+  incomplete.
+
 - **Refresh-token families with reuse detection** (`AuthService.RefreshSession`, TODO 6.1, §7.3).
   A refresh token is single-use; presenting a spent one means either a replay or a stolen token
   being used alongside the real client, and since the server cannot tell those apart it revokes the

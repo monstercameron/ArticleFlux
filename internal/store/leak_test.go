@@ -63,16 +63,19 @@ var unscopedByDesign = map[string]string{
 	"CountUsers":          "boot-time check for 7.9's 'refuse to serve with no superadmin'",
 
 	// Authentication: by definition these run before the caller is identified.
-	"ScopeForSession":      "turns a token into a Scope; requiring one would be circular",
-	"UserForLogin":         "the login path, before identity is established",
-	"ReconcileUnread":      "an instance-wide repair of denormalised columns; it reads nothing back to a caller and writes each row only the values of the item that row already names",
-	"CreateSession":        "same",
-	"RevokeSession":        "keyed by token hash, which the holder already has",
-	"RevokeAllSessions":    "admin and break-glass; keyed by user id",
-	"SetPasswordHash":      "break-glass reset (7.10), run from the CLI",
-	"PurgeExpiredSessions": "housekeeping over expiry alone; touches no tenant data",
-	"PurgeIdempotency":     "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
-	"Audit":                "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
+	"ScopeForSession":        "turns a token into a Scope; requiring one would be circular",
+	"UserForLogin":           "the login path, before identity is established",
+	"ReconcileUnread":        "an instance-wide repair of denormalised columns; it reads nothing back to a caller and writes each row only the values of the item that row already names",
+	"CreateSession":          "same",
+	"RevokeSession":          "keyed by token hash, which the holder already has",
+	"SessionAuthenticatedAt": "keyed by token hash, like RevokeSession: it reads one session's sudo stamp, and the hash is the session",
+	"StampAuthenticated":     "keyed by token hash: it records a re-authentication against the session the caller just proved it holds",
+	"RevokeOtherSessions":    "keyed by token hash for the session being KEPT; the user id whose other sessions end comes from the scope that token resolved to",
+	"RevokeAllSessions":      "admin and break-glass; keyed by user id",
+	"SetPasswordHash":        "break-glass reset (7.10), run from the CLI",
+	"PurgeExpiredSessions":   "housekeeping over expiry alone; touches no tenant data",
+	"PurgeIdempotency":       "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
+	"Audit":                  "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
 
 	// Global rows (A14). sources, items and favicons belong to no tenant, which
 	// is the entire point of the source/subscription split — a Scope here would

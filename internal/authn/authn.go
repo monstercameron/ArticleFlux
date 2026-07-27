@@ -232,6 +232,17 @@ const (
 	SudoChangePasswd SudoAction = "password.change"
 	SudoMintToken    SudoAction = "token.mint"
 	SudoManageMail   SudoAction = "mailbox.manage"
+	// SudoRecoveryCodes is replacing the recovery sheet.
+	//
+	// §7.3 lists the operations where a stolen session becomes a stolen
+	// instance, and this is one it did not name: the codes decide who can get
+	// back in WITHOUT a password, so somebody holding a borrowed session could
+	// mint themselves a permanent way back and the owner would find out when
+	// their own sheet stopped working. It would have been caught by the
+	// fail-closed default — an unlisted action requires sudo — but relying on
+	// that would leave the list, which is meant to be the one thing you read to
+	// know what is protected, quietly incomplete.
+	SudoRecoveryCodes SudoAction = "recovery.regenerate"
 )
 
 // sudoRequired is the list, as a set, so the check is a lookup rather than a
@@ -243,7 +254,7 @@ const (
 var sudoRequired = map[SudoAction]bool{
 	SudoChangeRole: true, SudoSuspendUser: true, SudoImpersonate: true,
 	SudoDeleteUser: true, SudoExportAll: true, SudoChangePasswd: true,
-	SudoMintToken: true, SudoManageMail: true,
+	SudoMintToken: true, SudoManageMail: true, SudoRecoveryCodes: true,
 }
 
 // NeedsSudo reports whether an action requires fresh authentication.

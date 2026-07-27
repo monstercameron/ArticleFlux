@@ -61,6 +61,85 @@ service AuthService {
   // Unauthenticated by design: the refresh token IS the credential, and a
   // caller with an expired session has nothing else to present.
   rpc RefreshSession(RefreshSessionRequest) returns (RefreshSessionResponse);
+
+  // Reauthenticate re-proves the password on an existing session, opening a
+  // sudo window (§7.3, TODO 6.1).
+  //
+  // This is the primitive the whole of sudo mode rests on, and without it the
+  // policy could never be SATISFIED — only failed. A session records when its
+  // holder last proved who they are; ordinary traffic deliberately does not
+  // refresh that stamp, because a control that demands a password must not be
+  // satisfied by reading articles. So there has to be one call whose entire job
+  // is to ask for the password again, and this is it.
+  //
+  // It does NOT mint a new session. A re-authentication is the same person on
+  // the same device answering a question, not a new login, and rotating the
+  // token here would log out every other tab to confirm a password.
+  rpc Reauthenticate(ReauthenticateRequest) returns (ReauthenticateResponse);
+
+  // ChangePassword replaces the caller's password and ends every other session.
+  //
+  // Requires a fresh sudo window rather than asking for the current password
+  // again. Those are the same check — proving you are the person, not the
+  // browser — and asking twice inside fifteen minutes trains people to type
+  // their password into whatever asks for it, which is the habit that makes
+  // phishing work.
+  //
+  // Every OTHER session is revoked, and the caller's own is kept. Ending the
+  // thief's sessions is most of what changing a password is for; ending the
+  // caller's as well would log out the person who just did the right thing, on
+  // the screen where they were most likely mid-task.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+
+  // RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
+  //
+  // Requires sudo, because it is the operation that decides who can get back
+  // into the account without a password. The codes are returned ONCE, in
+  // plaintext, here — the server stores only their hashes, so a caller who does
+  // not write them down has to generate another set.
+  //
+  // Replacing rather than adding is the security property: this is what someone
+  // does when they believe the old sheet is compromised, and survivors would
+  // make it a no-op that looked like it worked.
+  rpc RegenerateRecoveryCodes(RegenerateRecoveryCodesRequest)
+      returns (RegenerateRecoveryCodesResponse);
+}
+
+message ReauthenticateRequest {
+  // password is the caller's current password. There is no username: the
+  // session already says who this is, and accepting one would let a caller
+  // re-authenticate as somebody else on a session that is not theirs.
+  string password = 1;
+}
+
+message ReauthenticateResponse {
+  // sudo_expires_at is when the window closes, RFC3339. Returned so the client
+  // can hide an action that is about to need the password again rather than
+  // offering it and failing — the number is not a secret, and the alternative
+  // is a UI that guesses at a constant the server owns.
+  string sudo_expires_at = 1;
+}
+
+message ChangePasswordRequest {
+  // new_password is checked against the same policy as any other password:
+  // length, and the bundled breached-password list with its folding. A password
+  // change is the one moment someone is thinking about their password, which
+  // makes it the best moment to refuse a bad one.
+  string new_password = 1;
+}
+
+message ChangePasswordResponse {
+  // sessions_ended counts the OTHER sessions revoked, so the client can say
+  // "signed out of 3 other devices" rather than leaving someone to wonder
+  // whether the change did anything beyond the password.
+  int32 sessions_ended = 1;
+}
+
+message RegenerateRecoveryCodesRequest {}
+
+message RegenerateRecoveryCodesResponse {
+  // codes are plaintext and appear here exactly once.
+  repeated string codes = 1;
 }
 
 message RefreshSessionRequest {

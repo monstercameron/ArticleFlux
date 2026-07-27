@@ -19,10 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AuthService_Login_FullMethodName          = "/articleflux.v1.AuthService/Login"
-	AuthService_Logout_FullMethodName         = "/articleflux.v1.AuthService/Logout"
-	AuthService_WhoAmI_FullMethodName         = "/articleflux.v1.AuthService/WhoAmI"
-	AuthService_RefreshSession_FullMethodName = "/articleflux.v1.AuthService/RefreshSession"
+	AuthService_Login_FullMethodName                   = "/articleflux.v1.AuthService/Login"
+	AuthService_Logout_FullMethodName                  = "/articleflux.v1.AuthService/Logout"
+	AuthService_WhoAmI_FullMethodName                  = "/articleflux.v1.AuthService/WhoAmI"
+	AuthService_RefreshSession_FullMethodName          = "/articleflux.v1.AuthService/RefreshSession"
+	AuthService_Reauthenticate_FullMethodName          = "/articleflux.v1.AuthService/Reauthenticate"
+	AuthService_ChangePassword_FullMethodName          = "/articleflux.v1.AuthService/ChangePassword"
+	AuthService_RegenerateRecoveryCodes_FullMethodName = "/articleflux.v1.AuthService/RegenerateRecoveryCodes"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -83,6 +86,44 @@ type AuthServiceClient interface {
 	// Unauthenticated by design: the refresh token IS the credential, and a
 	// caller with an expired session has nothing else to present.
 	RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*RefreshSessionResponse, error)
+	// Reauthenticate re-proves the password on an existing session, opening a
+	// sudo window (§7.3, TODO 6.1).
+	//
+	// This is the primitive the whole of sudo mode rests on, and without it the
+	// policy could never be SATISFIED — only failed. A session records when its
+	// holder last proved who they are; ordinary traffic deliberately does not
+	// refresh that stamp, because a control that demands a password must not be
+	// satisfied by reading articles. So there has to be one call whose entire job
+	// is to ask for the password again, and this is it.
+	//
+	// It does NOT mint a new session. A re-authentication is the same person on
+	// the same device answering a question, not a new login, and rotating the
+	// token here would log out every other tab to confirm a password.
+	Reauthenticate(ctx context.Context, in *ReauthenticateRequest, opts ...grpc.CallOption) (*ReauthenticateResponse, error)
+	// ChangePassword replaces the caller's password and ends every other session.
+	//
+	// Requires a fresh sudo window rather than asking for the current password
+	// again. Those are the same check — proving you are the person, not the
+	// browser — and asking twice inside fifteen minutes trains people to type
+	// their password into whatever asks for it, which is the habit that makes
+	// phishing work.
+	//
+	// Every OTHER session is revoked, and the caller's own is kept. Ending the
+	// thief's sessions is most of what changing a password is for; ending the
+	// caller's as well would log out the person who just did the right thing, on
+	// the screen where they were most likely mid-task.
+	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
+	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
+	//
+	// Requires sudo, because it is the operation that decides who can get back
+	// into the account without a password. The codes are returned ONCE, in
+	// plaintext, here — the server stores only their hashes, so a caller who does
+	// not write them down has to generate another set.
+	//
+	// Replacing rather than adding is the security property: this is what someone
+	// does when they believe the old sheet is compromised, and survivors would
+	// make it a no-op that looked like it worked.
+	RegenerateRecoveryCodes(ctx context.Context, in *RegenerateRecoveryCodesRequest, opts ...grpc.CallOption) (*RegenerateRecoveryCodesResponse, error)
 }
 
 type authServiceClient struct {
@@ -127,6 +168,36 @@ func (c *authServiceClient) RefreshSession(ctx context.Context, in *RefreshSessi
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RefreshSessionResponse)
 	err := c.cc.Invoke(ctx, AuthService_RefreshSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) Reauthenticate(ctx context.Context, in *ReauthenticateRequest, opts ...grpc.CallOption) (*ReauthenticateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReauthenticateResponse)
+	err := c.cc.Invoke(ctx, AuthService_Reauthenticate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChangePasswordResponse)
+	err := c.cc.Invoke(ctx, AuthService_ChangePassword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) RegenerateRecoveryCodes(ctx context.Context, in *RegenerateRecoveryCodesRequest, opts ...grpc.CallOption) (*RegenerateRecoveryCodesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegenerateRecoveryCodesResponse)
+	err := c.cc.Invoke(ctx, AuthService_RegenerateRecoveryCodes_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +262,44 @@ type AuthServiceServer interface {
 	// Unauthenticated by design: the refresh token IS the credential, and a
 	// caller with an expired session has nothing else to present.
 	RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error)
+	// Reauthenticate re-proves the password on an existing session, opening a
+	// sudo window (§7.3, TODO 6.1).
+	//
+	// This is the primitive the whole of sudo mode rests on, and without it the
+	// policy could never be SATISFIED — only failed. A session records when its
+	// holder last proved who they are; ordinary traffic deliberately does not
+	// refresh that stamp, because a control that demands a password must not be
+	// satisfied by reading articles. So there has to be one call whose entire job
+	// is to ask for the password again, and this is it.
+	//
+	// It does NOT mint a new session. A re-authentication is the same person on
+	// the same device answering a question, not a new login, and rotating the
+	// token here would log out every other tab to confirm a password.
+	Reauthenticate(context.Context, *ReauthenticateRequest) (*ReauthenticateResponse, error)
+	// ChangePassword replaces the caller's password and ends every other session.
+	//
+	// Requires a fresh sudo window rather than asking for the current password
+	// again. Those are the same check — proving you are the person, not the
+	// browser — and asking twice inside fifteen minutes trains people to type
+	// their password into whatever asks for it, which is the habit that makes
+	// phishing work.
+	//
+	// Every OTHER session is revoked, and the caller's own is kept. Ending the
+	// thief's sessions is most of what changing a password is for; ending the
+	// caller's as well would log out the person who just did the right thing, on
+	// the screen where they were most likely mid-task.
+	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
+	//
+	// Requires sudo, because it is the operation that decides who can get back
+	// into the account without a password. The codes are returned ONCE, in
+	// plaintext, here — the server stores only their hashes, so a caller who does
+	// not write them down has to generate another set.
+	//
+	// Replacing rather than adding is the security property: this is what someone
+	// does when they believe the old sheet is compromised, and survivors would
+	// make it a no-op that looked like it worked.
+	RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -212,6 +321,15 @@ func (UnimplementedAuthServiceServer) WhoAmI(context.Context, *WhoAmIRequest) (*
 }
 func (UnimplementedAuthServiceServer) RefreshSession(context.Context, *RefreshSessionRequest) (*RefreshSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshSession not implemented")
+}
+func (UnimplementedAuthServiceServer) Reauthenticate(context.Context, *ReauthenticateRequest) (*ReauthenticateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Reauthenticate not implemented")
+}
+func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ChangePassword not implemented")
+}
+func (UnimplementedAuthServiceServer) RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegenerateRecoveryCodes not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -306,6 +424,60 @@ func _AuthService_RefreshSession_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_Reauthenticate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReauthenticateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).Reauthenticate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_Reauthenticate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).Reauthenticate(ctx, req.(*ReauthenticateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_ChangePassword_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChangePasswordRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).ChangePassword(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_ChangePassword_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).ChangePassword(ctx, req.(*ChangePasswordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_RegenerateRecoveryCodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegenerateRecoveryCodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).RegenerateRecoveryCodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_RegenerateRecoveryCodes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).RegenerateRecoveryCodes(ctx, req.(*RegenerateRecoveryCodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -328,6 +500,18 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshSession",
 			Handler:    _AuthService_RefreshSession_Handler,
+		},
+		{
+			MethodName: "Reauthenticate",
+			Handler:    _AuthService_Reauthenticate_Handler,
+		},
+		{
+			MethodName: "ChangePassword",
+			Handler:    _AuthService_ChangePassword_Handler,
+		},
+		{
+			MethodName: "RegenerateRecoveryCodes",
+			Handler:    _AuthService_RegenerateRecoveryCodes_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
