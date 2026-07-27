@@ -52,6 +52,7 @@ type keyed interface {
 // Store is what the interceptor needs from the repository.
 type Store interface {
 	BeginIdempotent(ctx context.Context, s store.Scope, key, method string, request []byte) (store.IdemRecord, bool, error)
+	ReserveIdempotent(ctx context.Context, s store.Scope, key, method string, request []byte) error
 	CompleteIdempotent(ctx context.Context, s store.Scope, key, method string, request, response []byte, status int) error
 }
 
@@ -129,6 +130,28 @@ func Unary(st Store, scopeOf ScopeFunc) grpc.UnaryServerInterceptor {
 
 func runAndStore(ctx context.Context, st Store, sc store.Scope, key, method string,
 	reqBytes []byte, req any, handler grpc.UnaryHandler) (any, error) {
+
+	// Claim the key BEFORE running, so the attempt leaves a trace.
+	//
+	// Without this the row appears only when the handler finishes, and a request
+	// that crashes halfway leaves nothing at all — the retry is indistinguishable
+	// from a first attempt, and a second key reused for a different body has
+	// nothing to conflict against until the first one returns.
+	//
+	// It does NOT make concurrent duplicates run once, and cannot: two callers
+	// presenting the same key at the same instant are the SAME request, and the
+	// second one has no answer to be given yet. `BeginIdempotent` says so
+	// explicitly — reporting a conflict would be wrong and replaying nothing
+	// would be wrong, so it proceeds. What makes that safe is the property the
+	// whole outbox already relies on: every queued mutation writes an absolute
+	// value, so applying it twice lands on the same state (§20.19.8).
+	//
+	// A failure to reserve is not fatal. The reservation is bookkeeping that
+	// narrows a window; refusing the request would turn a narrowed window into a
+	// failed write.
+	if err := st.ReserveIdempotent(ctx, sc, key, method, reqBytes); err != nil {
+		_ = err // best-effort; see above
+	}
 
 	res, err := handler(ctx, req)
 	if err != nil {
