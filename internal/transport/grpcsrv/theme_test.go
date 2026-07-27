@@ -127,7 +127,7 @@ func TestSuppressedTopicsAreNotATaste(t *testing.T) {
 	if cryptoID == "" {
 		t.Fatal("the topic under test was not stored")
 	}
-	if err := repo.SuppressTopic(ctx, sc, cryptoID, true); err != nil {
+	if err := repo.SteerTopic(ctx, sc, cryptoID, store.SteerNormal, true); err != nil {
 		t.Fatalf("suppress: %v", err)
 	}
 

@@ -31,6 +31,9 @@ type SystemServer struct {
 	started time.Time
 	pollS   int
 	scopeOf func(context.Context) (store.Scope, error)
+	// audioDir holds the broadcast's music beds (§19). Empty means this instance
+	// ships none, and ListAudioTracks answers with an empty list.
+	audioDir string
 }
 
 // NewSystemServer wires the system surface.

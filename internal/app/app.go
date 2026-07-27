@@ -194,7 +194,15 @@ type App struct {
 	// tts is the Smart+ voice. Nil-safe: absent means every request to /speech
 	// answers 501, which is the correct answer for an instance that never
 	// configured an API key.
+	//
 	tts *tts.Client
+	// speak is what the listening path calls, and is normally the same object as
+	// tts above. It exists as a separate, narrower field so a test can reach the
+	// half of /speech that lies PAST the gates — everything from the script
+	// choice to the cache key to the bytes — which was otherwise reachable only
+	// by a request that ends in a paid call to OpenAI, and was therefore covered
+	// by nothing. See speech.go's `speaker`.
+	speak speaker
 	// digest condenses an article into about a minute of spoken summary before
 	// the voice reads it. Nil-safe: absent means the digest preference has
 	// nothing to do and /speech reads the whole article, which is the correct
@@ -581,6 +589,10 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// carries the audio with it and a re-listen after a restore is still free.
 	a.tts = tts.New(filepath.Join(filepath.Dir(cfg.DBPath), "speech-cache"),
 		tts.KeyFunc(smartKey))
+	// The same object, seen through the narrow seam the listening path uses.
+	// Assigned here rather than derived at the call site so there is exactly one
+	// line to look at when asking "can these two ever disagree".
+	a.speak = a.tts
 	// Beside the audio it feeds, and cached for the same reason: the digest is
 	// the expensive half of listening to a long article, and re-summarising a
 	// paragraph that cannot have changed is money spent on an identical answer.
@@ -1042,7 +1054,11 @@ func (a *App) buildHandler() {
 			WithSpeech(a.SpeechURL))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
-			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext))
+			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext).
+			// The broadcast's music beds (§19), beside the web root they ship in.
+			// Empty when this instance serves no static files, which answers the
+			// picker with silence rather than four tracks it cannot send.
+			WithAudio(audioDirOf(a.cfg.WebRoot)))
 	// The login surface. Registered unconditionally, including in DevMode: an
 	// instance that starts on a laptop and later gets a domain must not need a
 	// different binary, and a client that can always call Login is a client with
@@ -1785,4 +1801,18 @@ func precompressed(root, p string, r *http.Request) (string, bool) {
 		return "", false
 	}
 	return "/" + rel + ".gz", true
+}
+
+// audioDirOf is where the broadcast's music beds sit relative to the web root.
+//
+// Derived rather than configured, because they are shipped together: make.ps1
+// copies web/audio into the same directory it copies index.html into, so a
+// second flag would be a second thing to get wrong for no choice anybody wants
+// to make. An instance serving no static files has no beds, which is the honest
+// answer rather than a path that does not exist.
+func audioDirOf(webRoot string) string {
+	if webRoot == "" {
+		return ""
+	}
+	return filepath.Join(webRoot, "audio")
 }

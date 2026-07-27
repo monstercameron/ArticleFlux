@@ -324,6 +324,17 @@ function Invoke-Wasm {
     if (Test-Path $fontsOut) { Remove-Item $fontsOut -Recurse -Force }
     Copy-Item (Join-Path $WebSrc 'fonts') $fontsOut -Recurse -Force
 
+    # The broadcast's music beds (§19). Twelve megabytes, and deliberately NOT
+    # part of the app shell: they are fetched only when a reader turns the bed on
+    # and picks one, the Service Worker is told to leave /audio/ alone, and a
+    # deployment that omits them loses a background track rather than the app.
+    $audioSrc = Join-Path $WebSrc 'audio'
+    if (Test-Path $audioSrc) {
+        $audioOut = Join-Path $OutDir 'audio'
+        if (Test-Path $audioOut) { Remove-Item $audioOut -Recurse -Force }
+        Copy-Item $audioSrc $audioOut -Recurse -Force
+    }
+
     # The manifest and the icons (§20.24). index.html links the manifest by
     # relative path and the manifest names each icon the same way, so a build that
     # ships one without the other is an app the browser refuses to install — with
