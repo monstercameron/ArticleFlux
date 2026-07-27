@@ -834,6 +834,8 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 			return nil
 		}
 		top := el.Get("scrollTop").Float()
+		view := el.Get("clientHeight").Float()
+		full := el.Get("scrollHeight").Float()
 		// 8px of grace, so a rounding difference between offsetTop and scrollTop
 		// does not leave the first article permanently "not yet reached".
 		found := ""
@@ -847,6 +849,22 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		}
 		if found == "" {
 			found = kids.Index(0).Call("getAttribute", attr).String()
+		}
+		// At the BOTTOM of a scrollable container, the last child is the answer.
+		//
+		// Otherwise the last article can never be the one being read, because
+		// there is nothing below it to scroll and its top never reaches the fold.
+		// The rule above then reports its predecessor for as long as the reader
+		// sits at the end of the stream — which is wrong on its face, and worse
+		// downstream: opening the last article leaves the reader recorded as
+		// reading the one before it, and anything gated on "the article I opened
+		// became topmost" waits for an event that cannot happen (8b.52).
+		//
+		// Only when the container actually scrolls. A pane whose whole content
+		// fits has no bottom to be at, and every child would qualify — the reader
+		// is looking at the first one.
+		if full > view+2 && top+view >= full-2 {
+			found = kids.Index(n-1).Call("getAttribute", attr).String()
 		}
 		if found != last {
 			last = found

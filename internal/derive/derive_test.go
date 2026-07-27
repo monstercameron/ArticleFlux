@@ -141,6 +141,23 @@ func (f *fixture) record(t *testing.T, kind signals.Kind, itemIDs []string, at t
 	}
 }
 
+// recordDwell writes a single Dwell event carrying attentive milliseconds as
+// its Value, which record cannot do — record only ever writes ValueNone-shaped
+// occurrence rows.
+func (f *fixture) recordDwell(t *testing.T, itemID string, at time.Time, ms int64) {
+	t.Helper()
+	if _, err := f.repo.RecordEngagements(f.ctx, f.scope, []signals.Event{{
+		ID:      idgen.New(),
+		ItemID:  itemID,
+		Kind:    signals.Dwell,
+		Value:   float64(ms),
+		Surface: signals.SurfaceReader,
+		At:      at.UnixMilli(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *fixture) itemsOfFeed(t *testing.T, title string) []string {
 	t.Helper()
 	items, _, err := f.repo.ListItems(f.ctx, f.scope, store.ListQuery{
@@ -181,6 +198,20 @@ func TestDerivedStateRebuildsIdentically(t *testing.T) {
 	f := setup(t)
 	f.engage(t)
 
+	// Five distinct, EQUALLY-WEIGHTED entities — two completions each, nothing
+	// else — so a broken tie-break in deriveEntities' sort has enough tied
+	// candidates that landing on the same order twice by chance is vanishingly
+	// unlikely. With only one or two tied entities a broken sort has good odds
+	// of getting away with it on any given run.
+	entityIDs := f.ingestEntityItems(t, map[string]string{
+		"eA1": "Alpha Widget review one", "eA2": "Alpha Widget review two",
+		"eB1": "Bravo Widget review one", "eB2": "Bravo Widget review two",
+		"eC1": "Charlie Widget review one", "eC2": "Charlie Widget review two",
+		"eD1": "Delta Widget review one", "eD2": "Delta Widget review two",
+		"eE1": "Echo Widget review one", "eE2": "Echo Widget review two",
+	})
+	f.record(t, signals.Completed, entityIDs, now.Add(-time.Hour))
+
 	first, err := f.svc.RunReporting(f.ctx, f.scope, now)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +224,11 @@ func TestDerivedStateRebuildsIdentically(t *testing.T) {
 	beforeTerms := snapshotTerms(t, f)
 	beforeDomains := snapshotDomains(t, f)
 	beforeRanking := snapshotRanking(t, f)
+	beforeEntities := snapshotEntities(t, f)
+	beforeTopics := snapshotTopics(t, f)
+	if beforeEntities == "" {
+		t.Fatal("the entity fixture produced no entities; the rest of this test proves nothing")
+	}
 
 	if err := f.repo.ClearDerived(f.ctx, f.scope); err != nil {
 		t.Fatal(err)
@@ -218,11 +254,29 @@ func TestDerivedStateRebuildsIdentically(t *testing.T) {
 	if got := snapshotRanking(t, f); got != beforeRanking {
 		t.Errorf("home ranking differs after rebuild:\n before %s\n after  %s", beforeRanking, got)
 	}
+	if got := snapshotEntities(t, f); got != beforeEntities {
+		t.Errorf("entity affinity differs after rebuild:\n before %s\n after  %s", beforeEntities, got)
+	}
+	if got := snapshotTopics(t, f); got != beforeTopics {
+		t.Errorf("topics differ after rebuild:\n before %s\n after  %s", beforeTopics, got)
+	}
 }
 
 // R17, end to end. Marking a backlog read is not 143 rejections, and a scorer
 // that learns from it concludes the reader dislikes everything they subscribe
 // to. The failure is silent and eats weeks of signal.
+//
+// This sends bulk_read rows ITEM-SCOPED (a real ItemID on every row), which is
+// the shape that reaches signals.Lookup at all inside engagedItems — see
+// TestBulkReadAtRealisticScaleAndShape for the empty-ItemID shape production
+// actually sends, a structurally different and complementary proof.
+//
+// Snapshotting all four derived views, not just feeds, is the point: a
+// regression in signals.BulkRead's own spec (Prior/Affinity) is invisible to
+// feed affinity, because FeedSignals excludes bulk_read by its own, separate
+// SQL literal. Terms, domains and ranking are what actually read the Go
+// registry, through engagedItems, and are the only views that can catch the
+// registry itself breaking.
 func TestBulkReadChangesNoAffinityScore(t *testing.T) {
 	f := setup(t)
 	f.engage(t)
@@ -230,7 +284,13 @@ func TestBulkReadChangesNoAffinityScore(t *testing.T) {
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshotFeeds(t, f)
+	beforeFeeds := snapshotFeeds(t, f)
+	beforeTerms := snapshotTerms(t, f)
+	beforeDomains := snapshotDomains(t, f)
+	beforeRanking := snapshotRanking(t, f)
+	if beforeFeeds == "" || beforeTerms == "" || beforeRanking == "" {
+		t.Fatal("the baseline engagement produced no derived state; the rest of this test proves nothing")
+	}
 
 	// The reader marks everything read. All twelve items, both feeds.
 	var all []string
@@ -242,11 +302,21 @@ func TestBulkReadChangesNoAffinityScore(t *testing.T) {
 	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
 		t.Fatal(err)
 	}
-	after := snapshotFeeds(t, f)
-
-	if before != after {
-		t.Errorf("a mark-all-read over 12 items moved the affinity scores:\n before %s\n after  %s",
-			before, after)
+	if got := snapshotFeeds(t, f); got != beforeFeeds {
+		t.Errorf("a mark-all-read over 12 items moved feed affinity:\n before %s\n after  %s",
+			beforeFeeds, got)
+	}
+	if got := snapshotTerms(t, f); got != beforeTerms {
+		t.Errorf("a mark-all-read over 12 items moved term affinity:\n before %s\n after  %s",
+			beforeTerms, got)
+	}
+	if got := snapshotDomains(t, f); got != beforeDomains {
+		t.Errorf("a mark-all-read over 12 items moved domain affinity:\n before %s\n after  %s",
+			beforeDomains, got)
+	}
+	if got := snapshotRanking(t, f); got != beforeRanking {
+		t.Errorf("a mark-all-read over 12 items moved home ranking:\n before %s\n after  %s",
+			beforeRanking, got)
 	}
 }
 
@@ -427,6 +497,126 @@ func TestRankingAssignsSlots(t *testing.T) {
 	}
 }
 
+// §18.2: a suppressed topic is documented as "a strong negative across its
+// whole cluster" (derive.go, deriveHomeRanking) and the wiring lives at
+// derive.go:901-903 — `if topicIdx >= 0 ... suppressed[topicIdx] { sig.NegativeAffinity = 1 }`.
+// TestAUserRenameSurvivesRederivation only proves the flag survives storage; it
+// never looks at ranking. Disabling the wiring entirely left the suite green.
+//
+// This suppresses every topic the reader has, re-derives, and checks the
+// ranked rows that belong to one of those topics actually carry rank's
+// "negative" reason and score strictly lower than before suppression.
+func TestSuppressedTopicDemotesRankedItems(t *testing.T) {
+	f := setup(t)
+	f.engage(t)
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.repo.Topics(f.ctx, f.scope)
+	if err != nil || len(stored) == 0 {
+		t.Fatalf("no topics: %v", err)
+	}
+
+	before, err := f.repo.HomeRanking(f.ctx, f.scope, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeScore := map[string]float64{}
+	for _, r := range before {
+		beforeScore[r.ItemID] = r.Score
+		for _, reason := range r.Reasons {
+			if reason.Term == "negative" {
+				t.Fatalf("item %s already carries a negative reason before any topic was suppressed", r.ItemID)
+			}
+		}
+	}
+
+	for _, topic := range stored {
+		if err := f.repo.SuppressTopic(f.ctx, f.scope, topic.ID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.repo.HomeRanking(f.ctx, f.scope, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) == 0 {
+		t.Fatal("nothing was ranked after suppression; the rest of this test proves nothing")
+	}
+
+	var sawNegativeReason, sawLoweredScore bool
+	for _, r := range after {
+		for _, reason := range r.Reasons {
+			if reason.Term == "negative" {
+				sawNegativeReason = true
+			}
+		}
+		if bs, ok := beforeScore[r.ItemID]; ok && r.Score < bs {
+			sawLoweredScore = true
+		}
+	}
+	if !sawNegativeReason {
+		t.Error("no ranked item carries rank's negative reason after its topic was suppressed")
+	}
+	if !sawLoweredScore {
+		t.Error("suppressing every topic did not lower any ranked item's score")
+	}
+}
+
+// No test in this package ever records a signals.Dwell event at all (the
+// audit's finding): flipping dwellWeight's Bounce case from -1.0 to +1.0 left
+// the whole suite green. This records dwell at both ends of the classification
+// — a bounce-length look and a full-length read on the same 400-word article —
+// and checks engagedItems' own output, which is where dwellWeight's sign
+// actually lands.
+func TestDwellClassifiesIntoEngagementWeight(t *testing.T) {
+	f := setup(t)
+	systems := f.itemsOfFeed(t, "Systems")
+
+	// Both items are opened first, so the effect under test is dwell's own
+	// contribution and not merely the absence of any other signal.
+	f.record(t, signals.Opened, systems[:2], now.Add(-48*time.Hour))
+	// 400 words expects ~101s (signals.ExpectedReadMS). 10s is well past the
+	// glance floor (2s) and under a quarter of that — an informed rejection.
+	f.recordDwell(t, systems[0], now.Add(-47*time.Hour), 10_000)
+	// 400s is roughly four times the expected reading time: a full, unhurried
+	// read (pace is unobserved here, so the impossible-pace guard does not fire).
+	f.recordDwell(t, systems[1], now.Add(-47*time.Hour), 400_000)
+
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+
+	engaged, err := f.svc.engagedItems(f.ctx, f.scope, now.Add(-Window).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]engagedItem{}
+	for _, e := range engaged {
+		byID[e.ItemID] = e
+	}
+
+	// Opened alone is worth 0.3 (signals.Opened's prior). A bounce-length dwell
+	// must pull that net negative and drop the item from engagedItems via the
+	// `w <= 0` filter — the same informed rejection §18.1 asks for.
+	if e, ok := byID[systems[0]]; ok {
+		t.Errorf("a bounce-length dwell on an opened item stayed engaged at weight %v; want it dropped", e.Weight)
+	}
+	// A full-length dwell must survive the filter and add meaningfully more than
+	// the bare Opened prior — dwellWeight's own Read contribution (0.8).
+	e, ok := byID[systems[1]]
+	if !ok {
+		t.Fatal("a full-length dwell on an opened item did not survive the w <= 0 filter")
+	}
+	if e.Weight <= 0.3 {
+		t.Errorf("a full read's engaged weight was %v, want meaningfully above the bare Opened prior (0.3)", e.Weight)
+	}
+}
+
 // A reader with no engagement at all must not produce a confident wrong answer.
 func TestColdStartIsReported(t *testing.T) {
 	f := setup(t)
@@ -522,6 +712,57 @@ func snapshotDomains(t *testing.T, f *fixture) string {
 	for _, k := range keys {
 		d := rows[k]
 		out += fmt.Sprintf("%s:%d/%d|", k, d.Opens, d.Stars)
+	}
+	return out
+}
+
+// snapshotEntities captures name, weight and mentions in the order the reader
+// screen actually gets them (repo.EntityAffinity orders by weight DESC, name —
+// the same weight-then-name rule deriveEntities' own sort uses, so a dropped
+// Name tie-break shows up here as an order that stops matching itself between
+// two derivations of the same input.
+func snapshotEntities(t *testing.T, f *fixture) string {
+	t.Helper()
+	rows, err := f.repo.EntityAffinity(f.ctx, f.scope, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := ""
+	for _, e := range rows {
+		out += fmt.Sprintf("%s:%.6f:%d|", e.Name, e.Weight, e.Mentions)
+	}
+	return out
+}
+
+// snapshotTopics captures label, top terms and member ids in topics.Build's OWN
+// return order, by calling the same unexported pipeline RunReporting does
+// rather than reading them back through the repo.
+//
+// That distinction matters: repo.Topics() reads with `ORDER BY member_count
+// DESC, label ASC`, which happens to impose the exact same order Build's own
+// (disputed) Label tie-break does. A derivation that goes through storage and
+// back CANNOT observe the tie-break breaking, because the SQL re-sorts on every
+// read regardless of what order the rows were written in — the storage layer's
+// own ordering silently launders the bug. Reading Build's return value directly
+// is the only way this snapshot can mean anything.
+func snapshotTopics(t *testing.T, f *fixture) string {
+	t.Helper()
+	sinceMS := now.Add(-Window).UnixMilli()
+	engaged, err := f.svc.engagedItems(f.ctx, f.scope, sinceMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, vectors, err := f.svc.deriveTermAffinity(f.ctx, f.scope, engaged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicSet, _, _, err := f.svc.deriveTopics(f.ctx, f.scope, engaged, vectors, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := ""
+	for _, top := range topicSet {
+		out += fmt.Sprintf("%s:%v:%v|", top.Label, top.TopTerms, top.Members)
 	}
 	return out
 }

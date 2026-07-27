@@ -1,6 +1,12 @@
 package signals
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
 
 func TestValidate(t *testing.T) {
 	ok := Event{ID: "e1", ItemID: "i1", Kind: Opened, Surface: SurfaceList, At: 1000}
@@ -55,6 +61,56 @@ func TestBulkReadIsExcludedFromAffinity(t *testing.T) {
 		}
 		if s.Prior != 0 {
 			t.Errorf("%s prior = %v, want 0 — it is neutral, not negative", k, s.Prior)
+		}
+	}
+}
+
+// R17 is enforced in two places that do not read each other: this package's
+// Affinity flag, which every derive-level consumer trusts through
+// engagedItems, and FeedSignals' own SQL literal
+// (`kind NOT IN ('bulk_read','sync_read')`, internal/store/engagements.go),
+// which excludes the same two kinds a second, independent way. Nothing stops
+// them drifting apart — a kind added here with Affinity=false is not
+// automatically excluded from that query, and vice versa.
+//
+// This reads the actual SQL source and pins its exclusion set against the
+// registry's, rather than hard-coding the literal here (which would just be a
+// THIRD copy to drift). It cannot touch internal/store — it only reads a file
+// that happens to live there.
+func TestBulkReadExclusionAgreesWithFeedSignalsSQL(t *testing.T) {
+	registryExcluded := map[string]bool{}
+	for _, k := range Kinds() {
+		spec, ok := Lookup(k)
+		if ok && !spec.Affinity {
+			registryExcluded[string(k)] = true
+		}
+	}
+	if len(registryExcluded) == 0 {
+		t.Fatal("no kind in the registry is excluded from affinity; the registry side of this check is broken")
+	}
+
+	src, err := os.ReadFile(filepath.Join("..", "store", "engagements.go"))
+	if err != nil {
+		t.Fatalf("could not read FeedSignals' source to check its exclusion literal: %v", err)
+	}
+	m := regexp.MustCompile(`kind NOT IN \(([^)]*)\)`).FindSubmatch(src)
+	if m == nil {
+		t.Fatal("FeedSignals' `kind NOT IN (...)` exclusion literal was not found; " +
+			"either it moved, was reworded, or the SQL-side exclusion was removed entirely")
+	}
+	sqlExcluded := map[string]bool{}
+	for _, part := range strings.Split(string(m[1]), ",") {
+		sqlExcluded[strings.Trim(strings.TrimSpace(part), "'")] = true
+	}
+
+	for k := range registryExcluded {
+		if !sqlExcluded[k] {
+			t.Errorf("%q is excluded from affinity in the Go registry but FeedSignals' SQL still reads it", k)
+		}
+	}
+	for k := range sqlExcluded {
+		if !registryExcluded[k] {
+			t.Errorf("%q is excluded in FeedSignals' SQL but the Go registry still allows it to move affinity", k)
 		}
 	}
 }

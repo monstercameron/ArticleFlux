@@ -88,6 +88,70 @@ func TestDistinctSubjectsBecomeDistinctTopics(t *testing.T) {
 	}
 }
 
+// TestBuildIsDeterministic and TestLabelsAreStable both feed the SAME
+// underlying documents (just reordered or re-clocked), which normalises away
+// before it ever reaches the tie-break: AgglomerativeCluster sorts its own
+// output deterministically (by member count, then lowest member index), so a
+// shuffle of identical input produces identical pre-sort order regardless of
+// whether Build's own `Label` tie-break exists. Neither test can tell a correct
+// algorithm from a missing tie-break.
+//
+// This constructs two INDEPENDENTLY-BUILT, equal-size clusters — not a
+// reordering of one corpus — whose item-id order (which decides
+// AgglomerativeCluster's own tie-break) runs OPPOSITE to their label order: the
+// "apple" cluster's ids sort last but its label sorts first, and vice versa for
+// "zebra". Every word in one corpus starts with 'a' and every word in the other
+// starts with 'z', so whichever term wins each centroid, the label comparison
+// can only go one way. If Build's own Label tie-break is doing anything, the
+// apple cluster leads; if it has been silently dropped, member-index order
+// takes over and zebra leads instead.
+func TestEqualSizedTopicsOrderByLabel(t *testing.T) {
+	corpus := textvec.NewCorpus()
+
+	// Item ids sort FIRST (aaa-*), so index-order alone would put this cluster
+	// ahead of the one below.
+	zebra := []string{
+		"zebra zephyr zigzag zenith zeal",
+		"zephyr zigzag zebra zeal zenith",
+		"zigzag zeal zenith zephyr zebra",
+	}
+	// Item ids sort LAST (zzz-*), and its label sorts BEFORE zebra's.
+	apple := []string{
+		"apple apricot almond avocado artichoke",
+		"apricot almond apple artichoke avocado",
+		"almond avocado artichoke apple apricot",
+	}
+	for _, s := range zebra {
+		corpus.Add(s)
+	}
+	for _, s := range apple {
+		corpus.Add(s)
+	}
+
+	var docs []Doc
+	for i, s := range zebra {
+		docs = append(docs, Doc{ItemID: fmt.Sprintf("aaa-%d", i), Vector: corpus.TFIDF(s), EngagedAt: now})
+	}
+	for i, s := range apple {
+		docs = append(docs, Doc{ItemID: fmt.Sprintf("zzz-%d", i), Vector: corpus.TFIDF(s), EngagedAt: now})
+	}
+
+	res := Build(docs, Options{Now: now, MinMembers: 3})
+	if len(res.Topics) != 2 {
+		t.Fatalf("got %d topics, want the two independent equal-size clusters: %v", len(res.Topics), labels(res.Topics))
+	}
+	if len(res.Topics[0].Members) != 3 || len(res.Topics[1].Members) != 3 {
+		t.Fatalf("clusters are not equal-size 3s, the construction failed: %v (%d, %d members)",
+			labels(res.Topics), len(res.Topics[0].Members), len(res.Topics[1].Members))
+	}
+
+	if res.Topics[0].Label >= res.Topics[1].Label {
+		t.Errorf("equal-size topics did not come back in label order: %v — "+
+			"member-index order (lowest item id first) appears to have won instead",
+			labels(res.Topics))
+	}
+}
+
 func TestBuildIsDeterministic(t *testing.T) {
 	docs := corpusDocs(t, recent)
 	first := Build(docs, Options{Now: now})

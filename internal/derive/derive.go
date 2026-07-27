@@ -1436,7 +1436,7 @@ func (s *Service) deriveEntities(ctx context.Context, sc store.Scope, engaged []
 		if out[i].Weight != out[j].Weight {
 			return out[i].Weight > out[j].Weight
 		}
-		return out[i].Name < out[j].Name
+		return false
 	})
 	if len(out) > MaxEntities {
 		out = out[:MaxEntities]
