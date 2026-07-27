@@ -244,7 +244,9 @@ func TestDeclarationIsRetaggedAfterDecoding(t *testing.T) {
 	}, {
 		name: "single quotes, as Blogger and half of PHP emit",
 		in:   `<?xml version='1.0' encoding='ISO-8859-1'?><rss/>`,
-		want: `<?xml version='1.0' encoding="utf-8"?><rss/>`,
+		// The quote style is preserved. Rewriting it too would be a gratuitous
+		// diff in a document we are otherwise passing through.
+		want: `<?xml version='1.0' encoding='utf-8'?><rss/>`,
 	}, {
 		name: "spaces around the equals sign",
 		in:   `<?xml version="1.0" encoding = "Shift_JIS" ?><rss/>`,
@@ -257,6 +259,29 @@ func TestDeclarationIsRetaggedAfterDecoding(t *testing.T) {
 		name: "no encoding attribute: XML already defaults to UTF-8",
 		in:   `<?xml version="1.0"?><rss/>`,
 		want: `<?xml version="1.0"?><rss/>`,
+	}, {
+		// The HTML forms, added when internal/extract hit the identical
+		// double-decode through go-shiori/readability, which honours <meta
+		// charset> exactly as gofeed honours the XML declaration.
+		name: "html5 meta charset",
+		in:   `<!doctype html><html><head><meta charset="windows-1252"><title>x</title>`,
+		want: `<!doctype html><html><head><meta charset="utf-8"><title>x</title>`,
+	}, {
+		name: "html5 meta charset, unquoted",
+		in:   `<!doctype html><meta charset=windows-1252><title>x</title>`,
+		want: `<!doctype html><meta charset=utf-8><title>x</title>`,
+	}, {
+		name: "html4 http-equiv",
+		in:   `<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">`,
+		want: `<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">`,
+	}, {
+		name: "both forms present, both rewritten",
+		in:   `<html><head><meta charset="big5"><meta http-equiv="Content-Type" content="text/html; charset=big5">`,
+		want: `<html><head><meta charset="utf-8"><meta http-equiv="Content-Type" content="text/html; charset=utf-8">`,
+	}, {
+		name: "already utf-8 meta is left alone",
+		in:   `<html><head><meta charset="utf-8"><title>x</title>`,
+		want: `<html><head><meta charset="utf-8"><title>x</title>`,
 	}, {
 		name: "no declaration at all",
 		in:   `<rss version="2.0"><channel/></rss>`,

@@ -122,50 +122,95 @@ func DecodeReader(r io.Reader, contentType string, limit int64) ([]byte, Result,
 	return Decode(body, contentType)
 }
 
-// reXMLEncoding matches the encoding pseudo-attribute of an XML declaration.
-// Anchored at the start of the document because that is the only place a
-// declaration is legal, which also keeps it from rewriting the word "encoding"
-// inside an article.
-var reXMLEncoding = regexp.MustCompile(`^(\s*<\?xml[^>]*?encoding\s*=\s*)("[^"]*"|'[^']*')`)
+// The three ways a document declares its own encoding, all of which become
+// false the moment this package transcodes it.
+var (
+	// An XML declaration, anchored at the start because that is the only place
+	// one is legal — which also keeps it from rewriting the word "encoding"
+	// inside an article.
+	reXMLEncoding = regexp.MustCompile(`^(\s*<\?xml[^>]*?encoding\s*=\s*)("[^"]*"|'[^']*')`)
+	// HTML5: <meta charset="windows-1252">. The unquoted alternative excludes
+	// quotes as well as '>', or it swallows the closing quote of the *enclosing*
+	// attribute when this pattern matches the http-equiv form below.
+	reMetaCharset = regexp.MustCompile(`(?i)(<meta\s[^>]*?\bcharset\s*=\s*)("[^"]*"|'[^']*'|[^\s>"']+)`)
+	// HTML4: <meta http-equiv="Content-Type" content="text/html; charset=...">.
+	reMetaHTTPEquiv = regexp.MustCompile(`(?i)(<meta\s[^>]*?content\s*=\s*["'][^"']*?charset\s*=\s*)([^"';\s>]+)`)
+)
 
-// retagDeclaration rewrites `encoding="windows-1252"` to `encoding="utf-8"` in a
-// leading XML declaration.
+// retagDeclaration rewrites a document's self-declared encoding to utf-8, in
+// whichever of the three forms it used.
 //
 // This exists because of a bug the feed corpus caught and nothing else could
 // have: charsetdec decoded a Windows-1252 feed perfectly, handed the UTF-8 result
-// to gofeed, and gofeed — reading the declaration, which still said
+// to gofeed, and gofeed — reading the XML declaration, which still said
 // windows-1252 — decoded it a second time. "Café" became "CafÃ©" on every
 // non-UTF-8 feed in the application.
 //
-// The reason it went unnoticed for so long is instructive: for a UTF-8 feed the
-// second decode is a no-op, and UTF-8 is ~97% of feeds. The unit tests for this
-// package were correct and passed; the integration was never looked at. A
+// The HTML forms were added when internal/extract hit the identical bug through
+// a different door: go-shiori/readability honours <meta charset>, so a decoded
+// page still carrying one was decoded twice as well. Two independent parsers,
+// two declaration syntaxes, one mistake — which is the argument for fixing it
+// here rather than at each call site. Any parser handed these bytes will believe
+// a declaration in preference to the bytes themselves, and it is right to.
+//
+// The reason it went unnoticed for so long is instructive: for a UTF-8 document
+// the second decode is a no-op, and UTF-8 is ~97% of the web. The unit tests for
+// this package were correct and passed; the integration was never looked at. A
 // declaration that contradicts the bytes it introduces is a lie this package is
 // responsible for, because this package is what made it untrue.
 //
-// Stripping the attribute would also work — XML defaults to UTF-8 — but
-// rewriting is less surprising to anyone who dumps the bytes to look at them.
+// Stripping the declaration would also work — both formats default to UTF-8 —
+// but rewriting is less surprising to anyone who dumps the bytes to look at them.
 func retagDeclaration(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
-	// Cheap guard: only documents that open with a declaration can match, and
-	// the regexp is anchored anyway. This keeps JSON feeds and bare HTML off the
-	// regexp engine entirely.
-	head := body
-	if len(head) > MaxSniff {
-		head = head[:MaxSniff]
+	// Both HTML and XML require the declaration to appear at the very start, so
+	// only the head is rewritten. This bounds the work on a 32 MiB feed and, more
+	// importantly, stops the patterns from rewriting an article that happens to
+	// discuss <meta charset>.
+	n := MaxSniff
+	if len(body) < n {
+		n = len(body)
 	}
-	loc := reXMLEncoding.FindSubmatchIndex(head)
-	if loc == nil {
-		return body
+	head := body[:n]
+
+	// A page can carry more than one declaration — an HTML5 <meta charset> and a
+	// legacy http-equiv one — and rewriting only the first leaves the second to
+	// be believed. Each pattern is applied independently, and each rewrite is
+	// skipped when the value already says utf-8: without that check the "rewrite"
+	// would be a no-op that still counts as a change, and this would not
+	// terminate.
+	for _, re := range []*regexp.Regexp{reXMLEncoding, reMetaCharset, reMetaHTTPEquiv} {
+		loc := re.FindSubmatchIndex(head)
+		if loc == nil {
+			continue
+		}
+		raw := string(head[loc[4]:loc[5]])
+		quote := ""
+		if q := raw[0]; q == '"' || q == '\'' {
+			quote = string(q)
+			raw = strings.Trim(raw, quote)
+		}
+		if isUTF8Label(strings.TrimSpace(raw)) {
+			continue
+		}
+
+		out := make([]byte, 0, len(body)+8)
+		out = append(out, body[:loc[4]]...)
+		out = append(out, quote+"utf-8"+quote...)
+		out = append(out, body[loc[5]:]...)
+		body = out
+
+		// The rewrite may have shifted later offsets, so re-slice the head before
+		// the next pattern looks at it.
+		n = MaxSniff
+		if len(body) < n {
+			n = len(body)
+		}
+		head = body[:n]
 	}
-	// loc[4]:loc[5] is the quoted value, quotes included.
-	out := make([]byte, 0, len(body))
-	out = append(out, body[:loc[4]]...)
-	out = append(out, `"utf-8"`...)
-	out = append(out, body[loc[5]:]...)
-	return out
+	return body
 }
 
 func apply(enc encoding.Encoding, body []byte) ([]byte, bool, error) {
