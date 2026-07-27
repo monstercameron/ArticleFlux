@@ -6,10 +6,11 @@
 # removes every step: the demo is a static page whose "server" is an in-memory
 # instance compiled into the same module (client/demodata).
 #
-# WHAT IS PUBLISHED, exactly three files:
+# WHAT IS PUBLISHED, exactly four files:
 #
 #   index.html      web/index.html unmodified — the same splash the server serves
 #   wasm_exec.js    from the toolchain that produced the module
+#   sw.js           web/sw.js with its cache key stamped to this build's version
 #   app.wasm.gz     the module, gzipped, and ONLY gzipped
 #
 # The last one is why the boot shim in web/index.html has a compressed path.
@@ -79,10 +80,6 @@ concurrency:
 
 env:
   GO_VERSION: "1.26.3"
-  # Where the demo is served while it is being checked. Not 9000 (the port a
-  # development server sits on) and not 9010 (the e2e suite's), so a local run of
-  # this same sequence collides with neither.
-  DEMO_PORT: "9310"
 
 jobs:
   build:
@@ -149,9 +146,22 @@ jobs:
           echo "--- what was built ---"
           ls -l
 
-          for f in index.html wasm_exec.js app.wasm.gz; do
+          for f in index.html wasm_exec.js app.wasm.gz sw.js; do
             [ -s "$f" ] || { echo "::error::bin/demo/$f is missing or empty"; exit 1; }
           done
+
+          # The Service Worker's cache identity. It is stamped with THIS build's
+          # version rather than shipped verbatim (see the Makefile), because the
+          # module is served cache-first and a second demo published under the
+          # same key would be invisible to everyone who had already looked.
+          want="const VERSION = '${{ steps.v.outputs.version }}';"
+          grep -qF "$want" sw.js || {
+            echo "::error::sw.js was not stamped with ${{ steps.v.outputs.version }} — returning visitors would keep the previous module"
+            grep -n "^const VERSION" sw.js || true
+            exit 1; }
+          grep -q "register('sw.js')" index.html || {
+            echo "::error::index.html does not register sw.js relatively, so it 404s on a project page"
+            exit 1; }
 
           # The raw module must NOT be here. Publishing it would mean a 28 MB
           # download for anyone whose browser takes the uncompressed path, which
@@ -167,13 +177,21 @@ jobs:
 
           # And it is a WebAssembly module rather than whatever else may have
           # ended up compressed: every wasm binary starts \0asm.
-          magic=$(gzip -dc app.wasm.gz | head -c 4 | od -An -tx1 | tr -d ' ')
+          #
+          # Decompressed to a file rather than piped into `head -c 4`. head exits
+          # the moment it has its four bytes, gzip gets SIGPIPE writing the fifth,
+          # and `set -o pipefail` turns that into a failed step — "gzip: stdout:
+          # Broken pipe" with exit 1, from a check that had already succeeded.
+          # The file goes to RUNNER_TEMP, never into bin/demo: the raw module must
+          # not end up in what gets published, which the check below enforces.
+          gzip -dc app.wasm.gz > "$RUNNER_TEMP/app.wasm"
+          magic=$(od -An -tx1 -N4 "$RUNNER_TEMP/app.wasm" | tr -d ' ')
           if [ "$magic" != "0061736d" ]; then
             echo "::error::app.wasm.gz does not decompress to a wasm module (magic $magic)"
             exit 1
           fi
 
-          raw=$(gzip -dc app.wasm.gz | wc -c)
+          raw=$(stat -c%s "$RUNNER_TEMP/app.wasm")
           gz=$(stat -c%s app.wasm.gz)
           echo "app.wasm.gz: $gz bytes on the wire, $raw decompressed"
           # A module this application's size cannot be under a megabyte. The
@@ -196,31 +214,35 @@ jobs:
             echo "::error::index.html has no compressed path, and the compressed module is all this publishes"
             exit 1; }
 
-      # The last check that can fail, and the only one that runs the thing.
-      #
-      # Everything above proves the bundle is well-formed. This proves it BOOTS:
-      # served by a dumb static file server with no negotiation and no fallbacks —
-      # as unhelpful as Pages is — and driven by a real browser until the rail
-      # lists the seeded feeds and an article opens.
+      # Node is pinned rather than "whatever the runner image ships this month",
+      # for the same reason the Go version is: the one thing worse than a demo
+      # that breaks is a demo that breaks on a day nobody changed anything.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
       - name: Install the browser
         working-directory: e2e
         run: |
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
 
+      # The last check that can fail, and the only one that runs the thing.
+      #
+      # Everything above proves the bundle is well-formed. This proves it BOOTS:
+      # the script serves bin/demo itself — from a static server as unhelpful as
+      # Pages is, no compression negotiation and a 404 for anything not on disk —
+      # and drives a real browser until the rail lists the seeded feeds and
+      # clicking a row changes the article being read.
+      #
+      # It serves the directory rather than being pointed at one started beside
+      # it here, on purpose: a backgrounded server in a YAML step needs a PID, a
+      # trap, a wait-for-the-port loop and a kill that behaves on every platform,
+      # and none of those four can be tested anywhere except in CI.
       - name: Boot it
-        run: |
-          set -euo pipefail
-          python3 -m http.server "${DEMO_PORT}" --bind 127.0.0.1 --directory bin/demo >/dev/null 2>&1 &
-          server=$!
-          trap 'kill $server 2>/dev/null || true' EXIT
-          # Wait for the port rather than sleeping at it: a fixed sleep is either
-          # too short on a slow runner or wasted on a fast one.
-          for _ in $(seq 1 50); do
-            curl -sf "http://127.0.0.1:${DEMO_PORT}/index.html" >/dev/null && break
-            sleep 0.2
-          done
-          node e2e/demo-smoke.mjs "http://127.0.0.1:${DEMO_PORT}/" bin/demo-smoke.png
+        run: node e2e/demo-smoke.mjs bin/demo bin/demo-smoke.png
 
       # Only on failure, and only the screenshot: it is the difference between
       # "the demo did not boot" and knowing what it showed instead.
@@ -260,7 +282,13 @@ jobs:
       # permissions problem rather than "Pages was never switched on".
       #
       # It is a no-op when Pages is already configured to build from Actions.
+      #
+      # Non-fatal on purpose: enabling is a CONVENIENCE, and on a repository
+      # where Pages is already on — or where this token cannot administer it —
+      # a failure here says nothing about whether the deploy below will work.
+      # Let the step that actually publishes be the one that decides.
       - uses: actions/configure-pages@v5
+        continue-on-error: true
         with:
           enablement: true
 
