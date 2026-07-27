@@ -874,11 +874,50 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		js.Global().Call("requestAnimationFrame", frame)
 		return nil
 	})
+	// Re-announcing on demand, for a caller that IGNORED a report.
+	//
+	// This reporter speaks only on CHANGE — it has to, or every scroll frame
+	// would be an event about the same article. The cost is that a report the
+	// caller chose to discard still counts as delivered: the reading pane
+	// suppresses reports while a click's scroll is travelling, and the article
+	// that stayed topmost throughout that travel was therefore announced once,
+	// into the void, and never again. Scrolling back up to it changed nothing,
+	// because from here nothing had changed. That is the second half of 8b.52,
+	// and it survived the first fix precisely because it is invisible from
+	// either side alone.
+	//
+	// One registration exists in this application. If a second ever does, this
+	// becomes a method on the Listener rather than a package-level hook.
+	topmostRefresh = func() {
+		last = ""
+		if !el.Truthy() {
+			el = doc.Call("querySelector", rootSelector)
+		}
+		if pending {
+			return
+		}
+		pending = true
+		js.Global().Call("requestAnimationFrame", frame)
+	}
 	opts := js.Global().Get("Object").New()
 	opts.Set("passive", true)
 	opts.Set("capture", true)
 	root.Call("addEventListener", "scroll", f, opts)
 	return Listener{target: root, event: "scroll", fn: f, capture: true}
+}
+
+// topmostRefresh re-runs the topmost calculation and re-announces the result.
+var topmostRefresh func()
+
+// RefreshTopmost asks the topmost-child reporter to say what is true NOW, even
+// if it has said it before.
+//
+// For a caller that suppressed reports for a while — see OnTopmostChild — since
+// what it suppressed still counted as said.
+func RefreshTopmost() {
+	if topmostRefresh != nil {
+		topmostRefresh()
+	}
 }
 
 // OnDelegatedInput is OnDelegatedClick for text entry: one listener on a stable

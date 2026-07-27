@@ -713,8 +713,15 @@ func Reader(p readerProps) ui.Node {
 	// it. Anything the handler sees after the movement has ended is the reader's
 	// own scrolling, which is precisely what the guard was never meant to hide.
 	releaseFocus := func() {
-		println("PROBE releaseFocus fired")
-		ui.PostAsync(func() { expectFocus.Set("") })
+		ui.PostAsync(func() {
+			expectFocus.Set("")
+			// And ask what is topmost NOW. The reporter speaks only on change,
+			// so the article that sat at the top for the whole of the travel was
+			// announced once — while this guard was discarding announcements —
+			// and would never be announced again. Scrolling back up to it would
+			// change nothing, because from the reporter's side nothing changed.
+			platform.RefreshTopmost()
+		})
 	}
 
 	// skipPast holds the articles a JUMP scrolled over, which the reader did not.

@@ -167,6 +167,8 @@ func OnNetworkChange(fn func(online bool)) Listener { return Listener{} }
 
 func OnResume(fn func()) Listener { return Listener{} }
 
+func RefreshTopmost() {}
+
 // Local storage has no native equivalent, and inventing an in-memory map here
 // would make a native test of the login gate pass against a fiction. Absent is
 // the honest answer: a native build has no browser and therefore no stored

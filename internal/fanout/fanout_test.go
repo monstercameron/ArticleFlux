@@ -13,6 +13,7 @@ import (
 
 type fixture struct {
 	repo    *store.ReaderRepo
+	db      *store.DB
 	svc     *Service
 	ctx     context.Context
 	alice   store.Scope
@@ -48,6 +49,7 @@ func setup(t *testing.T) *fixture {
 	}
 	f := &fixture{
 		repo:  repo,
+		db:    db,
 		svc:   New(repo, nil),
 		ctx:   ctx,
 		alice: store.Scope{TenantID: "ta", UserID: "alice", Role: "member"},
@@ -301,6 +303,112 @@ func TestHitsAndCountersAreRecorded(t *testing.T) {
 	}
 	if len(muted) != 1 || ruleIDs[0] != ruleID {
 		t.Errorf("the muted item does not name the rule that muted it: %v", ruleIDs)
+	}
+}
+
+// rule_hits and the counters derived from it (match_count, last_matched_at —
+// §13.5's dead-rule detection) must record distinct APPLICATIONS, not queue
+// deliveries: the fan-out queue is at-least-once, so the exact same job can
+// run any number of times. A redelivery must not add a duplicate rule_hits
+// row or inflate match_count. But a genuinely new rule's first-ever match —
+// even against an item some OTHER rule has already fired on — must still
+// record normally, because that first write is exactly what the
+// `alreadyFired` gate (added by the fix this one builds on) depends on
+// existing at all. If it silently stopped writing on a first match too, the
+// gate would never see a row, would never report "already fired", and the
+// rule-reapplies-after-a-redelivery bug that gate exists to close would come
+// straight back.
+func TestRedeliveryDoesNotInflateMatchCountOrDuplicateHits(t *testing.T) {
+	f := setup(t)
+	ruleA := muteRust(t, f, f.alice)
+	f.run(t) // ruleA's first, genuine match.
+
+	items, _, err := f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rustID string
+	for _, it := range items {
+		if it.Title == "Rust 2.0 is here" {
+			rustID = it.ID
+		}
+	}
+	if rustID == "" {
+		t.Fatal("setup: could not find the rust item")
+	}
+
+	hitRows := func(ruleID string) int {
+		t.Helper()
+		var n int
+		if err := f.db.Read.QueryRowContext(f.ctx,
+			`SELECT count(*) FROM rule_hits WHERE rule_id = ? AND item_id = ? AND user_id = ?`,
+			ruleID, rustID, f.alice.UserID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	matchCount := func(ruleID string) int {
+		t.Helper()
+		rs, stats, err := f.repo.ListRules(f.ctx, f.alice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, rule := range rs {
+			if rule.ID == ruleID {
+				return stats[i].MatchCount
+			}
+		}
+		t.Fatalf("rule %s not found in ListRules", ruleID)
+		return -1
+	}
+
+	if got := hitRows(ruleA); got != 1 {
+		t.Fatalf("after the first delivery, ruleA has %d rule_hits rows, want 1", got)
+	}
+	if got := matchCount(ruleA); got != 1 {
+		t.Fatalf("after the first delivery, ruleA.match_count = %d, want 1", got)
+	}
+
+	// Redeliveries: the exact same job, run twice more, with no reader action
+	// and no rule edit in between — the at-least-once case this whole fix is
+	// about.
+	f.run(t)
+	f.run(t)
+
+	if got := hitRows(ruleA); got != 1 {
+		t.Errorf("after two redeliveries, ruleA has %d rule_hits rows, want 1 (still) — redelivery duplicated the ledger", got)
+	}
+	if got := matchCount(ruleA); got != 1 {
+		t.Errorf("after two redeliveries, ruleA.match_count = %d, want 1 — redeliveries are inflating the count §13.5 reads", got)
+	}
+
+	// A second rule, created only now, matching the SAME item for the first
+	// time ever. This is the trap: a fix that suppresses "already have any
+	// hit for this item" rather than "already fired for THIS rule" would
+	// wrongly skip ruleB too, because ruleA already has a hit on this item.
+	ruleB, err := f.repo.CreateRule(f.ctx, f.alice, rules.Rule{
+		Name: "star rust", Enabled: true,
+		Match:   rules.Match{Conditions: []rules.Condition{{Field: rules.FieldTitle, Op: rules.OpContains, Value: "rust"}}},
+		Actions: []rules.Action{{Kind: rules.ActionStar}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+
+	if got := hitRows(ruleB); got != 1 {
+		t.Errorf("ruleB's first-ever match produced %d rule_hits rows, want 1 — a genuine first application must still record", got)
+	}
+	if got := matchCount(ruleB); got != 1 {
+		t.Errorf("ruleB.match_count = %d after its first-ever match, want 1", got)
+	}
+	// ruleA is untouched by this run: it already fired, so this delivery is
+	// still a redelivery from ruleA's point of view even though ruleB is new.
+	if got := hitRows(ruleA); got != 1 {
+		t.Errorf("ruleA has %d rule_hits rows after an unrelated rule's first match, want 1 (still)", got)
+	}
+	if got := matchCount(ruleA); got != 1 {
+		t.Errorf("ruleA.match_count = %d after an unrelated rule's first match, want 1 (still)", got)
 	}
 }
 
