@@ -64,8 +64,8 @@ them mechanically:
 
 | Id | Meaning | Defined in |
 |---|---|---|
-| `A1`–`A26` | Settled decisions | §2 |
-| `D0`–`D17` | Open decisions | §25 |
+| `A1`–`A34` | Settled decisions | §2, and §18.1a for A33–A34 |
+| `D0`–`D18` | Open decisions | §25 |
 | `R0`–`R20` | Risks | §25 |
 | `M0`–`M26` | Milestones | §24 |
 | `T1`–`T20` | Tests that must stay green | §23 |
@@ -619,25 +619,45 @@ CREATE TABLE mailboxes (
 );
 
 -- ═══ signals and derived interest (§18) ═══════════════════════════════════
+-- SHIPPED as migrations/0007_engagements.sql, 2026-07-26. TEXT ids and RFC3339
+-- elsewhere; INTEGER ms here, and the differences below are all deliberate.
 CREATE TABLE engagements (                          -- APPEND ONLY. Everything else rebuilds from this.
-  id INTEGER PRIMARY KEY,
-  tenant_id INTEGER NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-  source_id INTEGER NOT NULL,
-  kind TEXT NOT NULL,     -- impression | opened | dwell | scrolled | completed | favorited
-                          -- | tagged | noted | bookmarked | skipped | bounced
-                          -- | bulk_read | rule_muted | more_like | less_like | not_interested
-  value REAL,             -- dwell ms · scroll % · feedback magnitude
-  surface TEXT NOT NULL,  -- home | reader | search | sync_api | screensaver
-  at INTEGER NOT NULL
+  id TEXT PRIMARY KEY,                              -- CLIENT-generated; this IS the dedupe (A33)
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  item_id TEXT,                                     -- NULL for term/source signals (a search query)
+  source_id TEXT,                                   -- denormalised; every rollup groups by it
+  kind TEXT NOT NULL,                               -- the closed set lives in internal/signals
+  value REAL,                                       -- per kind: ms · 0..1 ratio · count
+  surface TEXT NOT NULL,                            -- home | list | reader | search | screensaver | sync_api
+  context TEXT,                                     -- small JSON: {"pos":7,"of":12} {"q":"fts5"}; ≤1 KiB
+  session_id TEXT,                                  -- client-assigned; the server sees one tunnel
+  at INTEGER NOT NULL,                              -- client-observed unix MS, clamped (§18.1a)
+  recorded_at INTEGER NOT NULL                      -- server MS, so skew stays measurable
 );
-CREATE INDEX engagements_user_at ON engagements(user_id, at DESC);
-CREATE INDEX engagements_item    ON engagements(user_id, item_id);
+CREATE INDEX engagements_user_at        ON engagements(user_id, at DESC);
+CREATE INDEX engagements_user_item      ON engagements(user_id, item_id) WHERE item_id IS NOT NULL;
+CREATE INDEX engagements_user_source_at ON engagements(user_id, source_id, at DESC) WHERE source_id IS NOT NULL;
+-- Partial, listing only the kinds that are sparse: impressions outnumber
+-- everything else by two orders of magnitude, so an index including them would
+-- be the table again.
+CREATE INDEX engagements_user_kind_at   ON engagements(user_id, kind, at DESC)
+    WHERE kind NOT IN ('impression','dwell','scroll_depth');
 ```
 
 > **`bulk_read` and `impression` are why this table exists in this shape.** Storing a derived
 > "open rate" only would make R17 unfixable — you could never re-derive it once you learned that bulk
 > reads must not count. **Log the event, derive the score.**
+
+> **Four deviations from the DDL rev 8 specified, each load-bearing.** `id` is a client-generated TEXT
+> so a retried batch collides on the primary key instead of double-counting — double-counted dwell is
+> the difference between "read carefully" and "left the tab open". `item_id` has **no `REFERENCES`**:
+> a signal stays true about an item that a restore or a pack no longer holds, and a foreign key would
+> let a repair delete the evidence. `at` is INTEGER **milliseconds** because every derivation over
+> this table is arithmetic on time, and parsing RFC3339 per row across millions of rows is a cost paid
+> forever for a cosmetic consistency. `kind` has **no CHECK constraint**: a new signal must not require
+> a migration on a live database, so the closed set is enforced in `internal/signals` at the service
+> boundary, where an unknown kind can be reported and counted rather than aborting a write.
 
 ```sql
 CREATE TABLE feed_affinity (
@@ -1513,6 +1533,13 @@ output — never replaces it.
 Logged raw to `engagements`, derived on a schedule — *log raw events, derive scores*, or you can't
 re-derive with a better formula later.
 
+> **Implemented 2026-07-26.** The taxonomy below is no longer prose: `internal/signals` is the
+> authority and this section describes it. A kind that is not in `signals.specs` is rejected at the
+> service boundary, so the list here and the code cannot drift. **`internal/signals` wins** if they
+> disagree — that is the one inversion of the usual precedence rule in this document, and it exists
+> because a signal vocabulary split across a spec and a registry is a signal vocabulary that will be
+> extended in one of them. See §18.1a for what shipped and what it corrected here.
+
 **Positive, strongest first:** **liked** (A27 — an explicit verdict, and the only signal a reader
 gives deliberately about quality) · **note written** (you stopped and typed — nothing else costs more
 effort) · **bookmarked** · **tagged** · **completed** (scrolled to the end) · **long dwell** ·
@@ -1552,6 +1579,74 @@ needs, and before A27 there was nowhere to record it.
 you cannot tell disinterest from never having seen it, and every rate you compute is against a
 denominator you invented. The list emits a coalesced impression event for rows visible longer than
 ~1s. This is the cheapest thing in the whole layer and it makes every other number honest.
+
+### 18.1a What shipped, and the three things rev 8 had wrong
+
+Built 2026-07-26: `internal/signals` (vocabulary, pure) · `migrations/0007_engagements.sql` ·
+`store.RecordEngagements` / `ItemSignals` / `FeedSignals` / `EngagementsSince` ·
+`ReaderService.RecordEngagements` · `client/platform` observers · `client/track` (the outbox).
+
+**Nine passive signals rev 8 did not have.** Each is either free or nearly so, and each observes
+something none of the others can:
+
+| Kind | What it sees that nothing else does |
+|---|---|
+| `searched` + `search_opened` | A term the reader **volunteered**. No inference at all, and the cheapest high-quality signal in the app — FTS5 search already shipped |
+| `chose` | Opening row 7 of 12 rejects the other 11 **simultaneously**. Carries `{"pos","of"}` because without position the model learns "he likes whatever the ranker put first" |
+| `reread` | Scrolled back **up** to re-read a paragraph. Almost nothing instruments it; it is one of the strongest positives a reader emits without meaning to |
+| `clicked_out` | Followed through to the publisher: the excerpt was not enough |
+| `selected` | Selected text — quoting, looking something up. **Length only, never content** |
+| `listened` | Fraction of TTS heard. Immune to the backgrounded-tab problem that makes dwell fragile |
+| `note_abandoned` | Started composing and left. Weaker than a note, stronger than nothing |
+| `tagged` | Hand-applied labels are **supervised** data for §18.2's otherwise-unsupervised clustering |
+| `sync_read` | A third-party client auto-marking on scroll. Neutral, for the same reason `bulk_read` is |
+
+Time-of-day, day-of-week, session position and age-at-open needed **no new instrumentation** — they
+are derivations over `at` and `session_id`, and age-at-open is where §18.4's per-source `half_life`
+actually comes from, which rev 8 asked for without saying how to compute.
+
+**Three corrections to this section, each found by trying to implement it:**
+
+1. **"Opened, then left in under ~15s" is wrong as an absolute.** Fifteen seconds is most of a link
+   post and a rounding error on a 4,000-word essay — the naive rule scores every longform piece as an
+   informed rejection. Dwell is now normalised against **expected reading time** (`word_count`, which
+   was already in the schema, at 238 wpm) and classified as a **ratio**: <0.25 bounce, <0.7 skim,
+   else read. The spirit of the rule survives; the constant did not.
+2. **`completed` is forgeable.** Flinging the scrollbar to the bottom reaches the end without reading
+   a word, and rev 8 scored that as the second-strongest positive available. `signals.Pace` catches
+   it: a completion at more than 3× a plausible reading speed is demoted to a skim.
+3. **Dwell without an attention gate is not a measurement.** An article left open in a background tab
+   overnight produces an eight-hour dwell, and one of those outweighs a month of honest reading in
+   any averaging scheme. `platform.OnAttention` gates on visibility, window focus, and 60s of
+   silence, and only attentive time is banked. The idle threshold is deliberately generous because
+   the dangerous error is the opposite one: a reader absorbed in a long article emits no events for
+   minutes, and an eager timeout would score deep reading as absence.
+
+**A33 — the client outbox.** Rev 8 said signals are "logged raw to `engagements`" without saying how
+they get there, and most of them are only observable in the client. There is now a batched,
+coalescing, order-preserving outbox in `client/track`: it ships at 25 events or on a tick, keeps a
+failed batch **in order** for the next attempt, bounds the backlog at 500 (dropping the *oldest*,
+since recent signal is worth more), and flushes on `pagehide` **and** on a hidden `visibilitychange`,
+because neither fires reliably alone. Event ids are client-generated and the server dedupes on the
+primary key, so a retry after an unconfirmed batch cannot double-count. §6.5's `events` service is
+server→client and is a different thing; this is the opposite direction.
+
+**A34 — analytics may never degrade reading.** `RecordEngagements` is the one RPC whose failure the
+client swallows: it does not touch the connection indicator, it has a short timeout, and every error
+path drops data and continues. The worst acceptable outcome of a broken signals layer is a worse
+ranking. It is never a page that will not load.
+
+**Clock handling.** `engagements.at` is **client-observed** unix milliseconds, which looks like a
+violation of A25 and is not: A25 forbids ordering *conflicting writes* on a client clock, and an
+engagement is not a conflicting write — it is an observation only the client was present for, and
+dwell and session structure are unreconstructible from the arrival time of a batch that came in four
+minutes late over a reconnect. It is clamped server-side (`signals.Clamp`) against `recorded_at`:
+more than 2 minutes fast collapses to now, more than 14 days old floors to the backlog limit. Both
+columns are kept so skew stays measurable instead of being silently absorbed.
+
+**Still not built:** the derivation job itself (`feed_affinity`, `term_affinity`, `domain_affinity`,
+topics) — TODO 5.9 and 6.9. The log is being written now so that when they land there is something to
+derive from; see R12, which this closes the front half of.
 
 ### 18.2 Topics, not one vector
 
@@ -2101,7 +2196,7 @@ clicked — an index in state would silently disagree with the pointer.
 | Anywhere | `Ctrl K` palette · `?` shortcut sheet · `1` `2` `3` panes · `/` search · `f` feed filter · `r` refresh · `u` unread-only · `Esc` close / stop / back |
 | Feed list | `↑ ↓` move · `Enter` open |
 | Article list | `↑ ↓` move **and open** · `j` `k` next/previous |
-| An article | `o` original · `l` like · `d` dislike · `t` read later · `U` mark unread · `Ctrl Enter` save note |
+| An article | `o` original · `l` like · `d` dislike · `t` read later · `U` mark unread · `Ctrl Enter` save the note NOW (it autosaves on a pause and on blur regardless) |
 
 Two rules that are easy to get wrong and were:
 
@@ -2696,6 +2791,19 @@ unenforceable free-riding. *Recommendation: quota on **subscription count** (una
 **tenant-exclusive storage** (packs, archives, audio, embeddings, mailbox items — the genuinely
 per-tenant bytes), and exclude shared source/item storage from quota entirely.* Decide before M18
 builds the usage display.
+
+**D18 — Do passive signals and explicit verdicts belong in the same sum? NEW, 2026-07-26.** §18.4
+blends every term into one linear score. The problem this raises, now that the signals themselves are
+being collected: dwell, completion and click-through all correlate strongly with **ease of
+consumption**, not with worth. Optimise a single linear score over them and the homepage converges on
+the most trivially clickable thing published that day — and it fails **invisibly**, because the page
+still looks full. Explore's 20% does not fix it; that addresses topic monoculture, not quality
+collapse. The A27 verdict is the only signal in the system that measures whether something was worth
+the time, and it is sparse *because* it is deliberate. *Recommendation: passive signals generate and
+order the candidate set (recall); verdicts and the deliberate acts — notes, tags, click-throughs —
+calibrate a re-rank over it (precision), rather than being one more weighted term in the sum.* This is
+a change to §18.4 rather than to §18.1, so the log being written now is correct either way — which is
+the argument for deciding it late rather than guessing now. **Blocks 6.9 and the M12 scorer.**
 
 **R0 — One factor on a public service.** §7.3's controls are the mitigation, not optional polish. If
 this ever holds other people's data, revisit TOTP (a day, $0) before any other feature.

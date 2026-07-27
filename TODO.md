@@ -163,10 +163,20 @@ a list of things actually in use.
 
 **Notes** (`0005_notes.sql`), plus a Notes stream. Kept in their own table rather than in
 `user_item_state`: read/star is a flag the reading loop writes constantly, a note is prose written
-rarely and read deliberately, and a note must survive anything that resets read state. Ctrl+Enter
-saves; plain Enter stays a newline, because a note that submits on Enter cannot hold two sentences.
-The Notes stream orders by when the *note* changed, not when the article was published — it is a list
-of your own writing, and you look for it by when you wrote it.
+rarely and read deliberately, and a note must survive anything that resets read state. It **saves
+itself**: 800ms after the typing stops, immediately on leaving the field, and immediately on
+Ctrl+Enter for anyone who wants it now. Plain Enter stays a newline, because a note that submits on
+Enter cannot hold two sentences. A sync glyph beside the field reports pending → saving → saved, and
+says so out loud only when a save FAILS — the reader is not asked to remember a keystroke, so the
+glyph is the entire feedback loop and the one thing it must never do is claim a save that has not
+landed (it withholds the tick if typing continued while the write was in flight). The Notes stream
+orders by when the *note* changed, not when the article was published — it is a list of your own
+writing, and you look for it by when you wrote it. It reloads on a note appearing or disappearing,
+never on every autosave, or the list would reshuffle under someone still writing in it.
+
+**Tags on the article.** The feed's tags render on the note panel with an × on each, so a tag can be
+seen and removed where it was added. They are the FEED's tags — removing one from an article removes
+it from the feed — which the heading says in full.
 
 **Continuous reading.** Scrolling an article to its end opens the next one, the list follows, and
 everything scrolled past is read. Verified: ten articles in sequence, sixteen rows marked read, the
@@ -592,6 +602,11 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
 - [ ] **5.7** `rules` · `rule_hits` · `scrape_rules` · `mailboxes`
 - [ ] **5.8** `settings` · `views` · `engagements` (append-only, **with the §18.1 kind taxonomy
       including `impression` and `bulk_read`**) · `audit_log`
+      ◧ 2026-07-26 — **`engagements` is DONE**, ahead of its tier because every day of reading
+      without it is signal that cannot be reconstructed (R12). `migrations/0007_engagements.sql` +
+      `store.RecordEngagements` (batched, one tx, `INSERT OR IGNORE` on a client-generated id so a
+      retried batch cannot double-count) + the three reads the interest layer needs: `ItemSignals`,
+      `FeedSignals`, `EngagementsSince`. `settings`, `views` and `audit_log` are untouched.
 - [ ] **5.9** Interest layer: `topics` · `item_topics` · `domain_affinity` · `outlinks` ·
       `recommendations` · `feed_affinity` · `term_affinity` · `home_ranking`. **All derived — a
       `DELETE` and rebuild from `engagements` must produce the same result**, which is the test.
@@ -634,6 +649,16 @@ Business logic over repositories. Still headless.
       never negative**) · scheduled derivation of `feed_affinity`, `term_affinity`, `domain_affinity`,
       topics, and `home_ranking`. *Done when: a simulated `mark all read` over 143 items changes no
       affinity score.* R17
+      ◧ 2026-07-26 — **Collection is done; derivation is not.** `internal/signals` owns the taxonomy
+      (25 kinds, priors, validation, dwell normalisation, clock clamping) and is the authority §18.1
+      now defers to. `client/track` does the impression coalescing — two consecutive visibility polls,
+      one impression per item per session — behind a `Sender` interface, so all of it is tested
+      natively off the browser. `bulk_read` and `sync_read` are excluded from affinity in
+      `signals.Spec.Affinity` **and** in `FeedSignals`' WHERE clause, and both are covered by tests.
+      What remains is the scheduled job: nothing yet writes `feed_affinity`, `term_affinity`,
+      `domain_affinity`, topics or `home_ranking`. See **D18**, which should be settled before the
+      scorer is written — it decides whether this is one linear sum or a two-stage recall/precision
+      split.
 - [ ] **6.10 `recommendjob`** — harvest outlinks and aggregator pass-throughs → candidates → health
       gate → score → `recommendations`. **Rungs 1–3, no LLM.** ← 4.12, 2.10 §18.7
 - [ ] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
@@ -768,6 +793,19 @@ hand-written CSS and vanilla JS, and nobody ports them.
       watch loop** — *not* `WithReconnectPolicy`; CashFlux found it can't fire once a blocking read is
       in flight
       ✅ 2026-07-26 — `client/data` dials the tunnel and reports `ConnState`; the badge reads it.
+      ✅ 2026-07-26 — **retry policy, both halves.** `WithReconnectPolicy` sets the backoff
+      (500ms → ×1.6 → 20s cap, jitter 0.2) because gRPC's own 120s cap is a datacentre number and
+      this is one tab talking to one box that gets restarted and lid-closed; there is **no attempt
+      limit** — it retries for as long as the page is open. The hand-rolled half is
+      `Client.Watch`: `GetState`/`WaitForStateChange` drives the indicator without polling, calls
+      `Connect()` on Idle (nothing re-dials an idle conn until an RPC asks, so an untouched tab
+      would sit disconnected), and fires `onRecover` on each return to Ready — which is where the
+      reader refetches, since a reconnect is exactly the moment the screen went stale. Calls
+      default to `WaitForReady(true)` so a click during a blip waits out the reconnect instead of
+      erroring, bounded by `callTimeout`; Refresh and Subscribe opt back out (a 2-minute silent
+      wait is worse than an honest "disconnected"). **Still owed at 8.7:** a blocking `WatchEvents`
+      read can wedge without the conn leaving Ready — that is the CashFlux failure this note
+      warned about, and `Watch` as written would not see it.
 
 - [ ] **8.7 `client/data/stream.go`** — event pump on one goroutine → **`ui.PostAsync`**, coalesced on
       a ~100 ms tick. **Never touch state directly.**
