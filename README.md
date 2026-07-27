@@ -255,7 +255,8 @@ decision.
 ## The documents
 
 `plan.md` is the spec of record, `TODO.md` the dependency-ordered build, `FLOWS.md` the nine paths
-that are easy to get subtly wrong, and `design/` the visual specification (hand-written HTML that
+that are easy to get subtly wrong, [`docs/FEATURES.md`](docs/FEATURES.md) the behaviour of every
+capability and whether it exists yet, and `design/` the visual specification (hand-written HTML that
 nobody ports — the reader is rebuilt from it in Go).
 
 They are kept in sync with the code deliberately, and the precedence rule is written down: **if the

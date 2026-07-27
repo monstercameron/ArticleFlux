@@ -46,8 +46,51 @@ The full reasoning behind any entry lives in the commit message; this file is th
   that may decide whether to ask for a password. It is now an explicit `-dev` flag, defaulting off
   and **refused on any non-loopback bind**.
 
+- **The fonts came from Google, on every load, for everyone.** A reader whose stated boundary is
+  that nothing they read leaves the machine was telling `fonts.googleapis.com` their IP address,
+  their User-Agent and the fact that they had opened the app — before they had read anything. No
+  setting turned it on and no policy mentioned it, because it arrived as a font choice rather than
+  as a network decision. The faces are checked in as woff2 subsets and served from the same origin,
+  which also means the typography survives being offline, on a LAN, or behind a firewall that does
+  not resolve Google.
+- **The app document had no security policy at all** (`internal/app/headers.go`). Every proxied
+  sub-resource already shipped a tight one — sandboxed images, an opaque origin for proxied HTML, a
+  locked-down live view — while the document those hang off set `Content-Type`, `Cache-Control` and
+  nothing else. That is backwards: the app document is the origin holding the session and the
+  reading history.
+- **An IPv4 address wearing an IPv6 costume walked past the SSRF guard.** v4-mapped,
+  v4-compatible, 6to4 and NAT64 (RFC 6052) each carry an IPv4 address inside an IPv6 one, so
+  `::ffff:127.0.0.1` was not `127.0.0.1` to a deny list that only knew the plain form. `unwrapV4`
+  reduces every such form to the address it carries, so one list covers all of them and the embedded
+  address is judged on its own merits under both policies.
+- **Telemetry is inert unless an operator points it somewhere.** OTLP export exists
+  (`internal/telemetry`) and does nothing without `-otlp-endpoint` — the same egress boundary as the
+  fonts above: an instance shipping spans to an endpoint nobody configured has had a network
+  decision made on the reader's behalf.
+
 ### Fixed
 
+- **CI could not build the project at all, publicly.** `go.mod` replaces `GoWebComponents/v5` with a
+  sibling checkout, and the branch it names did not exist on the remote — so every job died at its
+  second step, before building or testing anything. Alongside it: `actions/checkout` refuses a
+  `path:` outside the workspace, which is what three jobs still asked for; the composite action
+  written to work around that was itself untracked; the demo's artifact check killed itself with
+  `set -o pipefail` when `head -c 4` closed a pipe on `gzip`; the Service Worker's version stamping
+  existed only in a working tree, so the workflow verified something no committed build did; and
+  GitHub Pages was never switched on. The demo publishes now.
+- **The Service Worker cached nothing on the demo.** Its shell listed `app.wasm`, and the static
+  demo publishes only `app.wasm.gz` — so the install fetched a file that does not exist and left the
+  module uncached: a worker whose entire job is booting offline, unable to boot the one file that
+  matters. It lists both, and pays a 404 on whichever host lacks one.
+- **A browser-dependent test hung the Windows CI job for sixty seconds.** `windows-latest` has Edge,
+  launches it, and paints nothing — no GPU, no display, a cold profile. Skipped on CI behind
+  `ARTICLEFLUX_BROWSER_TESTS=1`, keyed on CI rather than on Windows, because it passes on a real
+  Windows desktop — which is where the MJPEG framing it covers was broken and found.
+- **`TestJobsRunAndComplete` was racing its own assertion.** It counted handler invocations and
+  asserted the queue was drained in the same breath, while the pool marks a job complete *after* the
+  handler returns. It failed a few percent of the time and read as a queue bug, which is worse than
+  no assertion: it teaches whoever sees it that the test is flaky rather than that the queue is
+  broken.
 - **The client had been stamping idempotency keys into a void** (TODO 8c.15, §20.7). The
   `idempotency_keys` table, the repository methods and the key generator all existed, and nothing on
   the server read one. That was survivable only by accident: every mutation the outbox queues sets an
@@ -111,6 +154,26 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **An interest layer that can be thrown away and rebuilt** (`internal/derive`, TODO 6.9, §18,
+  D18). Feed, term and domain affinity plus topics, derived from the engagement log in two stages
+  and in this order: *recall* from passive signals (impressions, opens, dwell, completion), then
+  *precision* from the explicit verdicts. Collapsing them into one sum is the mistake D18 names —
+  passive signals are cheap and plentiful and would drown the handful of statements a reader
+  actually made. Everything the package writes is derived, and a test asserts that `ClearDerived`
+  plus a re-run reproduces it, which is what keeps `engagements` the only irreplaceable table.
+- **Listening to a long article** (§10.7): `GetItem` returns a short-TTL sealed speech URL, and
+  `internal/smart.Digest` rewrites the piece *for the ear* before the voice reads it — no bullets,
+  no headings, no sentence whose structure only parses on a second look. The sealed URL exists
+  because an `<audio src>` cannot send an `Authorization` header; without a capability in the URL,
+  `/speech` could only identify a caller through the DevMode fallback, which is to say it worked on
+  a laptop and not on a server. Empty whenever the instance has no key, which is the signal the
+  client uses to stay on the browser's own synthesiser rather than offer an upgrade that cannot
+  work.
+- **Traces and metrics** (`internal/telemetry`, §22.11) — spans around every unary handler, so a
+  slow call can be opened up rather than merely counted. Span names and method attributes come from
+  the generated service descriptor, which is what makes them safe to record; the status code goes on
+  the span and the error text never does, because `codes.NotFound` is six possible values and an
+  error string is unbounded and quotes article titles back at whoever holds the traces.
 - **The Service Worker** (`web/sw.js`, TODO 8.4, §12.3) — app-shell caching so the reader boots on a
   plane, and nothing else. `index.html` is **network-first**: cache-first on the shell is how a
   browser ends up running last month's app against this month's server forever, which is the failure
@@ -647,6 +710,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Changed
 
+- **Full motion is the default, on every machine.** The sheet carried a
+  `(prefers-reduced-motion: reduce)` rule that zeroed `--mo` for anyone who had never opened the
+  Appearance screen, so on those machines the default experience was an application whose every
+  transition took zero time — and nothing said so, because the Appearance screen went on reporting
+  full motion while the sheet quietly overruled it. The movement here is not decoration: it says
+  which pane you came from and what changed. The OS preference is now a *choice* — "follow my system
+  setting" — resolved in Go and written as an ordinary `data-motion` value, so `<html>` always states
+  which mode is in force. A test fails if the media query returns.
 - **Tidings is now ArticleFlux** — module path, proto package (`tidings.v1` → `articleflux.v1`),
   command, and the default database file. Renaming the wire package is a break, done now because
   pre-1.0 there is no old client to break and after the sync API ships there will be, permanently.

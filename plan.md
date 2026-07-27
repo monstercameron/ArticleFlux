@@ -79,7 +79,7 @@ lifecycle. §22 (Operations) is new and was the largest hole in rev 7.*
 
 ## The document set
 
-Four documents, one spec. Each owns something the others must not duplicate, because duplicated facts
+Five documents, one spec. Each owns something the others must not duplicate, because duplicated facts
 drift and drifted facts get implemented.
 
 | Doc | Owns | Does not contain |
@@ -87,6 +87,7 @@ drift and drifted facts get implemented.
 | **`plan.md`** | **The spec of record.** Decisions (`A#`), open questions (`D#`), risks (`R#`), schema, services, milestones (`M#`), tests (`T#`) | Build order — that's `TODO.md` |
 | **`TODO.md`** | **Build order.** Dependency-ordered tiers, the five gates, and the page / settings / component / flow inventories (Appendices A–D) | Decisions. It *cites* them by id |
 | **`FLOWS.md`** | **Behaviour of the nine paths that are easy to get subtly wrong**, drawn so the wrong version is visibly wrong | Anything it doesn't draw |
+| **`docs/FEATURES.md`** | **Behaviour.** Every feature and capability from the outside — what happens when a reader touches it — and whether it is shipped, partial, engine-only or planned | Decisions, build order, or schema. It *describes*; it never settles anything |
 | **`design/`** | Visual spec — palette, type, layout, interaction. **Mockups, not source** (see `design/README.md`) | Implementation. It is hand-written CSS/JS on purpose; A26 governs the real thing |
 
 **Precedence.** `plan.md` wins. If `TODO.md` or `FLOWS.md` contradicts it, they are wrong and get
@@ -1809,24 +1810,46 @@ dropped.
 > pause and stop responsive, because the engine can only act on a boundary it has
 > reached.
 
-**Smart+ — OpenAI `/v1/audio/speech`, `GET /speech?item=<id>`.** Three gates, all
-of which must hold, and each answers with a different status because they are
-different problems:
+**Smart+ — OpenAI `/v1/audio/speech`, `GET /speech?t=<sealed ticket>`.** Four
+gates, all of which must hold, and each answers with a different status because
+they are different problems:
 
 | Gate | Failure | Why that code |
 |---|---|---|
-| Authenticated | `401` | Article text is private |
+| Authenticated | `401`, or `403` for a ticket that will not open | Article text is private. `403` because the caller *did* present a credential — `401` invites a retry with the login it already has, which loops |
 | Item visible to this scope | `404` — never `403` | §20.7: a permission error confirms the item exists |
 | Instance has a key (`OPENAI_API_KEY`) | `501` | The server is fine and simply has no key |
 | **This user opted in** (`tts.smartPlus`, default off) | `403` | The one the reader can actually fix |
 
 A plain HTTPS endpoint rather than an RPC, because the client is an `<audio>`
 element: a URL lets the browser stream, buffer and cache it, none of which comes
-free through a WebSocket and a blob. Audio is cached on disk by
-`(item, model, voice)`, so a re-listen costs nothing and a scrub back does not
-re-pay for the article. The provider's error text is logged and **never**
-returned — provider errors can echo request content, and request content here is
-the user's article (§22.11).
+free through a WebSocket and a blob.
+
+**That same fact is why the ticket exists.** An `<audio src>` cannot send an
+`Authorization` header, so the header path can only identify a caller through the
+DevMode fallback — which made this whole feature work on a laptop and answer
+`401` on every deployed instance. The URL therefore *is* the credential, as it is
+for `/asset` (§10.1a) and `/p` (§10.1b). The difference is that those two mint an
+identity-free capability over a public target, and this one has to carry a scope,
+because reading an item needs one. So the payload is **sealed** with AES-256-GCM
+under `speech.key` rather than signed in the clear: authenticated like a
+signature, and opaque as well — a tenant and user id in an `<audio src>` would
+land in browser history, in the referrer and in every access log between here and
+the listener. It is minted by `GetItem` onto `Item.speech_url`, expires in six
+hours, and names its own item, so a valid ticket cannot be paired with someone
+else's id.
+
+**One article is paid for once**, and three things hold that up: the disk cache
+by `(item, model, voice)` never expires; concurrent requests for the same
+artifact collapse onto a single paid call, which is what stops a second press of
+play during the tens of seconds a real article takes from starting a second
+synthesis; and a synthesis already paid for finishes onto the cache even if the
+reader who started it navigates away. No TTL anywhere in that, deliberately —
+article text is immutable, so an expiry could only ever be a schedule for
+re-buying identical audio.
+
+The provider's error text is logged and **never** returned — provider errors can
+echo request content, and request content here is the user's article (§22.11).
 
 The Smart+ toggle sits **next to the play button**, not in settings. It is an
 egress decision, and the reader should be able to see its state at the moment
@@ -1972,6 +1995,23 @@ link   url                     "/read/hajime-no-ippo/en/ch/1515" → resolved ag
 date   published_on            ISO 8601
 id     slug_lang_vol_ch_sub    "en-N-1515-N"
 ```
+
+**Verified with the model in the loop, 2026-07-27.** Asked for nothing but the response's shape,
+`gpt-5-mini` proposed exactly the rule above — `comic.chapters` / `full_title` / `url` /
+`published_on` / `slug_lang_vol_ch_sub` — and its note said why: *"it lists individual chapter
+releases"*. The chain end to end (`internal/reader`, `TestLiveEndToEndWithTheModel`): no feed found →
+app shell recognised → data endpoint discovered → shape sent → paths returned → 170 chapters
+extracted and stored → second poll adds nothing. Both live tests are skipped unless `AF_LIVE=1` and a
+key is set; nothing in CI touches a stranger's server or spends money.
+
+**Two things that cost a wasted call to learn**, written down so they are not learned twice:
+
+- **`max_output_tokens` covers the REASONING on a reasoning model.** The first attempt bounded the
+  answer at 1200 — fifty times what eight paths and a sentence need — and came back `ErrTruncated`
+  having spent the budget thinking and emitted nothing. That failure is indistinguishable from a bad
+  prompt unless you know to look. It is 6000 now.
+- **Effort belongs low here.** The question is structural and the evidence is in front of the model;
+  deliberation buys nothing and is charged by the token. `llm.Request.Effort` was added for it.
 
 **Discovery is four GETs, not a crawl**: `/api` + the page's path, the path + `.json`, `/api/v1` +
 the path, and the section index. Each candidate is fetched, parsed, and rejected unless it contains
@@ -3791,6 +3831,24 @@ Three things follow that are worth stating because each was a decision:
   900px, and a five-track value against a three-track layout does not interpolate.
   Each breakpoint gets a value with its own track count.
 
+Two things the e2e suite had to be taught, both of which are the suite encoding a
+superseded truth rather than a bug:
+
+- **"No horizontal overflow" now means "nothing UNCLIPPED sticks out."** The sweep
+  used to flag any box whose right edge passed the viewport, which was safe while
+  nothing was ever off-screen. Two panes now sit a full viewport to the side on
+  purpose. The rule became: an element is fine if some ancestor clips horizontally
+  *and that ancestor stays inside the viewport* — the question the test always
+  meant, which is whether the page can be scrolled sideways. It still catches the
+  long-unbroken-URL case it was written for, because `.pane` sets only
+  `overflow-y` and therefore computes `overflow-x: auto` — scrollable, not
+  clipping.
+- **The reading pane finally measures itself on a phone.** It was `display: none`
+  below 900px until the view changed, and an element with no layout has no scroll
+  metrics — so the continuous stream (A28) never appended there. It does now,
+  which is a fix rather than a regression, and it is why `.article h1` became a
+  strict-mode violation at phone widths as well as desktop ones.
+
 ### 20.23 Dialogs, which are the only gesture that has to run backwards
 
 All six overlays — palette, shortcut sheet, per-feed panel, tag panel, add-a-feed,
@@ -3812,6 +3870,12 @@ down, because both bit on the way in:
 
 - **`.pal-scrim` is no longer a unique selector.** Six of them are in the document
   at all times, so a bare `.pal-scrim` resolves to whichever comes first.
+- **The status banner had the same shape and got the same treatment**, by a
+  different technique: it is wrapped in a grid whose single row goes `0fr → 1fr`,
+  the only way to animate a collapse to the content's *own* height without
+  pinning it open. Affordable for one line of text; declined for the rail's 151
+  feed rows, where keeping them laid out to animate their removal is the exact
+  cost the fold exists to avoid.
 - **Anything that focuses a field inside a dialog must retry until the focus
   LANDS, not until the element exists.** `.focus()` on anything inside
   `visibility: hidden` is a silent no-op, so `platform.FocusField` found the

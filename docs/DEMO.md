@@ -105,13 +105,25 @@ the demo pays one 404 per load for it.
 `make demo` deletes the raw module after compressing for the same reason: if `app.wasm` sat next to
 the `.gz` locally, the compressed path would never be taken until it ran on the public URL.
 
+## The one file the demo does not ship verbatim
+
+`sw.js` — the Service Worker — keys its cache on a `VERSION` constant and serves the wasm module
+**cache-first**, because within a build that URL's contents never change. On the server that is
+exactly right: `VERSION` is `buildver.Version`, a release changes the constant, and the worker's
+`activate` drops every older cache.
+
+The demo is published from a **tag**, and a tag does not change `buildver`. A second demo release
+under an unchanged constant would leave every returning visitor on the module their browser cached
+the first time — publishing an update that nobody who has already looked can see, which is the worst
+way for a demo to be wrong, because it is invisible from the outside and permanent.
+
+So `make demo` stamps the copy with the build's own version and fails if it finds no line to stamp,
+and the workflow re-checks the stamp before publishing. `web/sw.js` itself is untouched, so
+`internal/buildver`'s test still pins the source file to the constant.
+
 ## Publishing
 
-Once, by hand, in the repository settings: **Settings → Pages → Build and deployment → Source →
-GitHub Actions**. Nothing in a workflow can do this, and without it the deploy step fails with a 404
-that reads like a permissions problem.
-
-Then a tag publishes:
+A tag publishes:
 
 ```bash
 git tag -a v1.0.0 -m 'the first public demo'
@@ -119,17 +131,50 @@ git push origin v1.0.0
 ```
 
 The tag name becomes the version the build reports on its settings screen (`-X main.version`).
-Running the workflow by hand from the Actions tab does the same thing with a version somebody types.
-A pull request that touches `client/`, `web/index.html` or the workflow **builds** the demo and does
-not deploy it.
+Running the workflow by hand from the Actions tab does the same thing with a version somebody types,
+and has a **deploy** switch for building without publishing. A pull request that touches `client/`,
+`web/index.html` or the workflow **builds and verifies** the demo and does not deploy it.
+
+Nothing has to be set up first: the deploy job runs `actions/configure-pages` with `enablement: true`,
+which turns Pages on and points it at Actions if nobody has. (If that ever fails, the manual
+equivalent is **Settings → Pages → Build and deployment → Source → GitHub Actions**.)
+
+### Nothing is published that has not been proved
+
+Between `make demo` and the upload, the workflow does two things that are the whole reason to trust
+it. The demo is the only build of this application that strangers see, and it is the one nobody is
+watching when it breaks.
+
+**It verifies the artifact.** Three files present and non-empty; no raw `app.wasm` (publishing 28 MB
+is the thing the compressed module exists to prevent); `gzip -t` for CRC integrity, which is what
+catches a compressor that died halfway; the decompressed bytes actually start `\0asm`; the module is
+not a stub; and `index.html` fetches its assets *relatively* and carries the `DecompressionStream`
+path. Every one of those is invisible in a green `make demo` and fatal on the public URL.
+
+**It boots it.** `e2e/demo-smoke.mjs` serves `bin/demo` from a static server as unhelpful as Pages is
+— no compression negotiation, a 404 for anything not on disk — and drives Chromium until the rail
+lists all seven seeded subscriptions and clicking a list row changes the article being read. It
+watches the boot shim's own failure state, so a broken module fails in about a second with the
+browser's message rather than in three minutes with a timeout.
+
+It runs locally too, against the directory or against a deployed URL:
+
+```bash
+node e2e/demo-smoke.mjs bin/demo
+node e2e/demo-smoke.mjs https://monstercameron.github.io/ArticleFlux/
+```
 
 ### The D0 wrinkle
 
 `go.mod` replaces `github.com/monstercameron/GoWebComponents/v5` with a **sibling directory**,
-because v5.0.0 was never tagged. `actions/checkout` refuses a path outside the workspace, so the
-workflow checks GoWebComponents out inside and then moves it next door. That is what lets the
-repository's own replace directive, `make deps`, and CI all agree without editing `go.mod` in the
-pipeline — an edited `go.mod` is a build that is not the build anybody runs.
+because v5.0.0 was never tagged — and `actions/checkout` refuses any path outside the workspace, so
+the obvious `path: ../GoWebComponents` fails at the second step of every job. `.github/actions/gwc`
+is the four lines that make it work: check out inside, move next door, and assert the checkout really
+is the v5 module rather than letting a wrong major version surface later as an unresolvable import.
+Both workflows use it, so there is one place to fix rather than four to keep in step.
+
+That is also what lets the repository's own replace directive, `make deps` and CI agree without
+editing `go.mod` in the pipeline — an edited `go.mod` is a build that is not the build anybody runs.
 
 ## Files
 
@@ -140,4 +185,6 @@ pipeline — an edited `go.mod` is a build that is not the build anybody runs.
 | `client/data/demo_wasm.go` | `DialDemo` — the `Client` over a connection that is not one |
 | `client/view/demo.go` | `DemoRoot`, and the dismissible note in the corner |
 | `client/i18n/en_demo.go` | that note's four strings, in the catalog like everything else |
-| `.github/workflows/pages.yml` | build and publish |
+| `e2e/demo-smoke.mjs` | serves the bundle and proves it boots — the last gate before publishing |
+| `.github/workflows/pages.yml` | build · verify · boot · publish |
+| `.github/actions/gwc` | the D0 sibling checkout, in one place for both workflows |

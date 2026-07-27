@@ -10,8 +10,9 @@ screen. **You will not see a UI until Tier 8. That is correct and it will feel w
 
 > **Document set:** `plan.md` is the spec of record — decisions (`A#`), open questions (`D#`), risks
 > (`R#`), schema, milestones (`M#`), tests (`T#`). **This file owns build order only** and cites the
-> rest by id. `FLOWS.md` draws the nine paths that are easy to get subtly wrong. `design/` is the
-> visual spec, and is mockups rather than source. **If this file and `plan.md` disagree, `plan.md`
+> rest by id. `FLOWS.md` draws the nine paths that are easy to get subtly wrong.
+> `docs/FEATURES.md` describes what every capability does from the outside and whether it exists
+> yet. `design/` is the visual spec, and is mockups rather than source. **If this file and `plan.md` disagree, `plan.md`
 > wins.** See `plan.md` → *The document set*.
 >
 > **Start at Tier 9** if you are picking up a milestone — each row there is the complete brief:
