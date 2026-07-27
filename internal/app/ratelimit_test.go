@@ -7,8 +7,15 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
+	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 )
@@ -129,4 +136,55 @@ func TestTheLimiterIsOffInDevModeAndOnOtherwise(t *testing.T) {
 	if !refused {
 		t.Error("a non-dev instance never refused; the limiter is not wired at all")
 	}
+}
+
+// TestTheLimiterIsInstalledOnTheRealServer drives a real tunnel into a real
+// gRPC server and pushes one caller past the burst.
+//
+// The other tests here build interceptors by hand, which proves the logic and
+// says nothing about whether it is WIRED. This one goes through the WebSocket
+// upgrade, the HTTP/2 session and the interceptor chain as assembled by
+// buildHandler, so deleting the line in app.go fails it.
+//
+// The credential is nonsense on purpose. rateKey reads the metadata and does
+// not validate it — the point is that the limiter runs BEFORE the handler, so
+// a caller who cannot authenticate is still counted rather than being handed a
+// free channel to hammer. The assertion is the code CHANGING from
+// Unauthenticated to ResourceExhausted, which is only possible if the
+// interceptor is in the chain.
+func TestTheLimiterIsInstalledOnTheRealServer(t *testing.T) {
+	url, _ := tunnelTo(t, false)
+	conn, err := grpctunnel.DialContext(t.Context(), url,
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := pb.NewReaderServiceClient(conn)
+	ctx := metadata.AppendToOutgoingContext(t.Context(), "authorization", "Bearer not-a-real-session")
+
+	sawAuthFailure := false
+	for i := 0; i < ratelimit.DefaultPerUser.Burst+20; i++ {
+		_, err := client.ListFeeds(ctx, &pb.ListFeedsRequest{})
+		code := status.Code(err)
+		if code == codes.ResourceExhausted {
+			if !sawAuthFailure {
+				t.Fatal("the first call was already rate limited, so this proves " +
+					"nothing about where the limit is")
+			}
+			return // limited, after being let through the burst
+		}
+		if code == codes.Unauthenticated || code == codes.PermissionDenied ||
+			code == codes.NotFound || code == codes.Internal {
+			sawAuthFailure = true
+			continue
+		}
+		if err != nil {
+			t.Fatalf("call %d failed unexpectedly with %v: %v", i+1, code, err)
+		}
+		sawAuthFailure = true
+	}
+	t.Errorf("%d calls from one caller were never limited — the interceptor is not "+
+		"in the chain that buildHandler assembles", ratelimit.DefaultPerUser.Burst+20)
 }
