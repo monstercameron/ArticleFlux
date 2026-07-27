@@ -22,7 +22,7 @@ import (
 // Copying costs ~50 MB and a few hundred milliseconds once per run, and buys the
 // property that matters: these can be run at any time, by anyone, without
 // thinking about it first.
-func openDev(t *testing.T) *DB {
+func openDev(t testing.TB) *DB {
 	t.Helper()
 	const src = "../../articleflux.db"
 	if _, err := os.Stat(src); err != nil {
@@ -64,7 +64,7 @@ func openDev(t *testing.T) *DB {
 	return db
 }
 
-func devScope(t *testing.T, db *DB) (*ReaderRepo, Scope) {
+func devScope(t testing.TB, db *DB) (*ReaderRepo, Scope) {
 	t.Helper()
 	repo := NewReaderRepo(db)
 	sc, err := repo.FirstUserScope(context.Background())

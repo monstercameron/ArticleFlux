@@ -274,6 +274,13 @@ function Invoke-Perf {
     Write-Host "      go tool pprof -top -nodecount=25 $profDir\PKG.test.exe $profDir\PKG.cpu.pprof" -ForegroundColor DarkGray
     Write-Host "    compare against another run with:" -ForegroundColor DarkGray
     Write-Host "      ./scripts/make.ps1 perf -Compare -From $Label -To OTHER" -ForegroundColor DarkGray
+
+    # The verdict on the run that just finished, LAST so it is the thing still on
+    # screen when the run ends — a warning printed above forty lines of benchmark
+    # output is a warning nobody reads. See internal/tools/benchspread for why a
+    # capture from this box needs one at all.
+    Write-Host ''
+    & go run ./internal/tools/benchspread $outFile
 }
 
 function Invoke-PerfCompare {
@@ -534,6 +541,7 @@ ArticleFlux task runner (TODO 1.4)
                                 -Bench Hot        only benchmarks matching this regexp
                                 -Count 6          samples per benchmark (this box throttles)
                                 -Compare -From baseline -To after    benchstat two runs
+                                Prints a verdict on whether the run's timings can be trusted.
   ./scripts/make.ps1 migrate    apply migrations
   ./scripts/make.ps1 run        build, then serve on :9000
   ./scripts/make.ps1 dev        wasm + run          <- the loop to leave open

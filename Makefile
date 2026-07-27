@@ -65,6 +65,7 @@ help:
 	@echo '  make e2e       build, then run the Playwright suite'
 	@echo '  make perf      benchmark every package that has one, with CPU/heap profiles'
 	@echo '                 LABEL=baseline BENCH=. COUNT=6'
+	@echo '                 ends with a verdict on whether its own timings can be trusted'
 	@echo '  make perf-compare FROM=baseline TO=after   benchstat two runs'
 	@echo '  make clean     remove bin/ (which is all generated output)'
 	@echo
@@ -287,6 +288,8 @@ perf:
 	    -o $(PERFDIR)/prof/$$short.test 2>&1 | tee -a $(PERFDIR)/$(LABEL).txt; \
 	done
 	@echo "==> wrote $(PERFDIR)/$(LABEL).txt; profiles in $(PERFDIR)/prof"
+	@echo
+	@go run ./internal/tools/benchspread $(PERFDIR)/$(LABEL).txt
 
 perf-compare:
 	@command -v benchstat >/dev/null || { echo 'benchstat not on PATH: go install golang.org/x/perf/cmd/benchstat@latest'; exit 1; }
