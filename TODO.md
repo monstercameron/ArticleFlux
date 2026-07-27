@@ -876,9 +876,16 @@ One package each, `Scope` first, leak test per repo (3.7 enforces it).
       `store.RecordEngagements` (batched, one tx, `INSERT OR IGNORE` on a client-generated id so a
       retried batch cannot double-count) + the three reads the interest layer needs: `ItemSignals`,
       `FeedSignals`, `EngagementsSince`. `settings`, `views` and `audit_log` are untouched.
-- [ ] **5.9** Interest layer: `topics` · `item_topics` · `domain_affinity` · `outlinks` ·
+- [x] **5.9** Interest layer: `topics` · `item_topics` · `domain_affinity` · `outlinks` ·
       `recommendations` · `feed_affinity` · `term_affinity` · `home_ranking`. **All derived — a
       `DELETE` and rebuild from `engagements` must produce the same result**, which is the test.
+      ✅ 2026-07-26 — `internal/store/interest.go`. Every table is **replaced**, not upserted: a
+      derivation is a whole-picture statement, and an upsert-only pass leaves a source the reader
+      abandoned competing forever at whatever score it last had. One transaction each, so a partial
+      derivation is never visible. **The rebuild test passes** — `ClearDerived` then re-run produces
+      identical snapshots of all four tables, which is what makes `engagements` the only
+      irreplaceable table here. A user's topic rename and suppression survive rederivation, matched
+      by the cluster's top three terms rather than by an id that is regenerated each pass.
 - [ ] **5.10** FTS5 triggers for `items_fts`, `notes_fts`, `bookmarks_fts`, and a search repo over them
       ◧ 2026-07-26 — `items_fts` with its three triggers and a `Search` repo over it, verified by `TestSearchFindsASeededItem` and `TestSearchIndexTracksUpdates`. `notes_fts` and `bookmarks_fts` are not built.
 
@@ -909,23 +916,45 @@ Business logic over repositories. Still headless.
       both the tunnel and the REST sync API — one model, not two. §7.5
 - [ ] **6.3 `settingsreg`** — typed registry + **system → tenant → user** resolution, returning the
       value *and which layer supplied it* ← 5.8
-- [ ] **6.4 `jobs`** — durable queue (`jobs` table), **per-kind concurrency caps** so pack building
+- [x] **6.4 `jobs`** — durable queue (`jobs` table), **per-kind concurrency caps** so pack building
       can't starve rule fan-out, retry, restart-survivable §22.7
-- [ ] **6.5 `events`** — **per-tenant** ring buffers (~1000 each), `since_seq` replay,
+      ✅ 2026-07-26 — `internal/store/jobs.go` + `internal/jobs`. In SQLite, so enqueueing and the
+      write that caused it are **one transaction** — the property no external broker can give at any
+      price. `locked_by`/`locked_at` make it restart-*survivable* rather than merely durable.
+      **Writing the per-kind cap test found a real race**: six workers computed saturation at the
+      same moment, all saw pack at zero, and all claimed a pack job before any registered — the exact
+      failure the cap exists to prevent, produced by the cap's own implementation. A panicking
+      handler fails its job, not the process. Dead jobs are kept with their cause. CI gained `-race`
+      on the Linux job, because this box is arm64 and cannot run the detector at all.
+- [x] **6.5 `events`** — **per-tenant** ring buffers (~1000 each), `since_seq` replay,
       `RESYNC_REQUIRED`, scope-filtered fan-out. *Done when: tenant A's burst cannot evict tenant B.*
+      ✅ 2026-07-26 — `internal/events`. Per-tenant rings, `since_seq` replay, `RESYNC_REQUIRED`
+      when a sequence has aged out (a partial replay leaves a client believing it is up to date while
+      having missed something). Scope-filtered at subscription rather than at read. **The
+      concurrency test found a process-level crash**: sending outside the tenant lock races `Close`
+      and lands on a closed channel. Sends are non-blocking, so holding the lock costs nothing — the
+      comment arguing otherwise was wrong on its own terms. *Done when: tenant A's burst cannot evict
+      tenant B* — asserted.
 - [x] **6.6 `ingest`** — fetch → parse → identity/dedup → `dupe_key` → revision detect → store →
       **queue** fan-out. Includes the **flood guard** (§15.5) and **outlink harvesting** (2.10).
       ← 4.1, 4.3, 5.3
       ✅ 2026-07-26 — `internal/store/ingest.go` — identity, `dupe_key` dedup, and `RecordFetch` storing the outcome either way, because a poll that fails silently makes a dead feed look like a quiet one and those must look different.
 
-- [ ] **6.7 `fanout`** — the per-subscriber job: evaluate rules, write `user_item_state` + `item_tags`,
+- [x] **6.7 `fanout`** — the per-subscriber job: evaluate rules, write `user_item_state` + `item_tags`,
       emit events, feed ranking signals. **Per subscriber, never once at ingest** — the §13.2 bug —
       and **never inline with the poll**, since it's `O(items × subscribers)`.
+      ✅ 2026-07-26 — `internal/fanout` + `internal/store/fanout.go` + migration 0014. Per
+      subscriber, never once at ingest, and there is a test for the §13.2 bug: alice mutes, bob still
+      sees. One job per (source, batch) rather than per subscriber — the per-subscriber version
+      multiplies queue rows by the subscriber count until claim/commit overhead dominates the
+      matching. The state upsert **never overwrites what the reader set** (`coalesce`), because the
+      queue is at-least-once and a re-run must not un-star something a person starred. Mute is a flag
+      with `UnmuteByRule` to reverse it in one statement.
 - [ ] **6.8 `poll`** — **priority queue by staleness ratio** (not FIFO), backoff, `Retry-After`,
       per-host semaphore, adaptive intervals, **lag metric**, widen-when-behind policy ← 6.4
       ◧ 2026-07-26 — A background poller runs on a fixed interval (`-poll`, default 15m) and per-feed refresh is wired to the UI. The **priority queue by staleness ratio** is not — it is still FIFO over everything due, so a feed that posts weekly is polled as often as one that posts hourly. `sources.fetch_interval_s` is now per-feed adjustable (A33), which is the manual version of the same idea.
 
-- [ ] **6.9 `signals`** — impression coalescing · the §18.1 kind taxonomy (**`bulk_read` is neutral,
+- [x] **6.9 `signals`** — impression coalescing · the §18.1 kind taxonomy (**`bulk_read` is neutral,
       never negative**) · scheduled derivation of `feed_affinity`, `term_affinity`, `domain_affinity`,
       topics, and `home_ranking`. *Done when: a simulated `mark all read` over 143 items changes no
       affinity score.* R17
@@ -939,6 +968,13 @@ Business logic over repositories. Still headless.
       `domain_affinity`, topics or `home_ranking`. See **D18**, which should be settled before the
       scorer is written — it decides whether this is one linear sum or a two-stage recall/precision
       split.
+      ✅ 2026-07-26 — `internal/derive`. **D18's two stages run in order and the control flow says
+      so**: recall (passive signals → affinities, topics) then precision (`home_ranking`, where the
+      deliberate acts *scale* what recall thought rather than being more weighted terms). **R17 is
+      asserted end to end**: a mark-all-read over twelve items moves not one affinity score.
+      `affinityWeight` returns zero for any unrecognised kind, so a signal added later without a
+      considered weight contributes nothing rather than something accidental. Half-life is fitted per
+      source and returns zero rather than guessing under ten samples.
 - [ ] **6.10 `recommendjob`** — harvest outlinks and aggregator pass-throughs → candidates → health
       gate → score → `recommendations`. **Rungs 1–3, no LLM.** ← 4.12, 2.10 §18.7
 - [ ] **6.11 `llm`** — `Provider` iface; Claude + OpenAI impls; **shared timeout, bounded in-flight,
@@ -1592,7 +1628,7 @@ be **one commit**.
 
 ### Proof, and making flakiness falsifiable
 
-- [x] **8c.11 T21 · the connection suite.** Five parts, and (b) is the one that needs building rather
+- [x] **8c.11 T21(a)–(d) · the connection suite, native half.** Five parts, and (b) is the one that needs building rather
       than writing: a **blackhole TCP relay** in `internal/testnet` that accepts and then silently stops
       forwarding, because that is the only honest way to reproduce a half-open socket — Playwright
       cannot make a browser do it. (c) the 30-minute idle soak is the `too_many_pings` regression test,
@@ -1606,6 +1642,48 @@ be **one commit**.
       the §20.3 ring and Settings → Activity: reconnect count, cumulative downtime, time since the last
       successful RPC. **"It feels flaky" is unfalsifiable without these**, and this app has no dashboard
       behind it. One reconnect an hour is a network; forty is a bug, and today neither is visible.
+      ✅ `internal/obs.Tunnels` (live · total · peak · since · since-last-drop) behind the tunnel's
+      connect/disconnect hooks, and `Client.Health()` → a Settings → Account row that appears **only
+      once a reconnect has happened**, so its presence is itself information rather than a "0" nobody
+      reads. *Not done: the server counters are collected and not yet on a screen — that needs a proto
+      field on `GetServerStats`, which was being regenerated by another lane all evening. Client half
+      is visible now.*
+
+### Found while wiring it, and fixed — no ticket had these
+
+- [x] **8c.13 Idempotency keys are unique per PRESS, not per item.** The four call sites sent stable
+      keys — `"unread-<id>"`, `"later-<id>-true"` — which reads as tidy and is a replay hazard the day
+      §20.7's idempotency store is honoured: mark unread → read → unread, and the third call is
+      answered from the FIRST one's cached response and silently applies nothing. Harmless while
+      `idempotency_keys` is an unused table; reachable the moment it is not, and **an outbox is what
+      makes it reachable, because an outbox is what replays.** Now `intentKey(prefix, id)` with a
+      millisecond suffix. *The server half is 8c.16 — this ticket only stopped the client from being
+      wrong when that lands.*
+- [x] **8c.14 `loadMore` had the same race as `loadItems`.** 8c.5 said "generation-guard every load"
+      and named one; there were two. A page in flight when the scope changes appended the OLD feed's
+      items to the new list, which reads as two feeds interleaving. Latent on a LAN and reachable the
+      moment a recovery refetch can replace the list under an in-flight page — so the reconnect work
+      is what turned it from theoretical into ordinary. Both guarded now, and the in-flight flag is
+      cleared on the discarded path or the filler wedges permanently.
+
+### Owed, and now specified rather than implied
+
+- [ ] **8c.16 Server-side idempotency enforcement (§20.7).** `idempotency_keys` is in the schema,
+      `idgen.IdempotencyKey()` exists, and **nothing reads or writes either** — the client has been
+      stamping keys onto every mutating RPC into a void. Store `(user_id, key) → response` for 24h and
+      replay it verbatim. *Was theoretical; the outbox made it load-bearing, because at-least-once
+      delivery is only safe today by the accident that every queued mutation sets an absolute value
+      (see §20.19.8). The first queued operation that is not idempotent-by-value needs this first.*
+      ← **8c.13**, which is what makes the keys safe to honour.
+- [ ] **8c.17 Version skew: the server half (§22.10).** The client recognises `data.SkewSentinel`,
+      classifies it terminal, stops retrying and offers Reload. **Nothing sends it.** The ordering was
+      deliberate — the client that must act on a skew refusal is by definition the OLD one, so
+      recognition has to ship before the refusal does or the first refusal ever sent lands on clients
+      that cannot understand it. Needs: a build stamp in the tunnel handshake, a minimum-supported
+      version on the server, and the refusal carrying the sentinel.
+- [ ] **8c.18 T21(e) · the Playwright half.** Kill the server mid-session and assert `down`; restart
+      and assert `live` plus a refetched list; `context.setOffline(true)` and assert `offline`, not
+      `down`. ← **8b.34**: adding specs to a suite that is not currently a gate buys nothing.
 
 > **The transferable rule from this audit, and it is the reason it is written down rather than just
 > fixed:** *a retry loop is a latency optimisation; an outbox is a durability guarantee.* They are not
@@ -1615,8 +1693,9 @@ be **one commit**.
 
 ### ✅ Built 2026-07-26, night — and the three things the build changed
 
-Eleven of twelve. `go build ./...`, `GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./...`
-green; every touched package's tests pass.
+**8c.1–8c.7 and 8c.9–8c.14 done; 8c.8 and 8c.16–8c.18 open and specified above.** `go build ./...`,
+`GOOS=js GOARCH=wasm go build ./client/...` and `go vet ./...` green; **`go test ./...` is 38 packages
+passing, zero failures.**
 
 **New packages, and why each is a package rather than a few lines somewhere.**
 
@@ -1630,6 +1709,9 @@ green; every touched package's tests pass.
   be decided without the DOM belongs in an untagged file, so it can be decided in a test instead.*
   Both of the audit's findings turned out to be provable without a browser.
 - **`client/outbox`** — the queue, pure and native-tested: coalescing, ordering, the cap, the round trip.
+- **`internal/obs/tunnels.go`** — WebSocket lifetimes as counters rather than as log lines. Every
+  connect already logged; what nobody could do was read a thousand of those and answer "is one an hour
+  normal on this box?"
 
 **Three things the build changed about the design.**
 
@@ -1648,32 +1730,29 @@ green; every touched package's tests pass.
    and the tunnel gate, because two readiness checks drift and the drift is silent — the probe says
    ready, the upgrade says no, and the operator is looking at a green dashboard.
 
-**Two findings the work turned up that were not in the audit.**
+**Two findings the work turned up that were not in the audit** — both now ticketed above as **8c.13**
+and **8c.14**, because a finding recorded only in prose is a finding nobody is assigned.
 
-- **Idempotency keys are decorative, and the client's were unsafe.** `idempotency_keys` is in the
-  schema and `idgen.IdempotencyKey()` exists; **nothing on the server reads or writes either**. Meanwhile
-  the client sent *stable per-item* keys (`"unread-<id>"`), which is a replay hazard the day that
-  changes: mark unread → read → unread, and the third call is answered from the first one's cached
-  response and silently applies nothing. Harmless while the table is unused and reachable the moment it
-  is not — and an outbox is what makes it reachable, because an outbox is what replays. Keys are now
-  unique per press (`intentKey`). **The server half is still owed** and belongs with §20.7.
-- **`loadMore` had the same race as `loadItems`.** A page in flight when the scope changes appended the
-  old feed's items to the new list. Latent on a LAN; the recovery refetch is what made it reachable.
-  Both are generation-guarded now.
+**Not done, and each for a stated reason rather than for lack of time:**
 
-**Not done: 8c.8**, and not for lack of time. `Retry-After` on a refused upgrade lives in
-**GoGRPCBridge**, which this repo consumes at a published `v1.1.1` with no `replace` — so editing the
-local checkout would change nothing here until that project tags and releases. It is a two-line change
-in someone else's release cycle, and ArticleFlux's own caps (8 connections, 30 upgrades/min) are
-generous enough that reaching them means a bug on this side. Left filed rather than half-done.
+- **8c.8** — `Retry-After` on a refused upgrade lives in **GoGRPCBridge**, which this repo consumes at a
+  published `v1.1.1` with no `replace`. Editing the local checkout changes nothing here until that
+  project tags a release, so it is a two-line change inside someone else's release cycle. ArticleFlux's
+  own caps (8 connections, 30 upgrades/min) are generous enough that reaching them means a bug on this
+  side. Filed rather than half-done.
+- **8c.16 / 8c.17 / 8c.18** — see above. All three were implicit before this batch and are now written
+  down with what they depend on.
+- **8c.12's server-side display.** The counters exist and are collected; putting them on the Settings →
+  Server tab needs a field on `GetServerStats`, and the proto was being regenerated by another lane
+  through the evening. The client-side half is live.
 
-**Owed, and now specified rather than vague:**
-
-- Server-side idempotency enforcement (§20.7), which the outbox has made load-bearing.
-- Version skew's server half (§22.10). The client recognises `SkewSentinel` and classifies it terminal;
-  nothing sends it yet. That ordering is deliberate — the client that must act on a skew refusal is by
-  definition the old one, so recognition has to ship before the refusal does.
-- **T21(e)**, the Playwright half, still gated on **8b.34**. (a)–(d) are native and landed.
+**One edit outside this work, flagged rather than buried:** the wasm build was broken by an in-flight
+typo in another lane's change (`id, value := forItem.Get(), value`). Completed to `forValue.Get()` —
+unambiguous from the surrounding comment, and leaving `GOOS=js GOARCH=wasm go build` red while
+reporting this batch green would have been the worse call. **Worth a glance from whoever owns that
+change.** I hit the wasm build broken while the native build stayed green **twice in one evening** —
+this typo, and separately a missing `strings` import in `theme.go` that its author fixed within a
+minute. Neither would have reached a commit with **8b.32** done, which is the whole argument for it.
 
 ---
 
