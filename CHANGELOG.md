@@ -56,6 +56,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `X-Forwarded-For` trusted only where an operator has said a proxy is in front — it is a request
   header, so trusting it unconditionally lets any client write whatever address it likes into the log.
 
+- **Rule fan-out** (`internal/fanout`, `internal/store/fanout.go`, migration 0014, TODO 6.7) — the
+  per-subscriber job that puts `internal/rules` to work. §13.2's decision is the whole design and is
+  easy to get backwards: rules are per-user and items are global (A14), so evaluation happens **once
+  per subscriber, never once at ingest** — otherwise one person's mute filter hides an article from
+  every other subscriber, and the symptom lands in an account with no rule at all. A test asserts
+  exactly that. Mute is a flag, not a deletion (§13.3): the item stays, `UnmuteByRule` reverses an
+  over-broad rule in one statement, and a MUTED view can show what a rule is eating. The state
+  upsert **never overwrites what the reader set** — `coalesce(existing, new)` — because the queue is
+  at-least-once and a re-run must not un-star something a person starred. Rules match plain **text**,
+  not markup, or "contains rust" matches a footer link to rust-lang.org that is invisible when they
+  check the article. Both structural guards caught all eleven new unscoped repository methods and
+  each now carries a written reason; `FanoutItems` is scoped by the `Subscriber` it takes rather than
+  by a `Scope`, deliberately — two structs that must agree about who the user is can disagree, and
+  one cannot.
+
 - **The durable job queue** (`internal/store/jobs.go` + `internal/jobs`, TODO 6.4) — SQLite-backed,
   so enqueueing and the write that caused it are **one transaction**, which is the property no
   external broker can give you at any price. `locked_by` + `locked_at` are what make it

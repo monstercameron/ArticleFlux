@@ -120,8 +120,12 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 		"login_attempts": {
 			"tenant_id": "the interesting rows are attempts on accounts that do not exist",
 		},
-		"shares":           {"object_id": "polymorphic: the kind is in object_kind"},
-		"item_tags":        {"applied_by_rule_id": "kept after the rule is deleted, so the tags stay cleanable"},
+		"shares":    {"object_id": "polymorphic: the kind is in object_kind"},
+		"item_tags": {"applied_by_rule_id": "kept after the rule is deleted, so the tags stay cleanable"},
+		// Same argument as item_tags, and the direction of the surprise matters:
+		// a cascade here would silently UNMUTE a backlog the moment a rule was
+		// deleted, which is the opposite of what anyone deleting a rule expects.
+		"user_item_state":  {"muted_by_rule_id": "the rule may be deleted; the mute must stay recoverable by id"},
 		"home_ranking":     {"cluster_id": "a derivation-local grouping, not a row anywhere"},
 		"jobs":             {"tenant_id": "a job may outlive the tenant it was queued for"},
 		"settings":         {"scope_id": "polymorphic: system has none, tenant and user differ"},

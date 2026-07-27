@@ -79,6 +79,26 @@ var unscopedByDesign = map[string]string{
 	"SourceHosts": "global; feeds the favicon fetcher",
 	"GetFavicon":  "global cache keyed by host",
 	"PutFavicon":  "same",
+
+	// Fan-out (6.7): global reads on behalf of every tenant at once.
+	// FanoutItems is scoped, just by a Subscriber rather than a Scope — one
+	// struct carrying tenant, user, folder, tags and source name, so there are
+	// not two structs that can disagree about who the user is.
+	"SubscribersOf": "lists every tenant's subscribers of one global source (A14)",
+	"ItemsByID":     "reads global items; nothing per-user is returned",
+	"FanoutItems":   "scoped by the Subscriber it takes, which carries tenant and user",
+
+	// The job queue (6.4). Infrastructure rather than user data: a worker drains
+	// it for everyone, and jobs.tenant_id records who the work is FOR so the
+	// handler can build a Scope. Scoping resumes in the handlers.
+	"Enqueue":       "queue infrastructure; jobs.tenant_id records who the work is for",
+	"Claim":         "a worker drains the queue for every tenant",
+	"Complete":      "keyed by job id, which the claiming worker already holds",
+	"Fail":          "same",
+	"GetJob":        "same",
+	"ReclaimStale":  "maintenance over abandoned jobs",
+	"QueueDepth":    "instance-wide queue health",
+	"PurgeFinished": "maintenance over completed jobs",
 }
 
 // twoTenants builds the fixture: tenant A with its own rows, tenant B with rows
