@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/textvec"
 	"github.com/monstercameron/ArticleFlux/internal/topics"
 )
@@ -630,4 +631,68 @@ func (r *ReaderRepo) HalfLifeFor(ctx context.Context, s Scope, sourceID string) 
 		return 0, nil
 	}
 	return ages[len(ages)/2], nil
+}
+
+// ScopesToDerive returns the users whose interest layer is worth recomputing:
+// those with at least one AFFINITY-BEARING engagement newer than `since`.
+//
+// Unscoped, because it is what the scheduler uses to discover scopes — the same
+// reason FirstUserScope is unscoped. It is only ever called from the background
+// loop, never from an RPC.
+//
+// # Why the kind filter is here and not left to derive
+//
+// The obvious version enumerates every user and lets the job decide it has
+// nothing to do. That is wrong in a way that only shows up on a real instance:
+// derive is a TF-IDF pass over ninety days of engaged items, and a poller firing
+// every fifteen minutes would run it for every account on the box forever,
+// including the ones that have not been opened since March. Filtering to the
+// kinds that can actually move a number means an idle reader costs one indexed
+// query rather than a full derivation.
+//
+// The kind list comes from signals.AffinityKinds rather than being written out
+// here, and that is not a style preference. A hand-written copy of the taxonomy is
+// exactly how derive.affinityWeight came to silently discard `reread`, `chose` and
+// `clicked_out` — three of the most frequent signals in a real database — while
+// reading as though it handled them. `impression` and `bulk_read` are excluded by
+// the registry itself for R17's reason: they must not be able to move a score, so
+// they must not be able to schedule the job that computes one either. A reader who
+// scrolled past forty rows and marked all read has changed nothing, and waking the
+// deriver to confirm that is pure cost.
+//
+// The window is caller-supplied rather than fixed at Window so the scheduler can
+// pass its own interval: it wants "since the last time I looked", which is a fact
+// about the loop, not about the interest model.
+func (r *ReaderRepo) ScopesToDerive(ctx context.Context, since time.Time) ([]Scope, error) {
+	kinds := signals.AffinityKinds()
+	args := make([]any, 0, len(kinds)+1)
+	args = append(args, since.UTC().UnixMilli())
+	holders := make([]string, len(kinds))
+	for i, k := range kinds {
+		holders[i] = "?"
+		args = append(args, string(k))
+	}
+
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT DISTINCT e.tenant_id, e.user_id
+		  FROM engagements e
+		  JOIN users u ON u.id = e.user_id
+		 WHERE e.at >= ?
+		   AND u.deactivated_at IS NULL
+		   AND e.kind IN (`+strings.Join(holders, ",")+`)
+		 ORDER BY e.tenant_id, e.user_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Scope
+	for rows.Next() {
+		var s Scope
+		if err := rows.Scan(&s.TenantID, &s.UserID); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

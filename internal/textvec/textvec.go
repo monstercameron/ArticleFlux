@@ -51,12 +51,56 @@ var stopwords = map[string]bool{
 	"you": true, "your": true,
 }
 
+// furniture is feed and aggregator chrome: words that reach the vectoriser
+// because of how a feed is BUILT, not because of what an article is about.
+//
+// A separate set from stopwords because the justification is different, and
+// collapsing them would hide that. Stopwords are common English that distinguishes
+// nothing. These are perfectly distinctive words that happen to be structural —
+// and structure is the thing IDF is worst at suppressing, because it appears in
+// EVERY document from a given source rather than in a random subset.
+//
+// The measured case: on a real database, with markup already stripped, `comments`
+// scored 6.29 in the derived vocabulary — nearly three times the next term. Every
+// lobste.rs and Hacker News entry carries a "Comments" link in its body, so from
+// TF-IDF's point of view it is a strong, consistent signal about what this reader
+// reads. It is a signal about their feed list.
+//
+// The cost of the false negative is accepted: an article genuinely about comment
+// sections loses one term. That is a much smaller error than one aggregator's link
+// text dominating the interest profile, and the reader can see neither.
+//
+// # Kept deliberately short, because a first draft of this list was wrong
+//
+// The obvious version of this set includes every word that sounds structural —
+// share, subscribe, article, image, link, source. Two of those are load-bearing
+// vocabulary for the people this application is for: "open source" and "image"
+// (as in image models) are subjects, not chrome, and the tokenizer test caught
+// `source` immediately by asserting that "open source software" survives.
+//
+// So the rule is: a word earns a place here only if it is chrome in essentially
+// every occurrence AND it was observed distorting a real vocabulary. Words that
+// are merely *often* structural stay out — IDF handles the ambiguous middle better
+// than a hand-written list does, because it measures this corpus instead of
+// guessing about all of them.
+var furniture = map[string]bool{
+	// Aggregator link text. `comments` is the measured 6.29 outlier; the singular
+	// showed up in the next run, from feeds whose link text reads "1 comment".
+	"comments": true, "comment": true, "permalink": true, "unsubscribe": true,
+	// Markup and URL remnants that survive text extraction, e.g. from a bare
+	// link printed as its own href, or an unparsed fragment.
+	"http": true, "https": true, "www": true, "html": true, "href": true,
+	"nbsp": true, "img": true, "src": true,
+	// Page furniture proper.
+	"advertisement": true, "sponsored": true, "copyright": true,
+}
+
 // MinTermLen drops one- and two-character tokens, which are almost always noise
 // after stopword removal.
 const MinTermLen = 3
 
-// Tokenize lowercases, splits on non-letter/digit boundaries, drops stopwords and
-// short tokens.
+// Tokenize lowercases, splits on non-letter/digit boundaries, drops stopwords,
+// feed furniture and short tokens.
 //
 // Intra-word apostrophes and hyphens are kept as separators rather than as part
 // of the token: "don't" becomes "don" (dropped as a stopword-adjacent short
@@ -72,7 +116,7 @@ func Tokenize(s string) []string {
 		}
 		t := b.String()
 		b.Reset()
-		if len(t) >= MinTermLen && !stopwords[t] && !isAllDigits(t) {
+		if len(t) >= MinTermLen && !stopwords[t] && !furniture[t] && !isAllDigits(t) {
 			out = append(out, t)
 		}
 	}

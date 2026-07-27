@@ -15,6 +15,7 @@ package signals
 
 import (
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -207,6 +208,49 @@ func Kinds() []Kind {
 	for k := range specs {
 		out = append(out, k)
 	}
+	return out
+}
+
+// MovesAffinity reports whether one observation of this kind can change an
+// interest score.
+//
+// Not the same question as Affinity, and the difference is the whole reason this
+// exists. Affinity says a kind is *eligible* to contribute; this says it actually
+// can. Two kinds are eligible and still cannot:
+//
+//   - Impression has prior 0.0 because it is the DENOMINATOR — "this was on
+//     screen" is what the other signals are measured against, and R17 turns on it
+//     not being able to move anything by itself.
+//   - Dwell also has prior 0.0, for the opposite reason: it must be classified
+//     against the article's length before it means anything (see Classify), not
+//     summed raw. It is the highest-volume positive signal there is, so a caller
+//     reading `Prior == 0` as "contributes nothing" would discard most of what the
+//     reader actually tells us.
+//
+// So the test is "non-zero prior, OR Dwell". Callers that need to know which kinds
+// are worth waking a derivation for should use this rather than writing the list
+// out, which is how derive.affinityWeight came to silently drop `reread`, `chose`
+// and `clicked_out` while looking correct.
+func MovesAffinity(k Kind) bool {
+	s, ok := specs[k]
+	if !ok || !s.Affinity {
+		return false
+	}
+	return s.Prior != 0 || k == Dwell
+}
+
+// AffinityKinds returns the sorted set of kinds that can move an interest score.
+//
+// Sorted so a caller building SQL from it produces a stable query string, which
+// keeps the statement cache from being defeated by map iteration order.
+func AffinityKinds() []Kind {
+	out := make([]Kind, 0, len(specs))
+	for k := range specs {
+		if MovesAffinity(k) {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 

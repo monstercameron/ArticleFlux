@@ -34,6 +34,45 @@ func TestTokenize(t *testing.T) {
 	}
 }
 
+// Feed furniture is dropped, and the words that only LOOK like furniture are not.
+//
+// The second half is the half that matters. A first draft of the furniture set
+// included `source` and `image`, which silently deleted "open source" and image
+// models from the vocabulary of exactly the reader this application is built for.
+// The failure is invisible from the outside: the interest profile is simply missing
+// a subject, and nothing reports a term that was never counted.
+func TestTokenizeDropsFurnitureButKeepsRealWords(t *testing.T) {
+	// Chrome, gone. `comments` is the measured case: it scored 6.29 in a real
+	// derived vocabulary, nearly 3x the next term, entirely from aggregator
+	// link text.
+	for _, in := range []string{
+		"comments", "permalink", "https", "www", "nbsp", "img", "href",
+		"advertisement", "sponsored", "copyright",
+	} {
+		if got := Tokenize(in); len(got) != 0 {
+			t.Errorf("Tokenize(%q) = %v, want the furniture dropped", in, got)
+		}
+	}
+
+	// Subjects that a careless furniture list eats. Each of these is a real topic
+	// for a technical reader, and each was either in the first draft of the set or
+	// one edit away from it.
+	keep := map[string][]string{
+		"open source software":    {"open", "source", "software"},
+		"image generation models": {"image", "generation", "models"},
+		"neural net inference":    {"neural", "net", "inference"},
+		"share price":             {"share", "price"},
+		"article 13 of the act":   {"article", "act"},
+		"continue reading":        {"continue", "reading"},
+	}
+	for in, want := range keep {
+		if got := Tokenize(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Tokenize(%q) = %v, want %v — a real subject was dropped as furniture",
+				in, got, want)
+		}
+	}
+}
+
 // Length normalisation is what stops every longform article from looking more
 // "about" everything than a link-blog post.
 func TestTermFreqIsLengthNormalised(t *testing.T) {

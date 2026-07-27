@@ -96,6 +96,7 @@ var unscopedByDesign = map[string]string{
 	// from internal/tools/guards so the two lists cannot say different things
 	// about the same method.
 	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
+	"ScopesToDerive":      "DISCOVERS scopes for the interest deriver rather than acting inside one; requiring a Scope would be circular, exactly like ScopeForSession. Background loop only — never reachable from an RPC",
 	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
 	"KnownGUIDs":          "reads global item guids for one global source (A14)",
 	"RecordOutlinks":      "outlinks are a property of a global item (A14); one extraction serves every subscriber",

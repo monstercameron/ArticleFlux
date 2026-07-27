@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -24,11 +25,13 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
+	"github.com/monstercameron/ArticleFlux/internal/derive"
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/idem"
+	"github.com/monstercameron/ArticleFlux/internal/jobs"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/obs"
 	"github.com/monstercameron/ArticleFlux/internal/pageproxy"
@@ -185,9 +188,33 @@ type App struct {
 	secretKey  []byte
 	llm        *llm.Client
 	translator *smart.Translator
+	// pool drains the durable job queue (§22.7). Always non-nil; Start is what
+	// decides whether it actually runs, so a test can enqueue and drain by hand.
+	pool *jobs.Pool
+	// deriver rebuilds the interest layer from the engagement log (§18, D18).
+	//
+	// It is the reason the pool exists at all on a single-user instance: every
+	// affinity number, topic and ranked homepage row is produced here and nowhere
+	// else, so an unwired pool means `engagements` accumulates forever and
+	// nothing ever reads it. That was the state before this field existed.
+	deriver    *derive.Service
 	grpc       *grpc.Server
 	handler    http.Handler
 	stopPo     chan struct{}
+	// lastDerive is the low-water mark for ScopesToDerive, under deriveMu.
+	//
+	// Held in memory rather than persisted: on restart it starts one window back,
+	// which re-enqueues a derivation that the dedupe key collapses anyway. A
+	// persisted cursor would buy nothing and could skip work if it were ever
+	// written before the job succeeded.
+	//
+	// The mutex is not defending against the current call pattern, where serve
+	// runs one DeriveDue at boot and the poller goroutine owns it afterwards. It
+	// is there because DeriveDue is EXPORTED: the cursor is the one piece of
+	// mutable state on App that a second caller could reasonably touch, and a torn
+	// read of it skips a window of engagements silently.
+	deriveMu   sync.Mutex
+	lastDerive time.Time
 }
 
 // Open builds the app and applies migrations.
@@ -284,6 +311,27 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	}
 	a.llm = llm.New(smartKey)
 	a.translator = smart.NewTranslator(a.llm, a.settings)
+
+	// The interest layer (§18) and the pool that runs it (§22.7).
+	//
+	// Registered here rather than in StartWorkers because handlers must be in
+	// place before any worker starts — jobs.Pool documents its handler map as
+	// write-before-Start precisely so it needs no lock, and building the pool in
+	// one place and populating it in another is how that invariant gets broken by
+	// a later edit.
+	//
+	// Only `derive` is registered, and the other kinds in DefaultCaps are caps for
+	// work that has no handler yet. That is safe only because nothing enqueues
+	// them: an unregistered kind is FAILED and retried five times before being
+	// declared dead (jobs.Pool.run), not skipped. So anything that starts
+	// enqueueing a kind must register it in the same change, or the queue grows a
+	// column of dead rows that look like a broken feature.
+	//
+	// Recommend is the near-term one, and it needs a discovery Validator — that is
+	// /discover's build, not this one.
+	a.deriver = derive.New(repo, cfg.Log)
+	a.pool = jobs.New(repo, jobs.Options{Log: cfg.Log})
+	a.pool.Handle(store.JobDerive, a.deriver.Handle)
 	// Following a page that has no feed (§11, §14.2).
 	//
 	// Three pieces, wired together because they are one ladder: `discover`
@@ -441,6 +489,16 @@ func (a *App) Close() error {
 	case <-a.stopPo:
 	default:
 		close(a.stopPo)
+	}
+	// Before the database closes, and it WAITS — jobs.Pool.Stop blocks until every
+	// worker has finished its current job. Closing the db underneath a running
+	// derivation would surface as "database is closed" errors on a job that then
+	// retries against a process that is going away.
+	//
+	// Unconditional: Stop on a pool that was never started returns immediately,
+	// since there are no workers to wait for.
+	if a.pool != nil {
+		a.pool.Stop()
 	}
 	// The browser is a child process, and one that outlives its parent is a
 	// headless Chrome nobody knows about holding 300 MB until the box reboots.
@@ -922,6 +980,61 @@ func (a *App) preflightCredentials(ctx context.Context) []error {
 	return problems
 }
 
+// StartWorkers launches the job pool.
+//
+// Separate from StartPoller because the two are independent: a `serve` with
+// -poll=0 still has an interest layer to rebuild when the reader marks something
+// read, and a test wants the pool without a fetch loop. Calling it twice would
+// start two sets of workers, so it is called once, from serve.
+func (a *App) StartWorkers(ctx context.Context) {
+	a.deriveMu.Lock()
+	a.lastDerive = time.Now().UTC().Add(-derive.Window)
+	a.deriveMu.Unlock()
+	a.pool.Start(ctx)
+}
+
+// DeriveDue enqueues an interest-layer rebuild for everyone who has read
+// something since the last call.
+//
+// Exported so `serve` can run it once at boot rather than making the first
+// homepage wait a whole poll interval, and so a test can drive it without a
+// ticker.
+//
+// The low-water mark advances only on success. Advancing it first and then
+// failing would silently skip a window of engagements, and the symptom — a
+// homepage that is stale for exactly one interval, occasionally — is close to
+// unfindable.
+//
+// # The window boundary is INCLUSIVE, and that is the deliberate direction
+//
+// ScopesToDerive matches `at >= since`, so an engagement landing in the same
+// millisecond the cursor advances to is seen twice and schedules one redundant
+// derivation. The alternative — an exclusive `>` — would SKIP that engagement
+// instead, and the two failure modes are not comparable: redundant work is
+// absorbed by the per-user dedupe key and costs one TF-IDF pass, while a skipped
+// engagement is signal that is gone for good. This whole loop runs in well under
+// a millisecond, so the collision is routine rather than theoretical.
+func (a *App) DeriveDue(ctx context.Context) {
+	a.deriveMu.Lock()
+	defer a.deriveMu.Unlock()
+
+	scopes, err := a.repo.ScopesToDerive(ctx, a.lastDerive)
+	if err != nil {
+		a.log.Warn("finding users to derive", "err", err)
+		return
+	}
+	for _, sc := range scopes {
+		if err := a.deriver.Enqueue(ctx, sc); err != nil {
+			a.log.Warn("enqueueing derive", "user", sc.UserID, "err", err)
+			return
+		}
+	}
+	a.lastDerive = time.Now().UTC()
+	if len(scopes) > 0 {
+		a.log.Info("derive enqueued", "users", len(scopes))
+	}
+}
+
 // StartPoller runs the background fetch loop until Close.
 //
 // Polling on a timer rather than on demand is what makes the reader feel like a
@@ -964,6 +1077,10 @@ func (a *App) StartPoller(ctx context.Context) {
 					a.log.Info("polled", "sources", res.Polled, "new", res.NewItems,
 						"errors", len(res.Errors))
 				}
+				// After the fetch, not before: new items are what the ranking is
+				// over, and deriving first would rank the homepage against a
+				// world one interval out of date.
+				a.DeriveDue(ctx)
 			}
 		}
 	}()
