@@ -52,6 +52,8 @@ func education() classify.Label {
 			{Text: "test scores", Weight: 1.6},
 			{Text: "provost", Weight: 1.6},
 			{Text: "learning outcomes", Weight: 1.6},
+			{Text: "study abroad", Weight: 1.6},
+			{Text: "lecture hall", Weight: 1.0},
 			{Text: "public school", Weight: 1.4},
 			{Text: "private school", Weight: 1.4},
 			{Text: "scholarship", Weight: 1.4},

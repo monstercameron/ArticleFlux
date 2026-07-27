@@ -39,6 +39,8 @@ func music() classify.Label {
 			{Text: "chart-topping", Weight: 1.8},
 			{Text: "indie label", Weight: 1.6},
 			{Text: "major label", Weight: 1.6},
+			{Text: "vinyl pressing", Weight: 1.6},
+			{Text: "concert review", Weight: 1.2},
 			{Text: "single release", Weight: 1.8},
 			{Text: "music producer", Weight: 1.6},
 			{Text: "singer-songwriter", Weight: 1.6},

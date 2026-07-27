@@ -5,7 +5,7 @@ import "github.com/monstercameron/ArticleFlux/internal/classify"
 // filmTV is the Film & TV category (plan.md §27.3d #17, slug `film-tv`).
 func filmTV() classify.Label {
 	return classify.Label{
-		Slug: "film-tv",
+		Slug: "filmtv",
 		Name: "Film & TV",
 		Terms: []classify.Term{
 			{Text: "box office", Weight: 2.6},
