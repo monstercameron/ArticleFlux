@@ -1751,9 +1751,20 @@ hand-written CSS and vanilla JS, and nobody ports them.
       build — the symbol table was never the cost; grpc + protobuf + the Go runtime are.
       Consequence: the static handler serves a precompressed `.gz` sibling, and the Service Worker
       stops being a nicety.
-- [ ] ~~8.2 original~~ and write the number into `plan.md` R4. **This decides whether A5
+- [x] ~~8.2 original~~ and write the number into `plan.md` R4. **This decides whether A5
       stays affordable.** Fallback order if alarming: imports to plain HTTP, then reconsider gRPC for
       unary while keeping one streaming endpoint.
+
+      ✅ 2026-07-27 — the number is in R4, and it has **moved**: 31.4 MB raw / 6.6 MB gzipped against
+      G5's 23.8 / 5.2, so +32% raw in a day of feature work. R4 now carries both figures and the
+      delta, because the RATE is the finding rather than the number.
+
+      **The CI ratchet is at 96% of its ceiling** — baseline 30,175,802, fails at 31,684,592, build
+      is 31,368,999. The next person to trip it will be somebody who added a button, and the bump
+      they are asked for is a decision about the trend rather than about their change. Recorded so
+      that decision is taken as one.
+
+      A5 survives. The headroom does not: packs are now planned against ~6.6 MB already spent.
 - [x] **8.3 `client/platform`** — **the only package that imports `syscall/js`.** Typed Go wrappers
       for: SW registration · `interop.PersistentStore` (IndexedDB) · `BroadcastChannel` (leader
       election, §12.5) · `navigator.wakeLock` · `storage.persist()` · Web Push subscribe · pointer and

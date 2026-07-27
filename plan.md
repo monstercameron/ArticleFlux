@@ -1851,6 +1851,43 @@ re-buying identical audio.
 The provider's error text is logged and **never** returned — provider errors can
 echo request content, and request content here is the user's article (§22.11).
 
+**Listening to a list.** Three preferences, each default off, each a separate
+decision:
+
+| Preference | What it changes | Why it is its own switch |
+|---|---|---|
+| `tts.smartPlus` | Who speaks — OpenAI instead of the browser | The egress boundary |
+| `tts.digest` | What is spoken — ~1 minute of summary instead of the article | A *second* egress and a second bill. Consent to being read aloud is not consent to being read and rewritten |
+| `tts.autoplay` | What happens when it ends — the next article, until the list runs out | Changes nothing about this article, so it is the one toggle that does not interrupt playback |
+
+The digest is written to be HEARD, which is a different job from being
+shortened: prose written for the eye leans on paragraph breaks, subheadings and
+the ability to skim back a line, none of which survive a synthesiser. So the
+prompt is mostly prohibitions, and `cleanForSpeech` strips the markdown it was
+told not to emit anyway — a stray asterisk is not a cosmetic problem, it is the
+word "asterisk" in the middle of a sentence, cached as audio.
+
+Audio is keyed by `(item, mode, model, voice)`. The mode is not optional: without
+it, turning the digest on serves yesterday's full-article audio and turning it
+off serves the digest, each looking exactly like the toggle not working.
+
+Continuous play marks each article read as it finishes — hearing it out is the
+same claim scrolling to the last line already makes — and prefetches the next
+track during the current one, which is the difference between a session and
+forty seconds of silence at every seam. Every segment opens `From {source}.
+{title}.`: a queue with no announcement tells a listener what a piece is called
+but not where it came from, and that is most of how anyone decides whether to
+keep listening.
+
+**The floating transport.** `listenBar` lives at the head of the article because
+listening is a decision made before reading, and because a floating player covers
+the text it is reading. That rule is not overturned by `nowPlaying` — it is
+completed. The floating bar appears only once the in-article control has left the
+viewport, so by construction it never covers the article it is reading; it covers
+whatever you scrolled away to, at the moment you have no other way to stop it. It
+carries the one thing the in-article control never needs — which article is
+talking — and the title itself is the control that takes you back.
+
 The Smart+ toggle sits **next to the play button**, not in settings. It is an
 egress decision, and the reader should be able to see its state at the moment
 they press play.
@@ -3055,6 +3092,8 @@ connect **before the first item list is fetched**:
 | `list.unreadOnly` · `rail.unreadOnly` · `rail.filter` | The three filters |
 | `pane.rail` · `pane.list` | Pane widths |
 | `tts.smartPlus` | The egress opt-in |
+| `tts.digest` | Speak a ~1 minute summary instead of the article — a second egress, so a second opt-in |
+| `tts.autoplay` | Carry on to the next article when this one ends |
 
 Four flat keys for the scope rather than one encoded string: flat keys cannot be
 mis-parsed, and a key this app stops understanding is ignored on the next boot
@@ -4917,6 +4956,28 @@ release build saves under 4% — the symbol table was never the problem.
   available is the difference between usable and not.
 - **A5 (offline packs) survives**, but with less headroom than assumed. The pack budget has to be
   planned against ~5 MB already spent, not against zero.
+
+**RE-MEASURED 2026-07-27: 31.4 MB raw, 6.6 MB gzipped.** The number above is the original G5
+measurement and is kept because the reasoning was written against it; this is where it has got to.
+
+| | 2026-07-26 (G5) | 2026-07-27 | |
+|---|---|---|---|
+| raw | 23.8 MB | **31.4 MB** | +32% |
+| gzipped | 5.2 MB | **6.6 MB** | +27% |
+
+**The ratchet is at 96% of its ceiling.** `wasm-baseline.txt` is 30,175,802 and CI fails at +5%
+(31,684,592); the build is 31,368,999. One more feature of any size trips it, and the next person to
+see that failure will be somebody who added a button. That is the ratchet working — but it means the
+next bump is a decision about the trend rather than about one change, and it should be taken as one.
+
+**What it changes about A5.** The conclusion above stands and its margin does not: the pack budget is
+now planned against **~6.6 MB already spent**, not ~5 MB. Offline packs are still affordable and the
+headroom shrank by a quarter in one day of feature work, which is the rate that matters rather than
+the number.
+
+**What it does not change.** The composition: still the Go runtime, grpc + protobuf, and GWC. Nothing
+added since G5 is individually large — the growth is a hundred small things, which is exactly the
+shape that has no single fix and is why the ratchet exists.
 
 **What was NOT done, deliberately:** TinyGo. It would cut this substantially and would also drop
 `syscall/js` compatibility guarantees, reflection-heavy protobuf, and parts of the standard library
