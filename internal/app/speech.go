@@ -270,7 +270,7 @@ func (a *App) digestFor(ctx context.Context, it store.Item) (string, error) {
 // here is recoverable by reading the article, and the handler says so in one
 // place.
 func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
-	vibe string, open *smart.Opening) (string, error) {
+	vibe string, open *smart.Opening, opened bool) (string, error) {
 	if a.podcast == nil {
 		return "", smart.ErrNothingToSummarise
 	}
@@ -280,6 +280,7 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
 		Title:  it.Title,
 		Vibe:   vibe,
 		Open:   open,
+		Opened: opened,
 		// The article stripped of markup, like the digest gets: the model is
 		// being asked to retell it, not to read our HTML, and the provider bills
 		// per character either way.
@@ -361,7 +362,7 @@ func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
 // more here: a listener whose narrator falls over should hear the article, which
 // is less pleasant than what they asked for and infinitely better than silence.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item, open *smart.Opening, intro bool) (text, cacheKey string) {
+	it store.Item, prev store.Item, open *smart.Opening, intro, opened bool) (text, cacheKey string) {
 	text, cacheKey = speechText(it), it.ID
 
 	// The opening, on its own, before any story. It is a separate recording
@@ -384,10 +385,17 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 
 	if prefs[podcastPrefKey] == "true" {
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
-		seg, err := a.podcastFor(ctx, it, prev, vibe, open)
+		seg, err := a.podcastFor(ctx, it, prev, vibe, open, opened)
 		switch {
 		case err == nil:
-			return seg, podcastKey(it.ID, prev.ID, vibe, open)
+			key := podcastKey(it.ID, prev.ID, vibe, open)
+			if opened {
+				// A first story that greets and one that does not are different
+				// recordings. Sharing a key would serve one for the other, and
+				// the audible half of that is the date read out twice.
+				key += "#opened"
+			}
+			return seg, key
 		case errors.Is(err, smart.ErrNothingToSummarise):
 			// A two-line link post is its own segment. Read it.
 			a.cfg.Log.Debug("broadcast segment skipped, reading the article", "item", it.ID)
@@ -613,6 +621,10 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// flag and a predecessor is a client that has lost track of where it is, and
 	// the flag loses.
 	intro := isIntroRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
+	// The other half of the split: the greeting has already been recorded, so
+	// this story must not open the show a second time.
+	opened := prefs[podcastPrefKey] == "true" &&
+		strings.TrimSpace(r.URL.Query().Get(introParam)) == introDone
 	if prefs[podcastPrefKey] == "true" {
 		if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != id {
 			// An unreadable or unknown predecessor is simply no predecessor. It
@@ -643,7 +655,8 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// `cacheKey` carries the difference, because the audio cache is keyed by it:
 	// without that, turning a mode on would serve yesterday's rendering of a
 	// different script, which looks exactly like the toggle not working.
-	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open, intro && prev.ID == "")
+	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open,
+		intro && prev.ID == "", opened && prev.ID == "")
 	if text == "" {
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return

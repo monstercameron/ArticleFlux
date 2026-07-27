@@ -519,3 +519,65 @@ func TestIntroWithNoLineupFallsBack(t *testing.T) {
 		t.Errorf("an opening with no headlines returned %v", err)
 	}
 }
+
+// The first story of a SPLIT broadcast must not open the show a second time.
+//
+// It is told so explicitly, because the absence of an instruction is not
+// neutral here: a segment with no previous story has to be told it has none, and
+// a model told "this is the opening segment" greets the listener and says the
+// date whatever the rules above say about only doing that when an opening was
+// given. The listener then hears the date twice in ninety seconds.
+func TestAnOpenedBroadcastDoesNotGreetAgain(t *testing.T) {
+	seg := Segment{
+		ItemID: "a", Source: "The Paper", Title: "The first story",
+		Body: "The body of the first story.", Opened: true,
+	}
+	in := podcastInput(seg, seg.Body)
+	for _, want := range []string{
+		"ALREADY OPENED",
+		"Do NOT greet the listener",
+		"Do NOT say the date",
+		// And still no handover: nothing has been covered yet, which is the
+		// thing the old line was there to prevent.
+		"Do NOT hand over",
+	} {
+		if !strings.Contains(in, want) {
+			t.Errorf("an opened broadcast was not told %q:\n%s", want, in)
+		}
+	}
+	if strings.Contains(in, "This is the OPENING segment") {
+		t.Errorf("an opened broadcast was told it was the opening:\n%s", in)
+	}
+	// The story itself is still there. This is a segment, not another intro.
+	if !strings.Contains(in, "The body of the first story.") {
+		t.Errorf("the story was dropped:\n%s", in)
+	}
+
+	// Without the flag, the old wording stands — a broadcast with no music is
+	// still unsplit, and that segment DOES open the show.
+	plain := podcastInput(Segment{ItemID: "a", Title: "T"}, "body")
+	if !strings.Contains(plain, "This is the OPENING segment") {
+		t.Errorf("an unsplit first segment lost its opening line:\n%s", plain)
+	}
+}
+
+// Three scripts, three cache entries. Sharing any pair of them serves one for
+// another, and the audible half of that is the date read out twice.
+func TestTheThreeFirstSegmentModesAreDistinct(t *testing.T) {
+	p := keylessPodcast(t)
+	open := &Opening{PartOfDay: "evening", Date: "Monday, 27 July 2026",
+		Lineup: []Headline{{Source: "The Paper", Title: "One"}}}
+	base := Segment{ItemID: "a", Vibe: VibeCalm, Open: open, Body: "text"}
+	intro := base
+	intro.OpenOnly = true
+	opened := Segment{ItemID: "a", Vibe: VibeCalm, Body: "text", Opened: true}
+
+	seen := map[string]string{}
+	for name, seg := range map[string]Segment{"unsplit": base, "intro": intro, "opened": opened} {
+		path := p.cachePath(seg, "m")
+		if other, dup := seen[path]; dup {
+			t.Errorf("%s and %s share a cache entry", name, other)
+		}
+		seen[path] = name
+	}
+}

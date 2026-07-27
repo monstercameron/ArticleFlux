@@ -111,7 +111,12 @@ func StingChime() {
 
 	// One lowpass for the whole sting, so the notes sit in the same room.
 	warm := ctx.Call("createBiquadFilter")
-	warm.Get("type").Set("value", "lowpass")
+	// `type` is a plain string property; `frequency` is an AudioParam. They are
+	// set differently and getting that wrong is not a no-op — Value.Set on a
+	// string PANICS the wasm module, which is recovered above and therefore
+	// looks exactly like a browser with no audio. This chime never made a sound
+	// until that was fixed.
+	warm.Set("type", "lowpass")
 	warm.Get("frequency").Set("value", 2400)
 	warm.Call("connect", ctx.Get("destination"))
 
@@ -128,7 +133,7 @@ func StingChime() {
 	}
 	for _, n := range notes {
 		osc := ctx.Call("createOscillator")
-		osc.Get("type").Set("value", "triangle")
+		osc.Set("type", "triangle")
 		osc.Get("frequency").Set("value", n.hz)
 
 		g := ctx.Call("createGain")
@@ -137,7 +142,7 @@ func StingChime() {
 		// triangle wave is a click, and a click is the one sound that makes an
 		// interface feel broken rather than designed.
 		g.Get("gain").Call("setValueAtTime", 0.0001, at)
-		g.Get("gain").Call("exponentialRampToValueAtTime", 0.12, at+0.015)
+		g.Get("gain").Call("exponentialRampToValueAtTime", chimeNote, at+0.015)
 		g.Get("gain").Call("exponentialRampToValueAtTime", 0.0001, at+1.6)
 
 		osc.Call("connect", g)
@@ -149,11 +154,11 @@ func StingChime() {
 	// The body underneath: one low sine that swells and decays slowly, so the
 	// three notes land on something rather than in the air.
 	low := ctx.Call("createOscillator")
-	low.Get("type").Set("value", "sine")
+	low.Set("type", "sine")
 	low.Get("frequency").Set("value", 73.42) // D2
 	lg := ctx.Call("createGain")
 	lg.Get("gain").Call("setValueAtTime", 0.0001, now)
-	lg.Get("gain").Call("exponentialRampToValueAtTime", 0.09, now+0.25)
+	lg.Get("gain").Call("exponentialRampToValueAtTime", chimeBody, now+0.25)
 	lg.Get("gain").Call("exponentialRampToValueAtTime", 0.0001, now+2.6)
 	low.Call("connect", lg)
 	lg.Call("connect", ctx.Get("destination"))

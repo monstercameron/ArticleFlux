@@ -229,6 +229,17 @@ type Segment struct {
 	// Body is still given (it is the story the run-through ends on) but is not
 	// covered. Requires Open.
 	OpenOnly bool
+	// Opened says the broadcast has ALREADY introduced itself, in a recording of
+	// its own, and this is the first story after it.
+	//
+	// It exists because leaving it out is not neutral. A segment with no previous
+	// story has to be TOLD it has none, or a model invents a handover from a
+	// story that never aired — and a model told "this is the opening segment"
+	// greets the listener and says the date, whatever the instructions say about
+	// only doing that when an opening was given. The listener then hears the date
+	// twice in ninety seconds, which is the most obviously wrong thing a split
+	// broadcast can do.
+	Opened bool
 }
 
 // Podcast writes broadcast segments.
@@ -556,8 +567,22 @@ func podcastInput(seg Segment, body string) string {
 		// model given only one story will write a handover from an imagined one
 		// about as often as not, and "we were just discussing" a story that never
 		// aired is the single most damaging thing this feature can produce.
-		in.WriteString("This is the OPENING segment of the broadcast. " +
-			"There is no previous story.\n\n")
+		if seg.Opened {
+			// And this is the OTHER thing it must not do. The broadcast has
+			// already been introduced — in a separate recording, seconds ago,
+			// over music — so a second greeting here is the listener being told
+			// the date twice.
+			in.WriteString("The broadcast has ALREADY OPENED: the listener has " +
+				"just heard the greeting, the date and the run-through of what " +
+				"is coming, in a recording of its own. This is the first story.\n" +
+				"Do NOT greet the listener. Do NOT say the date or the part of " +
+				"the day. Do NOT say how many stories there are. Do NOT hand " +
+				"over from anything — nothing has been covered yet. Begin on " +
+				"the story itself.\n\n")
+		} else {
+			in.WriteString("This is the OPENING segment of the broadcast. " +
+				"There is no previous story.\n\n")
+		}
 	}
 	in.WriteString("The story to cover now:\n")
 	if s := strings.TrimSpace(seg.Source); s != "" {
@@ -624,8 +649,14 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	// broadcast that either never gets to the news or never introduces itself,
 	// depending on which was asked for first.
 	mode := "seg"
-	if seg.OpenOnly {
+	switch {
+	case seg.OpenOnly:
 		mode = "intro"
+	case seg.Opened:
+		// A first story that greets and one that does not are different scripts
+		// from the same inputs, so they cannot share an entry — the same rule the
+		// opening itself follows, and for the same reason.
+		mode = "opened"
 	}
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
 		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(seg.Vibe) +

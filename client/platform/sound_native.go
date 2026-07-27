@@ -27,4 +27,6 @@ func RevokeBlobURL(url string) {}
 
 func BedDuck(under bool) {}
 
+func BedSeam() {}
+
 func MusicPause(on bool) {}

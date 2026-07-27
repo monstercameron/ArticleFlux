@@ -42,23 +42,50 @@ const (
 	// while the narrator is talking — about eleven decibels down, which is
 	// roughly what a broadcast desk does and comfortably enough for a voice to
 	// win without the music vanishing and drawing attention to its own absence.
-	bedLevel  = 0.17
-	bedDucked = 0.05
+	//
+	// A tenth of their first values, and the tenth is the point: loudness is not
+	// linear. "A quarter as loud" is about twenty decibels down, which is a gain
+	// of 0.1 — halving the number only takes six decibels off and sounds like a
+	// small correction rather than the one that was asked for.
+	bedLevel = 0.021
+	// bedDucked is only SIX decibels below the bed, not the eleven a broadcast
+	// desk would use, and the reason is what the bed is for. A desk ducks music
+	// so the voice wins; this music is already thirty decibels under the voice
+	// and its whole job is to be continuously there. Ducked hard it disappeared
+	// completely under every segment, which does not read as ducking — it reads
+	// as the music having stopped between articles.
+	bedDucked = 0.0105
+	// bedSeam is where the bed goes BETWEEN stories, and it is above its resting
+	// level rather than at it. The seam is the one moment in a broadcast with no
+	// voice in it, and a bed that merely stops being ducked reads as a gap; a bed
+	// that comes up reads as the programme breathing. About four decibels —
+	// enough to be heard as a lift, not enough to be a crescendo.
+	bedSeam = 0.036
+	// bedSwell is the rise into a seam. Quicker than bedFade because the seam is
+	// only a few seconds long: a lift that takes half of it has not happened.
+	bedSwell = 0.8
 	// bedFade is slow on purpose. Music that steps between two levels is music
 	// the listener notices stepping; a second and a half reads as the room
 	// changing rather than as a control moving.
 	bedFade = 1.5
-	// bedRise is longer still, because a bed arriving is the one moment it is
-	// most likely to be noticed and the correct amount of attention for it is
-	// none.
-	bedRise = 3.0
+	// bedRise matches stingOut exactly, because the two are one gesture: the
+	// theme leaves over the same two and a half seconds the bed arrives in. Any
+	// difference between them is a dip or a bulge in the middle of the crossfade,
+	// which is the one moment of it anybody would notice.
+	bedRise = stingOut
 
-	// stingOpen is the opening at full — this is a piece of music playing, not
-	// atmosphere, and it is the first thing anybody hears.
-	stingOpen = 0.5
+	// stingOpen is the opening — this is a piece of music playing, not
+	// atmosphere, and it is the first thing anybody hears. A third of its first
+	// value, for the reason the bed's number gives: half as loud is about ten
+	// decibels down, not half the gain. Loud enough to be the programme starting,
+	// not loud enough to be a reason to reach for the volume before the news has.
+	stingOpen = 0.16
 	// stingUnder is where it goes once there is a voice over it. Deeper than the
-	// bed's duck because there is more to get out of the way of.
-	stingUnder = 0.12
+	// bed's duck because there is more to get out of the way of. Expressed
+	// against stingOpen rather than typed, so the duck keeps its depth whenever
+	// the opening's level is changed — which is exactly what did NOT happen to
+	// the chime below, and it took a probe of the live gain values to notice.
+	stingUnder = stingOpen * 0.24
 	// stingDuck is quick: the narrator has started, and music that takes two
 	// seconds to notice is two seconds of a listener straining.
 	stingDuck = 1.0
@@ -223,6 +250,16 @@ func BedDuck(under bool) {
 	bedCh.level(want, bedFade)
 }
 
+// BedSeam lifts the bed between two stories.
+//
+// Its own call rather than a third state inside BedDuck, because it is a
+// different EVENT: ducking follows the voice, and this follows the absence of
+// one. Called when a track ends; undone by the duck when the next one starts.
+func BedSeam() {
+	defer func() { _ = recover() }()
+	bedCh.level(bedSeam, bedSwell)
+}
+
 // Sting starts the opening music, loud.
 //
 // Loud because for the next few seconds it is the only thing happening: the
@@ -271,6 +308,14 @@ func MusicPause(on bool) {
 		if !m.el.Truthy() {
 			continue
 		}
+		if on == m.el.Get("paused").Bool() {
+			// Already where it should be. Worth checking rather than calling
+			// anyway: this runs on a lifecycle effect, and effect dependencies
+			// are a hint in this runtime, so "call play on every commit" is what
+			// the unguarded version does — a few hundred no-op promises a minute
+			// for as long as the show is open.
+			continue
+		}
 		if on {
 			m.el.Call("pause")
 			continue
@@ -278,3 +323,15 @@ func MusicPause(on bool) {
 		catchPromise(m.el.Call("play"))
 	}
 }
+
+// The synthesised chime's levels, as fractions of the opening's.
+//
+// Fractions rather than numbers, because the numbers drifted: the music was
+// turned down twice and the chime — which is the FIRST thing anybody hears and
+// was therefore the loudest thing in the mix — stayed exactly where it started,
+// in a different file, silently making both of those changes look like they had
+// not been applied.
+const (
+	chimeNote = stingOpen * 0.24
+	chimeBody = stingOpen * 0.18
+)

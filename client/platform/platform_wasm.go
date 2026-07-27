@@ -1546,6 +1546,25 @@ func audioElement() js.Value {
 // that matters most here: Smart+ synthesis of a long article takes seconds, and
 // a play button that looks idle for five seconds gets pressed again.
 func PlayAudio(src string, onState func(state string)) {
+	PlayAudioIn(src, 0, onState)
+}
+
+// PlayAudioIn is PlayAudio with a LEAD: the audio is loaded, "ready" is reported
+// the moment it could start, and it actually starts leadMS later.
+//
+// The lead exists for one thing, and it cannot be done any other way. The
+// broadcast crosses from its opening theme to the bed underneath the first
+// story, and that crossfade has to BEGIN BEFORE the narrator speaks — a fade
+// that starts when the voice does is a fade you hear happening under the voice.
+// Reacting to the `playing` event is always too late by definition, so the
+// player says "ready" first and holds the audio back while the music moves.
+//
+// leadMS of 0 is the ordinary case and behaves exactly as before: play as soon
+// as the data allows. A NEGATIVE lead means "load it and wait to be told" — the
+// caller starts it with AudioGo when the music has made room. That exists
+// because the right moment is a function of two things this layer cannot see:
+// when the greeting ended, and how long the theme has been playing since.
+func PlayAudioIn(src string, leadMS int, onState func(state string)) {
 	AudioStop()
 
 	if !audioElement().Truthy() {
@@ -1564,6 +1583,11 @@ func PlayAudio(src string, onState func(state string)) {
 	on("pause", "paused")
 	on("ended", "idle")
 	on("error", "error")
+	// "ready" is `canplay`: enough has arrived to begin, and nothing has been
+	// heard yet. It is reported on every track and ignored by callers that have
+	// nothing to do with it — it is the only state here that describes the
+	// FUTURE rather than the present, which is exactly what a lead needs.
+	on("canplay", "ready")
 
 	audioEl.Set("src", src)
 	// Re-applied per track, because setting src resets the element's rate. A
@@ -1573,6 +1597,28 @@ func PlayAudio(src string, onState func(state string)) {
 	audioEl.Set("preservesPitch", true)
 	audioEl.Set("playbackRate", speechRate)
 	onState("loading")
+	if leadMS < 0 {
+		// Held indefinitely. The element still loads — preload is auto and the
+		// src is set — so AudioGo starts instantly when it comes.
+		return
+	}
+	if leadMS > 0 {
+		// Held. The element loads either way — `preload` is auto and the src is
+		// set — so the wait costs nothing but the delay that was asked for.
+		var start js.Func
+		start = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+			defer start.Release()
+			if !audioEl.Truthy() || audioEl.Get("src").String() != src {
+				// Something else took the player while this was waiting. Starting
+				// now would interrupt it with a track nobody asked for any more.
+				return nil
+			}
+			catchPromise(audioEl.Call("play"))
+			return nil
+		})
+		js.Global().Call("setTimeout", start, leadMS)
+		return
+	}
 	// play() returns a promise that rejects when autoplay policy or a 4xx blocks
 	// it. Unhandled, that is an uncaught rejection in the console and a control
 	// stuck on "loading" forever.
@@ -1586,6 +1632,18 @@ func PlayAudio(src string, onState func(state string)) {
 		})
 		p.Call("catch", f)
 	}
+}
+
+// AudioGo starts audio that PlayAudioIn was told to hold.
+//
+// Safe to call when nothing is held: an element already playing ignores it, and
+// one with no source does nothing.
+func AudioGo() {
+	defer func() { _ = recover() }()
+	if !audioEl.Truthy() || audioEl.Get("src").String() == "" {
+		return
+	}
+	catchPromise(audioEl.Call("play"))
 }
 
 // SetSpeechRate sets how fast the Smart+ voice plays.
