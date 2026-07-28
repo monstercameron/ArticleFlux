@@ -1277,6 +1277,17 @@ func (a *App) buildHandler() {
 	mux.Handle("/pub/", a.shareLimit(http.HandlerFunc(a.servePublicShare)))
 
 	if a.cfg.WebRoot != "" {
+		// The landing page, at a URL somebody can say out loud. It is a plain
+		// file in the web root, so /welcome.html already served it — this is
+		// the same bytes without the extension, because the address goes in a
+		// README and on a link somebody hands to a friend.
+		//
+		// It is NOT mounted at "/". Root belongs to the reader: an existing
+		// account arriving at the origin wants their articles, not a pitch for
+		// the software they already run.
+		mux.Handle("/welcome", a.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join(a.cfg.WebRoot, "welcome.html"))
+		})))
 		mux.Handle("/", a.securityHeaders(a.static(a.cfg.WebRoot)))
 	}
 	// Metrics for every HTTP response, outermost so it sees the status the client

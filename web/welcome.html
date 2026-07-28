@@ -1,0 +1,300 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArticleFlux — your reading, on your own machine</title>
+<meta name="description" content="A self-hosted feed reader that is Go all the way down. One binary, one SQLite file, and a reading history that never leaves the box.">
+<meta name="theme-color" content="#221A2E">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="fonts.css">
+
+<style>
+/* The landing page is the reader.
+ *
+ * Every colour and face here is the application's own — the Fanciful theme's
+ * plum ground, its cream, its amber — because a marketing page in a different
+ * palette is a promise the product does not keep. The layout is the reader's
+ * three panes, and the pitch is typeset as an article inside them: the thing
+ * being sold is doing the selling.
+ */
+:root {
+  --bg:    #221A2E;
+  --sur:   #2B2239;
+  --sur-2: #342A44;
+  --line:  #3D3150;
+  --hair:  #312741;
+  --cream: #F8F1E7;
+  --soft:  #C9BDD6;
+  --mute:  #A093AC;
+  --accent:#FFCE5C;
+  --pos:   #7DDCB0;
+
+  --dsp: 'Fraunces', Georgia, serif;
+  --rd:  'Literata', Georgia, serif;
+  --ui:  'Outfit', system-ui, sans-serif;
+
+  --rail: 232px;
+  --list: 340px;
+  --pane-gap: 1px;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--cream);
+  font-family: var(--rd);
+  font-size: 16px;
+  line-height: 1.6;
+  /* The same wash the application paints behind the article: a very slight
+   * lift at the top left so a flat plum does not read as a bare div. */
+  background-image: radial-gradient(120vw 90vh at 12% -10%, #2A2038 0%, var(--bg) 55%);
+  background-attachment: fixed;
+}
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* --- masthead ----------------------------------------------------------- */
+.top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--hair);
+}
+.mark { font-family: var(--dsp); font-weight: 600; font-size: 21px; letter-spacing: -.01em; }
+.mark span { color: var(--accent); }
+.top-right { display: flex; align-items: center; gap: 14px; }
+.top-link {
+  font-family: var(--ui); font-size: 13px; color: var(--soft);
+  text-decoration: none; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid transparent;
+}
+.top-link:hover { color: var(--cream); border-color: var(--line); }
+
+/* --- the frame: the reader, as the page --------------------------------- */
+.frame {
+  display: grid;
+  grid-template-columns: var(--rail) var(--list) minmax(0, 1fr);
+  gap: var(--pane-gap);
+  background: var(--hair);
+  min-height: calc(100vh - 61px);
+}
+.pane { background: var(--bg); padding: 22px 20px; }
+.pane--list { background: #241C31; }
+.pane--article { background: var(--bg); padding: 40px clamp(20px, 4vw, 64px) 64px; }
+
+/* Panes arrive left to right, the way the application's filmstrip moves. One
+ * sequence on load, nothing after it. */
+@media (prefers-reduced-motion: no-preference) {
+  .pane { animation: slide-in 620ms cubic-bezier(.2,.7,.3,1) both; }
+  .pane--list { animation-delay: 90ms; }
+  .pane--article { animation-delay: 180ms; }
+  @keyframes slide-in { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+}
+
+/* --- rail --------------------------------------------------------------- */
+.band {
+  font-family: var(--ui); font-size: 11px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--mute);
+  display: flex; align-items: center; gap: 8px; margin: 4px 0 10px;
+}
+.band::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+.rail-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px; color: var(--soft); font-size: 14px;
+}
+.rail-row .g { color: var(--mute); width: 14px; text-align: center; }
+.rail-row--on { background: var(--sur-2); color: var(--cream); box-shadow: inset 2px 0 0 var(--accent); }
+.rail-feed { display: flex; align-items: center; gap: 10px; padding: 6px 10px; font-size: 14px; color: var(--soft); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--mute)); flex: none; }
+.rail-note {
+  margin-top: 18px; font-family: var(--ui); font-size: 12px; line-height: 1.5;
+  color: var(--mute); border-top: 1px solid var(--hair); padding-top: 14px;
+}
+
+/* --- list --------------------------------------------------------------- */
+.list-title { font-family: var(--dsp); font-size: 22px; margin: 2px 0 2px; }
+.list-sub { font-family: var(--ui); font-size: 12px; color: var(--mute); margin: 0 0 16px; }
+.row {
+  border-top: 1px solid var(--hair); padding: 13px 4px 13px 12px;
+  box-shadow: inset 3px 0 0 var(--c, transparent);
+}
+.row:last-child { border-bottom: 1px solid var(--hair); }
+.row h3 { font-family: var(--rd); font-size: 15px; font-weight: 600; margin: 0 0 4px; line-height: 1.35; }
+.row p { margin: 0; font-family: var(--ui); font-size: 12px; color: var(--mute); }
+.row--on { background: var(--sur); }
+
+/* --- article: the pitch ------------------------------------------------- */
+.eyebrow {
+  font-family: var(--ui); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--accent); margin: 0 0 14px;
+}
+h1 {
+  font-family: var(--dsp); font-weight: 600;
+  font-size: clamp(34px, 5.2vw, 58px); line-height: 1.04;
+  letter-spacing: -.02em; margin: 0 0 18px; max-width: 16ch;
+}
+h1 em { font-style: italic; color: var(--accent); }
+.lede { font-size: clamp(17px, 1.6vw, 20px); color: var(--soft); max-width: 54ch; margin: 0 0 14px; }
+.article p { max-width: 62ch; color: var(--soft); }
+.article strong { color: var(--cream); font-weight: 600; }
+
+.cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 30px 0 10px; }
+.btn {
+  font-family: var(--ui); font-weight: 600; font-size: 15px;
+  background: var(--accent); color: #2A2033; text-decoration: none;
+  padding: 13px 22px; border-radius: 10px; border: 1px solid var(--accent);
+  transition: transform 140ms ease, filter 140ms ease;
+}
+.btn:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.btn--ghost { background: transparent; color: var(--cream); border-color: var(--line); }
+.btn--ghost:hover { border-color: var(--soft); }
+.cta-note { font-family: var(--ui); font-size: 12px; color: var(--mute); }
+
+/* --- the claims --------------------------------------------------------- */
+.claims { border-top: 1px solid var(--hair); margin-top: 44px; padding-top: 30px; }
+.claim { max-width: 62ch; margin: 0 0 26px; }
+.claim h2 {
+  font-family: var(--dsp); font-size: 20px; font-weight: 600;
+  margin: 0 0 6px; letter-spacing: -.01em;
+}
+.claim p { margin: 0; }
+
+/* --- bill of materials -------------------------------------------------- */
+.bom {
+  margin-top: 34px; border: 1px solid var(--line); border-radius: 12px;
+  background: #251D32; padding: 6px 18px;
+}
+.bom dl { display: grid; grid-template-columns: auto 1fr; gap: 0 18px; margin: 0; }
+.bom dt, .bom dd {
+  font-family: var(--ui); font-size: 13px; margin: 0;
+  padding: 10px 0; border-bottom: 1px solid var(--hair);
+}
+.bom dt { color: var(--cream); font-variant-numeric: tabular-nums; font-weight: 600; }
+.bom dd { color: var(--mute); }
+.bom dl > :nth-last-child(-n+2) { border-bottom: 0; }
+
+/* --- footer ------------------------------------------------------------- */
+.foot {
+  border-top: 1px solid var(--hair); margin-top: 40px; padding-top: 20px;
+  font-family: var(--ui); font-size: 12px; color: var(--mute);
+  display: flex; flex-wrap: wrap; gap: 14px;
+}
+.foot a { color: var(--soft); text-decoration: none; border-bottom: 1px solid var(--line); }
+.foot a:hover { color: var(--cream); }
+
+/* --- narrow: the panes fold, exactly as the application folds ----------- */
+@media (max-width: 1100px) {
+  .frame { grid-template-columns: var(--rail) minmax(0, 1fr); }
+  .pane--list { display: none; }
+}
+@media (max-width: 760px) {
+  .frame { grid-template-columns: minmax(0, 1fr); }
+  .pane--rail { display: none; }
+  .pane--article { padding: 30px 20px 48px; }
+}
+</style>
+
+<header class="top">
+  <div class="mark">Article<span>Flux</span></div>
+  <nav class="top-right">
+    <a class="top-link" href="https://github.com/monstercameron/ArticleFlux">Source</a>
+    <a class="top-link" href="https://monstercameron.github.io/ArticleFlux/">Live demo</a>
+    <a class="top-link" href="/">Sign in</a>
+  </nav>
+</header>
+
+<main class="frame">
+  <!-- The rail. Real vocabulary from the application, not invented icons. -->
+  <aside class="pane pane--rail" aria-label="What the reader looks like">
+    <div class="band">Streams</div>
+    <div class="rail-row rail-row--on"><span class="g">✦</span> My Feed</div>
+    <div class="rail-row"><span class="g">◈</span> All feeds</div>
+    <div class="rail-row"><span class="g">•</span> Unread</div>
+    <div class="rail-row"><span class="g">◷</span> Read later</div>
+    <div class="rail-row"><span class="g">✎</span> Notes</div>
+
+    <div class="band" style="margin-top:22px">Feeds</div>
+    <div class="rail-feed"><span class="dot" style="--c:#8FB8FF"></span> Hacker News</div>
+    <div class="rail-feed"><span class="dot" style="--c:#7DDCB0"></span> Simon Willison</div>
+    <div class="rail-feed"><span class="dot" style="--c:#FFCE5C"></span> The Go Blog</div>
+    <div class="rail-feed"><span class="dot" style="--c:#FF8A6B"></span> Ars Technica</div>
+    <div class="rail-feed"><span class="dot" style="--c:#C89BFF"></span> lobste.rs</div>
+
+    <p class="rail-note">Every source owns a hue. It runs through the dot, the row edge and the dateline, so on a phone a 3px edge answers <em>who wrote this</em> faster than a byline does.</p>
+  </aside>
+
+  <!-- The list. The headlines are the argument; the datelines are facts. -->
+  <section class="pane pane--list" aria-label="What it is">
+    <h2 class="list-title">All feeds</h2>
+    <p class="list-sub">Newest first.</p>
+
+    <article class="row row--on" style="--c:#FFCE5C">
+      <h3>Your reading history stays on your machine</h3>
+      <p>One SQLite file · nothing phones home</p>
+    </article>
+    <article class="row" style="--c:#8FB8FF">
+      <h3>Google Reader's key map, unchanged</h3>
+      <p>j k o s r u · muscle memory transfers</p>
+    </article>
+    <article class="row" style="--c:#7DDCB0">
+      <h3>151 subscriptions, 3,621 items, no lag</h3>
+      <p>virtualised list · honest scrollbar</p>
+    </article>
+    <article class="row" style="--c:#C89BFF">
+      <h3>Written in Go, all the way to the browser</h3>
+      <p>WebAssembly client · 0 JavaScript files</p>
+    </article>
+    <article class="row" style="--c:#FF8A6B">
+      <h3>Runs on the smallest droplet you can rent</h3>
+      <p>one binary · 1 GB of RAM</p>
+    </article>
+  </section>
+
+  <!-- The article. The pitch, typeset as the thing it is selling. -->
+  <article class="pane pane--article article">
+    <p class="eyebrow">Self-hosted feed reader</p>
+    <h1>Your reading is <em>nobody else's</em> business.</h1>
+
+    <p class="lede">Google Reader died in 2013 and what replaced it was a choice: somebody else's server holding your reading history, or a PHP app from 2011 with a mobile site that does not work.</p>
+
+    <p>ArticleFlux is the third option. One binary, one SQLite file, no runtime dependencies — and a client that is a real application rather than a page. Virtualised lists at firehose scale, full-text search, tags, notes, offline reading, and a voice that will read an article to you.</p>
+
+    <p><strong>The unusual part is what is not here.</strong> No JavaScript framework, no bundler, no <code>npm install</code>, no REST layer translating between two halves of one program. The server is Go. The client is Go compiled to WebAssembly. The stylesheet is Go. The only JavaScript that ships is a boot shim that loads the module.</p>
+
+    <div class="cta">
+      <a class="btn" href="/">Claim this server</a>
+      <a class="btn btn--ghost" href="https://monstercameron.github.io/ArticleFlux/">Try the demo first</a>
+    </div>
+    <p class="cta-note">Claiming takes a username and a password. No account exists yet — the first person to set one owns this instance.</p>
+
+    <section class="claims">
+      <div class="claim">
+        <h2>It fetches on your behalf, carefully</h2>
+        <p>Every outbound request goes through an SSRF guard: link-local addresses and the cloud metadata endpoint are unreachable on any configuration, and an IPv4 address wearing an IPv6 costume is still that address.</p>
+      </div>
+      <div class="claim">
+        <h2>Nothing leaves the box unless you turn it on</h2>
+        <p>Fonts are served from here, not from a CDN that would learn your IP on every load. The optional Smart+ features — a voice, translation, a summary written for the ear — are off until you add a key, and off again the moment you remove it.</p>
+      </div>
+      <div class="claim">
+        <h2>Popular feeds are polled once</h2>
+        <p>Sources and items are global and deduplicated; subscriptions are yours. A feed a hundred people read is fetched once for all of them, and what you have read is nobody's business but your own.</p>
+      </div>
+    </section>
+
+    <div class="bom">
+      <dl>
+        <dt>0</dt><dd>application JavaScript files</dd>
+        <dt>0</dt><dd>.css files — the stylesheet is written in Go</dd>
+        <dt>1</dt><dd>binary, and one SQLite file beside it</dd>
+        <dt>6.6 MB</dt><dd>the whole client, gzipped</dd>
+        <dt>1 GB</dt><dd>RAM is enough to run it</dd>
+      </dl>
+    </div>
+
+    <footer class="foot">
+      <span>MIT licensed</span>
+      <a href="https://github.com/monstercameron/ArticleFlux">Source on GitHub</a>
+      <a href="https://monstercameron.github.io/ArticleFlux/">Live demo</a>
+      <a href="/">Sign in</a>
+    </footer>
+  </article>
+</main>
