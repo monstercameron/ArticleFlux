@@ -299,7 +299,7 @@ func homeHero(ns i18n.Namespace) ui.Node {
 			homeFact(ns.T("bomBinN"), ns.T("bomBin")),
 		),
 
-		homeFig("", "shots/reader-desktop.jpg", ns.T("shotDesktopAlt"), ns.T("shotDesktopCap"), "3200", "2000"),
+		homeFigArt("", "shots/reader-desktop.jpg", "shots/reader-phone.jpg", ns.T("shotDesktopAlt"), ns.T("shotDesktopCap"), "3200", "2000"),
 	)
 }
 
@@ -357,13 +357,55 @@ func homeClaims(kids ...ui.Node) ui.Node {
 //
 // Every picture on this page is the real reader against real feeds, captured by
 // e2e/home-shots.mjs. Width and height are set so the space is reserved before
-// the bytes arrive: a marketing page that reflows as its images land is the
-// layout shift the reader itself refuses to ship.
+// the bytes arrive: a page that reflows as its images land is the layout shift
+// the reader itself refuses to ship.
 func homeFig(class, src, alt, caption, w, h string) ui.Node {
+	return homeFigArt(class, src, "", alt, caption, w, h)
+}
+
+// homeFigArt is a screenshot with a PHONE capture to swap in on a narrow screen.
+//
+// # Why a second photograph and not a smaller one
+//
+// A 1600px-logical picture of a three-pane application, shown in a 350px column,
+// renders at 0.21x. The reader's 14.5px body text lands at three pixels. Every
+// wide screenshot on this page was doing exactly that on a phone, and it read as
+// a smudge with a caption under it — which is worse than no picture, because it
+// occupies the space where an explanation could have been.
+//
+// Scaling cannot fix it: legibility needs roughly 1:1, and 1:1 of a desktop
+// capture does not fit. So the phone gets a photograph OF A PHONE — the same
+// journey, captured at 390px, where the app's own type is already sized for the
+// screen it is being shown on.
+//
+// `<picture>` rather than two `<img>`s toggled with CSS: display:none does not
+// stop a browser downloading an image, so the CSS version would ship both files
+// to everyone. The source's own width and height are set for the same reason the
+// img's are — the two have different aspect ratios, and without them the swap is
+// a layout shift.
+func homeFigArt(class, src, narrow, alt, caption, w, h string) ui.Node {
+	img := html.Img(html.Props{Src: src, Alt: alt, Width: w, Height: h, Loading: "lazy"})
+
+	var shot ui.Node = img
+	if narrow != "" {
+		class += " hm-fig-wide"
+		shot = html.Picture(html.Props{},
+			html.Source(html.Props{Raw: map[string]any{
+				// 1000px and not 700: the swap has to happen while there is still
+				// enough width for the phone capture to sit at its own size, not
+				// at the moment the desktop one becomes unreadable — by then it
+				// has been unreadable for 300px.
+				"media":  "(max-width: 1000px)",
+				"srcset": narrow,
+				"width":  "1170",
+				"height": "2532",
+			}}),
+			img,
+		)
+	}
+
 	return html.Figure(html.Props{Class: "hm-fig " + class},
-		html.Div(html.Props{Class: "hm-shot"},
-			html.Img(html.Props{Src: src, Alt: alt, Width: w, Height: h, Loading: "lazy"}),
-		),
+		html.Div(html.Props{Class: "hm-shot"}, shot),
 		html.Figcaption(html.Props{Class: "hm-cap"}, html.Text(caption)),
 	)
 }
@@ -432,10 +474,8 @@ func homeReading(ns i18n.Namespace, hue, lastKey string) ui.Node {
 			homeClaim(ns.T("readSkelH"), ns.T("readSkelP")),
 			homeClaim(ns.T("readFocusH"), ns.T("readFocusP")),
 		),
-		homeFigRow(
-			homeFig("", "shots/appearance.jpg", ns.T("shotThemesAlt"), ns.T("figThemesCap"), "3200", "2000"),
-			homeFig("", "shots/focus.jpg", ns.T("shotFocusAlt"), ns.T("figFocusCap"), "3200", "2000"),
-		),
+		homeFigArt("", "shots/appearance.jpg", "shots/appearance-phone.jpg", ns.T("shotThemesAlt"), ns.T("figThemesCap"), "3200", "2000"),
+		homeFigArt("", "shots/focus.jpg", "shots/focus-phone.jpg", ns.T("shotFocusAlt"), ns.T("figFocusCap"), "3200", "2000"),
 		homeClaims(
 			homeClaim(ns.T("readThemeH"), ns.T("readThemeP1"), ns.T("readThemeP2")),
 			homeClaim(ns.T("readDescH"), ns.T("readDescP")),
@@ -465,14 +505,10 @@ func homeFinding(ns i18n.Namespace, hue string) ui.Node {
 			homeClaim(ns.T("findClassH"), ns.T("findClassP")),
 			homeClaim(ns.T("findSetH"), ns.T("findSetP")),
 		),
-		homeFigRow(
-			homeFig("", "shots/palette.jpg", ns.T("shotPaletteAlt"), ns.T("figPaletteCap"), "3200", "2000"),
-			homeFig("", "shots/search.jpg", ns.T("shotSearchAlt"), ns.T("figSearchCap"), "3200", "2000"),
-		),
-		homeFigRow(
-			homeFig("", "shots/addfeed.jpg", ns.T("shotAddAlt"), ns.T("figAddCap"), "3200", "2000"),
-			homeFig("", "shots/keys.jpg", ns.T("shotKeysAlt"), ns.T("figKeysCap"), "3200", "2000"),
-		),
+		homeFigArt("", "shots/palette.jpg", "shots/palette-phone.jpg", ns.T("shotPaletteAlt"), ns.T("figPaletteCap"), "3200", "2000"),
+		homeFigArt("", "shots/search.jpg", "shots/search-phone.jpg", ns.T("shotSearchAlt"), ns.T("figSearchCap"), "3200", "2000"),
+		homeFigArt("", "shots/addfeed.jpg", "shots/addfeed-phone.jpg", ns.T("shotAddAlt"), ns.T("figAddCap"), "3200", "2000"),
+		homeFigArt("", "shots/keys.jpg", "shots/keys-phone.jpg", ns.T("shotKeysAlt"), ns.T("figKeysCap"), "3200", "2000"),
 	)
 }
 
@@ -485,7 +521,7 @@ func homeFinding(ns i18n.Namespace, hue string) ui.Node {
 func homeRanking(ns i18n.Namespace, hue string) ui.Node {
 	return homeSection("ranking", hue,
 		homeHead(ns.T("rankNav"), ns.T("rankStatus"), ns.T("rankTitle"), ns.T("rankLede")),
-		homeFig("", "shots/myfeed.jpg", ns.T("shotMyFeedAlt"), ns.T("rankFigCap"), "3200", "2000"),
+		homeFigArt("", "shots/myfeed.jpg", "shots/myfeed-phone.jpg", ns.T("shotMyFeedAlt"), ns.T("rankFigCap"), "3200", "2000"),
 		homeClaims(
 			homeClaim(ns.T("rankSignalH"), ns.T("rankSignalP1"), ns.T("rankSignalP2")),
 			homeClaim(ns.T("rankWrongH"), ns.T("rankWrongP1"), ns.T("rankWrongP2")),
@@ -519,10 +555,8 @@ func homeListen(ns i18n.Namespace, hue string) ui.Node {
 			homeClaim(ns.T("listenPaidH"), ns.T("listenPaidP")),
 			homeClaim(ns.T("listenKeepH"), ns.T("listenKeepP")),
 		),
-		homeFigRow(
-			homeFig("", "shots/slideshow.jpg", ns.T("shotSlideAlt"), ns.T("listenSlideCap"), "3200", "2000"),
-			homeFig("", "shots/listening.jpg", ns.T("shotListenAlt"), ns.T("listenSetCap"), "3200", "2000"),
-		),
+		homeFigArt("", "shots/slideshow.jpg", "shots/slideshow-phone.jpg", ns.T("shotSlideAlt"), ns.T("listenSlideCap"), "3200", "2000"),
+		homeFigArt("", "shots/listening.jpg", "shots/listening-phone.jpg", ns.T("shotListenAlt"), ns.T("listenSetCap"), "3200", "2000"),
 	)
 }
 
@@ -553,7 +587,7 @@ func homeBuilt(ns i18n.Namespace, hue string) ui.Node {
 			homeClaim(ns.T("builtOpsH"), ns.T("builtOpsP")),
 			homeClaim(ns.T("builtDemoH"), ns.T("builtDemoP")),
 		),
-		homeFig("", "shots/server.jpg", ns.T("shotServerAlt"), ns.T("builtOpsCap"), "3200", "2000"),
+		homeFigArt("", "shots/server.jpg", "shots/server-phone.jpg", ns.T("shotServerAlt"), ns.T("builtOpsCap"), "3200", "2000"),
 		homeHonest(ns.T("builtHonestH"), ns.T("builtHonestP1"), ns.T("builtHonestP2")),
 		html.P(html.Props{Class: "hm-head", Raw: map[string]any{"style": "border:0"}},
 			html.B(html.Props{}, html.Text(ns.T("builtRunH"))),

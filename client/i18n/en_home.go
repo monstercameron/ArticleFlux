@@ -30,10 +30,10 @@ func init() {
 		// The pivot is set in italic accent — see .hm-h1 em — so it is split
 		// out rather than marked up inside one string a translator cannot
 		// reorder.
-		"heroTitleA":  "Four thousand unread, and ",
-		"heroTitleEm": "not one row",
-		"heroTitleB":  " of it is anybody else’s data.",
-		"heroLede":    "ArticleFlux is a feed reader you run on your own box. One binary, one SQLite file beside it, and a client that is a real application rather than a page — 151 feeds at full scroll speed, full-text search, tags, notes, offline delivery, and a voice that will read the article to you.",
+		"heroTitleA":  "Four thousand unread, and the list still moves like it is ",
+		"heroTitleEm": "empty",
+		"heroTitleB":  ".",
+		"heroLede":    "A feed reader you run yourself: one binary, one SQLite file beside it, and a client that is a real application rather than a page. 151 feeds and a list virtualised against the scope’s true total, full-text search, tags and notes, a ranking that tells you why it picked something, and a voice that will read the article to you.",
 		"ctaDemo":     "Open the live demo",
 		"ctaSrc":      "Read the source",
 		"ctaIn":       "Sign in to this server",

@@ -45,18 +45,29 @@ test.describe('the homepage', () => {
     // Lazy images below the fold never load in a viewport that never moves, so
     // the page is scrolled through before anything is asserted. A test that only
     // checked the hero would pass with every other picture missing.
+    //
+    // Two traps, both of which hung or lied at some point while this was written:
+    //
+    //   * An image the layout has hidden at this width — the pair of phone shots
+    //     is display:none below 1000px — NEVER loads, so waiting on its onload
+    //     waits forever. Only rendered images are asked about.
+    //   * `complete` is true for an image that 404'd. A broken picture is a
+    //     LOADED picture as far as the DOM is concerned; `naturalWidth` is the
+    //     property that tells the truth.
     const missing = await page.evaluate(async () => {
       const el = document.querySelector('.hm');
-      for (let y = 0; y < el.scrollHeight; y += 600) {
+      for (let y = 0; y < el.scrollHeight; y += 500) {
         el.scrollTop = y;
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((r) => setTimeout(r, 60));
       }
-      const imgs = [...document.images];
-      await Promise.all(imgs.filter((i) => !i.complete)
-        .map((i) => new Promise((r) => { i.onload = i.onerror = r; })));
-      // naturalWidth is 0 for an image that 404'd. `complete` is true either way,
-      // which is the trap: a broken image is a LOADED image as far as it knows.
-      return imgs.filter((i) => !i.naturalWidth).map((i) => i.getAttribute('src'));
+      el.scrollTop = 0;
+      const shown = [...document.images].filter((i) => i.getClientRects().length > 0);
+      await Promise.all(shown.filter((i) => !i.complete).map((i) => new Promise((r) => {
+        i.addEventListener('load', r, { once: true });
+        i.addEventListener('error', r, { once: true });
+        setTimeout(r, 15000);
+      })));
+      return shown.filter((i) => !i.naturalWidth).map((i) => i.currentSrc || i.src);
     });
     expect(missing, 'screenshots that did not load').toEqual([]);
 
@@ -66,6 +77,61 @@ test.describe('the homepage', () => {
     const unlabelled = await page.evaluate(() =>
       [...document.images].filter((i) => !(i.alt || '').trim()).map((i) => i.getAttribute('src')));
     expect(unlabelled, 'screenshots with no alternative text').toEqual([]);
+  });
+
+  test('no screenshot is rendered too small to read', async ({ page }) => {
+    await openHome(page);
+
+    // The defect this exists for, stated as a number.
+    //
+    // A screenshot is a picture of TEXT. Displayed at 0.21x — which is what a
+    // 1600px-logical capture of the three-pane reader does inside a 350px column
+    // — the app's own 14.5px body type lands at three pixels, and the picture
+    // becomes a smudge occupying the space an explanation could have used. Every
+    // wide shot on this page was doing exactly that on a phone.
+    //
+    // The fix is art direction (view.homeFigArt swaps in a capture taken AT
+    // 390px below 1000px), and this is the ratchet that stops it regressing:
+    // whatever the layout does, no picture may be shown at less than 0.55 of the
+    // size its own pixels were captured at.
+    const FLOOR = 0.55;
+    // Capture scale by natural width — the desktop pass runs at deviceScaleFactor
+    // 2, the phone pass at 3 (see e2e/home-shots.mjs).
+    const tooSmall = await page.evaluate(async (floor) => {
+      const el = document.querySelector('.hm');
+      for (let y = 0; y < el.scrollHeight; y += 500) {
+        el.scrollTop = y;
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      el.scrollTop = 0;
+      const dsf = (w) => (w >= 2000 ? 2 : 3);
+      return [...document.images]
+        .filter((i) => i.getClientRects().length > 0 && i.naturalWidth)
+        .map((i) => ({
+          src: (i.currentSrc || i.src).split('/').pop(),
+          scale: +(i.clientWidth / (i.naturalWidth / dsf(i.naturalWidth))).toFixed(2),
+        }))
+        .filter((s) => s.scale < floor);
+    }, FLOOR);
+    expect(tooSmall, `screenshots rendered under ${FLOOR}x of capture size`).toEqual([]);
+  });
+
+  test('no text on the page is smaller than 13px', async ({ page }) => {
+    await openHome(page);
+
+    // 10.5px labels and 12.5px captions are a designer's texture on a large
+    // monitor and a squint everywhere else. There is no line of copy here whose
+    // job is served by being unreadable.
+    const tiny = await page.evaluate(() => {
+      const out = [];
+      for (const e of document.querySelectorAll('.hm *')) {
+        if (e.children.length || !e.textContent.trim()) continue;
+        const size = parseFloat(getComputedStyle(e).fontSize);
+        if (size < 13) out.push({ el: e.className || e.tagName, size });
+      }
+      return out;
+    });
+    expect(tiny, 'elements with text under 13px').toEqual([]);
   });
 
   test('j and k move between sections, and the rail follows', async ({ page }) => {

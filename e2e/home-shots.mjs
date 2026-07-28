@@ -21,8 +21,15 @@ const browser = await chromium.launch();
 const shot = (page, name) =>
   page.screenshot({ path: `${out}${name}.jpg`, type: 'jpeg', quality: 84 });
 
-async function ready(page) {
-  await page.goto(base, { waitUntil: 'load' });
+// ready opens the reader on a KNOWN scope.
+//
+// Not the bare address: where you were is account state (A30), so `/` resumes
+// whatever the last run left behind — and after the My Feed shot below, that is
+// My Feed. The hero silently became a second picture of the ranked stream, which
+// is the kind of drift nobody notices until the page ships with two of the same
+// screenshot. A path outranks the saved view at boot, so naming one pins it.
+async function ready(page, path = '/unread') {
+  await page.goto(base.replace(/\/$/, '') + path, { waitUntil: 'load' });
   await page.waitForSelector('.item-row', { timeout: 90000 });
   await page.waitForTimeout(2500);
 }
@@ -130,17 +137,102 @@ async function ready(page) {
 }
 
 // ------------------------------------------------------------------ phone ---
+//
+// Every wide shot above is captured AGAIN at 390px, and that is not a nicety.
+// A 1600px-logical picture of a three-pane application shown in a 350px column
+// is rendered at 0.21x — the reader's 14.5px body text lands at 3px on screen.
+// The page swaps to these below 1000px through a <picture> element, where they
+// display at roughly 1:1 and can actually be read.
+//
+// So the journey is repeated rather than the pictures resized. A phone shot of
+// the reader is a different photograph, not a smaller one: it is the filmstrip,
+// the tab bar, and one pane at a time.
 {
   const ctx = await browser.newContext({
     viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
   });
   const page = await ctx.newPage();
+  const step = async (name, fn) => {
+    try { await fn(); await shot(page, name); } catch (e) { console.log('skip', name, e.message.split('\n')[0]); }
+  };
+
   await ready(page);
   await shot(page, 'reader-phone');
 
-  await page.locator('.item-row').first().click();
-  await page.waitForTimeout(3000);
-  await shot(page, 'phone-article');
+  await step('phone-article', async () => {
+    await page.locator('.item-row').first().click();
+    await page.waitForTimeout(3000);
+  });
+
+  await step('focus-phone', async () => {
+    await page.keyboard.press('w');
+    await page.waitForTimeout(1800);
+  });
+  await page.keyboard.press('w').catch(() => {});
+  await page.waitForTimeout(800);
+
+  await step('keys-phone', async () => {
+    await page.keyboard.press('?');
+    await page.waitForTimeout(900);
+  });
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(600);
+
+  await step('palette-phone', async () => {
+    await page.keyboard.press('Control+k');
+    await page.waitForTimeout(600);
+    await page.keyboard.type('ha', { delay: 60 });
+    await page.waitForTimeout(900);
+  });
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(600);
+
+  await step('search-phone', async () => {
+    await page.keyboard.press('/');
+    await page.waitForTimeout(400);
+    await page.keyboard.type('battery', { delay: 40 });
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(3000);
+  });
+
+  await step('myfeed-phone', async () => {
+    await page.goto(base.replace(/\/$/, '') + '/myfeed', { waitUntil: 'load' });
+    await page.waitForSelector('.item-row', { timeout: 90000 });
+    await page.waitForTimeout(4000);
+  });
+
+  await step('slideshow-phone', async () => {
+    await page.keyboard.press('s');
+    await page.waitForTimeout(3500);
+  });
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(800);
+
+  // The settings surface, tab by tab. On a phone it replaces the panes rather
+  // than sharing the window, which is the whole reason these are worth their own
+  // pictures.
+  for (const [tab, name] of [['appearance', 'appearance-phone'], ['listening', 'listening-phone'], ['server', 'server-phone']]) {
+    await step(name, async () => {
+      await page.keyboard.press(',');
+      await page.waitForSelector('.set-tabs', { timeout: 20000 });
+      await page.locator(`[data-action='settings-tab'][data-value='${tab}']`).click();
+      await page.waitForTimeout(1600);
+    });
+  }
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(800);
+
+  await step('addfeed-phone', async () => {
+    await ready(page);
+    const rail = page.locator('.pane-rail');
+    if (!(await rail.isVisible())) {
+      await page.getByRole('button', { name: /Feeds/ }).first().click();
+      await page.waitForTimeout(900);
+    }
+    await page.getByRole('button', { name: /Add a feed/i }).first().click();
+    await page.waitForTimeout(1400);
+  });
+
   await ctx.close();
 }
 
