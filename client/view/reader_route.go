@@ -51,6 +51,11 @@ import (
 type addressBar struct {
 	tr  i18n.Runtime
 	act ui.Ref[*actions]
+	// restoring marks the next address change as the app catching up with where
+	// the reader already is, rather than the reader going somewhere. Set by the
+	// prefs effect; consumed by the writer below, which replaces instead of
+	// pushing. See its declaration in reader.go for the case it exists for.
+	restoring ui.Ref[bool]
 
 	// The place, and the article being read in it.
 	sel     ui.State[scope]
@@ -73,6 +78,18 @@ type addressBar struct {
 	feeds   ui.State[[]*pb.Feed]
 	tags    ui.State[[]*pb.Tag]
 	folders ui.State[[]*pb.Folder]
+
+	// remember is Reader's rememberScope: it writes the saved place.
+	//
+	// Needed here for one case, and it is a coherence bug rather than a nicety.
+	// A scope that arrived from a URL is not written back at mount, because at
+	// mount it has no title — a path carries an id. Meanwhile reading in it DOES
+	// keep writing `read.item` (reader.go's open). Leave it there and the stored
+	// place is half of one scope and half of another: `read.kind` naming
+	// yesterday's stream beside an article from today's feed, which resumes as
+	// the old stream with a resume-item that is not in it. So the moment the
+	// title lands, the place is recorded properly.
+	remember func(scope)
 }
 
 // current is the address this render describes.
@@ -142,6 +159,16 @@ func (d addressBar) wire() {
 	// for push, which is the version of this bug a reader notices — Back that
 	// needs pressing twice.
 	ui.UseEffect(func() func() {
+		// Read and cleared BEFORE the early return, and in the deps, so the flag
+		// cannot outlive the change it was raised for. A restoration that lands on
+		// the address already shown — the common case, since preferences usually
+		// agree with where the reader already is — writes nothing, and a flag left
+		// standing after that would silently turn the reader's NEXT navigation
+		// into a replace, costing them one Back with no way to tell why.
+		restore := d.restoring.Get()
+		if restore {
+			d.restoring.Set(false)
+		}
 		if path == lastPath.Get() {
 			return nil
 		}
@@ -150,7 +177,7 @@ func (d addressBar) wire() {
 		lastPath.Set(path)
 		lastRoute.Set(now)
 		switch {
-		case first:
+		case first || restore:
 			// The landing address, normalised — and REPLACED, never pushed.
 			//
 			// This is the write that makes a resumed place linkable: a reader who
@@ -159,6 +186,10 @@ func (d addressBar) wire() {
 			// want to send. Pushing here would put a second entry on top of the
 			// one the browser made for the page load, and Back would appear to do
 			// nothing before finally leaving.
+			//
+			// `restore` is the same write arriving late — the prefs round trip, or
+			// a manifest shortcut — and gets the same treatment for the same
+			// reason: the reader has not gone anywhere.
 			platform.ReplacePath(path)
 		case samePlace(prev, now):
 			platform.ReplacePath(path)
@@ -166,7 +197,7 @@ func (d addressBar) wire() {
 			platform.PushPath(path)
 		}
 		return nil
-	}, []any{path})
+	}, []any{path, d.restoring.Get()})
 
 	// The reader pressing Back or Forward.
 	ui.UseEffect(func() func() {
@@ -197,6 +228,11 @@ func (d addressBar) wire() {
 		}
 		if named := titleForScope(sc, d.feeds.Get(), d.tags.Get(), d.folders.Get()); named.Title != "" {
 			d.sel.Set(named)
+			// And record it, now that there is something to record. See the
+			// `remember` field for the half-written preference this closes.
+			if d.remember != nil {
+				d.remember(named)
+			}
 		}
 		return nil
 	}, []any{d.sel.Get().Title == "", len(d.feeds.Get()), len(d.tags.Get()), len(d.folders.Get())})
@@ -237,9 +273,22 @@ func (d addressBar) apply(base string, lastPath ui.Ref[string], lastRoute ui.Ref
 	}
 
 	// The place, and the article in it.
+	//
+	// Skipped entirely when the address is a SCREEN rather than a place. Those
+	// three forms — /settings/<tab>, /feed/<id>/settings, /tag/<id>/settings —
+	// take over the path while they are open (see routeSegments), so the scope
+	// underneath them is not written down anywhere and parseRoute can only report
+	// its default. Applying that default would mean going Back to the settings
+	// screen silently moved the reader's feed to All, and Forward to a feed's
+	// settings dragged them into that feed. Boot is the one case where these DO
+	// choose the place, because at boot there is no place yet to preserve — that
+	// is bootRoute's job and it uses the parsed scope directly.
 	rk, rv := scopeKind(r.sel)
 	ck, cv := scopeKind(d.sel.Get())
+	screen := r.tab != "" || r.dlg == dialogFeed || r.dlg == dialogTag
 	switch {
+	case screen:
+		// Leave the reader where they are.
 	case rk != ck || rv != cv:
 		// A different place: the list has to be refetched, so the article the
 		// address named is left for the auto-open effect to reopen once that list
@@ -294,6 +343,36 @@ func (d addressBar) apply(base string, lastPath ui.Ref[string], lastRoute ui.Ref
 }
 
 // --- boot ---------------------------------------------------------------------
+
+// bootState is what the address said when Reader MOUNTED.
+//
+// It exists because "read the address" is not the same question at render time as
+// it is at mount time, and conflating the two cost a working share target.
+// Reader's body runs on every render, so a bare `readLaunch()` there is re-read
+// on every render — and the address writer strips the query on the first commit,
+// so by the time the preferences effect's closure is built (a round trip later,
+// when the client connects) the parameters it needs are gone. The symptom was a
+// shared address opening the app and doing nothing, which is the exact failure
+// §20.24 says is worse than not implementing the feature.
+//
+// Held in a Ref by readBootState below, so every consumer sees the same answer
+// for the life of the component no matter how many times the body re-runs.
+type bootState struct {
+	// route is where the address says to open, or the resumed place.
+	route route
+	// addressed reports which of those two answered.
+	addressed bool
+	// launch is what an installed app was opened FOR (§20.24) — a manifest
+	// shortcut or a share, which live in the query and not in the path.
+	launch launch
+}
+
+// readBootState captures the opening address. Call it through a Ref (see
+// Reader), never directly from a render body.
+func readBootState(saved map[string]string, tr i18n.Runtime) bootState {
+	r, addressed := bootRoute(saved, tr)
+	return bootState{route: r, addressed: addressed, launch: readLaunch()}
+}
 
 // bootRoute decides where the reader opens: the address if it names somewhere,
 // the saved place otherwise.

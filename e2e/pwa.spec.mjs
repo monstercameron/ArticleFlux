@@ -22,19 +22,32 @@ import { test, expect, boot, signIn } from './fixtures.mjs';
  *     the app, changes nothing, and reads as broken rather than unimplemented.
  */
 
-/** The manifest, parsed, from the running server. */
+/**
+ * The manifest, parsed, from the running server.
+ *
+ * Resolved against `document.baseURI` and NOT against `page.url()`, which is the
+ * whole point of the `<base href>` the shell declares (§20.13b). Since the app
+ * routes, the page's address is wherever the reader navigated to — `/feed/<id>`,
+ * `/settings/appearance` — and it is no longer the directory the app was served
+ * from. Resolving a relative href against it asks for `/feed/manifest.webmanifest`
+ * and 404s, which is exactly the failure the base tag exists to prevent, and
+ * exactly how the browser would fail if the tag were removed. baseURI is what the
+ * browser itself uses to resolve that `<link>`, so this now asks the same question
+ * the browser asks.
+ */
 async function manifest(page) {
   const href = await page.locator('link[rel=manifest]').getAttribute('href');
   expect(href, 'the shell does not link a manifest').toBeTruthy();
-  const res = await page.request.get(new URL(href, page.url()).toString());
+  const base = await page.evaluate(() => document.baseURI);
+  const res = await page.request.get(new URL(href, base).toString());
   expect(res.status(), 'the manifest did not resolve').toBe(200);
-  return { res, json: JSON.parse(await res.text()) };
+  return { res, json: JSON.parse(await res.text()), base };
 }
 
 test.describe('pwa', () => {
   test('the manifest is served as one, and every URL in it resolves', async ({ page }) => {
     await boot(page);
-    const { res, json } = await manifest(page);
+    const { res, json, base } = await manifest(page);
 
     // application/manifest+json. Browsers are lenient about this and audits are
     // not, which makes it exactly the kind of defect nobody notices until
@@ -50,9 +63,9 @@ test.describe('pwa', () => {
     // Every icon, fetched from where the browser would fetch it: resolved
     // against the MANIFEST's own address, which is what makes the relative paths
     // work identically at the root and under /<repo>/.
-    const base = new URL('manifest.webmanifest', page.url()).toString();
+    const manifestURL = new URL('manifest.webmanifest', base).toString();
     for (const icon of json.icons) {
-      const url = new URL(icon.src, base).toString();
+      const url = new URL(icon.src, manifestURL).toString();
       const got = await page.request.get(url);
       expect(got.status(), `${icon.src} did not resolve`).toBe(200);
       expect(got.headers()['content-type'], `${icon.src} is not a PNG`).toContain('image/png');
@@ -81,7 +94,8 @@ test.describe('pwa', () => {
     // the page, scaled down, as the home-screen icon.
     const apple = await page.locator('link[rel="apple-touch-icon"]').getAttribute('href');
     expect(apple).toBeTruthy();
-    const appleRes = await page.request.get(new URL(apple, page.url()).toString());
+    // Against the base, not page.url(), for the reason `manifest` above gives.
+    const appleRes = await page.request.get(new URL(apple, base).toString());
     expect(appleRes.status(), 'the iOS icon did not resolve').toBe(200);
   });
 

@@ -139,6 +139,15 @@ func paletteStreams(tr i18n.Runtime) []paletteEntry {
 		{Kind: paletteStream, ID: streamLater, Label: tr.T("stream", "later")},
 		{Kind: paletteStream, ID: streamLiked, Label: tr.T("stream", "liked")},
 		{Kind: paletteStream, ID: streamNotes, Label: tr.T("stream", "notes")},
+		// Disliked is LAST and has no rail row, which is the whole of its design:
+		// a list of things you decided were not worth your time is not somewhere
+		// anyone goes, so it is deliberately not offered as a band in the sidebar
+		// (specialRow in panes.go) — but it is somewhere you can go, and the
+		// catalog note beside `stream.disliked` has always said the palette is how.
+		// It simply was never wired, which TestPaletteNeverOffersTheDislikedStream
+		// has been reporting; the scope became addressable at §20.13b (/disliked),
+		// and an address nothing in the interface can reach is an orphan.
+		{Kind: paletteStream, ID: streamDisliked, Label: tr.T("stream", "disliked")},
 	}
 }
 

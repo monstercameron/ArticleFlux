@@ -146,15 +146,21 @@ func TestWordPrefix(t *testing.T) {
 
 // --- buildPalette / paletteStreams: KNOWN BUG — the disliked stream is unreachable
 
-// TestPaletteNeverOffersTheDislikedStream pins a confirmed product defect:
-// scope.Rating is only ever set to +1 in this codebase (see reader.go), never
-// -1, and the palette's own list of destinations — where a reader would have
-// to go to reach it if the rail does not offer it (see panes.go's railPane,
-// which explicitly excludes it: "Liked is a stream; disliked is not") —
-// likewise never lists one. streamDisliked exists as a constant and
-// subDisliked/emptyDisliked/emptyDislikedHint exist as catalog copy, but
-// nothing in this codebase ever constructs a scope reaching that state. This
-// test is EXPECTED TO FAIL until that is fixed; it is not a test bug.
+// TestPaletteNeverOffersTheDislikedStream pinned a confirmed product defect, and
+// now guards the fix.
+//
+// The design was always "no rail row, reachable from the palette" — panes.go's
+// railPane excludes it on purpose ("Liked is a stream; disliked is not") and the
+// catalog note beside it said the palette is how you get there. The palette half
+// was simply never built, so streamDisliked was a constant with copy attached and
+// nothing that could produce it: scope.Rating was set to +1 in this codebase and
+// never -1.
+//
+// Both halves exist as of §20.13b — the scope has an address (/disliked), which
+// made an unreachable destination an orphan rather than merely an omission, and
+// the palette entry that the note always promised is there. The test kept its
+// name so the history is findable; what it now says is that the destination must
+// not go missing again.
 func TestPaletteNeverOffersTheDislikedStream(t *testing.T) {
 	tr := mustRuntime(t)
 

@@ -65,7 +65,21 @@ func Reader(p readerProps) ui.Node {
 	//
 	// Not a hook. A plain call, so it does not participate in the positional hook
 	// sequence and cannot be reordered by anything added above it.
-	boot, bootAddressed := bootRoute(saved, tr)
+	// Through a Ref, and that is the whole point of it.
+	//
+	// A component body runs on EVERY render, so reading the address here reads it
+	// again and again — and this component rewrites the address (§20.13b), so the
+	// later reads do not see what the first one saw. The launch parameters are the
+	// case where that is fatal: the writer strips the query on the first commit,
+	// and the preferences effect that consumes them does not run until the client
+	// connects, a round trip later, so a SHARED ADDRESS opened the app and did
+	// nothing at all. Caught by e2e/pwa.spec.mjs, which is what it is for.
+	//
+	// A Ref keeps the first answer for the life of the component, which is also
+	// the honest model: "the address this app was opened at" is a fact about one
+	// moment, not something to go and look up again later.
+	bootAt := ui.UseRef(readBootState(saved, tr))
+	boot, bootAddressed, launchAt := bootAt.Get().route, bootAt.Get().addressed, bootAt.Get().launch
 	client := ui.UseState[*data.Client](nil)
 	conn := ui.UseState(data.Connecting)
 	fatal := ui.UseState("")
@@ -5615,6 +5629,8 @@ func Reader(p readerProps) ui.Node {
 				a.pick(scope{Title: tr.T("stream", "liked"), Rating: 1})
 			case streamNotes:
 				a.pick(scope{Title: tr.T("stream", "notes"), Notes: true})
+			case streamDisliked:
+				a.pick(scope{Title: tr.T("stream", "disliked"), Rating: -1})
 			}
 		case "feed":
 			if f := a.feedByID(id); f != nil {
@@ -5794,16 +5810,32 @@ func Reader(p readerProps) ui.Node {
 		tags: tags, fsData: fsData,
 	}.wire()
 
+	// restoring marks the next address change as a RESTORATION rather than a
+	// navigation, so it replaces the current history entry instead of adding one.
+	//
+	// There is exactly one thing that needs it and it is not a corner case. When
+	// Root could not prefetch the preferences — a failed call, the degraded path
+	// readerProps.prefs documents — the reader mounts on All and the prefs effect
+	// moves it to the saved place a round trip later. That is the app catching up
+	// with where the reader already was, not somewhere they went; without this it
+	// pushes, and their very first Back takes them to a feed they never opened.
+	// The manifest-shortcut branch in the same effect is the same shape.
+	//
+	// A Ref because it is a note passed between an effect and a later render, and
+	// nothing renders from it.
+	restoring := ui.UseRef(false)
+
 	// The address bar (§20.13b, client/view/reader_route.go).
 	//
 	// Unconditionally and in this fixed position, like the block above and for the
 	// same reason: wire() installs hooks, and GWC matches hooks positionally.
 	addressBar{
-		tr: tr, act: act,
+		tr: tr, act: act, restoring: restoring,
 		sel: sel, current: current, resumeItem: resumeItem,
 		pane: pane, setTab: setTab,
 		addOpen: addOpen, fsOpen: fsOpen, tsOpen: tsOpen, showOpen: showOpen,
 		feeds: feeds, tags: tags, folders: folders,
+		remember: rememberScope,
 	}.wire()
 
 	// --- pane resizing, persisted server-side --------------------------------
@@ -6028,7 +6060,7 @@ func Reader(p readerProps) ui.Node {
 				//
 				// Not written back: a shortcut is a visit, not a decision about
 				// where this reader lives.
-				lch := readLaunch()
+				lch := launchAt
 				if s, ok := lch.scope(tr); ok {
 					resume = s
 					resumeItem.Set("")
@@ -6039,6 +6071,21 @@ func Reader(p readerProps) ui.Node {
 					// screen — set at mount, so there was never a frame showing
 					// anything else. Only the fetch is owed.
 					resume = sel.Get()
+				}
+				// Whatever this settles on is a restoration, not a navigation: the
+				// reader has not gone anywhere, the app has caught up with them. It
+				// must therefore REPLACE the entry the page load created rather than
+				// stack a second one on it — see the declaration of `restoring`.
+				restoring.Set(true)
+				// An addressed boot records where it landed, so the stored place
+				// stops being half of one scope and half of another — reading in a
+				// linked feed writes `read.item` regardless, and leaving
+				// `read.kind` at yesterday's stream resumes that stream with a
+				// resume-item that is not in it. A scope that arrived as an id has
+				// no title yet, so the rail's arrival records it again with one
+				// (see addressBar.remember).
+				if addressed {
+					rememberScope(resume)
 				}
 				sel.Set(resume)
 				loadItems(resume, unread)
@@ -6069,12 +6116,25 @@ func Reader(p readerProps) ui.Node {
 						act.Get().analyzeSite(false)
 					}
 				}
-				// Consumed exactly once. Left in the bar, a reload would re-open
-				// the dialog for an address already dealt with, and the shared URL
-				// would stay in the window title and in every screenshot after it.
-				if !lch.empty() {
-					platform.DropLaunchParams()
-				}
+				// Nothing to strip from the bar any more.
+				//
+				// This used to call platform.DropLaunchParams here, because the
+				// parameters had to be consumed exactly once — left in the bar, a
+				// reload re-opens a dialog for an address already dealt with, and
+				// the shared URL stays in the window title and in every screenshot
+				// after it. That is still true and it is still done; it is just
+				// done EARLIER and by something else. The address writer
+				// (§20.13b) rewrites the bar from state on the first commit, and a
+				// route never carries launch parameters, so they are gone before
+				// this effect even runs — which is precisely why `launchAt` is
+				// captured at mount rather than read here.
+				//
+				// Calling it anyway would now be actively wrong: it replaces the
+				// address with `location.pathname`, discarding the query — and the
+				// query is where a resumed SEARCH lives (/search?q=…). A reader
+				// whose saved place was a search, arriving via a share, would have
+				// had their own scope's address truncated by the cleanup for
+				// somebody else's.
 			})
 		}()
 		return nil

@@ -158,6 +158,14 @@ const (
 // session scratch — they belong to the reader, not to the address, and putting
 // them in a link would mean sending somebody your preferences along with the
 // article you wanted them to read. What is here is what a person would point at.
+//
+// Two overlays are excluded on the same test and it is worth naming them, because
+// "every dialog is routed" would otherwise read as an oversight: the **command
+// palette** and the **shortcut sheet**. Neither is a place. The palette is a way
+// of GETTING somewhere — an address for it would be a link to a half-finished
+// gesture, and Escape would have to pop history rather than dismiss — and the
+// sheet is a reference card. Both are opened by a keystroke, dismissed by
+// Escape, and hold nothing worth returning to.
 type route struct {
 	// sel is the place: which stream, feed, tag, category or search.
 	sel scope

@@ -169,8 +169,9 @@ test.describe('the address bar', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
     // And the address is corrected to the place it actually landed on, so the
-    // reader is not left holding a link that lies.
-    await expect.poll(() => path(page)).toBe('/');
+    // reader is not left holding a link that lies. All feeds is the root, plus
+    // whatever article the pick effect opened in it.
+    await expect.poll(() => path(page)).toMatch(/^\/(read\/[^/]+)?$/);
   });
 
   test('a deep link loads its assets', async ({ page }) => {
