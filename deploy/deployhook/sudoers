@@ -19,8 +19,22 @@
 # The scripts themselves must be root-owned and not group-writable, or sudo is
 # handing root to whoever can edit them.
 
-deployhook ALL=(root) NOPASSWD: /opt/ArticleFlux/deploy/update.sh
-deployhook ALL=(root) NOPASSWD: /usr/local/bin/earlcameron-deploy
+# systemd-run, not the script directly. deployhook is sandboxed
+# (ProtectSystem=strict), and a systemd sandbox is a namespace: it is inherited
+# by every descendant, including one that sudo has raised to root. The first
+# real deploy through this path died on "Read-only file system" trying to open
+# its own log — root, and still confined by the caller's namespace.
+#
+# A transient unit runs outside that namespace, under systemd rather than under
+# the web process, with its own timeout and its own journal. --pipe returns the
+# output to the hook so the transcript still lands in /var/log/deployhook.
+#
+# These lines are matched by sudo as COMPLETE command lines. That is what makes
+# them safe: no wildcard, no trailing arguments the caller can extend. Adding a
+# `*` anywhere here — including on --property or --unit — turns this into a root
+# shell for anyone who can reach the endpoint.
+deployhook ALL=(root) NOPASSWD: /usr/bin/systemd-run --pipe --wait --collect --unit=deploy-articleflux --property=TimeoutStartSec=1800 /opt/ArticleFlux/deploy/update.sh
+deployhook ALL=(root) NOPASSWD: /usr/bin/systemd-run --pipe --wait --collect --unit=deploy-earlcameron --property=TimeoutStartSec=1800 /usr/local/bin/earlcameron-deploy
 
 Defaults:deployhook !requiretty
 # The env is not inherited: a PATH or LD_PRELOAD arriving from the HTTP process
