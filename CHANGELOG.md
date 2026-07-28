@@ -422,6 +422,71 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **The address bar works** (§20.13b, `client/view/route.go` · `client/view/reader_route.go` ·
+  `client/platform/history_wasm.go`). Nothing in this application could be linked to. Not a feed, not
+  a tag, not a search, not an article — the whole reader lived at one URL, so Back left the app
+  entirely, a row could not be opened in a second tab, and two windows open at once silently fought
+  over `read.kind` on the server, each one moving the other's saved place.
+
+  Every place now has an address: the streams, `/feed/<id>`, `/tag/<id>`, `/category/<id>`,
+  `/search?q=`, `<place>/read/<itemID>`, `/settings/<tab>`, and the dialogs — `<place>/add`,
+  `<place>/slideshow`, `/feed/<id>/settings`, `/tag/<id>/settings`. **The precedence with A30 is the
+  whole design and it is one rule:** a path other than the base path is an explicit destination and
+  outranks the resume; a bare base path resumes exactly as before. Preferences are still written on
+  every navigation, so the bare address — which is what a bookmark to the app and every launcher icon
+  produce — still lands you where you left off, on any machine.
+
+  Deliberately **not** GWC's router, which is a route→component router: both `Navigate` and
+  `NavigateReplace` end in a full re-render of the mounted route element, and this app rewrites its
+  address on *scroll* (A28), so that would discard the loaded list, every fetched body and every note
+  draft once per article scrolled past. The address is derived from state in one effect instead —
+  pushing on a change of place and replacing on a change of article, or Back would step through a
+  hundred articles nobody navigated to.
+
+  Two silent failures had to be fixed for a deep link to load at all, and both are invisible from
+  `/`: `web/index.html` needs `<base href="/">`, because every asset is named relatively and the shell
+  is served at every route (without it `app.wasm` resolves under the route, 404s, and the page reads
+  "Go is not defined"); and the CSP's `base-uri` had to move from `'none'` to `'self'`, because
+  `'none'` forbade the app declaring its own base and the tag was ignored with only a console warning
+  to say so. `'self'` still closes what the directive is for — an injected base pointing off-origin.
+
+- **My Feed is remembered again.** `rememberScope` classified every scope inline and had no branch for
+  the ranked stream, so it was stored as `all`: a reader who lived on My Feed came back to All every
+  morning, silently, because All is plausible enough to read as the resume merely being imprecise.
+  `disliked` was missing the same way and had a test saying so. The classification is now one function
+  (`scopeKind`) shared by the saved place and the address, so a stream added in one is added in both.
+
+- **You can bring your feeds in without a shell on the server** (`ReaderService.ImportOpml` ·
+  `ExportOpml`, TODO F1, §15.7). `articleflux import -file feeds.opml` has always worked, which made
+  this a documentation gap on a single-user box and something worse on the multi-tenant server this
+  is built to be: a member had no path at all, and an operator had to SSH in to add a feed list.
+  Every competitor in the matrix ships this in the interface, including the free self-hosted ones.
+
+  **Settings › Data**, straight after Feeds — the same subject at a different scale, and where
+  somebody arriving on their first evening with an export file will look. Choosing a file subscribes
+  what it contains, folders become categories, and the sidebar and its categories reload behind the
+  report. Export downloads `feeds.opml` **with the categories intact**, which the CLI exporter never
+  did: it wrote every feed flat, a one-sided contract with an importer that has always read groups,
+  and a lossy round trip for anybody who spent an evening filing 151 feeds.
+
+  **The report is per row, not a count.** "12 skipped" is not something a person can act on, so every
+  row that failed comes back named, with its address and the reason — capped at thirty, with the
+  count kept exact. `subscribed` and `already subscribed` are separated for the same reason:
+  re-running an import is the normal way to top up after adding feeds elsewhere, and a screen
+  reporting 151 fresh subscriptions on the second run would be lying about what it just did. That
+  distinction needed a snapshot of the sidebar taken *before* the loop — the flag `SubscribeOnly`
+  returns answers a different question (whether the source existed for any tenant, A14), and reading
+  it as "you already had this" would be wrong for every popular feed nobody here reads.
+
+  **The migration moved out of `cmd/` and onto the service** (`internal/reader/opmlio.go`). That is
+  the part that outlives the ticket: the logic living in the CLI is *why* the only importer for a
+  year was one that needed a shell, and `articleflux import` / `export` now call the same two verbs
+  rather than being a second implementation that can drift. Import subscribes without fetching in
+  both paths — 151 feeds subscribe in under a second and take minutes to fetch, and an import that
+  appears to hang is one people interrupt halfway — so the tab says the articles arrive behind it as
+  the poller reaches each feed, rather than letting a feed showing nothing read as a feed that
+  failed. `-fetch` stays a CLI flag: a terminal is a better place than a browser tab to wait.
+
 - **My Feed can be argued with** (`ReaderService.GetInterestProfile` · `SteerInterest`, §18.2, §18.9,
   migration 0027). Every ranked row has always said why it was chosen; nothing said what the model
   believes overall, and nothing could be corrected. The gap was not theoretical — on a real database

@@ -1346,7 +1346,7 @@ losing the feed is the app not working.
 
 # Part VIII — The settings surface
 
-## 36. One page, nine tabs
+## 36. One page, thirteen tabs
 
 | | |
 |---|---|
@@ -1363,10 +1363,14 @@ and there is no dashboard.** The person running it is the person reading it.
 | Tab | Answers | Contents |
 |---|---|---|
 | **Reading** | what the list shows me next | Articles: everything / unread only · Feeds in the sidebar: all / with unread · Mark read: when you scroll past / only when you open · the bulk-read-is-neutral disclaimer · **Slideshow**: how long each story stays up, and whether the voice sets the pace |
+| **My Feed** | why the ranked page picked that | The interest profile the deriver built — topics and named things, each with the evidence behind it and a four-way dial to argue with it (§19) |
 | **Appearance** | what it looks like | Five theme cards drawn in their own colours · seven accents plus "the theme's own" · three reading sizes with a live specimen · motion: full / reduced / follow the system |
 | **Listening** | what it sounds like, and what leaves the machine | Browser voice (always available) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Join the stories up** · **Keep playing** · the caching note |
+| **FluxCast** | making it a programme | What read-to-me needs, as a checklist with each condition's current state · the broadcast switch and the narrator's manner · where the slideshow's read-to-me requirements are answered |
 | **Smart+** | what it costs | The OpenAI key (stored encrypted, never returned, last four shown) · the model · **tokens in / out / requests since the process started** · the interface-language picker |
+| **Classification** | which categories I want to see | The 26 categories the free classifier files articles into, each with a show/hide for THIS reader's chips — a view preference, not an edit to the taxonomy, and the hint says so · two Smart+ switches that render disabled, because no RPC backs them yet |
 | **Feeds** | my subscriptions as a whole | Feed count, unread, "N of M loaded" · **Fetch every feed now** · **Mark this list read** · a pointer to the per-feed gear |
+| **Data** | how my feeds get in, and out | **Import OPML**: choose a file, and it subscribes what the file contains · a report — subscribed, already had, categories, already on this server — and **every row that did not make it, named, with its reason** · **Export OPML**: downloads `feeds.opml` with the categories intact |
 | **Account** | who I am on this server | Signed in as · server · connection · **reconnects**, shown only once one has happened |
 | **Server** | is it healthy | Version · commit · schema migration · uptime · database and WAL size · path · article/note/tag/rated/saved counts · poll interval · last successful fetch · heap, goroutines, GC |
 | **Activity** | what just happened | The in-memory log ring, newest first, with a level filter |
@@ -1485,14 +1489,20 @@ or a theft, and since the server cannot tell those apart it revokes the **whole 
 
 `init` (creates the first tenant and superadmin; **refuses to run twice** — on a live box that is
 nearly always somebody re-running the setup steps) · `adduser` · `passwd` (break-glass; revokes every
-session) · `migrate` · `backup` · `seed` · `poll` · `serve` · `version`.
+session) · `migrate` · `backup` · `seed` · `poll` · `serve` · `version` · `import` · `export` ·
+`fluxcast` · `seed-reading`.
 
 **Corrected 2026-07-27 — this list was missing two features.** `articleflux import -file feeds.opml
 [-fetch]` and `articleflux export [-file feeds.opml]` both work: OPML in and out, from the shell.
-That is the *only* way to migrate a subscription list into this product today — there is no RPC and
-no data tab (`TODO.md` F1), so a reader who is not the operator cannot do it at all. `seed-reading`
-is also live and undocumented; it fabricates a reading history so My Feed has something to rank, and
-it ships in the production binary (F41).
+`seed-reading` is also live and undocumented; it fabricates a reading history so My Feed has
+something to rank, and it ships in the production binary (F41).
+
+**Updated 2026-07-27 — the shell is no longer the only way in.** Settings › Data does both (§36,
+`TODO.md` F1), and the two paths run the *same* code: the migration lives on the service
+(`internal/reader/opmlio.go`), and this command is a thin caller of it rather than a second
+implementation that can drift. `import` keeps `-fetch`, which the tab has no equivalent of: the
+tab subscribes and leaves the poller to fill in, because a browser tab is a worse place than a
+terminal to wait several minutes for 151 feeds.
 
 Passwords resolve flag → environment → terminal prompt, so one never has to appear in a process
 listing or a shell history.

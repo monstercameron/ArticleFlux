@@ -2600,6 +2600,14 @@ before `lease_seconds`, fall back to polling on failure.
 
 **Import must be idempotent** — re-importing updates, never duplicates, keyed on `url_norm` / feed URL.
 
+**Shipped 2026-07-27 — the first row, both directions, in the interface as well as the shell.**
+Settings › Data imports an OPML file and exports one (`ImportOpml` / `ExportOpml`, TODO F1). The
+migration lives on the service — `internal/reader.ImportOPML` / `ExportOPML` — so the RPC and
+`articleflux import` / `export` run the same code rather than two implementations that drift.
+Idempotence holds by construction: the subscription insert is `ON CONFLICT DO NOTHING`, so a second
+import of the same file re-files categories and adds nothing, and the report says how many rows the
+reader already had rather than counting them as new. Every other row of this table is unbuilt.
+
 ---
 
 ## 16. Trends, stats, and feed health
@@ -3628,6 +3636,71 @@ losing the feed is the app not working.
 `list.unreadOnly` must be restored before the fetch, not after: `loadItems` takes
 the flag as an argument, so setting it afterwards fetches the wrong list and then
 quietly disagrees with the toggle the reader is looking at.
+
+### 20.13b The address bar
+
+For a long time the resume above was the *only* answer to "where is the reader",
+and §20.24 said so in as many words: a URL that also decided what to show would be
+a second answer to a question that already had one. That reasoning was a case for
+**deciding the precedence**, not for having one answer. What one answer cost:
+
+- **Nothing could be linked.** Not a feed, not a tag, not a search, not an
+  article. Nothing in the application could be sent to anybody, including to
+  yourself tomorrow.
+- **Back and Forward did nothing** — Back left the app entirely, from a screen the
+  reader had navigated four levels into.
+- **No open-in-new-tab**, the one gesture every reader already knows.
+- **Two tabs fought.** Both wrote `read.kind` on every navigation, so a second
+  window silently moved the first one's saved place. A30 breaking A30.
+
+**The rule: a path other than the base path is an explicit destination and
+outranks the resume; a bare base path resumes exactly as before.** Preferences are
+still written on every navigation, so A30 is intact — the bare address is what a
+bookmark to the app and every launcher icon produce, and it still lands the reader
+where they left off on any machine. A link is a request made moments ago; the
+saved place is where they were yesterday. The newer, explicit one wins, which is
+the same call §20.24 already makes for a manifest shortcut.
+
+The grammar (`client/view/route.go`, a pure codec with a round-trip test):
+
+| Address | What it is |
+|---|---|
+| `/` | All feeds — and the address that resumes |
+| `/unread` `/liked` `/later` `/notes` `/myfeed` `/disliked` | the streams |
+| `/feed/<sourceID>` · `/tag/<tagID>` · `/category/<folderID>` | |
+| `/search?q=<text>` | reader-typed text belongs in a query, not a path segment |
+| `<place>/read/<itemID>` | the article open in that place |
+| `<place>/add` · `<place>/slideshow` | dialogs about nothing in particular |
+| `/feed/<id>/settings` · `/tag/<id>/settings` | dialogs ABOUT a subject, so they name it |
+| `/settings/<tab>` | the settings surface |
+
+Four things decided along the way, each of which is a bug if reversed:
+
+- **Push on a change of place, replace on a change of article.** The reading pane
+  is a continuous stream, so `current` changes on scroll (A28). One entry per
+  article scrolled past would bury the entry the reader actually wants under a
+  hundred they never chose.
+- **The address is DERIVED from state, in one effect, not written by the twenty
+  actions that navigate.** Hooking each call site means the next action added
+  forgets, and an address that lies is worse than none.
+- **An unknown path opens the reader**, exactly as an unrecognised `read.kind`
+  does. An address here is a request to look at something, not a resource, so a
+  404 screen would be the wrong answer to an old link or a typo.
+- **The slideshow is addressed while it runs but never started by an address at
+  boot.** A link that seizes the screen and goes fullscreen before the reader has
+  touched anything is not what they asked for, and the browser refuses the
+  fullscreen request anyway — leaving a mode running with no visible way out.
+
+Two things outside the client had to change with it, and both failed *silently*:
+
+- **`web/index.html` needs `<base href="/">`.** Every asset is named relatively and
+  the shell is now served at every route, so on a deep link `app.wasm` resolves
+  under that route, 404s, and the page renders "Go is not defined". Invisible from
+  `/`, which is the only address anybody opens by hand.
+- **CSP `base-uri` had to go from `'none'` to `'self'`.** `'none'` forbade the
+  application declaring its own base, so the tag above was ignored with nothing but
+  a console warning to say why. `'self'` still closes the hole the directive exists
+  for — an injected base pointing off-origin.
 
 ### 20.14 Keyboard-complete (A32)
 

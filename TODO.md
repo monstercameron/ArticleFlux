@@ -3782,13 +3782,24 @@ leaderboard, queue depth, storage by table, LLM spend + circuit state, ring dept
 `/setup` (first-run wizard after `articleflux init`) · `/404` · **the version-skew screen** (client below
 minimum: purge SW cache and hard reload, §22.10) · **the offline screen** (tunnel down, mirror empty).
 
-> **As built, 2026-07-26.** There is **no router** — the client is one mounted tree, and `Root` chooses
-> between `Login` and `Reader` (§7.1b). So "the login page" exists as a *component*, not a route, and
-> the rest of this appendix's routes are surfaces reached inside the reader: Settings is a pane with
-> seven tabs (§20.17), per-feed and per-tag settings are dialogs, add-a-feed is a dialog. Routing
-> arrives with M8's `ViewSpec` and saved views; until then a route in this table is a page that will
-> exist, not a URL that does. `/recover`, `/enroll/:token` and `/setup` have no counterpart at all —
-> `articleflux init` is a shell command, deliberately (§22.3).
+> **As built, 2026-07-26 — amended 2026-07-28.** The client is still one mounted tree: `Root` chooses
+> between `Login` and `Reader` (§7.1b), so "the login page" is a *component*, not a route, and the
+> surfaces in this appendix are still reached inside the reader — Settings is a pane with thirteen tabs
+> (§20.17), per-feed and per-tag settings are dialogs, add-a-feed is a dialog.
+>
+> What changed is that **those surfaces now have addresses** (§20.13b), so a route in this table can be
+> a URL that exists rather than only a page that will. There is still no route→component router, and
+> deliberately: GWC ships one, and both `Navigate` and `NavigateReplace` end in a full re-render of the
+> mounted route element — which for a single-tree app that rewrites its address on scroll would discard
+> the loaded list, every fetched body and every note draft, once per article scrolled past. The
+> evaluation is written out at the top of `client/view/route.go`. Instead the address is derived from
+> state and applied back to it.
+>
+> Addressed today: the streams, `/feed/<id>`, `/tag/<id>`, `/category/<id>`, `/search?q=`,
+> `<place>/read/<itemID>`, `/settings/<tab>`, and the four dialogs. `/login` is deliberately not one —
+> an address for a screen that exists only while you are signed out is an address that redirects.
+> `/recover`, `/enroll/:token` and `/setup` have no counterpart at all — `articleflux init` is a shell
+> command, deliberately (§22.3).
 
 ---
 
@@ -5228,7 +5239,7 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
 
 ### Band A — capabilities that exist and cannot be reached
 
-- [ ] **F1 · Bringing feeds in requires shell access to the server.** *Filed first as "there is no
+- [x] **F1 · Bringing feeds in requires shell access to the server.** *Filed first as "there is no
       supported way", which the CLI audit corrected:* `articleflux import -file feeds.opml [-fetch]`
       and `articleflux export [-file feeds.opml]` both exist and work (`cmd/articleflux/main.go:101`).
       Neither appears in `plan.md`, `TODO.md`, `README.md`, or `docs/FEATURES.md` §40's list of
@@ -5241,6 +5252,41 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: Settings has a Data tab; an OPML file dropped on it subscribes what it contains and
       reports what it skipped and why; export returns a file that imports back into itself; and the
       import runs as a job with progress, because 151 feeds is a minute of fetching, not a click.*
+
+      ✅ 2026-07-27 — **Settings › Data**, sitting straight after Feeds: the same subject at a
+      different scale, and where somebody arriving with an export file will look. Two RPCs,
+      `ImportOpml` and `ExportOpml`, and the migration itself moved OUT of `cmd/` into
+      `internal/reader/opmlio.go` — which is the part that matters beyond this ticket. The logic
+      living in the CLI is *why* the only importer for a year was one that needed a shell; the CLI
+      now calls the same two service verbs, so the two paths cannot drift into disagreeing about
+      what an OPML file means.
+      **The report is per-row, not a count.** "12 skipped" is not something a person can act on, so
+      each row that failed comes back named, with its address and the reason, capped at thirty with
+      the count kept exact. `subscribed` and `already_subscribed` are separated for the same reason:
+      re-running an import is the normal way to top up after adding feeds elsewhere, and a screen
+      reporting 151 fresh subscriptions on the second run would be lying about what it just did.
+      That distinction needed a `ListFeeds` snapshot taken BEFORE the loop — `SubscribeOnly`'s bool
+      answers a different question (whether the SOURCE existed for any tenant, A14), and reading it
+      as "you already had this" would have been wrong for every popular feed nobody here reads.
+      **The export now carries categories.** The CLI exporter wrote every feed flat, which made the
+      round trip lossy in exactly the way that matters to somebody who spent an evening filing 151
+      feeds — a one-sided contract, since the importer has always read groups.
+      **`client/platform` grew the two file operations** (`PickFile`, `SaveFile`), because reading a
+      local file and saving one are the two things the web platform only offers through elements
+      with side effects, and that ugliness belongs on the syscall/js side of the boundary. The
+      chooser opens from inside the click's own gesture and nothing is marked busy on the way in: a
+      cancelled chooser fires no event at all, so a spinner started there runs until the tab closes.
+      *Proved from the outside* by `e2e/data.spec.mjs` on desktop AND phone — a real chooser, real
+      bytes over the tunnel, the report on screen, the imported feed and its category in the rail,
+      and a real download whose bytes contain the subscriptions. `internal/reader/opmlio_test.go`
+      covers the migration itself, including the Done-when's round trip: an export imported into a
+      SECOND instance, which is what a migration actually is.
+      *Owed:* the Done-when's "runs as a job with progress" is NOT built, and the reason is that the
+      premise moved. Import subscribes without fetching — Cam's 151-feed export imports in under a
+      second, measured — so what would be shown progress for is a call that has already returned.
+      The fetching it was worried about is the poller's, behind the reader, and the tab says so
+      rather than implying the articles have arrived. If import ever grows a `-fetch` equivalent it
+      needs F12's queue; as shipped it does not. §15.7, F41
 
 - [x] **F2 · The event pump has no caller.** `EventService.WatchEvents` is on the wire, the server
       side is rate-limited and concurrency-capped (P1), and `client/data/stream_wasm.go` implements the
@@ -5697,6 +5743,13 @@ A backlog built from either mistake funds work that already exists.
       *Done when: §40 lists every subcommand the binary answers to; `import`/`export` are named in
       §15.7 as the shipped path they are; and `seed-reading` either refuses outside `-dev` or its
       availability is written down as intentional.*
+
+      ◐ 2026-07-27 — **two of the three, as a side effect of F1.** `docs/FEATURES.md` §40 now lists
+      every subcommand including `import`, `export`, `fluxcast` and `seed-reading`, and says that
+      the shell is no longer the only way in; `plan.md` §15.7 names the shipped path and which row
+      of its table is real. **`seed-reading` is untouched and is the whole remaining ticket** — it
+      is a decision about reachability, not documentation, and it is not one to make in passing
+      while shipping an import screen.
 
 - [ ] **F42 · The consent key in the spec does not exist in the code.** `plan.md` §11.2 and §27.4 and
       `docs/FEATURES.md` §9a all name **`smart.subscribe`** as the per-user switch that gates Smart+
