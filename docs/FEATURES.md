@@ -959,6 +959,11 @@ page scrolls in step with the narrator — driven by the audio's own clock, not 
 text is where the voice is. With *Join the stories up* (§22a) on, the segments hand over to each other
 and what you get is a newscast rather than a queue.
 
+**Reading speed** is yours, in Settings → Listening: 0.9× to 1.5×, default **1.1×**, because
+synthesised speech read at conversational pace sounds slow when it is news. It costs nothing and takes
+effect instantly — including on recordings you have already heard — because it is applied in the
+player rather than bought from the voice.
+
 **And it has music.** The broadcast opens on a theme, loud, which drops under the narrator while they
 greet you and run through the headlines, swells for five seconds when they finish, and fades out as a
 quieter piece rises underneath the first story and stays there for the rest of the show. Four tracks
@@ -966,8 +971,9 @@ ship with it: two openings, chosen at random so a regular listener does not hear
 evening, and two beds — pick yours in Settings → Listening, or turn the sound off there. The music is
 only downloaded when you first play it, and only the piece you chose.
 
-Pausing pauses the music where it is rather than fading it out, so pressing play again picks the
-programme up rather than starting the track over.
+Between stories the music **lifts for a few seconds** and the next one begins into it, so a running
+order sounds like a programme rather than a queue. Pausing pauses the music where it is rather than
+fading it out, so pressing play again picks the programme up rather than starting the track over.
 
 **The screen is kept awake** while it runs, and released the moment it stops. Both that and fullscreen
 are requests the browser may refuse; the mode is correct either way rather than gated on them.

@@ -271,6 +271,19 @@ func Reader(p readerProps) ui.Node {
 	// looks at to know that its arrival is a cue for the music. introSince is
 	// when the window opened, so the theme is guaranteed its phrase even when
 	// the segment was already cached and arrives at once.
+	// showOrder is the running order the slideshow walks — an editorial rundown
+	// (§29), or empty for the mode's original behaviour of walking the loaded
+	// list in its own order. State rather than a Ref because the slug counts
+	// against it, so setting one has to reach the screen.
+	showOrder := ui.UseState([]string(nil))
+	// Declared here and assigned with the rest of the show, far below, because
+	// the narrator's own callbacks are written before it and have to reach them.
+	var (
+		showQ     func() []string
+		showLoop  func() bool
+		showItem  func(id string) *pb.Item
+		showTitle func(id string) string
+	)
 	introWaiting := ui.UseRef(false)
 	introSince := ui.UseRef(time.Time{})
 	// The same pair for the seam between two stories: the music has come up and
@@ -1298,6 +1311,41 @@ func Reader(p readerProps) ui.Node {
 	// Per article rather than per pane, because the stream holds several at once
 	// and each arrives on its own schedule. Already-fetched ids are skipped:
 	// scrolling back up over an article must not refetch it.
+	// bodyPending is what fetchBodyID has in flight. It matters more here than it
+	// would for fetchBody: showItem is called from render and from the show's own
+	// 220ms tick, so an unguarded fetch for a story that is slow to arrive would
+	// be five requests a second for as long as it took.
+	bodyPending := ui.UseRef(map[string]bool{})
+
+	// fetchBodyID is fetchBody for a story the caller has an id for and nothing
+	// else — which is the shape a running order arrives in (§29): a rundown
+	// names stories, and some of them are on pages the list has never loaded.
+	// The RPC only ever needed the id; fetchBody takes an item because every
+	// caller before this one happened to have one.
+	fetchBodyID := func(id string) {
+		c := client.Get()
+		if c == nil || id == "" {
+			return
+		}
+		if _, ok := bodies.Get()[id]; ok {
+			return
+		}
+		if _, ok := bodyPending.Get()[id]; ok {
+			return
+		}
+		bodyPending.Get()[id] = true
+		go func() {
+			full, _, err := c.GetItemCached(context.Background(), id)
+			ui.PostAsync(func() {
+				delete(bodyPending.Get(), id)
+				if err != nil || full == nil {
+					return
+				}
+				act.Get().bodyLanded(full)
+			})
+		}()
+	}
+
 	fetchBody := func(it *pb.Item) {
 		c := client.Get()
 		if c == nil || it == nil {
@@ -3286,8 +3334,12 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		done := speakID.Get()
-		list := itemsRef.Get()
-		next := itemAfter(list, done)
+		// The QUEUE decides what is next, not the list. In a broadcast this is
+		// the running order (§29); with none set it is the loaded list and
+		// behaves as it always did. queueNext never wraps in either mode — a
+		// programme that silently restarts is a second reading of what was just
+		// played.
+		next := showItem(queueNext(showQ(), done))
 		if done != "" {
 			// Through readArticle rather than markRead, so it takes the same
 			// path as every other way an article gets marked read — including
@@ -3497,7 +3549,7 @@ func Reader(p readerProps) ui.Node {
 					stories: len(itemsRef.Get()),
 					// The headlines the broadcast opens with, starting at this
 					// story: a bulletin lists its own top story first.
-					lineup: slideLineup(itemsRef.Get(), it.GetId(), slideMaxLineup),
+					lineup: queueLineup(showQ(), it.GetId(), slideMaxLineup, showTitle),
 					intro:  introAskFor(it.GetId()),
 				}), lead, onState)
 				// Warm the NEXT article's audio while this one plays.
@@ -3511,7 +3563,11 @@ func Reader(p readerProps) ui.Node {
 				// Only when Keep playing is on: otherwise it is a paid synthesis
 				// of an article nobody asked to hear.
 				if speakAuto.Get() {
-					if nx := itemAfter(itemsRef.Get(), it.GetId()); nx != nil {
+					// The queue's next, not the list's. A broadcast segment is
+					// cached per ordered PAIR, so warming the wrong successor
+					// pays for a recording that will never be played and leaves
+					// the real one still to be synthesised when it is wanted.
+					if nx := showItem(queueNext(showQ(), it.GetId())); nx != nil {
 						if b := bodies.Get()[nx.GetId()]; b != nil && b.GetSpeechUrl() != "" {
 							// With the SAME handover the real request will carry.
 							// A broadcast segment is written per ordered pair, so
@@ -3704,6 +3760,45 @@ func Reader(p readerProps) ui.Node {
 		return nil, -1
 	}
 
+	// showQ is the queue the mode walks: the running order if one has been set,
+	// otherwise the loaded list. Everything below that used to do list
+	// arithmetic goes through this instead — see queueIDs.
+	showQ = func() []string { return queueIDs(showOrder.Get(), itemsRef.Get()) }
+
+	// showLoop is whether the end of the queue wraps. A feed does; a rundown
+	// does not, because somebody chose where it ends.
+	showLoop = func() bool { return len(showOrder.Get()) == 0 }
+
+	// showItem resolves an id to something playable, from wherever it is.
+	//
+	// The list first, because that is where it usually is, then the fetched
+	// bodies — and this is the case a running order introduces: a rundown may
+	// name a story on page three that the list pane has never loaded, and until
+	// this the mode had no way to show an item it did not already hold. Missing
+	// means "not yet"; the fetch is kicked and the caller tries again on a later
+	// tick rather than stalling.
+	showItem = func(id string) *pb.Item {
+		if id == "" {
+			return nil
+		}
+		if it, i := slideAt(id); i >= 0 {
+			return it
+		}
+		if b := bodies.Get()[id]; b != nil {
+			return b
+		}
+		fetchBodyID(id)
+		return nil
+	}
+
+	// showTitle is what a headline run-through needs and nothing more.
+	showTitle = func(id string) string {
+		if it := showItem(id); it != nil {
+			return it.GetTitle()
+		}
+		return ""
+	}
+
 	// slideVars writes the two numbers the stylesheet animates from.
 	//
 	// Four decimal places: the scroll multiplies these by a distance that can be
@@ -3806,18 +3901,22 @@ func Reader(p readerProps) ui.Node {
 		// a title card lasts under three seconds and a fetch does not always: by
 		// the time the display gets there the text should already be here, or the
 		// mode degrades into a sequence of headlines.
-		list := itemsRef.Get()
-		i := indexOf(list, it)
+		q := showQ()
+		i := queueIndex(q, it.GetId())
 		fetchBody(it)
-		for n := 1; n <= 2 && i >= 0 && i+n < len(list); n++ {
-			fetchBody(list[i+n])
+		for n := 1; n <= 2 && i >= 0 && i+n < len(q); n++ {
+			fetchBodyID(q[i+n])
 		}
 		// Reach for the next page well before running out. A display meant to be
 		// left running must never stall at the end of a loaded page, and asking
 		// three stories early means the request has landed by the time it is
 		// needed. loadMore refuses re-entry, so this costs two comparisons.
-		if i >= 0 && i+3 >= len(list) && nextCursor.Get() != "" {
-			loadMore(len(list) + 1)
+		//
+		// Not while a running order is set: a rundown is a chosen set with a
+		// chosen end, so paging the feed underneath it would fetch stories the
+		// programme is never going to reach.
+		if len(showOrder.Get()) == 0 && i >= 0 && i+3 >= len(q) && nextCursor.Get() != "" {
+			loadMore(len(q) + 1)
 		}
 	}
 
@@ -4007,31 +4106,32 @@ func Reader(p readerProps) ui.Node {
 	// own end (see trackEnded) and a broadcast that silently starts again from
 	// the top would be a second reading of stories the listener has just heard.
 	act.Get().slideStep = func(delta int) {
-		list := itemsRef.Get()
-		if len(list) == 0 {
+		q := showQ()
+		if len(q) == 0 {
 			return
 		}
-		_, i := slideAt(showID.Get())
-		if i < 0 {
-			// The list changed underneath the display — a feed switch, or a
-			// refresh that dropped what was showing. Start again at the top of
-			// whatever is there now rather than stopping.
-			slideOpen(list[0])
+		// Through the QUEUE, not the list. With no running order set the two are
+		// the same thing and this behaves exactly as it always has; with one set
+		// it steps through the programme, which \"i + delta\" over the loaded page
+		// cannot express (see queueStep).
+		nextID := queueStep(q, showID.Get(), delta, showLoop())
+		if nextID == "" {
+			// The end of a rundown, which unlike a feed has one. Hold the last
+			// story rather than wrapping into a second reading of it.
 			return
 		}
-		next := i + delta
-		switch {
-		case next >= len(list):
-			next = 0
-		case next < 0:
-			next = len(list) - 1
+		nx := showItem(nextID)
+		if nx == nil {
+			// Named but not loaded yet — showItem has asked for it. Leave the
+			// picture where it is; the next press or tick will find it.
+			return
 		}
 		// The picture moves either way; the narrator only follows when there is
 		// one. showVoice is non-empty exactly when read-to-me has been told it
 		// cannot speak, and stepping must not quietly try again on every story —
 		// that would be the browser voice starting on story two after being
 		// refused on story one.
-		slideOpen(list[next])
+		slideOpen(nx)
 		if showAudio.Get() && showVoice.Get() == "" {
 			// After slideOpen, in that order. The picture cuts to the new title
 			// card straight away; the narrator starts when the server has written
@@ -4042,7 +4142,7 @@ func Reader(p readerProps) ui.Node {
 			// Deliberately NOT marked read. A track that finishes marks the
 			// article, because hearing it out is reading it — skipping past one is
 			// the opposite claim.
-			slideNarrate(list[next])
+			slideNarrate(nx)
 		}
 	}
 
@@ -6710,7 +6810,11 @@ func Reader(p readerProps) ui.Node {
 		// full-screen gradient, and a reader who never opens it should pay for
 		// neither.
 		func() ui.Node {
-			it, i := slideAt(showID.Get())
+			it, _ := slideAt(showID.Get())
+			// Position in the QUEUE, so the slug counts tonight's programme
+			// rather than whatever happens to be loaded behind it.
+			q := showQ()
+			i := queueIndex(q, showID.Get())
 			return slideshow(tr, slideProps{
 				open:  showOpen.Get(),
 				it:    it,
@@ -6728,7 +6832,7 @@ func Reader(p readerProps) ui.Node {
 				needs:      slidePrereqsNow(),
 				hud:        showHud.Get(),
 				index:      i,
-				total:      len(items.Get()),
+				total:      len(q),
 				hosts:      hosts,
 			})
 		}(),

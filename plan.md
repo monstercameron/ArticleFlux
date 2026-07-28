@@ -2375,6 +2375,17 @@ server-side and returns an ID; `GET /pack/:id` is one authenticated, resumable, 
 **client store** in IndexedDB · **read path falls back** to the mirror with an unmistakable badge.
 `BuildPack` streams progress.
 
+**The shell cache is network-first in a dev build, and that is not a convenience.** `web/sw.js` keys
+its cache on `VERSION`, and retiring the old cache when the version changes is exactly right for a
+release — and exactly wrong for `0.1.0-dev`, which never changes. Every rebuild produced a new
+`app.wasm` that the worker refused to fetch, so a fix could be written, compiled, deployed and still
+not be running in the browser that was being used to test it. **That cost two false bug reports and
+most of an evening**, both times diagnosed as a broken feature rather than a stale cache, because
+nothing about the symptom points at the worker. `VERSION.endsWith('-dev')` now selects a network-first
+shell; the cache is still written, so offline still works, but the network wins whenever it answers.
+`/audio/` is bypassed entirely — megabyte media through a cache-first worker is both wasteful and
+wrong about Range requests.
+
 ### 12.4 Writes offline — and A25
 
 Every offline mutation appends to an **IndexedDB outbox** with a client-generated **idempotency key**.
@@ -3078,8 +3089,8 @@ renamed its files to match would be one rename behind for the rest of its life.
 ### The music, and why the greeting is its own recording
 
 The broadcast has two pieces of music and they are doing different jobs. The **opening** has a front to
-it: it starts loud, drops under the narrator while they introduce the programme, comes back up for five
-seconds when they finish, and leaves. The **bed** is furniture — it fades in under the first story and
+it: it starts loud, drops under the narrator while they introduce the programme, comes back up when they
+finish, holds until the first story is ready to speak, and leaves under it. The **bed** is furniture — it fades in under the first story and
 stays there, at a level nobody is meant to notice, for as long as the show runs. Which recording is
 which is declared beside the files on the SERVER (`internal/transport/grpcsrv/audio.go`), because a
 piece written to sit under speech and a piece written to open a programme are not interchangeable and a
@@ -3145,6 +3156,43 @@ were bugs before they were decisions:
 - **The music is started by an EFFECT, not by the click.** At the moment the show opens the bytes are
   usually still coming, so the imperative version called `Sting("")` once, at the only moment it could,
   and nothing ever revisited it. The synthesised chime covers the gap until the track lands.
+
+**The levels, and why halving a number is not halving a volume.** In linear gain: the theme opens at
+**0.16** and sits at **0.038** under a voice; the bed rests at **0.021**, ducks to **0.0105** while the
+narrator speaks, and lifts to **0.036** in a seam. Those are the third set of numbers, and the reason
+there were three is worth keeping. Asked to make the music "half as loud", the obvious change is to
+halve the gain — which is **−6 dB**, and reads as a small correction rather than the one that was
+asked for. Half as loud is about −10 dB (×0.32); a quarter as loud is about −20 dB (×0.1). The
+bed's duck is deliberately only −6 dB against its own resting level rather than the eleven a broadcast
+desk would use, because this music is already thirty decibels under the voice and its whole job is to
+be continuously present: ducked hard it vanished under every segment, which does not read as ducking,
+it reads as the music having stopped between stories.
+
+The synthesised chime's levels are **expressed as fractions of the theme's**, and that is a fix rather
+than a style. They were independent numbers in a different file, so two rounds of turning the music
+down left the chime — the FIRST thing anybody hears, and therefore the loudest thing in the mix —
+exactly where it started, which made both changes look like they had not been applied at all.
+
+**The narrator's pace is a preference, and it is free.** `tts.rate` (default **1.1**, offered 0.9 /
+1 / 1.1 / 1.3 / 1.5) is applied as `playbackRate` on the `<audio>` element with `preservesPitch`, not
+asked of the provider. That distinction is the whole reason it can exist: the audio is cached on the
+server by item and voice, so buying a faster reading would make the rate part of what was purchased
+and re-bill every change, while the element's own rate is instant, costs nothing, and applies to
+recordings already on disk. It is set on every track because assigning `src` resets it — without that
+a reader who chose a faster narrator would get it for one segment and lose it at every seam, which
+reads as a flaky setting rather than an unapplied one. It also feeds the arithmetic in
+`internal/rundown`: a listener at 1.5× gets more stories in the same twenty minutes, because they do.
+
+**"Do not greet anybody" had to be said out loud.** Splitting the opening off (`i=0`) stopped the
+server from ATTACHING a second greeting, and the broadcast still said the date twice. The cause is
+that the absence of an instruction is not neutral: a segment with no previous story has to be *told*
+it has none, or the model invents a handover from a story that never aired — and a model told "this is
+the opening segment of the broadcast" greets the listener and dates the show whatever the rules above
+it say about only doing that when an opening was given. So `smart.Segment.Opened` says the show has
+already introduced itself, in a recording of its own, seconds ago, over music; the input then forbids
+the greeting, the date, the story count and any handover explicitly. It is its own cache entry for the
+same reason the intro is — a first story that greets and one that does not are two different scripts
+from one set of inputs.
 
 One more, recorded because it looked exactly like a browser with no audio: on a `BiquadFilterNode` and an
 `OscillatorNode`, `frequency` is an AudioParam and **`type` is a plain string**. Setting it as

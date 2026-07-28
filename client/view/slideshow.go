@@ -467,42 +467,136 @@ func speechFrom(src string, ask speechAsk) string {
 	return out
 }
 
-// slideLineup is the first few story IDs, for the headline run-through the
-// broadcast opens with.
+// --- the running order ---------------------------------------------------------
 //
-// IDs and not headlines, which is a privacy decision rather than a size one: a
-// GET's query string lands in the access log, in browser history and in any
-// referrer, and the reader's article titles are their reading. An opaque id says
-// nothing to anyone who cannot already resolve it, and the server resolves these
-// through the reader's own scope.
+// The slideshow has always been a view over the LOADED LIST: it steps by index,
+// it advances by "the next item in the list", and its slug counts against the
+// page. That is exactly right for a display that plays a feed, and exactly wrong
+// for one that plays a PROGRAMME — an editorial rundown (§29) is a chosen
+// sub-queue in a chosen order, and \"1, 10, 4\" is not a thing list arithmetic can
+// express.
 //
-// Starts AT the story being spoken and runs forward, because the run-through is
-// "here is what is coming" and the first thing coming is the one about to be
-// covered — a bulletin lists its own top story first.
-func slideLineup(list []*pb.Item, fromID string, max int) []string {
+// So the mode walks a QUEUE of ids. An empty queue means "walk the list", which
+// is the behaviour the mode has always had, unchanged and untouched by any of
+// this; a non-empty one is a running order and is walked exactly as given.
+//
+// These are pure and take ids rather than items on purpose. A running order may
+// name a story the list pane has never loaded — a rundown can reach page three
+// — so the queue cannot be a slice of `*pb.Item` without deciding, here, what to
+// do about an item nobody has fetched. That decision belongs to the caller, which
+// has a client to fetch with.
+
+// queueIDs resolves what the show should walk: the explicit order if there is
+// one, otherwise the loaded list in its own order.
+func queueIDs(order []string, list []*pb.Item) []string {
+	if len(order) > 0 {
+		return order
+	}
+	out := make([]string, 0, len(list))
+	for _, it := range list {
+		out = append(out, it.GetId())
+	}
+	return out
+}
+
+// queueIndex is where an id sits in the queue, or -1.
+func queueIndex(q []string, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, v := range q {
+		if v == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// queueStep moves through the queue, and `loop` is the difference between a feed
+// and a programme.
+//
+// Walking a feed, the show LOOPS — §19 argues that at length, and the argument
+// is that a display you leave running must never turn itself into a dark screen
+// with no explanation. A rundown is not that: it has an end because somebody
+// chose one, and going round again would replay stories the listener has just
+// heard. So the caller passes `loop` and the two modes keep their own answer.
+//
+// Returns "" when there is nowhere to go.
+func queueStep(q []string, id string, delta int, loop bool) string {
+	if len(q) == 0 {
+		return ""
+	}
+	i := queueIndex(q, id)
+	if i < 0 {
+		// The queue changed underneath the display — a feed switch, a refresh
+		// that dropped what was showing, a rundown replaced mid-show. Starting
+		// again at the top is better than stopping, which is what §19's own
+		// recovery already does.
+		return q[0]
+	}
+	next := i + delta
+	switch {
+	case next >= len(q):
+		if !loop {
+			return ""
+		}
+		next = 0
+	case next < 0:
+		if !loop {
+			return ""
+		}
+		next = len(q) - 1
+	}
+	return q[next]
+}
+
+// queueNext is the story after this one, or "" at the end. It never wraps, in
+// either mode: this is what the NARRATOR follows, and a broadcast that silently
+// starts again from the top is a second reading of what was just played.
+//
+// It also does NOT inherit queueStep's restart-at-the-top recovery, and the
+// difference is the whole reason this is a separate function. Stepping is
+// DELIBERATE — somebody pressed a key and something has to happen, so landing at
+// the top beats doing nothing. Advancing is AUTOMATIC, and a story that has left
+// the queue (a refresh dropped it, the feed was switched) must end the session
+// rather than start it again from the beginning. This is the property
+// `itemAfter` documented before the queue replaced it, and it was nearly lost
+// with it.
+func queueNext(q []string, id string) string {
+	if queueIndex(q, id) < 0 {
+		return ""
+	}
+	return queueStep(q, id, 1, false)
+}
+
+// queueLineup is the headline run-through the broadcast opens with: this story
+// and the few after it, in the order they will actually be told.
+//
+// `title` resolves an id, and returns "" for a story the caller cannot see yet.
+// Those are skipped rather than waited for — the server drops untitled entries
+// anyway, so sending one spends a lookup to be told so, and a run-through is a
+// nicety that must never be the reason a broadcast does not start.
+func queueLineup(q []string, fromID string, max int, title func(string) string) []string {
 	if fromID == "" || max <= 0 {
 		return nil
 	}
 	out := make([]string, 0, max)
 	found := false
-	for _, it := range list {
-		if !found && it.GetId() != fromID {
+	for _, id := range q {
+		if !found && id != fromID {
 			continue
 		}
 		found = true
-		// A story with no headline cannot be run through, and the server would
-		// drop it anyway — sending it would only spend a lookup to be told so.
-		if strings.TrimSpace(it.GetTitle()) == "" {
+		if strings.TrimSpace(title(id)) == "" {
 			continue
 		}
-		out = append(out, it.GetId())
+		out = append(out, id)
 		if len(out) >= max {
 			break
 		}
 	}
 	if len(out) < 2 {
 		// One headline is not a run-through, it is the story about to be told.
-		// Better to open with the greeting alone than with "and finally".
 		return nil
 	}
 	return out

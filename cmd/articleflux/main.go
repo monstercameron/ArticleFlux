@@ -28,8 +28,10 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/opml"
 	"github.com/monstercameron/ArticleFlux/internal/seedread"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // The single build constant, shared with the wasm client so the two cannot
@@ -68,6 +70,8 @@ func main() {
 		err = seedReading(log, args)
 	case "poll":
 		err = poll(log, args)
+	case "fluxcast":
+		err = fluxcastCmd(log, args)
 	case "import":
 		err = importOPML(log, args)
 	case "export":
@@ -100,6 +104,7 @@ func usage() {
   articleflux poll    [-db path]
   articleflux import  -file feeds.opml [-db path] [-fetch]
   articleflux export  [-file feeds.opml] [-db path]
+  articleflux fluxcast [-db path] [-minutes 20] [-style balanced] [-rate 1.0] [-quickhits]
   articleflux version
 
 serve defaults to 127.0.0.1:9000 and REQUIRES a login. Pass -dev to serve the
@@ -558,6 +563,127 @@ func poll(log *slog.Logger, args []string) error {
 	}
 	log.Info("polled", "sources", res.Polled, "new", res.NewItems, "errors", len(res.Errors))
 	return nil
+}
+
+// fluxcastCmd produces one rundown for a user and prints it — the terminal
+// proof that TODO 11.1-11.5's four lanes now actually connect (plan.md §19 +
+// §29). It reads whatever home_ranking, item_clusters and item_analysis this
+// database already holds; it does not force a fresh derivation, matching
+// `poll`'s own choice not to force one either. On a database whose
+// background poller and boot derivation have run — which is every deployed
+// instance and the dev server after a restart — that is already current.
+//
+// No model call reaches this command, by construction: internal/fluxcast's
+// Produce never imports internal/llm or internal/smart, so this prints a
+// complete rundown on an instance with no API key, exactly as TODO 11's rule
+// 2 requires.
+func fluxcastCmd(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("fluxcast", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	user := fs.String("user", devUsername, "username for the local account")
+	pass := fs.String("password", devPassword, "password, on first run only")
+	minutes := fs.Int("minutes", 20, "target rundown length in minutes (flux.length)")
+	style := fs.String("style", store.StyleBalanced, "focused | balanced | explore (flux.style)")
+	rate := fs.Float64("rate", 1.0, "playback rate multiplier (tts.rate); a higher rate fits more stories in the same minutes")
+	quickHits := fs.Bool("quickhits", true, "include QUICK_HIT/MENTION roles (flux.quickHits)")
+	title := fs.String("title", "", "rundown title; empty leaves it blank rather than inventing one (see rundown.Rundown.Title)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *minutes <= 0 {
+		return fmt.Errorf("fluxcast: -minutes must be positive")
+	}
+
+	ctx := context.Background()
+	a, err := app.Open(ctx, app.Config{DBPath: *dbPath, Log: log, Version: version, DevMode: true})
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+
+	sc, err := a.EnsureDevUser(ctx, *user, *pass)
+	if err != nil {
+		return err
+	}
+
+	producer := fluxcast.NewRepo(a.Repo())
+	produced, err := producer.Produce(ctx, sc, fluxcast.Options{
+		Title:          *title,
+		Target:         time.Duration(*minutes) * time.Minute,
+		Rate:           *rate,
+		Style:          *style,
+		AllowQuickHits: *quickHits,
+	})
+	if err != nil {
+		return fmt.Errorf("fluxcast: %w", err)
+	}
+
+	printRundown(os.Stdout, produced, *rate)
+	return nil
+}
+
+// printRundown is the deliverable Job 4 asks for: a running order a person
+// can read and judge, not a struct dump. Title, then per segment its theme
+// and stories (source, role, words, estimated minutes), then the total —
+// exactly the shape the visual rundown (TODO 11.17) will eventually render,
+// because internal/rundown is the one place both read from.
+func printRundown(w io.Writer, p fluxcast.Produced, rate float64) {
+	title := p.Rundown.Title
+	if title == "" {
+		title = "(untitled rundown)"
+	}
+	fmt.Fprintf(w, "%s\n", title)
+	fmt.Fprintf(w, "target %s\n", p.Rundown.Target)
+	fmt.Fprintln(w, strings.Repeat("=", 72))
+
+	totalStories := 0
+	for _, seg := range p.Rundown.Segments {
+		theme := seg.Theme
+		if theme == "" {
+			theme = "(unsorted)"
+		}
+		fmt.Fprintf(w, "\n-- %s --\n", theme)
+		for _, st := range seg.Stories {
+			totalStories++
+			headline := p.Titles[st.ItemID]
+			if headline == "" {
+				headline = st.ItemID
+			}
+			mins := float64(st.Words) / (150.0 * rateOrOne(rate)) // 11.3's own arithmetic
+			source := "(no source on record)"
+			if len(st.Sources) > 0 {
+				source = strings.Join(st.Sources, ", ")
+			}
+			fmt.Fprintf(w, "  [%-10s] %-70s\n", st.Role, truncateFor(headline, 70))
+			fmt.Fprintf(w, "               %-58s %4d words  ~%.1f min\n", source, st.Words, mins)
+		}
+	}
+
+	fmt.Fprintln(w, strings.Repeat("=", 72))
+	fmt.Fprintf(w, "%d stories, %d words, ~%s of a %s target\n",
+		totalStories, p.Rundown.Words(), p.Rundown.Duration(rate).Round(time.Second), p.Rundown.Target)
+}
+
+func rateOrOne(rate float64) float64 {
+	if rate <= 0 {
+		return 1
+	}
+	return rate
+}
+
+// truncateFor keeps a headline inside a fixed-width column without cutting a
+// rune in half — the same shape RankReason's own comment describes for a
+// truncated hover string, applied here to a terminal column instead of a
+// list row.
+func truncateFor(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // isLoopback reports whether an address binds only the local machine.

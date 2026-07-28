@@ -6183,8 +6183,10 @@ catalog change and the spec change are the same commit or the suite goes red.
       **Your reader** — Reading · Appearance · My Feed · Listening · **Slideshow**;
       **Your library** — **Subscriptions** (was Feeds) · **Categories** (was Classification);
       **This server** — Smart+ · Account · **Server**.
-      Three moves make the count work: the **Podcast** tab becomes **Slideshow**, which is where the
-      feature actually lives and where its dependency checklist belongs; **Reading** loses its
+      Three moves make the count work: the Podcast tab — **renamed FluxCast on 2026-07-27**, which
+      supersedes this line's "becomes Slideshow": the capability now has a name and this is the one
+      screen entitled to use it (plan §19, *FluxCast: the name, and where it is allowed to appear*).
+      It stays where the feature lives and where its dependency checklist belongs; **Reading** loses its
       Slideshow group to it, and **Listening** takes the narration controls; **Activity** and **Speed**
       fold into **Server** as sections, being one-panel instrument readouts that have no business
       sitting as peers of Appearance. *Feeds → Subscriptions* is forced separately by N8.
@@ -6284,3 +6286,490 @@ catalog change and the spec change are the same commit or the suite goes red.
 | Regrouping the **article action row** | Seven controls spanning verdict / queue / where-to-read / audio is a real scan cost, but the fix is spacing and separators, not names. It belongs in a visual pass, not this one. |
 | **Read later** vs *saved for later* vs *Save this article for later* | A verb/noun flip across three surfaces, and genuinely minor. Fold it into whichever commit touches `en_panes.go` next rather than spending a translation invalidation on it alone. |
 | The **Account** tab existing to say a feature does not exist | Correct once N7 groups it under *This server*, where a placeholder reads as a placeholder. Deleting it would only have to be undone when §7.3a lands. |
+
+---
+
+## Tier 11 — FluxCast: the editorial producer (M30, plan §19 + §29)
+
+*FluxCast is the layer that turns a feed into a **programme**: it selects, groups, orders, allocates
+airtime, writes transitions and hands a finished rundown to the narrator that §19 already built. The
+narrator exists. The music exists. **Nothing selects or orders the queue** — the client passes an
+ordered list of item ids and the server narrates whatever order it is given. That gap is this tier.*
+
+### The three rules this tier is built under
+
+**1. FluxCast is a Smart+ ADD-ON, and "add-on" has a specific meaning here.** There is no billing
+machinery in this application and this tier does not add any. Add-on means what the three existing
+listening opt-ins already mean (`tts.smartPlus` → `tts.digest` → `tts.podcast`, each documented as *"a
+separate egress and a separate bill"*): **its own per-user preference, default off, with its own
+visible spend.** A reader who consented to having an article read aloud has not thereby consented to
+a model reading two hundred headlines and writing a running order.
+
+**2. The rundown is Smart; the broadcast is Smart+.** This is the free-tier answer, and the tier is
+designed around it rather than apologising for it later. Selection, clustering, grouping, ordering and
+airtime are **deterministic and cost nothing** — they run on `home_ranking`, `corroborate` and the
+category taxonomy, all of which already exist. An instance with no API key still produces a real
+rundown, still shows it, and still plays it with the per-item voice. The model is what makes it *sound
+like a programme*. That split follows the naming rule already in `docs/FEATURES.md`: **Smart** is
+deterministic and on-machine, **Smart+** is the model and the money.
+
+**3. The planner may shape, and may never rank.** There are already two opinions about relevance —
+`rank.Score`'s twelve weighted terms and, for Smart+ readers, `Interest.RerankCandidates` at
+`Effort: "medium"`, commented as *"the one call in the application where deliberation is the product
+being bought"*. A third opinion that disagrees with both, and has no `reasons_json` to explain itself,
+is not an improvement. **The planner consumes `home_ranking`.** It decides segments, order, airtime
+and transitions. It does not decide what is worth hearing.
+
+### The constraint that decides the architecture
+
+**The audio unit is the item, and it is sealed.** `/speech` is reached with a per-item ticket —
+`speech\n<tenant>\n<user>\n<role>\n<itemID>\n<exp>`, AES-GCM sealed, minted by `GetItem`. One item is
+one audio file is one slide; `--fill` comes from that file's playhead and read-state fires on `ended`.
+A segment covering three stories breaks the ticket, the slide boundary, the cue points and the
+bookkeeping at once.
+
+**So: write per segment, synthesise per story.** One model call produces a whole segment *including*
+its transition, and returns it as per-story prose blocks. Each block is synthesised under its own item
+ticket. The cross-story flow survives because the words were written together; tickets, slides, cue
+points and read-state are untouched; and the three-second musical seam already shipped covers the
+joins. **Every item below assumes this. Do not change it without redoing §19's clock.**
+
+### G6 — the gate this tier does not start without
+
+| Gate | At | Question | Written into |
+|---|---|---|---|
+| **G6** | before 11.7 | **What are the exact model ids, and what is their price/capability order?** Cam has named GPT-5.6 **Sol**, **Terra** and **Luna**. Nothing in this repo knows those names, and neither does the assistant that wrote this list. | §29, and `llm.DefaultModel`'s comment |
+
+**No model id may be written into this repository until G6 is answered.** A guessed id is not a
+compile error and not a test failure — it is a 404 at spend time, and the caller falls back to
+`llm.DefaultModel` silently, so the wrong model produces plausible output forever and the only
+symptom is a bill. The tier assignments below are written against **tiers**, not ids.
+
+**Assumed order, to be confirmed at G6 and corrected here if wrong:** Sol > Terra > Luna in capability
+and price. The assignments are chosen so that being wrong about the *order* is a settings change and
+not a rewrite.
+
+| Call | Tier | Effort | Why |
+|---|---|---|---|
+| Editorial planner | **Luna** | `low` | Shapes ~200 pre-ranked rows into segments. Cheap, frequent, and wrong answers are visible in the rundown before anything is spoken. |
+| Segment writer | **Terra** | `low` | The only place quality is *heard*. Full article text in, spoken prose out, once per selected story. |
+| Opening + transitions | **Luna** | `low` | Short, formulaic, heavily constrained by prompt. Promote to Terra only if G6 says Luna cannot hold a manner. |
+| Anything else | — | — | **Nothing in this tier uses Sol.** Cost here is per minute of audio produced, and a broadcast is produced continuously. If a call needs Sol, that call is mis-specified. |
+
+*Price-conscious, not latency-conscious, is the standing instruction: prefer the cheaper tier and a
+longer wall clock everywhere, because the opening theme covers the wait by design (§19).*
+
+---
+
+- [ ] **11.1 · Persist the story cluster into the column that already exists for it.**
+      `derive.corroborate` (`derive.go:1701`) already does exactly the clustering this tier needs:
+      TF-IDF cosine over **title + summary** — the right weighting, because two outlets covering one
+      announcement diverge in body while two pieces from one outlet converge on house style — at
+      `SameStoryThreshold = 0.45` over `SameStoryWindow = 72h`, same-source pairs excluded, earliest
+      published representing the story, deliberately non-transitive. Then it **throws the grouping
+      away** and keeps two scalars, and items above the threshold are dropped from the page entirely
+      rather than demoted. Meanwhile `home_ranking.cluster_id` exists, is never written, and
+      `schema_test.go:130` documents it as *"a derivation-local grouping, not a row anywhere"*.
+      **Do not change what reaches the page.** `home_ranking` holds survivors only, so writing the
+      grouping there would either lose the dropped members or change the homepage — and the homepage
+      is a shipped feature with tests. Write an additive per-user table instead
+      (`item_clusters`: user_id, item_id, cluster_id, is_head, other_sources), populated in the same
+      transaction as `ReplaceHomeRanking`. `home_ranking.cluster_id` gets the head's id for the row
+      that survived, so the dead column stops being dead, and the full membership lives beside it.
+      *Done when: a fixture feed carrying one story from four sources produces four `item_clusters`
+      rows with one `cluster_id` and exactly one `is_head`; the page still shows one of them; every
+      existing corroboration and duplicate-penalty test passes unchanged; and a test asserts the
+      grouping is identical to what `corroborate` computed in memory.* §18.4
+
+- [ ] **11.2 · `internal/rundown` — the structure, pure.** No database, no clock, no network, no
+      model, exactly as `internal/classify` and `internal/rules` are pure and for the same reason: the
+      visual rundown (11.17) and the producer (11.16) must be **the same code**, or the screen lies
+      about what will play. Types: `Rundown{Title, Target, Segments}`, `Segment{Theme, Intro,
+      Transition, Stories}`, `Story{ItemID, ClusterID, Role, Words, Sources}`.
+      *Done when: the package compiles with no imports outside the standard library and `textvec`;
+      `TestRundownIsDeterministic` builds the same rundown twice from the same input.*
+
+- [ ] **11.3 · Roles → words → minutes, and never the other way round.** A model cannot estimate
+      spoken duration, so it is never asked to. The planner emits a **role**; this table owns the
+      arithmetic. `LEAD 220w · SUPPORTING 110w · STANDARD 140w · QUICK_HIT 45w · MENTION 20w`, and
+      seconds = words ÷ (150 wpm × `tts.rate`). That is what makes "20 minutes" an honest label on a
+      control rather than a hope.
+      *Done when: `TestTargetIsHit` builds rundowns for 5/10/20/40 minutes from a 200-item fixture and
+      every one lands within 10% of target; `TestRateChangesTheStoryCount` asserts that a reader at
+      1.5× gets more stories in the same twenty minutes, because they do.*
+
+- [ ] **11.4 · Deterministic selection — the Smart half, and the whole free-tier answer.**
+      Build a rundown from `home_ranking` (score, `rank`, `slot ∈ top|explore|cluster_head`,
+      `reasons_json`, capped at `MaxRanked = 200`), the clusters from 11.1, the 26-slug category
+      taxonomy, and `item_analysis.genre` — **which is populated today and read by nothing**, and
+      whose own migration names *"a digest that leads with analysis"* as its intended first consumer
+      (`0021_classification.sql:62`). Segments are categories. Order is by segment weight then score.
+      Roles come from score band + corroboration count + genre. The 70/20/10 top/explore/cluster split
+      is not invented here — it is already the `slot` column, so **the surprise budget is free**.
+      *Done when: an instance with no API key produces a complete, playable rundown; every story in it
+      can name the `reasons_json` that put it there; and a feed of 200 items with 6 duplicate clusters
+      yields no two stories from the same cluster.* §18.4, §18.5
+
+- [ ] **11.5 · `rundowns` + `rundown_stories` (migration 0029).** The rundown persists, and that is
+      not an implementation detail: the visual rundown, resume-after-reload, continuous mode's memory
+      and "what did it pick last night" all need it to be a row. Note the numbering — the tree is at
+      **0027** with a gap at 0024; take 0029 (11.1 takes 0028) and never reuse 0024.
+      *Done when: a rundown survives a restart mid-broadcast and resumes at the story it was on;
+      `ClearAnalysis`-style rebuild rules from §27 are respected — a rundown is derived and may be
+      deleted and rebuilt.*
+
+- [ ] **11.6 · Segment-written, story-synthesised.** Extend `smart.Podcast` with a segment call: given
+      2–4 stories with their full text plus the previous segment's theme, return **one script split
+      into per-story blocks**, using the strict-schema pattern (`interest.go:107`, `scrapejson.go:170`
+      — `additionalProperties:false`, exhaustive `required`). Each block is then cached and synthesised
+      under its own item ticket exactly as today. The cache key gains the segment's shape, the way it
+      already gained `mode` for the intro split.
+      *Done when: a three-story segment produces three audio files; the second and third contain no
+      greeting and no restatement; playing them back to back is indistinguishable from one file except
+      at the seams, where the bed is doing its job.*
+
+- [ ] **11.7 · The planner call — propose, validate, retry with the failure.** ← G6.
+      Use the `scrapejson.ProposeJSON` shape (`scrapejson.go:47`), not the one-shot shape, because a
+      rundown is a *plan that must be usable*: it can reference an item that was dropped, overrun its
+      minute budget, put eight stories in one segment or return an empty running order, and all four
+      are **validatable failures with a sentence that can be handed back**. Bounded at two attempts;
+      on failure fall through to 11.4's deterministic rundown, which is a complete product.
+      *Done when: `TestPlannerRefusesAnUnusablePlan` covers all four failure shapes; the fallback path
+      is exercised by a fake client that always returns rubbish; and no planner output reaches the
+      writer without every item id having been re-validated against the reader's own scope.*
+
+- [ ] **11.8 · Transitions are metadata, not sentences.** The planner emits `previous_theme`,
+      `next_theme`, `transition_type`, `energy`; the **writer** produces the words. Never a stock
+      phrase from a table — a broadcast that says "turning now to" four times an hour is a broadcast
+      nobody leaves running. The existing handover rules in `podcastInstructionsFor` already say this
+      for story-to-story; segment-to-segment inherits them.
+      *Done when: `TestTransitionsAreNotCanned` asserts no fixed connective appears in the instructions
+      as a literal to be reused, and that the metadata reaches the prompt.*
+
+- [ ] **11.9 · Continuous mode, with a memory that decays.** Continuous is not "loop". It is *the next
+      editorial window over the remaining eligible pool*: produce, play, remove what was heard,
+      produce again. It carries a history — recent themes, recent sources, ids already used — and the
+      planner is told to prefer under-represented subjects **when editorial quality is comparable**.
+      **The history must decay.** A running total means a week of suppressing AI because Tuesday's
+      rundown was AI-heavy; use a half-life measured in hours, not a counter.
+      *Done when: three consecutive rundowns over one fixture feed do not repeat a story; theme
+      distribution across the three is measurably flatter than three independent selections; and a
+      history 48 hours old changes nothing.*
+
+- [ ] **11.10 · `heard` is not `read` (migration 0030).** Add audio consumption to
+      `user_item_state` beside `read_at`, `starred_at`, `rating` and `muted_at`. **Default: hearing a
+      forty-five-second summary does not mark the article read**, because it is not the article and
+      the application must not claim it was. The preference to change that is a checkbox, not an
+      assumption. Eligibility for a later rundown is `read_at IS NULL AND heard_at IS NULL`.
+      *Done when: a played rundown leaves the unread count unchanged with the default; changes it with
+      the box ticked; and a heard item is never selected into a later rundown either way.*
+
+- [ ] **11.11 · The Settings → FluxCast tab, which already exists and is where all of this goes.**
+      The tab, its prerequisites checklist and its start button shipped 2026-07-27. Everything below is
+      added to it, keyed `flux.*` — the producer's settings — while narration stays `tts.*`, because
+      the two answer different questions ("what show do I want" vs "what should it sound like"):
+
+      | Control | Key | Default | Notes |
+      |---|---|---|---|
+      | FluxCast | `flux.enabled` | **off** | The add-on's own opt-in. Rule 1. |
+      | Length | `flux.length` | `20` | 5 · 10 · 20 · 40 · continuous. Minutes, resolved through 11.3. |
+      | Style | `flux.style` | `balanced` | focused · balanced · explore — moves the 70/20/10 weighting, does not replace it. |
+      | Group related stories | `flux.group` | on | 11.1's clusters. |
+      | Include quick hits | `flux.quickHits` | on | Whether `QUICK_HIT`/`MENTION` roles are allowed. |
+      | Continue with what's left | `flux.continuous` | off | 11.9. |
+      | Mark heard as read | `flux.markRead` | **off** | 11.10. |
+      | Spend ceiling per show | `flux.budget` | a number | 11.12. |
+
+      *Done when: every key round-trips through the server like every other preference; the tab renders
+      nothing about FluxCast's shape while `flux.enabled` is off; and `screenlint` still reports zero
+      hardcoded copy in `client/view`.* §8, §20.17
+
+- [ ] **11.12 · Say what it costs, before and after.** The only cost signal available is
+      `llm.Client.Usage`, and it is process-wide. This tier needs it per rundown: an **estimate before**
+      ("about 12 stories · roughly N thousand tokens") shown on the button, and an **actual after**,
+      stored on the rundown row. Plus a ceiling: a rundown that would exceed `flux.budget` is produced
+      **smaller**, not refused, and says so.
+      *Done when: the estimate is within 25% of actual on a fixture; a budget of nearly zero produces a
+      short honest rundown rather than an error; and the Activity log carries one line per produced
+      rundown with its cost.* §9, §22.15
+
+- [ ] **11.13 · One model setting is no longer enough — and this is a real spec change.**
+      `store.KeySmartModel` is documented as *"the model **every** Smart+ feature uses. One setting,
+      not one per feature"*, and that decision was right when every feature made one comparable call.
+      This tier makes two calls with different economics in the same second. Add a **tier** indirection
+      rather than a per-feature setting: `smart.model.small` / `smart.model.mid` / `smart.model.large`,
+      with `smart.model` retained as the compatibility default for everything that does not ask for a
+      tier. Write the resolution rule in §29 and amend the comment at `settings.go:40` rather than
+      leaving it contradicting the code.
+      *Done when: an instance that sets only `smart.model` behaves exactly as it does today; a call
+      asking for a tier that is unset falls back to `smart.model`; and `TestModelTierFallback` covers
+      both.* ← G6
+
+- [ ] **11.14 · A named egress allowlist for the planner payload.** §18.8 is enforced **by types**, not
+      by convention: ranking has `EgressKeys` + `AuditEgress`, classification has its own wider pair,
+      and `egress.go:130` says in as many words that a feature sending more than titles and summaries
+      needs its own. A planner payload carries clusters, categories, genres, abstracts and airtime
+      hints. Write `llm.PlanPayload`, `llm.AuditPlan`, and the allowlist.
+      *Done when: `TestPlanEgressCarriesNoBody` asserts no `content_html`, no URL and no database id
+      leaves the process, and that the per-request ordinal id scheme (`Candidate.ID`, never a DB id)
+      is used here too.* §18.8, §22.11
+
+- [ ] **11.15 · Wire the circuit breaker that has been built and unused since it was written.**
+      `internal/llm/breaker.go` is complete — `FailuresToOpen=5`, `OpenFor=2m`, one half-open probe,
+      `MaxInFlight=4` acquired non-blocking — and `NewGuard` has **no caller outside its own tests**,
+      while `llm.go:11` still claims it is not built. A producer that fans out one planner call plus a
+      segment write per segment is precisely the load it was written for.
+      *Done when: `Guard` wraps the planner and the segment writer; a provider outage produces one
+      deterministic rundown and a note rather than a stalled show; and the stale comment is corrected.*
+      §22.8
+
+- [ ] **11.16 · The producer runs one segment ahead, on the durable queue.** Time to first audio is a
+      hard constraint: today it is one script call plus one synthesis, and a rundown inserts a planner
+      pass and full-text fetches in front of that. So: plan → write and synthesise **segment one only**
+      → start playing → produce the rest during playback on the `jobs` table (§22.7, per-kind
+      concurrency caps). The client already prefetches one track ahead; this is the server-side twin.
+      *Done when: audio starts within the window the opening theme covers; a rundown of six segments
+      never has more than two in flight; and killing the process mid-show resumes without re-paying for
+      what was already written.*
+
+- [ ] **11.17 · The rundown, on screen — which is the explainability surface, not a nicety.**
+      The editorial layer's failure mode is **invisible**: §18.5 already says a monoculture "fails
+      invisibly, because the page still looks full", and a rundown that picks the wrong twelve still
+      sounds excellent over good music. So the show is inspectable before it plays — themes, story
+      counts, minutes, and per story the `reasons_json` that put it there — and a segment can be
+      removed. Reuse §19's own vocabulary; this is a surface, not a dialog.
+      *Done when: every story on screen can say why it is there; removing a segment re-times the show
+      through 11.3 rather than leaving a stale minute count; and the screen is reachable without
+      starting playback.* §18.9
+
+- [ ] **11.18 · The tests that decide whether this works, as opposed to whether it runs.**
+      Everything above has unit tests; these are the ones that catch the failures nobody hears:
+      **(a)** a 200-item fixture across 12 sources produces a rundown with no source above 30% and no
+      category above 40%; **(b)** three continuous rundowns cover more distinct topics than three
+      independent selections; **(c)** the deterministic and planned rundowns over the same input differ
+      in *order and grouping* but not in *membership* by more than 20% — if the planner is silently
+      re-ranking, this is what catches it; **(d)** an e2e that plays a two-segment rundown end to end
+      and asserts the seam, the transition and the read-state.
+      *Done when: all four are green in CI on windows-latest alongside the existing suite.* §23
+
+- [ ] **11.19 · Write it down.** `plan.md` gains **§29 FluxCast** — the producer, the Smart/Smart+
+      split, the tier table with the ids from G6, and the audio-unit constraint. `docs/FEATURES.md`
+      gains the outside view. §19 keeps the narrator and the music and gains a pointer, because the
+      slideshow is still a slideshow when nobody is listening.
+      *Done when: a reader who has never seen this tier can answer "what does FluxCast cost me and what
+      does it do without a key" from the docs alone.*
+
+### What is explicitly NOT in this tier
+
+- **Embeddings.** `item_embeddings` exists, is written by nothing, and there is no embedding call
+  anywhere in `internal/llm`. `textvec` is the substrate and it is enough at this scale. Adding a
+  second similarity system to serve one feature is how a codebase acquires two answers to one question.
+- **A second ranking opinion.** See rule 3.
+- **Billing.** Add-on means an opt-in and a visible number, not a SKU.
+- **Sol.** See G6.
+
+---
+
+## The broadcast's sound, as built — 2026-07-27, evening
+
+*Backfilled after the fact. Everything here shipped in one sitting on top of §19's slideshow, and it
+is recorded because five of the seven items were **bugs that presented as "the feature does nothing"**
+— the failure mode where every part works and the result is silence. Plan §19 carries the reasoning;
+this is the ledger.*
+
+- [x] **S1 · Four music tracks, served over gRPC rather than as a URL.** `ListAudioTracks` and
+      `GetAudioTrack` on `SystemService`, a fixed table in `internal/transport/grpcsrv/audio.go` that
+      the wire id is matched against and never joined onto a path, 64KiB chunks so the tunnel stays
+      usable, and a `role` of `bed` or `sting` declared **by the server** — because which recording
+      works under speech and which one opens a programme is a property of the recording, and a client
+      inferring it from a filename gets it wrong the day somebody adds a fifth file.
+      ✅ `internal/transport/grpcsrv/audio.go` · `client/data/audio.go` · 4 tests. The two Patchcord
+      takes are beds; Signal and Ideas and Midnight Thought Loop are openings, chosen at random per
+      session.
+
+- [x] **S2 · The greeting became its own recording.** `smart.Segment.OpenOnly` + `i=1`, with its own
+      prompt (`podcastIntroInstructions`) and its own cache entry. Not a writing decision — a *sound*
+      one: the theme has to swell and clear before the first story, and the only moment a client can
+      see coming is the end of a file.
+      ✅ Plus `Segment.Opened` + `i=0`, which is the half that had to be discovered: suppressing the
+      server's second greeting was not enough, because a model told "this is the opening segment"
+      greets and dates the show anyway. The absence of an instruction is not neutral.
+
+- [x] **S3 · The handover is triggered by the voice, not by a clock.** `PlayAudioIn` with a negative
+      lead loads the segment, reports `ready` on `canplay`, and **holds** it; `introCross` fades the
+      theme out and the bed in; `AudioGo` releases the voice two seconds into that. A timer-driven
+      version is out of phase by construction — the one duration it cannot know is the only one that
+      matters — and reacting to playback starting is too late by definition.
+      ✅ Verified against the live server by hooking `AudioParam` and `HTMLMediaElement.play`: greeting
+      ends 44.7s, theme swells, crossfade at 56.6s when the segment reported ready, voice at 58.6s.
+
+- [x] **S4 · A three-second musical seam between stories.** The bed lifts above its resting level, the
+      next segment is held, and it starts into the lift — measured from the END of the last story, so a
+      segment that took ten seconds to synthesise adds nothing on top; the wait it already imposed WAS
+      the seam.
+      ✅ Traced over four minutes and four story changes with no `pause`, no `ended` and no second
+      `play` on the bed element — it loops continuously, which was the requirement.
+
+- [x] **S5 · Reading speed, applied in the player.** `tts.rate`, default 1.1×, 0.9–1.5, as
+      `playbackRate` with `preservesPitch`. Re-applied per track because assigning `src` resets it.
+      Free, instant, and it works on audio already on disk — which is only true because it is not
+      bought from the provider.
+
+- [x] **S6 · Three bugs that each presented as "there is no music".** Recorded individually because
+      none of them looked like what it was:
+      1. `node.Get("type").Set("value", …)` on an `OscillatorNode` **panics the wasm module** — `type`
+         is a plain string, `frequency` is an AudioParam — and the sound layer's own `recover()`
+         swallowed it. The synthesised chime made no sound from the day it was written.
+      2. The music was started **by the click**, at the one moment the bytes had not arrived yet, and
+         nothing revisited it. It is an effect now, keyed on the fetch landing.
+      3. Two concurrent `GetAudioTrack` streams plus the event pump exceeded `maxStreamsPerCaller` and
+         were refused with `ResourceExhausted` — silently, and never retried, because the track had
+         already been marked as asked. One fetch at a time, three attempts each.
+
+- [x] **S7 · Levels calibrated by ear, then by arithmetic.** Theme 0.16 open / 0.038 under a voice; bed
+      0.021 resting / 0.0105 ducked / 0.036 in a seam; the chime expressed as a **fraction of the
+      theme** rather than as its own numbers, because independent numbers in a different file survived
+      two rounds of turning the music down and made both look unapplied. Halving a gain is −6 dB, not
+      half as loud; see plan §19.
+
+- [x] **S8 · FluxCast, named.** The Settings tab formerly called Podcast, and the line *"ArticleFlux
+      Broadcast — powered by FluxCast"* on it. Every control keeps its plain verb. Supersedes **N7**'s
+      "the Podcast tab becomes Slideshow".
+
+### What this left open
+
+- [ ] **S9 · The intro's `slideVoiceWait` backstop is now doubly redundant.** It was raised to 90s when
+      the failure it guarded against was a slow first segment; the player's own `error` state reports a
+      real failure immediately, and `introWait` (45s) now covers a held segment that never arrives.
+      Three timeouts for one condition is two too many — work out which one is the truth and delete the
+      others.
+
+- [ ] **S10 · The bed is chosen per reader but the opening is chosen per session, and nothing says so
+      on the settings screen.** The picker offers beds only, which is correct, but a reader who
+      wonders why the music at the top is different every evening has nowhere to find out that this is
+      deliberate. One sentence of hint copy.
+
+---
+
+## Tier 11, after the first wave — 2026-07-27, night
+
+*Items 11.1–11.6 and 11.14 were built by four parallel agents. What follows is what that exposed, and
+it is here rather than edited into the items above because the items were the brief and this is the
+result of executing it.*
+
+- [ ] **11.20 · The rundown has no way out of the server.** Nothing in the first wave exposes a
+      rundown over gRPC or plays one from the client — `internal/fluxcast` produces and persists it,
+      and there it stops. This is the wiring that makes FluxCast audible rather than provable:
+      an RPC to produce/fetch the current rundown, and a client that walks it instead of walking the
+      item list. **It lands in `client/view/reader.go`, which is the largest and most contended file
+      in the tree**, so it is a single-owner job and not a lane.
+
+      **The show cannot currently play an out-of-order sequence at all** (audited 2026-07-27), and
+      that is the substance of this item rather than a detail of it. Eight sites do list arithmetic:
+      `slideAt` returns a position in `itemsRef`; `slideStep` is `i + delta` wrapped at `len(list)`;
+      `trackEnded` advances via `itemAfter(list, done)`; `slideLineup` teases the next N **in list
+      order**; the audio prefetch warms `itemAfter(list, id)`, which for a pair-keyed recording means
+      paying for a segment that will never be played; the body prefetch takes `list[i+1..i+2]`;
+      `loadMore` fires on `i+3 >= len(list)`; and the slug renders `index: i, total: len(items)`.
+      Given a rundown of `1, 10, 4`, the display shows story 1 and then steps to story 2.
+
+      The shape: a `showOrder []string` ref — **empty means "walk the list", which is today's
+      behaviour unchanged** — and four helpers (`orderIndex`, `orderAt`, `orderNext`, `orderLen`) that
+      those eight sites route through instead of indexing. Two of them get more correct on the way:
+      the slug counts against the SHOW rather than the loaded page, and `loadMore` must stop firing
+      when an order is set, because a rundown ends and the show currently loops forever by design.
+
+      **The consequence that is actual work:** the slideshow is a view over the LOADED LIST today, and
+      a rundown makes it a view over a set of ids — which may name a story on page three that the list
+      pane has never fetched. `orderAt` therefore cannot be a lookup; it has to fetch by id and hold
+      what it gets. Nothing in the mode currently handles an item it does not already have.
+
+      *Done when: pressing play in the slideshow plays a produced rundown in its running order; the
+      story on screen is the story being spoken; the slug counts the show; a rundown naming an unloaded
+      item plays it; and with no rundown the mode behaves exactly as it does today — asserted by the
+      existing slideshow e2e suite passing unchanged.*
+
+- [ ] **11.21 · `Story` cannot say why it is there.** `internal/rundown.Story` is `{ItemID, ClusterID,
+      Role, Words, Sources}` — no reasons — so the visual rundown (11.17) has to join back to
+      `home_ranking.reasons_json` through the item id to answer the question that whole screen exists
+      to answer. Either carry the reasons onto the story at build time or give `internal/fluxcast` a
+      read that returns them alongside. **Decide before 11.17 is built, not during.**
+
+- [ ] **11.22 · Three decisions were invented under the items rather than by them.** Each is defensible
+      and each is now load-bearing, so each needs writing into plan §29 rather than living only in a
+      Go comment: `rundowns.state` is `producing|complete` **with no `failed`**, because 11.7's
+      deterministic fallback is itself a complete product; "the current rundown" means *most recently
+      created*, which is a guess that continuous mode (11.9) will make wrong the moment two exist;
+      and `smart.SegmentGroup.PrevTheme` is a forward reference to `rundown.Segment.Theme` written by
+      an agent that could not see it. The first two are the ones that will bite.
+
+- [ ] **11.23 · Nothing has been verified at merged HEAD by a human-facing suite.** Each of the four
+      lanes ran only its own package while the other three were mid-edit, and the wasm build, the e2e
+      suite and the design ratchets have not run since. Not a formality: the last two times this tree
+      was edited by concurrent agents, what broke was a signature two lanes shared and a test one lane
+      could not see.
+
+### The first real rundown, and what it says — 2026-07-27, night
+
+*`articleflux fluxcast -minutes 20` against Cam's live feed produced 28 stories, 2990 words,
+19m56s of a 20m target. It ran, it persisted, it round-tripped. **It is also not a programme
+anybody would leave running**, and every reason why is a rule in `internal/rundown` meeting a real
+feed for the first time. This is the failure §18.5 calls invisible — the output looks full and
+sounds fine — so it is written down while there is still evidence.*
+
+- [ ] **11.24 · There was no LEAD. Not one, in twenty minutes.** 27 of 28 stories came out
+      `SUPPORTING` at 110 words and one was a `MENTION`; nothing reached `STANDARD` or `LEAD`. The
+      cause is that `roleFor` requires top-decile score **and** ≥2 corroborating sources, and on real
+      data those two are **anti-correlated**: a reader's highest-scoring story is very often a
+      single-source exclusive, and part of *why* it scores highest is that freshness, topic and entity
+      terms do not need corroboration to fire. So the gate can almost never open. The result is
+      twenty minutes at one pace with nothing signalled as the top of the hour, which is the whole
+      thing a producer is for.
+      *Fix direction: the top-scoring story IS the lead, full stop — corroboration should PROMOTE a
+      second story to lead in a long show, not gate the first. Done when a 20-minute rundown from any
+      non-trivial feed has exactly one lead and a visible spread of roles.*
+
+- [ ] **11.25 · One category ate 46% of the show.** `hardware` took 13 of 28 stories — phones,
+      laptops, glasses, a gaming mouse — back to back for about nine minutes at identical pacing.
+      §18.4's `VolumePenalty` is per SOURCE and does its job; nothing is per CATEGORY, and a producer
+      needs both. A cap on any one segment's share of the minute budget, with the overflow demoted to
+      quick hits or dropped, not appended.
+      *Done when: TODO 11.18(a)'s "no category above 40%" assertion passes on this reader's real feed,
+      which today it would fail at 46%.*
+
+- [ ] **11.26 · The second-biggest segment was `(unsorted)`, at 36%.** Ten stories with no recognised
+      category, running film casting next to a wrongful conviction next to an EV navigation deal.
+      `internal/rundown` is right to refuse to invent a 27th taxonomy slug — that is the honest
+      behaviour and it should stay — but a third of a programme with no theme is audible as
+      incoherence whatever the cause. Two separate things to do: **put unsorted last** (it is an "and
+      also", never an opener) and **cap it**; and separately treat 36% unclassified as a signal about
+      classify coverage on this reader's sources, which is a §27 question and not a FluxCast one.
+
+- [ ] **11.27 · Segment order is taxonomy table position, not editorial weight.** The show opened on
+      `software` — one middling Ubuntu Touch story — ahead of the AI segment carrying a $250 billion
+      Nvidia/OpenAI financing story, because `lexicon.Categories()` happens to list software first.
+      That is indefensible on a programme whose entire claim is that it decided what mattered. Order
+      segments by the weight of their best story.
+      *Done when: the first story a listener hears is the highest-scoring story in the rundown, and a
+      test asserts it.*
+
+- [x] **11.28 · The running order, client side.** `client/view` walks a QUEUE of ids rather than
+      indexing the loaded list: `queueIDs` / `queueIndex` / `queueStep` / `queueNext` / `queueLineup`
+      (pure, in `slideshow.go`) plus `showQ` / `showItem` / `showTitle` / `fetchBodyID` in `reader.go`.
+      All eight list-arithmetic sites from 11.20 now route through it. An empty order means "walk the
+      list", which is the mode's original behaviour — asserted by the slideshow e2e suite passing
+      unchanged, 24/24.
+      ✅ Two things worth keeping: `queueNext` deliberately does NOT inherit `queueStep`'s
+      restart-at-the-top recovery, because stepping is deliberate (something must happen) and
+      advancing is automatic (a story that left the queue must END the session, not restart it) — that
+      was `itemAfter`'s documented property and it was nearly lost when `itemAfter` was deleted. And
+      `showItem` can resolve a story the list pane has never loaded, which is the thing a rundown
+      needs and the mode could not do before.
+      **Still open:** nothing SETS `showOrder` yet — that is the RPC half of 11.20.
+
+- [ ] **11.29 · Two conventions invented during integration, undocumented.** `internal/fluxcast.Repo`
+      is named for its suffix on purpose — guard 4 matches receiver type names ending in `Repo`
+      regardless of package, so the "every method takes a Scope" check comes free. And `Produced.Titles`
+      is a side-map because `rundown.Story` has no title field (11.2 fixed that struct's shape), which
+      is the same gap 11.21 names for reasons. Whoever builds 11.16/11.17 hits both. Write them into
+      §29 rather than leaving them in a Go comment.

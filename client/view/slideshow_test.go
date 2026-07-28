@@ -502,70 +502,11 @@ func item(id, title string) *pb.Item {
 
 // The run-through starts AT the story being spoken, because a bulletin lists its
 // own top story first and then covers it.
-func TestLineupStartsAtTheStoryBeingSpoken(t *testing.T) {
-	list := []*pb.Item{
-		item("a", "First"), item("b", "Second"), item("c", "Third"),
-		item("d", "Fourth"), item("e", "Fifth"), item("f", "Sixth"),
-	}
-
-	got := slideLineup(list, "b", 5)
-	want := []string{"b", "c", "d", "e", "f"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("lineup = %v, want %v", got, want)
-	}
-
-	// Bounded: a bulletin that recites eleven headlines before covering any of
-	// them has told the listener nothing they can keep.
-	if got := slideLineup(list, "a", 3); len(got) != 3 || got[0] != "a" {
-		t.Errorf("lineup = %v, want three starting at a", got)
-	}
-}
-
 // One headline is not a run-through, it is the story about to be told. Better to
 // open with the greeting alone than with "and finally".
-func TestLineupNeedsMoreThanOneStory(t *testing.T) {
-	list := []*pb.Item{item("a", "First"), item("b", "Second")}
-
-	if got := slideLineup(list, "b", 5); got != nil {
-		t.Errorf("the last story produced a run-through of %v", got)
-	}
-	if got := slideLineup(list, "a", 5); len(got) != 2 {
-		t.Errorf("two stories produced %v", got)
-	}
-}
-
 // A story with no headline cannot be run through, and sending it would only
 // spend a server lookup to be told so.
-func TestLineupSkipsUntitledStories(t *testing.T) {
-	list := []*pb.Item{
-		item("a", "First"), item("b", "   "), item("c", "Third"), item("d", "Fourth"),
-	}
-	got := slideLineup(list, "a", 5)
-	for _, id := range got {
-		if id == "b" {
-			t.Errorf("an untitled story reached the run-through: %v", got)
-		}
-	}
-	if len(got) != 3 {
-		t.Errorf("lineup = %v, want three titled stories", got)
-	}
-}
-
 // Nothing to work with is no run-through rather than a panic or a stray comma.
-func TestLineupHandlesNothing(t *testing.T) {
-	if got := slideLineup(nil, "a", 5); got != nil {
-		t.Errorf("an empty list produced %v", got)
-	}
-	if got := slideLineup([]*pb.Item{item("a", "First")}, "", 5); got != nil {
-		t.Errorf("no starting story produced %v", got)
-	}
-	// An id that is not in the list — a story swept away mid-session — yields
-	// nothing rather than the whole list.
-	if got := slideLineup([]*pb.Item{item("a", "First"), item("b", "Second")}, "zz", 5); got != nil {
-		t.Errorf("an unknown starting story produced %v", got)
-	}
-}
-
 // The ids ride in the URL comma-separated, and only at the top of a broadcast.
 func TestSpeechFromCarriesTheLineup(t *testing.T) {
 	const ticket = "/speech?t=abc"
@@ -769,5 +710,112 @@ func TestTheHandoverIsABeatAndABackstop(t *testing.T) {
 	if introHold+introLead >= introWait {
 		t.Errorf("hold (%v) plus lead (%v) reaches the backstop (%v)",
 			introHold, introLead, introWait)
+	}
+}
+
+// --- the running order ----------------------------------------------------------
+//
+// The mode walks a queue of ids so that a programme can be played in the order
+// somebody chose (§29). What is checked here is the property that decides
+// whether that works at all: an order like "1, 10, 4" is walked as given, and an
+// empty order is the loaded list, unchanged, because that is what every existing
+// slideshow behaviour depends on.
+
+func qItems(ids ...string) []*pb.Item {
+	out := make([]*pb.Item, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, item(id, "Story "+id))
+	}
+	return out
+}
+
+func TestAnEmptyOrderIsTheLoadedList(t *testing.T) {
+	list := qItems("a", "b", "c")
+	got := queueIDs(nil, list)
+	if len(got) != 3 || got[0] != "a" || got[2] != "c" {
+		t.Fatalf("the list was not walked in its own order: %v", got)
+	}
+	// And stepping through it wraps, which is what a feed does and what §19
+	// argues at length: a display left running must not turn into a dark screen.
+	if next := queueStep(got, "c", 1, true); next != "a" {
+		t.Errorf("the end of a feed did not wrap: %q", next)
+	}
+	if prev := queueStep(got, "a", -1, true); prev != "c" {
+		t.Errorf("the start of a feed did not wrap: %q", prev)
+	}
+}
+
+// The case the whole seam exists for: a rundown that is not in list order.
+func TestARundownIsWalkedInTheOrderItWasGiven(t *testing.T) {
+	// The loaded list is 1..10 in feed order; the programme is not.
+	list := qItems("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+	order := []string{"1", "10", "4"}
+	q := queueIDs(order, list)
+
+	if len(q) != 3 {
+		t.Fatalf("the running order was not honoured: %v", q)
+	}
+	for _, c := range []struct{ from, want string }{
+		{"1", "10"},
+		{"10", "4"},
+	} {
+		if got := queueNext(q, c.from); got != c.want {
+			t.Errorf("after %q the programme played %q, wanted %q", c.from, got, c.want)
+		}
+	}
+	// The list's own neighbour is NOT what comes next. This is the exact bug the
+	// seam replaces: before it, "after 1" was "2" no matter what was planned.
+	if got := queueNext(q, "1"); got == "2" {
+		t.Error("the programme stepped to the list neighbour instead of the running order")
+	}
+	// A rundown ENDS. It does not go round again, because somebody chose where
+	// it stops and a second reading is not what they chose.
+	if got := queueStep(q, "4", 1, false); got != "" {
+		t.Errorf("the end of a rundown wrapped to %q", got)
+	}
+	if got := queueStep(q, "1", -1, false); got != "" {
+		t.Errorf("stepping back past the start of a rundown gave %q", got)
+	}
+	// Backwards through the programme, not the list.
+	if got := queueStep(q, "4", -1, false); got != "10" {
+		t.Errorf("stepping back from 4 gave %q, wanted 10", got)
+	}
+}
+
+// A queue that changed underneath the display recovers at the top rather than
+// stopping — the same recovery §19's own step already performed.
+func TestAnIDThatLeftTheQueueRestartsAtTheTop(t *testing.T) {
+	q := []string{"a", "b"}
+	if got := queueStep(q, "gone", 1, false); got != "a" {
+		t.Errorf("a story that left the queue produced %q", got)
+	}
+	if got := queueStep(nil, "a", 1, true); got != "" {
+		t.Errorf("an empty queue produced %q", got)
+	}
+}
+
+// The greeting teases what is ACTUALLY coming, in programme order, and skips
+// what it cannot name rather than waiting for it.
+func TestTheRunThroughFollowsTheRunningOrder(t *testing.T) {
+	q := []string{"1", "10", "4", "7"}
+	titles := map[string]string{"1": "First", "10": "Tenth", "4": "Fourth", "7": ""}
+	title := func(id string) string { return titles[id] }
+
+	got := queueLineup(q, "1", 5, title)
+	if len(got) != 3 || got[0] != "1" || got[1] != "10" || got[2] != "4" {
+		t.Fatalf("the run-through was %v, wanted the programme order minus the untitled one", got)
+	}
+	// Starting midway names what follows from there, not from the top.
+	if mid := queueLineup(q, "10", 5, title); len(mid) != 2 || mid[0] != "10" {
+		t.Errorf("a mid-programme run-through was %v", mid)
+	}
+	// One headline is not a run-through.
+	if lone := queueLineup(q, "4", 5, title); lone != nil {
+		t.Errorf("a single remaining story produced a run-through: %v", lone)
+	}
+	// A story nobody has loaded yet cannot be teased, and must not stop the rest.
+	blank := func(string) string { return "" }
+	if none := queueLineup(q, "1", 5, blank); none != nil {
+		t.Errorf("an unloaded programme produced %v", none)
 	}
 }

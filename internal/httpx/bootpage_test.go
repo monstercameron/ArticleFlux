@@ -108,8 +108,12 @@ func TestStatusParsesRealTODO(t *testing.T) {
 	if len(st.Tiers) < 9 {
 		t.Errorf("parsed %d tiers, expected the full set", len(st.Tiers))
 	}
-	if len(st.Gates) != 5 {
-		t.Errorf("parsed %d gates, expected G1-G5", len(st.Gates))
+	if len(st.Gates) != 6 {
+		// Tier 11 (FluxCast, TODO.md §"Tier 11") added G6 — the FluxCast model-id
+		// decision — alongside the existing G1-G5. This count tracks TODO.md's
+		// real gate table rather than a number frozen at whatever tier last
+		// touched this test; the next tier that adds a gate updates this too.
+		t.Errorf("parsed %d gates, expected G1-G6", len(st.Gates))
 	}
 	var g1 bool
 	for _, g := range st.Gates {
