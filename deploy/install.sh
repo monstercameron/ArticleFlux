@@ -154,7 +154,15 @@ mkdir -p "$REPO/bin"
 rm -rf "$REPO/bin/web"
 cp -a "$REPO/web" "$REPO/bin/web"
 ( cd "$REPO" && export GOOS=js GOARCH=wasm && run /usr/local/go/bin/go build -trimpath -ldflags="-s -w" -o "$REPO/bin/web/app.wasm" ./client/app )
+# From the toolchain, not the repo — see the note in update.sh. Its absence is a
+# client that boots to "Go is not defined" while every server-side check passes.
+goroot=$(/usr/local/go/bin/go env GOROOT)
+exec_js="$goroot/lib/wasm/wasm_exec.js"
+[ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
+[ -f "$exec_js" ] || { echo "wasm_exec.js not found under $goroot"; exit 1; }
+cp "$exec_js" "$REPO/bin/web/wasm_exec.js"
 run gzip -9 -kf "$REPO/bin/web/app.wasm"
+run gzip -9 -kf "$REPO/bin/web/wasm_exec.js"
 note "client: $(du -h "$REPO/bin/web/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web/app.wasm.gz" | cut -f1) gzipped"
 ( cd "$REPO" && run /usr/local/go/bin/go build -trimpath -o "$REPO/bin/articleflux" ./cmd/articleflux )
 note "server: $(du -h "$REPO/bin/articleflux" | cut -f1)"

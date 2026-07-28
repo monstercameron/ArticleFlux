@@ -170,8 +170,24 @@ mkdir -p "$GOCACHE"
 rm -rf "$REPO/bin/web.new"
 cp -a "$REPO/web" "$REPO/bin/web.new"
 ( cd "$REPO" && export GOOS=js GOARCH=wasm && run "$GO" build -ldflags="-s -w" -o "$REPO/bin/web.new/app.wasm" ./client/app )
+# wasm_exec.js comes from the TOOLCHAIN, not the repo, and it is not optional:
+# without it the page loads, the module downloads, and the app dies at
+# "Go is not defined" behind a boot error that blames the server. This script
+# shipped exactly that to production, because copying web/ looks like it copies
+# everything the client needs.
+#
+# It must also come from the same Go that built the module — a copy from an
+# older toolchain fails at instantiate with an import mismatch that reads like a
+# corrupt binary.
+goroot=$("$GO" env GOROOT)
+exec_js="$goroot/lib/wasm/wasm_exec.js"
+[ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
+[ -f "$exec_js" ] || { echo "wasm_exec.js not found under $goroot — the client cannot boot without it"; exit 1; }
+cp "$exec_js" "$REPO/bin/web.new/wasm_exec.js"
 run gzip -9 -kf "$REPO/bin/web.new/app.wasm"
+run gzip -9 -kf "$REPO/bin/web.new/wasm_exec.js"
 note "client: $(du -h "$REPO/bin/web.new/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web.new/app.wasm.gz" | cut -f1) gzipped"
+note "boot shim: wasm_exec.js from $goroot"
 
 # The service worker caches by version string, so a client that ships without a
 # fresh stamp is a client browsers keep the old copy of — the update lands and
@@ -180,6 +196,11 @@ if [ -f "$REPO/bin/web.new/sw.js" ]; then
 	sed -i "s/__BUILD__/${new_sha:0:12}/g" "$REPO/bin/web.new/sw.js" || true
 fi
 done_ok "client built"
+
+for f in app.wasm app.wasm.gz wasm_exec.js index.html; do
+	[ -s "$REPO/bin/web.new/$f" ] || { echo "the built client is missing $f — refusing to deploy it"; exit 1; }
+done
+done_ok "client complete"
 
 step "Building the server"
 ( cd "$REPO" && run "$GO" build -o "$REPO/bin/articleflux.new" ./cmd/articleflux )
@@ -249,6 +270,16 @@ if systemctl is-active --quiet nginx; then
 		warn "nginx is running but did not serve / — check /var/log/nginx/error.log"
 	fi
 fi
+
+# The files the CLIENT needs, fetched the way a browser fetches them. /healthz
+# is a server-side question and it passed happily while the deployed client was
+# missing its boot shim and dying at "Go is not defined" in every browser. A
+# deploy check that cannot see that is not checking the thing that matters.
+for f in / /app.wasm.gz /wasm_exec.js; do
+	c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1$f" 2>/dev/null)
+	[ "$c" = "200" ] || { echo "the deployed client is missing $f (HTTP $c) — it will not boot in a browser"; exit 1; }
+done
+note "client assets served: index, app.wasm.gz, wasm_exec.js"
 trap - EXIT INT TERM   # past the point of no return; the new build works
 ROLLBACK_CMD=""
 done_ok "answering"
