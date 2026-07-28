@@ -220,7 +220,12 @@ write_report() {
 # One trap, and it says the four things worth knowing: which step, which line,
 # which exit code, and what the log's last lines were.
 on_error() {
-	code=$?
+	# The exit code is passed in, not read from $? here. $? reflects the LAST
+	# command run, and by the time this function body starts that is the trap
+	# wrapper's own bookkeeping — an assignment, which always succeeds. That is
+	# how a failed deploy came back as exit 0: the script reported FAILED, then
+	# exited zero, and the webhook that ran it recorded a successful deploy.
+	code=${2:-$?}
 	line=${1:-?}
 	printf '\n%s%s✗ FAILED%s during step %s%d: %s%s\n' "$C_RED" "$C_BLD" "$C_OFF" "$C_BLD" "$STEP_N" "$STEP_NAME" "$C_OFF"
 	printf '%s  exit %s at line %s of %s%s\n' "$C_DIM" "$code" "$line" "$0" "$C_OFF"
@@ -247,7 +252,16 @@ on_error() {
 # REPORTED keeps the two from writing the report twice.
 REPORTED=''
 set -E
-on_err_trap() { [ -n "$REPORTED" ] && return; REPORTED=1; on_error "$1"; }
+# $? is captured as the FIRST thing the wrapper does and threaded through. Every
+# statement after it — the guard, the assignment — resets $?, so reading it any
+# later reads the trap's own success instead of the failure that fired it.
+on_err_trap() {
+	__code=$?
+	[ -n "$REPORTED" ] && return
+	REPORTED=1
+	[ "$__code" = "0" ] && __code=1
+	on_error "$1" "$__code"
+}
 trap 'on_err_trap $LINENO' ERR
 trap 'on_err_trap $LINENO' INT TERM
 trap 'on_err_trap ${LINENO}' EXIT
