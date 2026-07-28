@@ -27,7 +27,12 @@ func init() {
 		// because nothing here can send to it.
 		"emailHint": "This server sends no mail — your address is stored to label the account, not to reset it. The codes on the next screen are how you get back in.",
 		"password":  "Password",
-		"confirm":   "Password again",
+		// The rule, BEFORE it is broken. The server refuses anything under twelve
+		// characters, and a requirement a person only meets by failing is a
+		// requirement stated too late. "Length beats symbols" because it is true
+		// and because it stops the reflex of adding a ! to a short one.
+		"passwordHint": "At least 12 characters. Length beats symbols — a short phrase works.",
+		"confirm":      "Password again",
 
 		"submit":  "Claim this server",
 		"working": "Setting up…",
@@ -35,6 +40,13 @@ func init() {
 		"errEmpty":    "A username and a password, and this server is yours.",
 		"errMismatch": "Those two passwords are not the same.",
 		"errDial":     "Couldn't reach the server: {err}",
+		// Two fallbacks, and both are about SETUP rather than signing in. The
+		// first version of this screen borrowed the login screen's, so a password
+		// the server refused for a stated reason came back as "Couldn't sign in.
+		// Check the server is running" — which sent somebody to check a server
+		// that was fine, about an action they were not taking.
+		"errUnreachable": "The server stopped answering. It may still be starting up — try again in a moment.",
+		"errGeneric":     "Couldn't set up this server. Try again, and if it keeps happening the server log will say why.",
 
 		// --- the recovery codes -------------------------------------------
 		"codesMark": "Save these",

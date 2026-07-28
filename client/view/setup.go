@@ -6,6 +6,9 @@ import (
 	"context"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
@@ -116,12 +119,7 @@ func Setup(p setupProps) ui.Node {
 			ui.PostAsync(func() {
 				busy.Set(false)
 				if err != nil {
-					// The server's own words. Its refusals here are things a
-					// person can act on — a password in the known-password list,
-					// an address with no @, an instance somebody else just
-					// claimed — and paraphrasing them into "setup failed" throws
-					// away the only part that helps.
-					errMsg.Set(loginMessage(tr, err))
+					errMsg.Set(setupMessage(tr, err))
 					password.Set("")
 					confirm.Set("")
 					platform.ClearField("setup-password")
@@ -214,6 +212,7 @@ func Setup(p setupProps) ui.Node {
 					Data:    map[string]string{"role": "setup-password"},
 					Raw:     map[string]any{"autocomplete": "new-password"},
 				}),
+				html.P(html.Props{Class: "login-foot"}, html.Text(tr.T("setup", "passwordHint"))),
 			),
 
 			html.Div(html.Props{Class: "login-field"},
@@ -280,4 +279,38 @@ func setupSubmitLabel(tr i18n.Runtime, busy bool) string {
 		return tr.T("setup", "working")
 	}
 	return tr.T("setup", "submit")
+}
+
+// setupMessage turns a refusal into something the person can act on.
+//
+// It exists because loginMessage does not, and using it here cost a real
+// signup: every refusal this endpoint makes for a REASON — a password in the
+// known-password list, an address with no @, a username of one character — is
+// InvalidArgument, which loginMessage maps to "Couldn't sign in. Check the
+// server is running and try again." The server had said precisely what was
+// wrong, the client threw it away, and the reader was sent to look at a server
+// that was working perfectly.
+//
+// So the codes that carry a server-composed explanation resolve to it, via the
+// same ErrorDetail key every other refusal in the app uses. Only a genuinely
+// unexplained failure falls back, and it falls back to setup's own words rather
+// than to a sentence about signing in, which is not what anybody on this screen
+// is doing.
+func setupMessage(tr i18n.Runtime, err error) string {
+	if err == nil {
+		return ""
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return tr.T("setup", "errGeneric")
+	}
+	switch st.Code() {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return tr.T("setup", "errUnreachable")
+	case codes.InvalidArgument, codes.FailedPrecondition,
+		codes.ResourceExhausted, codes.Unauthenticated, codes.AlreadyExists:
+		return serverText(tr, err)
+	default:
+		return tr.T("setup", "errGeneric")
+	}
 }
