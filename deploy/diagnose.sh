@@ -27,11 +27,15 @@ case "${1:-}" in
 	-h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
-# Sourced for json_str/write_report, but its EXIT trap is not wanted here: this
-# script reports failures rather than being one.
+# Sourced for json_str/write_report — and then comprehensively disarmed. lib.sh
+# exists to turn a failing command into a reported failure, which is the exact
+# opposite of what this script does: a failing check here IS the output. With
+# the traps left armed the first red check aborted the run and reported itself
+# as a crash, so the checks that mattered most never ran.
 LOG="${LOG:-/tmp/articleflux-diagnose.$$.log}"
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
-trap - EXIT INT TERM
+trap - EXIT INT TERM ERR
+set +eE
 
 if [ "$MODE" = json ] || [ "$MODE" = agent ]; then
 	REPORT_DIR=$(mktemp -d)
