@@ -94,8 +94,22 @@ REPORT="$REPORT_DIR/last-failure.json"
 # escapes added afterwards get escaped again and the report is not valid JSON —
 # which defeats the entire point of writing one for a machine to read.
 json_str() {
-	printf '%s' "$1" | sed -e 's/\/\\/g' -e 's/"/\\"/g' -e 's/	/\t/g' -e 's/
-//g' 		| awk 'BEGIN{ORS=""} {if (NR>1) print "\n"; print}'
+	# One awk program rather than a chain of sed expressions. The first version
+	# of this was sed, and the shell quoting needed to make sed emit a backslash
+	# did not survive being written by a script: it shipped as
+	# an unterminated `s` command — so every escaped field in every
+	# report came out empty, and the reports stayed valid JSON while saying
+	# nothing. awk takes its escapes in a string literal, where they are legible.
+	printf '%s' "$1" | awk '
+		BEGIN { ORS = "" }
+		{
+			gsub(/\\/, "\\\\")   # backslashes first, or the escapes below get escaped
+			gsub(/"/,  "\\\"")
+			gsub(/\t/, "\\t")
+			gsub(/\r/, "")
+			if (NR > 1) print "\\n"
+			print
+		}'
 }
 
 # json_file emits a file's tail as one escaped JSON string.
@@ -161,17 +175,17 @@ write_report() {
 		printf '    "health_url": "%s",
 ' "${HEALTH:-http://127.0.0.1:9000/healthz}"
 		printf '    "health_http_code": "%s",
-' "$(curl -s -o /dev/null -w '%%{http_code}' --max-time 5 "${HEALTH:-http://127.0.0.1:9000/healthz}" 2>/dev/null || echo 000)"
+' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${HEALTH:-http://127.0.0.1:9000/healthz}" 2>/dev/null || echo 000)"
 		printf '    "nginx_active": "%s",
 ' "$(systemctl is-active nginx 2>/dev/null || true)"
 		printf '    "nginx_http_code": "%s"
-' "$(curl -s -o /dev/null -w '%%{http_code}' --max-time 5 http://127.0.0.1/ 2>/dev/null || echo 000)"
+' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1/ 2>/dev/null || echo 000)"
 		printf '  },
 '
 		printf '  "box": {
 '
 		printf '    "os": "%s",
-' "$(json_str "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")")"
+' "$(json_str "$(grep -m1 PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '\"')")"
 		printf '    "kernel": "%s",
 ' "$(uname -r)"
 		printf '    "go": "%s",
