@@ -165,6 +165,78 @@ func TestStoriesDoNotChainTransitively(t *testing.T) {
 	}
 }
 
+// item_clusters (0028) is a lossless transform of corroborate's own map, and
+// this pins the transform down field by field rather than trusting that
+// clusterRows and corroborate agree by construction. One story from three
+// sources plus one unrelated item exercises both a multi-member cluster and a
+// singleton one in the same pass.
+func TestClusterRowsMatchCorroborateExactly(t *testing.T) {
+	base := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	a := "Qualcomm announces Snapdragon X2 Elite laptop processor"
+	b := "Qualcomm unveils the Snapdragon X2 Elite processor for laptops"
+	c := "Snapdragon X2 Elite: Qualcomm announces its new laptop processor"
+	d := "Framework laptop battery replacement guide and teardown"
+
+	corpus := corpusOf(a, b, c, d)
+	stories := corroborate([]store.Item{
+		item("i1", "s1", a, a, base),
+		item("i2", "s2", b, b, base.Add(2*time.Hour)),
+		item("i3", "s3", c, c, base.Add(3*time.Hour)),
+		item("i4", "s4", d, d, base.Add(time.Hour)),
+	}, corpus)
+
+	rows := clusterRows(stories)
+	if len(rows) != len(stories) {
+		t.Fatalf("clusterRows produced %d rows for %d stories — the transform dropped or invented a member",
+			len(rows), len(stories))
+	}
+
+	byID := make(map[string]store.ItemCluster, len(rows))
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+
+	// Field-for-field against the map clusterRows was built from: nothing here
+	// may disagree with what corroborate concluded in memory.
+	for id, st := range stories {
+		r, ok := byID[id]
+		if !ok {
+			t.Fatalf("%s is in corroborate's map but has no row", id)
+		}
+		if r.ClusterID != st.headID {
+			t.Errorf("%s: ClusterID = %q, want corroborate's headID %q", id, r.ClusterID, st.headID)
+		}
+		if r.IsHead != (id == st.headID) {
+			t.Errorf("%s: IsHead = %v, want %v", id, r.IsHead, id == st.headID)
+		}
+		if r.OtherSources != st.otherSources {
+			t.Errorf("%s: OtherSources = %d, want %d", id, r.OtherSources, st.otherSources)
+		}
+	}
+
+	// The shape the Done-when line names: one cluster_id shared by the three
+	// corroborating members, exactly one of them the head.
+	heads := 0
+	for _, id := range []string{"i1", "i2", "i3"} {
+		if byID[id].ClusterID != byID["i1"].ClusterID {
+			t.Errorf("%s: ClusterID = %q, want the shared story id %q", id, byID[id].ClusterID, byID["i1"].ClusterID)
+		}
+		if byID[id].IsHead {
+			heads++
+		}
+	}
+	if heads != 1 {
+		t.Errorf("the three-source story has %d head rows, want exactly 1", heads)
+	}
+
+	// The unrelated item is a cluster of one: still a row, still its own head,
+	// zero other sources — corroborate never drops a candidate from the map,
+	// and clusterRows must not either.
+	if got := byID["i4"]; !got.IsHead || got.ClusterID != "i4" || got.OtherSources != 0 {
+		t.Errorf("i4 = %+v, want a singleton head cluster of its own id", got)
+	}
+}
+
 // Every kind named in deliberateKinds must actually exist in the registry.
 //
 // The switch this map replaced had cases for `starred` and `clicked_through`, neither

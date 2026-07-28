@@ -68,6 +68,7 @@ func TestSchemaHasEverySpecifiedTable(t *testing.T) {
 		// §18 signals and derived interest
 		"engagements", "topics", "item_topics", "feed_affinity", "term_affinity",
 		"domain_affinity", "outlinks", "recommendations", "item_embeddings", "home_ranking",
+		"item_clusters",
 		// §12, §17, §22 platform
 		"jobs", "settings", "meta", "idempotency_keys",
 		"offline_packs", "pack_items", "outbox_conflicts",
@@ -127,7 +128,14 @@ func TestForeignKeyShapedColumnsHaveReferences(t *testing.T) {
 		// a cascade here would silently UNMUTE a backlog the moment a rule was
 		// deleted, which is the opposite of what anyone deleting a rule expects.
 		"user_item_state": {"muted_by_rule_id": "the rule may be deleted; the mute must stay recoverable by id"},
-		"home_ranking":    {"cluster_id": "a derivation-local grouping, not a row anywhere"},
+		// Was "a derivation-local grouping, not a row anywhere" until 0028: the
+		// grouping corroborate computes is now item_clusters, and this column
+		// holds the head item's id for the row that survived onto the page.
+		// Still exempt rather than a declared FK, because this column predates
+		// 0028 and SQLite cannot ALTER a foreign key in — the same reason
+		// sessions.device_id below is exempt rather than fixed. item_clusters
+		// itself carries the honest REFERENCES on the same value.
+		"home_ranking": {"cluster_id": "predates item_clusters (0028); the FK-worthy copy of this value lives there"},
 		"jobs": {
 			"tenant_id": "a job may outlive the tenant it was queued for",
 			// A log correlation id, not a reference to a row. Nothing stores

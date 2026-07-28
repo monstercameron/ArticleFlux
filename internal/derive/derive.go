@@ -1047,7 +1047,7 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		cursor = next
 	}
 	if len(candidates) == 0 {
-		return 0, s.repo.ReplaceHomeRanking(ctx, sc, nil)
+		return 0, s.repo.ReplaceHomeRanking(ctx, sc, nil, nil)
 	}
 
 	byFeed := make(map[string]store.FeedAffinity, len(feeds))
@@ -1244,6 +1244,12 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			Score:  sc.res.Score,
 			Rank:   i + 1,
 			Slot:   slotFor(i, len(out)),
+			// The row that survives the drop at duplicateOf >= SameStoryThreshold is,
+			// by construction, always its own story's representative — a
+			// non-representative never reaches `out` in the first place — so this is
+			// always sc.item.ID's own value. Read off stories rather than assumed,
+			// so the two never have a chance to disagree.
+			ClusterID: stories[sc.item.ID].headID,
 			// Which topic this matched, or empty when none did.
 			//
 			// It is the client's cold-start signal: an empty value on every row means the
@@ -1256,7 +1262,9 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 			Tier:    tier,
 		})
 	}
-	if err := s.repo.ReplaceHomeRanking(ctx, sc, rows); err != nil {
+
+	clusters := clusterRows(stories)
+	if err := s.repo.ReplaceHomeRanking(ctx, sc, rows, clusters); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
@@ -1661,6 +1669,18 @@ type story struct {
 	// similarity for every other member, which is what feeds rank's duplicate
 	// penalty.
 	duplicateOf float64
+	// headID is the representative's own item id — the item this one's story is
+	// filed under. Equal to the item's own id on the representative's row, which
+	// is what item_clusters.is_head tests for rather than carrying a second
+	// boolean this struct would have to keep in sync with it.
+	//
+	// Reusing the head's id as the cluster's id (rather than minting a UUID or a
+	// counter) is what 0028_item_clusters.sql spends its longest comment on: it
+	// costs nothing extra here, since headID is already computed as part of
+	// finding the representative, and it is deterministic the same way the
+	// representative's choice is — see the sort above and the rebuild property
+	// this whole function exists to satisfy.
+	headID string
 }
 
 // corroborate finds items that are the same story from different sources.
@@ -1783,9 +1803,37 @@ func corroborate(candidates []store.Item, corpus *textvec.Corpus) map[string]sto
 		if others < 0 {
 			others = 0
 		}
-		out[items[i].id] = story{otherSources: others, duplicateOf: sim[i]}
+		out[items[i].id] = story{
+			otherSources: others,
+			duplicateOf:  sim[i],
+			headID:       items[rep].id,
+		}
 	}
 	return out
+}
+
+// clusterRows translates corroborate's in-memory grouping into the rows
+// item_clusters is replaced with (TODO 11.1, 0028_item_clusters.sql).
+//
+// Deliberately a pure function of the map corroborate already returned rather
+// than a second pass over candidates: `stories` is the grouping, in full, and
+// this only renames its fields onto the storage shape. Anything that recomputed
+// membership here — even by re-running the pairwise comparison — would risk the
+// exact failure §18.4 warns about for the two rank.Item signals: two answers to
+// "which story is this" that can drift apart, one written to home_ranking's
+// scoring and one written here. One transform of one map keeps them provably
+// the same, which is also what TestClusterRowsMatchCorroborateExactly checks.
+func clusterRows(stories map[string]story) []store.ItemCluster {
+	rows := make([]store.ItemCluster, 0, len(stories))
+	for id, st := range stories {
+		rows = append(rows, store.ItemCluster{
+			ItemID:       id,
+			ClusterID:    st.headID,
+			IsHead:       id == st.headID,
+			OtherSources: st.otherSources,
+		})
+	}
+	return rows
 }
 
 // MaxEntities bounds the stored entity list.

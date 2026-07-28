@@ -575,13 +575,21 @@ func (r *ReaderRepo) SteerTopic(ctx context.Context, s Scope, topicID string, st
 
 // RankedItem is one row of the materialised homepage.
 type RankedItem struct {
-	ItemID  string
-	Score   float64
-	Rank    int
-	Slot    string
-	TopicID string
-	Reasons []RankReason
-	Tier    string
+	ItemID string
+	Score  float64
+	Rank   int
+	Slot   string
+	// ClusterID is the id of the story this item's cluster is filed under —
+	// which, because home_ranking holds survivors only and a non-representative
+	// member never survives to be a row here (derive.go:1191), is always this
+	// same row's own ItemID. Written anyway, rather than left for a reader to
+	// re-derive, because it is the join key onto item_clusters (0028): a client
+	// that wants "who else covered this" reads it straight off the row it
+	// already has instead of recomputing which id was the head.
+	ClusterID string
+	TopicID   string
+	Reasons   []RankReason
+	Tier      string
 }
 
 // RankReason is one scoring term's explanation, as a machine key plus prose.
@@ -615,13 +623,42 @@ type RankReason struct {
 	Text string `json:"x"`
 }
 
-// ReplaceHomeRanking rewrites a user's homepage.
+// ItemCluster is one member of a same-story grouping, exactly as corroborate
+// (internal/derive) computed it in memory — see 0028_item_clusters.sql for why
+// this is a table at all rather than staying a derivation-local map.
+type ItemCluster struct {
+	ItemID string
+	// ClusterID is the head item's id: its own id on the head's row, the
+	// representative's id on every other member's.
+	ClusterID string
+	// IsHead is true on exactly one row per ClusterID — the representative
+	// corroborate chose, which is also the only member that can appear in
+	// home_ranking, since every other member was dropped as a duplicate.
+	IsHead bool
+	// OtherSources is corroborate's count of OTHER subscribed sources that
+	// carried this story, identical across every row sharing a ClusterID.
+	OtherSources int
+}
+
+// ReplaceHomeRanking rewrites a user's homepage and, in the same transaction,
+// the story-clustering it was computed from.
 //
 // The precision stage's output (D18). Materialised because the homepage is the
 // most frequently rendered screen and it has to be an indexed read rather than a
 // scoring pass — a ranker that runs on render cannot be made fast enough to hide,
 // and the alternative is a homepage that takes a second every time.
-func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []RankedItem) error {
+//
+// # Why clusters ride in the same call, and the same transaction
+//
+// home_ranking and item_clusters are two views of one derivation: the
+// representative that survives into home_ranking IS the head row in
+// item_clusters, and home_ranking.cluster_id is only meaningful if that head
+// row exists. Writing them from two calls would let a crash between them leave
+// a ranking that names a cluster item_clusters has never heard of, or a
+// clustering for a ranking that no longer exists — either one is a join that
+// silently returns nothing instead of failing loudly. One transaction makes
+// that state unreachable rather than merely unlikely.
+func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []RankedItem, clusters []ItemCluster) error {
 	if !s.Valid() {
 		return ErrNoScope
 	}
@@ -630,6 +667,10 @@ func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []Ra
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM home_ranking WHERE user_id = ?`, s.UserID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM item_clusters WHERE user_id = ?`, s.UserID); err != nil {
 			return err
 		}
 		for _, it := range items {
@@ -643,15 +684,58 @@ func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []Ra
 			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO home_ranking
-				    (user_id, item_id, score, rank, slot, topic_id, reasons_json, tier, computed_at)
-				VALUES (?,?,?,?,?,?,?,?,?)`,
-				s.UserID, it.ItemID, it.Score, it.Rank, it.Slot,
+				    (user_id, item_id, score, rank, slot, cluster_id, topic_id, reasons_json, tier, computed_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?)`,
+				s.UserID, it.ItemID, it.Score, it.Rank, it.Slot, nullify(it.ClusterID),
 				nullify(it.TopicID), string(reasons), tier, now); err != nil {
+				return err
+			}
+		}
+		for _, c := range clusters {
+			isHead := 0
+			if c.IsHead {
+				isHead = 1
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO item_clusters
+				    (user_id, item_id, cluster_id, is_head, other_sources, computed_at)
+				VALUES (?,?,?,?,?,?)`,
+				s.UserID, c.ItemID, c.ClusterID, isHead, c.OtherSources, now); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// HomeClusters reads every persisted cluster membership for a user, ordered by
+// cluster then member — the shape a test compares against corroborate's
+// in-memory map, and the shape FluxCast's planner will read a story's full
+// source list from.
+func (r *ReaderRepo) HomeClusters(ctx context.Context, s Scope) ([]ItemCluster, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT item_id, cluster_id, is_head, other_sources
+		  FROM item_clusters WHERE user_id = ?
+		 ORDER BY cluster_id, item_id`, s.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ItemCluster
+	for rows.Next() {
+		var c ItemCluster
+		var isHead int
+		if err := rows.Scan(&c.ItemID, &c.ClusterID, &isHead, &c.OtherSources); err != nil {
+			return nil, err
+		}
+		c.IsHead = isHead != 0
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // HomeRanking reads the materialised homepage in rank order.
@@ -663,7 +747,7 @@ func (r *ReaderRepo) HomeRanking(ctx context.Context, s Scope, limit int) ([]Ran
 		limit = 50
 	}
 	rows, err := r.db.Read.QueryContext(ctx, `
-		SELECT item_id, score, rank, slot, ifnull(topic_id,''), reasons_json, tier
+		SELECT item_id, score, rank, slot, ifnull(cluster_id,''), ifnull(topic_id,''), reasons_json, tier
 		  FROM home_ranking WHERE user_id = ?
 		 ORDER BY rank ASC LIMIT ?`, s.UserID, limit)
 	if err != nil {
@@ -676,7 +760,7 @@ func (r *ReaderRepo) HomeRanking(ctx context.Context, s Scope, limit int) ([]Ran
 		var it RankedItem
 		var reasons string
 		if err := rows.Scan(&it.ItemID, &it.Score, &it.Rank, &it.Slot,
-			&it.TopicID, &reasons, &it.Tier); err != nil {
+			&it.ClusterID, &it.TopicID, &reasons, &it.Tier); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(reasons), &it.Reasons)
@@ -700,7 +784,7 @@ func (r *ReaderRepo) ClearDerived(ctx context.Context, s Scope) error {
 	}
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		for _, table := range []string{
-			"home_ranking", "item_topics", "topics",
+			"home_ranking", "item_clusters", "item_topics", "topics",
 			"feed_affinity", "term_affinity", "domain_affinity",
 			// entity_affinity belongs here for the same reason as the rest, and this
 			// is the line that keeps the rebuild property honest: a derived table
