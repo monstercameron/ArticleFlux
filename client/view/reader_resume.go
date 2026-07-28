@@ -18,12 +18,11 @@ import (
 // what the server remembered and what the component starts from, and that is worth
 // being able to find.
 
-func searchTextFrom(p map[string]string) string {
-	if p["read.kind"] == "search" {
-		return p["read.value"]
-	}
-	return ""
-}
+// searchTextFrom is gone: the search box is now seeded from the scope that
+// actually won at boot (`boot.sel.Search`, see reader.go), which is the same
+// value for a resumed search and the RIGHT one for an addressed one. Reading it
+// back out of the preference map would have put yesterday's query in the box
+// under today's /search?q= results.
 
 // resumeScope turns the saved place into the scope the list is fetched for.
 //
@@ -35,33 +34,27 @@ func searchTextFrom(p map[string]string) string {
 // An unrecognised or absent kind falls through to All, and a feed whose title
 // was never saved takes All's title too — an empty header is worse than a
 // slightly wrong one.
+// Delegated to scopeOf (client/view/route.go) rather than switching here.
+//
+// It used to switch on `read.kind` itself, and the cost of the second copy was
+// exactly what a second copy always costs: the two drifted. This one grew cases
+// for unread, liked, later, notes, feed, tag, folder and search, and never grew
+// one for **My Feed** — so the ranked stream, which the rail offers first and
+// which §18.4 calls the point of the interest layer, was written by rememberScope
+// as kind "all" and read back as All. A reader who lived on My Feed was returned
+// to All every morning, silently, because All is plausible enough that it reads
+// as the resume merely being imprecise. `disliked` was missing for the same
+// reason and had a failing test saying so (TestResumeScopeNeverRestoresA-
+// DislikedScope).
+//
+// One classifier (scopeKind) and one builder (scopeOf), shared with the address
+// bar, is what stops a third encoding from being added to only two of them.
 func resumeScope(p map[string]string, tr i18n.Runtime) scope {
-	var s scope
-	switch p["read.kind"] {
-	case "unread":
-		s = scope{Title: tr.T("stream", "unread"), Unread: true}
-	case "liked":
-		s = scope{Title: tr.T("stream", "liked"), Rating: 1}
-	case "later":
-		s = scope{Title: tr.T("stream", "later"), Later: true}
-	case "notes":
-		s = scope{Title: tr.T("stream", "notes"), Notes: true}
-	case "feed":
-		if v := p["read.value"]; v != "" {
-			s = scope{SourceID: v, Title: p["read.title"]}
-		}
-	case "tag":
-		if v := p["read.value"]; v != "" {
-			s = scope{TagID: v, Title: p["read.title"]}
-		}
-	case "folder":
-		if v := p["read.value"]; v != "" {
-			s = scope{FolderID: v, Title: p["read.title"]}
-		}
-	case "search":
-		if v := p["read.value"]; v != "" {
-			s = scope{Search: v, Title: p["read.title"]}
-		}
+	s, ok := scopeOf(p["read.kind"], p["read.value"], p["read.title"], tr)
+	if !ok {
+		// An unrecognised kind, or one whose argument is missing. Both fall through
+		// to All below rather than to an empty scope with an empty id.
+		s = scope{}
 	}
 	if s.Title == "" {
 		s.Title = tr.T("stream", "all")

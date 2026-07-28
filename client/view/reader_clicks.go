@@ -290,6 +290,10 @@ func (d delegatedClicks) wire() {
 					a.loadMyFeed()
 				case "settings-loglevel":
 					a.setLogLevel(value)
+				case actDataImport:
+					a.importOPML()
+				case actDataExport:
+					a.exportOPML()
 				case actSmartKeySave:
 					a.saveSmartKey()
 				case actSmartKeyClear:

@@ -53,6 +53,19 @@ func Reader(p readerProps) ui.Node {
 	// Nil is fine and is the first-boot case: every lookup below falls back to
 	// the default it would have had anyway.
 	saved := p.prefs
+	// Where this reader is opening, decided ONCE and before any hook that depends
+	// on it (§20.13b, client/view/reader_route.go).
+	//
+	// The address if it names somewhere, the saved place otherwise. It is computed
+	// here, above everything, for the same reason `saved` is used inline below
+	// rather than corrected in an effect: this decides the FIRST FRAME, and a
+	// destination applied after the first frame is a visible flash of the wrong
+	// feed followed by a snap into the right one — which is exactly the defect
+	// 8b.51 fixed for the resume and which a URL must not reintroduce.
+	//
+	// Not a hook. A plain call, so it does not participate in the positional hook
+	// sequence and cannot be reordered by anything added above it.
+	boot, bootAddressed := bootRoute(saved, tr)
 	client := ui.UseState[*data.Client](nil)
 	conn := ui.UseState(data.Connecting)
 	fatal := ui.UseState("")
@@ -196,7 +209,10 @@ func Reader(p readerProps) ui.Node {
 	// resumeItem is the article id to reopen once its list arrives, restored from
 	// the server on connect. A Ref because it is consumed exactly once and must
 	// not cause a render of its own.
-	resumeItem := ui.UseRef(saved["read.item"])
+	// From boot rather than from `saved` directly: an address that names an
+	// article — which is the link a reader sends somebody — has to outrank the
+	// one they were on yesterday, and bootRoute is where that is decided.
+	resumeItem := ui.UseRef(boot.item)
 	// Listening state. speakID is which article is being read aloud, speakState
 	// is what the transport is doing, and speakSmart is the egress opt-in.
 	speakID := ui.UseState("")
@@ -347,12 +363,22 @@ func Reader(p readerProps) ui.Node {
 	// when the screen opens rather than kept live: they are a snapshot someone
 	// asked for, and polling them in the background would make the reader pay for
 	// a screen nobody is looking at.
-	setTab := ui.UseState("reading")
+	setTab := ui.UseState(bootTab(boot))
 	serverStats := ui.UseState[*pb.GetServerStatsResponse](nil)
 	serverLogs := ui.UseState[[]*pb.LogRecord](nil)
 	logLevel := ui.UseState("INFO")
 	statsLoading := ui.UseState(false)
 	statsErr := ui.UseState("")
+	// The Data tab (F1). Nothing is fetched when it opens: both halves are acts
+	// the reader starts, and the report is what the last one did rather than a
+	// view of anything on the server. It survives tab switches for that reason —
+	// somebody reads "12 skipped", goes to Feeds to look one up, and comes back.
+	dataBusy := ui.UseState(false)
+	dataExporting := ui.UseState(false)
+	dataFile := ui.UseState("")
+	dataResult := ui.UseState[*pb.ImportOpmlResponse](nil)
+	dataNote := ui.UseState("")
+	dataNoteBad := ui.UseState(false)
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -570,12 +596,17 @@ func Reader(p readerProps) ui.Node {
 	// different hat.
 	listFrom := ui.UseState(data.Staleness{})
 
-	sel := ui.UseState(resumeScope(saved, tr))
-	pane := ui.UseState(viewList)
+	sel := ui.UseState(boot.sel)
+	// viewSettings when the address named the settings surface, so a link to
+	// /settings/appearance opens on it rather than opening the reader and then
+	// switching.
+	pane := ui.UseState(bootPane(boot))
 	unreadOnly := ui.UseState(prefBool(saved, "list.unreadOnly", false))
 	busy := ui.UseState("")
 	notice := ui.UseState("")
-	searchText := ui.UseState(searchTextFrom(saved))
+	// Seeded from the scope that actually won rather than from the preference, so
+	// arriving at /search?q=rust puts "rust" in the box the reader is looking at.
+	searchText := ui.UseState(boot.sel.Search)
 
 	// The add-a-feed dialog. Its three drafts live here, with every other piece
 	// of state, so they survive the re-render that typing in any one of them
@@ -1406,26 +1437,12 @@ func Reader(p readerProps) ui.Node {
 	// encoded string. Four keys cannot be mis-parsed, and a key this app stops
 	// understanding is simply ignored on the next boot instead of resolving to
 	// something wrong.
+	// The classification itself is scopeKind's, in route.go, because the address
+	// bar has to make exactly the same one. It used to be inline here, and having
+	// two copies is what lost My Feed's resume for as long as the ranked stream has
+	// existed — see resumeScope's comment for the whole account.
 	rememberScope := func(sc scope) {
-		kind, value := "all", ""
-		switch {
-		case sc.Search != "":
-			kind, value = "search", sc.Search
-		case sc.Notes:
-			kind = "notes"
-		case sc.Later:
-			kind = "later"
-		case sc.Rating > 0:
-			kind = "liked"
-		case sc.TagID != "":
-			kind, value = "tag", sc.TagID
-		case sc.FolderID != "":
-			kind, value = "folder", sc.FolderID
-		case sc.SourceID != "":
-			kind, value = "feed", sc.SourceID
-		case sc.Unread:
-			kind = "unread"
-		}
+		kind, value := scopeKind(sc)
 		savePrefs(map[string]string{
 			"read.kind": kind, "read.value": value, "read.title": sc.Title,
 		})
@@ -4988,6 +5005,89 @@ func Reader(p readerProps) ui.Node {
 		logLevel.Set(level)
 		act.Get().loadStats()
 	}
+
+	// --- migration, on the Data tab (F1) --------------------------------------
+
+	// importOPML opens the file chooser and imports whatever comes back.
+	//
+	// The chooser is opened from INSIDE the click handler's own stack, because a
+	// browser opens one only from within a user gesture — moving this behind an
+	// await or a goroutine would produce a button that silently does nothing.
+	//
+	// Nothing is marked busy on the way in. A cancelled chooser fires no event
+	// at all, so "opened" and "cancelled" are indistinguishable, and a spinner
+	// started here would run until the tab closed.
+	act.Get().importOPML = func() {
+		c := client.Get()
+		if c == nil || dataBusy.Get() {
+			return
+		}
+		dataNote.Set("")
+		dataNoteBad.Set(false)
+		platform.PickFile(opmlAccept, func(name string, data []byte) {
+			// The callback lands on the JS event loop, outside GWC's dispatch,
+			// so every write goes through PostAsync — and the RPC goes on a
+			// goroutine rather than being awaited here: a blocking call inside a
+			// js.Func deadlocks the whole client against its own reply.
+			ui.PostAsync(func() {
+				dataFile.Set(name)
+				if len(data) == 0 {
+					dataNote.Set(tr.T("data", "readFailed"))
+					dataNoteBad.Set(true)
+					return
+				}
+				dataBusy.Set(true)
+				// The previous report is cleared as the new one starts. Leaving
+				// it up would put last import's numbers under this import's
+				// spinner, which is the screen saying two things at once.
+				dataResult.Set(nil)
+				go func() {
+					res, err := c.ImportOPML(context.Background(), data)
+					ui.PostAsync(func() {
+						dataBusy.Set(false)
+						if err != nil {
+							dataNote.Set(tr.T("data", "importFailed",
+								i18n.Args{"err": serverText(tr, err)}))
+							dataNoteBad.Set(true)
+							return
+						}
+						dataResult.Set(res)
+						// The sidebar is the point of the whole feature, and the
+						// categories with it: an import that files 151 feeds into
+						// eight categories and leaves the rail showing neither
+						// looks exactly like an import that did nothing.
+						loadFolders()
+						loadFeeds()
+					})
+				}()
+			})
+		})
+	}
+
+	// exportOPML downloads this reader's subscriptions.
+	act.Get().exportOPML = func() {
+		c := client.Get()
+		if c == nil || dataExporting.Get() {
+			return
+		}
+		dataExporting.Set(true)
+		dataNote.Set("")
+		dataNoteBad.Set(false)
+		go func() {
+			res, err := c.ExportOPML(context.Background())
+			ui.PostAsync(func() {
+				dataExporting.Set(false)
+				if err != nil {
+					dataNote.Set(tr.T("data", "exportFailed",
+						i18n.Args{"err": serverText(tr, err)}))
+					dataNoteBad.Set(true)
+					return
+				}
+				platform.SaveFile(opmlFileName, opmlMIME, res.GetOpml())
+				dataNote.Set(tr.T("data", "exportSaved", i18n.Args{"name": opmlFileName}))
+			})
+		}()
+	}
 	// --- Smart+ ---------------------------------------------------------------
 
 	// loadSmart fetches the config and the language list together, because the
@@ -5694,6 +5794,18 @@ func Reader(p readerProps) ui.Node {
 		tags: tags, fsData: fsData,
 	}.wire()
 
+	// The address bar (§20.13b, client/view/reader_route.go).
+	//
+	// Unconditionally and in this fixed position, like the block above and for the
+	// same reason: wire() installs hooks, and GWC matches hooks positionally.
+	addressBar{
+		tr: tr, act: act,
+		sel: sel, current: current, resumeItem: resumeItem,
+		pane: pane, setTab: setTab,
+		addOpen: addOpen, fsOpen: fsOpen, tsOpen: tsOpen, showOpen: showOpen,
+		feeds: feeds, tags: tags, folders: folders,
+	}.wire()
+
 	// --- pane resizing, persisted server-side --------------------------------
 	//
 	// Widths are written to CSS custom properties during the drag, which only
@@ -5880,12 +5992,30 @@ func Reader(p readerProps) ui.Node {
 					feedFilter.Set(v)
 				}
 
+				// An ADDRESS outranks this whole block (§20.13b).
+				//
+				// These preferences arrive a round trip after mount, and applying
+				// them unconditionally is what this effect has always done —
+				// correctly, while the saved place was the only opinion there was.
+				// Now there can be two, and a reader who followed a link to
+				// /feed/<id> would watch it open, then be moved to yesterday's feed
+				// when the prefs landed. bootRoute already made this decision on
+				// the first frame; honouring it here is the same decision surviving
+				// the round trip, and it is the same shape the launch-parameter
+				// branch below has always had.
+				//
+				// Everything above this line still applies either way: the unread
+				// filter, the rail filter and the appearance are settings, not
+				// places, and a link to a feed says nothing about them.
+				addressed := bootAddressed
 				resume := resumeScope(p, tr)
-				if v := p["read.value"]; p["read.kind"] == "search" && v != "" {
+				if v := p["read.value"]; p["read.kind"] == "search" && v != "" && !addressed {
 					searchText.Set(v)
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
-				resumeItem.Set(p["read.item"])
+				if !addressed {
+					resumeItem.Set(p["read.item"])
+				}
 
 				// What an installed app was opened FOR outranks what it was doing
 				// yesterday (§20.24).
@@ -5902,9 +6032,21 @@ func Reader(p readerProps) ui.Node {
 				if s, ok := lch.scope(tr); ok {
 					resume = s
 					resumeItem.Set("")
+					addressed = false
+				}
+				if addressed {
+					// The scope the address chose is already in `sel` and already on
+					// screen — set at mount, so there was never a frame showing
+					// anything else. Only the fetch is owed.
+					resume = sel.Get()
 				}
 				sel.Set(resume)
 				loadItems(resume, unread)
+
+				// A dialog the address named, once there is a client to fetch with.
+				if addressed {
+					bootDialog(boot, act.Get())
+				}
 
 				// A share, or the "Add a feed" shortcut. After the list is asked
 				// for rather than instead of it: the dialog sits over a reader
@@ -6680,6 +6822,17 @@ func Reader(p readerProps) ui.Node {
 					},
 					classify: classifySettingsProps{
 						hiddenCats: catHidden.Get(),
+					},
+					data: dataProps{
+						busy:      dataBusy.Get(),
+						exporting: dataExporting.Get(),
+						fileName:  dataFile.Get(),
+						result:    dataResult.Get(),
+						note:      dataNote.Get(),
+						noteBad:   dataNoteBad.Get(),
+						// The same count the Feeds tab shows, so the export
+						// button promises what the sidebar holds.
+						feeds: len(feeds.Get()),
 					},
 					theme: themeProps{
 						prompt:       themePrompt.Get(),

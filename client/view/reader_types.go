@@ -278,6 +278,12 @@ type actions struct {
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
 
+	// Migration, on the Data tab (F1). Two verbs rather than one taking a
+	// direction: one opens a file chooser and ends in a report the screen keeps,
+	// the other ends in a download and a sentence. They share nothing but a tab.
+	importOPML func()
+	exportOPML func()
+
 	// The interest profile (§18.2, §18.9): what the ranking believes, and the
 	// reader correcting it. Two verbs rather than one taking a kind, because a
 	// topic is addressed by id and a named thing by its normalised name, and one
@@ -378,6 +384,16 @@ type actions struct {
 	// rather than next to what was on screen.
 	navStep func(delta int) *pb.Item
 
+	// applyAddress moves the reader to whatever the address bar now says, after a
+	// Back or a Forward (§20.13b, client/view/reader_route.go).
+	//
+	// On this struct for the reason every other listener callback here is: the
+	// popstate listener is registered ONCE, in a fixed-deps effect, so a closure
+	// given to it directly would apply a popped address against the scope, the
+	// loaded list and the open dialogs as they were on the FIRST render — for the
+	// rest of the session. Reached through the Ref, it is the newest render's.
+	applyAddress func()
+
 	// fill loads whatever the reader has scrolled the item list to.
 	//
 	// It lives on this struct for the same reason everything else here does: the
@@ -432,8 +448,10 @@ type readerProps struct {
 // Absent and false are different answers and the difference is load-bearing at
 // boot: `markOnPast` defaults to TRUE, so treating a missing key as false would
 // silently turn it off for every reader who has never touched the setting.
-// searchTextFrom seeds the search box, and only when the saved scope IS a search.
 //
-// `read.value` carries whichever argument the saved scope needed — a source id
-// for a feed, a tag id for a tag — so putting it in the search box unconditionally
-// would greet a reader with a ULID in the field they type into.
+// (The paragraph that stood here described searchTextFrom, which no longer
+// exists. Its point survives in the code that replaced it: `read.value` carries
+// whichever argument the saved scope needed — a source id for a feed, a tag id
+// for a tag — so the search box is seeded from `boot.sel.Search`, which is empty
+// unless the scope really is a search, rather than from the raw preference, which
+// would greet a reader with a ULID in the field they type into.)
