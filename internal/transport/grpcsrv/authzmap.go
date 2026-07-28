@@ -103,6 +103,11 @@ func DefaultPolicy() *authz.Map {
 		// nothing the ranked page does not already say on every row. A reader who
 		// may read the feed may read why it looks like that.
 		"GetInterestProfile",
+		// ExportOpml writes out the feed list the caller can already see in the
+		// sidebar, in a different file format. Requiring a subscribe capability
+		// to LEAVE with your own subscriptions would make the export a privilege
+		// an operator can withdraw, which is the roach motel with extra steps.
+		"ExportOpml",
 	} {
 		m.Require(reader+method, authz.CapReadItems)
 	}
@@ -131,7 +136,11 @@ func DefaultPolicy() *authz.Map {
 	// AnalyzeSite is a subscribe capability rather than a read one because it
 	// makes this server fetch a URL the caller chose — the SSRF surface netguard
 	// exists for. Whoever may not subscribe may not aim the fetcher either.
-	for _, method := range []string{"Subscribe", "SubscribeScrape", "Unsubscribe", "AnalyzeSite"} {
+	// ImportOpml is bulk Subscribe and is capped by the same capability: it can
+	// create categories on the way in, but a caller who may not add one feed must
+	// not be able to add a hundred and fifty by uploading a file.
+	for _, method := range []string{"Subscribe", "SubscribeScrape", "Unsubscribe", "AnalyzeSite",
+		"ImportOpml"} {
 		m.Require(reader+method, authz.CapSubscribe)
 	}
 	for _, method := range []string{"Refresh", "UpdateFeedSettings", "SetFeedFolder"} {

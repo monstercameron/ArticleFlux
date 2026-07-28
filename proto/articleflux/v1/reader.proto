@@ -56,6 +56,29 @@ service ReaderService {
   // Unsubscribe removes the subscription. It never deletes the source (A22).
   rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
 
+  // ImportOpml subscribes to everything in an OPML file, folders and all.
+  //
+  // This is how somebody ARRIVES. Until it existed the only importer was
+  // `articleflux import`, which needs a shell on the server — so on a
+  // multi-tenant instance (A13) a member had no path at all, and the operator
+  // had to SSH in to add a feed list. Every competitor ships this in the UI.
+  //
+  // The whole file travels in one message rather than a stream of rows: a
+  // 151-feed export is ~32 KB, the parse has to see the document to unwrap a
+  // FreshRSS "Subscriptions" wrapper, and a partial upload is not half an
+  // import — it is a subscription list missing feeds nobody would notice.
+  //
+  // It subscribes without fetching. Filling 151 feeds is minutes of network,
+  // and an import that appears to hang is one people interrupt halfway; the
+  // poller fills them in behind the reader, who has a usable sidebar at once.
+  rpc ImportOpml(ImportOpmlRequest) returns (ImportOpmlResponse);
+
+  // ExportOpml writes this reader's subscriptions back out.
+  //
+  // An importer without an exporter is a roach motel. It is also the check on
+  // the importer: the file this returns has to import back into the app.
+  rpc ExportOpml(ExportOpmlRequest) returns (ExportOpmlResponse);
+
   // AnalyzeSite answers "can I follow this page?" for an address that is not
   // itself a feed — the subscribe ladder of §11, deterministic first.
   //
@@ -534,6 +557,52 @@ message SubscribeResponse {
 
 message UnsubscribeRequest { string source_id = 1; }
 message UnsubscribeResponse {}
+
+message ImportOpmlRequest {
+  // The file's bytes, exactly as they came off disk. Not a parsed structure:
+  // OPML in the wild disagrees with the specification about nesting, about
+  // which attribute holds the title, and about the declared encoding, and
+  // internal/opml is written against what real exports contain. A client that
+  // parsed first would be a second, worse parser.
+  bytes opml = 1;
+}
+
+// ImportSkip is one row that did not become a subscription, and why.
+//
+// Reported per row rather than as a count, because "12 skipped" is not
+// something a person can act on: the reader who has just migrated wants to
+// know WHICH twelve, and whether they were feeds they cared about.
+message ImportSkip {
+  string title = 1;
+  string url = 2;
+  // Why, in a sentence, from the server. A machine key would need a catalog
+  // entry per failure mode of the URL parser and the private-address guard,
+  // and these are diagnostics rather than interface copy.
+  string reason = 3;
+}
+
+message ImportOpmlResponse {
+  // subscribed counts rows that ended as a subscription, including the ones
+  // this reader already had — an import re-run must not read as 151 failures.
+  int32 subscribed = 1;
+  // already_subscribed is how many of those were already in the sidebar.
+  int32 already_subscribed = 2;
+  // shared counts sources that already existed server-side and were attached
+  // rather than created (A14). A fact about the deployment, not the reader.
+  int32 shared = 3;
+  int32 folders = 4;
+  repeated ImportSkip skips = 5;
+  // The file's own title, when it had one. Worth showing back: it is how a
+  // person confirms they picked the export they meant to.
+  string title = 6;
+}
+
+message ExportOpmlRequest {}
+
+message ExportOpmlResponse {
+  bytes opml = 1;
+  int32 feeds = 2;
+}
 
 message AnalyzeSiteRequest {
   // The address the reader typed. A site, a blog index, or an article — the

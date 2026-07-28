@@ -29,6 +29,8 @@ const (
 	ReaderService_MarkAllRead_FullMethodName        = "/articleflux.v1.ReaderService/MarkAllRead"
 	ReaderService_Subscribe_FullMethodName          = "/articleflux.v1.ReaderService/Subscribe"
 	ReaderService_Unsubscribe_FullMethodName        = "/articleflux.v1.ReaderService/Unsubscribe"
+	ReaderService_ImportOpml_FullMethodName         = "/articleflux.v1.ReaderService/ImportOpml"
+	ReaderService_ExportOpml_FullMethodName         = "/articleflux.v1.ReaderService/ExportOpml"
 	ReaderService_AnalyzeSite_FullMethodName        = "/articleflux.v1.ReaderService/AnalyzeSite"
 	ReaderService_SubscribeScrape_FullMethodName    = "/articleflux.v1.ReaderService/SubscribeScrape"
 	ReaderService_Refresh_FullMethodName            = "/articleflux.v1.ReaderService/Refresh"
@@ -100,6 +102,27 @@ type ReaderServiceClient interface {
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (*SubscribeResponse, error)
 	// Unsubscribe removes the subscription. It never deletes the source (A22).
 	Unsubscribe(ctx context.Context, in *UnsubscribeRequest, opts ...grpc.CallOption) (*UnsubscribeResponse, error)
+	// ImportOpml subscribes to everything in an OPML file, folders and all.
+	//
+	// This is how somebody ARRIVES. Until it existed the only importer was
+	// `articleflux import`, which needs a shell on the server — so on a
+	// multi-tenant instance (A13) a member had no path at all, and the operator
+	// had to SSH in to add a feed list. Every competitor ships this in the UI.
+	//
+	// The whole file travels in one message rather than a stream of rows: a
+	// 151-feed export is ~32 KB, the parse has to see the document to unwrap a
+	// FreshRSS "Subscriptions" wrapper, and a partial upload is not half an
+	// import — it is a subscription list missing feeds nobody would notice.
+	//
+	// It subscribes without fetching. Filling 151 feeds is minutes of network,
+	// and an import that appears to hang is one people interrupt halfway; the
+	// poller fills them in behind the reader, who has a usable sidebar at once.
+	ImportOpml(ctx context.Context, in *ImportOpmlRequest, opts ...grpc.CallOption) (*ImportOpmlResponse, error)
+	// ExportOpml writes this reader's subscriptions back out.
+	//
+	// An importer without an exporter is a roach motel. It is also the check on
+	// the importer: the file this returns has to import back into the app.
+	ExportOpml(ctx context.Context, in *ExportOpmlRequest, opts ...grpc.CallOption) (*ExportOpmlResponse, error)
 	// AnalyzeSite answers "can I follow this page?" for an address that is not
 	// itself a feed — the subscribe ladder of §11, deterministic first.
 	//
@@ -318,6 +341,26 @@ func (c *readerServiceClient) Unsubscribe(ctx context.Context, in *UnsubscribeRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UnsubscribeResponse)
 	err := c.cc.Invoke(ctx, ReaderService_Unsubscribe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) ImportOpml(ctx context.Context, in *ImportOpmlRequest, opts ...grpc.CallOption) (*ImportOpmlResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ImportOpmlResponse)
+	err := c.cc.Invoke(ctx, ReaderService_ImportOpml_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *readerServiceClient) ExportOpml(ctx context.Context, in *ExportOpmlRequest, opts ...grpc.CallOption) (*ExportOpmlResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExportOpmlResponse)
+	err := c.cc.Invoke(ctx, ReaderService_ExportOpml_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -582,6 +625,27 @@ type ReaderServiceServer interface {
 	Subscribe(context.Context, *SubscribeRequest) (*SubscribeResponse, error)
 	// Unsubscribe removes the subscription. It never deletes the source (A22).
 	Unsubscribe(context.Context, *UnsubscribeRequest) (*UnsubscribeResponse, error)
+	// ImportOpml subscribes to everything in an OPML file, folders and all.
+	//
+	// This is how somebody ARRIVES. Until it existed the only importer was
+	// `articleflux import`, which needs a shell on the server — so on a
+	// multi-tenant instance (A13) a member had no path at all, and the operator
+	// had to SSH in to add a feed list. Every competitor ships this in the UI.
+	//
+	// The whole file travels in one message rather than a stream of rows: a
+	// 151-feed export is ~32 KB, the parse has to see the document to unwrap a
+	// FreshRSS "Subscriptions" wrapper, and a partial upload is not half an
+	// import — it is a subscription list missing feeds nobody would notice.
+	//
+	// It subscribes without fetching. Filling 151 feeds is minutes of network,
+	// and an import that appears to hang is one people interrupt halfway; the
+	// poller fills them in behind the reader, who has a usable sidebar at once.
+	ImportOpml(context.Context, *ImportOpmlRequest) (*ImportOpmlResponse, error)
+	// ExportOpml writes this reader's subscriptions back out.
+	//
+	// An importer without an exporter is a roach motel. It is also the check on
+	// the importer: the file this returns has to import back into the app.
+	ExportOpml(context.Context, *ExportOpmlRequest) (*ExportOpmlResponse, error)
 	// AnalyzeSite answers "can I follow this page?" for an address that is not
 	// itself a feed — the subscribe ladder of §11, deterministic first.
 	//
@@ -735,6 +799,12 @@ func (UnimplementedReaderServiceServer) Subscribe(context.Context, *SubscribeReq
 }
 func (UnimplementedReaderServiceServer) Unsubscribe(context.Context, *UnsubscribeRequest) (*UnsubscribeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Unsubscribe not implemented")
+}
+func (UnimplementedReaderServiceServer) ImportOpml(context.Context, *ImportOpmlRequest) (*ImportOpmlResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportOpml not implemented")
+}
+func (UnimplementedReaderServiceServer) ExportOpml(context.Context, *ExportOpmlRequest) (*ExportOpmlResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportOpml not implemented")
 }
 func (UnimplementedReaderServiceServer) AnalyzeSite(context.Context, *AnalyzeSiteRequest) (*AnalyzeSiteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AnalyzeSite not implemented")
@@ -996,6 +1066,42 @@ func _ReaderService_Unsubscribe_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ReaderServiceServer).Unsubscribe(ctx, req.(*UnsubscribeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_ImportOpml_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportOpmlRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).ImportOpml(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_ImportOpml_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).ImportOpml(ctx, req.(*ImportOpmlRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ReaderService_ExportOpml_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportOpmlRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ReaderServiceServer).ExportOpml(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ReaderService_ExportOpml_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ReaderServiceServer).ExportOpml(ctx, req.(*ExportOpmlRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1424,6 +1530,14 @@ var ReaderService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Unsubscribe",
 			Handler:    _ReaderService_Unsubscribe_Handler,
+		},
+		{
+			MethodName: "ImportOpml",
+			Handler:    _ReaderService_ImportOpml_Handler,
+		},
+		{
+			MethodName: "ExportOpml",
+			Handler:    _ReaderService_ExportOpml_Handler,
 		},
 		{
 			MethodName: "AnalyzeSite",

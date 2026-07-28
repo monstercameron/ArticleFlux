@@ -858,6 +858,35 @@ func (c *Client) SubscribeScrape(parent context.Context, indexURL, title, folder
 	return res, c.track(err)
 }
 
+// ImportOPML subscribes to a whole OPML file (F1).
+//
+// Refused offline for Subscribe's reason and more of it: the server validates
+// and stores every row, so there is nothing a disconnected client could
+// optimistically show. Queuing 151 subscriptions that may each fail is not an
+// offline feature, it is a report the reader would have to read twice.
+//
+// The long budget is the import's own: subscribing does not fetch, but it is
+// still one transaction per feed against SQLite plus the categories, and a
+// hundred and fifty of those on a loaded server outlast the default.
+func (c *Client) ImportOPML(parent context.Context, data []byte) (*pb.ImportOpmlResponse, error) {
+	if c.State() != Live {
+		return nil, ErrOffline
+	}
+	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
+	defer cancel()
+	res, err := c.reader.ImportOpml(ctx, &pb.ImportOpmlRequest{Opml: data},
+		grpc.WaitForReady(false))
+	return res, c.track(err)
+}
+
+// ExportOPML returns this reader's subscriptions as an OPML file.
+func (c *Client) ExportOPML(parent context.Context) (*pb.ExportOpmlResponse, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.ExportOpml(ctx, &pb.ExportOpmlRequest{})
+	return res, c.track(err)
+}
+
 // Unsubscribe removes a subscription.
 func (c *Client) Unsubscribe(parent context.Context, sourceID string) error {
 	ctx, cancel := c.ctx(parent)
