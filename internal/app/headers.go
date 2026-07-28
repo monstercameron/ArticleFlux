@@ -70,8 +70,18 @@ const (
 //     close.
 //   - `img-src` includes data: and blob: for inline icons and object URLs; every
 //     remote image already arrives through /asset on this origin.
-//   - `object-src 'none'` and `base-uri 'none'` close the two classic bypasses —
-//     a plugin document, and a rewritten <base> that repoints every relative URL.
+//   - `object-src 'none'` closes the plugin-document bypass.
+//   - `base-uri 'self'`, and it was 'none' until client-side routing arrived
+//     (§20.13b). The threat `base-uri` addresses is an INJECTED <base> that
+//     repoints every relative URL at an attacker's origin, and 'self' still closes
+//     that completely: a base may only name this origin, so there is nowhere
+//     off-origin for a rewritten one to send anything. What 'none' additionally
+//     forbade was the application declaring its OWN base — which this application
+//     now must, because the shell is served at every route and a relative
+//     `app.wasm` would otherwise resolve under whichever route the reader arrived
+//     at (see web/index.html). 'none' did not fail loudly: the tag was ignored,
+//     every asset 404ed under the route, and the page rendered "Go is not
+//     defined" with the real cause visible only as a console warning.
 //   - `frame-ancestors 'none'` is the clickjacking control, and replaces
 //     X-Frame-Options, which is obsolete and which no browser consults when
 //     frame-ancestors is present.
@@ -87,7 +97,7 @@ var baseCSP = []string{
 	"worker-src 'self'",
 	"manifest-src 'self'",
 	"object-src 'none'",
-	"base-uri 'none'",
+	"base-uri 'self'",
 	"form-action 'none'",
 	"frame-ancestors 'none'",
 	"frame-src 'none'",

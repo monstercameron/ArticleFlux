@@ -89,8 +89,13 @@ func TestExternalScriptsAreNotHashed(t *testing.T) {
 func TestCSPClosesTheClassicHoles(t *testing.T) {
 	csp := documentCSP(shellWith(t, "<html></html>"))
 	for _, want := range []struct{ name, value string }{
-		{"object-src", "'none'"},      // plugin documents
-		{"base-uri", "'none'"},        // <base> rewriting every relative URL
+		{"object-src", "'none'"}, // plugin documents
+		// 'self', not 'none', since §20.13b — the app declares its own <base>
+		// because the shell answers at every route (web/index.html). The hole this
+		// directive exists to close is an injected base pointing OFF-ORIGIN, and
+		// 'self' still closes it completely. What must never come back is a wider
+		// value, or the absence of the directive, and that is what this pins.
+		{"base-uri", "'self'"},
 		{"frame-ancestors", "'none'"}, // clickjacking
 		{"form-action", "'none'"},     // injected form posting the DOM offsite
 		{"default-src", "'self'"},

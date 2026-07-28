@@ -2,6 +2,34 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+
+<!--
+  Where every relative URL in this document resolves from (§20.13b).
+
+  This is REQUIRED, not a tidiness measure, and it is required by client-side
+  routing specifically. Every asset below is named relatively — manifest.webmanifest,
+  icons/, fonts.css, wasm_exec.js, app.wasm, sw.js — and a browser resolves a
+  relative URL against the document's own address. That was correct for as long as
+  this document had exactly one address. It no longer does: the server serves this
+  same shell for /feed/<id>, /settings/appearance and every other route
+  (internal/app/app.go's static handler), so on a deep link `app.wasm` would resolve
+  to /feed/app.wasm — which has an extension, so the SPA fallback does not rewrite
+  it, so it 404s, so the module never loads and the reader gets a blank page.
+
+  The whole failure is invisible from the root address, which is the only one
+  anybody tests by hand. Opening the app works; opening a LINK to the app does not.
+
+  It also fixes the service worker, whose registration scope is resolved the same
+  way — without this, register('sw.js') from /feed/<id> would ask for
+  /feed/sw.js and, if it existed, scope the worker to /feed/.
+
+  "/" and not "./": this document is served at every route, so the directory it
+  appears to be in is not a fixed place. The demo is published under a project-page
+  prefix instead, and `make demo` stamps this line to "./" for exactly that reason —
+  a static host has no SPA fallback, so there are no deep links there to break.
+-->
+<base href="/">
+
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#221A2E">
