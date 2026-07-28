@@ -94,7 +94,8 @@ REPORT="$REPORT_DIR/last-failure.json"
 # escapes added afterwards get escaped again and the report is not valid JSON —
 # which defeats the entire point of writing one for a machine to read.
 json_str() {
-	printf '%s' "$1" | sed -e 's/\/\\/g' -e 's/"/\\"/g' -e 's/	/\t/g' -e 's///g' 		| awk 'BEGIN{ORS=""} {if (NR>1) print "\n"; print}'
+	printf '%s' "$1" | sed -e 's/\/\\/g' -e 's/"/\\"/g' -e 's/	/\t/g' -e 's/
+//g' 		| awk 'BEGIN{ORS=""} {if (NR>1) print "\n"; print}'
 }
 
 # json_file emits a file's tail as one escaped JSON string.
@@ -224,12 +225,24 @@ on_error() {
 	fi
 	exit "$code"
 }
-trap 'on_error $LINENO' EXIT INT TERM
+# ERR, not just EXIT. An EXIT trap fires wherever the shell happens to leave —
+# which is the trap's own line — so the first failure this library reported said
+# "line 1 of update.sh" and sent the reader to the shebang. ERR fires at the
+# command that actually failed. EXIT stays as a backstop for the paths ERR does
+# not cover (an explicit `exit 1`, an unset variable under `set -u`), and
+# REPORTED keeps the two from writing the report twice.
+REPORTED=''
+set -E
+on_err_trap() { [ -n "$REPORTED" ] && return; REPORTED=1; on_error "$1"; }
+trap 'on_err_trap $LINENO' ERR
+trap 'on_err_trap $LINENO' INT TERM
+trap 'on_err_trap ${LINENO}' EXIT
 
 # finish disarms the trap. Call it on the success path or the trap fires on a
 # clean exit and reports a failure that did not happen.
 finish() {
-	trap - EXIT INT TERM
+	REPORTED=1
+	trap - EXIT INT TERM ERR
 	secs=$(( $(date +%s) - SCRIPT_T0 ))
 	printf '\n%s%s✓ %s%s %sin %ss — log: %s%s\n' "$C_GRN" "$C_BLD" "${1:-Done}" "$C_OFF" "$C_DIM" "$secs" "$LOG" "$C_OFF"
 	printf '\n===== SUCCESS: %s (%ss) =====\n' "${1:-Done}" "$secs" >> "$LOG"

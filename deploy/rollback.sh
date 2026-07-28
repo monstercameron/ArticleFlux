@@ -35,7 +35,7 @@ if [ "${1:-}" = "--list" ]; then
 		printf '  %-46s %s  %s\n' "$(basename "$f")" "$(du -h "$f" | cut -f1)" "$(date -r "$f" '+%Y-%m-%d %H:%M')"
 	done || echo "  (none)"
 	printf '\n%sDatabase snapshots (restore by hand, see the header of this script)%s\n' "$C_DIM" "$C_OFF"
-	ls -1t "$BACKUPS"/articleflux-*.db 2>/dev/null | head -5 | sed 's/^/  /' || true
+	ls -1t "$BACKUPS"/articleflux-*.db 2>/dev/null | head -5 | sed 's/^/  /' || echo "  (none)"
 	trap - EXIT INT TERM
 	exit 0
 fi

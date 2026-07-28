@@ -129,9 +129,15 @@ fi
 ROLLBACK_CMD="cp -a '$prev_bin' '$REPO/bin/articleflux'; rm -rf '$REPO/bin/web'; cp -a '$prev_web' '$REPO/bin/web'; chown -R $OWNER:$OWNER '$REPO/bin'; systemctl reset-failed $SERVICE || true; systemctl restart $SERVICE"
 
 # Ten of each, so a bad week of deploys does not fill the disk with rollbacks.
-ls -1dt "$BACKUPS"/articleflux-*.bin 2>/dev/null | tail -n +11 | xargs -r rm -f
-ls -1dt "$BACKUPS"/web-* 2>/dev/null | tail -n +11 | xargs -r rm -rf
-ls -1dt "$BACKUPS"/articleflux-*.db 2>/dev/null | tail -n +11 | xargs -r rm -f
+#
+# The `|| true` is load-bearing. `ls` of a glob that matches nothing exits 2, and
+# under `set -e` with `pipefail` that took down the whole update on the first run
+# of this script — a deploy aborted by its own housekeeping, on a box whose only
+# fault was not having ten old backups yet.
+prune() { ls -1dt $1 2>/dev/null | tail -n +11 | xargs -r rm -rf || true; }
+prune "$BACKUPS/articleflux-*.bin"
+prune "$BACKUPS/web-*"
+prune "$BACKUPS/articleflux-*.db"
 done_ok "rollback point saved"
 
 # --- 4/5. build --------------------------------------------------------------
