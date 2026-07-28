@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -579,5 +580,216 @@ func TestTheThreeFirstSegmentModesAreDistinct(t *testing.T) {
 			t.Errorf("%s and %s share a cache entry", name, other)
 		}
 		seen[path] = name
+	}
+}
+
+// --- segment groups (TODO 11.6) ---------------------------------------------
+//
+// WriteSegment writes 2-4 related stories in one call and returns them split
+// back into one block per story, because the audio path downstream is sealed
+// per item (see the package comment above groupCachePath). These tests cover
+// the acceptance bar TODO 11.6 names: a multi-story segment yields one block
+// per story, the blocks after the first carry no greeting, and a group's
+// cache never collides with a lone segment's.
+
+func newFakeGroupLLM(reply string) *fakeLLM {
+	return &fakeLLM{configured: true, text: reply}
+}
+
+// **The load-bearing test in this file's group half.** A three-story segment
+// must come back as three blocks, in call order, each addressed to its own
+// item id — the schema round-trip (podcastGroupSchema) is the one thing this
+// call must not get wrong, because there is no way to recover a split from a
+// paragraph of prose after the fact.
+func TestSegmentGroupProducesOneBlockPerStory(t *testing.T) {
+	fake := newFakeGroupLLM(`{"blocks":[
+		{"story":1,"text":"Handing over from the last segment, the first story here is this."},
+		{"story":2,"text":"Moving from that story to this one, here is the second."},
+		{"story":3,"text":"And from the second to the third, here is the last of them."}
+	]}`)
+	p := NewPodcast(fake, nil, t.TempDir())
+	g := SegmentGroup{
+		Vibe:      VibeCalm,
+		PrevTheme: "the transit budget fight",
+		Stories: []SegmentStory{
+			{ItemID: "a", Source: "LWN", Title: "One", Body: "body one"},
+			{ItemID: "b", Source: "HN", Title: "Two", Body: "body two"},
+			{ItemID: "c", Source: "Ars", Title: "Three", Body: "body three"},
+		},
+	}
+	blocks, err := p.WriteSegment(context.Background(), g)
+	if err != nil {
+		t.Fatalf("WriteSegment: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3", len(blocks))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if blocks[i].ItemID != want {
+			t.Errorf("block %d belongs to item %q, want %q", i, blocks[i].ItemID, want)
+		}
+		if blocks[i].Text == "" {
+			t.Errorf("block %d has no text", i)
+		}
+	}
+	// Blocks 2 and 3 (index 1 and 2) must carry no greeting: greeting the
+	// listener is the top-of-broadcast's job, never a mid-segment story's.
+	for _, i := range []int{1, 2} {
+		for _, bad := range []string{"Good morning", "Good evening", "Good afternoon"} {
+			if strings.Contains(blocks[i].Text, bad) {
+				t.Errorf("block %d carries a greeting: %q", i, blocks[i].Text)
+			}
+		}
+	}
+	if fake.callCount() != 1 {
+		t.Errorf("wrote a 3-story segment in %d model calls, want exactly 1", fake.callCount())
+	}
+}
+
+// A group and a single-story Segment must not share a cache entry, even for
+// the very same item — the same story told alone and told inside a group with
+// neighbours is a different piece of writing, because the handover and the
+// "do not restate" rule mean its wording depends on what surrounds it.
+func TestSegmentGroupAndSingleSegmentDoNotShareACacheEntry(t *testing.T) {
+	p := keylessPodcast(t)
+	single := Segment{ItemID: "a", PrevID: "z"}
+	singlePath := p.cachePath(single, "gpt-5-mini")
+
+	group := SegmentGroup{Vibe: VibeCalm, Stories: []SegmentStory{
+		{ItemID: "a"}, {ItemID: "b"},
+	}}
+	groupPath := p.groupCachePath(group, 0, "gpt-5-mini")
+	if groupPath == "" {
+		t.Fatal("no group cache path")
+	}
+	if groupPath == singlePath {
+		t.Error("the same story written alone and written inside a group share one cache entry")
+	}
+
+	// And the argument cachePath makes about ordered PAIRS applies one level
+	// up: the same lead story with a different second story is a different
+	// group, because the transition it hands into differs.
+	other := group
+	other.Stories = []SegmentStory{{ItemID: "a"}, {ItemID: "c"}}
+	if p.groupCachePath(other, 0, "gpt-5-mini") == groupPath {
+		t.Error("the same lead story in two different groups shares one cache entry")
+	}
+	// A different theme transitioning INTO the same group is a different
+	// opening sentence for block 1, so it must not share a path either.
+	retheme := group
+	retheme.PrevTheme = "something else entirely"
+	if p.groupCachePath(retheme, 0, "gpt-5-mini") == groupPath {
+		t.Error("two different previous themes share one cache entry")
+	}
+}
+
+// WriteSegment enforces its own bounds rather than trusting a caller to know
+// them: below two stories there is nothing to write a transition across
+// (Segment already exists for one story), and above four the model is asked
+// to hold more articles in mind than it reliably keeps straight.
+func TestSegmentGroupRejectsAnUnsupportedStoryCount(t *testing.T) {
+	p := keylessPodcast(t)
+	for _, n := range []int{0, 1, MaxSegmentStories + 1} {
+		stories := make([]SegmentStory, n)
+		for i := range stories {
+			stories[i] = SegmentStory{ItemID: strconv.Itoa(i), Body: "text"}
+		}
+		if _, err := p.WriteSegment(context.Background(), SegmentGroup{Stories: stories}); err == nil {
+			t.Errorf("%d stories: want an error, got nil", n)
+		}
+	}
+}
+
+// The instructions are the feature, same as the single-segment prompt: the
+// transition belongs to block 1 alone, later blocks must not restate an
+// earlier fact, and every prohibition the single-story prompt carries against
+// an invented programme survives into the group prompt unchanged.
+func TestSegmentGroupInstructionsRestrictGreetingAndRestatement(t *testing.T) {
+	got := podcastGroupInstructionsFor(DefaultVibe)
+	for _, want := range []string{
+		// The greeting and transition are block 1's alone.
+		"belongs ENTIRELY to block 1",
+		"Blocks 2 and onward must not repeat any of it",
+		"at the very top of BLOCK 1 and nowhere else",
+		// No restating a fact once it has been said.
+		"Never restate a fact from an earlier block",
+		// Exactly one block per story — the schema's contract, stated in prose
+		// too so the model does not merge or drop one.
+		"Return exactly one block per STORY given",
+		// The rules carried over unchanged from the single-story prompt.
+		"Never invent a programme name",
+		"You may NOT invent",
+		"Never sign off",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the group instructions no longer say %q", want)
+		}
+	}
+	// It is its own prompt, not a copy of the single-story one — if these ever
+	// converge, the group's per-block rules are being applied to a single
+	// segment too.
+	if got == podcastInstructionsFor(DefaultVibe) {
+		t.Error("the group and single-segment prompts are identical")
+	}
+}
+
+// The input's SHAPE is the contract with the instructions above, and — as
+// with podcastInput — it is the half that rots silently. The opening must
+// appear exactly once, ahead of every story, however many stories the group
+// carries: a duplicate would be the model being handed a second greeting to
+// read out in some later block.
+func TestSegmentGroupInputPlacesTheOpeningOnceAtTheTop(t *testing.T) {
+	g := SegmentGroup{
+		Open: &Opening{PartOfDay: "morning", Date: "Monday, 27 July 2026", Stories: 5},
+		Stories: []SegmentStory{
+			{ItemID: "a", Source: "LWN", Title: "One"},
+			{ItemID: "b", Source: "HN", Title: "Two"},
+		},
+	}
+	in := segmentGroupInput(g, []string{"body one", "body two"})
+	// "OPENING —" is the greeting block's own marker (writeOpening); it must
+	// appear exactly once regardless of how many stories follow it, or a
+	// later block would be handed a second greeting to read out.
+	if n := strings.Count(in, "OPENING —"); n != 1 {
+		t.Errorf("the opening block appears %d times, want exactly once:\n%s", n, in)
+	}
+	if strings.Index(in, "OPENING —") > strings.Index(in, "STORY 1") {
+		t.Errorf("the opening is not before the first story:\n%s", in)
+	}
+	for _, want := range []string{"STORY 1 of 2", "STORY 2 of 2", "body one", "body two"} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the input lost %q:\n%s", want, in)
+		}
+	}
+}
+
+// A group that has neither an opening nor a previous theme is the top of the
+// broadcast, and must say so explicitly — the same reasoning Segment's own
+// "This is the OPENING segment" branch is built on: leaving it to be inferred
+// from an absence produces a handover from a theme that was never given.
+func TestSegmentGroupInputWithNoThemeSaysSoExplicitly(t *testing.T) {
+	in := segmentGroupInput(SegmentGroup{
+		Stories: []SegmentStory{{ItemID: "a"}, {ItemID: "b"}},
+	}, []string{"x", "y"})
+	if !strings.Contains(in, "This is the OPENING segment") {
+		t.Errorf("a themeless, unopened group does not say it opens the broadcast:\n%s", in)
+	}
+
+	opened := segmentGroupInput(SegmentGroup{
+		Opened:  true,
+		Stories: []SegmentStory{{ItemID: "a"}, {ItemID: "b"}},
+	}, []string{"x", "y"})
+	for _, want := range []string{"ALREADY OPENED", "Do NOT greet the listener"} {
+		if !strings.Contains(opened, want) {
+			t.Errorf("an already-opened group was not told %q:\n%s", want, opened)
+		}
+	}
+
+	themed := segmentGroupInput(SegmentGroup{
+		PrevTheme: "the transit budget fight",
+		Stories:   []SegmentStory{{ItemID: "a"}, {ItemID: "b"}},
+	}, []string{"x", "y"})
+	if !strings.Contains(themed, "the transit budget fight") {
+		t.Errorf("the previous theme did not reach the model:\n%s", themed)
 	}
 }

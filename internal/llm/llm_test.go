@@ -96,6 +96,18 @@ func TestEndpointMatchesAllowedHost(t *testing.T) {
 	if u.Scheme != "https" {
 		t.Fatalf("content would leave over %q, not https", u.Scheme)
 	}
+	// The PATH as well as the host, because the host test would pass just as
+	// happily against /v1/chat/completions. Every intelligence in this
+	// application goes through this one client and this one endpoint (llm.go:4),
+	// and the Responses API is not a preference — `text.format` with a strict
+	// json_schema, `reasoning.effort`, and `store:false` are all shaped by it.
+	// A future call added against chat completions would work, quietly lose
+	// structured output, and be found by whoever wondered why a planner started
+	// returning prose.
+	if u.Path != "/v1/responses" {
+		t.Fatalf("Endpoint path is %q; every model call in this application "+
+			"uses the Responses API", u.Path)
+	}
 }
 
 // --- no key, no egress -------------------------------------------------------

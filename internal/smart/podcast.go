@@ -37,6 +37,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,7 +63,11 @@ import (
 // the headline, and read the opening headlines out as a list, which a listener
 // hears as a list of nouns going past. This one opens on the fact, cuts the
 // scene-setting, and gives the run-through momentum.
-const podcastPromptVersion = "v3"
+// v4: added the segment-GROUP writer (TODO 11.6) — new instruction text
+// (podcastGroupInstructionsFor) that did not exist in v3 at all, so the same
+// argument applies: a v3-cached single segment and a v4 group segment must not
+// be mistaken for interchangeable text sharing one version number.
+const podcastPromptVersion = "v4"
 
 // The vibes: how the narrator sounds.
 //
@@ -479,6 +485,61 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	return out, nil
 }
 
+// writeOpening appends the OPENING block — part of day, date, story count and
+// the headline run-through — that both a single segment (podcastInput) and a
+// segment GROUP (segmentGroupInput) need stated identically.
+//
+// Factored out rather than duplicated because the greeting is a property of
+// the BROADCAST, not of which call happens to be writing the next words: if
+// the two call sites drifted, a group's opening and a single segment's
+// opening would silently stop sounding like the same programme.
+//
+// It is given as FACTS — a part of the day, a date, a count — rather than as
+// a sentence to read out, so the wording varies between broadcasts instead of
+// the same greeting arriving every morning like a recording. `where` is the
+// trailing clause on the headline list, because what "the first story" refers
+// to differs by caller (an intro-only recording vs. the segment or group it
+// leads into).
+func writeOpening(in *strings.Builder, o *Opening, where string) {
+	if o == nil {
+		return
+	}
+	in.WriteString("OPENING — this is the top of the broadcast.\n")
+	if s := strings.TrimSpace(o.PartOfDay); s != "" {
+		in.WriteString("  Part of day: ")
+		in.WriteString(s)
+		in.WriteByte('\n')
+	}
+	if s := strings.TrimSpace(o.Date); s != "" {
+		in.WriteString("  Date: ")
+		in.WriteString(s)
+		in.WriteByte('\n')
+	}
+	if o.Stories > 0 {
+		in.WriteString("  Stories queued, including this one: ")
+		in.WriteString(strconv.Itoa(o.Stories))
+		in.WriteByte('\n')
+	}
+	// The run-through. Numbered in the INPUT so the order is unambiguous, and
+	// explicitly not numbered in the output — the instructions say so, because
+	// a model given a numbered list will read "one, two, three" aloud.
+	if len(o.Lineup) > 0 {
+		in.WriteString("  HEADLINES to run through, in this order (" + where + "):\n")
+		for i, h := range o.Lineup {
+			in.WriteString("    ")
+			in.WriteString(strconv.Itoa(i + 1))
+			in.WriteString(". ")
+			if s := strings.TrimSpace(h.Source); s != "" {
+				in.WriteString(s)
+				in.WriteString(" — ")
+			}
+			in.WriteString(strings.TrimSpace(h.Title))
+			in.WriteByte('\n')
+		}
+	}
+	in.WriteByte('\n')
+}
+
 // podcastInput assembles what the model is shown.
 //
 // Labelled fields rather than prose, and the previous story FIRST, because that
@@ -493,53 +554,13 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 // longer emitted still reads perfectly.
 func podcastInput(seg Segment, body string) string {
 	var in strings.Builder
-	// The opening first, because it is the first thing said. It is given as
-	// FACTS — a part of the day, a date, a count — rather than as a sentence to
-	// read out, so the wording varies between broadcasts instead of the same
-	// greeting arriving every morning like a recording.
-	if o := seg.Open; o != nil {
-		in.WriteString("OPENING — this is the top of the broadcast.\n")
-		if s := strings.TrimSpace(o.PartOfDay); s != "" {
-			in.WriteString("  Part of day: ")
-			in.WriteString(s)
-			in.WriteByte('\n')
-		}
-		if s := strings.TrimSpace(o.Date); s != "" {
-			in.WriteString("  Date: ")
-			in.WriteString(s)
-			in.WriteByte('\n')
-		}
-		if o.Stories > 0 {
-			in.WriteString("  Stories queued, including this one: ")
-			in.WriteString(strconv.Itoa(o.Stories))
-			in.WriteByte('\n')
-		}
-		// The run-through. Numbered in the INPUT so the order is unambiguous, and
-		// explicitly not numbered in the output — the instructions say so, because
-		// a model given a numbered list will read "one, two, three" aloud.
-		if len(o.Lineup) > 0 {
-			// The trailing clause differs by mode because it is a claim about
-			// what follows in this input, and in intro mode nothing does.
-			where := "the first is the story covered below"
-			if seg.OpenOnly {
-				where = "the first is the story the broadcast starts with"
-			}
-			in.WriteString("  HEADLINES to run through, in this order (" +
-				where + "):\n")
-			for i, h := range o.Lineup {
-				in.WriteString("    ")
-				in.WriteString(strconv.Itoa(i + 1))
-				in.WriteString(". ")
-				if s := strings.TrimSpace(h.Source); s != "" {
-					in.WriteString(s)
-					in.WriteString(" — ")
-				}
-				in.WriteString(strings.TrimSpace(h.Title))
-				in.WriteByte('\n')
-			}
-		}
-		in.WriteByte('\n')
+	// The opening first, because it is the first thing said. See writeOpening
+	// for why it is given as FACTS rather than as a sentence to read out.
+	where := "the first is the story covered below"
+	if seg.OpenOnly {
+		where = "the first is the story the broadcast starts with"
 	}
+	writeOpening(&in, seg.Open, where)
 	// An opening on its own stops here. Nothing below this line is anything but
 	// a story to cover or a story to hand over from, and both are exactly what
 	// this mode must not produce — a model shown an article and told not to
@@ -665,5 +686,402 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	// One level of fan-out, matching the digest and audio caches, so a long
 	// listener does not end up with one directory holding tens of thousands of
 	// entries.
+	return filepath.Join(p.dir, name[:2], name)
+}
+
+// ---------------------------------------------------------------------------
+// Segment GROUPS — write per segment, synthesise per story (TODO 11.6)
+// ---------------------------------------------------------------------------
+//
+// Segment above writes one story next to the one immediately before it. A
+// GROUP widens that to 2-4 stories the rundown decided belong together — a
+// cluster running as one beat rather than as separate handovers — written in
+// ONE model call so the prose actually flows across them, the way a real
+// bulletin's "and while we're on the subject of X" segment does and four
+// independent Segment calls sharing a topic never quite manage.
+//
+// It is returned split back into one block per story because the audio unit
+// downstream is sealed at the ITEM, and that is not a preference this call
+// gets to have an opinion about: `/speech` is reached with an AES-GCM sealed
+// per-item ticket — `speech\n<tenant>\n<user>\n<role>\n<itemID>\n<exp>`, minted
+// by `GetItem` — and one item is one audio file is one slide. The slideshow's
+// progress bar reads that file's own playhead, and read-state fires on that
+// file's `ended` event. A single file covering three stories has no ticket to
+// be sealed under, no slide boundary, and no `ended` event to attach
+// read-state to for the second or third story in it. So the model writes the
+// whole segment — that is what makes it flow — and this method hands the
+// caller back one block per story, each of which is cached and synthesised
+// exactly as a lone Segment's output is today. Do not collapse this back into
+// one returned string; see TODO 11's "constraint that decides the
+// architecture" for why that would break four things at once.
+
+// MinSegmentStories and MaxSegmentStories bound one WriteSegment call.
+//
+// Two, because a "segment" of one story is just Segment and already has a
+// cheaper path that does not need a schema round-trip. Four, because the
+// transition the model writes into story N has to relate it to a story
+// several paragraphs back in the SAME reply, and a model asked to hold more
+// than a handful of articles in mind at once starts writing connective tissue
+// rather than remembering what it already said — at which point four
+// independent Segment calls would have been both cheaper and no worse.
+const (
+	MinSegmentStories = 2
+	MaxSegmentStories = 4
+)
+
+// podcastGroupMaxTokens is sized as a multiple of podcastMaxTokens rather than
+// guessed fresh: the per-story budget a single segment needs still applies,
+// there are just up to MaxSegmentStories of them held in one reply, plus the
+// model's own reasoning over all of them at once.
+const podcastGroupMaxTokens = podcastMaxTokens * MaxSegmentStories
+
+// SegmentStory is one story's input to a group: the same four fields Segment
+// itself carries, pulled into their own type because a group is a slice of
+// these rather than one of them.
+type SegmentStory struct {
+	ItemID string
+	Source string
+	Title  string
+	Body   string
+}
+
+// SegmentGroup is one call to WriteSegment.
+type SegmentGroup struct {
+	// Stories is 2 to 4 entries, in the order they will be told. The order is
+	// the caller's decision — the rundown's — and not this package's: the
+	// transition out of story 1 into story 2 is written for THIS order and
+	// no other, so reordering the slice after the fact would leave a
+	// handover pointing at the wrong neighbour.
+	Stories []SegmentStory
+
+	// PrevTheme is what the segment immediately before this one was ABOUT —
+	// "the row over the transit budget", "the earnings season" — not its
+	// text and not its stories. A group is a step up from one story to
+	// another, so the handover into it is a step from one THEME to another;
+	// the model is never shown the previous segment's stories, so it cannot
+	// restate them even by accident. Empty means this group opens the
+	// broadcast, exactly as an empty PrevSource/PrevTitle does for Segment.
+	PrevTheme string
+
+	// Vibe is how the narrator sounds. Empty resolves to DefaultVibe.
+	Vibe string
+	// Open is the top-of-broadcast greeting, exactly as on Segment: present
+	// only when this group is first in the session, and folded into the
+	// FIRST block only — every other block in the group is never told it
+	// exists, the same way every segment after the first never is.
+	Open *Opening
+	// Opened mirrors Segment.Opened: the broadcast has already introduced
+	// itself in a recording of its own, and this group's first block must
+	// not greet a second time.
+	Opened bool
+}
+
+// SegmentBlock is one story's slice of a written group: the text to
+// synthesise under that story's own item ticket, unchanged from how a lone
+// Segment's output is synthesised today.
+type SegmentBlock struct {
+	ItemID string
+	Text   string
+}
+
+// podcastGroupSchema forces one block per story rather than a single prose
+// blob the caller would then have to guess how to split.
+//
+// That guess is exactly the thing this call exists to avoid: paragraph breaks
+// in free text do not reliably land on story boundaries, and a split
+// recovered after the fact would occasionally cut a sentence in half across
+// two audio files. The schema makes the split a GUARANTEE from the provider
+// instead — the same reasoning `rerankSchema` and `entitySchema` (interest.go)
+// are built on.
+var podcastGroupSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"blocks"},
+	"properties": map[string]any{
+		"blocks": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"story", "text"},
+				"properties": map[string]any{
+					// story is a one-based ordinal into the STORY list this request
+					// carried, exactly as rerankSchema's `id` is an ordinal into its
+					// candidates — never anything the model invents on its own.
+					"story": map[string]any{"type": "integer"},
+					"text":  map[string]any{"type": "string"},
+				},
+			},
+		},
+	},
+}
+
+// podcastGroupInstructionsFor builds the instructions for writing a whole
+// segment of 2-4 stories in one call, in the given vibe.
+//
+// A sibling of podcastInstructionsFor rather than a parameterised version of
+// it: almost every rule below restates a rule that prompt already states, but
+// the SHAPE of the job — one call, several stories, the transition belongs to
+// exactly one of them, no restating a fact once it has been said — is
+// different enough that a single prompt branching on story count would be a
+// prompt a model half-follows, the same argument podcastIntroInstructions
+// already makes for staying its own function.
+func podcastGroupInstructionsFor(vibe string) string {
+	return `You are the narrating voice of a continuous news broadcast, writing ONE SEGMENT that covers SEVERAL related stories together.
+
+` + vibes[VibeFor(vibe)] + `
+
+You will be given 2 to 4 stories, labelled STORY 1 through STORY N in the order you must tell them, and — unless this is the opening segment — either an OPENING to fold in, or the theme of the segment you have just finished, or a note that the broadcast has already opened elsewhere. Return one block of spoken prose per story, in that same order, and nothing else.
+
+THE SHAPE OF THIS SEGMENT
+
+1. THE OPENING, only if one was given — exactly as a single segment would carry it: greet the listener for the part of day, say the date, and if headlines were given, run through them with a beat of colour each rather than reading a list. This belongs ENTIRELY to block 1. Blocks 2 and onward must not repeat any of it — no greeting, no date, no story count, ever, from the second block on.
+
+2. THE TRANSITION INTO THE SEGMENT, at the very top of BLOCK 1 and nowhere else. If a previous segment's theme was given, hand over from it in one or two sentences — say what changes ("from the transit budget to something with no politics in it at all") if the two are actually related, or make a plain unhurried change of subject if they are not. Never a stock phrase like "in other news" or "turning now to" standing in for an actual thought. If there is no previous theme and no opening, block 1 simply starts on its story.
+
+3. EACH STORY, told for a listener exactly as a single segment would tell it — open on the fact, cut the publisher's padding, say what it means as well as what it says, and never invent a fact, number, quote or attribution that is not in the text given for THAT story.
+
+4. THE HANDOVERS BETWEEN STORIES, at the top of every block after the first. One or two sentences carrying the listener from the story just told into the next one: say the real relation if there is one — that is usually the reason these stories were grouped together — or make a plain change of subject if there is not. Never restate a fact from an earlier block to set up the next one; the listener just heard it thirty seconds ago and does not need it again.
+
+WHAT "TOLD FOR A LISTENER" MEANS, for every block:
+
+- Open on the fact, not on context, the field it belongs to, or why the topic is interesting.
+- Cut the fat the publisher put there: the scene-setting opener, the restated headline, the closing summary of what was just said. None of it survives being spoken.
+- Say what it MEANS, not only what it says. You may editorialise about SIGNIFICANCE — that a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before.
+- You may NOT invent. No facts, numbers, quotes, dates, names or attributions that are not in the text you were given for that specific story. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
+- Write for the mouth, not the page: contractions, short sentences, one idea in each, a rhythm that varies rather than three sentences of the same length in a row.
+- Round numbers and give them scale: "about a third", not a precise percentage. Skip anything that does not survive being heard once — exact decimals, URLs, code, a long proper noun repeated.
+- Name the publication once per story, naturally, where you introduce it.
+
+ALWAYS:
+
+- Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+- Return exactly one block per STORY given, in the same order, and only that: no block for a story you were not given, no single block merging two stories, no extra commentary block at the end.
+
+NEVER:
+
+- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.
+- Never say what is coming after this segment. You have not been told, and guessing is a false statement.
+- Never sign off, thank the listener, or summarise the segment. The broadcast continues after you.
+- If a story's own text is an error page, a paywall notice, a cookie banner or otherwise not an article, hand over from whatever precedes it in the group, say in one sentence that this one could not be read, and stop that block there — it does not cost the other blocks in the segment.
+
+Output nothing but the requested blocks.`
+}
+
+// segmentGroupInput assembles what the model is shown for one WriteSegment
+// call: the same shapes podcastInput uses, laid out for N stories instead of
+// one, so the input's contract with the instructions above is exactly as
+// explicit and exactly as prone to rotting silently — see podcastInput's own
+// comment for why this is a named, tested function rather than inlined.
+func segmentGroupInput(g SegmentGroup, bodies []string) string {
+	var in strings.Builder
+	writeOpening(&in, g.Open, "the first is the first story of this segment")
+
+	prevTheme := strings.TrimSpace(g.PrevTheme)
+	switch {
+	case prevTheme != "":
+		in.WriteString("The segment you have just finished was about: ")
+		in.WriteString(prevTheme)
+		in.WriteString("\n\n")
+	case g.Opened:
+		// The same statement Segment makes when Opened is true and there is no
+		// previous story: the absence of a previous theme is not neutral, and a
+		// model left to infer it invents one about as often as not.
+		in.WriteString("The broadcast has ALREADY OPENED: the listener has just heard " +
+			"the greeting, the date and the run-through of what is coming, in a " +
+			"recording of its own. This is the first segment.\n" +
+			"Do NOT greet the listener. Do NOT say the date or the part of the day. " +
+			"Do NOT say how many stories there are. Do NOT hand over from anything " +
+			"— nothing has been covered yet. Begin block 1 on its own story.\n\n")
+	default:
+		in.WriteString("This is the OPENING segment of the broadcast. There is no " +
+			"previous segment.\n\n")
+	}
+
+	for i, s := range g.Stories {
+		in.WriteString("STORY ")
+		in.WriteString(strconv.Itoa(i + 1))
+		in.WriteString(" of ")
+		in.WriteString(strconv.Itoa(len(g.Stories)))
+		in.WriteString(":\n")
+		if src := strings.TrimSpace(s.Source); src != "" {
+			in.WriteString("  Publication: ")
+			in.WriteString(src)
+			in.WriteByte('\n')
+		}
+		if t := strings.TrimSpace(s.Title); t != "" {
+			in.WriteString("  Headline: ")
+			in.WriteString(t)
+			in.WriteByte('\n')
+		}
+		in.WriteByte('\n')
+		if i < len(bodies) {
+			in.WriteString(bodies[i])
+		}
+		in.WriteString("\n\n")
+	}
+	return in.String()
+}
+
+// WriteSegment writes 2 to 4 related stories as one flowing segment and
+// returns them split back into one block per story, in call order.
+//
+// Cache is consulted PER STORY, before a key is required, for the same reason
+// Segment's own cache is: text already paid for and sitting on disk must not
+// be withheld because a credential was rotated. A group counts as cached only
+// when EVERY block is on disk — a partial hit still pays for the whole call,
+// because the blocks were written together and a lone cached block cannot be
+// regenerated to match siblings it no longer has.
+func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBlock, error) {
+	if n := len(g.Stories); n < MinSegmentStories || n > MaxSegmentStories {
+		return nil, fmt.Errorf("smart: a segment takes %d-%d stories, got %d",
+			MinSegmentStories, MaxSegmentStories, n)
+	}
+
+	bodies := make([]string, len(g.Stories))
+	for i, s := range g.Stories {
+		b := strings.TrimSpace(s.Body)
+		if b == "" {
+			return nil, ErrNothingToSummarise
+		}
+		if len(b) > maxInputChars {
+			// On a word boundary, like Segment.Segment does, so the model's last
+			// piece of evidence for this story is not half a word.
+			if cut := strings.LastIndexByte(b[:maxInputChars], ' '); cut > maxInputChars/2 {
+				b = b[:cut]
+			} else {
+				b = b[:maxInputChars]
+			}
+		}
+		bodies[i] = b
+	}
+
+	model := p.model(ctx)
+
+	paths := make([]string, len(g.Stories))
+	blocks := make([]SegmentBlock, len(g.Stories))
+	allCached := p.dir != ""
+	for i, s := range g.Stories {
+		path := p.groupCachePath(g, i, model)
+		paths[i] = path
+		if path == "" {
+			allCached = false
+			continue
+		}
+		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+			blocks[i] = SegmentBlock{ItemID: s.ItemID, Text: string(b)}
+		} else {
+			allCached = false
+		}
+	}
+	if allCached {
+		return blocks, nil
+	}
+
+	if !p.Configured(ctx) {
+		return nil, llm.ErrNotConfigured
+	}
+
+	out, err := p.llm.Do(ctx, llm.Request{
+		Model:        model,
+		Instructions: podcastGroupInstructionsFor(g.Vibe),
+		Input:        segmentGroupInput(g, bodies),
+		SchemaName:   "podcast_segment",
+		Schema:       podcastGroupSchema,
+		// Bounded because the budget covers reasoning too, and a group cut off
+		// mid-reply is worse than a single truncated segment: it can lose the
+		// LAST story's block entirely rather than just ending one sentence early.
+		MaxOutputTokens: podcastGroupMaxTokens,
+		// Low, like Segment: writing a handover between stories that are already
+		// in front of the model is a small act of composition, not a reasoning
+		// problem, and deliberation here buys tokens rather than a better link.
+		Effort: "low",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var reply struct {
+		Blocks []struct {
+			Story int    `json:"story"`
+			Text  string `json:"text"`
+		} `json:"blocks"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		return nil, fmt.Errorf("smart: segment reply was not the schema: %w", err)
+	}
+
+	// Re-validated field by field, exactly as interest.go's rerank reply is:
+	// the caller cannot trust this package and this package cannot trust the
+	// provider, and both checks are cheap. `story` is a one-based ordinal into
+	// g.Stories and nothing else may address a block.
+	byStory := make(map[int]string, len(reply.Blocks))
+	for _, b := range reply.Blocks {
+		if b.Story < 1 || b.Story > len(g.Stories) {
+			continue
+		}
+		if text := cleanForSpeech(b.Text); text != "" {
+			byStory[b.Story] = text
+		}
+	}
+	if len(byStory) != len(g.Stories) {
+		return nil, fmt.Errorf("smart: segment reply covered %d of %d stories",
+			len(byStory), len(g.Stories))
+	}
+
+	for i, s := range g.Stories {
+		text := byStory[i+1]
+		blocks[i] = SegmentBlock{ItemID: s.ItemID, Text: text}
+		if path := paths[i]; path != "" {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			// Temp-then-rename, like every other cache write in this file: a
+			// reader who reloads mid-write must not find half a block.
+			tmp := path + ".tmp"
+			if err := os.WriteFile(tmp, []byte(text), 0o644); err == nil {
+				_ = os.Rename(tmp, path)
+			}
+		}
+	}
+	return blocks, nil
+}
+
+// groupCachePath hashes ONE STORY's block together with the whole group it
+// was written inside.
+//
+// The argument cachePath makes about the ordered PAIR applies one level up:
+// the SAME story written into a different group — different neighbours, a
+// different order, a different theme it transitions from — is a different
+// piece of writing, because the handover and the "do not restate" rule mean
+// every block's wording depends on what surrounds it. Caching on the story's
+// id alone would serve a block that hands over from a story that, in THIS
+// playing, is not the one actually next to it — the same failure cachePath's
+// own comment describes, one level up the structure.
+//
+// The explicit "group" tag is what keeps this from ever colliding with
+// cachePath's own hash space even by coincidence, the same way cachePath
+// itself tags "intro" and "opened" so the three first-segment shapes cannot
+// share an entry.
+func (p *Podcast) groupCachePath(g SegmentGroup, idx int, model string) string {
+	if p.dir == "" || idx < 0 || idx >= len(g.Stories) || g.Stories[idx].ItemID == "" {
+		return ""
+	}
+	var ids strings.Builder
+	for _, s := range g.Stories {
+		ids.WriteString(s.ItemID)
+		ids.WriteByte('\x01')
+	}
+	open := ""
+	if o := g.Open; o != nil {
+		open = o.PartOfDay + "|" + o.Date + "|" + strconv.Itoa(o.Stories)
+		for _, h := range o.Lineup {
+			open += "|" + h.Source + "\x01" + h.Title
+		}
+	}
+	sum := sha256.Sum256([]byte(g.Stories[idx].ItemID + "\x00" + ids.String() + "\x00" +
+		strconv.Itoa(idx) + "\x00" + strings.TrimSpace(g.PrevTheme) + "\x00" +
+		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(g.Vibe) + "\x00" +
+		open + "\x00group"))
+	name := hex.EncodeToString(sum[:]) + ".txt"
+	// One level of fan-out, matching every other cache in this file.
 	return filepath.Join(p.dir, name[:2], name)
 }
