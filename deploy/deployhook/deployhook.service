@@ -1,0 +1,61 @@
+# deployhook — redeploy a site when its CI goes green on main.
+#
+# Install:  see deploy/deployhook/README in the package comment of main.go
+# Logs:     journalctl -u deployhook -f   (per-deploy transcripts in /var/log/deployhook)
+#
+# This process is reachable from the public internet through nginx, which is why
+# it runs as nobody in particular. It holds one capability — ask sudo to run one
+# of two allow-listed deploy scripts — and the sandbox below exists so that a
+# flaw in parsing an untrusted JSON body cannot become anything more than that.
+
+[Unit]
+Description=GitHub deploy webhook (deploy on green CI)
+Documentation=https://github.com/monstercameron/ArticleFlux/tree/main/deploy/deployhook
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=deployhook
+Group=deployhook
+
+ExecStart=/usr/local/bin/deployhook -config /etc/deployhook/config.json
+
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# --- hardening ---------------------------------------------------------------
+#
+# NoNewPrivileges is deliberately NOT set. It would break sudo — the one thing
+# this service exists to do — because sudo needs setuid to raise privilege at
+# all. The containment is therefore the sudoers allow-list, which names two
+# absolute script paths and permits nothing else, not this flag.
+NoNewPrivileges=no
+
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=no
+LockPersonality=yes
+RemoveIPC=yes
+
+# The deploy transcripts. Everything else on the filesystem is read-only to this
+# process, including the checkouts it triggers builds of — the build runs as root
+# through sudo, in a separate process, with its own rules.
+ReadWritePaths=/var/log/deployhook
+
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

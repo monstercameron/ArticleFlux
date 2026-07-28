@@ -1,0 +1,28 @@
+# Install as /etc/sudoers.d/deployhook, mode 0440, validated with visudo -c.
+#
+# This file IS the security boundary. deployhook receives an HTTP request from
+# the public internet, and the only thing standing between a flaw in that
+# handling and a root shell is the fact that sudo will run these two paths and
+# nothing else.
+#
+# Two rules about editing it:
+#
+#   * Never add a wildcard. `/opt/*/deploy/update.sh` looks equivalent and is
+#     not — a writable directory anywhere under the glob becomes a way to run
+#     arbitrary code as root.
+#   * Never add arguments the caller controls. The scripts named here take flags
+#     that change what gets built, and `--ref` in particular means "deploy this
+#     branch" — accepting one from a webhook payload would let anyone who can
+#     forge a signed request deploy any branch. deployhook passes only the fixed
+#     Args from its config file.
+#
+# The scripts themselves must be root-owned and not group-writable, or sudo is
+# handing root to whoever can edit them.
+
+deployhook ALL=(root) NOPASSWD: /opt/ArticleFlux/deploy/update.sh
+deployhook ALL=(root) NOPASSWD: /usr/local/bin/earlcameron-deploy
+
+Defaults:deployhook !requiretty
+# The env is not inherited: a PATH or LD_PRELOAD arriving from the HTTP process
+# would be inherited by a root build otherwise.
+Defaults:deployhook env_reset
