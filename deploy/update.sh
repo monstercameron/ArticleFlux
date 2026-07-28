@@ -59,6 +59,24 @@ systemctl cat "$SERVICE" >/dev/null 2>&1 || { echo "$SERVICE is not installed �
 avail_mb=$(df -Pm "$REPO" | awk 'NR==2 {print $4}')
 [ "$avail_mb" -gt 1500 ] || { echo "only ${avail_mb}MB free on $REPO — a build needs ~1.5GB"; exit 1; }
 note "$(free -m | awk 'NR==2 {print $2"MB RAM, "$7"MB available"}'), ${avail_mb}MB disk free"
+
+# A deployment checkout is not a workspace, but people edit files on it anyway —
+# a quick sed to unblock something at 3am, a chmod +x, a config tweak — and then
+# every future deploy dies on "your local changes would be overwritten by merge"
+# with the fix buried in git's advice rather than the script's.
+#
+# Stashed, not discarded. The change is recoverable by name and the deploy goes
+# through, which is the only combination that is both safe and unattended.
+stash_repo() {
+	if ! git -C "$1" diff --quiet || ! git -C "$1" diff --cached --quiet; then
+		msg="update.sh auto-stash $(date -Is)"
+		git -C "$1" stash push -m "$msg" >> "$LOG" 2>&1 || true
+		warn "$(basename "$1") had local changes — stashed as \"$msg\""
+		note "recover them with: git -C $1 stash list"
+	fi
+}
+stash_repo "$REPO"
+[ -d "$GWC/.git" ] && stash_repo "$GWC"
 note "current: $(cd "$REPO" && git log -1 --format='%h %s' 2>/dev/null | cut -c1-64)"
 done_ok "ready"
 
