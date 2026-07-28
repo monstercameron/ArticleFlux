@@ -17,6 +17,8 @@ set -euo pipefail
 # Recorded verbatim in the failure report: how the script was invoked is half of
 # what a reproduction needs, and it is the half nobody remembers.
 SCRIPT_ARGS="$*"
+ORIG_ARGS=("$@")
+SELF_HASH=$(sha256sum "$0" 2>/dev/null | cut -d" " -f1)
 
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
 GWC="${GWC_REPO:-/opt/GoWebComponents}"
@@ -115,6 +117,23 @@ if [ "$old_sha" = "$new_sha" ] && [ -z "$FORCE" ]; then
 	finish "Up to date"
 	exit 0
 fi
+# This script is one of the files it just pulled, and bash reads a script from
+# disk as it runs — so a run that updates update.sh keeps executing the old
+# copy, and the fix it just downloaded does not apply until somebody runs it
+# again. That is not theoretical: the commit that added the wasm_exec.js check
+# deployed a broken client anyway, because the check arrived in the same pull.
+#
+# Re-exec into the new version, once. AF_REEXEC stops a loop if the hash somehow
+# keeps changing, and exec replaces the process so the old copy's traps go with
+# it. The log restarts too, which is the price of running the right code.
+if [ "${AF_REEXEC:-}" != "1" ] && [ -n "$SELF_HASH" ]; then
+	if [ "$(sha256sum "$0" | cut -d' ' -f1)" != "$SELF_HASH" ]; then
+		note "update.sh itself changed in this pull — re-running the new version"
+		trap - EXIT INT TERM ERR
+		AF_REEXEC=1 exec bash "$0" "${ORIG_ARGS[@]}"
+	fi
+fi
+
 changed=$(git -C "$REPO" diff --name-only "$old_sha" "$new_sha" | wc -l)
 note "$(git -C "$REPO" log -1 --format='%h %s' | cut -c1-64)"
 note "${changed} file(s) changed since ${old_sha:0:8}"
