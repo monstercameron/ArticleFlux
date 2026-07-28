@@ -112,6 +112,16 @@ func init() {
 		// own policy one refusal at a time.
 		"notAllowed": "your account is not allowed to do that",
 
+		// --- first-run setup (§7.11)
+		//
+		// Byte-identical to the fallbacks in grpcsrv/setup.go, as the paired test
+		// requires. alreadySetUp is a refusal somebody reaches by bookmarking the
+		// setup URL or by racing a second browser, so it says what is true and
+		// what to do rather than reporting a failure.
+		"setupUsername": "choose a username of at least two characters",
+		"setupEmail":    "that does not look like an email address",
+		"alreadySetUp":  "this instance already has an account; sign in instead",
+
 		// --- sudo mode (§7.3)
 		//
 		// A password confirmation in front of the few actions that change who can

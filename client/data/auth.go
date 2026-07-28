@@ -202,6 +202,32 @@ func (c *Client) Login(parent context.Context, username, password string) (*pb.L
 // whether the server still honours it, and the alternative — assuming it is good
 // and letting the first real RPC fail — flashes the reader's furniture for a
 // moment before dropping to the login screen.
+// Setup claims a brand-new instance: it creates the first account and returns a
+// session, so the caller lands in the reader rather than at a login screen.
+//
+// The recovery codes come back in the response and NOWHERE else — they are
+// stored hashed — so a caller that drops this value has destroyed them. The
+// screen shows them before it hands the connection on.
+func (c *Client) Setup(parent context.Context, username, email, password string) (*pb.SetupResponse, error) {
+	// Longer than Login's fifteen seconds. Setup hashes a password with the
+	// instance's tuned Argon2id parameters AND writes a sheet of recovery codes,
+	// on a box whose cost was calibrated to take a quarter-second per hash on
+	// hardware that may be busier now than it was at boot.
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	res, err := c.auth.Setup(ctx, &pb.SetupRequest{
+		Username: username,
+		Email:    email,
+		Password: password,
+	})
+	if err != nil {
+		return nil, err
+	}
+	setToken(res.GetToken())
+	return res, nil
+}
+
 func (c *Client) WhoAmI(parent context.Context) (*pb.WhoAmIResponse, error) {
 	ctx, cancel := c.ctx(parent)
 	defer cancel()

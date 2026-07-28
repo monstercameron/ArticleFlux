@@ -46,6 +46,9 @@ type rootPhase int
 const (
 	phaseChecking rootPhase = iota
 	phaseLogin
+	// phaseSetup is a server with no accounts at all: there is nothing to log
+	// in to yet, so a password prompt would be a door with no room behind it.
+	phaseSetup
 	phaseReader
 )
 
@@ -120,7 +123,18 @@ func Root() ui.Node {
 				ui.PostAsync(func() { phase.Set(phaseLogin) })
 				return
 			}
-			_, err = c.WhoAmI(context.Background())
+			who, err := c.WhoAmI(context.Background())
+			// An unclaimed instance answers WhoAmI without an error and without
+			// an identity: nobody is signed in because nobody exists yet. That
+			// is setup, not login — and not the reader either, since there is no
+			// account whose preferences the fetch below could return.
+			if err == nil && who.GetNeedsSetup() {
+				ui.PostAsync(func() {
+					authed.Set(c)
+					phase.Set(phaseSetup)
+				})
+				return
+			}
 			// The saved view, fetched HERE rather than after the reader mounts.
 			//
 			// It used to be the reader's own first effect, which meant the reader
@@ -248,6 +262,19 @@ func Root() ui.Node {
 	switch phase.Get() {
 	case phaseReader:
 		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get()})
+	case phaseSetup:
+		child = ui.CreateElement(Setup, setupProps{
+			tunnel: tunnel,
+			onSuccess: func(c *data.Client) {
+				authed.Set(c)
+				// Straight to the reader, and deliberately without the prefs
+				// round trip the login path takes: an account created ten
+				// seconds ago has no saved view to wait for, and pausing on a
+				// fetch that can only return empty would add a stall to the one
+				// moment somebody is watching to see whether this thing works.
+				phase.Set(phaseReader)
+			},
+		})
 	case phaseLogin:
 		child = ui.CreateElement(Login, loginProps{
 			tunnel: tunnel,

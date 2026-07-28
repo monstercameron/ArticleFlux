@@ -196,8 +196,21 @@ func Reload() {}
 // the honest answer, for the same reason LocalGet gives.
 func LaunchParam(name string) string { return "" }
 
-func DropLaunchParams() {}
+// Path, Query and the history writers have no native equivalent either, for
+// LaunchParam's reason: there is no document and therefore no address. Path
+// answers "/" so that the route codec sees a bare address and falls through to
+// the saved place, which is the only source a native build could have.
+func Path() string  { return "/" }
+func Query() string { return "" }
+
+func PushPath(p string)    {}
+func ReplacePath(p string) {}
+
+func OnPopState(fn func()) Listener { return Listener{} }
 
 // SetThemeColor does nothing natively: there is no document, and therefore no
 // installed-app window chrome to paint.
 func SetThemeColor(hex string) {}
+
+// WriteClipboard does nothing natively: there is no clipboard to write to.
+func WriteClipboard(text string) {}

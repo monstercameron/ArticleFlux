@@ -2302,28 +2302,25 @@ func LaunchParam(name string) string {
 	return v.String()
 }
 
-// DropLaunchParams rewrites the address to the page's own path, keeping the
-// history entry.
+// DropLaunchParams is gone, and what replaced it is worth writing down.
 //
-// Called once, immediately after the launch parameters have been consumed, and
-// the reason is that they are an INSTRUCTION rather than a location. Left in the
-// bar, a reload would re-open the add-feed dialog with a URL the reader has
-// already dealt with, and — worse for a share target — the address the reader
-// shared would stay visible in the window title and in any screenshot they take
-// of the app afterwards.
+// It rewrote the address to `location.pathname` once the launch parameters had
+// been consumed, because they are an INSTRUCTION rather than a location: left in
+// the bar, a reload re-opens the add-feed dialog for an address the reader has
+// already dealt with, and a shared URL stays visible in the window title and in
+// every screenshot taken afterwards.
 //
-// replaceState rather than pushState: there is no state to go back to, and a
-// launch that added a history entry would make the back button a no-op that looks
-// broken.
-func DropLaunchParams() {
-	defer func() { _ = recover() }()
-	loc := js.Global().Get("location")
-	hist := js.Global().Get("history")
-	if !loc.Truthy() || !hist.Truthy() || !hist.Get("replaceState").Truthy() {
-		return
-	}
-	hist.Call("replaceState", js.Null(), "", loc.Get("pathname").String())
-}
+// All of that is still true and still done — by the address writer (§20.13b,
+// client/view/reader_route.go), which rewrites the bar from application state on
+// the first commit and never emits a launch parameter. Keeping this as well would
+// have been actively harmful rather than merely redundant: it discards the whole
+// query, and the query is where a resumed SEARCH lives (/search?q=…), so a reader
+// whose saved place was a search and who arrived via a share would have had their
+// own address truncated by the cleanup for somebody else's.
+//
+// The consuming read moved with it: client/view/reader.go captures readLaunch()
+// at MOUNT now, because the writer strips the query before the effect that used
+// to read it ever runs.
 
 // SetThemeColor rewrites the document's <meta name="theme-color">.
 //
@@ -2348,4 +2345,33 @@ func SetThemeColor(hex string) {
 		return
 	}
 	meta.Call("setAttribute", "content", hex)
+}
+
+// WriteClipboard copies text, and says nothing when it cannot.
+//
+// navigator.clipboard is unavailable on an insecure origin — which a
+// self-hosted instance reached over plain HTTP is — and it rejects when the
+// call is not tied to a user gesture. Both are conditions the caller cannot fix
+// and the reader cannot act on, so the failure is swallowed: the codes are on
+// screen either way, and a copy button that throws an error dialog over a
+// perfectly readable list has made things worse.
+func WriteClipboard(text string) {
+	nav := js.Global().Get("navigator")
+	if !nav.Truthy() {
+		return
+	}
+	cb := nav.Get("clipboard")
+	if !cb.Truthy() {
+		return
+	}
+	promise := cb.Call("writeText", text)
+	if !promise.Truthy() {
+		return
+	}
+	var onRejected js.Func
+	onRejected = js.FuncOf(func(js.Value, []js.Value) any {
+		onRejected.Release()
+		return nil
+	})
+	promise.Call("catch", onRejected)
 }
