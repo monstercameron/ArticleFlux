@@ -1384,13 +1384,23 @@ func (a *App) Preflight(ctx context.Context) error {
 	}
 
 	if !a.cfg.DevMode {
-		n, err := a.repo.CountUsers(ctx)
-		switch {
-		case err != nil:
+		// An instance with no accounts used to be a refusal to start, with a CLI
+		// command in the message. That is right for a server nobody can reach and
+		// wrong for the one case it actually happens in: a fresh deployment whose
+		// owner is looking at the URL right now. Refusing to boot means the only
+		// way to claim it is a shell, which makes the terminal part of the
+		// product for everyone who was handed a link.
+		//
+		// So it boots, serves the setup screen, and says so here — loudly,
+		// because an UNCLAIMED instance facing the internet is claimable by
+		// whoever finds it first, and the window should be minutes rather than
+		// however long it takes somebody to read a log.
+		if n, err := a.repo.CountUsers(ctx); err != nil {
 			problems = append(problems, fmt.Errorf("counting accounts: %w", err))
-		case n == 0:
-			problems = append(problems, errors.New(
-				"no accounts exist, so nobody can log in — run: articleflux init -user <name> -password <pass>"))
+		} else if n == 0 {
+			a.log.Warn("this instance has no account and is UNCLAIMED",
+				"what", "the setup screen is being served to anyone who can reach it",
+				"do", "open it and set a password now, or run: articleflux init -user <name> -password <pass>")
 		}
 	}
 

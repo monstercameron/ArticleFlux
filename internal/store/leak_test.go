@@ -56,6 +56,7 @@ const leakMarker = "TENANTB-LEAK-CANARY"
 // stops this from being a list someone forgets to update.
 var unscopedByDesign = map[string]string{
 	// Bootstrap: these run before any Scope can exist.
+	"CreateFirstUser":     "claims an instance that has no tenant and no user yet; it is the call that CREATES the first scope, so requiring one is circular (§7.11)",
 	"CreateTenantAndUser": "creates the tenant a Scope would name",
 	"AddUser":             "admin-level; the caller is the CLI, and there is no session yet",
 	"FirstUserScope":      "produces a Scope; cannot require one",

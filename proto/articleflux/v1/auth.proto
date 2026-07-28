@@ -26,6 +26,18 @@ service AuthService {
   // The token is returned once and never again — the server stores only its
   // SHA-256, so a database dump does not hand out live sessions (see
   // internal/secret on why tokens are hashed fast and passwords are not).
+  // Setup creates the first account on a brand-new instance.
+  //
+  // Unauthenticated by necessity — there is nobody to authenticate as yet — and
+  // refused the moment one account exists. That refusal is checked inside the
+  // creating transaction rather than before it: two browsers racing this on a
+  // fresh droplet must produce one superadmin and one FailedPrecondition, not
+  // two owners of the same instance.
+  //
+  // It answers with a session, so the first thing after setting a password is
+  // the reader rather than the login screen somebody just proved they can pass.
+  rpc Setup(SetupRequest) returns (SetupResponse);
+
   rpc Login(LoginRequest) returns (LoginResponse);
 
   // Logout revokes the calling session. Idempotent: logging out twice, or with a
@@ -199,6 +211,27 @@ message LogoutResponse {}
 
 message WhoAmIRequest {}
 
+message SetupRequest {
+  string username = 1;
+  // Stored, and honest about what it is for: this instance sends no mail. It
+  // identifies the account and it is what a future reset flow would need. The
+  // thing that actually recovers an account here is the codes below.
+  string email = 2;
+  string password = 3;
+}
+
+message SetupResponse {
+  string token = 1;
+  string expires_at = 2;
+  string username = 3;
+  string role = 4;
+  string device_id = 5;
+  string refresh_token = 6;
+  // Shown once and never again: they are stored hashed, so this response is the
+  // only moment they exist in readable form anywhere.
+  repeated string recovery_codes = 7;
+}
+
 message WhoAmIResponse {
   string username = 1;
   string role = 2;
@@ -209,4 +242,10 @@ message WhoAmIResponse {
   // failure this service was added to prevent, and it should be visible rather
   // than inferred.
   bool dev_mode = 4;
+  // needs_setup reports an instance with no accounts at all, so the client shows
+  // the setup screen instead of a password prompt nothing can satisfy. Answered
+  // to an unauthenticated caller on purpose: it is the one fact a stranger must
+  // know before they can become the owner, and it discloses only that the box is
+  // unclaimed.
+  bool needs_setup = 5;
 }

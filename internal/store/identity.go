@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,11 @@ type NewTenant struct {
 	Name     string
 	UserID   string
 	Username string
+	// Email is optional and unverified: this server sends no mail, so an
+	// address here identifies an account and nothing more. Stored anyway,
+	// because a reset flow that ever exists will need it and asking for it
+	// afterwards means asking somebody who has already forgotten.
+	Email    string
 	Hash     string
 	Role     string
 	Now      string
@@ -34,9 +40,9 @@ func (r *ReaderRepo) CreateTenantAndUser(ctx context.Context, t NewTenant) error
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO users (id,tenant_id,username,password_hash,role,created_at)
-			 VALUES (?,?,?,?,?,?)`,
-			t.UserID, t.TenantID, t.Username, t.Hash, t.Role, t.Now)
+			`INSERT INTO users (id,tenant_id,username,email,password_hash,role,created_at)
+			 VALUES (?,?,?,?,?,?,?)`,
+			t.UserID, t.TenantID, t.Username, nullIfEmpty(t.Email), t.Hash, t.Role, t.Now)
 		return err
 	})
 }
@@ -218,6 +224,52 @@ func (r *ReaderRepo) Identity(ctx context.Context, sc Scope) (username, role str
 		return "", "", ErrNotFound
 	}
 	return username, role, err
+}
+
+// CreateFirstUser bootstraps the instance, and reports whether it was this call
+// that did it.
+//
+// The count and the insert are ONE transaction, which is the entire reason this
+// exists next to CreateTenantAndUser. Reading the count in the handler and
+// writing here leaves a window where two setup requests both see zero and both
+// create an owner — on a fresh public droplet that is not a thought experiment,
+// it is a double-click. `false, nil` means somebody else got there first, which
+// is a refusal rather than an error: the instance is fine, it is just claimed.
+func (r *ReaderRepo) CreateFirstUser(ctx context.Context, t NewTenant) (bool, error) {
+	created := false
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM users WHERE deactivated_at IS NULL`).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO tenants (id,name,created_at) VALUES (?,?,?)`,
+			t.TenantID, t.Name, t.Now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO users (id,tenant_id,username,email,password_hash,role,created_at)
+			 VALUES (?,?,?,?,?,?,?)`,
+			t.UserID, t.TenantID, t.Username, nullIfEmpty(t.Email), t.Hash, t.Role, t.Now); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+// nullIfEmpty writes NULL rather than "" for an optional column, so "no email"
+// is one value in the database instead of two that every query has to know about.
+func nullIfEmpty(s string) any {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return s
 }
 
 // CountUsers reports how many live accounts exist.

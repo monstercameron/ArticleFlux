@@ -406,6 +406,18 @@ func (s *AuthServer) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.Logou
 func (s *AuthServer) WhoAmI(ctx context.Context, _ *pb.WhoAmIRequest) (*pb.WhoAmIResponse, error) {
 	sc, err := s.scopeOf(ctx)
 	if err != nil {
+		// A caller with no session on an instance with no accounts is not
+		// unauthenticated, it is EARLY: there is nothing yet to authenticate
+		// against. Saying so is what lets the client show setup instead of a
+		// password prompt that nothing could satisfy — the state a fresh
+		// deployment is in for exactly as long as it takes somebody to claim it.
+		//
+		// What this discloses to a stranger is that the box is unclaimed, which
+		// is the one fact they need in order to claim it, and which stops being
+		// true the moment anybody does.
+		if n, cErr := s.repo.CountUsers(ctx); cErr == nil && n == 0 {
+			return &pb.WhoAmIResponse{NeedsSetup: true, DevMode: s.devMode}, nil
+		}
 		return nil, toStatus(err)
 	}
 	username, role, err := s.repo.Identity(ctx, sc)

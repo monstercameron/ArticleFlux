@@ -244,6 +244,7 @@ var unscopedByDesign = map[string]string{
 	"SchemaVersion": "schema, not data",
 	// Identity bootstrap: these create or produce a Scope, so there is none to
 	// take. FirstUserScope is additionally gated on Config.DevMode.
+	"CreateFirstUser":     "claims an instance that has no tenant and no user yet; it is the call that CREATES the first scope, so requiring one is circular (§7.11)",
 	"CreateTenantAndUser": "creates the tenant and its first user; no scope exists yet",
 	"ScopeForSession":     "produces a Scope from a session token",
 	"FirstUserScope":      "produces the dev Scope; gated on DevMode + loopback",

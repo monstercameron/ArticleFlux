@@ -73,7 +73,12 @@ func DefaultPolicy() *authz.Map {
 	//     when there is none.
 	//   - CheckHealth is a health check. One that requires a credential is one no
 	//     load balancer can use.
+	//   - Setup is public because there is nobody to authenticate as until it
+	//     runs, and it refuses itself the moment one account exists — the
+	//     refusal is inside the creating transaction, not in this map. A
+	//     capability check here would be a capability nobody could hold.
 	m.Public(
+		auth+"Setup",
 		auth+"Login",
 		auth+"Logout",
 		auth+"WhoAmI",
