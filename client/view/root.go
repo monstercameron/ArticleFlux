@@ -4,6 +4,7 @@ package view
 
 import (
 	"context"
+	"strings"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
@@ -50,6 +51,14 @@ const (
 	// in to yet, so a password prompt would be a door with no room behind it.
 	phaseSetup
 	phaseReader
+	// phaseHome is the front door at `/home` (see client/view/home.go).
+	//
+	// It is decided from the ADDRESS, before WhoAmI, and that ordering is the
+	// whole point: a visitor who has never had an account should not wait on a
+	// round trip that can only answer "nobody" before they are allowed to read
+	// what this is. It is also why the page has no signed-in variant — it is a
+	// document, and a signed-in reader who typed the address wanted the document.
+	phaseHome
 )
 
 func Root() ui.Node {
@@ -260,6 +269,8 @@ func Root() ui.Node {
 	// slot sequence and is safe.
 	var child ui.Node
 	switch phase.Get() {
+	case phaseHome:
+		child = ui.CreateElement(Home)
 	case phaseReader:
 		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get()})
 	case phaseSetup:
@@ -331,7 +342,31 @@ func Root() ui.Node {
 // first RPC, or that RPC goes out anonymously.
 func initialPhase() rootPhase {
 	data.LoadToken()
+	// The one address that is not the reader. Checked here rather than in
+	// parseRoute because it is not a place inside the reader — it decides which
+	// application mounts, not what that application is looking at.
+	if isHomePath(platform.BasePath(), platform.Path()) {
+		return phaseHome
+	}
 	return phaseChecking
+}
+
+// isHomePath reports whether an address asks for the front door.
+//
+// Base-relative, like every other address in this client (see routePath): an
+// instance mounted under /reader/ serves the page at /reader/home, and hard-coding
+// "/home" would be correct on exactly one deployment shape. Pure, so it is
+// testable without a browser.
+func isHomePath(base, path string) bool {
+	if base == "" {
+		base = "/"
+	}
+	if base != "/" {
+		if trimmed := strings.TrimPrefix(path, strings.TrimSuffix(base, "/")); trimmed != path {
+			path = trimmed
+		}
+	}
+	return strings.Trim(path, "/") == homePath
 }
 
 // bootSplash is what shows while the stored token is being validated.

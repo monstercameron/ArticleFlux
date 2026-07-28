@@ -92,6 +92,7 @@ func Sheet() {
 	helpCSS(r)
 	feedSettingsCSS(r)
 	loginCSS(r)
+	homeCSS(r)
 	categoriesCSS(r)
 	glyphs(r)
 	mobile(r)

@@ -134,7 +134,24 @@ sudo certbot --nginx -d YOUR-DOMAIN    # writes the ssl_certificate lines
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Open `https://YOUR-DOMAIN`. You should get the login screen.
+Open `https://YOUR-DOMAIN`. You should get the login screen, and
+`https://YOUR-DOMAIN/home` the front door that explains the thing.
+
+**One block in that file serves files rather than proxying them.** `/shots/` is
+the homepage's screenshots — about 4 MB of JPEG, unchanged between builds — and
+nginx reads them straight off `/opt/articleflux/bin/web/shots/` with `sendfile`
+instead of waking the Go process for each one. Two things have to be true for it
+to work, and both are true after step 3:
+
+- **nginx can read the directory.** `/opt/articleflux` is owned by
+  `articleflux:articleflux` at the default `0755`, so `www-data` can read it. It
+  is deliberately not `chmod 700` like `/var/lib/articleflux` — nothing secret
+  lives in the web root. Check with
+  `sudo -u www-data ls /opt/articleflux/bin/web/shots/`.
+- **The path matches your install prefix.** If you put the binary somewhere other
+  than `/opt/articleflux`, change the `alias` in that block too. A wrong alias is
+  a 404 on every screenshot and nothing else, so the page still loads and only
+  looks broken.
 
 Certbot installs its own renewal timer. Confirm it: `systemctl list-timers | grep certbot`.
 
