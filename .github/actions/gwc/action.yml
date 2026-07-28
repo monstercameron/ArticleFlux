@@ -1,8 +1,14 @@
 # Materialise the GoWebComponents checkout that go.mod's replace points at.
 #
 # D0: `replace github.com/monstercameron/GoWebComponents/v5 => ../GoWebComponents`,
-# because v5.0.0 was never tagged or published. Every job in every workflow needs
-# that directory to exist before it can build anything, and the obvious spelling
+# because v5.0.0 was never tagged or published. That is still why the replace
+# exists, but the ref below is now a TAG rather than the `v5` branch: v5.0.1 was
+# tagged on 2026-07-28, and a branch is a moving target — CI pointed at one
+# re-tests a different library every time upstream commits, so a red run cannot be
+# told apart from a red change. Bumping this is a decision somebody makes, the same
+# argument as STATICCHECK_VERSION in ci.yml.
+# Every job in every workflow needs that directory to exist before it can build
+# anything, and the obvious spelling
 #
 #     uses: actions/checkout@v4
 #     with: { repository: …/GoWebComponents, path: ../GoWebComponents }
@@ -22,7 +28,7 @@ inputs:
   ref:
     description: Branch or tag of GoWebComponents to build against.
     required: false
-    default: v5
+    default: v5.0.1
   token:
     description: >
       Token for the checkout. Only needed if GoWebComponents is private — the
