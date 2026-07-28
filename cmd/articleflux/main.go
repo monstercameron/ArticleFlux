@@ -29,7 +29,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
-	"github.com/monstercameron/ArticleFlux/internal/opml"
 	"github.com/monstercameron/ArticleFlux/internal/seedread"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -958,17 +957,10 @@ func importOPML(log *slog.Logger, args []string) error {
 		return errors.New("import: -file is required")
 	}
 
-	f, err := os.Open(*file)
+	data, err := os.ReadFile(*file)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	doc, err := opml.Parse(f)
-	if err != nil {
-		return fmt.Errorf("import %s: %w", *file, err)
-	}
-	log.Info("parsed", "title", doc.Title, "feeds", len(doc.Feeds), "folders", len(doc.Folders))
 
 	ctx := context.Background()
 	a, err := app.Open(ctx, app.Config{
@@ -985,58 +977,33 @@ func importOPML(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	// The OPML folders become categories, resolved once each rather than per
-	// feed: a 144-feed export from FreshRSS has perhaps eight of them, and
-	// resolving inside the loop would be 144 writes to create eight rows.
-	//
-	// This is the one place a category arrives as a NAME. Everywhere else the
-	// client holds ids from ListFolders, which is why FolderByName lives on the
-	// service rather than being how filing works generally.
-	folderIDs := map[string]string{}
-	for _, feed := range doc.Feeds {
-		if feed.Folder == "" {
-			continue
-		}
-		if _, ok := folderIDs[feed.Folder]; ok {
-			continue
-		}
-		id, err := a.Service().FolderByName(ctx, sc, feed.Folder)
-		if err != nil {
-			// An unusable folder name must not cost the feeds inside it: they
-			// import unfiled, which is recoverable, where skipping them is not.
-			log.Warn("category skipped", "name", feed.Folder, "err", err)
-			continue
-		}
-		folderIDs[feed.Folder] = id
+	// The migration itself lives on the service (F1), not here. It used to live
+	// in this function, which is why the only importer for the first year was
+	// one that needed a shell on the server — the RPC behind Settings › Data
+	// runs this same call, so the two cannot drift into disagreeing about what
+	// an OPML file means.
+	res, err := a.Service().ImportOPML(ctx, sc, data)
+	if err != nil {
+		return fmt.Errorf("import %s: %w", *file, err)
 	}
-
-	var added, shared, failed int
-	for _, feed := range doc.Feeds {
-		_, existed, err := a.Service().SubscribeOnly(ctx, sc, feed.FeedURL, feed.Title, feed.SiteURL,
-			folderIDs[feed.Folder])
-		if err != nil {
-			// One bad row must not abort a 144-feed migration.
-			log.Warn("skipped", "title", feed.Title, "url", feed.FeedURL, "err", err)
-			failed++
-			continue
-		}
-		added++
-		if existed {
-			shared++
-		}
+	log.Info("imported", "title", res.Title, "subscribed", res.Subscribed,
+		"already_subscribed", res.AlreadySubscribed, "already_on_server", res.Shared,
+		"categories", res.Folders, "skipped", res.SkipCount())
+	for _, s := range res.Skips {
+		log.Warn("skipped", "title", s.Title, "url", s.URL, "err", s.Reason)
 	}
-	log.Info("imported", "subscribed", added, "already_known", shared, "skipped", failed)
 
 	if !*fetch {
 		log.Info("feeds will fill in as the poller runs; pass -fetch to wait")
 		return nil
 	}
-	res, err := a.Service().Refresh(ctx, sc, nil)
+	fetched, err := a.Service().Refresh(ctx, sc, nil)
 	if err != nil {
 		return err
 	}
-	log.Info("fetched", "sources", res.Polled, "new_items", res.NewItems, "errors", len(res.Errors))
-	for _, e := range res.Errors {
+	log.Info("fetched", "sources", fetched.Polled, "new_items", fetched.NewItems,
+		"errors", len(fetched.Errors))
+	for _, e := range fetched.Errors {
 		log.Warn("feed error", "detail", e)
 	}
 	return nil
@@ -1064,16 +1031,13 @@ func exportOPML(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	feeds, _, err := a.Service().ListFeeds(ctx, sc)
+	// The service's exporter, for importOPML's reason — and because it is the
+	// one that carries categories. This function used to write feeds flat,
+	// which made the round trip lossy in exactly the way that matters to
+	// somebody who spent an evening filing 151 feeds.
+	data, n, err := a.Service().ExportOPML(ctx, sc)
 	if err != nil {
 		return err
-	}
-
-	doc := &opml.Document{Title: "ArticleFlux"}
-	for _, f := range feeds {
-		doc.Feeds = append(doc.Feeds, opml.Feed{
-			Title: f.Title, FeedURL: f.FeedURL, SiteURL: f.SiteURL,
-		})
 	}
 
 	out := io.Writer(os.Stdout)
@@ -1085,11 +1049,11 @@ func exportOPML(log *slog.Logger, args []string) error {
 		defer fh.Close()
 		out = fh
 	}
-	if err := opml.Write(out, doc); err != nil {
+	if _, err := out.Write(data); err != nil {
 		return err
 	}
 	if *file != "" {
-		log.Info("exported", "feeds", len(doc.Feeds), "file", *file)
+		log.Info("exported", "feeds", n, "file", *file)
 	}
 	return nil
 }

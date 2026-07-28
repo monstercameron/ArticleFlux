@@ -23,6 +23,10 @@ func init() {
 		"tab.smart":    "Smart+",
 		"tab.classify": "Classification",
 		"tab.feeds":    "Feeds",
+		// Named for what it holds rather than for what you do to it. "Import"
+		// would be half the tab, and somebody looking for the way OUT — which is
+		// the half that matters when you are leaving — would not look under it.
+		"tab.data":     "Data",
 		"tab.account":  "Account",
 		"tab.server":   "Server",
 		"tab.activity": "Activity",

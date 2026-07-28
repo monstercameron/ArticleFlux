@@ -30,11 +30,16 @@ func init() {
 		"unread":         "Unread",
 		"later":          "Read later",
 		"liked":          "Liked",
-		// No "disliked": a list of things you decided were not worth your time is
-		// not somewhere anyone goes, so it is deliberately not a stream (see
-		// specialRow in panes.go). The list header still names the scope —
-		// list.subDisliked — because the palette can reach it.
-		"notes":   "Notes",
+		// "disliked" has a NAME but no rail row. A list of things you decided were
+		// not worth your time is not somewhere anyone goes, so it is deliberately
+		// not offered as a destination (see specialRow in panes.go) — but it is a
+		// scope the application can be IN, and since §20.13b every scope the
+		// application can be in has an address (/disliked), which means it needs a
+		// header. Naming it is not the same as advertising it; the alternative was
+		// a titleless header or a scope the URL codec had to classify as something
+		// it is not, and that second one is the bug that lost My Feed's resume.
+		"disliked": "Disliked",
+		"notes":    "Notes",
 		"unfiled": "Unfiled",
 	})
 }

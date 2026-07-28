@@ -210,8 +210,19 @@ demo: deps
 	@# gzip (see below), and an unstamped loader asks for app.wasm first — a 404
 	@# in the console of every stranger who opens the demo, on every load, for a
 	@# file that is deliberately not here. Same idea as the sw.js stamp under it.
-	@sed "s|const MODULE = 'app.wasm';|const MODULE = 'app.wasm.gz';|" web/index.html > $(DEMO)/index.html
+	@# The <base href> is stamped in the same pass, and for a related reason.
+	@# The served app declares `/` because it answers at every route (§20.13b), so
+	@# a relative asset URL on a deep link would resolve under that route. A static
+	@# host has no SPA fallback and therefore no deep links, but it DOES publish
+	@# under a project-page prefix — so `/` would send every asset request to the
+	@# wrong origin root, which is the failure the relative manifest paths below
+	@# were already written to avoid.
+	@sed -e "s|const MODULE = 'app.wasm';|const MODULE = 'app.wasm.gz';|" \
+	     -e 's|<base href="/">|<base href="./">|' web/index.html > $(DEMO)/index.html
 	@grep -q "const MODULE = 'app.wasm.gz';" $(DEMO)/index.html || { 	  echo "index.html has no 'const MODULE = ...' line to stamp — the demo would 404 on every boot"; 	  exit 1; }
+	@grep -q '<base href="./">' $(DEMO)/index.html || { \
+	  echo 'index.html has no `<base href="/">` line to stamp — the demo would resolve every asset against the origin root, not the project page'; \
+	  exit 1; }
 	@# sw.js, with its cache identity STAMPED — the one file the demo does not
 	@# ship verbatim, and the reason is a failure that is invisible for weeks.
 	@#

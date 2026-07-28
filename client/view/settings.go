@@ -49,6 +49,7 @@ const (
 	setSmart      settingsTab = "smart"
 	setClassify   settingsTab = "classify"
 	setFeeds      settingsTab = "feeds"
+	setData       settingsTab = "data"
 	setAccount    settingsTab = "account"
 	setServer     settingsTab = "server"
 	setActivity   settingsTab = "activity"
@@ -86,6 +87,13 @@ var settingsTabs = []struct {
 	{setSmart, glyphShared},
 	{setClassify, glyphClassify},
 	{setFeeds, glyphFeeds},
+	// Straight after Feeds, because it is the same subject at a different
+	// scale: Feeds is the subscription list as a thing to act on, and this is
+	// the subscription list as a thing to carry in or out. It is also the tab a
+	// new reader needs FIRST and almost never again, so it sits where somebody
+	// arriving with an export file will scan for it rather than at the end
+	// behind five operational screens.
+	{setData, glyphAdd},
 	{setAccount, "◑"},
 	{setServer, glyphHealth},
 	{setActivity, "≡"},
@@ -161,6 +169,11 @@ type settingsProps struct {
 	// other tab reads any of it, and settingsProps is already long enough to be
 	// scanned rather than read.
 	myFeed myFeedProps
+	// data is the Data tab's state: the last import's report and whichever
+	// press is in flight. Grouped for `smart`'s reason — no other tab reads any
+	// of it, and settingsProps is already long enough to be scanned rather than
+	// read.
+	data dataProps
 	// classify is the Classification tab's state: which category slugs this
 	// reader has hidden. See classifySettingsProps for why there is nothing else
 	// here — no per-category counts and no live Smart+ egress flags, because
@@ -232,6 +245,8 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 		body = settingsClassify(tr, p.classify)
 	case setFeeds:
 		body = settingsFeeds(tr, p)
+	case setData:
+		body = settingsData(tr, p.data)
 	case setAccount:
 		body = settingsAccount(tr, p)
 	case setServer:

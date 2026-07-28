@@ -2118,6 +2118,32 @@ func mobile(r func(string, string) css.Rule) {
 	// is emphasis on a message that stands without it.
 	css.Global(".set-note-live[data-bad='true']", r("border-left-color", "var(--neg)"))
 
+	// --- the Data tab's skip list (F1) ---
+	//
+	// One row per OPML entry that did not become a subscription. Stacked rather
+	// than laid out in columns like .set-fact: the reason is a sentence from the
+	// server of unpredictable length, and a URL is long and unbreakable, so a
+	// two-column row would either wrap into a mess or ellipsise away the part
+	// somebody needs to retype.
+	css.Global(".imp-skip",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "2px"),
+		r("padding", "8px 0"), r("border-bottom", "1px solid var(--hair)"),
+		r("font-size", "13px"),
+	)
+	css.Global(".imp-skip-name", r("color", "var(--cream)"), r("overflow-wrap", "anywhere"))
+	// The address is data rather than prose, and it is there to be copied — so
+	// it takes .fs-url's treatment: selectable whole, and allowed to break
+	// anywhere, because feed URLs are long and have no spaces to break on.
+	css.Global(".imp-skip-url",
+		r("font-size", "11.5px"), r("color", "var(--mute)"),
+		r("overflow-wrap", "anywhere"), r("user-select", "all"),
+	)
+	css.Global(".imp-skip-why",
+		r("font-family", "var(--rd)"), r("font-size", "12px"),
+		r("line-height", "1.5"), r("color", "var(--soft)"),
+		r("overflow-wrap", "anywhere"),
+	)
+
 	// --- My Feed: the interest model, shown and corrected (§18.2, §18.9) ---
 	//
 	// A row here carries two lines of EVIDENCE and a four-way dial, which is more

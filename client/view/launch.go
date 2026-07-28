@@ -11,18 +11,26 @@ import (
 
 // What an installed app was opened FOR (§20.24).
 //
-// # This is not the beginning of client-side routing
+// # This was once the only thing that read the address
 //
-// The application resumes from a PREFERENCE, not from a URL (§20.13, A30): the
-// scope, its argument and the open article are server-side state, so the same
-// reader lands in the same place on a laptop and a phone. A URL that also decided
-// what to show would be a second answer to a question that already has one, and
-// the two would disagree the first time somebody bookmarked a link.
+// It said so, at length: "this is not the beginning of client-side routing", on
+// the grounds that a URL and a saved preference would be two answers to one
+// question and would disagree the first time somebody bookmarked a link.
+//
+// They do disagree, and the answer turned out to be to DECIDE THE PRECEDENCE
+// rather than to have only one of them — see client/view/route.go for what
+// having only one of them cost. Since §20.13b the path is read too: an address
+// that names somewhere outranks the resume, and a bare address resumes exactly as
+// before. That change leaves everything in this file working as it did, because
+// a launcher's address IS bare — `/?view=unread` has no path — so these
+// parameters are still read, still acted on once, and still removed.
 //
 // A manifest has no other channel. `shortcuts` and `share_target` say what they
 // want in the query string because that is all a launcher can send, so this reads
 // three named parameters, acts on them once, and then removes them from the
-// address — which is what keeps them an INSTRUCTION rather than a location.
+// address — which is what keeps them an INSTRUCTION rather than a location. A
+// route, by contrast, stays in the bar: that is the difference between the two,
+// and it is why they are still separate readers rather than one.
 //
 // # A launch outranks the resume, and only for this launch
 //

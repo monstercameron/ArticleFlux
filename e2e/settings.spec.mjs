@@ -1,31 +1,39 @@
 import { test, expect, boot } from './fixtures.mjs';
 
 /**
- * The nine settings tabs, each asserted to render ITS OWN content.
+ * Every settings tab, each asserted to render ITS OWN content.
  *
  * client/view/settings.go keys `.set-panel` on the active tab specifically so
  * switching tabs replaces the element rather than patching it — which is also
- * what lets the panel's entrance animation run again. A Go `switch` with nine
- * cases can still have two of them return the same thing by accident (a
+ * what lets the panel's entrance animation run again. A Go `switch` with a case
+ * per tab can still have two of them return the same thing by accident (a
  * copy-paste of the wrong case, an early return that never reaches its branch),
- * and nothing renders that mistake more legibly than nine really being nine on
- * screen.
+ * and nothing renders that mistake more legibly than every tab being on screen.
  *
- * Content is compared rather than asserted against fixed copy: hardcoding nine
+ * Content is compared rather than asserted against fixed copy: hardcoding the
  * strings here would make every wording pass in Go's own tests fail here too,
  * for a reason that has nothing to do with what this file is supposed to catch
- * (nine DISTINCT panels), which is the "transcription instead of reasoning"
- * trap CLAUDE.md warns about, applied to nine strings instead of one.
+ * (DISTINCT panels), which is the "transcription instead of reasoning" trap
+ * CLAUDE.md warns about.
+ *
+ * The list is the tabs in settingsTabs order, and it is kept in step by hand —
+ * which is the point: a tab added in Go and forgotten here fails the count
+ * assertion below rather than going untested. It went stale once (this file
+ * asserted nine while the surface had grown to twelve), so the count is checked
+ * against the DOM rather than against itself.
  */
 
-const TABS = ['reading', 'appearance', 'listening', 'smart', 'feeds', 'account', 'server', 'activity', 'speed'];
+const TABS = [
+  'reading', 'myfeed', 'appearance', 'listening', 'podcast', 'smart', 'classify',
+  'feeds', 'data', 'account', 'server', 'activity', 'speed',
+];
 
 test.describe('settings', () => {
   test.afterEach(async ({ page }) => {
     await page.keyboard.press('Escape').catch(() => {});
   });
 
-  test('all nine tabs render, and each shows content none of the others do', async ({ page }) => {
+  test('every tab renders, and each shows content none of the others do', async ({ page }) => {
     await boot(page);
     await page.keyboard.press(',');
     await expect(page.locator('.set-tabs')).toBeVisible();

@@ -2017,14 +2017,63 @@ func Origin() string {
 // site entirely and asked github.io for a favicon service that is not there,
 // nine times per page load.
 //
-// Derived from the document's own address rather than configured, so a build
-// does not have to be told where it will be mounted.
+// # Read from the document's declared base, not guessed from its address
+//
+// This used to take location.pathname up to the last "/", which was exact for as
+// long as the app had exactly one address. Client-side routing (§20.13b) ended
+// that: the server serves this same document for /feed/<id> and every other
+// route, so the pathname-derived answer on a deep link is "/feed/" — and every
+// favicon request would go to /feed/favicon, which is not the favicon endpoint
+// and resolves through the SPA fallback to the app shell, delivered as an image.
+//
+// web/index.html declares `<base href>` for the same reason (see the comment
+// there — without it the wasm module itself 404s on a deep link), so the browser
+// has already been told the answer. document.baseURI is that answer, resolved:
+// it is the <base href> when there is one and the document address when there is
+// not, which makes the fallback below the OLD behaviour rather than a second
+// guess. A page with no base tag behaves exactly as it did.
 func BasePath() string {
+	doc := js.Global().Get("document")
+	if doc.Truthy() {
+		if u := doc.Get("baseURI"); u.Type() == js.TypeString && u.String() != "" {
+			if p := pathOfURL(u.String()); p != "" {
+				return dirOf(p)
+			}
+		}
+	}
 	loc := js.Global().Get("location")
 	if !loc.Truthy() {
 		return "/"
 	}
-	path := loc.Get("pathname").String()
+	return dirOf(loc.Get("pathname").String())
+}
+
+// pathOfURL pulls the path out of an absolute URL without net/url.
+//
+// baseURI is always absolute ("https://host/reader/"), and the parts before the
+// path are exactly "scheme://authority". Parsing it properly would mean pulling
+// net/url into the one package that is meant to be a thin syscall/js seam, to
+// answer a question that is one index away.
+func pathOfURL(u string) string {
+	i := strings.Index(u, "://")
+	if i < 0 {
+		return u
+	}
+	rest := u[i+3:]
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		p := rest[j:]
+		// A query or fragment on the base is meaningless and would end up in every
+		// asset URL built on it.
+		if k := strings.IndexAny(p, "?#"); k >= 0 {
+			p = p[:k]
+		}
+		return p
+	}
+	return "/"
+}
+
+// dirOf is the directory part of a path, with a trailing slash.
+func dirOf(path string) string {
 	if i := strings.LastIndexByte(path, '/'); i >= 0 {
 		path = path[:i+1]
 	}
@@ -2223,10 +2272,15 @@ func Reload() {
 //
 // It exists for exactly one caller: an installed app being launched from a
 // manifest shortcut or as a share target, both of which say what they want in the
-// query string because that is the only channel a manifest has. The application
-// has no client-side routing otherwise (§20.13 resumes from a preference, not
-// from a URL), and this is deliberately not the beginning of one — it reads named
-// parameters, it does not parse a path, and nothing else calls it.
+// query string because that is the only channel a manifest has.
+//
+// This used to add that the application had no client-side routing and that this
+// was deliberately not the beginning of one. It has one now (§20.13b — see
+// history_wasm.go in this package and client/view/route.go), and the two do not
+// overlap: routing parses the PATH and leaves it in the bar, this reads named
+// QUERY parameters and strips them, because one is a location and the other is an
+// instruction. Query is what the route codec reads for `?q=`; this stays separate
+// from it so a launch cannot be mistaken for a destination.
 //
 // An absent parameter and an empty one are both "". The distinction has no
 // meaning here: `?url=` is a share of nothing.

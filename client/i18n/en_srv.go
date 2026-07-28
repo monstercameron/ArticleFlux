@@ -71,6 +71,17 @@ func init() {
 		// and the sync API get.
 		"clientTooOld": "refusing: articleflux:client-too-old",
 
+		// --- migration (F1)
+		//
+		// Three refusals about the FILE rather than about the import, because
+		// that is what the reader can act on: all three are fixed by picking a
+		// different file, and none of them means the import is broken. Named
+		// separately for the usual reason — "not an OPML list" sends somebody
+		// back to their old reader's export screen, and "too large" does not.
+		"opmlEmpty":   "that file was empty",
+		"opmlTooBig":  "that file is too large to import — a subscription list is normally a few dozen kilobytes",
+		"opmlNotOPML": "that file is not an OPML subscription list — export one from your old reader and pick that",
+
 		// --- Smart+
 		"badApiKeyShape":       "that does not look like an OpenAI API key — they begin with sk-",
 		"saveModelFailed":      "couldn't save the model",
