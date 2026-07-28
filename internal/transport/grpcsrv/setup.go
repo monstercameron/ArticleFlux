@@ -115,8 +115,10 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	}
 
 	token := idgen.Token()
-	device := strings.TrimSpace(req.GetUsername())
-	device = idgen.DeviceID()
+	// A fresh server-side ID, not anything derived from what the caller sent. An
+	// earlier draft seeded this from the username, which would have made the
+	// device identifier guessable from a name the reader chose in public.
+	device := idgen.DeviceID()
 	expires := now.Add(SessionTTL)
 	if err := s.repo.CreateSession(ctx, store.NewSession{
 		SessionID: idgen.New(),

@@ -145,23 +145,42 @@ func TestPreflightCatchesMailboxesWithNoEncryptionKey(t *testing.T) {
 // Someone setting up a droplet usually has more than one thing wrong at once,
 // and a one-at-a-time boot loop is a miserable way to find that out.
 func TestPreflightReportsEveryProblemAtOnce(t *testing.T) {
+	// An empty web root is two faults, not one: no page, and no module behind
+	// it. Both must appear in a single error.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// No account (not DevMode) AND no wasm module.
 	a := openFor(t, Config{WebRoot: dir})
 
 	err := a.Preflight(t.Context())
 	if err == nil {
-		t.Fatal("an instance with no account and no module passed preflight")
+		t.Fatal("an instance with no client build passed preflight")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "no accounts exist") {
-		t.Errorf("the missing account is not reported: %v", err)
+	if !strings.Contains(msg, "index.html") {
+		t.Errorf("the missing page is not reported: %v", err)
 	}
 	if !strings.Contains(msg, "app.wasm") {
 		t.Errorf("the missing module is not reported: %v", err)
+	}
+}
+
+// A fresh deployment has no account, and that is the ONE case where refusing to
+// boot is wrong: the setup screen is how an account gets created, so a server
+// that will not start until one exists can only be claimed through a shell.
+//
+// This test guards the direction of that decision. It was previously asserted
+// the other way round — a missing account failed preflight — which was correct
+// until first-run setup existed and is a boot loop now.
+func TestPreflightAllowsAnUnclaimedInstanceToBoot(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"index.html", "app.wasm"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := openFor(t, Config{WebRoot: dir})
+
+	if err := a.Preflight(t.Context()); err != nil {
+		t.Fatalf("an unclaimed instance must boot so setup can be reached, got: %v", err)
 	}
 }
 
