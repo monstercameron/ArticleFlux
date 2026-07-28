@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# ArticleFlux — what is this box doing, and what is wrong with it.
+#
+#   sudo /opt/ArticleFlux/deploy/diagnose.sh          # checks, in words
+#   sudo /opt/ArticleFlux/deploy/diagnose.sh --json   # the same state, for an agent
+#   sudo /opt/ArticleFlux/deploy/diagnose.sh --agent  # a ready-made handoff prompt
+#
+# Exits non-zero when a check fails, so it can be the thing a monitor calls.
+#
+# The failure reports written by install.sh and update.sh describe a moment that
+# has passed. This describes now, and it exists because the first question asked
+# of a sick server is always the same list — is the process up, is it answering,
+# is nginx passing WebSockets, is the disk full, what did the log say — and
+# typing that list from memory at 2am is how steps get skipped.
+set -uo pipefail
+
+REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
+GWC="${GWC_REPO:-/opt/GoWebComponents}"
+HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
+ORIGIN="${ARTICLEFLUX_ORIGIN:-http://$(hostname -I | awk '{print $1}')}"
+SCRIPT_ARGS="$*"
+
+MODE=human
+case "${1:-}" in
+	--json) MODE=json ;;
+	--agent) MODE=agent ;;
+	-h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+# Sourced for json_str/write_report, but its EXIT trap is not wanted here: this
+# script reports failures rather than being one.
+LOG="${LOG:-/tmp/articleflux-diagnose.$$.log}"
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+trap - EXIT INT TERM
+
+if [ "$MODE" = json ] || [ "$MODE" = agent ]; then
+	REPORT_DIR=$(mktemp -d)
+	REPORT="$REPORT_DIR/state.json"
+	STEP_NAME='(diagnose, no failure)'
+	journalctl -u articleflux -n 60 --no-pager -o short-iso > "$LOG" 2>/dev/null || true
+	write_report 0 0
+	if [ "$MODE" = json ]; then
+		cat "$REPORT"
+	else
+		cat <<EOF
+Fix this ArticleFlux server. It is a self-hosted Go + WebAssembly feed reader:
+a single binary behind nginx, SQLite at /var/lib/articleflux, systemd unit
+"articleflux" with Restart=always and a health watchdog timer. The checkout is
+at $REPO and its sibling library at $GWC (go.mod uses a replace directive, so
+both must be present to build).
+
+Useful commands: journalctl -u articleflux -n 100 --no-pager
+                 systemctl status articleflux --no-pager
+                 sudo $REPO/deploy/update.sh --verbose
+                 sudo $REPO/deploy/rollback.sh --list
+
+Current state follows as JSON. Any previous deploy failure is at
+/var/log/articleflux/last-failure.json.
+
+$(cat "$REPORT")
+EOF
+	fi
+	rm -rf "$REPORT_DIR" "$LOG"
+	exit 0
+fi
+
+# --- human ------------------------------------------------------------------
+fails=0
+check() { # check <label> <ok?> <detail>
+	if [ "$2" = "0" ]; then
+		printf '  %s✓%s %-34s %s%s%s\n' "$C_GRN" "$C_OFF" "$1" "$C_DIM" "${3:-}" "$C_OFF"
+	else
+		printf '  %s✗%s %-34s %s%s%s\n' "$C_RED" "$C_OFF" "$1" "$C_YEL" "${3:-}" "$C_OFF"
+		fails=$((fails + 1))
+	fi
+}
+
+printf '\n%s%sArticleFlux%s on %s %s%s%s\n\n' "$C_BLD" "$C_CYN" "$C_OFF" "$(hostname)" "$C_DIM" "$(date -Is)" "$C_OFF"
+
+state=$(systemctl is-active articleflux 2>/dev/null)
+[ "$state" = active ]; check "service running" $? "$state, $(systemctl show -p NRestarts --value articleflux 2>/dev/null) restarts, up $(systemctl show -p ActiveEnterTimestamp --value articleflux 2>/dev/null | cut -c1-19)"
+
+[ "$(systemctl is-enabled articleflux 2>/dev/null)" = enabled ]; check "starts at boot" $? "$(systemctl show -p Restart --value articleflux 2>/dev/null) on exit"
+
+[ "$(systemctl is-active articleflux-health.timer 2>/dev/null)" = active ]; check "health watchdog armed" $? "$(systemctl list-timers articleflux-health.timer --no-pager 2>/dev/null | awk 'NR==2{print "next in "$3" "$4}')"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$HEALTH" 2>/dev/null)
+[ "$code" = 200 ]; check "server answers /healthz" $? "HTTP $code on $HEALTH"
+
+if systemctl is-active --quiet nginx; then
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1/ 2>/dev/null)
+	[ "$code" = 200 ]; check "nginx serves the client" $? "HTTP $code through :80"
+
+	# The upgrade, tested rather than assumed. Every RPC rides this one socket,
+	# so a proxy that answers 200 for / and drops Upgrade produces a page that
+	# loads perfectly and does nothing at all — the hardest failure to see.
+	ws=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+		-H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+		-H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+		-H "Origin: $ORIGIN" http://127.0.0.1/grpc 2>/dev/null)
+	[ "$ws" = 101 ]; check "WebSocket upgrade through nginx" $? "HTTP $ws (want 101) with Origin: $ORIGIN"
+	nginx -t >/dev/null 2>&1; check "nginx config valid" $? "$(nginx -v 2>&1)"
+else
+	check "nginx running" 1 "inactive — nothing is serving :80"
+fi
+
+free_mb=$(df -Pm "$REPO" | awk 'NR==2{print $4}')
+[ "$free_mb" -gt 500 ]; check "disk has room" $? "${free_mb}MB free (a build needs ~1500MB)"
+
+avail_mb=$(free -m | awk 'NR==2{print $7}')
+[ "$avail_mb" -gt 150 ]; check "memory available" $? "${avail_mb}MB available, $(free -m | awk 'NR==3{print $3}')MB swap used"
+
+db="${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}"
+[ -f "$db" ]; check "database present" $? "$([ -f "$db" ] && du -h "$db" | cut -f1) at $db"
+
+[ -d "$GWC/.git" ]; check "GoWebComponents checkout" $? "$(git -C "$GWC" log -1 --format='%h %s' 2>/dev/null | cut -c1-40)"
+
+printf '\n%s  deployed  %s%s\n' "$C_DIM" "$(git -C "$REPO" log -1 --format='%h %s' 2>/dev/null | cut -c1-58)" "$C_OFF"
+printf '%s  built     %s%s\n' "$C_DIM" "$(date -r "$REPO/bin/articleflux" '+%Y-%m-%d %H:%M' 2>/dev/null)" "$C_OFF"
+
+errs=$(journalctl -u articleflux --since '1 hour ago' -p err --no-pager -o cat 2>/dev/null | wc -l)
+if [ "$errs" -gt 0 ]; then
+	printf '\n%s  %s error line(s) in the last hour:%s\n' "$C_YEL" "$errs" "$C_OFF"
+	journalctl -u articleflux --since '1 hour ago' -p err --no-pager -o cat 2>/dev/null | tail -5 | sed 's/^/    /'
+fi
+
+if [ -f /var/log/articleflux/last-failure.json ]; then
+	printf '\n%s  a previous deploy failed: /var/log/articleflux/last-failure.json (%s)%s\n' \
+		"$C_YEL" "$(date -r /var/log/articleflux/last-failure.json '+%Y-%m-%d %H:%M')" "$C_OFF"
+fi
+
+if [ "$fails" -gt 0 ]; then
+	printf '\n%s%s%s check(s) failed.%s Hand the state to an agent with:\n' "$C_RED" "$C_BLD" "$fails" "$C_OFF"
+	printf '  %ssudo %s --agent%s\n\n' "$C_DIM" "$0" "$C_OFF"
+	exit 1
+fi
+printf '\n%s%sAll checks passed.%s\n\n' "$C_GRN" "$C_BLD" "$C_OFF"

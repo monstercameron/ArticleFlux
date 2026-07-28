@@ -1,0 +1,32 @@
+# ArticleFlux — the watchdog that notices what systemd cannot.
+#
+# Install:  sudo systemctl enable --now articleflux-health.timer
+# Logs:     journalctl -u articleflux-health
+#
+# systemd restarts a process that EXITS. It has nothing to say about a process
+# that is still running and no longer answering — a deadlock, a wedged database
+# handle, a goroutine leak that ate the box — and on an unattended droplet those
+# look exactly like uptime. This asks the server the only question that matters,
+# over the same loopback port nginx uses, and restarts it when the answer stops
+# coming.
+#
+# It also finishes the job articleflux.service cannot: when a crash loop trips
+# the start-limit, the unit stays failed until something clears it. That
+# something is `systemctl reset-failed` below, which is why a broken deploy
+# recovers on its own the moment the cause goes away.
+
+[Unit]
+Description=ArticleFlux health check and recovery
+Documentation=https://github.com/monstercameron/ArticleFlux
+After=articleflux.service
+
+[Service]
+Type=oneshot
+# Two tries thirty seconds apart, because one failed probe is not evidence. A
+# restart drops every open WebSocket tunnel and every reader mid-article with
+# it, so the bar for pulling that lever is "twice, a poll cycle apart", not "a
+# request timed out while the poller was fetching a slow publisher".
+ExecStart=/usr/local/bin/articleflux-health
+
+[Install]
+WantedBy=multi-user.target

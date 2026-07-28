@@ -89,7 +89,53 @@ The full reasoning behind any entry lives in the commit message; this file is th
   fonts above: an instance shipping spans to an endpoint nobody configured has had a network
   decision made on the reader's behalf.
 
+### Added
+
+- **A landing page, at `/welcome`.** The origin has only ever opened onto a password prompt, which
+  answers "what is this?" with "log in". The page is the reader's own three-pane layout with the
+  pitch typeset inside it as an article — same palette, same faces, same per-source hue running
+  through the rail and the row edges — so the thing being described is doing the describing. It is
+  deliberately not mounted at `/`: an existing account arriving at the origin wants their articles,
+  not a pitch for software they already run.
+
+- **`deploy/install.sh`, `update.sh`, `rollback.sh`, `diagnose.sh`.** A bare Ubuntu box to a running
+  reader in one command, and every subsequent deploy in another. `update.sh` builds before it stops
+  anything, backs the database up with `sqlite3 .backup` before it migrates (WAL means `cp` of the
+  `.db` alone misses committed data), and holds the outgoing binary until the incoming one has
+  answered `/healthz` **and** returned 200 through nginx — rolling both back automatically if either
+  check fails. `install.sh` is written to be run twice, so a run that dies at step 7 is fixed by
+  fixing the cause and running it again.
+
+- **Every deploy failure writes a report a machine can read.** `/var/log/articleflux/last-failure.json`
+  carries the step, the exact command, the exit code, the line, 80 lines of build output, the journal
+  tail, the deployed commit, and the box's memory and disk — because the terminal has always scrolled
+  away by the time anybody looks, and "build failed, exit 1" moves a problem rather than describing
+  one. `diagnose.sh --agent` emits the same state with the context an agent needs to act on it.
+
+- **A health watchdog that restarts the server when it stops answering.** systemd restarts a process
+  that *exits*; it has nothing to say about one that is running and wedged, which on an unattended
+  box is indistinguishable from uptime. `articleflux-health.timer` probes `/healthz` every two
+  minutes, requires two failures thirty seconds apart before pulling a lever that costs every reader
+  their open tunnel, snapshots the state *before* restarting (a restart destroys the evidence that
+  explains it), and logs whether the restart actually helped.
+
 ### Fixed
+
+- **Setup told readers to check a server that was working.** A refused signup on the live instance
+  reported "Couldn't sign in. Check the server is running and try again." The server was running: it
+  had refused the password for a stated reason and answered `InvalidArgument` saying so, which
+  `loginMessage`'s default branch maps to generic login copy. Every refusal this endpoint makes for a
+  *reason* — a password under twelve characters, an address with no `@`, an instance already claimed —
+  arrived as that sentence. `setupMessage` resolves those codes through the same `ErrorDetail` key
+  every other refusal uses, and the twelve-character rule is now stated under the field rather than
+  discovered by breaking it.
+
+- **`StartLimitIntervalSec` and `StartLimitBurst` were under `[Service]`, where systemd ignores them.**
+  They are `[Unit]` keys. The unit logged "Unknown key name ... ignoring" on every reload and applied
+  no rate limit at all, so the documented crash-loop protection did not exist. Moved, and paired with
+  `Restart=always` (`on-failure` leaves the reader down when the process exits zero for a reason
+  nobody intended) and the health watchdog above, which clears an exhausted start limit — the limit is
+  now a pause rather than a grave.
 
 - **Two migrations claimed version 0024, so every `migrate` failed on a UNIQUE constraint** — the
   store tests could not open a database at all. The version is the number in the filename; the

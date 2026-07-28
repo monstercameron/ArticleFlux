@@ -22,6 +22,19 @@ Documentation=https://github.com/monstercameron/ArticleFlux
 After=network-online.target
 Wants=network-online.target
 
+# A crash loop should be loud, and it must not be terminal. The burst limit
+# stops a broken binary from restarting every five seconds forever, so
+# `systemctl status` shows a failed unit — but reaching that limit means the
+# service stays dead until a human logs in, which on a self-hosted box can be
+# weeks. articleflux-health.timer clears the failed state and tries again a few
+# minutes later, so the limit is a pause rather than a grave.
+#
+# These two are [Unit] keys, not [Service] keys. They lived under [Service] here
+# until 2026-07-28, where systemd logged "Unknown key name ... ignoring" on every
+# reload and applied no limit at all — a rate limit that silently did not exist.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
 [Service]
 Type=simple
 User=articleflux
@@ -47,13 +60,14 @@ ExecStartPre=/opt/articleflux/bin/articleflux migrate -db /var/lib/articleflux/a
 # articles for free. 0600, owned by articleflux — it is an API key that bills.
 EnvironmentFile=-/etc/articleflux/articleflux.env
 
-Restart=on-failure
+# always, not on-failure. on-failure leaves the reader down when the process
+# exits ZERO for a reason nobody intended — a panic recovered into a clean
+# return, an OOM killer's SIGKILL that systemd reads as success on some kernels,
+# a stray SIGTERM from a script. The distinction between "crashed" and "stopped
+# without being asked to" is not one this unit can make correctly, and the wrong
+# guess costs an unattended box its reader until somebody notices.
+Restart=always
 RestartSec=5s
-# A crash loop should be loud, not infinite. Five failures in a minute stops the
-# unit, so `systemctl status` shows a failed service rather than a service that
-# has been restarting every five seconds for a week.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # SIGTERM is what cmd/articleflux traps for graceful shutdown: it stops
 # accepting, drains for up to five seconds, and closes the database cleanly. The

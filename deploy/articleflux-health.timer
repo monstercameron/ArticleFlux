@@ -1,0 +1,20 @@
+# Runs the health check every two minutes.
+#
+# Two minutes is the worst case a reader waits for a wedged server to come back
+# on its own, and it is chosen against the cost of the cure: a restart is not
+# free, so probing every ten seconds would turn a slow publisher into an outage.
+
+[Unit]
+Description=Check ArticleFlux is answering, every two minutes
+Documentation=https://github.com/monstercameron/ArticleFlux
+
+[Timer]
+# Three minutes after boot: long enough that a cold start running migrations on
+# a large database is not mistaken for a hang and restarted mid-migration.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=articleflux-health.service
+
+[Install]
+WantedBy=timers.target
