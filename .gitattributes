@@ -8,6 +8,13 @@
 # Files whose endings are not negotiable.
 *.go        text eol=lf
 *.sql       text eol=lf
+# Shell scripts run on the deployment box, and a CR at the end of the shebang
+# line is a "bad interpreter: /usr/bin/env bash^M" that names the wrong problem.
+# These are edited on Windows and executed on Ubuntu, so the ending is not a
+# per-machine preference.
+*.sh        text eol=lf
+*.service   text eol=lf
+*.timer     text eol=lf
 *.proto     text eol=lf
 *.md        text eol=lf
 *.yaml      text eol=lf
