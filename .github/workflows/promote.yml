@@ -1,0 +1,105 @@
+# Promote dev to main.
+#
+# The branch policy in CONTRIBUTING.md, made mechanical: work lands on `dev`, and `main`
+# advances only by promotion once the gates pass.
+#
+# Running this DEPLOYS. deployhook watches for CI going green on main and redeploys the
+# box when it does, so a promotion is not a merge convenience — it is the release. That is
+# why this is a manual trigger with a typed confirmation and never runs on push.
+
+name: Promote dev to main
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "promote" to release dev to main (this deploys)'
+        required: true
+        default: ""
+
+# Never two promotions at once, and never cancel one halfway: the second half of this
+# pushes a ref, and a cancelled push is a worse state than a slow one.
+concurrency:
+  group: promote-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  confirm:
+    name: Confirm intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the confirmation word
+        # Through env rather than spliced into the script. A `${{ }}` inside a run block is
+        # substituted before the shell sees it, so an input carrying shell metacharacters
+        # would execute as code.
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "promote" ]; then
+            echo "::error::type 'promote' in the confirm box to release dev to main"
+            exit 1
+          fi
+
+  # Not "CI was green on dev at some point" — the gates run again here, on the tree being
+  # promoted. Calling ci.yml rather than restating its steps is what stops promotion from
+  # drifting into a weaker check than the one every push gets.
+  gates:
+    name: Quality gates
+    needs: confirm
+    uses: ./.github/workflows/ci.yml
+
+  promote:
+    name: Fast-forward main
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The ancestry check below is meaningless against a shallow clone.
+          fetch-depth: 0
+          ref: dev
+
+      - name: Fast-forward main to dev
+        run: |
+          set -euo pipefail
+          git fetch origin main dev
+
+          dev_sha="$(git rev-parse origin/dev)"
+          main_sha="$(git rev-parse origin/main)"
+          echo "dev  $dev_sha"
+          echo "main $main_sha"
+
+          if [ "$dev_sha" = "$main_sha" ]; then
+            echo "main already matches dev — nothing to promote."
+            exit 0
+          fi
+
+          # Fast-forward only. If main carries commits dev does not, someone committed
+          # straight to main — which the policy forbids — and merging here would bury the
+          # evidence under a merge commit instead of surfacing it.
+          if ! git merge-base --is-ancestor "$main_sha" "$dev_sha"; then
+            echo "::error::main is not an ancestor of dev — refusing to promote."
+            echo "These commits are on main but not dev, which means something landed there directly:"
+            git log --oneline "$dev_sha..$main_sha" || true
+            exit 1
+          fi
+
+          echo "promoting:"
+          git log --oneline "$main_sha..$dev_sha"
+
+          git push origin "$dev_sha:refs/heads/main"
+          echo "main is now $dev_sha"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Promoted \`dev\` → \`main\`"
+            echo ""
+            echo "CI now runs on \`main\`. When it goes green, **deployhook redeploys the box**."
+          } >> "$GITHUB_STEP_SUMMARY"

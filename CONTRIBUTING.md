@@ -144,6 +144,26 @@ omitting them.
 - The wasm bundle is ratcheted against `wasm-baseline.txt`. Growing it more than 5% fails the build.
   If the growth is deliberate, bump the baseline in the same commit and say why.
 
+## Branches
+
+Two, and no others. **`dev` is where work lands. `main` is releases.** There are no feature or
+topic branches — commit dev work straight to `dev`.
+
+`main` moves in exactly one way: by promoting `dev` once the gates pass. Run
+**Actions → Promote dev to main**, and type `promote` to confirm. It re-runs the whole of
+`ci.yml` against the tree being promoted — not against a remembered green run — and then
+**fast-forwards only**. If `main` holds commits `dev` does not, it refuses and prints them,
+because the only way that happens is something landing on `main` directly.
+
+**Promoting deploys.** `deployhook` redeploys the box when CI goes green *on `main`*, so
+promotion is the release, not a merge tidy-up. It is a manual, typed-confirmation action for
+that reason. CI runs on `dev` too, but deployhook acknowledges and ignores every branch but
+its configured one, so a green `dev` never touches the box.
+
+Worth setting once in the repository settings: protect `main` against direct pushes. The
+workflow enforces this for anything that goes through it; branch protection is what stops a
+`git push origin main` from going around it.
+
 ## Commit messages
 
 Look at `git log` before writing one. The house style is a plain subject line followed by **prose

@@ -14,8 +14,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `dev` is where work lands and `main` is releases, so both are gated. Running CI
+    # on dev costs a runner and nothing else: deployhook acts on workflow_run for its
+    # configured branch only and acknowledges-then-ignores everything else, so a green
+    # dev never touches the box. A green MAIN does, which is the point of promoting.
+    branches: [main, dev]
   pull_request:
+  # promote.yml runs this exact workflow before it will fast-forward main, so a
+  # promotion cannot be held to a weaker standard than an ordinary push.
+  workflow_call:
 
 permissions:
   contents: read
