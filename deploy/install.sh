@@ -128,7 +128,12 @@ if ! id "$OWNER" >/dev/null 2>&1; then
 	note "created system user $OWNER (no shell, no password)"
 fi
 install -d -o "$OWNER" -g "$OWNER" -m 0700 "$DATA"
-install -d -o root -g root -m 0750 "$BACKUPS"
+# Owned by the service account, not root: the nightly backup runs as
+# articleflux and VACUUMs INTO this directory. Created root-owned, it fails with
+# "unable to open database file: permission denied" — a message about SQLite for
+# a problem that is entirely about a chown. root writes here regardless, which is
+# how update.sh keeps its rollback points alongside.
+install -d -o "$OWNER" -g "$OWNER" -m 0750 "$BACKUPS"
 install -d -m 0755 /var/log/articleflux
 install -d -o "$OWNER" -g "$OWNER" -m 0755 /var/cache/articleflux-go
 done_ok "directories ready"
@@ -179,8 +184,12 @@ sed -e "s#/opt/articleflux#$REPO#g" \
     -e "s#/var/lib/articleflux#$DATA#g" \
     "$REPO/deploy/articleflux.service" > /etc/systemd/system/articleflux.service
 
+# The backup unit carries the same example paths as the main one, so it gets the
+# same substitution. Copied verbatim, it fails with 203/EXEC on a case-sensitive
+# filesystem — /opt/articleflux is not /opt/ArticleFlux.
 for u in articleflux-health.service articleflux-health.timer articleflux-backup.service articleflux-backup.timer; do
-	[ -f "$REPO/deploy/$u" ] && cp "$REPO/deploy/$u" "/etc/systemd/system/$u"
+	[ -f "$REPO/deploy/$u" ] || continue
+	sed -e "s#/opt/articleflux#$REPO#g" -e "s#/var/lib/articleflux#$DATA#g" 	    "$REPO/deploy/$u" > "/etc/systemd/system/$u"
 done
 install -m 755 "$REPO/deploy/articleflux-health.sh" /usr/local/bin/articleflux-health
 install -m 755 "$REPO/deploy/update.sh" /usr/local/bin/articleflux-update 2>/dev/null || true
