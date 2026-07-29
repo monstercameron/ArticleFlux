@@ -226,6 +226,13 @@ func prose(e ast.Expr) (string, bool) {
 // "true", "Enter", and every glyph — which are the four kinds of literal that
 // legitimately live in this package.
 //
+// And a command line, which is the fifth. The front door prints a terminal
+// transcript (client/view/home.go's homeBuilt), and this guard demanded that
+// `articleflux init -db … -user cam` be routed through the catalog — where a
+// translation would produce a command that does not run. The short lines
+// ("build", "seed", "dev") passed only because they are one word each, so the
+// rule was already inconsistent about the same kind of literal.
+//
 // A single capitalised word like "Feeds" slips through this net. That is a
 // known and accepted gap: tightening it to catch one-word labels would also
 // catch every action id and CSS class in the file, and a guard that cries wolf
@@ -245,8 +252,11 @@ func looksLikeCopy(s string) bool {
 		// One word, and copy only if it ends like a sentence.
 		return strings.ContainsAny(t[len(t)-3:], ".!?…")
 	}
-	// Multi-word. Require at least two runs of letters, so "1 2 3" and
-	// "▲ ▼" are not copy.
+	// Multi-word, and a command line first: see above.
+	if hasFlagWord(t) {
+		return false
+	}
+	// Require at least two runs of letters, so "1 2 3" and "▲ ▼" are not copy.
 	words := 0
 	inWord := false
 	for _, r := range t {
@@ -261,4 +271,32 @@ func looksLikeCopy(s string) bool {
 		}
 	}
 	return words >= 2
+}
+
+// hasFlagWord reports whether any word is a command-line flag: a leading `-` or
+// `--` followed by a letter.
+//
+// One signal, not a shell parser, and chosen because it is the one thing UI copy
+// essentially never contains while every non-trivial command line does. A path
+// is deliberately NOT a second signal: "Stored under /var/lib" is prose that
+// happens to name a directory, and it should be translated.
+//
+// The near misses are why this reads a word at a time rather than searching for
+// " -": an em dash is not a hyphen, so "Sign in — it's free" is untouched,
+// "well-known" does not begin with one, "-5 items" has a digit after it, and a
+// bare "-" bullet has nothing after it at all.
+func hasFlagWord(s string) bool {
+	for _, w := range strings.Fields(s) {
+		if !strings.HasPrefix(w, "-") {
+			continue
+		}
+		rest := strings.TrimLeft(w, "-")
+		if rest == "" {
+			continue
+		}
+		if unicode.IsLetter([]rune(rest)[0]) {
+			return true
+		}
+	}
+	return false
 }
