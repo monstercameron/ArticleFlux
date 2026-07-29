@@ -41,13 +41,43 @@ User=articleflux
 Group=articleflux
 
 WorkingDirectory=/opt/articleflux
+# BEFORE DNS AND TLS EXIST — reachable directly at http://<droplet-ip>:9000
+#
+# Three things change together here and none of them is optional, which is why
+# they are spelled out rather than left as "just bind 0.0.0.0":
+#
+#   -addr 0.0.0.0:9000   nothing is in front, so the app takes the public port
+#                        itself. Bound to loopback it answers only the box.
+#   -origin http://…     the tunnel compares the browser's Origin against this
+#                        allowlist. Reaching the app by IP makes that Origin
+#                        http://<ip>:9000, so an allowlist naming a hostname
+#                        refuses every WebSocket upgrade — and that failure is
+#                        the nastiest kind, because the page loads perfectly and
+#                        then no data ever arrives.
+#   no -behind-proxy     that flag tells the server to trust X-Forwarded-For.
+#                        With nothing in front of it, the CLIENT sets those
+#                        headers, so trusting them means trusting a stranger
+#                        about their own address.
+#
+# Put this droplet's IP in -origin below. Swap all three back the moment a
+# hostname and a certificate exist: this serves the application over plaintext,
+# and a session token in the clear is fine for an IP nobody has bookmarked and
+# not fine for anything else.
 ExecStart=/opt/articleflux/bin/articleflux serve \
-    -addr 127.0.0.1:9000 \
+    -addr 0.0.0.0:9000 \
     -db /var/lib/articleflux/articleflux.db \
     -web /opt/articleflux/bin/web \
-    -origin https://reader.example.com \
-    -behind-proxy \
+    -origin http://167.99.232.99:9000 \
     -poll 15m
+
+# The behind-nginx form, for when DNS and TLS are done — swap the two blocks.
+# ExecStart=/opt/articleflux/bin/articleflux serve \
+#     -addr 127.0.0.1:9000 \
+#     -db /var/lib/articleflux/articleflux.db \
+#     -web /opt/articleflux/bin/web \
+#     -origin https://reader.example.com \
+#     -behind-proxy \
+#     -poll 15m
 
 # Migrations run before the server takes traffic. serve migrates on open anyway,
 # so this is belt and braces — but a schema change that fails here fails the

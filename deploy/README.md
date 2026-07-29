@@ -228,6 +228,111 @@ worth knowing both rather than relying on either:
 The right place for server configuration is the unit and `EnvironmentFile=`. `.env` is a
 development convenience; leave it on the development machine.
 
+## What deploys what — the whole topology, in one place
+
+One box runs two sites and one deployer. Getting this wrong is not a broken build,
+it is a promotion that appears to succeed and changes nothing anybody can see, so
+it is written out rather than inferred from three scripts.
+
+```
+GitHub                        the droplet
+------                        -----------
+promote dev -> main
+      |
+      v
+CI runs on main
+      |
+      | workflow_run: completed + success
+      v
+  deployhook  --sudo systemd-run-->  /opt/ArticleFlux/deploy/update.sh   (unit deploy-articleflux)
+              --sudo systemd-run-->  /usr/local/bin/earlcameron-deploy    (unit deploy-earlcameron)
+                                          |
+                                          v  (delegates when the repo ships one)
+                                     PersonalWebsiteMid2026/deploy/update.sh
+                                          |
+                                          +-- pulls  PersonalWebsiteMid2026  @ $SITE_REF      (main)
+                                          +-- pulls  CashFlux                @ $CASHFLUX_REF  (main)
+                                          +-- pulls  GoWebComponents         @ $GWC_REF       (PINNED TAG)
+                                          +-- builds, stages a release, health-checks, swaps, rolls back on failure
+```
+
+**deployhook fires on `workflow_run`, never on `push`.** A push means code arrived;
+a green CI run on `main` means it is worth serving, and those are different moments.
+It additionally requires the run's own triggering event to be `push` or
+`workflow_dispatch`, because a `workflow_run` from a pull request carries the PR's
+merge commit rather than the branch tip — deploying that ships code that is not on
+main.
+
+**Exactly two commands are authorised**, by complete command line, in
+`deploy/deployhook/sudoers`. That file is the security boundary; read its own
+warnings before touching it.
+
+### The config, and the third target that is missing
+
+`deployhook -config` takes one file, and each target is keyed on **repo + workflow
+name + branch**. All three matter: both repositories name their workflow `CI`, so
+the repo is what disambiguates them, and a target that omitted it would let either
+site deploy the other.
+
+```json
+{
+  "addr": "127.0.0.1:9500",
+  "log_dir": "/var/log/deployhook",
+  "targets": [
+    { "repo": "monstercameron/ArticleFlux",           "workflow": "CI", "branch": "main",
+      "secret": "...", "command": "/usr/bin/systemd-run",
+      "args": ["--pipe","--wait","--collect","--unit=deploy-articleflux",
+               "--property=TimeoutStartSec=1800","/opt/ArticleFlux/deploy/update.sh"] },
+
+    { "repo": "monstercameron/PersonalWebsiteMid2026", "workflow": "CI", "branch": "main",
+      "secret": "...", "command": "/usr/bin/systemd-run",
+      "args": ["--pipe","--wait","--collect","--unit=deploy-earlcameron",
+               "--property=TimeoutStartSec=1800","/usr/local/bin/earlcameron-deploy"] },
+
+    { "repo": "monstercameron/CashFlux",               "workflow": "CI", "branch": "main",
+      "secret": "...", "command": "/usr/bin/systemd-run",
+      "args": ["--pipe","--wait","--collect","--unit=deploy-earlcameron",
+               "--property=TimeoutStartSec=1800","/usr/local/bin/earlcameron-deploy"] }
+  ]
+}
+```
+
+**The third target is the one to add, and its absence is a real gap.** The portfolio
+*embeds* CashFlux and builds it from `$CASHFLUX_REF`, which is `main`. So promoting
+CashFlux to main puts new code where the site would pick it up — and then nothing
+picks it up, because no webhook target names CashFlux. The site keeps serving the
+previous build until somebody promotes the *website* or runs a deploy by hand. It
+needs no new sudoers line: `earlcameron-deploy` is already authorised, and it
+rebuilds from all three checkouts whichever repository caused it to run.
+
+Add the webhook in the CashFlux repository's settings pointed at the same endpoint,
+with that repo's own secret, `Content-Type: application/json`, and **"Let me select
+individual events" → Workflow runs** — not "Just the push event", which this hook
+ignores on purpose.
+
+### What each promotion actually deploys
+
+| Promoting… | Deploys | Does **not** deploy |
+|---|---|---|
+| **ArticleFlux** → main | the ArticleFlux box (`/opt/ArticleFlux`) | anything on earlcameron.com — the portfolio does not embed ArticleFlux and its `go.mod` has no require for it |
+| **PersonalWebsiteMid2026** → main | earlcameron.com, rebuilt from all three checkouts | ArticleFlux |
+| **CashFlux** → main | *nothing today* — see the missing target above | — |
+| **GoWebComponents** → main | *nothing, by design* | — `$GWC_REF` is a pinned tag, not `main` |
+
+**`GWC_REF` being a pinned tag is deliberate and is the one ref that should stay
+pinned.** It is a library with a major-version contract that two dependants resolve
+through relative `replace` directives; tracking its `main` would mean an unrelated
+library commit could change what the site serves without anybody promoting anything.
+Moving it is a deliberate edit to `deploy/lib.sh` in the portfolio, and that is the
+correct amount of friction.
+
+If ArticleFlux is ever embedded in the portfolio the way CashFlux is, three things
+change together and none of them are optional: a `replace` in the portfolio's
+`go.mod`, an `ARTICLEFLUX_REF` pull in its `deploy/update.sh`, and a fourth
+deployhook target. Until all three exist, the row above stays true.
+
+---
+
 ## Updating
 
 ```bash
