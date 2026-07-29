@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -73,8 +74,23 @@ type Config struct {
 	// Addr is the loopback address to listen on. nginx is in front.
 	Addr string `json:"addr"`
 	// LogDir receives one file per deploy attempt.
-	LogDir  string   `json:"log_dir"`
-	Targets []Target `json:"targets"`
+	LogDir string `json:"log_dir"`
+	// StatusToken is a GitHub token with `repo:status`, used to report the
+	// outcome of a deploy back onto the commit it deployed.
+	//
+	// Optional, and everything works without it — but without it a deploy
+	// failure is INVISIBLE from GitHub, and that is the single most expensive
+	// property this service has. The webhook answers 202 the moment it accepts
+	// the job and the deploy runs afterwards, so a delivery that says
+	// "deploying …" is a delivery that says nothing about whether the deploy
+	// worked. On 2026-07-29 a portfolio deploy failed three times in a row
+	// while every delivery in GitHub's log showed a green 202, and the only
+	// record of the truth was a file on the box that nobody had reason to open.
+	//
+	// With a token, a failed deploy is a red check beside the commit, where
+	// somebody is already looking.
+	StatusToken string   `json:"status_token"`
+	Targets     []Target `json:"targets"`
 }
 
 // hookPayload is the subset of GitHub's workflow_run event this needs. Decoding
@@ -103,6 +119,9 @@ type runner struct {
 	last    map[string]string
 	logDir  string
 	log     *slog.Logger
+	// token reports outcomes back to GitHub. Empty disables reporting; see
+	// Config.StatusToken for why that is a worse place to be than it sounds.
+	token string
 }
 
 func main() {
@@ -126,6 +145,11 @@ func main() {
 		last:    map[string]string{},
 		logDir:  cfg.LogDir,
 		log:     log,
+		token:   cfg.StatusToken,
+	}
+	if cfg.StatusToken == "" {
+		log.Warn("no status_token configured: deploy FAILURES will not be visible in GitHub — " +
+			"the webhook's 202 says the job was accepted, never that it succeeded")
 	}
 
 	mux := http.NewServeMux()
@@ -380,6 +404,7 @@ func (r *runner) run(t *Target, sha, runURL string) {
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(f, "\nFAILED TO START: %v\n", err)
 		r.finish(t.Repo, "failed to start: "+err.Error(), logPath)
+		r.report(t.Repo, sha, "error", "deploy did not start: "+err.Error())
 		return
 	}
 
@@ -393,11 +418,13 @@ func (r *runner) run(t *Target, sha, runURL string) {
 			fmt.Fprintf(f, "\nFAILED after %s: %v\n", took, err)
 			r.log.Error("deploy failed", "repo", t.Repo, "sha", short(sha), "took", took, "log", logPath)
 			r.finish(t.Repo, fmt.Sprintf("failed after %s (%v)", took, err), logPath)
+			r.report(t.Repo, sha, "failure", fmt.Sprintf("deploy failed after %s — see %s on the box", took, logPath))
 			return
 		}
 		fmt.Fprintf(f, "\nOK in %s\n", took)
 		r.log.Info("deployed", "repo", t.Repo, "sha", short(sha), "took", took, "log", logPath)
 		r.finish(t.Repo, fmt.Sprintf("ok in %s at %s", took, short(sha)), logPath)
+		r.report(t.Repo, sha, "success", fmt.Sprintf("deployed in %s", took))
 	case <-time.After(deployTimeout):
 		// Kill it. A build that has hung past the timeout holds the per-target
 		// lock, and a held lock means every later green build is silently
@@ -406,6 +433,7 @@ func (r *runner) run(t *Target, sha, runURL string) {
 		fmt.Fprintf(f, "\nTIMED OUT after %s — killed\n", deployTimeout)
 		r.log.Error("deploy timed out", "repo", t.Repo, "log", logPath)
 		r.finish(t.Repo, "timed out after "+deployTimeout.String(), logPath)
+		r.report(t.Repo, sha, "failure", "deploy timed out after "+deployTimeout.String())
 	}
 }
 
@@ -414,6 +442,61 @@ func (r *runner) finish(repo, result, logPath string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.last[repo] = fmt.Sprintf("%s — %s (%s)", time.Now().UTC().Format(time.RFC3339), result, logPath)
+}
+
+// report posts the deploy's outcome onto the commit it deployed.
+//
+// This is the whole answer to "the webhook said 200, so it deployed" — it did
+// not; 202 means the job was accepted. A commit status is the one place where a
+// deploy failure appears next to the thing that caused it, in a UI somebody
+// already has open.
+//
+// Best-effort by design. A token that has expired, a rate limit, a network blip:
+// none of them may turn a SUCCESSFUL deploy into a failed one, so every error
+// here is logged and swallowed. The deploy already happened; this is reporting.
+func (r *runner) report(repo, sha, state, description string) {
+	if r.token == "" || repo == "" || sha == "" {
+		return
+	}
+	// GitHub rejects descriptions over 140 characters with a 422, which would
+	// turn a real outcome into no outcome at all.
+	if len(description) > 138 {
+		description = description[:137] + "…"
+	}
+	body, err := json.Marshal(map[string]string{
+		"state":       state, // success | failure | error | pending
+		"context":     "deploy",
+		"description": description,
+	})
+	if err != nil {
+		return
+	}
+	url := "https://api.github.com/repos/" + repo + "/statuses/" + sha
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+r.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Its own client with a short timeout rather than http.DefaultClient, which
+	// has none: a hung API call would hold this goroutine for as long as the
+	// connection stayed open, and this runs after every single deploy.
+	cl := &http.Client{Timeout: 15 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		r.log.Warn("commit status not posted", "repo", repo, "sha", short(sha), "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 300 {
+		r.log.Warn("commit status refused", "repo", repo, "sha", short(sha), "code", resp.StatusCode)
+		return
+	}
+	r.log.Info("commit status posted", "repo", repo, "sha", short(sha), "state", state)
 }
 
 // short trims a commit SHA for log lines.

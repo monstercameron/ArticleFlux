@@ -23,14 +23,58 @@ SERVICE=earlcameron
 
 say() { printf '==> %s\n' "$*"; }
 
-# Prefer the repo's own script once it exists and is executable. Handing over is
-# the point of this file, not a fallback.
-if [ -x "$REPO/deploy/update.sh" ]; then
+die() { printf 'xx  %s\n' "$*" >&2; exit 1; }
+
+# --- PULL FIRST, THEN DECIDE ---------------------------------------------------
+#
+# This check used to run against whatever was already on disk, which is wrong the
+# one time it matters: on a box that has never deployed, the repo's own update.sh
+# has not been fetched yet, so the check failed, this script took its own path,
+# and the handover never happened. It "self-healed" only because that path pulled
+# the file as a side effect — meaning the FIRST deploy on any fresh box silently
+# ran a different deploy implementation from every subsequent one.
+#
+# That is not academic. The two implementations had different REF POLICIES: the
+# built-in path fast-forwards each checkout to origin/<whatever branch it is on>,
+# while update.sh honours the pinned GWC_REF. A GoWebComponents checkout left on
+# `v4` therefore stayed on v4 indefinitely, and the site could not build against
+# its own go.mod — which is exactly how this failed on 2026-07-29.
+#
+# So: fetch the site repo, THEN look for its script. One fetch is cheap insurance
+# against running the wrong deployer.
+[ -d "$REPO/.git" ] || die "no checkout at $REPO — run the site's deploy/install.sh first"
+say "refreshing $REPO to see which deployer to use"
+if command -v runuser >/dev/null 2>&1 && id "$OWNER" >/dev/null 2>&1; then
+	runuser -u "$OWNER" -- git -C "$REPO" fetch --quiet --all --prune 2>/dev/null \
+		|| say "fetch failed — continuing; update.sh reports properly if this matters"
+else
+	git -C "$REPO" fetch --quiet --all --prune 2>/dev/null || true
+fi
+_branch=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+[ "$_branch" = "HEAD" ] || git -C "$REPO" merge --ff-only "origin/$_branch" >/dev/null 2>&1 || true
+
+# Prefer the repo's own script. Handing over is the point of this file.
+#
+# `-f`, not `-x`: a checkout whose exec bit did not survive — a clone made on
+# Windows, a tarball, a restored backup — is a script that exists and would run
+# perfectly under bash. Refusing to delegate over a permission bit is how a box
+# silently falls back to a deployer nobody has exercised in months.
+if [ -f "$REPO/deploy/update.sh" ]; then
 	say "delegating to the repo's deploy/update.sh"
-	exec "$REPO/deploy/update.sh" "$@"
+	exec bash "$REPO/deploy/update.sh" "$@"
 fi
 
-say "no repo deploy script yet — using the built-in path"
+# --- the built-in path is now a LAST RESORT, and says so ------------------------
+#
+# Reaching here means the site repo genuinely ships no deploy script. That was
+# true once and is not any more, so it now far more likely means a broken or
+# half-restored checkout. It still deploys — refusing outright would turn a
+# recoverable state into an outage — but it is LOUD, because a deploy that
+# quietly uses the wrong ref policy is worse than one that fails.
+say "WARNING: $REPO/deploy/update.sh is missing — using the built-in fallback"
+say "WARNING: the fallback tracks each checkout's CURRENT BRANCH and ignores the"
+say "WARNING: pinned refs in the repo's deploy/lib.sh. If GoWebComponents is not"
+say "WARNING: on the tag the site's go.mod requires, this build will fail."
 export HOME="${HOME:-/root}" GOCACHE="${GOCACHE:-/var/cache/earlcameron-go}"
 mkdir -p "$GOCACHE"
 
