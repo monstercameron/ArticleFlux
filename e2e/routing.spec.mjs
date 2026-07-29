@@ -22,17 +22,43 @@ function path(page) {
 }
 
 /**
- * settled waits for the address to match, then returns it.
+ * place is the address with the open article stripped off.
  *
- * Reading page.url() straight after a click is a race and it is the one that
- * cost the most here: the address is written from an EFFECT, so it lands a
- * commit after the click that changed the state. A test that captured the URL
+ * Almost every assertion here wants this rather than the raw path, because a
+ * scope change settles in TWO steps and both are correct: the place lands first,
+ * then the pick effect auto-opens an article in it (reader.go) and the address
+ * gains a `/read/<id>` by replace. Asserting on the raw path is therefore a race
+ * against a second write — it passes or fails on which step the poll happens to
+ * catch, which is exactly the "flaky" that means nothing. The place is the part
+ * navigation decides; the article is the part scrolling decides.
+ */
+function place(page) {
+  return stripArticle(path(page));
+}
+
+/**
+ * stripArticle removes a `/read/<id>` segment from an address string.
+ *
+ * Normalised back to "/" when nothing is left, because All feeds IS the root:
+ * "/read/<id>" strips to the empty string, and an empty string is not an address.
+ */
+function stripArticle(p) {
+  const out = p.replace(/\/read\/[^/?]+/, '');
+  return out === '' ? '/' : out;
+}
+
+/**
+ * settled waits for the PLACE to match, then returns the full address.
+ *
+ * Reading page.url() straight after a click is the other race, and the one that
+ * cost the most: the address is written from an EFFECT, so it lands a commit
+ * after the click that changed the state. A test that captured the URL
  * immediately got the PREVIOUS address, navigated back to it later, and reported
  * the app resuming the saved place — a correct app failing a test that had
  * recorded the wrong link. Anything that captures an address has to wait for it.
  */
 async function settled(page, re) {
-  await expect.poll(() => path(page)).toMatch(re);
+  await expect.poll(() => place(page)).toMatch(re);
   return path(page);
 }
 
@@ -42,24 +68,19 @@ test.describe('the address bar', () => {
     // The landing address is normalised to the place the reader resumed into,
     // rather than being left bare — that write is what makes a resumed place
     // linkable.
-    await expect.poll(() => path(page)).toBe('/');
+    await expect.poll(() => place(page)).toBe('/');
 
-    // Prefixes, because opening a stream AUTO-OPENS an article in it
-    // (reader.go's pick effect — a reader who selects a feed gets something to
-    // read rather than "Pick something to read"), so the settled address is
-    // /unread/read/<id>. That is the address being right: it names what is on
-    // screen. Only "Read later" is empty in the seed and therefore bare.
     await openStream(page, 'Unread');
-    await expect.poll(() => path(page)).toMatch(/^\/unread(\/read\/[^/]+)?$/);
+    await expect.poll(() => place(page)).toBe('/unread');
 
     await openStream(page, 'Read later');
-    await expect.poll(() => path(page)).toBe('/later');
+    await expect.poll(() => place(page)).toBe('/later');
 
     await openFeed(page, /Alpha Journal/);
     // A feed is addressed by id, so this asserts the shape rather than a literal
     // — the seed's ids are not fixed and a test that hardcoded one would be
     // pinning the fixture, not the router.
-    await expect.poll(() => path(page)).toMatch(/^\/feed\/[^/]+(\/read\/[^/]+)?$/);
+    await expect.poll(() => place(page)).toMatch(/^\/feed\/[^/]+$/);
   });
 
   test('opening an article puts it in the address', async ({ page }) => {
@@ -76,7 +97,7 @@ test.describe('the address bar', () => {
     await openFeed(page, /Alpha Journal/);
     const feedPath = await settled(page, /^\/feed\/[^/]+$/);
     await openStream(page, 'Read later');
-    await expect.poll(() => path(page)).toBe('/later');
+    await expect.poll(() => place(page)).toBe('/later');
 
     // Now arrive at the feed's address in a fresh load. The saved place says
     // Read later; the address says the feed. The address is the more recent,
@@ -86,7 +107,7 @@ test.describe('the address bar', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
 
-    await expect.poll(() => path(page)).toBe(feedPath);
+    await expect.poll(() => place(page)).toBe(stripArticle(feedPath));
     // And the header names the feed, which is the half a path cannot carry: the
     // address holds an id, so the title has to be resolved once the rail lands
     // (titleForScope). A blank header here would mean that repair never ran.
@@ -107,28 +128,29 @@ test.describe('the address bar', () => {
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
 
     // Resumed into the feed, and the address was then rewritten to name it.
-    await expect.poll(() => path(page)).toBe(feedPath);
+    await expect.poll(() => place(page)).toBe(stripArticle(feedPath));
   });
 
   test('back returns to the previous place', async ({ page }) => {
     await boot(page);
     await openStream(page, 'Unread');
-    await expect.poll(() => path(page)).toMatch(/^\/unread(\/read\/[^/]+)?$/);
+    await expect.poll(() => place(page)).toBe('/unread');
     await openStream(page, 'Read later');
-    await expect.poll(() => path(page)).toBe('/later');
+    await expect.poll(() => place(page)).toBe('/later');
 
     await page.goBack();
-    // A prefix, not the exact string: the entry for a place carries whatever
-    // article was open in it, because opening one REPLACES the entry rather than
-    // adding to it. Coming back to /unread/read/<id> is that rule working — the
-    // reader returns to the stream AND to the piece they were reading in it.
-    await expect.poll(() => path(page)).toMatch(/^\/unread(\/|$)/);
+    // The entry for a place carries whatever article was open in it, because
+    // opening one REPLACES the entry rather than adding to it — so this comes
+    // back to /unread/read/<id> and `place` is what makes that assertable.
+    // Returning to the stream AND to the piece being read in it is the rule
+    // working, not a wrinkle in it.
+    await expect.poll(() => place(page)).toBe('/unread');
     // Not just the address: the reader has to actually be there. An address that
     // moves without the app moving is the failure this whole feature is against.
     await expect(page.locator('.pane-list')).toContainText('Unread');
 
     await page.goForward();
-    await expect.poll(() => path(page)).toMatch(/^\/later(\/|$)/);
+    await expect.poll(() => place(page)).toBe('/later');
   });
 
   test('scrolling the stream does not fill the history', async ({ page }) => {
@@ -137,16 +159,20 @@ test.describe('the address bar', () => {
     // longer leave the feed — it would step through articles nobody navigated to.
     await boot(page);
     await openFeed(page, /Alpha Journal/);
-    const feedPath = await settled(page, /^\/feed\/[^/]+$/);
+    const feedRoot = stripArticle(await settled(page, /^\/feed\/[^/]+$/));
 
-    await page.locator('.item-row').first().click();
+    // Move to a DIFFERENT article in the same feed.
+    await page.locator('.item-row').nth(1).click();
     await expect(currentArticle(page).locator('h1')).toBeVisible();
     await expect.poll(() => path(page)).toMatch(/\/read\/[^/]+$/);
 
-    // One Back, from an article inside the feed, lands outside the feed — which
-    // is only true if opening the article REPLACED rather than pushed.
+    // One Back, from an article inside the feed, leaves the feed entirely —
+    // which is only true if moving between articles REPLACED rather than pushed.
+    // If it pushed, this Back would land on the previous article and the reader
+    // would need one press per article they had passed through.
     await page.goBack();
-    await expect.poll(() => path(page)).not.toBe(feedPath);
+    await expect.poll(() => path(page)).not.toMatch(
+      new RegExp('^' + feedRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 
   test('the settings surface has an address', async ({ page }) => {

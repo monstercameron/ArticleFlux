@@ -80,12 +80,19 @@
 # One-off probe scripts. They are written against whatever bug is in front of
 # you, they hard-code a port and a database, and they are worthless a day later.
 #
-# Three spellings because three were in use and the rule only matched one of
+# Four spellings because four have been in use and the rule only matched some of
 # them — a probe called `.af-modal.mjs` sat untracked in `git status` for a day
-# while this file claimed to have covered it.
+# while this file claimed to have covered it, and nine `.pf*.mjs` did the same
+# later. Enumerating them is deliberate: the alternative, `/e2e/.*.mjs`, would
+# also swallow a real dot-named config nobody would think to look for.
 /e2e/_*.mjs
 /e2e/.af-*.mjs
 /e2e/.demo-*.mjs
+/e2e/.pf*.mjs
+# And what the probes write. Screenshots taken by hand land beside the probe
+# rather than in the ignored /e2e/shots/, because a probe passes `path:` straight
+# to Playwright and nobody sets a directory at half past midnight.
+/e2e/pf-*.png
 # A probe named *.spec.mjs is worse than untidy: Playwright's glob picks it up,
 # so it runs as part of the suite and fails against whatever it was probing.
 /e2e/zz-*.spec.mjs
