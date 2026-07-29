@@ -144,16 +144,16 @@ func TestParseRouteDegradesToAll(t *testing.T) {
 	tr := mustRuntime(t)
 	bad := []string{
 		"/not-a-stream",
-		"/feed",              // a kind with no argument
-		"/tag",               //
-		"/category",          //
-		"/feed/",             // the same, spelled with the separator
-		"/search",            // a search with no query
-		"/search?notq=rust",  // ... or the wrong parameter
-		"/one/two/three",     // too deep for any shape
-		"/feed/a/b/c/d",      //
-		"/read",              // the article marker with no id
-		"/unread/read",       //
+		"/feed",               // a kind with no argument
+		"/tag",                //
+		"/category",           //
+		"/feed/",              // the same, spelled with the separator
+		"/search",             // a search with no query
+		"/search?notq=rust",   // ... or the wrong parameter
+		"/one/two/three",      // too deep for any shape
+		"/feed/a/b/c/d",       //
+		"/read",               // the article marker with no id
+		"/unread/read",        //
 		"/feed/x/notsettings", // a three-segment feed path that is not the dialog
 	}
 	for _, p := range bad {
@@ -405,3 +405,62 @@ func TestResumeScopeAndPathAgree(t *testing.T) {
 }
 
 var _ = i18n.DefaultLocale
+
+// TestBorrowTitle: a reload must not paint a blank header.
+//
+// An addressed scope has no name — a path carries "/feed/01J2…" and never "Ars
+// Technica" — so it normally waits for the rail. On a RELOAD it does not have to:
+// the reader is reloading the place they were already in, and `read.title` is
+// already on hand before the first frame. Losing that is a visible flash on every
+// refresh, which is the defect 8b.51 fixed for the resume and which routing must
+// not reintroduce (reader.spec's "a reload paints the saved view" is the e2e half).
+//
+// The dangerous direction is the other one, and it is what most of these cases
+// pin: borrowing a title from a DIFFERENT place would put one feed's name above
+// another feed's articles. A header that lies is worse than a blank one.
+func TestBorrowTitle(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    route
+		saved map[string]string
+		want  string
+	}{
+		{
+			"the saved place is this place, so its name is borrowed",
+			route{sel: scope{SourceID: "01J2SRC"}},
+			map[string]string{"read.kind": "feed", "read.value": "01J2SRC", "read.title": "Ars Technica"},
+			"Ars Technica",
+		},
+		{
+			"a DIFFERENT feed's title is never borrowed",
+			route{sel: scope{SourceID: "01J2SRC"}},
+			map[string]string{"read.kind": "feed", "read.value": "01J2OTHER", "read.title": "Ars Technica"},
+			"",
+		},
+		{
+			"a different KIND's title is never borrowed",
+			route{sel: scope{SourceID: "01J2SRC"}},
+			map[string]string{"read.kind": "tag", "read.value": "01J2SRC", "read.title": "Go"},
+			"",
+		},
+		{
+			"a title already present is left alone",
+			route{sel: scope{SourceID: "01J2SRC", Title: "from the address"}},
+			map[string]string{"read.kind": "feed", "read.value": "01J2SRC", "read.title": "from the prefs"},
+			"from the address",
+		},
+		{
+			"nothing saved is simply nothing borrowed",
+			route{sel: scope{SourceID: "01J2SRC"}},
+			nil,
+			"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := borrowTitle(tc.in, tc.saved).sel.Title; got != tc.want {
+				t.Errorf("borrowTitle(%+v).sel.Title = %q, want %q", tc.in.sel, got, tc.want)
+			}
+		})
+	}
+}

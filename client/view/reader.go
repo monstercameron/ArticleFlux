@@ -6066,29 +6066,42 @@ func Reader(p readerProps) ui.Node {
 					resumeItem.Set("")
 					addressed = false
 				}
-				if addressed {
-					// The scope the address chose is already in `sel` and already on
-					// screen — set at mount, so there was never a frame showing
-					// anything else. Only the fetch is owed.
-					resume = sel.Get()
-				}
 				// Whatever this settles on is a restoration, not a navigation: the
 				// reader has not gone anywhere, the app has caught up with them. It
 				// must therefore REPLACE the entry the page load created rather than
 				// stack a second one on it — see the declaration of `restoring`.
 				restoring.Set(true)
-				// An addressed boot records where it landed, so the stored place
-				// stops being half of one scope and half of another — reading in a
-				// linked feed writes `read.item` regardless, and leaving
-				// `read.kind` at yesterday's stream resumes that stream with a
-				// resume-item that is not in it. A scope that arrived as an id has
-				// no title yet, so the rail's arrival records it again with one
-				// (see addressBar.remember).
+
+				// An addressed boot does NOT write `sel`, and that is a bug fix
+				// rather than an optimisation.
+				//
+				// The scope the address chose has been in `sel` since mount, so
+				// there is nothing to set — but setting it anyway is not a harmless
+				// no-op. This closure was built by an earlier render, so a
+				// `sel.Get()` inside it returns THAT render's value (the hazard the
+				// `actions` Ref exists for), and that value is the scope from before
+				// titleForScope resolved its name out of the rail. Writing it back
+				// replaced "Alpha Journal" with "", leaving a permanently blank list
+				// header after any reload on a feed's address — caught by
+				// reader.spec's "a reload paints the saved view, never the default
+				// one first" test, which is 8b.51's regression guard.
+				//
+				// Only the FETCH is owed, against the mount-time scope, whose id is
+				// the part a query cares about.
+				//
+				// It is also recorded, so the stored place stops being half of one
+				// scope and half of another: reading in a linked feed writes
+				// `read.item` regardless, and leaving `read.kind` at yesterday's
+				// stream resumes that stream with a resume-item that is not in it.
+				// A scope that arrived as a bare id is recorded again, with its name,
+				// when the rail lands (see addressBar.remember).
 				if addressed {
-					rememberScope(resume)
+					rememberScope(boot.sel)
+					loadItems(boot.sel, unread)
+				} else {
+					sel.Set(resume)
+					loadItems(resume, unread)
 				}
-				sel.Set(resume)
-				loadItems(resume, unread)
 
 				// A dialog the address named, once there is a client to fetch with.
 				if addressed {

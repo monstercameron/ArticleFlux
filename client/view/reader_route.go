@@ -418,7 +418,37 @@ func bootRoute(saved map[string]string, tr i18n.Runtime) (boot route, addressed 
 	if r.dlg == dialogShow {
 		r.dlg = dialogNone
 	}
-	return r, true
+
+	return borrowTitle(r, saved), true
+}
+
+// borrowTitle fills an addressed scope's name from the saved place, when the two
+// are the same place.
+//
+// A path carries an id and never a name, so an addressed scope opens titleless
+// and waits for the rail (titleForScope). That is a blank header for one round
+// trip — and it is avoidable in the commonest case there is, which is a RELOAD:
+// the reader is reloading the place they were already in, so `read.title` already
+// holds its name and is already on hand before the first frame.
+//
+// This is 8b.51's rule surviving routing. "The saved view is fetched behind the
+// splash, not after it" was about never painting an empty or wrong header first,
+// and an address that discarded a title the client was already holding would have
+// reintroduced exactly that flash on every refresh — which is what reader.spec's
+// "a reload paints the saved view, never the default one first" caught.
+//
+// The kind AND the argument must both match. A title is not interchangeable
+// between scopes, and borrowing on kind alone would put the last feed's name above
+// this feed's articles — a header that lies, which is worse than a blank one.
+func borrowTitle(r route, saved map[string]string) route {
+	if r.sel.Title != "" {
+		return r
+	}
+	kind, value := scopeKind(r.sel)
+	if saved["read.kind"] == kind && saved["read.value"] == value {
+		r.sel.Title = saved["read.title"]
+	}
+	return r
 }
 
 // bootPane is which pane Reader mounts showing: the settings surface when the
