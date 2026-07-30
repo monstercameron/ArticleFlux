@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +14,7 @@ import (
 // are tested individually. Each one is a distinct way a naive "deploy on
 // workflow_run" would ship something nobody approved.
 func TestShouldSkip(t *testing.T) {
-	target := &Target{Repo: "monstercameron/ArticleFlux", Workflow: "CI", Branch: "main"}
+	target := &Target{Repo: "monstercameron/ArticleFlux", Triggers: []Trigger{{Workflow: "CI", Branch: "main"}}}
 
 	pass := func() *hookPayload {
 		var p hookPayload
@@ -58,10 +60,131 @@ func TestShouldSkip(t *testing.T) {
 	}
 }
 
+// The promotion path, which is the one that was broken.
+//
+// promote.yml fast-forwards main using GITHUB_TOKEN, and a push made with that
+// token does not start a workflow run — so there is never a `CI on main` to wait
+// for. The run that DOES exist is the promote workflow itself, and it ran on
+// `dev`. A hook configured only for CI-on-main declines it with a tidy reason and
+// the box stays on whatever commit was last pushed by hand, indefinitely.
+func TestPromotionDeploys(t *testing.T) {
+	target := &Target{
+		Repo: "monstercameron/ArticleFlux",
+		Triggers: []Trigger{
+			{Workflow: "CI", Branch: "main"},
+			{Workflow: "Promote dev to main", Branch: "dev"},
+		},
+	}
+
+	promote := func() *hookPayload {
+		var p hookPayload
+		p.Action = "completed"
+		p.WorkflowRun.Name = "Promote dev to main"
+		p.WorkflowRun.Conclusion = "success"
+		p.WorkflowRun.HeadBranch = "dev" // the ref it was dispatched from
+		p.WorkflowRun.Event = "workflow_dispatch"
+		return &p
+	}
+
+	if reason := shouldSkip(promote(), target); reason != "" {
+		t.Fatalf("a successful promotion must deploy, got %q", reason)
+	}
+
+	// The other trigger still works: a hand-pushed main going green deploys too.
+	var ci hookPayload
+	ci.Action = "completed"
+	ci.WorkflowRun.Name = "CI"
+	ci.WorkflowRun.Conclusion = "success"
+	ci.WorkflowRun.HeadBranch = "main"
+	ci.WorkflowRun.Event = "push"
+	if reason := shouldSkip(&ci, target); reason != "" {
+		t.Fatalf("green CI on main must still deploy, got %q", reason)
+	}
+
+	// Triggers are pairs, not a pool of allowed workflows crossed with allowed
+	// branches. `CI` on `dev` matches neither pair and must not deploy — every
+	// push to dev would otherwise ship unpromoted code to the live box.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*hookPayload)
+	}{
+		{"CI on dev", func(p *hookPayload) { p.WorkflowRun.Name = "CI" }},
+		{"promote on main", func(p *hookPayload) { p.WorkflowRun.HeadBranch = "main" }},
+		{"promote that failed", func(p *hookPayload) { p.WorkflowRun.Conclusion = "failure" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := promote()
+			tc.mutate(p)
+			if reason := shouldSkip(p, target); reason == "" {
+				t.Fatalf("%s should not deploy, but was allowed", tc.name)
+			}
+		})
+	}
+}
+
+// The reason a declined event gives has to name what WOULD have matched. The
+// outage this replaced was invisible because "branch is \"dev\", not \"main\""
+// reads like correct behaviour when it is in fact the whole bug.
+func TestSkipReasonNamesTheTriggers(t *testing.T) {
+	target := &Target{Repo: "r", Triggers: []Trigger{
+		{Workflow: "CI", Branch: "main"},
+		{Workflow: "Promote dev to main", Branch: "dev"},
+	}}
+	var p hookPayload
+	p.Action = "completed"
+	p.WorkflowRun.Name = "Demo (GitHub Pages)"
+	p.WorkflowRun.Conclusion = "success"
+	p.WorkflowRun.HeadBranch = "main"
+	p.WorkflowRun.Event = "push"
+
+	reason := shouldSkip(&p, target)
+	for _, want := range []string{"Demo (GitHub Pages)", "CI", "Promote dev to main", "dev", "main"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason %q does not mention %q", reason, want)
+		}
+	}
+}
+
+// The shorthand has to keep working: every config in existence uses it, and a
+// silent behaviour change here is a box that stops deploying.
+func TestLoadConfigFoldsShorthandIntoTriggers(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.json"
+	cmd := absCommand(t)
+	if err := writeFile(path, `{"targets":[{"repo":"a/b","workflow":"CI","branch":"main","secret":"s","command":"`+cmd+`"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Targets[0].Triggers
+	if len(got) != 1 || got[0].Workflow != "CI" || got[0].Branch != "main" {
+		t.Fatalf("shorthand did not fold into one CI/main trigger: %+v", got)
+	}
+}
+
+// findTarget returns the first target matching a repo, so a second one for the
+// same repository is dead configuration that looks alive. It must not start.
+func TestLoadConfigRejectsDuplicateRepo(t *testing.T) {
+	path := t.TempDir() + "/config.json"
+	cmd := absCommand(t)
+	err := writeFile(path, `{"targets":[
+		{"repo":"a/b","workflow":"CI","branch":"main","secret":"s","command":"`+cmd+`"},
+		{"repo":"a/b","workflow":"Promote","branch":"dev","secret":"s","command":"`+cmd+`"}
+	]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("two targets for one repo were accepted; the second would never fire")
+	}
+}
+
 // An empty Workflow means "any workflow", which is a real configuration and a
 // dangerous default — the test pins the behaviour so it cannot change silently.
 func TestShouldSkipAnyWorkflow(t *testing.T) {
-	target := &Target{Repo: "r", Branch: "main"}
+	target := &Target{Repo: "r", Triggers: []Trigger{{Branch: "main"}}}
 	var p hookPayload
 	p.Action = "completed"
 	p.WorkflowRun.Name = "anything at all"
@@ -133,4 +256,16 @@ func TestLoadConfigRejectsUnsafeTargets(t *testing.T) {
 // writeFile is a tiny helper so the table above stays readable.
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// absCommand returns an absolute deploy-command path that satisfies
+// filepath.IsAbs on the host running the test, JSON-safe.
+//
+// The service only ever runs on Linux, but CI runs `go test` on Windows too,
+// where "/x/y.sh" is NOT absolute — a hardcoded POSIX path makes these tests
+// fail for a reason that has nothing to do with what they check. Forward slashes
+// after the drive letter are absolute on both, and need no escaping in JSON.
+func absCommand(t *testing.T) string {
+	t.Helper()
+	return filepath.ToSlash(t.TempDir()) + "/y.sh"
 }

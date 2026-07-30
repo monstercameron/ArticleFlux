@@ -237,12 +237,12 @@ it is written out rather than inferred from three scripts.
 ```
 GitHub                        the droplet
 ------                        -----------
-promote dev -> main
+"Promote dev to main", dispatched on dev
       |
-      v
-CI runs on main
+      +-- gates (ci.yml with ref: dev)
+      +-- fast-forwards main to dev  ... which starts NO workflow run: see below
       |
-      | workflow_run: completed + success
+      | workflow_run: "Promote dev to main" on dev, completed + success
       v
   deployhook  --sudo systemd-run-->  /opt/ArticleFlux/deploy/update.sh   (unit deploy-articleflux)
               --sudo systemd-run-->  /usr/local/bin/earlcameron-deploy    (unit deploy-earlcameron)
@@ -257,11 +257,31 @@ CI runs on main
 ```
 
 **deployhook fires on `workflow_run`, never on `push`.** A push means code arrived;
-a green CI run on `main` means it is worth serving, and those are different moments.
-It additionally requires the run's own triggering event to be `push` or
+a green build means it is worth serving, and those are different moments. It
+additionally requires the run's own triggering event to be `push` or
 `workflow_dispatch`, because a `workflow_run` from a pull request carries the PR's
 merge commit rather than the branch tip — deploying that ships code that is not on
 main.
+
+**A promotion is authorised by the promote run itself, not by CI on `main`, and
+this is the one piece of the topology that is counter-intuitive enough to have
+been wrong in this file.** `promote.yml` fast-forwards `main` with a `git push`
+authenticated by `GITHUB_TOKEN`, and **GitHub does not start workflow runs from
+events created with `GITHUB_TOKEN`** — it is deliberate loop-prevention. So there
+is no `CI on main` run after a promotion; not a late one, not a skipped one, none
+at all. A hook waiting for one waits forever, and the failure is perfectly quiet:
+the promotion is green, `main` really did move, GitHub's delivery log shows a
+green 200 for the `workflow_run` it declined, and the box keeps serving the last
+commit somebody pushed by hand. That is exactly what happened between this
+workflow's first use and 2026-07-30, when `main` reached `1f370d8` and the box
+stayed on `3fca38c`.
+
+Hence two triggers for ArticleFlux, and hence `promote.yml` refusing to run from
+any ref but `dev`: the promote run's `head_branch` is the ref it was dispatched
+from, so pinning it is what makes `"Promote dev to main"` on `dev` a fixed,
+checkable pair instead of a property of which branch was selected in the dropdown.
+A direct push to `main` still deploys through the `CI`/`main` trigger — the policy
+forbids it, but when it happens the box should not silently stop tracking.
 
 **Exactly two commands are authorised**, by complete command line, in
 `deploy/deployhook/sudoers`. That file is the security boundary; read its own
@@ -269,17 +289,34 @@ warnings before touching it.
 
 ### The config, and the third target that is missing
 
-`deployhook -config` takes one file, and each target is keyed on **repo + workflow
-name + branch**. All three matter: both repositories name their workflow `CI`, so
-the repo is what disambiguates them, and a target that omitted it would let either
-site deploy the other.
+`deployhook -config` takes one file. Each target names a **repo** and a list of
+**triggers**, each trigger a `(workflow name, branch)` pair; any one matching
+authorises a deploy. All of it matters: both repositories name their workflow `CI`,
+so the repo is what disambiguates them, and a target that omitted it would let
+either site deploy the other.
+
+Triggers are **pairs, not a set of allowed workflows crossed with a set of allowed
+branches**. `CI` on `main` and `Promote dev to main` on `dev` does not imply `CI`
+on `dev` — which is the point, because that fires on every push to `dev` and would
+put unpromoted code on the live box.
+
+One target per repo. `findTarget` matches on the repo and returns the first hit, so
+a second target for the same repository would never fire while looking entirely
+correct in the file; `loadConfig` now refuses to start on a duplicate rather than
+leave that trap lying around. Several triggers on one target is how to express it.
+
+`workflow` + `branch` at the top level of a target is still accepted as shorthand
+for a single trigger.
 
 ```json
 {
   "addr": "127.0.0.1:9500",
   "log_dir": "/var/log/deployhook",
+  "status_token": "ghp_… (repo:status — see below; without it a failed deploy is invisible)",
   "targets": [
-    { "repo": "monstercameron/ArticleFlux",           "workflow": "CI", "branch": "main",
+    { "repo": "monstercameron/ArticleFlux",
+      "triggers": [ { "workflow": "CI",                  "branch": "main" },
+                    { "workflow": "Promote dev to main", "branch": "dev"  } ],
       "secret": "...", "command": "/usr/bin/systemd-run",
       "args": ["--pipe","--wait","--collect","--unit=deploy-articleflux",
                "--property=TimeoutStartSec=1800","/opt/ArticleFlux/deploy/update.sh"] },
@@ -296,6 +333,17 @@ site deploy the other.
   ]
 }
 ```
+
+**The two entries that still deploy on `CI`/`main` alone deploy on a hand-push and
+nothing else.** If either repo grows a `promote.yml` of its own, it needs its own
+promote trigger here for the same `GITHUB_TOKEN` reason — promoting it otherwise
+changes `main` and nothing else.
+
+**`status_token` is worth setting before the next promotion, not after.** Without
+it, deployhook's 202 is the only thing GitHub ever hears: a deploy that dies
+halfway leaves a green delivery and a log file on the box. With it, a failure is a
+red `deploy` check beside the commit. A fine-grained PAT with `repo:status` on
+these repositories is enough; the process warns at boot when it is missing.
 
 **The third target is the one to add, and its absence is a real gap.** The portfolio
 *embeds* CashFlux and builds it from `$CASHFLUX_REF`, which is `main`. So promoting

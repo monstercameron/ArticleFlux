@@ -3,9 +3,10 @@
 # The branch policy in CONTRIBUTING.md, made mechanical: work lands on `dev`, and `main`
 # advances only by promotion once the gates pass.
 #
-# Running this DEPLOYS. deployhook watches for CI going green on main and redeploys the
-# box when it does, so a promotion is not a merge convenience — it is the release. That is
-# why this is a manual trigger with a typed confirmation and never runs on push.
+# Running this DEPLOYS. deployhook watches for THIS WORKFLOW completing successfully and
+# redeploys the box, so a promotion is not a merge convenience — it is the release. That is
+# why this is a manual trigger with a typed confirmation, never runs on push, and refuses
+# any ref but `dev`.
 
 name: Promote dev to main
 
@@ -31,6 +32,30 @@ jobs:
     name: Confirm intent
     runs-on: ubuntu-latest
     steps:
+      # Dispatch from `dev`, and nothing else. This is not tidiness — two things
+      # downstream are properties of the ref this was launched from, and both are
+      # silent when it is wrong:
+      #
+      #   * deployhook matches this workflow on branch `dev` (see deploy/README.md).
+      #     Dispatched from `main`, the run reports head_branch=main, matches no
+      #     trigger, and the promotion completes green having deployed nothing.
+      #   * head_sha is the dispatch ref's tip, and it is the SHA the deploy's
+      #     commit status lands on. From `dev` that is exactly the commit being
+      #     released; from `main` it is the commit being replaced.
+      #
+      # It cost an evening on 2026-07-29: the same promotion was run from `main`
+      # and then from `dev`, behaved differently both times, and nothing said why.
+      - name: Refuse to promote from any ref but dev
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "dev" ]; then
+            echo "::error::dispatched from '$REF'; promote must be run with dev selected as the branch"
+            echo "Re-run this workflow and pick 'dev' in the branch dropdown (gh workflow run promote.yml --ref dev)."
+            exit 1
+          fi
+
       - name: Check the confirmation word
         # Through env rather than spliced into the script. A `${{ }}` inside a run block is
         # substituted before the shell sees it, so an input carrying shell metacharacters
@@ -113,5 +138,15 @@ jobs:
           {
             echo "### Promoted \`dev\` → \`main\`"
             echo ""
-            echo "CI now runs on \`main\`. When it goes green, **deployhook redeploys the box**."
+            echo "**This run succeeding is what deploys.** deployhook watches for"
+            echo "\`Promote dev to main\` completing successfully on \`dev\` and"
+            echo "redeploys the box from \`origin/main\`."
+            echo ""
+            echo "It is NOT waiting for CI to run on \`main\`, and that is worth"
+            echo "stating because this file claimed otherwise until 2026-07-30."
+            echo "The fast-forward above is pushed with \`GITHUB_TOKEN\`, and GitHub"
+            echo "does not start workflow runs from pushes made with that token — so"
+            echo "no \`CI on main\` run is ever created, and a hook waiting for one"
+            echo "waits forever. Every promotion between this workflow's first use"
+            echo "and that date completed green and deployed nothing."
           } >> "$GITHUB_STEP_SUMMARY"

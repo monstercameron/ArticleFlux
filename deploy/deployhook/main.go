@@ -1,15 +1,25 @@
-// Command deployhook redeploys a site when its CI goes green on the default branch.
+// Command deployhook redeploys a site when a gated build says the release branch
+// is worth serving.
 //
 // It listens on loopback behind nginx and answers GitHub's webhook. The rule it
 // enforces is the whole point:
 //
-//	a push to main is not a reason to deploy — a PASSING BUILD on main is.
+//	a push to main is not a reason to deploy — a PASSING BUILD is.
 //
 // So it ignores `push` entirely and acts only on `workflow_run` with
-// action=completed, conclusion=success, and a workflow and branch that match the
-// configuration. Gating on the push instead would deploy every red commit and
-// make the quality gate decorative, which is the failure mode this exists to
-// prevent.
+// action=completed, conclusion=success, and a workflow and branch that match one
+// of the target's triggers. Gating on the push instead would deploy every red
+// commit and make the quality gate decorative, which is the failure mode this
+// exists to prevent.
+//
+// A target has a LIST of triggers because "the build that authorises a deploy"
+// is not always the same workflow on the same branch. ArticleFlux has two: `CI`
+// on `main`, and `Promote dev to main` on `dev`. The second is not a convenience
+// — it is the only one that ever fires for a promotion, and the reason is in
+// promote.yml: a push made with GITHUB_TOKEN does not start a workflow run, so
+// fast-forwarding main produces NO `CI on main` to wait for. A single-trigger
+// hook waited for that run for as long as promotion existed, and the box simply
+// stayed on the last commit somebody had pushed by hand.
 //
 // Why a receiver on the box rather than an SSH step in the Actions runner: a
 // deploy key in GitHub secrets is a credential that logs into the droplet, and
@@ -49,17 +59,39 @@ const maxBody = 1 << 20
 // wedged build hold the lock forever and silently stop all future deploys.
 const deployTimeout = 30 * time.Minute
 
-// Target is one deployable site.
-type Target struct {
-	// Repo is the full name GitHub sends, e.g. "monstercameron/ArticleFlux".
-	Repo string `json:"repo"`
+// Trigger is one (workflow, branch) pair whose success authorises a deploy.
+type Trigger struct {
 	// Workflow is the workflow NAME (the `name:` field, not the filename) whose
 	// success authorises a deploy. Empty means any workflow, which is almost
 	// never what you want: a docs-only workflow going green would ship code.
 	Workflow string `json:"workflow"`
-	// Branch is the branch that deploys. Everything else is acknowledged and
-	// ignored, so feature branches can run CI freely without touching the box.
+	// Branch is the branch the run must have executed on. Everything else is
+	// acknowledged and ignored, so feature branches can run CI freely without
+	// touching the box.
+	//
+	// For a promotion this is the branch the PROMOTE WORKFLOW ran on, which is
+	// `dev` — not the branch being released. promote.yml refuses to run from any
+	// other ref precisely so that this stays a fixed, checkable value rather than
+	// a property of how somebody happened to click the button.
 	Branch string `json:"branch"`
+}
+
+// Target is one deployable site.
+type Target struct {
+	// Repo is the full name GitHub sends, e.g. "monstercameron/ArticleFlux".
+	Repo string `json:"repo"`
+
+	// Workflow and Branch are the single-trigger shorthand, kept because every
+	// config in existence uses it. loadConfig folds them into Triggers; nothing
+	// below this line reads them.
+	Workflow string `json:"workflow"`
+	Branch   string `json:"branch"`
+
+	// Triggers is the full form: any one of them matching authorises a deploy.
+	// Listing several is not "be permissive" — each entry is a distinct, named
+	// event that means the release branch moved.
+	Triggers []Trigger `json:"triggers"`
+
 	// Secret is the shared secret configured on the GitHub webhook. Without it
 	// this endpoint would accept a deploy from anybody who learned the URL.
 	Secret string `json:"secret"`
@@ -174,6 +206,14 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 	}
 	log.Info("deployhook up", "addr", cfg.Addr, "targets", len(cfg.Targets))
+	// One line per target, naming every trigger. A deploy that never fires looks
+	// identical to a hook that is not running; this is the cheapest way to tell
+	// them apart without a live webhook delivery to read.
+	for _, t := range cfg.Targets {
+		for _, tr := range t.Triggers {
+			log.Info("deploy trigger", "repo", t.Repo, "workflow", tr.Workflow, "branch", tr.Branch)
+		}
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("listen", "err", err)
 		os.Exit(1)
@@ -200,7 +240,15 @@ func loadConfig(path string) (*Config, error) {
 	if len(cfg.Targets) == 0 {
 		return nil, errors.New("no targets configured")
 	}
-	for i, t := range cfg.Targets {
+	seen := map[string]bool{}
+	for i := range cfg.Targets {
+		t := &cfg.Targets[i]
+
+		// Fold the shorthand in first, so validation below has one shape to check.
+		if t.Workflow != "" || t.Branch != "" {
+			t.Triggers = append(t.Triggers, Trigger{Workflow: t.Workflow, Branch: t.Branch})
+		}
+
 		switch {
 		case t.Repo == "":
 			return nil, fmt.Errorf("target %d: repo is required", i)
@@ -211,9 +259,27 @@ func loadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf("target %s: secret is required", t.Repo)
 		case t.Command == "" || !filepath.IsAbs(t.Command):
 			return nil, fmt.Errorf("target %s: command must be an absolute path", t.Repo)
-		case t.Branch == "":
-			return nil, fmt.Errorf("target %s: branch is required", t.Repo)
+		case len(t.Triggers) == 0:
+			return nil, fmt.Errorf("target %s: at least one trigger (branch, or triggers[]) is required", t.Repo)
 		}
+
+		// A trigger with no branch deploys whatever branch went green, which
+		// includes every feature branch anyone pushes. That is not a configuration
+		// worth supporting quietly.
+		for j, tr := range t.Triggers {
+			if tr.Branch == "" {
+				return nil, fmt.Errorf("target %s: trigger %d: branch is required", t.Repo, j)
+			}
+		}
+
+		// findTarget matches on repo alone and returns the FIRST hit, so a second
+		// target for the same repository would never run — silently, and looking
+		// perfectly correct in the file. Two triggers on one target is the way to
+		// express that; two targets is a mistake, and it stops the process.
+		if seen[strings.ToLower(t.Repo)] {
+			return nil, fmt.Errorf("target %s: duplicate repo — use one target with several triggers", t.Repo)
+		}
+		seen[strings.ToLower(t.Repo)] = true
 	}
 	return &cfg, nil
 }
@@ -321,18 +387,37 @@ func shouldSkip(p *hookPayload, t *Target) string {
 		// land here, and a skipped run is NOT a pass.
 		return fmt.Sprintf("conclusion is %q, not success", p.WorkflowRun.Conclusion)
 	}
-	if p.WorkflowRun.HeadBranch != t.Branch {
-		return fmt.Sprintf("branch is %q, not %q", p.WorkflowRun.HeadBranch, t.Branch)
-	}
-	if t.Workflow != "" && !strings.EqualFold(p.WorkflowRun.Name, t.Workflow) {
-		return fmt.Sprintf("workflow is %q, not %q", p.WorkflowRun.Name, t.Workflow)
-	}
 	// A workflow_run fired by a pull_request carries the PR's merge commit, not
 	// the branch tip. Deploying that ships code that is not on main.
+	//
+	// Checked before the trigger match so the reason stays specific: "it was a PR"
+	// is a different problem from "that workflow does not deploy", and the reason
+	// string is what somebody reads in the delivery log six weeks from now.
 	if p.WorkflowRun.Event != "push" && p.WorkflowRun.Event != "workflow_dispatch" {
 		return fmt.Sprintf("triggering event is %q, not push", p.WorkflowRun.Event)
 	}
-	return ""
+	for _, tr := range t.Triggers {
+		if p.WorkflowRun.HeadBranch != tr.Branch {
+			continue
+		}
+		if tr.Workflow != "" && !strings.EqualFold(p.WorkflowRun.Name, tr.Workflow) {
+			continue
+		}
+		return ""
+	}
+	// Say what would have matched. A bare "no match" turns every misconfiguration
+	// into a box that is silently one commit behind, which is the exact failure
+	// this list of triggers exists to end.
+	want := make([]string, 0, len(t.Triggers))
+	for _, tr := range t.Triggers {
+		name := tr.Workflow
+		if name == "" {
+			name = "any workflow"
+		}
+		want = append(want, fmt.Sprintf("%q on %q", name, tr.Branch))
+	}
+	return fmt.Sprintf("workflow %q on branch %q matches no trigger (want %s)",
+		p.WorkflowRun.Name, p.WorkflowRun.HeadBranch, strings.Join(want, " or "))
 }
 
 // validSignature checks GitHub's HMAC in constant time.
