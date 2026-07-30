@@ -3051,6 +3051,19 @@ beside it — the same tickets, the same prefetch, the same mark-as-read when a 
 `tts.podcast` on (§10.7) the segments hand over to each other, so what comes out is a broadcast rather
 than a queue read in a row.
 
+**Each segment is written blind, and that is what makes the narrator repeat itself.** A segment is one
+independent model call: it can see the story it covers and the headline of the one before, and nothing
+else — not what the last handover actually said, because that text was written by a different call and
+was never kept. Told only to "vary the transitions", a stateless writer has nothing to vary *against*
+and emits its single most likely bridge sentence every time, confidently and identically; a listener
+hears that as a machine inside about four stories. So the server hands each segment a different
+**handover shape** — a structure to satisfy (name the relation, hard cut, carry one thread, contrast,
+change pace, half a sentence of step-back), not a phrase to use, because a list of approved sentences
+would be the same failure at a lower frequency. It is chosen by hash of the ordered pair rather than at
+random, so a segment rewritten after a cache miss is the *same* segment: randomness here would make the
+same story after the same story sound different tomorrow, which is indistinguishable from the cache
+being broken.
+
 `--fill` then comes from the `<audio>` element's own playhead, which is the whole point: estimating a
 segment's length from its word count drifts within one article and is wrong by a paragraph by the third,
 because synthesis speed depends on the voice, the punctuation and how many numbers are in the text.
@@ -3066,7 +3079,16 @@ started left *nothing* to drive the display: it froze on its first title card, t
 onto the story, the scroll never ran, and the browser's own synthesiser read the article underneath it.
 Nothing had errored, so nothing said anything. Now the voice must prove it is playing — an actual
 `timeupdate` with a known duration, not a `play()` having been issued — before it is allowed to pace
-anything, and after `slideVoiceWait` (20s) with no sound the clock takes the story back.
+anything, and after `slideVoiceWait` (90s) with no sound the clock takes the story back.
+
+That backstop was 20s and had to grow. On a cold cache a broadcast segment is *two* paid round trips —
+write it, then synthesise it — and twenty seconds routinely expired on an instance whose key was
+working perfectly, at which point the display announced that the server had no Smart+ voice. That is a
+configuration claim inferred from a stopwatch. The line the slide shows now says only what is known:
+the voice did not start. Which is also why **the end of a programme has its own state** rather than
+falling through to that one — a broadcast that has read its sign-off and stopped is not a narrator that
+failed to start, and after the change above it would otherwise have sat for ninety seconds and then
+said so.
 
 **Read-to-me refuses the browser voice rather than degrading to it.** `speechSynthesis` reads what is in
 the DOM, so it cannot speak a written segment, cannot hand over between stories, and reports no position
@@ -3120,6 +3142,34 @@ The sequence, in order:
     the story ends                           the bed LIFTS above its resting level
     three seconds of music                   seamHold, measured from the end
     the next story starts into it            AudioGo, then the bed ducks again
+
+    … and once, at the end:
+
+    the last story ends                      queueNext returns nothing
+    "That's the lot. Back when there's more" the SIGN-OFF, its own recording
+    the bed lifts as the voice leaves        BedOutro() — bedOutroRise, 1.5s
+    the music has the last word              bedOutroFall, 8.5s to silence
+
+**A programme ends; a queue stops**, and the difference is audible. Before the
+sign-off existed the broadcast ran out — the last segment finished, the audio
+element went quiet, and the listener was left waiting for something that was not
+coming. Every other segment is *forbidden* to sign off (the narrator does not
+know it is last, and a goodbye in the middle of a show is worse than none at the
+end of one), so exactly one recording per session is granted the permission:
+`smart.Segment.CloseOnly`, requested with `&i=2`, written by its own prompt.
+
+It takes the last headline and the story count and **nothing else** — no body.
+The mirror of the opening's rule, and for the same reason: a model handed an
+article will cover it, and a goodbye that re-tells the story just heard is worse
+than no goodbye at all. A failure here does *not* fall back to reading the
+article the way every other broadcast failure does; it ends the programme
+quietly, because the fallback would be the last story a second time, which is
+not a degraded ending — it is a bug with a voice.
+
+The music outlives the session state on purpose. Nothing waits for the fade: the
+reader is free, the controls come back, and the bed goes on its own clock
+underneath — which is what makes it read as a programme closing rather than as an
+interface still busy.
 
 The seam is the same held-playback mechanism as the opening, for the same reason:
 one story ending and the next beginning in the same half second is what makes a

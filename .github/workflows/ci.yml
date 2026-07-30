@@ -292,7 +292,7 @@ jobs:
   # (scripts/make.ps1's wasmtest verb skips those same two tests by name for
   # exactly this reason, so a developer's local run stays meaningful too.)
   wasmtest:
-    name: wasm test (client/i18n + client/view)
+    name: wasm test (client/i18n + client/platform + client/view)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -328,7 +328,14 @@ jobs:
             echo "::error::wasm_exec_node.js not found under $(go env GOROOT)/lib/wasm"
             exit 1
           fi
-          GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" -exec="node $exec_js" ./client/i18n/... ./client/view/...
+          # client/platform is in the gate as of the LocalNow fix. Its
+          # *_wasm_test.go files existed and had never been run by CI, which is
+          # how a browser-only bug lived there: LocalNow read Date.getTime()
+          # through a guard sized for media durations, returned zero on every
+          # browser, and the listener was greeted by the SERVER's clock. Nothing
+          # native can compile that path, so an ungated wasm package is a
+          # package with no tests at all.
+          GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" -exec="node $exec_js" ./client/i18n/... ./client/platform/... ./client/view/...
 
       # Non-gating by design: `continue-on-error` lets this step actually run
       # and still show failed/red in the Actions UI without blocking the

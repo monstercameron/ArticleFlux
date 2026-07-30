@@ -16,6 +16,12 @@
 /speech-cache/
 *.mp3
 
+# Except the broadcast beds, which are SOURCE (§19). They are shipped assets the
+# client names directly, not derived audio, and the blanket *.mp3 above silently
+# excluded them: the droplet had no web/audio/ at all, so the music 404'd on
+# every deploy while it played perfectly on the machine that had the files.
+!/web/audio/*.mp3
+
 # The spoken digests those are made from (§10.7). A model's summary of an
 # article the reader opened is the same class of thing as the audio: derived
 # from their reading, regenerable, and nobody's business but theirs.

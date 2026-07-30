@@ -239,6 +239,14 @@ func Reader(p readerProps) ui.Node {
 	// handing over from the one played before it (§19). Server-side like the
 	// digest — /speech reads it — and default off like every other paid switch.
 	speakPodcast := ui.UseState(prefBool(saved, "tts.podcast", false))
+	// outroDone says the sign-off for THIS run of the queue has been played, so
+	// a programme cannot say goodbye twice.
+	//
+	// A Ref rather than state: nothing renders from it, and a re-render on the
+	// last `ended` event of a session would be a repaint for a flag. Cleared
+	// whenever a story follows another, so a reader who loads more pages and
+	// keeps listening gets an ending when THAT queue runs out too.
+	outroDone := ui.UseRef(false)
 	// speakVibe is how the narrator sounds — calm, brisk, warm or dry. Server-side
 	// like the switch it belongs to, and validated on both ends: the server
 	// resolves anything it does not recognise to the default rather than putting
@@ -3381,11 +3389,92 @@ func Reader(p readerProps) ui.Node {
 			// The end of the loaded list, not the end of the feed: more may be
 			// a page away. Stopping is still right — silently paging and
 			// carrying on would turn "play the list" into "play forever".
-			speakID.Set("")
-			speakState.Set("")
-			notice.Set(tr.T("reader", "queueFinished"))
+			//
+			// But a BROADCAST gets to end rather than to stop, and those are
+			// different sounds. A programme that runs out mid-air leaves the
+			// listener waiting for something that is not coming; forty words of
+			// sign-off is the difference between "it finished" and "it broke".
+			// Only in broadcast mode, and only once — outroDone is what stops a
+			// programme saying goodbye twice.
+			//
+			// finish is the end of the session, however it is reached: after the
+			// sign-off, or straight away when there is not going to be one.
+			//
+			// `music` is the difference between the two. Only the sign-off's own
+			// ending gets the ten-second fade — a session that stopped without
+			// one has nothing to fade FROM in the listener's ear, and holding
+			// music under a silence nobody expected would be the tab refusing to
+			// go quiet rather than a programme closing.
+			finish := func(music bool) {
+				// The show is told the programme ENDED, not that it broke.
+				//
+				// Without this the slideshow's own tick sees read-to-me on, a
+				// narrator that is not speaking, and no stated reason — and after
+				// ninety seconds it announces that the voice failed to start,
+				// which is a lie about a broadcast the listener just heard finish.
+				showVoice.Set(slideVoiceEnded)
+				if music {
+					// The bed outlives the session state on purpose. Nothing here
+					// waits for the fade: the reader is free, the controls come
+					// back, the notice appears — and the music goes on its own
+					// clock underneath all of it, which is what makes it read as
+					// the end of a programme rather than as a UI still busy.
+					platform.BedOutro()
+				}
+				speakID.Set("")
+				speakState.Set("")
+				outroDone.Set(false)
+				notice.Set(tr.T("reader", "queueFinished"))
+			}
+			if speakPodcast.Get() && !outroDone.Get() && done != "" {
+				if b := bodies.Get()[done]; b != nil && b.GetSpeechUrl() != "" {
+					outroDone.Set(true)
+					speakState.Set("loading")
+					// Its OWN state handler, not startPlayback's. That one is
+					// built around a story — it marks things read, it advances
+					// the queue, it runs the theme and seam timing — and every
+					// one of those is wrong for a recording that comes after the
+					// last story. This one has a single job: when the goodbye
+					// stops, the session is over.
+					//
+					// "error" ends it too. A sign-off that fails to synthesise is
+					// a programme that ends without one, which is exactly where
+					// this feature started; leaving the session hanging on a
+					// failed nicety would be worse than never having built it.
+					platform.PlayAudioIn(speechFrom(b.GetSpeechUrl(), speechAsk{
+						podcast: true,
+						intro:   askIntroClose,
+						stories: len(itemsRef.Get()),
+					}), 0, func(s string) {
+						ui.PostAsync(func() {
+							switch s {
+							case "idle":
+								// The goodbye landed. Let the music have the
+								// last ten seconds.
+								finish(true)
+							case "error":
+								// It did not. Ending in silence is right here:
+								// swelling the bed under a sign-off the listener
+								// never heard would be music with nothing to
+								// close.
+								finish(false)
+							default:
+								speakState.Set(s)
+							}
+						})
+					})
+					return
+				}
+			}
+			// No sign-off: an ordinary listening session, or a broadcast whose
+			// last story had no ticket to close against. Ends as it always has.
+			finish(false)
 			return
 		}
+		// Any story that follows another means the programme is still running, so
+		// a sign-off already played can be forgotten: a reader who loads more and
+		// carries on gets a second ending when THAT runs out, which is right.
+		outroDone.Set(false)
 		// THE SEAM. The bed comes up, and the next segment is held so that it
 		// starts into the lift rather than on top of it. Only inside the show
 		// and only with music playing: an ordinary listening session has no bed
@@ -3798,7 +3887,15 @@ func Reader(p readerProps) ui.Node {
 
 	// showLoop is whether the end of the queue wraps. A feed does; a rundown
 	// does not, because somebody chose where it ends.
-	showLoop = func() bool { return len(showOrder.Get()) == 0 }
+	//
+	// And read-to-me does not either, whichever of those it is walking. That
+	// exception was WRITTEN — slideStep's comment has always claimed it — and
+	// never implemented, so a broadcast reaching its last story looped the
+	// display back to the top while trackEnded had already stopped the narrator:
+	// the show started again, silently, from stories the listener had just heard.
+	// A programme ends. The clock-paced slideshow is the thing you leave running,
+	// and it still goes round.
+	showLoop = func() bool { return slideLoops(len(showOrder.Get()) > 0, showAudio.Get()) }
 
 	// showItem resolves an id to something playable, from wherever it is.
 	//

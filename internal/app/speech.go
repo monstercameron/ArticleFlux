@@ -106,6 +106,14 @@ const (
 	introParam = "i"
 	introOnly  = "1"
 	introDone  = "0"
+	// introClose asks for the SIGN-OFF alone: the programme is over, this
+	// recording ends it, and it covers no story (§19).
+	//
+	// A third value on the existing parameter rather than a parameter of its
+	// own, because it answers the same question every other value here answers —
+	// where in the programme this request sits — and a second flag would make
+	// "i=1&c=1" expressible, which is a request with no meaning.
+	introClose = "2"
 )
 
 // wantsOpening decides whether this request gets a greeting attached.
@@ -132,6 +140,16 @@ func wantsOpening(intro string, hasPrev bool) bool {
 // an opening.
 func isIntroRequest(intro string, podcast bool) bool {
 	return podcast && strings.TrimSpace(intro) == introOnly
+}
+
+// isCloseRequest is true when the caller asked for the SIGN-OFF alone.
+//
+// Gated on broadcast mode for the reason isIntroRequest is: without the writer
+// there is no programme to end, and a flag that meant something in one mode and
+// nothing in another would be a request that quietly returns the article when
+// the client thinks it asked for a goodbye.
+func isCloseRequest(intro string, podcast bool) bool {
+	return podcast && strings.TrimSpace(intro) == introClose
 }
 
 // openingFrom builds the top-of-broadcast greeting, or nil when this is not the
@@ -311,6 +329,35 @@ func (a *App) podcastIntro(ctx context.Context, it store.Item, vibe string,
 	})
 }
 
+// podcastOutro writes the sign-off on its own: the programme is over.
+//
+// `it` is the LAST story covered, and it is here to be two things — the cache
+// key, and the headline the close can land on. Its body is never sent: there is
+// nothing left to cover, and a model handed an article will cover it.
+//
+// The opening is passed through for its story COUNT alone (see writeClosing).
+// Nil is fine and ordinary — a listener who joined mid-programme was never
+// greeted, and the broadcast still has to be allowed to end.
+func (a *App) podcastOutro(ctx context.Context, it store.Item, vibe string,
+	open *smart.Opening) (string, error) {
+	if a.podcast == nil {
+		return "", smart.ErrNothingToSummarise
+	}
+	return a.podcast.Segment(ctx, smart.Segment{
+		ItemID: it.ID,
+		Vibe:   vibe,
+		Open:   open,
+		// The last story goes in the PREV fields rather than the current ones,
+		// which is not a quirk: from the sign-off's point of view every story is
+		// behind it, and the prompt's vocabulary for "the story you have just
+		// finished covering" is already exactly that.
+		PrevID:     it.ID,
+		PrevSource: it.SourceTitle,
+		PrevTitle:  it.Title,
+		CloseOnly:  true,
+	})
+}
+
 // podcastKey names an audio recording by the PAIR of articles it covers, not by
 // the article.
 //
@@ -362,8 +409,31 @@ func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
 // more here: a listener whose narrator falls over should hear the article, which
 // is less pleasant than what they asked for and infinitely better than silence.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item, open *smart.Opening, intro, opened bool) (text, cacheKey string) {
+	it store.Item, prev store.Item, open *smart.Opening, intro, opened, closing bool) (text, cacheKey string) {
 	text, cacheKey = speechText(it), it.ID
+
+	// The sign-off, on its own, after every story. Checked FIRST because it is
+	// the one mode that is not a rendering of the item at all — the item is
+	// here to be a cache key and a headline, and falling through to any of the
+	// paths below would read out an article the listener has already heard.
+	//
+	// A failure DOES NOT fall through. That is the opposite of every other
+	// branch in this function and it is deliberate: everywhere else the fallback
+	// is "read the article", which is worse than what was asked for and better
+	// than silence. Here the fallback would be reading the last story a second
+	// time, which is not a degraded goodbye — it is a bug with a voice. An
+	// empty script ends the programme quietly, which is what a broadcast with no
+	// sign-off has always done.
+	if closing {
+		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		txt, err := a.podcastOutro(ctx, it, vibe, open)
+		if err != nil {
+			a.cfg.Log.Warn("broadcast sign-off failed, ending without one",
+				"item", it.ID, "err", err)
+			return "", ""
+		}
+		return txt, podcastKey(it.ID, "", vibe, open) + "#outro"
+	}
 
 	// The opening, on its own, before any story. It is a separate recording
 	// rather than the first paragraph of the first segment for a reason that is
@@ -621,6 +691,10 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// flag and a predecessor is a client that has lost track of where it is, and
 	// the flag loses.
 	intro := isIntroRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
+	// The sign-off, asked for on its own after the last story. Like the opening
+	// it is its own recording, and for a related reason: the music has to come
+	// back up under it and then end, which can only be timed against a file.
+	closing := isCloseRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
 	// The other half of the split: the greeting has already been recorded, so
 	// this story must not open the show a second time.
 	opened := prefs[podcastPrefKey] == "true" &&
@@ -650,14 +724,28 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Three things this could be — the article, its digest, or its slot in a
-	// broadcast — and they are different artifacts, not renderings of one.
-	// `cacheKey` carries the difference, because the audio cache is keyed by it:
-	// without that, turning a mode on would serve yesterday's rendering of a
-	// different script, which looks exactly like the toggle not working.
+	// Four things this could be — the article, its digest, its slot in a
+	// broadcast, or the sign-off that ends one — and they are different
+	// artifacts, not renderings of one. `cacheKey` carries the difference,
+	// because the audio cache is keyed by it: without that, turning a mode on
+	// would serve yesterday's rendering of a different script, which looks
+	// exactly like the toggle not working.
+	//
+	// `closing` is NOT conditioned on `prev.ID == ""` the way the other two are.
+	// The opening flags mean "this is the top", so a predecessor contradicts
+	// them; a sign-off has every story behind it by definition, and the one it
+	// names travels as the item rather than as `p`.
 	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open,
-		intro && prev.ID == "", opened && prev.ID == "")
+		intro && prev.ID == "", opened && prev.ID == "", closing)
 	if text == "" {
+		if closing {
+			// 204 rather than 422: the request was understood and correct, and
+			// the answer is that this programme ends without a goodbye. The
+			// client treats it as the end either way, and a 4xx here would put a
+			// console error under a session that finished perfectly well.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return
 	}

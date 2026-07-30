@@ -81,6 +81,11 @@ func init() {
 		"voice.off":    "Read to me needs a couple of things switched on — see what",
 		"voice.nokey":  "This server has no Smart+ key, so read to me can't speak here. Playing silently",
 		"voice.failed": "The voice didn't start, so this is playing silently — see what read to me needs",
+		// Not a fault, and the only line in this group that is not. It shares the
+		// slot because it answers the same question — why is nobody talking —
+		// and a reader who has just heard a sign-off should see the show agree
+		// with them rather than an error about a voice that worked.
+		"voice.ended": "That's the end of the broadcast",
 
 		// --- what read-to-me needs
 		//

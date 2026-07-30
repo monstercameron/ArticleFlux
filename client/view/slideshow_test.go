@@ -819,3 +819,62 @@ func TestTheRunThroughFollowsTheRunningOrder(t *testing.T) {
 		t.Errorf("an unloaded programme produced %v", none)
 	}
 }
+
+// --- the sign-off request --------------------------------------------------------
+
+// The close is not about the story in the ticket: the programme is over, and the
+// item is there to be a cache key and a headline to land on. So none of the
+// handover or opening parameters apply to it, and sending them would widen the
+// surface the server has to ignore.
+func TestSpeechFromAsksForTheSignOff(t *testing.T) {
+	const ticket = "/speech?t=abc"
+	out := speechFrom(ticket, speechAsk{podcast: true, intro: askIntroClose, stories: 9})
+	if !strings.Contains(out, "&i=2") {
+		t.Errorf("the sign-off did not ask for itself: %q", out)
+	}
+	// The count rides along, because "that's the nine" is a real thing to say and
+	// the only number here that is true.
+	if !strings.Contains(out, "&n=9") {
+		t.Errorf("the sign-off lost the story count: %q", out)
+	}
+	for _, bad := range []string{"&p=", "&q=", "&now=", "&i=1", "&i=0"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("the sign-off carried %q, which belongs to a story: %q", bad, out)
+		}
+	}
+}
+
+// Broadcast mode gates it, like every other parameter here: with the writer off
+// there is no programme to end, and appending anything would change the URL —
+// which is the browser's audio cache key.
+func TestSpeechFromLeavesTheSignOffAloneWithoutBroadcast(t *testing.T) {
+	const ticket = "/speech?t=abc"
+	if got := speechFrom(ticket, speechAsk{intro: askIntroClose, stories: 9}); got != ticket {
+		t.Errorf("a sign-off was requested with broadcast mode off: %q", got)
+	}
+}
+
+// --- what wraps and what ends ------------------------------------------------------
+
+// The rule slideStep has always DOCUMENTED and did not implement until the
+// sign-off landed. A broadcast that reached its last story looped the display
+// back to the top while the narrator had already stopped: the show started
+// again, silently, on stories the listener had just heard.
+func TestSlideLoopsOnlyForAClockPacedFeed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hasOrder bool
+		audio    bool
+		want     bool
+	}{
+		{"a feed on the clock goes round — §19's screensaver", false, false, true},
+		{"read-to-me on a feed ENDS: the programme has a sign-off", false, true, false},
+		{"a rundown ends: somebody chose where", true, false, false},
+		{"a rundown being read to you ends twice over", true, true, false},
+	} {
+		if got := slideLoops(tc.hasOrder, tc.audio); got != tc.want {
+			t.Errorf("%s: slideLoops(hasOrder=%v, audio=%v) = %v, want %v",
+				tc.name, tc.hasOrder, tc.audio, got, tc.want)
+		}
+	}
+}

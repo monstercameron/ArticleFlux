@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
+	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -502,5 +504,189 @@ func TestTheSplitOpeningNeverBreaksPlayback(t *testing.T) {
 				t.Error("nothing was synthesised")
 			}
 		})
+	}
+}
+
+// --- the sign-off (§19) ------------------------------------------------------------
+//
+// A programme ends; a queue stops. `&i=2` is the request that buys the
+// difference, and the failure that matters most is not it being missing — it is
+// it returning the LAST STORY AGAIN, which is not a degraded goodbye but a bug
+// with a voice.
+
+// fakeWriter is the llmClient seam from internal/smart, satisfied from here.
+//
+// Possible because both methods on that unexported interface are exported names,
+// which is what lets this test drive the real Podcast writer — the prompt, the
+// cache key, the cleanup — instead of asserting against a stub of it.
+type fakeWriter struct {
+	mu   sync.Mutex
+	last llm.Request
+	n    int
+}
+
+func (f *fakeWriter) Configured(context.Context) bool { return true }
+
+func (f *fakeWriter) Do(_ context.Context, r llm.Request) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.last, f.n = r, f.n+1
+	// Whatever it is asked for, it says goodbye. The point of these tests is
+	// which prompt arrives and what the handler does with the answer, not
+	// whether a model can write.
+	return "That's the lot. Back when there's more.", nil
+}
+
+func (f *fakeWriter) seen() (llm.Request, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last, f.n
+}
+
+// withWriter swaps in a podcast writer that always succeeds.
+func withWriter(t *testing.T, a *App) *fakeWriter {
+	t.Helper()
+	w := &fakeWriter{}
+	a.podcast = smart.NewPodcast(w, a.settings, t.TempDir())
+	return w
+}
+
+func TestSignOffIsItsOwnRecordingAndNotTheStoryAgain(t *testing.T) {
+	a, voice, _, ids := broadcastApp(t)
+	w := withWriter(t, a)
+
+	rec := speak(t, a, "item="+ids[0]+"&i=2")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the sign-off answered %d, want 200", rec.Code)
+	}
+
+	req, n := w.seen()
+	if n != 1 {
+		t.Fatalf("the writer was called %d times, want 1", n)
+	}
+	if !strings.Contains(req.Instructions, "THE SIGN-OFF ONLY") {
+		t.Errorf("the sign-off did not get its own instructions:\n%s", req.Instructions)
+	}
+	// THE regression. The article body must not reach the model, because a model
+	// handed an article covers it — and the listener would hear the story they
+	// just finished, told again, as the programme's farewell.
+	//
+	// Matched on "story body", which every seeded item shares, rather than on one
+	// item's text: itemIDs returns newest-first, so naming a particular body here
+	// asserts against whichever story the ordering happens to put at ids[0] and
+	// passes for free when that is not the one being requested.
+	if strings.Contains(req.Input, "story body") {
+		t.Errorf("the sign-off was given the article body:\n%s", req.Input)
+	}
+	// And what was actually synthesised is the goodbye, not the article.
+	spoken := voice.last()
+	if !strings.Contains(spoken.text, "That's the lot") {
+		t.Errorf("the sign-off synthesised %q", spoken.text)
+	}
+	if strings.Contains(spoken.text, "story body") {
+		t.Errorf("the sign-off synthesised the article: %q", spoken.text)
+	}
+	// Its own cache entry. Sharing one with the story would serve the goodbye as
+	// the story or the story as the goodbye, and the audio cache is keyed off it.
+	if !strings.HasSuffix(spoken.key, "#outro") {
+		t.Errorf("the sign-off was cached as %q, which is not its own entry", spoken.key)
+	}
+}
+
+// Broadcast mode gates it, exactly as it gates the opening. With the writer off
+// there is no programme to end, and `&i=2` must not become a way to get a
+// different rendering of an article.
+func TestSignOffWithoutBroadcastModeReadsTheArticle(t *testing.T) {
+	a, voice, sc, ids := broadcastApp(t)
+	withWriter(t, a)
+	if err := a.repo.SetPrefs(t.Context(), sc, store.Prefs{podcastPrefKey: "false"}); err != nil {
+		t.Fatalf("SetPrefs: %v", err)
+	}
+	rec := speak(t, a, "item="+ids[0]+"&i=2")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("answered %d, want 200 and the article", rec.Code)
+	}
+	// "story body" rather than a named one, for the reason above: ids[0] is
+	// whichever story the newest-first ordering puts there.
+	spoken := voice.last()
+	if !strings.Contains(spoken.text, "story body") {
+		t.Errorf("with broadcast off, `i=2` did not read the article: %q", spoken.text)
+	}
+	if strings.Contains(spoken.text, "That's the lot") {
+		t.Errorf("with broadcast off, `i=2` still produced a sign-off: %q", spoken.text)
+	}
+}
+
+// A sign-off the writer cannot produce ends the programme QUIETLY.
+//
+// Every other broadcast failure falls back to reading the article, and that is
+// right — the listener asked to hear the story. Here it would be the last story
+// a second time. 204 rather than 422 because nothing went wrong: the request was
+// understood, and the answer is that this programme ends without a goodbye.
+func TestSignOffThatCannotBeWrittenEndsInSilenceNotInTheArticle(t *testing.T) {
+	// No writer swap: the App's own podcast has no key, so Segment refuses.
+	a, voice, _, ids := broadcastApp(t)
+	before := voice.count()
+
+	rec := speak(t, a, "item="+ids[0]+"&i=2")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("an unwritable sign-off answered %d, want 204", rec.Code)
+	}
+	if voice.count() != before {
+		t.Errorf("an unwritable sign-off synthesised something anyway: %q", voice.last().text)
+	}
+}
+
+// The flag is read from the same parameter as the opening, so the three states
+// have to stay told apart. `i=1` opens, `i=0` says the opening is already
+// recorded, `i=2` closes — and a mix-up here is a broadcast that greets the
+// listener when it meant to say goodbye.
+func TestTheOpeningAndTheSignOffAreNotConfused(t *testing.T) {
+	a, voice, _, ids := broadcastApp(t)
+	w := withWriter(t, a)
+
+	if rec := speak(t, a, "item="+ids[0]+"&i=1&n=4"); rec.Code != http.StatusOK {
+		t.Fatalf("the opening answered %d", rec.Code)
+	}
+	openReq, _ := w.seen()
+	openKey := voice.last().key
+
+	if rec := speak(t, a, "item="+ids[0]+"&i=2&n=4"); rec.Code != http.StatusOK {
+		t.Fatalf("the sign-off answered %d", rec.Code)
+	}
+	closeReq, _ := w.seen()
+	closeKey := voice.last().key
+
+	if strings.Contains(openReq.Instructions, "SIGN-OFF") {
+		t.Error("the opening was given the sign-off's instructions")
+	}
+	if strings.Contains(closeReq.Instructions, "THE OPENING ONLY") {
+		t.Error("the sign-off was given the opening's instructions")
+	}
+	if openKey == closeKey {
+		t.Errorf("the opening and the sign-off share the audio cache entry %q", openKey)
+	}
+}
+
+// isCloseRequest is the gate, and it is a pure function so the three states can
+// be checked without a database behind them.
+func TestIsCloseRequest(t *testing.T) {
+	for _, tc := range []struct {
+		intro   string
+		podcast bool
+		want    bool
+	}{
+		{"2", true, true},
+		{" 2 ", true, true}, // trimmed, like every other value here
+		{"2", false, false}, // broadcast off: no programme to end
+		{"1", true, false},  // that is the opening
+		{"0", true, false},  // that is "already opened"
+		{"", true, false},   // an ordinary segment
+		{"22", true, false}, // not a prefix match
+	} {
+		if got := isCloseRequest(tc.intro, tc.podcast); got != tc.want {
+			t.Errorf("isCloseRequest(%q, %v) = %v, want %v",
+				tc.intro, tc.podcast, got, tc.want)
+		}
 	}
 }

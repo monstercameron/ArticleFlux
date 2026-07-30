@@ -29,4 +29,6 @@ func BedDuck(under bool) {}
 
 func BedSeam() {}
 
+func BedOutro() {}
+
 func MusicPause(on bool) {}

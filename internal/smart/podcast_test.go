@@ -793,3 +793,145 @@ func TestSegmentGroupInputWithNoThemeSaysSoExplicitly(t *testing.T) {
 		t.Errorf("the previous theme did not reach the model:\n%s", themed)
 	}
 }
+
+// --- the sign-off ----------------------------------------------------------------
+//
+// A programme ends; a queue stops. The difference is about forty words, and the
+// failure modes are the mirror of the opening's: a close that covers a story, and
+// a close served as the segment for the story it names.
+
+func TestOutroInputCarriesTheLastHeadlineAndNoStory(t *testing.T) {
+	seg := Segment{
+		ItemID: "z", Source: "The Paper", Title: "Ignored",
+		Body:       "The body of the last story, which must not appear.",
+		PrevID:     "z",
+		PrevSource: "The Paper",
+		PrevTitle:  "The last story",
+		CloseOnly:  true,
+		Open:       &Opening{PartOfDay: "evening", Date: "Monday, 27 July 2026", Stories: 9},
+	}
+	in := podcastInput(seg, seg.Body)
+	for _, want := range []string{"SIGN-OFF", "The last story", "The Paper", "9"} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the sign-off lost %q:\n%s", want, in)
+		}
+	}
+	// The one thing it must never be given. A model handed an article will cover
+	// it, and a "goodbye" that re-tells the story just heard is worse than no
+	// goodbye at all.
+	if strings.Contains(in, "must not appear") {
+		t.Errorf("the sign-off was given the article body:\n%s", in)
+	}
+	// Nor any of a segment's scaffolding, including the handover shape — there is
+	// nothing to hand over to.
+	for _, bad := range []string{"The story to cover now", "SHAPE FOR THE HANDOVER", "OPENING"} {
+		if strings.Contains(in, bad) {
+			t.Errorf("the sign-off carried %q, which belongs to a segment:\n%s", bad, in)
+		}
+	}
+}
+
+// The close is keyed on the LAST story, which already has a segment of its own
+// under that id. Sharing an entry would serve the goodbye as the story, or the
+// story as the goodbye — and the audio cache is keyed off this too.
+func TestOutroDoesNotShareACacheEntryWithItsStory(t *testing.T) {
+	p := keylessPodcast(t)
+	open := &Opening{PartOfDay: "evening", Date: "Monday, 27 July 2026"}
+	seg := Segment{ItemID: "z", Vibe: VibeCalm, Open: open, Body: "text"}
+	outro := seg
+	outro.CloseOnly = true
+	intro := seg
+	intro.OpenOnly = true
+	if a, b := p.cachePath(seg, "m"), p.cachePath(outro, "m"); a == b {
+		t.Errorf("the sign-off and the last segment share %q", a)
+	}
+	if a, b := p.cachePath(intro, "m"), p.cachePath(outro, "m"); a == b {
+		t.Errorf("the sign-off and the opening share %q", a)
+	}
+}
+
+// A broadcast must be allowed to END whatever it knows about itself. A listener
+// who joined mid-programme was never greeted, so there is no Opening — and a
+// close that refused on that would leave exactly the silence this feature exists
+// to remove.
+func TestOutroNeedsNeitherBodyNorOpening(t *testing.T) {
+	seg := Segment{ItemID: "z", CloseOnly: true}
+	in := podcastInput(seg, "")
+	if !strings.Contains(in, "SIGN-OFF") {
+		t.Errorf("a bare sign-off produced nothing usable:\n%s", in)
+	}
+	// Opening.stories() is nil-safe; the count is simply omitted.
+	if strings.Contains(in, "Stories in this broadcast") {
+		t.Errorf("a sign-off with no opening claimed a story count:\n%s", in)
+	}
+}
+
+// The sign-off gets its OWN instructions. The segment prompt forbids signing off
+// — correctly, for every other segment — so a close routed through it would be a
+// model told to say goodbye and told not to, in the same breath.
+func TestOutroUsesTheSignOffInstructions(t *testing.T) {
+	got := podcastInstructionsOf(Segment{CloseOnly: true, Vibe: VibeCalm})
+	if !strings.Contains(got, "THE SIGN-OFF ONLY") {
+		t.Errorf("a closing segment did not get the sign-off instructions:\n%s", got)
+	}
+	// And the opening still gets its own, including when both flags are somehow
+	// set: ending the programme is the safer thing to do wrong.
+	both := podcastInstructionsOf(Segment{CloseOnly: true, OpenOnly: true})
+	if !strings.Contains(both, "THE SIGN-OFF ONLY") {
+		t.Error("a segment flagged both ways did not end the programme")
+	}
+}
+
+// --- handover variety ------------------------------------------------------------
+
+// Every segment is an independent call that cannot see the one before it, so
+// identical instructions converge on one bridge sentence — which a listener hears
+// as a machine within about four stories. The shape is what breaks that up, and
+// it has to reach the model to do anything at all.
+func TestHandoverShapeReachesTheModelOnlyWhenThereIsAHandover(t *testing.T) {
+	with := podcastInput(Segment{
+		ItemID: "b", PrevID: "a", PrevSource: "Elsewhere", PrevTitle: "The one before",
+	}, "body text")
+	if !strings.Contains(with, "SHAPE FOR THE HANDOVER") {
+		t.Errorf("a segment with a predecessor got no handover shape:\n%s", with)
+	}
+	// The top of a broadcast has nothing to hand over from, and an instruction
+	// with nothing to apply to is one a model applies anyway.
+	top := podcastInput(Segment{ItemID: "a"}, "body text")
+	if strings.Contains(top, "SHAPE FOR THE HANDOVER") {
+		t.Errorf("the first segment was told how to hand over from nothing:\n%s", top)
+	}
+}
+
+// Deterministic, because the alternative poisons the cache: a segment rewritten
+// after a miss must be the same segment, or the same story after the same story
+// sounds different on Tuesday and reads as the cache being broken.
+func TestHandoverShapeIsStableForAPair(t *testing.T) {
+	a := handoverShapeFor("one", "two")
+	for range 20 {
+		if got := handoverShapeFor("one", "two"); got != a {
+			t.Fatalf("the shape for a pair moved: %q then %q", a, got)
+		}
+	}
+	// And it is ORDERED: B-after-A is a different piece of writing from
+	// A-after-B, which is the same reason the cache key carries both ids.
+	if handoverShapeFor("two", "one") == a {
+		// Not a failure on its own — with six shapes a collision is expected
+		// about one time in six — so this only reports, it does not fail.
+		t.Logf("note: the reversed pair drew the same shape; that is a collision, not a bug")
+	}
+}
+
+// The point of the rotation is that a session does not use one shape. If the
+// hash only ever landed on one bucket the feature would be inert and every test
+// above would still pass.
+func TestHandoverShapesActuallyRotate(t *testing.T) {
+	seen := map[string]bool{}
+	for i := range 200 {
+		seen[handoverShapeFor("prev", strconv.Itoa(i))] = true
+	}
+	if len(seen) < len(handoverShapes) {
+		t.Errorf("only %d of %d handover shapes were ever drawn over 200 pairs",
+			len(seen), len(handoverShapes))
+	}
+}

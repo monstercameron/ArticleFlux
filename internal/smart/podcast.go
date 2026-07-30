@@ -39,6 +39,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,7 +68,57 @@ import (
 // (podcastGroupInstructionsFor) that did not exist in v3 at all, so the same
 // argument applies: a v3-cached single segment and a v4 group segment must not
 // be mistaken for interchangeable text sharing one version number.
-const podcastPromptVersion = "v4"
+// v5: three changes that are all about the same complaint — the narrator sounded
+// like software. (a) The handover gets a rotating SHAPE (handoverShapes), because
+// every segment is an independent call with no memory of the last one, so
+// identical instructions converged on one construction and a listener heard the
+// same bridge sentence all session. (b) The prose brief allows colour and a
+// figure of speech, where v4 read as a style guide for a wire service. (c) The
+// sign-off exists at all (podcastOutroInstructions), which is new text under this
+// version like the group writer was under v4.
+const podcastPromptVersion = "v5"
+
+// handoverShapes are the STRUCTURES a segment can use to get from the last story
+// to this one — not phrases.
+//
+// The distinction is the entire point. A list of approved sentences would
+// produce a narrator with five catchphrases instead of one, which is the same
+// failure at a lower frequency. These describe what the sentence has to DO, and
+// leave the words to the model, so two segments that draw the same shape still
+// read differently because the stories under them differ.
+//
+// The rotation is what makes it work, and it is why this is a slice rather than
+// a paragraph telling the model to "vary the transitions". A model asked to vary
+// something inside one call has nothing to vary against: it cannot see the
+// segment before it, and it will produce its single most likely bridge every
+// time, confidently and identically. Handing each call a DIFFERENT constraint is
+// the only version of this that survives contact with a stateless writer.
+//
+// Chosen by hash of the pair rather than at random, so a segment rewritten after
+// a cache miss is the same segment. Randomness here would mean the same story
+// after the same story sounded different on Tuesday, which is indistinguishable
+// from the cache being broken.
+var handoverShapes = []string{
+	"Name the RELATION between the two stories in plain words — same industry, same country, cause and effect, one contradicting the other, one explaining the other. Say what the connection is rather than gesturing at one.",
+	"Make a CLEAN BREAK. No bridge at all: finish the last thought and open the new story on its own first fact. A hard cut is a legitimate transition and it is the one that sounds least like software.",
+	"Carry ONE THREAD across — an idea, a word, a number, a company, a question the last story left open — and let it be the first thing the new story answers or complicates.",
+	"Use CONTRAST. Set the new story against the last one: bigger, smaller, the opposite conclusion, the same promise from a different direction. Say the contrast, do not merely imply it.",
+	"CHANGE PACE instead of changing subject with a phrase. A short sentence that lands the last story, then straight into the new fact. The rhythm does the work the connective would have done.",
+	"Step back for HALF A SENTENCE — what the two have in common about the week, the field, or the way these things tend to go — then into the new story. At most one clause of it; this is a breath, not an essay.",
+}
+
+// handoverShapeFor picks the shape for one ordered pair, deterministically.
+//
+// FNV over the two ids: cheap, stable across processes and builds, and with no
+// meaning of its own — which is what is wanted, because any pattern a listener
+// could notice in WHICH shape comes when would be a new kind of sameness.
+func handoverShapeFor(prevID, itemID string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(prevID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(itemID))
+	return handoverShapes[int(h.Sum32()%uint32(len(handoverShapes)))]
+}
 
 // The vibes: how the narrator sounds.
 //
@@ -159,6 +210,20 @@ type Opening struct {
 	Lineup []Headline
 }
 
+// stories is Stories, nil-safe.
+//
+// The sign-off is the one caller that reads an Opening it may not have been
+// given: a broadcast can be closed whether or not anyone was greeted at the top
+// of it — the listener may have joined mid-programme, or the opening may have
+// failed — and a close that panicked on that would take the whole request with
+// it for the sake of one number in one sentence.
+func (o *Opening) stories() int {
+	if o == nil {
+		return 0
+	}
+	return o.Stories
+}
+
 // Headline is one story in the opening run-through: who ran it, and what it
 // said.
 //
@@ -246,6 +311,19 @@ type Segment struct {
 	// twice in ninety seconds, which is the most obviously wrong thing a split
 	// broadcast can do.
 	Opened bool
+	// CloseOnly writes the SIGN-OFF and nothing else: no handover, no story.
+	//
+	// The mirror of OpenOnly, and it exists for the same reason the opening is
+	// its own recording — a programme that stops dead after its last story has
+	// not ended, it has run out. Every other segment is forbidden from signing
+	// off (see the NEVER list in podcastInstructionsFor), because the broadcast
+	// continues after it; exactly one segment per session is allowed to, and this
+	// is how it is told which.
+	//
+	// PrevSource and PrevTitle are the LAST story covered, so the close can land
+	// on what the listener was actually just told rather than on the programme in
+	// general. Body is not read: there is no story here to cover.
+	CloseOnly bool
 }
 
 // Podcast writes broadcast segments.
@@ -308,6 +386,56 @@ func (p *Podcast) Configured(ctx context.Context) bool {
 // introduction that will not end.
 const podcastIntroWords = 90
 
+// podcastOutroWords is the budget for the sign-off.
+//
+// Shorter than the opening, and deliberately the shortest thing in the
+// programme. An opening has work to do — it has to make someone stay. A close
+// has none: the listener has already heard everything, and every extra sentence
+// after the last story is a programme reluctant to stop. Forty words is a beat
+// of reflection and a goodbye.
+const podcastOutroWords = 45
+
+// podcastOutroInstructions writes the end of the broadcast and stops.
+//
+// Its own prompt rather than a flag on the segment prompt, for the reason the
+// opening has its own: almost every rule about covering a story is wrong here,
+// and "do all of this except the parts about the article" is an instruction a
+// model half-follows — keeping, of course, the article.
+//
+// The one rule it INVERTS is the segment prompt's "never sign off". That rule is
+// right for every other segment and is exactly what has to be lifted for this
+// one, which is why the permission is stated so plainly below: a model that has
+// been told all session not to say goodbye will not say goodbye by implication.
+func podcastOutroInstructions(vibe string) string {
+	return `You are the narrating voice of a continuous news broadcast, writing THE SIGN-OFF ONLY.
+
+` + vibes[VibeFor(vibe)] + `
+
+The programme is over. Every story has been told. You will be given the source and headline of the LAST story covered, and how many stories the broadcast ran — nothing else, because there is nothing else left to say.
+
+This is the one moment in the whole broadcast where signing off is not only allowed but is the entire job. Do it.
+
+Write about ` + strconv.Itoa(podcastOutroWords) + ` words of continuous spoken prose:
+
+1. LAND. One sentence that closes the programme rather than the last story — a look back across what the listener has just heard, or a plain acknowledgement that it is done. If the last story genuinely leaves something hanging, you may nod at that in a few words. Do not summarise the stories; the listener heard them.
+
+2. SIGN OFF. A goodbye, short, in your own manner. "That's the lot." "That's everything for now — back when there's more." "Thanks for the company." One line. Vary it; do not use the same farewell every time.
+
+Then stop, mid-air if need be. The last thing a listener should hear is you deciding to stop, not you running out.
+
+NEVER:
+
+- Never cover a story, quote one, or explain one. There is nothing left to cover.
+- Never invent a fact, a number, a name or an attribution.
+- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone, and do not name a show you have just finished presenting.
+- Never promise a specific next edition, a time, or a schedule. You do not know when the listener will come back and saying so is a false statement.
+- Never tell the listener to subscribe, rate, share, follow or do anything else. This is their own reader reading their own feeds to them; there is nothing to sell and nobody to sell it.
+
+Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+
+Output the spoken text and nothing else.`
+}
+
 // podcastIntroInstructions writes the top of the broadcast and stops.
 //
 // Its own prompt rather than a flag inside the segment one, because almost every
@@ -365,7 +493,11 @@ Write about ` + strconv.Itoa(podcastWords) + ` words of continuous spoken prose 
    You may lean on them lightly — a raised eyebrow at a claim, a note that something is overdue or surprising. That judgement is what makes a run-through worth hearing rather than worth skipping. Do not number them, do not name the publication for each one, and do not explain any of them yet: you are saying why they matter, not what happened.
 
    Never read a title verbatim if it was written for the eye. A headline with a colon in it, a bracketed aside, a site name stuck on the end or a number in front of it is not a sentence anybody says out loud — say the thing it is about instead.
-2. THE HANDOVER, only if a previous story was given: one or two sentences carrying the listener from it into this one. If the two are genuinely related — same subject, same industry, same country, cause and effect, agreement or contradiction — say what the relation IS. That connection is the most valuable sentence in the segment. If they are unrelated, make a plain, unhurried change of subject and do not pretend to a link. Never use a stock phrase like "in other news" or "turning now to" as a substitute for saying what is changing.
+2. THE HANDOVER, only if a previous story was given: one or two sentences carrying the listener from it into this one.
+
+   You will be given a SHAPE for this handover. Use it. It is there because you cannot see the segment before this one and will otherwise write the same bridge sentence every time — which a listener hears, within about four stories, as a machine.
+
+   If the shape genuinely does not fit these two stories, do the plainest possible change of subject instead. Never force a connection that is not there: a manufactured link is worse than no link, because the listener checks it and finds nothing. Never use a stock phrase — "in other news", "turning now to", "meanwhile", "speaking of which" — as a substitute for saying what is changing.
 3. THE STORY, told for a listener rather than transcribed for a reader.
 
 WHAT "TOLD FOR A LISTENER" MEANS. This is the whole job, so it is spelled out:
@@ -376,7 +508,8 @@ WHAT "TOLD FOR A LISTENER" MEANS. This is the whole job, so it is spelled out:
 - **You may editorialise about SIGNIFICANCE.** You may say a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before, or that this mostly matters if you use the thing in question. That judgement is why anyone would listen to a person instead of a feed reader.
 - **You may NOT invent.** No facts, numbers, quotes, dates, names or attributions that are not in the text you were given. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
 - **Write for the mouth, not the page.** Contractions. Short sentences. One idea in each — a sentence a listener has to hold in their head to the end is a sentence they have lost. Vary the length so it has a rhythm; three of the same length in a row is a metronome.
-- **Be specific rather than clever.** A concrete detail is worth three adjectives, and wordplay that needs a second to land is wordplay a listener has already missed. Where a turn of phrase is genuinely better than the plain version, use it — sparingly, and never at the cost of being understood first time.
+- **Be specific rather than clever — but do not be beige.** A concrete detail is worth three adjectives, and wordplay that needs a second to land is wordplay a listener has already missed. Within that: you are allowed to be good company. One image, one aside, one dry observation per segment is not a lapse in discipline, it is the difference between a person and a text-to-speech engine reading a summary. A listener who could not tell your segment from an automated one has been given no reason to keep listening.
+- **Have a voice, not a formula.** Do not open every segment the same way. Do not use the same connective twice in one segment. If you notice yourself reaching for a construction because it is safe, reach past it. The failure this whole brief is written against is not inaccuracy — it is a narrator who is correct, fluent, and completely interchangeable.
 - **Round numbers and give them scale**: "about a third", "roughly nine thousand — a small town's worth". Never read a table, a list of figures, or a version number.
 - **Skip what does not survive being heard once**: percentages to two decimal places, URLs, code, long proper nouns said more than once, the names of everyone quoted.
 - **Signpost when you change direction**: "the catch is", "what's new here is", "worth saying".
@@ -404,7 +537,13 @@ Output the spoken text and nothing else.`
 // opening. "Do all of this, except the parts about the article" is an
 // instruction a model half-follows, and the half it keeps is the story.
 func podcastInstructionsOf(seg Segment) string {
-	if seg.OpenOnly {
+	switch {
+	case seg.CloseOnly:
+		// Before OpenOnly, though the two are never both set: a request that
+		// somehow carried both is a client that has lost track of where it is,
+		// and ending the programme is the safer of the two things to do wrong.
+		return podcastOutroInstructions(seg.Vibe)
+	case seg.OpenOnly:
 		return podcastIntroInstructions(seg.Vibe)
 	}
 	return podcastInstructionsFor(seg.Vibe)
@@ -420,12 +559,20 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	// An opening has nothing to summarise by design — it covers no story — so the
 	// emptiness check that protects a two-line link post would reject every
 	// intro. What an intro needs instead is something to introduce.
-	if seg.OpenOnly {
+	switch {
+	case seg.CloseOnly:
+		// A sign-off needs even less: it can close a programme it knows nothing
+		// about except that it is over. There is deliberately NO precondition
+		// here — no last headline required, no story count — because every one
+		// of those would be a reason to end a broadcast in silence, and silence
+		// is the exact failure this whole feature exists to remove.
+		body = ""
+	case seg.OpenOnly:
 		if seg.Open == nil || len(seg.Open.Lineup) == 0 {
 			return "", ErrNothingToSummarise
 		}
 		body = ""
-	} else if body == "" {
+	case body == "":
 		return "", ErrNothingToSummarise
 	}
 	// Cache before key, like Digest.Speakable and for the same reason: this text
@@ -500,6 +647,39 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 // trailing clause on the headline list, because what "the first story" refers
 // to differs by caller (an intro-only recording vs. the segment or group it
 // leads into).
+// writeClosing states the little the sign-off is allowed to know.
+//
+// Deliberately thin: the last headline, so the close can land on what the
+// listener was actually just told, and the story count, because "that's the
+// eleven" is a real thing a presenter says and is the only number available
+// that is true. No body, no other headlines, no dates — every one of those is
+// something a model would be tempted to cover, and there is nothing left to
+// cover.
+func writeClosing(in *strings.Builder, seg Segment) {
+	in.WriteString("SIGN-OFF — the broadcast is over and every story has been told.\n")
+	if n := seg.Open.stories(); n > 0 {
+		in.WriteString("  Stories in this broadcast: ")
+		in.WriteString(strconv.Itoa(n))
+		in.WriteByte('\n')
+	}
+	source := strings.TrimSpace(seg.PrevSource)
+	title := strings.TrimSpace(seg.PrevTitle)
+	if source != "" || title != "" {
+		in.WriteString("  The last story you covered:\n")
+		if source != "" {
+			in.WriteString("    Publication: ")
+			in.WriteString(source)
+			in.WriteByte('\n')
+		}
+		if title != "" {
+			in.WriteString("    Headline: ")
+			in.WriteString(title)
+			in.WriteByte('\n')
+		}
+	}
+	in.WriteString("\nClose the programme and say goodbye. Nothing else.\n")
+}
+
 func writeOpening(in *strings.Builder, o *Opening, where string) {
 	if o == nil {
 		return
@@ -554,6 +734,14 @@ func writeOpening(in *strings.Builder, o *Opening, where string) {
 // longer emitted still reads perfectly.
 func podcastInput(seg Segment, body string) string {
 	var in strings.Builder
+	// The sign-off takes nothing but what it is closing over, and takes it
+	// FIRST: everything below this line is a story to cover or to hand over
+	// from, and a model shown an article while being told the programme is over
+	// will cover it anyway. Same argument OpenOnly makes a few lines down.
+	if seg.CloseOnly {
+		writeClosing(&in, seg)
+		return in.String()
+	}
 	// The opening first, because it is the first thing said. See writeOpening
 	// for why it is given as FACTS rather than as a sentence to read out.
 	where := "the first is the story covered below"
@@ -583,6 +771,13 @@ func podcastInput(seg Segment, body string) string {
 			in.WriteByte('\n')
 		}
 		in.WriteByte('\n')
+		// The shape for THIS handover. Emitted only where there is something to
+		// hand over from, because it is the one instruction in the prompt that is
+		// meaningless at the top of a broadcast — and an instruction with nothing
+		// to apply to is an instruction a model applies anyway.
+		in.WriteString("SHAPE FOR THE HANDOVER — use this one:\n  ")
+		in.WriteString(handoverShapeFor(seg.PrevID, seg.ItemID))
+		in.WriteString("\n\n")
 	} else {
 		// Said explicitly rather than left to be inferred from an absence. A
 		// model given only one story will write a handover from an imagined one
@@ -671,6 +866,11 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	// depending on which was asked for first.
 	mode := "seg"
 	switch {
+	case seg.CloseOnly:
+		// FIRST, so a sign-off can never be served as the segment that covers
+		// the same story. The close is keyed on the last item covered, which is
+		// an id that already has a segment of its own under it.
+		mode = "outro"
 	case seg.OpenOnly:
 		mode = "intro"
 	case seg.Opened:

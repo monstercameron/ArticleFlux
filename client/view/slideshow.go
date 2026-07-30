@@ -145,6 +145,16 @@ const (
 	slideVoiceOff    = "off"
 	slideVoiceNoKey  = "nokey"
 	slideVoiceFailed = "failed"
+	// slideVoiceEnded is the programme having FINISHED — the sign-off has been
+	// read and there is nothing after it.
+	//
+	// It is in this set rather than being its own piece of state because of what
+	// this set actually does: it is the reason the narrator is not speaking, and
+	// the tick that reports a silent narrator checks it before deciding anything.
+	// Without an entry here, a broadcast that ended correctly sat with an empty
+	// reason, the ninety-second backstop expired, and the display announced that
+	// the voice had failed to start — over a show that had just said goodbye.
+	slideVoiceEnded = "ended"
 )
 
 // --- what read-to-me needs before it can speak --------------------------------
@@ -424,6 +434,18 @@ func speechFrom(src string, ask speechAsk) string {
 	if src == "" || !ask.podcast {
 		return src
 	}
+	// The sign-off, before every other case. It is the one request that is not
+	// about the story in the ticket — the programme is over — so none of the
+	// handover or opening parameters below apply to it. The story count rides
+	// along because "that's the eleven" is a real thing a presenter says and is
+	// the only number here that is true.
+	if ask.intro == askIntroClose {
+		out := src + "&i=2"
+		if ask.stories > 0 {
+			out += "&n=" + strconv.Itoa(ask.stories)
+		}
+		return out
+	}
 	if ask.prevID == "" && ask.intro == askIntroDone {
 		// The first story of a SPLIT broadcast. Nothing about the opening is sent
 		// — not the clock, not the count, not the run-through — because the
@@ -550,6 +572,22 @@ func queueStep(q []string, id string, delta int, loop bool) string {
 	return q[next]
 }
 
+// slideLoops decides whether the END of the queue wraps back to the top.
+//
+// Pure and here rather than inline in Reader, because it is a three-way rule
+// that reads as one boolean at the call site and was WRONG for months in a way
+// nothing could catch: slideStep's comment claimed read-to-me did not loop, and
+// the condition it called only ever asked whether a running order was set.
+//
+//	rundown     never — somebody chose where it ends
+//	read-to-me  never — the programme has a sign-off, and going round again is
+//	            a second reading of stories just heard
+//	a feed      always — §19's screensaver argument: a display you leave running
+//	            must not turn itself into a dark screen with no explanation
+func slideLoops(hasOrder, audio bool) bool {
+	return !hasOrder && !audio
+}
+
 // queueNext is the story after this one, or "" at the end. It never wraps, in
 // either mode: this is what the NARRATOR follows, and a broadcast that silently
 // starts again from the top is a second reading of what was just played.
@@ -647,6 +685,10 @@ const (
 	// askIntroDone says the greeting has already been recorded — do not send
 	// another one. Without this the listener is greeted twice.
 	askIntroDone
+	// askIntroClose asks for the SIGN-OFF alone, after the last story. It covers
+	// no article: the item it names is the one just finished, and it is there to
+	// be a cache key and a headline to land on.
+	askIntroClose
 )
 
 // localStamp composes what platform.LocalNow reports into RFC3339.

@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"math"
 	"strconv"
 	"syscall/js"
 )
@@ -263,9 +264,17 @@ func OnAudioProgress(fn func(pos, dur float64)) Listener {
 	}
 }
 
-// finite turns a JS number into a Go float64, answering 0 for anything that is
-// not a real number — undefined, NaN and Infinity all reach here in normal use,
-// because that is what an <audio> element reports before it has parsed a header.
+// finite turns a MEDIA number into a Go float64, answering 0 for anything that
+// is not a real number — undefined, NaN and Infinity all reach here in normal
+// use, because that is what an <audio> element reports before it has parsed a
+// header.
+//
+// The bounds are what make it a media helper rather than a general one, and the
+// name does not say so: a position or a duration is a small non-negative number
+// of seconds, so anything outside that is a reading taken too early. Do NOT
+// reach for this for other JS numbers. It was used once for `Date.getTime()`,
+// which is about 1.75e12 — five hundred times the ceiling — so every clock the
+// client sent the server read as zero. See jsNumber for that case.
 func finite(v js.Value) float64 {
 	if v.Type() != js.TypeNumber {
 		return 0
@@ -274,6 +283,24 @@ func finite(v js.Value) float64 {
 	// NaN is the only value not equal to itself, and Infinity is what duration
 	// reads as for a stream with no length. Neither is usable as a fraction.
 	if f != f || f > 1e9 || f < 0 {
+		return 0
+	}
+	return f
+}
+
+// jsNumber is finite without the media bounds: NaN and infinities are still
+// rejected, and every real number is returned as it is.
+//
+// It exists because epoch milliseconds and timezone offsets are both ordinary
+// numbers that the media guard throws away — one for being far too large, the
+// other for being negative east of Greenwich.
+func jsNumber(v js.Value) float64 {
+	if v.Type() != js.TypeNumber {
+		return 0
+	}
+	f := v.Float()
+	// NaN, +Inf and -Inf. Everything else is a number a caller can use.
+	if f != f || f > math.MaxFloat64/2 || f < -math.MaxFloat64/2 {
 		return 0
 	}
 	return f
@@ -335,12 +362,21 @@ func LocalNow() (unixMillis int64, offsetMinutes int) {
 	if !now.Truthy() {
 		return 0, 0
 	}
-	ms := finite(now.Call("getTime"))
+	// jsNumber, NOT finite: epoch milliseconds are about 1.75e12 and finite
+	// rejects anything over 1e9 as a media reading taken too early. That single
+	// wrong helper made this return (0, 0) on every browser, so `&now=` was never
+	// sent and every listener was greeted by the SERVER's clock — which on a UTC
+	// droplet is "good afternoon" at half past eight in the morning in Florida.
+	ms := jsNumber(now.Call("getTime"))
 	// getTimezoneOffset is minutes BEHIND UTC — it reports +300 for New York,
 	// which is five hours west. Negated here so the caller gets the sign every
 	// other timezone API in the world uses, and so nobody has to remember this
 	// twice.
-	off := finite(now.Call("getTimezoneOffset"))
+	//
+	// jsNumber here too: finite floors negatives at zero, and getTimezoneOffset
+	// is negative for every zone EAST of Greenwich — so Paris and Tokyo would
+	// have been handed UTC while New York happened to survive.
+	off := jsNumber(now.Call("getTimezoneOffset"))
 	return int64(ms), -int(off)
 }
 

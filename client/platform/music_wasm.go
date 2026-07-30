@@ -94,6 +94,19 @@ const (
 	stingSwell = 1.2
 	// stingOut is the long goodbye under which the bed arrives.
 	stingOut = 2.5
+
+	// bedOutroRise and bedOutroFall are the end of the programme: the bed comes
+	// up as the sign-off finishes, then goes, over ten seconds together.
+	//
+	// The rise is quick and the fall is most of it, which is the shape of every
+	// piece of music that has ever ended — a lift you notice and a departure you
+	// do not. Reversing the ratio gives a long swell into an abrupt stop, which
+	// sounds like a mistake rather than an ending.
+	//
+	// Ten seconds total. Long enough to be a close and not so long that somebody
+	// who has finished listening is waiting for their tab to go quiet.
+	bedOutroRise = 1.5
+	bedOutroFall = 8.5
 )
 
 // musicChan is one playing track: the element, its gain, and what it is playing.
@@ -228,6 +241,45 @@ func (m *musicChan) stop(secs float64) {
 	js.Global().Call("setTimeout", done, int((secs+0.1)*1000))
 }
 
+// outro is stop() with a lift in front of it: the music comes UP as the voice
+// leaves, holds the programme for a moment, and then goes.
+//
+// One method rather than a level() followed by a stop(), and that is not tidiness
+// — it is the only way it works. stop() opens with cancelScheduledValues, so a
+// swell scheduled a line earlier would be thrown away and the listener would hear
+// the bed fade from wherever it was ducked to. Both ramps have to be booked on
+// the same clock, in the same call, before anything cancels anything.
+//
+// Exponential rather than linear for the reason every other fade here is: a
+// linear ramp to silence sounds like it stops early, because the last twenty
+// decibels of it are inaudible and the ear hears the fade end when the music
+// does.
+func (m *musicChan) outro(peak, rise, fall float64) {
+	el, g := m.el, m.gain
+	m.el, m.gain, m.src = js.Undefined(), js.Undefined(), ""
+	if !el.Truthy() {
+		return
+	}
+	if g.Truthy() && audioCtx.Truthy() {
+		now := audioCtx.Get("currentTime").Float()
+		gain := g.Get("gain")
+		gain.Call("cancelScheduledValues", now)
+		gain.Call("setValueAtTime", gain.Get("value").Float()+0.0001, now)
+		gain.Call("exponentialRampToValueAtTime", peak, now+rise)
+		gain.Call("exponentialRampToValueAtTime", 0.0001, now+rise+fall)
+	}
+	var done js.Func
+	done = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		defer done.Release()
+		if el.Truthy() {
+			el.Call("pause")
+			el.Set("src", "")
+		}
+		return nil
+	})
+	js.Global().Call("setTimeout", done, int((rise+fall+0.1)*1000))
+}
+
 // Bed plays the low music under the stories, or stops the one playing.
 //
 // src is a blob URL; "" stops.
@@ -258,6 +310,25 @@ func BedDuck(under bool) {
 func BedSeam() {
 	defer func() { _ = recover() }()
 	bedCh.level(bedSeam, bedSwell)
+}
+
+// BedOutro ends the broadcast: the bed lifts as the sign-off finishes, holds,
+// and fades away.
+//
+// The mirror of the opening, and it exists for the same reason the opening does.
+// A programme whose music cuts the instant the last word lands has not ended, it
+// has been switched off — and the moment after a goodbye is precisely where a
+// listener expects to be let go rather than dropped. Ten seconds is long enough
+// to read as the programme closing and short enough that nobody is waiting for
+// it to be over.
+//
+// The lift is to bedSeam, the same level the music reaches between two stories.
+// That is deliberate: the listener has already learned what "the programme is
+// breathing" sounds like, so ending on it says the show is finished in a
+// vocabulary they have been hearing all session.
+func BedOutro() {
+	defer func() { _ = recover() }()
+	bedCh.outro(bedSeam, bedOutroRise, bedOutroFall)
 }
 
 // Sting starts the opening music, loud.
