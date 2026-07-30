@@ -41,42 +41,50 @@ User=articleflux
 Group=articleflux
 
 WorkingDirectory=/opt/articleflux
-# BEFORE DNS AND TLS EXIST — reachable directly at http://<droplet-ip>:9000
+# BEHIND NGINX, WHICH TERMINATES TLS. This is the live shape: production runs
+# exactly this with -origin https://feed.earlcameron.com.
 #
-# Three things change together here and none of them is optional, which is why
-# they are spelled out rather than left as "just bind 0.0.0.0":
+# Three things go together here and none of them is optional, which is why they
+# are spelled out rather than left as "just bind loopback":
 #
-#   -addr 0.0.0.0:9000   nothing is in front, so the app takes the public port
-#                        itself. Bound to loopback it answers only the box.
-#   -origin http://…     the tunnel compares the browser's Origin against this
-#                        allowlist. Reaching the app by IP makes that Origin
-#                        http://<ip>:9000, so an allowlist naming a hostname
-#                        refuses every WebSocket upgrade — and that failure is
-#                        the nastiest kind, because the page loads perfectly and
-#                        then no data ever arrives.
-#   no -behind-proxy     that flag tells the server to trust X-Forwarded-For.
-#                        With nothing in front of it, the CLIENT sets those
-#                        headers, so trusting them means trusting a stranger
-#                        about their own address.
+#   -addr 127.0.0.1:9000 nginx owns the public ports; the app answers only the
+#                        box. Bound to 0.0.0.0 it is reachable around the proxy,
+#                        which means around TLS.
+#   -origin https://…    the tunnel compares the browser's Origin against this
+#                        allowlist, and it must be the URL A BROWSER ACTUALLY
+#                        SHOWS — scheme included. An allowlist naming the box's
+#                        IP while readers arrive over https://<hostname> refuses
+#                        every WebSocket upgrade, and that failure is the
+#                        nastiest kind: the page loads perfectly and then no data
+#                        ever arrives.
+#   -behind-proxy        trust X-Forwarded-For, which is only safe BECAUSE nginx
+#                        is in front and overwrites it. Without a proxy the
+#                        CLIENT sets that header and trusting it means trusting a
+#                        stranger about their own address.
 #
-# Put this droplet's IP in -origin below. Swap all three back the moment a
-# hostname and a certificate exist: this serves the application over plaintext,
-# and a session token in the clear is fine for an IP nobody has bookmarked and
-# not fine for anything else.
+# `https://reader.example.com` is a substitution target, not an example to copy:
+# install.sh rewrites it to whatever `--origin` says. Keep the literal string on
+# the ExecStart line. It used to live only in the commented-out block below,
+# which meant the sed matched nothing, `--origin` silently did nothing, and a
+# fresh install came up allowlisting a DIFFERENT box's IP address.
 ExecStart=/opt/articleflux/bin/articleflux serve \
-    -addr 0.0.0.0:9000 \
+    -addr 127.0.0.1:9000 \
     -db /var/lib/articleflux/articleflux.db \
     -web /opt/articleflux/bin/web \
-    -origin http://167.99.232.99:9000 \
+    -origin https://reader.example.com \
+    -behind-proxy \
     -poll 15m
 
-# The behind-nginx form, for when DNS and TLS are done — swap the two blocks.
+# The pre-DNS form, for a box reachable only at http://<droplet-ip>:9000 with
+# nothing in front of it — swap the two blocks, and put the real IP in -origin.
+# It serves the application over plaintext: fine for an IP nobody has bookmarked,
+# not fine for anything a person logs into, because the session token crosses the
+# wire in the clear. Swap back the moment a hostname and a certificate exist.
 # ExecStart=/opt/articleflux/bin/articleflux serve \
-#     -addr 127.0.0.1:9000 \
+#     -addr 0.0.0.0:9000 \
 #     -db /var/lib/articleflux/articleflux.db \
 #     -web /opt/articleflux/bin/web \
-#     -origin https://reader.example.com \
-#     -behind-proxy \
+#     -origin http://203.0.113.10:9000 \
 #     -poll 15m
 
 # Migrations run before the server takes traffic. serve migrates on open anyway,
