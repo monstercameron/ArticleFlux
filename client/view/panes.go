@@ -203,6 +203,13 @@ const (
 	glyphAction   = "\u26a1"
 	glyphYours    = "\u25cd"
 	glyphShared   = "\u25cc"
+	// Signing out, on the Account tab. The open counterpart of that tab's own
+	// \u25d1: half a disc is somebody signed in, an empty ring is the same seat with
+	// nobody in it. Deliberately NOT an arrow \u2014 the document's direction flips with
+	// the locale (Root sets `dir`), so a glyph that means "out" by pointing right
+	// means "in" in Arabic. And deliberately not \u23fb, which on the settings screen
+	// of a self-hosted server reads as "shut the server down".
+	glyphSignOut = "\u25cb"
 	// The note autosave's marks. \u21bb is the sync glyph in every application
 	// that has one, which is exactly why it is here: a field that saves itself
 	// has to report that in a form nobody needs a legend for.

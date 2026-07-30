@@ -275,6 +275,15 @@ type actions struct {
 	loadStats      func()
 	setLogLevel    func(level string)
 	toggleMarkPast func()
+
+	// Signing out, on the Account tab. Three verbs rather than one taking a
+	// state, because the press that arms the button and the press that ends the
+	// session are not the same decision, and the third is the reader
+	// acknowledging a logout the server never confirmed. See view.signOutGroup.
+	armSignOut   func()
+	doSignOut    func()
+	leaveToLogin func()
+
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
 

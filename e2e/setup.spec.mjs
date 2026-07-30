@@ -137,3 +137,68 @@ test('the account that setup created can sign in', async ({ page }) => {
   await page.click('.login-submit');
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
 });
+
+// signIn takes a fresh context from the address to the reader.
+//
+// Every test here gets its own browser context, so nothing carries a credential
+// in from the test above — which is the property this file already relies on and
+// the one the sign-out tests below need most: each starts genuinely signed in.
+async function signIn(page) {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="login"]', { timeout: 60_000 });
+  await page.fill('#login-username', 'cam');
+  await page.fill('#login-password', PASSWORD);
+  await page.click('.login-submit');
+  await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+}
+
+async function openAccountTab(page) {
+  await page.keyboard.press(',');
+  await expect(page.locator('.set-tabs')).toBeVisible();
+  await page.locator('[data-action="settings-tab"][data-value="account"]').click();
+  await expect(page.locator('.set-panel')).toBeVisible();
+}
+
+// The sign-out control exists ONLY on an authenticated instance, which is why
+// these tests live in this file rather than beside the other settings specs: the
+// shared instance every other spec drives is started with `-dev`, holds no
+// credential, and correctly renders no sign-out at all.
+test('signing out takes two presses, and the first one only asks', async ({ page }) => {
+  await signIn(page);
+  await openAccountTab(page);
+
+  const arm = page.locator('[data-action="sign-out"]');
+  await expect(arm).toBeVisible();
+  await arm.click();
+
+  // Armed, not done. The reader is still in the reader, and the button now
+  // carries the action that actually ends the session.
+  await expect(page.locator('[data-action="sign-out-confirm"]')).toBeVisible();
+  await expect(page.locator('.set-panel [role="alert"]')).toBeVisible();
+  await expect(page.locator('.shell')).toBeVisible();
+
+  // Leaving the tab disarms it, so a confirmation nobody remembers giving cannot
+  // be spent by a later click that happens to land on the same pixels.
+  await page.locator('[data-action="settings-tab"][data-value="reading"]').click();
+  await page.locator('[data-action="settings-tab"][data-value="account"]').click();
+  await expect(page.locator('[data-action="sign-out"]')).toBeVisible();
+  await expect(page.locator('[data-action="sign-out-confirm"]')).toHaveCount(0);
+});
+
+test('the second press ends the session and the credential does not come back', async ({ page }) => {
+  await signIn(page);
+  await openAccountTab(page);
+
+  await page.locator('[data-action="sign-out"]').click();
+  await page.locator('[data-action="sign-out-confirm"]').click();
+
+  await expect(page.locator('[data-phase="login"]')).toBeVisible({ timeout: 60_000 });
+
+  // The assertion that separates a real logout from a screen that merely looks
+  // like one: reload, and the stored credential is still gone. Before this
+  // control existed, clearing local storage by hand was the only way to reach
+  // this state — a reload that walked back into the reader would mean the token
+  // survived and the button had only navigated.
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('[data-phase="login"]')).toBeVisible({ timeout: 60_000 });
+});

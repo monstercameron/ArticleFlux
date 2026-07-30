@@ -4397,9 +4397,10 @@ why 6.1 was built ahead of its milestone rather than after it.
   first droplet build is where it gets proven.
 - **`deploy/` has never been run against a real droplet.** Every file in it is reasoned from the
   failure it prevents, and none of it has met DigitalOcean.
-- **A sign-out button.** `data.SignOut` exists, works, and has no affordance — wiring it into the
-  settings screen means editing `reader.go` while another lane is rewriting it. Clearing local storage
-  is the current logout.
+- ~~**A sign-out button.**~~ **Done** (2026-07-30). Settings → Account, two presses, absent on a
+  `-dev` instance and in the demo because neither issues a credential. See F46b for what is still
+  owed around it — devices, "sign out everywhere", and the identity line above it still reading
+  "the local account" on an authenticated server (F46a).
 - **D0 is now an operational footgun, not just a build inconvenience.** The droplet needs both
   checkouts side by side and both kept in step on every update. `make deps` says so loudly instead of
   failing with a path error, but tagging GWC v5.0.0 removes the whole class.
@@ -5915,12 +5916,15 @@ A backlog built from either mistake funds work that already exists.
             it never falls back to “local account” merely because a prop was omitted; and its
             identity state updates without a reload.*
 
-      - [ ] **F46b · Ship sign-out and session/device management.** Wire the existing client
-            `SignOut` method to a visible action; add “sign out everywhere”; list active devices and
-            sessions with label, approximate last use, client version and current-device marker; and
-            revoke one device/family. A failed server logout still clears the local credential and
-            explains that remote revocation could not be confirmed. Destructive actions require
-            confirmation that names their scope.
+      - [ ] **F46b · Ship sign-out and session/device management.** ~~Wire the existing client
+            `SignOut` method to a visible action~~ (**done 2026-07-30**: Settings → Account, armed
+            two-press control, absent where no credential exists; ~~a failed server logout still
+            clears the local credential and explains that remote revocation could not be
+            confirmed~~; ~~confirmation that names its scope~~ — `client/view/settings.go`
+            `signOutGroup`, `e2e/setup.spec.mjs`). **Still owed:** “sign out everywhere”, which has
+            no RPC behind it yet — `AuthService.Logout` revokes exactly the calling session; list
+            active devices and sessions with label, approximate last use, client version and
+            current-device marker; and revoke one device/family.
             *Done when: current sign-out, all-device sign-out and single-device revoke are usable by
             keyboard and screen reader; the current credential disappears locally even offline; and
             server tests prove the corresponding refresh authority is dead.*

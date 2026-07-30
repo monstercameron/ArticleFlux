@@ -290,6 +290,12 @@ func (d delegatedClicks) wire() {
 					a.loadMyFeed()
 				case "settings-loglevel":
 					a.setLogLevel(value)
+				case actSignOut:
+					a.armSignOut()
+				case actSignOutDo:
+					a.doSignOut()
+				case actSignOutBack:
+					a.leaveToLogin()
 				case actDataImport:
 					a.importOPML()
 				case actDataExport:

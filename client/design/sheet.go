@@ -1808,6 +1808,17 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 	css.Global(".fs-danger:hover",
 		r("background", "var(--neg)"), r("color", "var(--bg)"), r("border-color", "var(--neg)"),
 	)
+	// The same fill, held rather than hovered: a control that has been armed and
+	// whose next press is the press (client/view/signOutGroup). It is the hover
+	// state made permanent on purpose — the reader has already committed once, so
+	// the button should look the way it looked at the moment they did.
+	//
+	// Not `[aria-pressed="true"]`, which the chip already styles from the reader's
+	// chosen accent: a warning painted in the accent is green on a green theme,
+	// and "go" is the last thing this press should look like.
+	css.Global(`.fs-danger[data-armed="true"]`,
+		r("background", "var(--neg)"), r("color", "var(--bg)"), r("border-color", "var(--neg)"),
+	)
 	css.Global(".fs-note",
 		r("margin-top", "10px"), r("font-size", "12px"), r("color", "var(--mute)"),
 	)

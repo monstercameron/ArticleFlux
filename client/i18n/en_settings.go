@@ -163,9 +163,43 @@ func init() {
 		"factReconnects":   "Reconnects",
 		"reconnectSummary": "{count} · {lost} offline",
 		"localAccount":     "the local account",
-		"notBuiltGroup":    "Not built yet",
-		"notBuiltHint":     "This server runs one local account with no login screen.",
-		"notBuiltNote":     "Passwords, sessions, devices, invites and roles arrive with authentication (plan §7). Until then the server binds to loopback only and treats whoever reaches the port as the owner, which is why it must not be exposed to a network.",
+
+		// --- account · signing out
+		//
+		// A group of its own rather than a row under "You", because it is the
+		// only control on this screen that ENDS something. The title names the
+		// scope before the button is read: what is about to happen happens to
+		// this browser, and a reader who signs out on a library machine needs to
+		// know that without pressing anything to find out.
+		// No group hint. It carried a third "in this browser" under a heading
+		// that already says it and above a note that says it again — the same
+		// sentence three times reads as insistence rather than emphasis.
+		"sessionGroup": "This browser",
+		"signOut":      "Sign out",
+		// The armed label is a different sentence, not the same one shouted.
+		// "Sign out now" says the next press is the press.
+		"signOutArmed": "Sign out now",
+		"signOutBusy":  "Signing out…",
+		// Says what is at stake in the terms the reader is worried about. Nobody
+		// hesitating over this button is wondering about tokens; they are
+		// wondering whether they are about to lose four years of saved reading.
+		"signOutWarn": "Press again to sign out. Your feeds, notes and saved place stay on the server.",
+		// The standing note, always up, naming the scope the way F46b asks: this
+		// press reaches one browser. The phone in your pocket is unaffected, and
+		// somebody signing out of a machine they do not trust should not walk
+		// away believing otherwise.
+		"signOutScope": "This ends the session in this browser only. Anywhere else you are signed in stays signed in.",
+		// The offline answer, and the reason this screen does not simply reload.
+		// The credential is already gone from this machine — that part cannot
+		// fail — but the server was not reached, so its copy of the session is
+		// still live until it expires. Saying so is the difference between a
+		// logout and the appearance of one.
+		"signOutStranded": "Signed out in this browser. The server did not answer, so the session there stays open until it expires on its own.",
+		"signOutGo":       "Back to sign-in",
+
+		"notBuiltGroup": "Not on this screen yet",
+		"notBuiltHint":  "What the server can do that this tab cannot ask it to.",
+		"notBuiltNote":  "Changing your password and regenerating your recovery codes exist on the server and have no control here yet. Naming the devices you are signed in on, and ending all of them at once, are not built anywhere.",
 
 		// --- server
 		"buildGroup":    "Build",

@@ -91,6 +91,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **A way to sign out** (Settings → Account, TODO F46b's first half). `data.SignOut` was written,
+  tested and reachable from nowhere for its entire life — clearing local storage by hand was the
+  documented logout — so this is an affordance for a capability that already worked, not a new one.
+  It takes two presses, the second one named ("Sign out now") and the first only arming it, and the
+  arming is spent by leaving the tab; the red arrives WITH the second press rather than at rest,
+  because signing out costs a password to undo and does not deserve to be the loudest thing on the
+  screen. It is on the Account tab and deliberately not in the list header beside the gear, where a
+  misfire would sit two pixels from the controls a reader hits forty times an evening.
+  **The failure path does not reload.** The local credential is cleared whether or not the server
+  answered, so a logout that never reached the server leaves the two halves disagreeing — gone here,
+  live there — and the screen says exactly that instead of showing a login page that implies a
+  revocation which did not happen. The control is absent entirely on a `serve -dev` instance and in
+  the demo build, which issue no credential: a button that clears nothing and reloads back into the
+  reader teaches people not to trust the ones that do.
+
 - **A landing page, at `/welcome`.** The origin has only ever opened onto a password prompt, which
   answers "what is this?" with "log in". The page is the reader's own three-pane layout with the
   pitch typeset inside it as an article — same palette, same faces, same per-source hue running

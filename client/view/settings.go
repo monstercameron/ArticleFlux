@@ -155,6 +155,11 @@ type settingsProps struct {
 	whoami    string
 	serverURL string
 
+	// session is the Account tab's sign-out state: whether there is a credential
+	// to give up, how far through giving it up we are, and whether the server
+	// confirmed. Grouped for `smart`'s reason — no other tab reads any of it.
+	session sessionProps
+
 	// smart is the Smart+ tab's entire state. One field rather than eight,
 	// because none of it is read by any other tab and settingsProps is already
 	// long enough to be scanned rather than read.
@@ -499,7 +504,7 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if who == "" {
 		who = tr.T("settings", "localAccount")
 	}
-	return []ui.Node{
+	out := []ui.Node{
 		fsGroup("◑", tr.T("settings", "youGroup"), ""),
 		setFact(tr.T("settings", "factSignedIn"), who),
 		setFact(tr.T("settings", "factServer"), p.serverURL),
@@ -512,7 +517,9 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 		ui.If(p.reconnects > 0, func() ui.Node {
 			return setFact(tr.T("settings", "factReconnects"), p.connHealth)
 		}),
-
+	}
+	out = append(out, signOutGroup(tr, p.session)...)
+	return append(out,
 		// Said plainly rather than shown as a disabled form. A greyed-out
 		// "Change password" that never works is worse than an honest sentence:
 		// the reader spends time working out whether they are doing it wrong.
@@ -520,6 +527,133 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 			tr.T("settings", "notBuiltHint")),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "notBuiltNote"))),
+	)
+}
+
+// --- signing out ---------------------------------------------------------------
+//
+// The one control on this surface that ends something, and the only affordance
+// `data.SignOut` has ever had — it was written, tested and then reachable from
+// nowhere, so clearing local storage by hand was the documented logout.
+//
+// **It is here and nowhere else, on purpose.** The obvious alternative is the
+// list header, beside the gear, where every webmail puts it. That row is two
+// pixels from the controls a reader hits forty times an evening — Refresh, Mark
+// all read, Slideshow — and the cost of a misfire there is not symmetric: the
+// other buttons are undoable and this one ends the session. Settings is one
+// keystroke away (a comma), the Account tab is where identity already lives, and
+// somebody who has decided to leave will spend the extra click.
+//
+// # Why it can be absent
+//
+// A `serve -dev` instance issues no credential at all: the server hands over the
+// local account to whoever reaches the port, and Root never shows a login screen.
+// A sign-out button there would clear nothing, reload, and sign the reader
+// straight back in — a control that visibly does nothing, which is worse than a
+// control that is missing. The demo build is the same shape. So the group appears
+// only when this browser is actually holding something to give up.
+//
+// # Why the failure path does not reload
+//
+// Every other outcome ends in a reload, because the token is gone and the page
+// has to go back to the door. A failed logout is the one case where the reader is
+// owed a sentence first: the credential is already gone from this machine (the
+// data layer clears it whether or not the call lands), but the server's copy is
+// still live. Reloading would replace that sentence with a login screen, and the
+// reader would walk away from a shared machine believing the session was revoked.
+// So the note stays up, and going back to the door becomes the reader's own press.
+type sessionProps struct {
+	// present is whether this browser holds a credential at all. False on a dev
+	// server and in the demo — see above.
+	present bool
+	// armed is the first press. Per-visit, like the category editor's delete:
+	// a confirm that survives leaving the tab is a confirm nobody remembers
+	// giving.
+	armed bool
+	busy  bool
+	// stranded is a logout the server did not confirm. The local half succeeded
+	// regardless, so this is a state to explain rather than an error to retry.
+	stranded bool
+}
+
+const (
+	actSignOut     = "sign-out"
+	actSignOutDo   = "sign-out-confirm"
+	actSignOutBack = "sign-out-back"
+)
+
+func signOutGroup(tr i18n.Runtime, s sessionProps) []ui.Node {
+	if !s.present {
+		return nil
+	}
+
+	// Stranded replaces the button rather than sitting beside it. There is
+	// nothing left to sign out of here, so offering to do it again would be
+	// offering to repeat work that has already happened.
+	if s.stranded {
+		return []ui.Node{
+			fsGroup(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
+			html.Div(html.Props{
+				Class: "set-note set-note-live",
+				Data:  map[string]string{"bad": "true"},
+				Role:  "status",
+			}, html.Text(tr.T("settings", "signOutStranded"))),
+			html.Div(html.Props{Class: "set-actions"},
+				glyphChip(actSignOutBack, glyphSignOut, tr.T("settings", "signOutGo"), false)),
+		}
+	}
+
+	label, action := tr.T("settings", "signOut"), actSignOut
+	switch {
+	case s.busy:
+		label, action = tr.T("settings", "signOutBusy"), actSignOutDo
+	case s.armed:
+		label, action = tr.T("settings", "signOutArmed"), actSignOutDo
+	}
+
+	// The colour arrives WITH the consequence, not before it.
+	//
+	// `fs-danger` is the sheet's destructive chip — a red outline that fills on
+	// hover — and it is the right treatment for the second press and the wrong
+	// one for the first. Worn at rest it made the only button on a short tab the
+	// loudest thing on the screen, for an action that is not even irreversible:
+	// the cost of signing out by accident is typing a password, not losing
+	// anything. So the resting control is an ordinary chip, and arming it is what
+	// turns it red — which means the red is never decoration, it is the state.
+	//
+	// data-armed rather than aria-pressed, and rather than leaning on the chip's
+	// own pressed style. `.chip[aria-pressed="true"]` fills from the reader's
+	// CHOSEN ACCENT (client/view/theme.go), so on a green theme the armed
+	// warning would paint green — a "go" colour on the press that ends the
+	// session. The armed fill comes from --neg, the one token that means this
+	// went wrong or is about to.
+	class := "chip"
+	if s.armed || s.busy {
+		class = "chip fs-danger"
+	}
+
+	return []ui.Node{
+		fsGroup(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
+		html.Div(html.Props{Class: "set-actions"},
+			html.Button(html.Props{
+				Class: class,
+				Raw: map[string]any{
+					"data-action": action,
+					"data-armed":  strconv.FormatBool(s.armed && !s.busy),
+				},
+				Aria: map[string]string{"busy": strconv.FormatBool(s.busy)},
+			}, lead(glyphSignOut), html.Text(label)),
+		),
+		// The warning is a live region: arming changes what the next press does,
+		// and a reader who cannot see the button turning red has to be told.
+		ui.If(s.armed && !s.busy, func() ui.Node {
+			return html.Div(html.Props{
+				Class: "set-note set-note-live",
+				Role:  "alert",
+			}, html.Text(tr.T("settings", "signOutWarn")))
+		}),
+		html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("settings", "signOutScope"))),
 	}
 }
 

@@ -401,6 +401,24 @@ func Reader(p readerProps) ui.Node {
 	dataResult := ui.UseState[*pb.ImportOpmlResponse](nil)
 	dataNote := ui.UseState("")
 	dataNoteBad := ui.UseState(false)
+	// Signing out, on the Account tab. Unlike the Data tab's report, the armed
+	// state does NOT survive leaving the tab — see settingsTabTo, and the
+	// category editor's delete for the same rule stated at length. `stranded`
+	// does survive, because it is not a confirmation waiting to be spent, it is
+	// a fact about what already happened.
+	signOutArmed := ui.UseState(false)
+	signOutBusy := ui.UseState(false)
+	signOutStranded := ui.UseState(false)
+	// Whether this browser was holding a credential when the reader mounted,
+	// which is what decides whether the sign-out control exists at all (see
+	// view.signOutGroup: a dev server issues none, and a button that clears
+	// nothing is worse than no button).
+	//
+	// A Ref, read once, rather than data.Token() at render time. Signing out
+	// clears the token, so a live read would delete the group from under the
+	// message explaining what just happened — the one screen state that exists
+	// precisely because the credential is already gone.
+	hadSession := ui.UseRef(data.Token() != "")
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -5089,6 +5107,11 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().settingsTabTo = func(id string) {
 		setTab.Set(id)
+		// Leaving the Account tab disarms the sign-out. A confirm that survives
+		// the screen it was given on is a confirm the reader has forgotten
+		// giving — the same rule the category editor's delete follows, and the
+		// stakes here are a session rather than a folder.
+		signOutArmed.Set(false)
 		// The server tabs are the only ones with anything to fetch, and fetching
 		// on every tab click would re-query while someone flicks through.
 		switch settingsTab(id) {
@@ -5116,6 +5139,52 @@ func Reader(p readerProps) ui.Node {
 		logLevel.Set(level)
 		act.Get().loadStats()
 	}
+
+	// --- signing out, on the Account tab --------------------------------------
+
+	// armSignOut turns the first press into a question. See view.signOutGroup
+	// for why there are two presses at all.
+	act.Get().armSignOut = func() { signOutArmed.Set(true) }
+
+	// doSignOut ends the session and goes back to the door.
+	//
+	// The reload is the whole exit: data.SignOut has already cleared the token
+	// from memory and local storage by the time it returns, so a fresh page
+	// asks WhoAmI with nothing, is told nobody, and Root shows the login screen.
+	// That is the same path a rejected credential takes anywhere else in the app
+	// (see Root's unauthenticated handler), which is what keeps there being one
+	// way for this application to arrive at its login screen rather than two.
+	//
+	// The failure branch does NOT reload, and that is the deliberate half. The
+	// local credential is gone either way — data.SignOut clears it whether or
+	// not the call lands — but the server's copy is only revoked if the call
+	// reached it. Reloading would replace that distinction with a login screen,
+	// and a reader closing a laptop in a library would be entitled to believe
+	// the session was revoked when it was not.
+	act.Get().doSignOut = func() {
+		c := client.Get()
+		if c == nil || signOutBusy.Get() {
+			return
+		}
+		signOutBusy.Set(true)
+		go func() {
+			err := c.SignOut(context.Background())
+			ui.PostAsync(func() {
+				signOutBusy.Set(false)
+				signOutArmed.Set(false)
+				if err != nil {
+					signOutStranded.Set(true)
+					return
+				}
+				platform.Reload()
+			})
+		}()
+	}
+
+	// leaveToLogin is the stranded reader's own press, once they have read what
+	// happened. There is nothing left to clear here, so this is only the reload
+	// the success path takes for them.
+	act.Get().leaveToLogin = func() { platform.Reload() }
 
 	// --- migration, on the Data tab (F1) --------------------------------------
 
@@ -6963,6 +7032,12 @@ func Reader(p readerProps) ui.Node {
 					loading:      statsLoading.Get(),
 					statsErr:     statsErr.Get(),
 					serverURL:    platform.Origin(),
+					session: sessionProps{
+						present:  hadSession.Get(),
+						armed:    signOutArmed.Get(),
+						busy:     signOutBusy.Get(),
+						stranded: signOutStranded.Get(),
+					},
 					smart: smartProps{
 						cfg:         smartCfg.Get(),
 						languages:   smartLangs.Get(),
