@@ -24,6 +24,12 @@ REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
 GWC="${GWC_REPO:-/opt/GoWebComponents}"
 DB="${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}"
 HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
+# The APPLICATION, addressed directly, not through nginx. Step 8 asks two
+# different questions and they need two different addresses: "is this file in
+# the build I just deployed" is a question for the app, and asking nginx instead
+# means the answer changes when the edge config changes. It did, and it cost
+# every deploy from 2026-07-29 onward.
+APP="${ARTICLEFLUX_APP_URL:-http://127.0.0.1:9000}"
 SERVICE=articleflux
 OWNER="${ARTICLEFLUX_USER:-articleflux}"
 BACKUPS="${ARTICLEFLUX_BACKUPS:-/var/backups/articleflux}"
@@ -279,26 +285,45 @@ if ! wait_healthy "$HEALTH" 120; then
 	echo "the new build did not answer $HEALTH within 120s"
 	exit 1
 fi
-# Through nginx as well as on loopback, when nginx is here: a server that
-# answers on 127.0.0.1 and 502s through the proxy is still an outage, and it is
-# the version a reader sees.
-if systemctl is-active --quiet nginx; then
-	if curl -fsS --max-time 10 -o /dev/null http://127.0.0.1/ 2>/dev/null; then
-		note "nginx is serving it too"
-	else
-		warn "nginx is running but did not serve / — check /var/log/nginx/error.log"
-	fi
-fi
-
-# The files the CLIENT needs, fetched the way a browser fetches them. /healthz
-# is a server-side question and it passed happily while the deployed client was
-# missing its boot shim and dying at "Go is not defined" in every browser. A
-# deploy check that cannot see that is not checking the thing that matters.
+# The files the CLIENT needs, asked of the APP. /healthz is a server-side
+# question and it passed happily while the deployed client was missing its boot
+# shim and dying at "Go is not defined" in every browser. A deploy check that
+# cannot see that is not checking the thing that matters.
+#
+# On $APP and not through nginx, which is a correction rather than a preference.
+# This loop used to fetch http://127.0.0.1$f, and when the site moved to TLS the
+# edge began answering a bare-IP request with `301 -> https://feed.earlcameron.com`.
+# 301 is not 200, so the check failed; it failed AFTER the restart, so a
+# perfectly good build was rolled back every time; and it failed identically no
+# matter what was in the build, because nothing in the build could change it.
+# Between 2026-07-29 and 2026-07-30 every deploy died here and the box sat on a
+# binary from before the TLS change. A check that a deploy cannot pass is not a
+# safety net, it is a stuck door.
 for f in / /app.wasm.gz /wasm_exec.js; do
-	c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1$f" 2>/dev/null)
+	c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$APP$f" 2>/dev/null)
 	[ "$c" = "200" ] || { echo "the deployed client is missing $f (HTTP $c) — it will not boot in a browser"; exit 1; }
 done
 note "client assets served: index, app.wasm.gz, wasm_exec.js"
+
+# Then the edge, the way a reader reaches it: -L, because the canonical redirect
+# to https:// IS the correct answer to a plaintext request and following it is
+# what a browser does. A server that answers on loopback and 502s through the
+# proxy is still an outage, and it is the version a reader sees.
+#
+# A warning and not a failure, deliberately. The build has already proven itself
+# above; DNS, the certificate and hairpin routing back to the box are none of its
+# doing, and rolling a good binary back because the box could not resolve its own
+# public name would be this check causing the outage it exists to catch.
+if systemctl is-active --quiet nginx; then
+	edge=$(curl -sS -L --max-time 20 -o /dev/null -w '%{http_code}' http://127.0.0.1/ 2>/dev/null || echo 000)
+	final=$(curl -sS -L --max-time 20 -o /dev/null -w '%{url_effective}' http://127.0.0.1/ 2>/dev/null || echo "?")
+	if [ "$edge" = "200" ]; then
+		note "nginx is serving it too — $final"
+	else
+		warn "nginx answered $edge for / (followed to $final) — check /var/log/nginx/error.log"
+		warn "the build is good and is running; this is the edge, not the deploy"
+	fi
+fi
 trap - EXIT INT TERM   # past the point of no return; the new build works
 ROLLBACK_CMD=""
 done_ok "answering"

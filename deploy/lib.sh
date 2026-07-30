@@ -178,8 +178,10 @@ write_report() {
 ' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${HEALTH:-http://127.0.0.1:9000/healthz}" 2>/dev/null || echo 000)"
 		printf '    "nginx_active": "%s",
 ' "$(systemctl is-active nginx 2>/dev/null || true)"
-		printf '    "nginx_http_code": "%s"
-' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1/ 2>/dev/null || echo 000)"
+		printf '    "nginx_http_code": "%s",
+' "$(curl -s -L -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1/ 2>/dev/null || echo 000)"
+		printf '    "nginx_final_url": "%s"
+' "$(json_str "$(curl -s -L -o /dev/null -w '%{url_effective}' --max-time 8 http://127.0.0.1/ 2>/dev/null || echo '')")"
 		printf '  },
 '
 		printf '  "box": {

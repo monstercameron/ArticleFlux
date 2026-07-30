@@ -234,9 +234,13 @@ wait_healthy "http://127.0.0.1:$PORT/healthz" 120 || { echo "the server never an
 note "server answers on 127.0.0.1:$PORT"
 
 if [ "$WITH_NGINX" = "1" ]; then
-	code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1/ || echo 000)
-	[ "$code" = "200" ] || { echo "nginx returned $code for / — see /var/log/nginx/error.log"; exit 1; }
-	note "nginx returns 200 for /"
+	# -L: on a box that already terminates TLS, :80 answers a plaintext request
+	# with a canonical redirect, and 301 is the RIGHT answer. Demanding a literal
+	# 200 here fails the install on exactly the boxes that are set up best.
+	code=$(curl -fsS -L -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1/ || echo 000)
+	final=$(curl -fsS -L -o /dev/null -w '%{url_effective}' --max-time 15 http://127.0.0.1/ || echo '?')
+	[ "$code" = "200" ] || { echo "nginx returned $code for / (followed to $final) — see /var/log/nginx/error.log"; exit 1; }
+	note "nginx serves / — $final"
 	# The tunnel, proved rather than assumed: a 101 here is the difference
 	# between a working reader and a page that loads and never connects.
 	ws=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \

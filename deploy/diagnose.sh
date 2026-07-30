@@ -17,7 +17,23 @@ set -uo pipefail
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
 GWC="${GWC_REPO:-/opt/GoWebComponents}"
 HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
-ORIGIN="${ARTICLEFLUX_ORIGIN:-http://$(hostname -I | awk '{print $1}')}"
+# The app's OWN allowlist, read off the running unit rather than guessed.
+#
+# The server compares a browser's Origin against the `-origin` it was started
+# with, so any other value here tests a request no browser will ever send. This
+# used to guess `http://<box-ip>`, and from the day the site moved to
+# https://feed.earlcameron.com it reported "WebSocket upgrade through nginx: 403"
+# on a box whose WebSockets were entirely fine — a diagnostic inventing the
+# outage it was run to find, in the one script somebody reads at 2am.
+#
+# The IP guess stays as the last resort, for a box where the unit is not
+# installed yet and there is nothing better to ask.
+unit_origin() {
+	systemctl show -p ExecStart --value articleflux 2>/dev/null |
+		awk '{for (i = 1; i < NF; i++) if ($i == "-origin") { print $(i + 1); exit }}'
+}
+ORIGIN="${ARTICLEFLUX_ORIGIN:-$(unit_origin)}"
+ORIGIN="${ORIGIN:-http://$(hostname -I | awk '{print $1}')}"
 SCRIPT_ARGS="$*"
 
 MODE=human
@@ -92,8 +108,12 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$HEALTH" 2>/dev/null
 [ "$code" = 200 ]; check "server answers /healthz" $? "HTTP $code on $HEALTH"
 
 if systemctl is-active --quiet nginx; then
-	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1/ 2>/dev/null)
-	[ "$code" = 200 ]; check "nginx serves the client" $? "HTTP $code through :80"
+	# -L, because the canonical redirect to https:// IS the correct answer to a
+	# plaintext request on :80 and following it is what a browser does. Without it
+	# this reported "HTTP 301" as a failure from the moment TLS was configured.
+	code=$(curl -s -L -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1/ 2>/dev/null)
+	final=$(curl -s -L -o /dev/null -w '%{url_effective}' --max-time 10 http://127.0.0.1/ 2>/dev/null)
+	[ "$code" = 200 ]; check "nginx serves the client" $? "HTTP $code at ${final:-:80}"
 
 	# The upgrade, tested rather than assumed. Every RPC rides this one socket,
 	# so a proxy that answers 200 for / and drops Upgrade produces a page that
