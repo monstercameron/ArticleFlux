@@ -23,6 +23,24 @@ on:
   # promote.yml runs this exact workflow before it will fast-forward main, so a
   # promotion cannot be held to a weaker standard than an ordinary push.
   workflow_call:
+    inputs:
+      ref:
+        # WHICH TREE the gates run against, and it has to be said explicitly.
+        #
+        # A local reusable workflow is resolved from the CALLER's commit, and the
+        # checkouts below default to the caller's SHA — which for a
+        # workflow_dispatch on promote.yml is `main`. So the promotion gate was
+        # testing main: the code being REPLACED, not the code replacing it. It
+        # claimed otherwise in promote.yml's own comment, and the way it surfaced
+        # was a promotion failing on a flaky test that dev had already fixed.
+        #
+        # Empty is the default and means "the ref that triggered this", which is
+        # correct for push and pull_request and is what actions/checkout does
+        # with an empty string anyway.
+        description: "Git ref to check out; empty means the triggering ref"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -54,6 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0 # buf breaking needs history to compare against
 
       # D0: GWC v5.0.0 was never tagged, so go.mod carries a replace directive to
@@ -199,6 +218,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
@@ -297,6 +318,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
@@ -362,6 +385,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:

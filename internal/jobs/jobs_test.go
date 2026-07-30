@@ -327,12 +327,29 @@ func TestPoolReclaimsAJobAbandonedByADeadWorker(t *testing.T) {
 		return atomic.LoadInt64(&recovered) == 1
 	})
 
-	job, err := repo.GetJob(ctx, ghost.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if job.State != store.StateDone {
-		t.Errorf("state = %s after reclaim and rerun, want done", job.State)
+	// Waited for SEPARATELY, and the counter above is not a substitute.
+	//
+	// The handler increments `recovered` and then returns; the pool settles the
+	// job after that. Reading the row the moment the counter moves is a read
+	// inside that window, and it is the whole width of a database write on a
+	// machine under load. This test failed exactly once, on a CI runner, with
+	// "state = running after reclaim and rerun" — the reclaim had worked
+	// perfectly and the assertion was simply early.
+	//
+	// Waiting on the state itself rather than on a proxy for it also makes the
+	// test say what it means: the claim is that an abandoned job ends up DONE,
+	// not that a handler ran.
+	var final store.Job
+	waitFor(t, "the reclaimed job to be settled as done", func() bool {
+		j, err := repo.GetJob(ctx, ghost.ID)
+		if err != nil {
+			return false
+		}
+		final = j
+		return j.State == store.StateDone
+	})
+	if final.State != store.StateDone {
+		t.Errorf("state = %s after reclaim and rerun, want done", final.State)
 	}
 }
 

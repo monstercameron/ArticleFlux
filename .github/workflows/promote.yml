@@ -51,6 +51,18 @@ jobs:
     name: Quality gates
     needs: confirm
     uses: ./.github/workflows/ci.yml
+    # `dev`, explicitly, and this line is the difference between a release gate
+    # and a formality.
+    #
+    # A local reusable workflow resolves from the CALLER's commit, and this
+    # workflow is dispatched on the default branch — so without an explicit ref,
+    # ci.yml checked out `main` and the gates tested the code being REPLACED
+    # rather than the code replacing it. The comment above claimed the opposite
+    # and had been wrong since the file was written. It surfaced the first time
+    # it mattered: a promotion failed on a flaky test that dev had already
+    # fixed, because dev was never what ran.
+    with:
+      ref: dev
 
   promote:
     name: Fast-forward main
