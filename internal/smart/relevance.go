@@ -87,13 +87,34 @@ func cleanRelevanceReason(s string) string {
 // interest.go does not import derive's caller: the egress boundary lives here,
 // and the interface the caller declares should not have to reach back in.
 type RelevanceChecker struct {
-	llm llmClient
+	llm      llmClient
+	settings *store.SettingsRepo
 }
 
 // NewRelevanceChecker wires the checker. c is the llmClient seam (see
-// llmclient.go) — production passes a *llm.Client, tests pass a fake.
-func NewRelevanceChecker(c llmClient) *RelevanceChecker {
-	return &RelevanceChecker{llm: c}
+// llmclient.go) — production passes a *llm.Client, tests pass a fake. s may
+// be nil (tests, or an instance with no configured model override), in which
+// case model() falls back to the provider default the same way it always did
+// before this had a settings field at all.
+func NewRelevanceChecker(c llmClient, s *store.SettingsRepo) *RelevanceChecker {
+	return &RelevanceChecker{llm: c, settings: s}
+}
+
+// model resolves the configured model, or the provider default — same
+// resolution TopicTerms's sibling calls already use (classify.go's
+// (*Classifier).model, interest.go's (*Interest).model). Cam, 2026-08-01:
+// this call was hardcoding the provider default and ignoring the model
+// picker on the Smart+ settings tab entirely — every other Smart+ feature
+// already reads store.KeySmartModel, and this one should have from the start.
+func (c *RelevanceChecker) model(ctx context.Context) string {
+	if c == nil || c.settings == nil {
+		return ""
+	}
+	m, err := c.settings.SystemValue(ctx, store.KeySmartModel)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m)
 }
 
 // Check asks whether a candidate's own sample posts match the reader's
@@ -107,7 +128,15 @@ func NewRelevanceChecker(c llmClient) *RelevanceChecker {
 // (true, ...): recommendjob.Run treats an error as "review did not run" and
 // leaves the candidate unreviewed rather than recommending on a failed check,
 // so the false here is never read as a verdict — but it must never be true.
-func (c *RelevanceChecker) Check(ctx context.Context, topic string, samples []recommend.Sample) (bool, string, error) {
+//
+// positive/negative are taste-calibration titles (Cam, 2026-08-01's "quality
+// pass ... good personalized fit" framing) — internal/smart.TasteExamples's
+// output, forwarded verbatim, exactly as topic already is. Either or both may
+// be nil; the check still runs on topic and samples alone, same as before
+// this parameter existed.
+func (c *RelevanceChecker) Check(
+	ctx context.Context, topic string, samples []recommend.Sample, positive, negative []string,
+) (bool, string, error) {
 	if c == nil || c.llm == nil || !c.llm.Configured(ctx) {
 		return false, "", fmt.Errorf("smart: no API key")
 	}
@@ -115,7 +144,9 @@ func (c *RelevanceChecker) Check(ctx context.Context, topic string, samples []re
 		return false, "", fmt.Errorf("smart: no samples to review")
 	}
 
-	payload := llm.RelevancePayload{Topic: topic}
+	payload := llm.RelevancePayload{
+		Topic: topic, PositiveExamples: positive, NegativeExamples: negative,
+	}
 	for _, s := range samples {
 		payload.Samples = append(payload.Samples, llm.RelevanceSample{
 			Title: s.Title, Summary: s.Summary,
@@ -132,6 +163,7 @@ func (c *RelevanceChecker) Check(ctx context.Context, topic string, samples []re
 	defer cancel()
 
 	out, err := c.llm.Do(call, llm.Request{
+		Model:        c.model(ctx),
 		Instructions: llm.RelevanceInstructions,
 		Input:        string(body),
 		SchemaName:   "recommendation_relevance",

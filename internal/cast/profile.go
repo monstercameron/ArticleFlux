@@ -350,11 +350,19 @@ func Gain(db float64) float64 { return math.Pow(10, db/20) }
 type Script struct {
 	// Vibe is the narrator's manner: calm, brisk, dry or warm.
 	Vibe string `cast:"script.vibe" doc:"the narrator's manner: calm, brisk, dry or warm"`
-	// Revision is the script generation's identity, and it is part of every
-	// cache key. An edit to the instructions that nothing can invalidate would
-	// apply only to beats nobody has heard yet, and the two halves of the
-	// library would differ permanently and invisibly.
-	Revision string `cast:"script.revision" doc:"script generation, part of every cache key"`
+	// Revision is the WRITER's generation, and it is part of every beat's cache
+	// key. An edit to the instructions that nothing can invalidate would apply
+	// only to beats nobody has heard yet, and the two halves of the library
+	// would differ permanently and invisibly.
+	//
+	// This package does not know what the current revision is and must not
+	// guess one: the writer owns its own instructions, so the caller sets this
+	// from the writer (see internal/smart.PromptVersion). Empty is legal and
+	// means "no writer has claimed this profile" — a standalone plan, a test, a
+	// sheet printed for inspection. What is NOT legal is hardcoding a version
+	// here, because that is the same fact in two files, and the copy that
+	// drifts is the one nobody rebuilt.
+	Revision string `cast:"script.revision" doc:"the writer's instruction generation, part of every cache key"`
 
 	// Greeting, Lineup and SignOff are the three beats that are not stories.
 	// Each is separately switchable because each fails differently: a greeting
@@ -450,8 +458,8 @@ func Default() Profile {
 			Enabled:         true,
 		},
 		Script: Script{
-			Vibe:            "calm",
-			Revision:        "v6",
+			Vibe: "calm",
+			// Revision is set by the caller from its writer, never here.
 			Greeting:        true,
 			Lineup:          true,
 			SignOff:         true,
@@ -758,10 +766,9 @@ func (p Profile) Validate() (Profile, []Note) {
 	if s.Vibe == "" {
 		s.Vibe = "calm"
 	}
-	if s.Revision == "" {
-		note("script.revision", "", "v6", "a script with no revision shares a cache key with every other revision")
-		s.Revision = "v6"
-	}
+	// Revision is deliberately not defaulted. See the field's own comment: this
+	// package cannot know the writer's generation, and inventing one would make
+	// every cached beat claim a revision no writer ever produced.
 	// A lineup with no greeting is a run-through addressed to nobody: the
 	// greeting is what makes "here is what's coming" a sentence.
 	if s.Lineup && !s.Greeting {

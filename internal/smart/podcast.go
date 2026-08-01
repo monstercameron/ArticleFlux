@@ -49,7 +49,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
-// podcastPromptVersion is part of the cache key, for the reason promptVersion is:
+// PromptVersion is part of the cache key, for the reason promptVersion is:
 // an edit to the instructions that nothing can invalidate would apply only to
 // pairs nobody has listened to yet, and the two halves of the library would
 // differ permanently and invisibly.
@@ -85,7 +85,18 @@ import (
 // pair — see that function's own comment for the cache trade-off this accepts.
 // (d) The run-through's headline count went from "three or four" to "two or
 // three", matching MaxLineup's cut from five to three.
-const podcastPromptVersion = "v6"
+// v7: two new beats that did not exist in v6 at all — the TEASE ("coming up")
+// and the RECAP ("what you missed"), each with its own instruction text, added
+// so internal/cast's formats can schedule them. The same argument the group
+// writer made under v4 applies: text written under v6 and text written under v7
+// must not be mistaken for interchangeable prose sharing one version number.
+//
+// Exported because it is the WRITER's identity and internal/cast carries it into
+// every beat's cache key (cast.Profile.Script.Revision). That package
+// deliberately does not know what the current revision is — a hardcoded copy
+// there would be the same fact in two files, and the copy that drifts is the one
+// nobody rebuilt.
+const PromptVersion = "v7"
 
 // handoverShapes are the STRUCTURES a segment can use to get from the last story
 // to this one — not phrases.
@@ -347,6 +358,27 @@ type Segment struct {
 	// on what the listener was actually just told rather than on the programme in
 	// general. Body is not read: there is no story here to cover.
 	CloseOnly bool
+
+	// TeaseOnly writes "coming up" and nothing else: the stories in Names are
+	// ones the listener has NOT heard yet.
+	//
+	// Its own mode for the reason every other mode here has one — almost every
+	// rule about covering a story is wrong for it, and a prompt that says "do
+	// all of this except the parts about the article" is one a model half
+	// follows, keeping the article. The specific failure it guards against is
+	// sharper than that, though: a tease is one sentence away from being a
+	// summary, and a tease that summarises has spent the listener's interest
+	// instead of buying it.
+	TeaseOnly bool
+	// RecapOnly writes "what you missed": the stories in Names HAVE been heard.
+	// The mirror of a tease and not the same prompt with a tense changed — one
+	// is selling and one is catching somebody up, and a recap that sells is
+	// telling a listener to look forward to something they already heard.
+	RecapOnly bool
+	// Names are the stories a tease or a recap names. Ignored by every other
+	// mode: the opening's run-through travels in Open.Lineup, because it is
+	// part of the greeting rather than a beat of its own.
+	Names []Headline
 }
 
 // Podcast writes broadcast segments.
@@ -585,6 +617,10 @@ func podcastInstructionsOf(seg Segment) string {
 		return podcastOutroInstructions(seg.Vibe)
 	case seg.OpenOnly:
 		return podcastIntroInstructions(seg.Vibe)
+	case seg.TeaseOnly:
+		return podcastTeaseInstructions(seg.Vibe)
+	case seg.RecapOnly:
+		return podcastRecapInstructions(seg.Vibe)
 	}
 	return podcastInstructionsFor(seg.Vibe)
 }
@@ -782,6 +818,14 @@ func podcastInput(seg Segment, body string) string {
 		writeClosing(&in, seg)
 		return in.String()
 	}
+	// A tease and a recap take the headlines they name and nothing else, and
+	// they take them FIRST for the same reason the sign-off does: everything
+	// below is a story to cover, and a model shown an article writes about it
+	// whatever it was told.
+	if seg.TeaseOnly || seg.RecapOnly {
+		writeNames(&in, seg)
+		return in.String()
+	}
 	// The opening first, because it is the first thing said. See writeOpening
 	// for why it is given as FACTS rather than as a sentence to read out.
 	where := "the first is the story covered below"
@@ -931,6 +975,14 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 		mode = "outro"
 	case seg.OpenOnly:
 		mode = "intro"
+	case seg.TeaseOnly:
+		// The named stories are in the key, not just the mode: two teases at
+		// different points in a programme name different things and are
+		// different scripts, and they share an item id whenever the tease is
+		// keyed on the story it lands into.
+		mode = "tease:" + namesKey(seg.Names)
+	case seg.RecapOnly:
+		mode = "recap:" + namesKey(seg.Names)
 	case seg.Opened:
 		// A first story that greets and one that does not are different scripts
 		// from the same inputs, so they cannot share an entry — the same rule the
@@ -938,7 +990,7 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 		mode = "opened"
 	}
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
-		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(seg.Vibe) +
+		model + "\x00" + PromptVersion + "\x00" + VibeFor(seg.Vibe) +
 		"\x00" + open + "\x00" + mode))
 	name := hex.EncodeToString(sum[:]) + ".txt"
 	// One level of fan-out, matching the digest and audio caches, so a long
@@ -1331,7 +1383,7 @@ func (p *Podcast) groupCachePath(g SegmentGroup, idx int, model string) string {
 	open := openCacheKey(g.Open)
 	sum := sha256.Sum256([]byte(g.Stories[idx].ItemID + "\x00" + ids.String() + "\x00" +
 		strconv.Itoa(idx) + "\x00" + strings.TrimSpace(g.PrevTheme) + "\x00" +
-		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(g.Vibe) + "\x00" +
+		model + "\x00" + PromptVersion + "\x00" + VibeFor(g.Vibe) + "\x00" +
 		open + "\x00group"))
 	name := hex.EncodeToString(sum[:]) + ".txt"
 	// One level of fan-out, matching every other cache in this file.

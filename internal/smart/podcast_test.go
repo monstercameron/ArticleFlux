@@ -95,7 +95,7 @@ func TestCacheKeyIsPerOrderedPair(t *testing.T) {
 	}
 	// The prompt version is baked into cachePath, so the only honest way to check
 	// it participates is to confirm the hash is taken over it too.
-	if p.cachePath(base, "gpt-5-mini\x00"+podcastPromptVersion) == first {
+	if p.cachePath(base, "gpt-5-mini\x00"+PromptVersion) == first {
 		t.Error("the prompt version does not participate in the key")
 	}
 }

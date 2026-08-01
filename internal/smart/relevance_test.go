@@ -24,16 +24,16 @@ var twoSamples = []recommend.Sample{
 // refuse rather than send anything — mirrors every other Smart+ guard test in
 // this package (e.g. interest_test.go's no-key cases).
 func TestRelevanceCheckerRefusesWithoutAConfiguredKey(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: false})
-	_, _, err := c.Check(context.Background(), "topic", twoSamples)
+	c := NewRelevanceChecker(&fakeLLM{configured: false}, nil)
+	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded with no API key configured")
 	}
 }
 
 func TestRelevanceCheckerRefusesWithNoSamples(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: true})
-	_, _, err := c.Check(context.Background(), "topic", nil)
+	c := NewRelevanceChecker(&fakeLLM{configured: true}, nil)
+	_, _, err := c.Check(context.Background(), "topic", nil, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded with zero samples — nothing to review")
 	}
@@ -44,9 +44,9 @@ func TestRelevanceCheckerRefusesWithNoSamples(t *testing.T) {
 // egress boundary held (topic + samples only).
 func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
 	fake := &fakeLLM{configured: true, text: `{"relevant": true, "reason": "covers the same distributed-systems topics you read"}`}
-	c := NewRelevanceChecker(fake)
+	c := NewRelevanceChecker(fake, nil)
 
-	ok, reason, err := c.Check(context.Background(), "distributed systems", twoSamples)
+	ok, reason, err := c.Check(context.Background(), "distributed systems", twoSamples, nil, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -72,9 +72,9 @@ func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
 
 func TestRelevanceCheckerReturnsFalseOnAMismatch(t *testing.T) {
 	fake := &fakeLLM{configured: true, text: `{"relevant": false, "reason": "writes about cooking, not the reader's topics"}`}
-	c := NewRelevanceChecker(fake)
+	c := NewRelevanceChecker(fake, nil)
 
-	ok, reason, err := c.Check(context.Background(), "npu inference", twoSamples)
+	ok, reason, err := c.Check(context.Background(), "npu inference", twoSamples, nil, nil)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -89,16 +89,16 @@ func TestRelevanceCheckerReturnsFalseOnAMismatch(t *testing.T) {
 // A malformed reply must be a hard error, not a silent "not relevant" — see
 // the doc comment on Check: a false here must never be misread as a verdict.
 func TestRelevanceCheckerErrorsOnMalformedReply(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: true, text: `not json`})
-	_, _, err := c.Check(context.Background(), "topic", twoSamples)
+	c := NewRelevanceChecker(&fakeLLM{configured: true, text: `not json`}, nil)
+	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded on a non-JSON reply")
 	}
 }
 
 func TestRelevanceCheckerPropagatesAProviderError(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: true, err: context.DeadlineExceeded})
-	_, _, err := c.Check(context.Background(), "topic", twoSamples)
+	c := NewRelevanceChecker(&fakeLLM{configured: true, err: context.DeadlineExceeded}, nil)
+	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded despite the provider call failing")
 	}
@@ -185,5 +185,36 @@ func TestTopicTermsExcludesSuppressedTopics(t *testing.T) {
 	}
 	if terms != "" {
 		t.Errorf("terms = %q, want empty — the only topic stored was suppressed", terms)
+	}
+}
+
+// The model picker on the Smart+ settings tab was being ignored entirely —
+// this call hardcoded the provider default (Cam, 2026-08-01). Mirrors
+// TestClassifierModelReadsTheConfiguredSetting exactly.
+func TestRelevanceCheckerModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5.6-luna", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	fake := &fakeLLM{configured: true, text: `{"relevant":true,"reason":"ok"}`}
+	c := NewRelevanceChecker(fake, settings)
+	_, _, err := c.Check(context.Background(), "topic", []recommend.Sample{{Title: "a"}, {Title: "b"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(fake.calls))
+	}
+	if got := fake.calls[0].Model; got != "gpt-5.6-luna" {
+		t.Errorf("Request.Model = %q, want the configured model to be forwarded verbatim", got)
+	}
+}
+
+// nil settings (an instance with no override, or a test) falls back to the
+// provider default — same as every other Smart+ feature's model().
+func TestRelevanceCheckerModelEmptyWithNilSettings(t *testing.T) {
+	c := NewRelevanceChecker(&fakeLLM{}, nil)
+	if got := c.model(context.Background()); got != "" {
+		t.Errorf("model = %q with nil settings, want empty", got)
 	}
 }
