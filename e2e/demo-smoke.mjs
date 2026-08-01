@@ -186,6 +186,52 @@ try {
     if ((await page.locator('.demo-note').count()) !== 1) {
       fail('the demo note is not on the page');
     }
+
+    // Discover (§18.7), and the reason it is checked HERE rather than left to
+    // the Go tests next door.
+    //
+    // Every RPC behind this screen shipped to the public URL answering
+    // Unimplemented, and the screen sat on "Couldn't load recommendations" for
+    // as long as it took somebody to open it. Nothing noticed: the bundle was
+    // well-formed, it booted, the rail listed seven feeds and an article opened.
+    // A demo failure that is invisible from the outside is the expensive kind,
+    // and the cheap way to make this one visible is to open the screen.
+    //
+    // Last, because it replaces the reading pane the checks above are about.
+    await page.locator('[data-action="open-discover"]').first().click();
+    await page.locator('#discover-page').waitFor({ timeout: SETTLE_MS });
+    await page.locator('.discover-card, .discover-status-error').first()
+      .waitFor({ timeout: SETTLE_MS })
+      .catch(() => { fail('Discover never resolved — it is still saying "Loading…"'); });
+
+    if (await page.locator('.discover-status-error').count()) {
+      fail('Discover could not load its recommendations from the in-memory instance');
+    } else {
+      // Polled rather than sampled once, and the reason is not politeness about
+      // slow rendering: this pane's body is REPLACED between the card list and
+      // the loading placeholder while it settles, so a single `count()` lands on
+      // whichever frame it happened to catch. A run that read 0 cards and, a
+      // line later, read the evidence out of a card was what made that obvious.
+      let cards = 0;
+      let evidence = '';
+      for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; ) {
+        cards = await page.locator('.discover-card').count();
+        if (cards > 0) {
+          evidence = (await page.locator('.discover-card-evidence').first()
+            .innerText().catch(() => '')).trim();
+          if (evidence) break;
+        }
+        await page.waitForTimeout(250);
+      }
+      console.log(`discover: ${cards} suggestions · first reads "${evidence.slice(0, 60)}…"`);
+      // Empty is a legitimate state on a real instance and never on this one:
+      // the fixtures seed a harvest, so no cards means the scorer refused
+      // everything or the list never arrived.
+      if (cards === 0) fail('Discover rendered no suggestions; the fixtures seed a harvest that survives the gate');
+      // Every card explains itself, which is the whole argument of the feature
+      // (§18.7) and the one thing a screenshot of it cannot prove.
+      else if (!evidence) fail('a Discover card carries no evidence');
+    }
   }
 
   if (failedRequests.length) {

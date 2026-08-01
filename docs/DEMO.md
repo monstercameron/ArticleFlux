@@ -41,7 +41,6 @@ evidence about a code path nobody ships.
 So `client/demodata` implements the **generated server interfaces** (`pb.ReaderServiceServer` and
 friends) and routes `Invoke` through the generated `ServiceDesc` handlers. Consequences worth having:
 
-- A new RPC in the proto is a **compile error** here, not a demo that silently returns nothing.
 - Requests and responses are real protobuf messages, marshalled through the same code, so the read
   cache's `proto.Marshal` round trip is real.
 - Errors are real gRPC status codes, so `Classify` sees what it would see from a server.
@@ -49,6 +48,25 @@ friends) and routes `Invoke` through the generated `ServiceDesc` handlers. Conse
 `client/demodata` carries **no build tag** — nothing in it touches the DOM — so it is tested by an
 ordinary `go test ./client/demodata/...`, through the generated client stubs, and that test runs in
 CI on every pull request that touches the client.
+
+### A new RPC is not a compile error, and this file said it was
+
+Three comments in the package and a bullet here claimed that adding a method to the proto broke this
+package's build. It never did. Each service embeds its generated `pb.UnimplementedXServiceServer` —
+the generated interfaces require it — and that embed answers every method nobody wrote, forever,
+with `Unimplemented`. Drift was therefore **silent**, and by 2026-08-01 it had already happened three
+times: Discover (§18.7), OPML import/export and the edit-history disclosure had all shipped to the
+public URL answering `Unimplemented`, with Discover's screen sitting on *"Couldn't load
+recommendations"* for anybody who opened it.
+
+`client/demodata/served_test.go` is what actually catches it now. It calls **every method on every
+registered `ServiceDesc`**, and a method that answers `Unimplemented` must appear in that file's
+`notServed` map **with a reason**. So a new RPC is neither served nor declared, and the test fails on
+the pull request that adds it, naming the method. The author's two options are to serve it or to
+write down why the demo cannot — and the second one is cheap, which is the point.
+
+Deleting a line from `notServed` is checked too: a method that has since been implemented, still
+listed as unserved, is a failure rather than a stale comment.
 
 ## What the sample instance contains
 
@@ -69,10 +87,28 @@ It is chosen to be representative rather than pretty:
 | 2 articles over 900 words | so the long-read clamp and a real reading-time estimate have something to work on |
 | 1 feed failing for two days | so the dormant-feed nudge has something to nudge about |
 | 4 articles held back | so **Refresh** finds something, twice, and then honestly finds nothing |
+| 1 article with an edit history | so §10.1's "this changed since you read it" has a headline that really did lose a number |
+| 9 harvested candidates | so Discover has a list — and three of them are refused, which is the half worth showing |
 
 Everything a reader does works and none of it is stored: marking, starring, rating, notes, tags,
-categories, feed settings, search, subscribe, unsubscribe, mark-all-read and its undo. Closing the
-tab is the undo button for all of it.
+categories, feed settings, search, subscribe, unsubscribe, mark-all-read and its undo, OPML import
+and export, and Discover's accept and dismiss. Closing the tab is the undo button for all of it.
+
+### Discover runs the real scorer
+
+The fixtures for §18.7 are **candidates** — what a harvest observed — and `internal/recommend.Score`
+turns them into cards in `client/demodata/discover.go`, with the same defaulted `Thresholds{}`
+`internal/recommendjob` passes on a server. So the evidence sentence under each card is written by
+`describe()`, the ordering is the scorer's, and the three candidates that never appear are refused by
+`gate()` — a site silent for fourteen months, a firehose at 900 posts a week, and one linked nine
+times with no feed behind it. A fixture of finished cards would have rendered identically and
+demonstrated nothing, because the argument of the feature is that the evidence is derived and the
+gate refuses more than it accepts.
+
+The observations are seeded to be consistent with the reading fixture next door, which is what makes
+them checkable: a card that says *three writers you read linked here* names writers who are in the
+rail. What the demo genuinely cannot do is **harvest** — rungs 1–3 read outlinks, aggregator
+engagement and blogrolls out of a store this instance does not have, and rungs 4–5 are Smart+.
 
 ## What it cannot do, and how it says so
 
@@ -85,6 +121,20 @@ UI explains it with the copy it already has, rather than looking broken:
   nothing would be the worst possible failure for that feature.
 - **The page proxy and text-to-speech** (`proxy_url` empty; `/speech` is not there). Both fetch on
   the server's behalf, over the public internet.
+
+Two more that answer rather than refuse, because the honest answer is "none":
+
+- **FluxCast's music beds** (`ListAudioTracks` → an empty list). The beds are files beside the binary
+  and are fetched a track at a time precisely so they are *not* in the module; a 6 MB demo shipping
+  megabytes of MP3 to play under narration it cannot generate would be paying for the wrong half of
+  the feature. A deployment without the audio directory answers exactly this way, and the picker
+  already reads an empty list as "offers silence" rather than as a failure.
+- **Everything else that needs a key** (`ListModels`, `SuggestTheme`, `ComposeTheme` →
+  `FailedPrecondition` with a sentence). Left unimplemented they would answer `Unimplemented`, which
+  on this API means *"this server is older than your client"* — a version skew that is not happening.
+
+The five auth RPCs and `ScrollLiveView` are the only methods left genuinely unserved, and
+`served_test.go` holds the list and the reason for each.
 
 Cosmetic and known: feed favicons come from the server's `/favicon` endpoint, which a static host
 does not have, so those requests 404 and the rail shows its hue dots alone. The dots are the
@@ -153,9 +203,17 @@ path. Every one of those is invisible in a green `make demo` and fatal on the pu
 
 **It boots it.** `e2e/demo-smoke.mjs` serves `bin/demo` from a static server as unhelpful as Pages is
 — no compression negotiation, a 404 for anything not on disk — and drives Chromium until the rail
-lists all seven seeded subscriptions and clicking a list row changes the article being read. It
-watches the boot shim's own failure state, so a broken module fails in about a second with the
-browser's message rather than in three minutes with a timeout.
+lists all seven seeded subscriptions, clicking a list row changes the article being read, and
+**Discover renders suggestions with evidence on them**. It watches the boot shim's own failure state,
+so a broken module fails in about a second with the browser's message rather than in three minutes
+with a timeout.
+
+Discover is checked here rather than left to the Go tests for a reason worth stating: its RPCs
+shipped to the public URL unserved, and every other check passed while they were. The bundle was
+well-formed, it booted, the rail was right and an article opened — and the newest screen in the
+application said *"Couldn't load recommendations"* to every stranger who opened it. A demo failure
+invisible from the outside is the expensive kind, and the cheap way to make this one visible is to
+open the screen.
 
 It runs locally too, against the directory or against a deployed URL:
 
@@ -182,6 +240,9 @@ editing `go.mod` in the pipeline — an edited `go.mod` is a build that is not t
 |---|---|
 | `client/demo/main.go` | the binary: build the instance, dial it, render |
 | `client/demodata/` | the instance — dispatcher, model, RPCs, fixtures, tests |
+| `client/demodata/served_test.go` | every RPC is served or declared unserved with a reason — the drift check |
+| `client/demodata/discover.go` | §18.7's candidates, scored by `internal/recommend` |
+| `client/demodata/opml.go` | import and export, through `internal/opml` — the one pair a demo can honour completely |
 | `client/data/demo_wasm.go` | `DialDemo` — the `Client` over a connection that is not one |
 | `client/view/demo.go` | `DemoRoot`, and the dismissible note in the corner |
 | `client/i18n/en_demo.go` | that note's four strings, in the catalog like everything else |
