@@ -218,6 +218,55 @@ func slidePrereqs(smartVoice, podcast, keepPlaying, serverKey bool) []slidePrere
 	}
 }
 
+// slideKeyKnown collapses two sources into the three answers there actually
+// are: yes, no, and not yet.
+//
+// `cfg*` is the Smart+ config — the question asked directly, and the authority
+// whenever it has been answered. `body*` is the inference available inside the
+// show: SpeechURL mints a listening ticket only on an instance that can
+// synthesise, so a fetched article carrying one proves a key and a fetched
+// article carrying none disproves it.
+//
+// The case that matters is neither: at the instant a show starts, slideOpen has
+// only just ASKED for the first body. Reporting "no key" for that moment is the
+// bug this function exists to remove — it made pressing Podcast produce a
+// silent show blaming a key that was fine.
+func slideKeyKnown(cfgAsked, cfgOn, bodyLanded, bodyHasTicket bool) (present, known bool) {
+	if cfgAsked {
+		return cfgOn, true
+	}
+	if bodyLanded {
+		return bodyHasTicket, true
+	}
+	return false, false
+}
+
+// slideStartBlockedBy is what may REFUSE TO START the narrator, which is not the
+// same list as what may be reported about it.
+//
+// A condition the reader owns is known the instant it is asked, and refusing on
+// one of those is correct and actionable — the remedy is a switch they can
+// reach. The server's key is not known until something has been fetched, and
+// refusing on evidence that has not arrived yet is how a working instance gets
+// told it has no key.
+//
+// So an unknown key does not block. Being wrong that way costs one request that
+// answers 501 and reports itself at once; being wrong the other way costs a show
+// that never starts and blames somebody's deployment.
+func slideStartBlockedBy(list []slidePrereq, keyKnown bool) string {
+	if keyKnown {
+		return slidePrereqBlocked(list)
+	}
+	kept := make([]slidePrereq, 0, len(list))
+	for _, q := range list {
+		if q.Key == prereqServerKey {
+			continue
+		}
+		kept = append(kept, q)
+	}
+	return slidePrereqBlocked(kept)
+}
+
 // slidePrereqsMet reports whether read-to-me can actually speak.
 func slidePrereqsMet(list []slidePrereq) bool {
 	for _, p := range list {
@@ -251,6 +300,10 @@ const slideAuto = "auto"
 // the kitchen has decided how they like the news, not how this browser behaves.
 const (
 	slidesDwellPref = "slides.dwell"
+	// slidesAudioPref is retired (TODO 11.50) and kept only so that a stored
+	// value from an older client is a key nobody reads rather than a key
+	// something reads by accident. The mode is decided by which button was
+	// pressed; see plan §19, "Two modes, and the correction one of them makes".
 	slidesAudioPref = "slides.readToMe"
 )
 
@@ -609,6 +662,48 @@ func queueNext(q []string, id string) string {
 	return queueStep(q, id, 1, false)
 }
 
+// queueAfter is queueNext with a memory, and it is the fix for a programme that
+// ended after its first story.
+//
+// queueNext returns "" for two facts that need opposite answers: "that was the
+// last one" and "I have never heard of that one". The second happens routinely
+// and through no fault of the listener — a background poll replaces the list,
+// and the story currently playing has already been marked read by the show that
+// opened it, so it drops out of a ranked or unread-only page. The player then
+// could not tell the end of the programme from a list that moved, played the
+// sign-off after story one of sixty, and restarted the display from the top.
+//
+// So the caller remembers WHERE the playing story was, and this uses that
+// position when the id itself has gone. `was` is that index; a negative one
+// means there is nothing to fall back on and the honest answer is the end.
+//
+// It still never wraps. A programme that silently starts again is a second
+// reading of what was just played, and that property is why this is separate
+// from queueStep rather than a flag on it.
+func queueAfter(q []string, id string, was int) string {
+	if len(q) == 0 {
+		return ""
+	}
+	if i := queueIndex(q, id); i >= 0 {
+		if i+1 < len(q) {
+			return q[i+1]
+		}
+		return ""
+	}
+	// The id has left the queue. Its old position is the best available guess
+	// at what follows it — and it is a good one, because a list that lost a
+	// story it had already shown has usually lost exactly that one.
+	if was < 0 {
+		return ""
+	}
+	if was >= len(q) {
+		// The list is shorter than it was. Everything after that position is
+		// gone too, so this genuinely is the end.
+		return ""
+	}
+	return q[was]
+}
+
 // queueLineup is the headline run-through the broadcast opens with: this
 // story, then the MOST INTERESTING few of what is coming — not simply the
 // next few in queue order.
@@ -685,6 +780,19 @@ func queueLineup(q []string, fromID string, max int, title func(string) string, 
 // the most interesting three rather than simply the next three in the queue —
 // see queueLineup's use of showInterest.
 const slideMaxLineup = 3
+
+// warmDepth is how many segments ahead the pipeline writes and synthesises.
+//
+// Two, and the number is a trade with money on both sides. A segment is two paid
+// round trips and they happen the first time its audio is asked for; asked at
+// the seam that is ten to thirty seconds of silence, asked during the previous
+// story it is nothing. So warming is worth real money saved in dead air.
+//
+// It is not free the other way: a reader who stops after story three has paid
+// for story five. Two is deep enough that a slow write still lands before it is
+// wanted — a ninety-second story covers it twice over — and shallow enough that
+// leaving early wastes one segment rather than a programme.
+const warmDepth = 2
 
 // speechAsk is everything the client adds to a minted listening ticket.
 //
@@ -993,7 +1101,11 @@ const (
 	// The way IN, which lives in the list header rather than in the slideshow —
 	// it is an action on the feed you are looking at, and that is where the other
 	// actions on the feed are.
-	actSlideOpen   = "slide-open"
+	actSlideOpen = "slide-open"
+	// The OTHER way in: the same display with a narrator and the words it is
+	// saying. Its own action rather than a flag on actSlideOpen, so that the
+	// mode can only ever come from the control that was pressed (plan §19).
+	actPodcastOpen = "podcast-open"
 	actSlideLeave  = "slide-leave"
 	actSlidePause  = "slide-pause"
 	actSlideNext   = "slide-next"
@@ -1051,6 +1163,17 @@ type slideProps struct {
 	// thing its name promises, with the explanation hidden behind itself, is
 	// indistinguishable from one that is broken.
 	voice string
+	// script is the words the narrator is saying, or "" when they are not known.
+	//
+	// When it is present it REPLACES the article in the body, because the two
+	// are different texts: the audio is a rewritten segment and the article is
+	// the article, and scrolling one at the pace of the other is the bug this
+	// field exists to fix (plan §19, TODO 11.46).
+	script string
+	// said is which sentence of that script is being spoken, or -1 before the
+	// audio reports a duration. An estimate by character share — see
+	// scriptCursor for why there is nothing better available.
+	said int
 	// needs is every condition read-to-me depends on, with its current state.
 	// Kept on the slide's props because the VOICE LINE reads it — which
 	// requirement is missing decides what that line says, and whether it is worth
@@ -1146,6 +1269,14 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 		}
 	}
 	nodes, empty := parsedBody("slide-"+it.GetId(), raw)
+	// The script wins over the article whenever there is one. The article's
+	// PICTURES stay — an ambient display with nothing but type on it is worse,
+	// and a picture is not a claim about what is being said — but its prose
+	// goes, because it is not what the listener is hearing.
+	captioned := p.audio && strings.TrimSpace(p.script) != ""
+	if captioned {
+		nodes, empty = scriptNodes(p.script, p.said), false
+	}
 
 	return html.Div(html.Props{Class: "slide", Key: "slide-" + it.GetId()},
 		html.Div(html.Props{Class: "slide-card"},
@@ -1214,9 +1345,21 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 		// interpolate, it snaps.
 		html.Div(html.Props{Class: "slide-stage"},
 			html.Div(html.Props{Class: "slide-flow"},
+				// data-captioned is read by the stylesheet, and by the e2e
+				// suite as the one honest answer to "is this slide showing the
+				// words being said". A class would say the same thing and is
+				// the one of the two that gets renamed.
 				ui.If(!empty, func() ui.Node {
-					return html.Div(html.Props{Class: "slide-body"}, nodes...)
+					return html.Div(html.Props{
+						Class: "slide-body",
+						Data:  map[string]string{"captioned": strconv.FormatBool(captioned)},
+					}, nodes...)
 				}),
+				// Said once, at the top of a script, because a reader who has
+				// used this mode before will otherwise wonder where the article
+				// went — and the honest answer is that it was never what they
+				// were hearing.
+				ui.If(captioned, func() ui.Node { return scriptCaptionNote(tr) }),
 			),
 		),
 	)

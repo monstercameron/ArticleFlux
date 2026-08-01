@@ -48,6 +48,12 @@ func init() {
 		// in Settings are recognisably the same thing.
 		"readToMe": "Read to me",
 		"leave":    "Leave the slideshow",
+		// Said once at the top of a script (§19, TODO 11.46). It exists because
+		// this mode used to show the ARTICLE while the narrator read a rewritten
+		// segment, so a reader who has used it before will notice the article is
+		// gone and deserves to be told why rather than left to think something
+		// broke.
+		"scriptNote": "What the narrator is saying",
 
 		// --- the status line, in the order it outranks itself.
 		"statePaused": "Paused",

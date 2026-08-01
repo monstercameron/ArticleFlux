@@ -454,6 +454,44 @@ func slideStage(r func(string, string) css.Rule) {
 	css.Global(".slide-body ul", r("list-style", "disc"))
 	css.Global(".slide-body ol", r("list-style", "decimal"))
 	css.Global(".slide-body li", r("margin", ".3em 0"))
+
+	// --- the words being said (plan §19, TODO 11.46) -------------------------
+	//
+	// The same column, the same type, the same scroll — this is the article's
+	// surface showing the right text, not a caption band. What changes is that
+	// one sentence at a time is lit.
+	//
+	// Three states rather than two. `said` is dimmed rather than hidden because
+	// a listener who looked away wants to see what they missed; `before` is
+	// dimmed further because it is a spoiler for the next ten seconds; `now` is
+	// full weight. Hiding either would turn the column into a single replacing
+	// line, which is the caption band this deliberately is not.
+	css.Global(".slide-said",
+		r("margin", "0 0 .85em"),
+		r("color", "var(--read)"),
+		// The transition is what makes the emphasis read as the voice moving
+		// rather than as the page repainting, and it uses the mode's own
+		// duration token rather than a number: --t-slide is what everything
+		// else here fades over, and a caption on its own clock would be the one
+		// element in the display that did not belong to it.
+		r("transition", "color var(--t-slide) var(--e-out), opacity var(--t-slide) var(--e-out)"),
+	)
+	css.Global(".slide-said[data-said='said']", r("opacity", ".42"))
+	css.Global(".slide-said[data-said='before']", r("opacity", ".24"))
+	css.Global(".slide-said[data-said='now']",
+		r("opacity", "1"), r("color", "var(--cream)"),
+	)
+	// Said once, at the top, and quietly: it explains an absence rather than
+	// announcing a feature.
+	css.Global(".slide-said-note",
+		r("font-family", "var(--ui)"),
+		r("font-size", "clamp(11px, .78vw, 14px)"),
+		r("letter-spacing", ".08em"),
+		r("text-transform", "uppercase"),
+		r("color", "var(--soft)"),
+		r("opacity", ".55"),
+		r("margin-top", "1.6em"),
+	)
 	// Links keep their colour but lose the underline: nothing here is clickable,
 	// and an underline that cannot be followed is a promise the mode does not
 	// keep.

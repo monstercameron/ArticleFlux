@@ -103,6 +103,67 @@ test.describe('the two modes', () => {
     await expect(slides(page)).toHaveCount(0);
   });
 
+  /**
+   * The path none of the tests above cover, because this instance has no key —
+   * and the one that broke twice.
+   *
+   * The chip's enabled-ness and the handler's willingness are two answers to one
+   * question, and when they disagree the control enables itself and then does
+   * nothing on every press. That happened first because the handler asked about
+   * a story that was not on screen yet, and again because the chip was taught
+   * that an unknown key is not a missing one and the handler was not.
+   *
+   * Both are invisible to every test that only ever sees the refusing state. So
+   * this one CONFIGURES a key — a fake one, which is enough: `configured` means
+   * a key is stored, the chip unblocks, and the question is whether pressing it
+   * opens a show. Whether the provider then accepts that key is a different
+   * matter and not what this is about.
+   */
+  test('with a key configured, the podcast button actually starts a show', async ({ page }) => {
+    await boot(page);
+
+    await expect(async () => {
+      await page.locator('.list-corner').getByRole('button', { name: 'Settings' }).click();
+      await expect(page.locator('.pane-settings')).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Smart\+$/ }).click();
+
+    const key = page.locator('[data-role="smart-key"]');
+    await expect(key).toBeVisible();
+    await key.fill('sk-e2e-not-a-real-credential');
+    await page.locator('[data-action="smart-key-save"]').click();
+
+    // And the three conditions the READER owns, which the chip is also right
+    // to refuse on — a key alone is not consent to send anything anywhere.
+    // They live on the FluxCast tab, and flipping one there flips it
+    // everywhere: no staged copy, no Apply.
+    await page.getByRole('button', { name: /^FluxCast$/ }).click();
+    const panel = page.locator('.set-panel');
+    await expect(panel.locator('.pc-need')).toHaveCount(4);
+    for (let i = 0; i < 4; i++) {
+      const row = panel.locator('.pc-need').nth(i);
+      const toggle = row.getByRole('button');
+      if (await toggle.count() === 0) continue;   // the server's key is not a switch
+      if (await row.getAttribute('data-on') === 'true') continue;
+      await toggle.click();
+      await expect(row).toHaveAttribute('data-on', 'true');
+    }
+
+    // Back to the list, where the chip lives.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+
+    // It must no longer refuse, and pressing it must open the show rather than
+    // silently doing nothing.
+    const chip = podcastChip(page);
+    await expect(chip).not.toContainText(/needs setting up/i);
+    await expect(async () => {
+      await chip.click();
+      await expect(slides(page)).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 30_000 });
+    await expect(slides(page)).toHaveAttribute('data-mode', 'read');
+  });
+
   test('the mode is not remembered between shows', async ({ page }) => {
     await boot(page);
     await startSilent(page);

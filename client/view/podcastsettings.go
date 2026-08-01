@@ -61,6 +61,17 @@ type podcastProps struct {
 	// reader with a perfectly good key that they had none, on the screen whose
 	// entire job is to say what is actually true.
 	keyUnknown bool
+	// lastError is the class of the most recent Smart+ refusal this server
+	// observed, and lastErrorAt is when — both empty when nothing has failed.
+	//
+	// The row above can only say a key is STORED: proving one works costs
+	// money, so it does not claim to, and an expired key, a revoked key, a
+	// project with no credit and a model this account cannot reach all read as
+	// ready. This is what was actually observed the last time it was used, and
+	// it is the difference between a green tick beside a silent player and a
+	// sentence somebody can act on.
+	lastError   string
+	lastErrorAt string
 }
 
 // actPodcastStart launches the show from here.
@@ -83,6 +94,12 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 	}
 	for _, q := range p.needs {
 		out = append(out, podcastNeedRow(tr, q, p.keyUnknown))
+		// Directly under the key, because that is the row it corrects. A
+		// refusal shown anywhere else on this screen would read as a general
+		// fault rather than as evidence about this specific claim.
+		if q.Key == prereqServerKey && p.lastError != "" {
+			out = append(out, podcastRefusalRow(tr, p.lastError))
+		}
 	}
 
 	// The button says what it will do and refuses when it cannot, rather than
@@ -125,6 +142,28 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 // something they do not. That distinction is the row's real job — a screen where
 // the server's configuration looks like a switch is one that will be pressed,
 // repeatedly, by somebody who cannot fix what it names.
+// podcastRefusalRow says what happened the last time the key was used.
+//
+// It sits under the key's own row and contradicts it on purpose: "ready" is
+// true — a key IS stored — and it is not the whole truth when every call is
+// coming back refused. Saying both is the only honest option, because the
+// screen cannot prove a key works without spending money to find out.
+//
+// The class, never the provider's own words: that message can quote the article
+// being read aloud. An operator who needs the verbatim text has the server log
+// and `articleflux speech`, and the line says so.
+func podcastRefusalRow(tr i18n.Runtime, kind string) ui.Node {
+	return html.Div(html.Props{
+		Class: "mf-row pc-refused",
+		Raw:   map[string]any{"data-refusal": kind},
+	},
+		html.Div(html.Props{Class: "mf-label"},
+			html.Text(tr.T("podcast", "refusal."+kind))),
+		html.Div(html.Props{Class: "mf-hint"},
+			html.Text(tr.T("podcast", "refusalHint"))),
+	)
+}
+
 func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown bool) ui.Node {
 	var control ui.Node
 	switch {
