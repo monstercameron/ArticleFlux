@@ -90,3 +90,27 @@ func TestTheWorkerIsRegisteredAfterTheAppStarts(t *testing.T) {
 			"bad worker could then stop the application from ever starting")
 	}
 }
+
+// Spoken articles must not go through the worker at all.
+//
+// The handler below the exclusions is CACHE-FIRST, so a stored recording is
+// returned without the network being consulted — and what a listen says depends
+// on preferences the server reads at request time. Turning "summarise" on and
+// pressing play answered from this cache with the words from before the switch,
+// which is not a stale asset but a setting that appears not to work.
+//
+// The same Range argument the music beds already make applies here too: /speech
+// is an <audio src>, and a worker answering a Range request from a cached 200
+// hands the browser a whole file where it asked for a slice.
+func TestTheServiceWorkerLeavesSpokenArticlesAlone(t *testing.T) {
+	src, err := os.ReadFile("../../web/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `/^\/speech(\/|$)/.test(url.pathname)) return;`) {
+		t.Error("sw.js no longer excludes /speech, so spoken articles are being " +
+			"served cache-first: a preference that changes what is spoken will " +
+			"appear to do nothing, and the stale fallback below can answer one " +
+			"article's request with another's audio")
+	}
+}

@@ -510,7 +510,20 @@ func castMode(pref, inShow bool) bool { return pref && inShow }
 // appending an empty or pointless parameter would re-download every segment a
 // reader has already heard.
 func speechFrom(src string, ask speechAsk) string {
-	if src == "" || !ask.podcast {
+	if src == "" {
+		return src
+	}
+	if !ask.podcast {
+		// The ordinary listen, and the one thing it has to say about itself:
+		// WHICH rendering of the article this is. The server already keeps the
+		// summary and the article apart on disk; this keeps them apart in the
+		// browser, which is the cache that answers an <audio src> and knows
+		// nothing about preferences. Absent when the summary is off, so the
+		// URL a reader has been playing all along is unchanged and nothing
+		// already heard is re-downloaded.
+		if ask.digest {
+			return src + "&d=1"
+		}
 		return src
 	}
 	// The sign-off, before every other case. It is the one request that is not
@@ -841,6 +854,23 @@ type speechAsk struct {
 	// intro says where in the SPLIT opening this request sits. See the askIntro
 	// constants.
 	intro int
+	// digest says this listen is the SUMMARY of the article rather than the
+	// article, and it is here to name the recording rather than to ask for one.
+	//
+	// The server decides what to speak from `tts.digest` and files the audio
+	// under its own key — `<item>#digest` against `<item>`, which is why two
+	// recordings of the same article never collided on disk. The URL did not
+	// carry the difference at all: the sealed ticket names the item and nothing
+	// else, so both modes asked for the same address, and the browser's audio
+	// cache answers by address. Turn the summary on after hearing the article
+	// and you got the article back, byte for byte, which reads as the switch
+	// doing nothing.
+	//
+	// Only meaningful with the broadcast off, and speechFrom enforces that: a
+	// segment already IS the short form, so the server's precedence has podcast
+	// outranking digest, and a marker that claimed otherwise would fragment the
+	// broadcast's cache by a preference that changed none of its words.
+	digest bool
 }
 
 // Where a request sits in the split opening.

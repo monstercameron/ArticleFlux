@@ -131,6 +131,26 @@ self.addEventListener('fetch', (e) => {
   // no help from here.
   if (/^\/audio(\/|$)/.test(url.pathname)) return;
 
+  // Nor spoken articles, and the Range argument above applies here verbatim —
+  // /speech is an <audio src> too. Three more reasons of its own:
+  //
+  // It is CACHE-FIRST down there, so a stored recording is returned without the
+  // network being consulted at all. What a listen says depends on preferences
+  // the server reads at request time — the summary instead of the article — and
+  // the URL cannot carry every one of them, so turning a switch on and pressing
+  // play answered from this cache with the words from before the switch. That
+  // is not a stale asset; it is a setting that appears not to work.
+  //
+  // The stale fallback below matches with `ignoreSearch`, which for a sealed
+  // listening ticket means "any /speech response will do" — one article's audio
+  // for another's, on a dropped connection.
+  //
+  // And it is one reader's article read aloud: private, per-account, megabytes
+  // apiece, in a cache whose job is the shell you cannot boot without. The
+  // browser's own HTTP cache holds it correctly for a day (see serveSpoken's
+  // Cache-Control) and needs no help from here.
+  if (/^\/speech(\/|$)/.test(url.pathname)) return;
+
   // Navigations and the page itself: network first, cache as the fallback.
   if (req.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('/index.html')) {
     e.respondWith((async () => {

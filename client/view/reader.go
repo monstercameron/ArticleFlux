@@ -4050,6 +4050,11 @@ func Reader(p readerProps) ui.Node {
 				// untouched — which is the whole plain path: warm the article,
 				// play the article, one recording.
 				podcast: castOn(),
+				// Read here, like everything else in this struct, so the warm
+				// URL and the played URL are the same string. A warm that named
+				// the article while the play named the summary is a recording
+				// paid for twice and a seam that stalls anyway.
+				digest: speakDigest.Get(),
 				// The same value the real request will carry. A warm URL that
 				// differs from the one that gets played is a segment paid for
 				// twice and a seam that stalls anyway.
@@ -4271,6 +4276,12 @@ func Reader(p readerProps) ui.Node {
 					// greeting — the server reads the article, or its summary
 					// when the digest is on. See castOn.
 					podcast: castOn(),
+					// WHICH rendering of the article this is, so the summary and
+					// the article are two addresses rather than one. The server
+					// has always filed them apart; the browser could not tell
+					// them apart, and answered an <audio src> from whichever it
+					// had. See speechAsk.digest.
+					digest: speakDigest.Get(),
 					// Read here rather than once at mount: a broadcast started
 					// this evening and resumed tomorrow morning should be greeted
 					// for the morning, and a value captured at boot would greet it

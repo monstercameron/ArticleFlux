@@ -117,3 +117,38 @@ func TestAPlainListenAsksForTheArticle(t *testing.T) {
 		t.Errorf("a listen outside the show asked for a broadcast: %q", got)
 	}
 }
+
+// The summary and the article are two recordings, so they must be two addresses.
+//
+// The server has always filed them apart on disk. The browser could not tell
+// them apart at all: the sealed ticket names the item and nothing else, so both
+// modes asked for the same URL, and an audio cache answers by URL. Turn the
+// summary on after hearing the article and the article came back, byte for byte,
+// which reads as the switch doing nothing.
+func TestTheSummaryAndTheArticleAreDifferentURLs(t *testing.T) {
+	const ticket = "/speech?t=SEALED"
+	article := speechFrom(ticket, speechAsk{})
+	summary := speechFrom(ticket, speechAsk{digest: true})
+	if article == summary {
+		t.Errorf("the summary and the article share one URL: %q", article)
+	}
+	// The article's URL is the ticket untouched: a reader who has never turned
+	// the summary on must not re-download everything they have already heard.
+	if article != ticket {
+		t.Errorf("a plain listen rewrote its URL to %q", article)
+	}
+}
+
+// And the broadcast is not fragmented by a preference it ignores.
+//
+// A segment already IS the short form, so the server's precedence has the
+// broadcast outranking the summary. A marker on those URLs would split the
+// programme's cache by a switch that changes none of its words.
+func TestTheSummaryMarkerStaysOffBroadcastURLs(t *testing.T) {
+	const ticket = "/speech?t=SEALED"
+	on := speechFrom(ticket, speechAsk{podcast: true, prevID: "a", digest: true})
+	off := speechFrom(ticket, speechAsk{podcast: true, prevID: "a"})
+	if on != off {
+		t.Errorf("the summary preference changed a broadcast URL: %q vs %q", on, off)
+	}
+}
