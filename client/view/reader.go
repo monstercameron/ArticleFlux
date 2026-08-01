@@ -246,6 +246,18 @@ func Reader(p readerProps) ui.Node {
 	// harmless: a caption from the previous request is worse than none.
 	scriptText := ui.UseState("")
 	scriptFor := ui.UseRef("")
+	// scriptAsked is the request whose words are already on their way, so the
+	// two events that can ask for them — `ready` and `playing`, and a cached
+	// response reaches the second without ever reporting the first — cannot buy
+	// the same fetch twice.
+	scriptAsked := ui.UseRef("")
+	// scriptWait drives the slide's third state: the words are coming, so show
+	// no prose rather than the article's. See slideProse.
+	scriptWait := ui.UseState(false)
+	// scripts is every script already fetched, keyed by the audio URL it belongs
+	// to. Filled by warmAhead one beat ahead of where the reader is, which is
+	// what makes a caption arrive with the first word rather than after it.
+	scripts := ui.UseRef(newScriptCache())
 	speakURL := ui.UseRef("")
 	// warmed is every audio URL already asked for, so a pipeline that is driven
 	// from two places does not pay for the same segment twice.
@@ -3868,39 +3880,56 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 
-	// fetchScript asks for the WORDS of the recording that is playing.
+	// fetchScript puts the WORDS of the recording on screen.
 	//
-	// After `playing` rather than before it, and that ordering is the whole
-	// economy of the feature: the audio request is what writes the script, so
-	// asking first would either answer 204 or — on a server that wrote on
-	// demand — buy a second copy of the programme to put text on a screen. By
-	// the time a beat is audible its script is on disk and this is a cache read.
+	// Usually free and instant: warmAhead fetched this script while the PREVIOUS
+	// beat was playing, so the ordinary path is a map lookup and the caption is
+	// up before the first word is spoken rather than a round trip after it.
+	//
+	// The network path is the cold one — the first beat of a show, or a warm that
+	// could not resolve — and it is driven from `ready` rather than from
+	// `playing`. That ordering is the whole economy of the feature: the audio
+	// request is what writes the script, so asking sooner would either answer 204
+	// or, on a server that wrote on demand, buy a second copy of the programme to
+	// put text on a screen. `ready` is the earliest moment at which the audio has
+	// arrived, which is the earliest moment this is a cache read — and it lands
+	// inside the seam the music is already holding.
 	//
 	// A failure is silence, not an error. 204 is the ordinary answer for a beat
 	// nobody has paid for yet, and a slide without captions is a correct slide.
 	fetchScript := func(url string) {
-		if url == "" || scriptFor.Get() == url {
+		if url == "" || scriptFor.Get() == url || scriptAsked.Get() == url {
 			return
 		}
-		sep := "&"
-		if !strings.Contains(url, "?") {
-			sep = "?"
+		if text, ok := scripts.Get().get(url); ok {
+			scriptAsked.Set(url)
+			scriptFor.Set(url)
+			scriptText.Set(text)
+			scriptWait.Set(false)
+			return
 		}
-		platform.FetchText(url+sep+"as=text", func(text string, ok bool) {
+		scriptAsked.Set(url)
+		// Only from here: until the request is actually out, "waiting" would be
+		// a slide holding its prose for something nobody asked for.
+		scriptWait.Set(true)
+		platform.FetchText(scriptURL(url), func(text string, ok bool) {
 			ui.PostAsync(func() {
 				// The answer to a request that has been superseded. A caption
 				// from the beat before this one is worse than no caption: it is
 				// the wrong words, presented with the same confidence as the
-				// right ones.
+				// right ones. Its arrival must also not clear the WAIT that
+				// belongs to the beat now on screen.
 				if speakURL.Get() != url {
 					return
 				}
+				scriptWait.Set(false)
 				if !ok {
 					return
 				}
 				if text = strings.TrimSpace(text); text == "" {
 					return
 				}
+				scripts.Get().put(url, text)
 				scriptFor.Set(url)
 				scriptText.Set(text)
 			})

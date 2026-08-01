@@ -1170,6 +1170,14 @@ type slideProps struct {
 	// the article, and scrolling one at the pace of the other is the bug this
 	// field exists to fix (plan §19, TODO 11.46).
 	script string
+	// scriptWait is set while the words for the beat ON SCREEN are in flight.
+	//
+	// It exists because "no script" has two meanings and they need opposite
+	// answers. Not coming — silent mode, an instance with no key, a beat whose
+	// script was never written — means the article is the honest body. Not here
+	// YET means the article is the WRONG body: a different text, shown with the
+	// same confidence, for the second before the right one lands.
+	scriptWait bool
 	// said is which sentence of that script is being spoken, or -1 before the
 	// audio reports a duration. An estimate by character share — see
 	// scriptCursor for why there is nothing better available.
@@ -1269,13 +1277,17 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 		}
 	}
 	nodes, empty := parsedBody("slide-"+it.GetId(), raw)
-	// The script wins over the article whenever there is one. The article's
-	// PICTURES stay — an ambient display with nothing but type on it is worse,
-	// and a picture is not a claim about what is being said — but its prose
-	// goes, because it is not what the listener is hearing.
-	captioned := p.audio && strings.TrimSpace(p.script) != ""
-	if captioned {
+	// The script wins over the article whenever there is one, and while it is on
+	// its way NEITHER of them is shown. The article's PICTURES stay in both cases
+	// — an ambient display with nothing but type on it is worse, and a picture is
+	// not a claim about what is being said — but its prose goes, because it is
+	// not what the listener is hearing. See slideProse for the third answer.
+	captioned, holding := slideProse(p.audio, p.script, p.scriptWait)
+	switch {
+	case captioned:
 		nodes, empty = scriptNodes(p.script, p.said), false
+	case holding:
+		nodes, empty = nil, true
 	}
 
 	return html.Div(html.Props{Class: "slide", Key: "slide-" + it.GetId()},
