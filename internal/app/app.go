@@ -31,6 +31,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
+	"github.com/monstercameron/ArticleFlux/internal/cast"
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
@@ -217,6 +218,15 @@ type App struct {
 	// hears the article or its digest, which is the right degradation — a queue
 	// instead of a programme, not silence.
 	podcast *smart.Podcast
+	// write is the beat-addressed writer (internal/cast), and is normally the
+	// same object as podcast above.
+	//
+	// A separate, narrower field for the reason `speak` is one: everything past
+	// the gates — the brief, the fallback, the cache key, the status a failure
+	// maps to — was otherwise reachable only by a request that ends in a paid
+	// call, and was therefore covered by nothing. The interface is cast.Writer,
+	// which is the same seam internal/cast defines for its own tests.
+	write cast.Writer
 	// speechKey seals the listening tickets in an <audio src> (see SpeechURL).
 	//
 	// Its own key rather than assetKey, which is the one an obvious edit would
@@ -579,9 +589,18 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// run — see recommendjob.Service.relFor.
 	a.recommender = recommendjob.New(repo,
 		discover.New(discover.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
-		smart.NewRelevanceChecker(a.llm),
+		smart.NewRelevanceChecker(a.llm, a.settings),
+		// Rung 5 (Cam, 2026-08-01): wired unconditionally, same reasoning as
+		// the RelevanceChecker above — harmless without a key, and gated for
+		// real by the SAME discover.smartPlus opt-in (recommendjob.wsFor).
+		smart.NewWebSearchFinder(a.llm, a.settings),
 		func(ctx context.Context, sc store.Scope) (string, error) {
 			return smart.TopicTerms(ctx, repo, sc)
+		},
+		// Taste examples (Cam, 2026-08-01) — randomized per call, see
+		// smart.TasteExamples's own doc for why random rather than most-recent.
+		func(ctx context.Context, sc store.Scope) ([]string, []string, error) {
+			return smart.TasteExamples(ctx, repo, sc)
 		},
 		cfg.Log)
 	a.pool.Handle(store.JobRecommend, a.recommender.Handle)
@@ -649,6 +668,9 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// reason about the size of.
 	a.podcast = smart.NewPodcast(a.llm, a.settings,
 		filepath.Join(filepath.Dir(cfg.DBPath), "podcast-cache"))
+	// The same object, through the seam the beat-addressed path uses. One line,
+	// so there is one place to look when asking whether the two can disagree.
+	a.write = a.podcast
 	// Unconditionally, unlike the asset key below: listening does not depend on
 	// the image proxy being on, and an instance that turned pictures off must
 	// not lose its voice as a side effect. A failure here is a warning rather

@@ -17,9 +17,9 @@ func staticRoot(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string][2]string{
-		"index.html":       {"<html>shell</html>", ""},
-		"app.wasm":         {"\x00asm-bytes", "application/wasm"},
-		"app.js":           {"console.log(1)", "text/javascript"},
+		"index.html":           {"<html>shell</html>", ""},
+		"app.wasm":             {"\x00asm-bytes", "application/wasm"},
+		"app.js":               {"console.log(1)", "text/javascript"},
 		"manifest.webmanifest": {"{}", "application/manifest+json"},
 	}
 	for name, pair := range files {

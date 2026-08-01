@@ -1,7 +1,6 @@
 package cast
 
 import (
-	"hash/fnv"
 	"strconv"
 	"strings"
 	"time"
@@ -461,23 +460,21 @@ func beatID(programID string, b Beat) string {
 // bulletin are two different recordings, and sharing one would mean a fitted
 // programme quietly playing unfitted audio.
 func beatKey(p Program, b Beat) string {
-	h := fnv.New64a()
-	w := func(s string) { _, _ = h.Write([]byte(s)); _, _ = h.Write([]byte{0}) }
-	w(string(b.Kind))
-	w(b.ItemID)
-	w(b.PrevItemID)
-	w(p.Variant.Vibe)
-	w(p.Profile.Script.Revision)
-	w(strconv.Itoa(b.Words))
-	w(strconv.Itoa(b.Handover))
-	if b.Kind != BeatStory || len(b.Lineup) > 0 {
-		w(p.Variant.PartOfDay)
-		w(p.Variant.Date)
-		for _, id := range b.Lineup {
-			w(id)
-		}
+	br := Brief{
+		Kind:      b.Kind,
+		Words:     b.Words,
+		Vibe:      p.Variant.Vibe,
+		Revision:  p.Profile.Script.Revision,
+		Handover:  b.Handover,
+		Subject:   Subject{ItemID: b.ItemID},
+		Prev:      Subject{ItemID: b.PrevItemID},
+		PartOfDay: p.Variant.PartOfDay,
+		Date:      p.Variant.Date,
 	}
-	return strconv.FormatUint(h.Sum64(), 36)
+	for _, id := range b.Lineup {
+		br.Lineup = append(br.Lineup, Headline{ItemID: id})
+	}
+	return ScriptKey(br)
 }
 
 // seq is a seeded, dependency-free sequence.

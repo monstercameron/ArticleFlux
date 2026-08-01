@@ -464,7 +464,7 @@ func Default() Profile {
 			Lineup:          true,
 			SignOff:         true,
 			SplitOpening:    true,
-			HandoverVariety: 8,
+			HandoverVariety: 0,
 			WordTolerance:   0.35,
 		},
 	}

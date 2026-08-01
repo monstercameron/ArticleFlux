@@ -2,6 +2,8 @@ package cast
 
 import (
 	"context"
+	"hash/fnv"
+	"strconv"
 	"strings"
 )
 
@@ -123,6 +125,45 @@ type Draft struct {
 // timing.
 func CountWords(s string) int {
 	return len(strings.Fields(s))
+}
+
+// ScriptKey is the identity of the WORDS a brief asks for.
+//
+// It is the only cache key in the system, and both ends compute it
+// independently — the client to address a beat, the server to store what it
+// wrote. That is not redundancy, it is the security property: a server that
+// took the client's key would let a caller file one beat's audio under another
+// beat's slot, and the audio cache is shared across readers because the same
+// article read in the same voice is the same recording. So the key is DERIVED
+// from resolved inputs at both ends and never transmitted as an authority.
+//
+// Everything that changes the words goes in, and nothing that does not. The
+// beat's position does not, so the same story after the same predecessor is one
+// recording in two different shows, paid for once. The WORD BUDGET does, which
+// is what keeps a fitted programme honest: a story written to 140 words and the
+// same story written to 95 are two recordings, and sharing a key would have a
+// twenty-minute bulletin quietly playing unfitted audio.
+func ScriptKey(b Brief) string {
+	h := fnv.New64a()
+	w := func(s string) { _, _ = h.Write([]byte(s)); _, _ = h.Write([]byte{0}) }
+	w(string(b.Kind))
+	w(b.Subject.ItemID)
+	w(b.Prev.ItemID)
+	w(b.Vibe)
+	w(b.Revision)
+	w(strconv.Itoa(b.Words))
+	w(strconv.Itoa(b.Handover))
+	// The greeting, a tease and a recap all depend on what they NAME and on
+	// when they were said; an ordinary story depends on neither, unless it is
+	// carrying the greeting itself.
+	if b.Kind != BeatStory || len(b.Lineup) > 0 {
+		w(b.PartOfDay)
+		w(b.Date)
+		for _, hl := range b.Lineup {
+			w(hl.ItemID)
+		}
+	}
+	return strconv.FormatUint(h.Sum64(), 36)
 }
 
 // A Writer turns a Brief into prose.

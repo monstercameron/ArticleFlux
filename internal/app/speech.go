@@ -697,6 +697,23 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// a caller-supplied id safe (see prevItemParam) — and it is only looked up at
 	// all when the preference that uses it is on, so the ordinary listen still
 	// costs one query.
+	// A BEAT of a planned programme, which is a different request from anything
+	// this handler answered before: the client has planned a whole show with
+	// internal/cast and is asking for one beat of it, at a word budget the
+	// fitter chose. See speechbeat.go for why this is a second path rather than
+	// a rewrite of the one below — old clients are cached by a Service Worker
+	// and will keep asking the old way for as long as their bundle survives.
+	if kind, words, handover, rev, ok := castBeat(r); ok && prefs[podcastPrefKey] == "true" {
+		b := a.briefFor(r.Context(), sc, r, it, kind, words, handover, rev)
+		text, key, err := a.writeBeat(r.Context(), b, it)
+		if err != nil {
+			a.beatError(w, r, id, err)
+			return
+		}
+		a.serveSpoken(w, r, prefs, id, text, key)
+		return
+	}
+
 	var prev store.Item
 	var open *smart.Opening
 	// The opening asked for ON ITS OWN, as its own recording. Only meaningful in
@@ -762,6 +779,19 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nothing to read aloud", http.StatusUnprocessableEntity)
 		return
 	}
+
+	a.serveSpoken(w, r, prefs, id, text, cacheKey)
+}
+
+// serveSpoken synthesises one script and writes the response.
+//
+// Shared by both paths — the legacy one above and the beat-addressed one in
+// speechbeat.go — because everything from here down is about AUDIO rather than
+// about which script was chosen: the same cache, the same provider, the same
+// headers, the same rule about never echoing a provider message that may quote
+// the reader's article.
+func (a *App) serveSpoken(w http.ResponseWriter, r *http.Request,
+	prefs map[string]string, id, text, cacheKey string) {
 
 	voice := strings.TrimSpace(prefs["tts.voice"])
 	audio, err := a.speak.Speak(r.Context(), cacheKey, text, prefs["tts.model"], voice)
