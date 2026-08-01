@@ -123,3 +123,23 @@ func TestChangingTheDirectionChangesTheRecording(t *testing.T) {
 		t.Error("two different house styles share one cache entry")
 	}
 }
+
+func TestNoFormatMeansNoChangeToTheCacheKey(t *testing.T) {
+	// The other half of "adopting formats is inaudible", and the half that
+	// costs money when it is wrong.
+	//
+	// An unconditional separator in the key changed it for every reader with no
+	// format at all, so the entire cached library missed at once and every
+	// segment somebody had already paid for was rewritten to say the same
+	// thing. The prompt had this rule from the start; the key did not, because
+	// nothing asserted it.
+	p := keylessPodcast(t)
+	base := Segment{ItemID: "i1", Source: "LWN", Title: "Fsyncgate", Vibe: "calm",
+		PrevID: "i0", PrevSource: "HN", PrevTitle: "Postgres"}
+
+	withEmpty := base
+	withEmpty.Direction = fluxcast.Direction{}
+	if p.cachePath(withEmpty, "m") != p.cachePath(base, "m") {
+		t.Error("an empty direction moved the cache entry, invalidating everything already written")
+	}
+}

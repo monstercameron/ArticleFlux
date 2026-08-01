@@ -1010,9 +1010,21 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	// The format's direction is part of the key because it is part of the TEXT.
 	// Editing a house style and being served back every segment written under
 	// the old one is indistinguishable from the format never having been read.
+	//
+	// It is APPENDED ONLY WHEN THERE IS ONE, and that is not a micro-
+	// optimisation. An unconditional separator changes the key for every reader
+	// who has no format at all — which invalidated the whole library the moment
+	// this field was added, so every segment somebody had already paid for got
+	// rewritten and re-billed to say the same thing. The prompt already had this
+	// rule (an empty direction leaves it byte-identical); the key did not, and
+	// nothing tested it. It does now.
+	dir := ""
+	if !seg.Direction.Empty() {
+		dir = "\x00" + seg.Direction.Summary()
+	}
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
 		model + "\x00" + PromptVersion + "\x00" + VibeFor(seg.Vibe) +
-		"\x00" + open + "\x00" + mode + "\x00" + seg.Direction.Summary()))
+		"\x00" + open + "\x00" + mode + dir))
 	name := hex.EncodeToString(sum[:]) + ".txt"
 	// One level of fan-out, matching the digest and audio caches, so a long
 	// listener does not end up with one directory holding tens of thousands of
