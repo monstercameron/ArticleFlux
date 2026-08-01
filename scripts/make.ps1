@@ -538,9 +538,17 @@ function Invoke-Migrate {
 function Ensure-Build { if (-not (Test-Path 'bin\articleflux.exe')) { Invoke-Build } }
 
 function Invoke-Run {
+    param([switch]$Dev)
     Invoke-Build
     Step "serving on http://127.0.0.1:$Port"
-    & (Join-Path $Root 'bin\articleflux.exe') serve -addr "127.0.0.1:$Port"
+    if ($Dev) {
+        Write-Host '*** -dev serves the local account with NO LOGIN. Loopback only. ***' -ForegroundColor Yellow
+        Write-Host '*** Credentials, if you start without -dev to test the login screen: ***' -ForegroundColor Yellow
+        Write-Host '***   see .env.example (default cam / articleflux-dev)               ***' -ForegroundColor Yellow
+        & (Join-Path $Root 'bin\articleflux.exe') serve -addr "127.0.0.1:$Port" -dev
+    } else {
+        & (Join-Path $Root 'bin\articleflux.exe') serve -addr "127.0.0.1:$Port"
+    }
 }
 
 switch ($Target) {
@@ -555,7 +563,7 @@ switch ($Target) {
     'migrate' { Invoke-Migrate }
     'perf'    { if ($Compare) { Invoke-PerfCompare } else { Invoke-Perf } }
     'run'     { Invoke-Run }
-    'dev'     { Invoke-Wasm; Invoke-Run }
+    'dev'     { Invoke-Wasm; Invoke-Run -Dev }
     'e2e'     {
         Invoke-Build
         Invoke-Wasm

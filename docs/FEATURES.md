@@ -238,10 +238,11 @@ clicked.
 
 | Where | Keys |
 |---|---|
-| **Anywhere** | `Ctrl-K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` jump to rail/list/article · `/` search · `f` filter feeds · `r` refresh · `u` unread-only · `Esc` close / stop reading aloud / back |
+| **Anywhere** | `Ctrl-K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` jump to rail/list/article · `/` search · `f` filter feeds · `r` refresh · `u` unread-only · `s` start slideshow · `Esc` close / stop reading aloud / back |
 | **Feed list** | `↑ ↓` move · `Enter` open |
 | **Article list** | `↑ ↓` move **and open** · `j` `k` next / previous |
 | **An article** | `o` or `Enter` open original · `l` like · `d` dislike · `t` read later · `U` mark unread · `w` focus mode · `Ctrl-Enter` save the note now |
+| **Slideshow** | `Esc` stop · `Space` pause · `→` / `j` / `n` next · `←` / `k` / `p` previous · `v` toggle voice — every other key is swallowed while it owns the screen |
 
 Two rules that are easy to get wrong and were:
 
@@ -329,7 +330,7 @@ they then had to find. The cost is one click on the fast path.
 
 | | |
 |---|---|
-| **Status** | ◧ — rungs 1, 2 and 5 shipped; rungs 3, 4 and 6 owed |
+| **Status** | ◧ — rungs 1, 2 (Smart) and 5 (Smart+) shipped; rungs 3, 4 and 6 owed |
 | **Spec** | §11, §11.1–11.2c, `FLOWS.md` §6 |
 
 Paste any page address. The dialog says *"Looking for a feed…"* and climbs:
@@ -384,23 +385,23 @@ reads named fields out of it. The reader is told plainly: *"This page loads its 
 address, and that is what Smart+ follow found."*
 
 Two consent conditions are checked at the RPC and neither implies the other: the per-user
-`smart.subscribe` switch is on, **and** the request carried the flag the button sets.
+`smart.follow` switch is on, **and** the request carried the flag the button sets.
 
 ### 9b. Two refusals with their own copy
 
 - **No key**: *"This server has no OpenAI key. Whoever runs it adds one in Settings → Smart+."*
 - **robots.txt**: *"This site's robots.txt asks us not to read this page, so we won't."*
 
-## 10. Categories (folders)
+## 10. Folders
 
 | | |
 |---|---|
 | **Status** | ✅ |
 | **Spec** | §6.10, A37 |
 
-> **The name is contested — D23, open.** Entry 76 introduces categories that hold *articles*, and this
-> word cannot mean both. The plan recommends renaming this one to **Folders**, which is its schema
-> name and an accurate description of what it does: a feed lives in exactly one of them.
+> **Renamed Folders — D23, resolved 2026-07-31.** Entry 76 holds the categories that hold *articles*,
+> and this word cannot mean both. This one is now **Folders**, its schema name and an accurate
+> description of what it does: a feed lives in exactly one of them.
 
 Per-user, **flat**, one category per subscription. Create · rename · delete · file a feed. Reached
 from the rail's Categories band or from the add-a-feed dialog.
@@ -810,7 +811,7 @@ nothing. *Forget this theme* removes it.
 
 | | |
 |---|---|
-| **Status** | ✅ (Smart+ optional) |
+| **Status** | ✅ Smart · ✅ Smart+ optional |
 | **Spec** | §20.16.3, §18.2 |
 
 Switch **Attune** on and the reader slowly takes on the colour of whatever you actually read. Your
@@ -1632,6 +1633,7 @@ milestone suggests.
 | 55 | **Import / export** ◧ | OPML both directions (a live 151-feed export imported through it), Netscape bookmarks both directions, Chrome JSON in | Any UI — there is no data tab |
 | 56 | **Interchange formats** ✅ | RSS 0.91 / 1.0 / 2.0, Atom 0.3 / 1.0, JSON Feed, `content:encoded`, Dublin Core, media, iTunes namespaces, charset reconciliation, ~15 date layouts, a 27-fixture corpus | — |
 | 57 | **Extraction** ✅ | Readability with sanitised HTML and plain text from one pass, refusing an implausibly short result rather than returning navigation as an article | The render-mode switcher that would let a reader choose it per feed |
+| 82 | **FluxCast: the editorial producer** ⚙ | The deterministic half (TODO Tier 11, plan §29): story clustering into a real table, roles-to-words-to-minutes arithmetic, selection off `home_ranking` with the 70/20/10 slot split inherited free, segment/story persistence, transitions-as-metadata, `heard ≠ read`, a named egress allowlist for the planner payload, and three real bugs a live feed exposed (no lead story, one category eating 46% of a show, segment order following a taxonomy table instead of editorial weight) all fixed and tested against fixtures reproducing the reported shapes | The Settings → FluxCast controls beyond the tab shell, the planner call itself (gated on the exact model ids — see plan §29.3), the circuit breaker wired in front of it, the segment-ahead producer on the durable queue, the on-screen rundown, and the client-side RPC/queue plumbing that would let a reader hear any of this — today `internal/fluxcast` produces and persists a rundown and there it stops |
 
 ---
 
@@ -1837,17 +1839,15 @@ the actor anonymised: an audit trail you can erase by deleting the actor is not 
 Deletion is soft first, with a grace period. Accidental deletion of the only person who knows what
 those 400 rules did is not recoverable from a nightly backup without losing everyone else's day.
 
-## 76. Article categories ○
+## 76. Article categories ◧
 
 | | |
 |---|---|
-| **Status** | ○ |
+| **Status** | ◧ — the pipeline runs on every item and `ListItems`/`GetItem` already carry `category`, `secondary_categories`, `genre` and `category_reason` on the wire (`internal/transport/grpcsrv/reader.go`'s `withCategory`); no client surface renders a chip yet |
 | **Spec** | §27.1, §27.3 · M29 |
 
-**Not the same thing as §10's categories**, which are folders and hold *feeds*. These hold *articles*.
-The plan proposes renaming §10 back to **Folders** so the word "category" can mean the one thing
-readers expect it to mean — **that is D23 and it is open.** Until it is answered this entry and §10
-both use the word and one of them is wrong.
+**Not the same thing as §10's folders**, which hold *feeds*. These hold *articles* — and now that D23
+is resolved (2026-07-31), "category" means only this.
 
 Twenty-six shipped categories — Software, AI, Hardware, Security, Science, Health, Business, Finance,
 Politics, World, Law, Climate, Space, Energy, Transport, Gaming, Film & TV, Music, Culture, Books,
@@ -1888,11 +1888,11 @@ state the next run overwrites.
 Starter packs — Systems · Web · AI · Security · Markets · Space · Motorsport and more — are ~250
 focused terms you enable a pack at a time rather than 250 checkboxes.
 
-## 78. Smart+ classification ○
+## 78. Smart+ classification ◧
 
 | | |
 |---|---|
-| **Status** | ○ |
+| **Status** | ◧ — the Smart half (§76) is shipped and on by default. Of the Smart+ half: the egress payload, the consent-key boundary, the escalation gate (measured at 0.470 on the corpus) and the shared-read Contributor registry are built and tested; per-label prompts, the per-user `JobLabelPlus` pass and a live run against a real provider are not |
 | **Spec** | §27.4 · M29 |
 
 **The model is the tie-breaker, not the pipeline.** The free classifier runs on everything; the model
@@ -1913,11 +1913,11 @@ Everything fails soft. No key, no budget, provider down, reply truncated — you
 classifier's answer, which was already computed and already written, and the app says so rather than
 quietly getting worse.
 
-## 79. One read per article ○
+## 79. One read per article ◧
 
 | | |
 |---|---|
-| **Status** | ○ |
+| **Status** | ◧ — the pass itself runs on every item, free tier included, and fan-out (the reason a poll's rules ever fire at all) is wired to run downstream of it; the consumers below are individually still owed |
 | **Spec** | §27.2, A41 · M29 |
 
 Not a screen — the reason the three entries above are affordable, and the reason the next five
@@ -1925,10 +1925,11 @@ features will be.
 
 New articles go through **one** analysis pass: language, vector, key phrases, named entities, genre
 and category scores, computed once for the whole instance rather than once per reader. Everything
-downstream reads that instead of re-deriving it. The ranked homepage stops rebuilding a term corpus
-from raw text after every poll. Entity extraction, today a Smart+ feature over articles you engaged
-with, becomes free and covers everything. Trends gets a category histogram at no cost. Rules gain
-`category` and `genre` as fields.
+downstream reads that instead of re-deriving it. Entity extraction, once a Smart+ feature over
+articles you engaged with, is now free and covers everything. Rules gain `category` and `genre` as
+fields — **shipped**: `category = security AND genre = release → tag "patch"` evaluates today.
+Still owed: the ranked homepage rebuilding a term corpus from raw text after every poll instead of
+reading the stored vector, and a category histogram on Trends.
 
 And when the model is used, every feature that wants something from that article contributes to **one**
 request and takes its slice of **one** answer. A reader can see the list of what is being asked and
@@ -1959,8 +1960,13 @@ before asking is the one wrong answer that names somebody else's deployment as t
 
 | | |
 |---|---|
-| **Status** | ✅ |
+| **Status** | ✅ Smart · ✅ Smart+ optional |
 | **Spec** | §18.2, §18.9 · `ReaderService.GetInterestProfile` / `SteerInterest` · migration 0027 |
+
+**My Feed's ranking is itself two-tier**, and this screen steers the Smart half that always runs:
+`internal/rank` orders every pick from the factors below, deterministically and for free. Turn on
+**Smart+ ranking** (Settings → Smart+) and a model reorders what that pass already chose — it can
+promote, not invent; My Feed works, and works from this same explanation, with the switch off.
 
 The ranked page has always explained itself per row. This is the screen that shows the **model**, and
 the reason it had to exist is one line off a real database: the strongest "thing you follow" was
@@ -2118,7 +2124,9 @@ consumer) · plus the five defects above.
 
 **Engine only.** Rules · recommendations · preservation · item tags · mailboxes · settings
 registry · the job queue · the degrade ladder · notes/bookmark search · quota accounting · **the
-analysis pipeline** (`internal/pipeline` has no importer outside its own tests).
+analysis pipeline** (`internal/pipeline` has no importer outside its own tests) · **FluxCast's
+deterministic rundown** (entry 82 — selection, grouping and ordering are built and tested; nothing
+gets it out of the server).
 
 *Corrected 2026-07-27:* **ranking and capability enforcement were listed here and both ship** —
 see entries 45 and 51. **Event rings** are shipped on both ends and unreached by one missing call

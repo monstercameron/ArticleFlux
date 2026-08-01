@@ -11,6 +11,34 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Security
 
+- **A client-supplied device id let a second login hijack the first account's session row** (TODO
+  SEC1). `client/data/auth.go` minted `device_id` from a timestamp; `devices.id` was globally unique;
+  `store.RegisterDevice`'s `ON CONFLICT(id) DO UPDATE` resolved a collision by replacing only the
+  stored refresh secret while keeping the row's original owner — so a second login that happened to
+  collide installed its own refresh token against someone else's account. Fixed by splitting the field
+  into a client-stable, presentation-only `label` and a server-generated `refresh_record_id` (128-bit
+  CSPRNG, never client-supplied); `RegisterDevice` now checks ownership before writing and refuses on
+  any mismatch rather than overwriting.
+- **A logged-out session's refresh family could still mint new sessions** (TODO SEC2). `Logout` killed
+  the current session but never its refresh family, so a device treated as "signed out" could still
+  renew. `Logout` now revokes the session *and* walks to its refresh family; `ChangePassword` revokes
+  every *other* family while keeping the caller's own.
+- **A password change and its session revocation were two separate writes** (TODO SEC3).
+  `ChangePassword` stored the new hash and revoked sessions independently, and logged a revocation
+  failure while still reporting success. `store.ChangePasswordAndRevoke` now does the hash update plus
+  every revocation as one transaction — nothing commits if any of it fails, and the RPC returns
+  `Internal` rather than fabricating a zero count.
+- **Refresh-token issuance is off by default until client-side rotation exists** (TODO SEC4, partial).
+  The wasm client stored the access token and discarded the refresh token entirely — a session that
+  should have rotated just expired instead, or an issued-but-unused refresh token sat live with no
+  client ever consuming it. `AuthServer.WithRefreshTokens(bool)` gates issuance; production does not
+  opt in. The rotation machinery (versioned bundle, cross-tab coordination, shortened access TTL)
+  still needs building in the client — this is the honest stopgap, not the finished fix.
+- **Plaintext passwords no longer accepted as command arguments.** `init`/`adduser`/`passwd` dropped
+  `-password` (TODO SEC5) — a shell history and `ps` output both keep an argv password long after the
+  command that typed it is gone. `ARTICLEFLUX_PASSWORD` or a hidden terminal prompt are the only paths
+  left.
+
 - **The sanitizer had no fuzz target, and it is the one that needed it most.** Ten packages here
   carried one — feed parsing, charset decoding, mail headers, the SSRF guard — while `sanitize`, the
   only thing standing between hostile publisher HTML and the reader's DOM on an origin that holds
@@ -91,6 +119,55 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Smart+ suggests a category when you add a feed** (`smart.categorize` preference, off by
+  default). Reads the new feed's title and description, checks it against the reader's existing
+  categories first — reusing one beats inventing another — and only proposes a new one when nothing
+  reasonably fits. Presented as a plain accept/dismiss banner after the feed is added, never filed
+  automatically; declining leaves the feed exactly where it landed. The model call is pinned to the
+  cheap default (`gpt-5-mini`) regardless of whatever model an instance has configured for other
+  Smart+ features, since matching a feed to a category name is text classification, not a task that
+  benefits from a stronger model.
+- **The settings strip is three grouped sections instead of twelve flat tabs** (TODO N7). "Feeds" is
+  now named "Subscriptions" to stop colliding with the Feeds/Categories axis the naming pass drew.
+  Activity and Speed stayed their own tabs, grouped under the server section, rather than merging
+  their content into Server's body — that merge touches live-rendered panels several e2e specs cover
+  and nobody could verify against a running suite this session; noted as the honest remainder.
+- **Smart vs Smart+ now names one consistent thing across the app** (TODO N1–N13, the naming pass).
+  "Smart" is deterministic and on-machine; "Smart+" spends a request. A dozen places used to blur the
+  two — a settings toggle read "Smart features" for something that only ever runs locally, "Rank My
+  Feed" didn't say which one was ranking it, the sidebar's filing unit was called "Category" in one
+  screen and "Folder" in the store while "Category" also names the *article's* subject elsewhere.
+  Categories→Folders is now consistent for the filing axis; "Smart+ ranking", "Smart+ file", and
+  every `smart.*` preference's copy say which tier they are.
+
+- **Article revisions: an edited article says so, and shows what it said before** (TODO F34).
+  Publishers correct pieces silently; `internal/store/ingest.go` now hashes title+summary+body on
+  every poll and files the version it replaces the moment the hash changes, so noticing costs
+  nothing on the common case (`IngestResult.Edited` is false for the overwhelming majority of
+  polls). `GetItemRevisions` (`reader.proto`, capped at 10) is subscriber-scoped — a non-subscriber
+  reads nothing — and the dateline's `edited-mark` button opens a disclosure panel that keeps three
+  states apart on purpose: absent means still loading, present-and-empty means no earlier copy was
+  ever recorded (true of everything ingested before this shipped), and failed is its own third
+  thing. The wording never claims to know *when* the publisher made the change, only when this
+  instance saw it — those differ by anywhere from a poll interval to a week, and stating the first
+  as the second would be a fabricated fact in the one feature whose entire purpose is accuracy.
+- **Article categories and genre, computed once per item for the whole instance** (`internal/classify`,
+  `internal/pipeline`, `internal/analyze`, migration `0021`, M29, plan §27, TODO Tier 10). A 26-category
+  lexicon (1,644 terms) scores every article deterministically and for free — measured at 88µs/item —
+  and refuses rather than guesses when nothing clears its floor: an off-topic item gets no chip instead
+  of a wrong one. `ListItems` and `GetItem` already carry `category`, `secondary_categories`, `genre`
+  and `category_reason` on the wire; no client surface renders them yet. The escalation path to a
+  model (measured at a 0.470 upper-bound rate on the corpus) has its egress boundary, consent keys and
+  shared-read Contributor registry built and tested, but has never spoken to a real provider and has no
+  per-label prompts or per-user pass yet.
+  **`JobFanout` was built, tested, documented — and never wired to anything.** No handler was
+  registered for `store.JobFanout` and nothing called `fanout.Service.Enqueue`, so no user-authored
+  rule had ever run in this application: `rule_hits` was always empty and the Mute view had nothing in
+  it, for as long as `internal/fanout` has existed. Fixed by giving `analyze.Service` the fan-out hook
+  it already exposed and registering the handler with the pool. Rules gained `category` and `genre` as
+  fields in the same change, wired to a real `item_analysis` row via `fanout.forSubscriber`'s existing
+  `CategoriesFor` call — `category = security AND genre = release → tag "patch"` runs today.
+
 - **A way to sign out** (Settings → Account, TODO F46b's first half). `data.SignOut` was written,
   tested and reachable from nowhere for its entire life — clearing local storage by hand was the
   documented logout — so this is an affordance for a capability that already worked, not a new one.
@@ -136,6 +213,43 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **FluxCast never produced a lead story.** `roleFor` required both a top-decile score AND two
+  corroborating sources to reach `LEAD` — anti-correlated on real data, since a reader's
+  highest-scoring story is very often a single-source exclusive. 27 of 28 stories in a real 20-minute
+  rundown came out `SUPPORTING`, with nothing signalled as the top of the hour. Fixed: the top-scoring
+  story is always the lead; a second, well-corroborated story can be promoted alongside it only in a
+  show 20 minutes or longer.
+- **One category could eat nearly half a FluxCast rundown.** `hardware` took 13 of 28 stories back to
+  back for about nine minutes at identical pacing — nothing capped a single segment's share of the
+  show. A 40% ceiling now demotes overflow to quick hits or drops it, never appends it.
+- **The unsorted segment wasn't reliably last, and segments were ordered by taxonomy table position
+  instead of what they actually contained.** A programme opened on a middling software story ahead of
+  a $250B financing story in the AI segment, purely because of where `lexicon.Categories()` happens to
+  list "software". Segments now sort by their strongest story's score, with unsorted forced last.
+  regardless of score.
+- **The rules/fan-out engine was fully built, tested, and never wired into the running server.** No
+  handler was registered for `store.JobFanout` and nothing called `fanout.Service.Enqueue` — so no
+  user-authored rule had ever run in this application. `category` and `genre` also gained rule-engine
+  fields in the same change, driven by a real `item_analysis` row.
+- **`netguard.Get` ignored a client's own permissive policy.** The convenience wrapper validated every
+  URL against the strict SSRF policy regardless of whether the passed `*http.Client` was built with
+  `AllowPrivate: true` — the one entry point in the package that didn't respect it. Fixed with an
+  explicit `allowPrivate` parameter, since a plain `*http.Client` carries no field to read the policy
+  back out of.
+- **OPML import under-reported how many rows failed once past the report cap.** `SkipCount()` derived
+  its answer from `len(Skips)`, but `Skips` is deliberately capped at 30 entries for display — so a
+  151-feed import with 35 failures reported "30 skipped" instead of 35. Now stored as its own counter,
+  incremented on every skip regardless of whether the row makes the capped list.
+- **My Feed's "why this is here" line split multi-word publisher names into two attributions.**
+  "Wall Street Journal" matched both a followed "Wall Street" and a followed "Street Journal"
+  independently, rendering "about Street Journal and Wall Street, which you follow" for one mention.
+  Overlapping entity matches now resolve to the longest span.
+- **The add-feed dialog showed raw gRPC error text.** A rejected feed URL surfaced `rpc error: code =
+  InvalidArgument desc = reader: "..." is not a URL` verbatim; five error sites now route through the
+  existing sanitizer instead.
+- **Three HTTP surfaces (`/metrics`, `/debug/pprof/*`, `/debug/reset-state`) had no stated policy and
+  no enforcement on a public bind.** `deploy/nginx.conf` now returns 404 on all three ahead of the
+  catch-all route, on both the TLS vhost and the bootstrap default-server block.
 - **Setup told readers to check a server that was working.** A refused signup on the live instance
   reported "Couldn't sign in. Check the server is running and try again." The server was running: it
   had refused the password for a stated reason and answered `InvalidArgument` saying so, which

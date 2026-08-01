@@ -238,6 +238,8 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 | **A39** | **Every paintable value is a token, and motion is one of them** | No literal colour outside a `design.Theme`; a theme is a set of custom-property values, so a new theme costs one list and not a rule per sheet. Every duration is written `calc(var(--mo) * t)` — `--mo: 0` makes reduced motion *absent* rather than suppressed, and there is no way to author an animation that escapes the gate (§20.16). |
 | **A40** | **The connection is a state machine, not a boolean** | Five states — `live` · `connecting` · `offline` · `down` · `blocked` — driven by four inputs: gRPC connectivity, a **client-side keepalive verdict**, browser lifecycle events, and the code of the last RPC. **Retry is not the answer to every failure.** Most errors say nothing about the connection at all, and a few — a version-skew refusal, a revoked session, a deleted tenant — are *terminal*: the loop must stop and name a remedy, because retrying a permanent refusal is a loop that never recovers and never says why. And **retry is not durability** — what survives an outage is the outbox (§12.4), not the reconnect (§20.19). |
 | **A42** | **Nobody but OpenAI.** A feature may depend on the reader's own server, the publisher's own site, and OpenAI — and on nothing else. No mail provider, no push vendor, no app store, no archive service, no other company's account, on either side of the boundary. This is not a privacy posture, it is a *liveness* one: every third party is a service that can price us, rate-limit us, deprecate us, or vanish, and a self-hosted reader whose features die when someone else's product does is not self-hosted. OpenAI is the single, named, replaceable exception (A11–A12), it is gated per user, it is billed to the reader's own key, and the whole product works without it. Where a capability genuinely requires a third party, the answer is to ship the **primitive** the reader can point wherever they like — a webhook rather than a Slack integration, an Atom feed rather than a share button (§28). |
+| **A43** | **Smart is on this machine; Smart+ is a model asked.** The `+` is the egress-and-billing boundary and the only thing in the interface that marks it — never a quality claim, never a tier badge. Every capability that exists at both levels is named with **one noun, two prefixes** (*Smart ranking* → *Smart+ ranking*, not "ranking" → a fresh coinage), so the pair reads as a pair. `TODO.md` "The naming pass — Smart vs Smart+" (2026-07-27) is where this was worked out; `client/i18n`'s catalog test asserts the tier-prefixed label set against a canonical list, so a fifth capability cannot be added under a name that skips the rule. |
+| **A44** | **The browser's own voice is never called "Smart voice."** A11–A31 pair every other two-tier capability as Smart/Smart+, and that pattern makes this one look obligatory — it is not. The free tier under *Smart+ voice* is the operating system's own synthesiser: ArticleFlux does not derive it, choose it, or improve it, so naming it Smart would claim credit that is not ours, and would turn the `+` into a quality ladder exactly where it has to keep meaning "this one leaves the machine." Stays *"Read articles aloud"* / *"your browser's own synthesiser."* |
 
 ---
 
@@ -2180,7 +2182,7 @@ The reader is shown the extracted items, the count, the model's one-line note, a
 There is deliberately **no confidence score**: a number a model assigns to its own answer is not
 evidence, and five real headlines pulled off the page are.
 
-**Consent is two conditions, both checked at the RPC** (§18.8): `smart.subscribe` is on for this user
+**Consent is two conditions, both checked at the RPC** (§18.8): `smart.follow` is on for this user
 (default off, its own key rather than sharing `tts.smartPlus` — different content, different
 decision), *and* the request carried the flag the button sets. Neither implies the other.
 
@@ -2955,6 +2957,22 @@ models endpoint on save. **Hard budget ceiling with a visible meter**, shared wi
 **Fail soft always** — any error, timeout, missing key, exhausted budget, or open circuit falls back
 to Smart. Smart+ must never produce an empty homepage.
 
+> **Amendment, 2026-07-31: taste-calibration examples.** The re-rank's derived profile also carries
+> up to 15 **positive example headlines** — recent titles the reader engaged with strongly (liked,
+> clicked through, read to the end, dwelled on; ranked by that blended engagement weight, not
+> filtered to explicit likes only) — and up to 15 **negative example headlines**, titles the reader
+> explicitly **Disliked** (the A27 verdict; never Bounced or Skipped, which §18.1 calls genuinely
+> ambiguous and which have no business standing in as a confident "this was bad" for a model). Both
+> are titles only, same rule as every other string that crosses this boundary: never a URL, never a
+> timestamp, never which feed carried it. The point is a model that can infer "does this candidate
+> read like the reader's taste or against it" from concrete examples, not only from an aggregated
+> topic label — the gap `internal/derive`'s Smart+ rerank had until this addition: the profile it
+> built was abstract enough that a candidate near a liked SUBJECT and a candidate near a disliked
+> ANGLE of the same subject looked identical to it. Enforced the same way as every cap here — a
+> named constant (`llm.MaxProfileExamples`) applied at the boundary in `RankPayload.Trim`, not
+> assumed from the caller — and the two new keys (`positive_examples`, `negative_examples`) are on
+> `llm.EgressKeys`, with `TestNothingLeavesThatSection188DoesNotPermit` updated to cover them.
+
 ### 18.9 Explainability is the product
 
 Every ranked item shows why — *"you open 84% of this source"* · *"matches your NPU inference reading"*
@@ -3291,6 +3309,10 @@ narrator's session has its own end, and starting again from the top would re-rea
 
 **Still to do.** Idle auto-start after N minutes (off by default), and the offline path from the trip
 pack — which remains the place a broken one would be most visible.
+
+**What decides the running order is a different layer, and it has its own section.** This section
+owns the sound and the picture; §29 owns selection, grouping, ordering and cost — the editorial
+producer that hands this narrator a rundown instead of a bare list of ids.
 
 ---
 
@@ -3763,10 +3785,11 @@ clicked — an index in state would silently disagree with the pointer.
 
 | Where | Keys |
 |---|---|
-| Anywhere | `Ctrl K` palette · `?` shortcut sheet · `1` `2` `3` panes · `/` search · `f` feed filter · `r` refresh · `u` unread-only · `Esc` close / stop / back |
+| Anywhere | `Ctrl K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` panes · `/` search · `f` feed filter · `r` refresh · `u` unread-only · `s` start slideshow · `Esc` close / stop / back |
 | Feed list | `↑ ↓` move · `Enter` open |
 | Article list | `↑ ↓` move **and open** · `j` `k` next/previous |
-| An article | `o` original · `l` like · `d` dislike · `t` read later · `U` mark unread · `Ctrl Enter` save the note NOW (it autosaves on a pause and on blur regardless) |
+| An article | `o` original · `l` like · `d` dislike · `t` read later · `U` mark unread · `w` focus mode · `Ctrl Enter` save the note NOW (it autosaves on a pause and on blur regardless) |
+| Slideshow | Owns every key while it runs: `Esc` stop · `Space` pause · `→`/`j`/`n` next · `←`/`k`/`p` previous · `v` toggle voice — `l` means Like everywhere else, so the slideshow does not reuse it for voice |
 
 Two rules that are easy to get wrong and were:
 
@@ -4941,6 +4964,18 @@ reason `docs/FEATURES.md` has a status legend at all.
 - **Pack URLs** authenticated, tenant-scoped, short-TTL signed.
 - **`/healthz`, `/readyz`** are unauthenticated and therefore **deliberately information-free** — a
   status code and nothing else. No version, no counts, no tenant data (§22.4).
+- **`/metrics`, `/debug/pprof/*`, `/debug/reset-state`** (TODO F38) are operator-only, and the decision
+  is now written rather than left to a default. `/metrics` is unauthenticated by the same reasoning as
+  `/healthz`/`/readyz` — a scraper is a machine with no session, and every attribute
+  `internal/telemetry` emits is a bounded label, never a feed URL, article title or username — but that
+  makes it *safe to answer without a login*, not *safe to expose to the public internet*: request rates
+  alone say when somebody reads. `/debug/pprof/*` registers only when `-profiling` is passed (default
+  off); `/debug/reset-state` registers only in `-dev` mode, which is itself refused on any non-loopback
+  bind (§7.1a). **On a remote, TLS deployment (A9) none of the three is reachable through the reverse
+  proxy** — `deploy/nginx.conf` returns 404 for `/metrics` and everything under `/debug/` in both server
+  blocks, ahead of the catch-all `location /`, so a flag flipped on the box for a debugging session is
+  not also a hole in the site in front of it. An operator collects metrics and profiles from the
+  loopback address directly (SSH tunnel, or a Prometheus agent on the box), never through the vhost.
 - **Tunnel hardening** — `WithAllowedOrigins`, `WithReadLimitBytes(4<<20)` (**a deliberate tightening;
   the library default is 16 MiB**), `WithKeepalive`, and the three connection/upgrade caps.
 - **WebSub callback** — verify the challenge and **validate the HMAC on every push**.
@@ -5213,6 +5248,45 @@ when everything feels slow) · disk headroom against the §22.6 watermarks · sy
 
 **One request id threads handler → job → poller**, which is the only way a failure that crosses the
 queue boundary is traceable at all.
+
+#### 22.15a Packages with no trace in this document (2026-07-31, TODO F40)
+
+A sweep of every `internal/*` package against this file and `TODO.md` found six with no mention
+anywhere, each defensible on its own and none written down. Recorded here rather than deleted —
+every one of them is load-bearing for someone.
+
+- **`internal/telemetry`** — the second instrumentation surface §22.15 describes as `internal/obs`
+  alone. `internal/obs` is the in-process log ring and admin-RPC view; `internal/telemetry` is what
+  makes the process inspectable from OUTSIDE itself (metrics, traces) when it is wedged rather than
+  merely slow. §22.15's metrics list is telemetry's, not obs's — the two packages were never in
+  competition, just undocumented as a pair.
+- **`internal/seedread`** — fabricates a reading history so My Feed has something to derive from on
+  an otherwise-empty development database (§18's cold-start problem, made observable rather than
+  theoretical). **Reachability, stated rather than inferred:** it ships in the production binary as
+  the `seed-reading` CLI subcommand (`cmd/articleflux/main.go`), which opens the target database
+  with `DevMode: true` unconditionally — there is no separate dev build, no flag guard, and nothing
+  stops it from being pointed at a live instance's database file by anyone holding the binary and a
+  `-db` path. Whether that reachability is acceptable is TODO F41, not decided here.
+- **`internal/buildstatus`** — the boot page's own doc comment says it plainly: reads `TODO.md` and
+  parses the checklist rather than keeping a second copy of "what's done," specifically so the status
+  page cannot go stale independently of the tracker. Named here as dev instrumentation for the boot
+  page, gone once the real client lands (TODO 8.1).
+- **`internal/envfile`** — loads `.env` into the process environment on startup. Exists because
+  `.env.example` has told people to copy it to `.env` since Tier 1 and nothing ever read the result;
+  the real environment always wins over a value it sets, and it is deliberately dependency-free
+  rather than pulling in a parser for four rules of `KEY=VALUE` syntax.
+- **`internal/clientaddr`** — the one place that answers "who made this request," because
+  `r.RemoteAddr` is wrong under this project's own `deploy/nginx.conf` (which terminates TLS on :443
+  and forwards to loopback, making `RemoteAddr` nginx for every caller). Used by the tunnel's abuse
+  caps, the login limiter and the lockout ledger, three call sites that each had their own — and
+  disagreeing — answer before this existed.
+- **`internal/tools/benchspread`** (built as `benchspread.exe`) and **`internal/tools/probe`** (built
+  as `probe.exe`) — developer-only diagnostics, not part of the shipped server. `benchspread` reads
+  `go test -bench` output and flags timings taken while the fanless dev box was thermally throttled
+  or contended, rather than letting six plausible-looking numbers hide a run that cannot be trusted.
+  `probe` runs one derivation pass against a real database and reports what it did — corroboration
+  behaviour, or (with a second argument) the pairwise-similarity histogram `SameStoryThreshold` was
+  actually chosen from, rather than guessed.
 
 ### 22.16 Internationalisation
 
@@ -6102,9 +6176,10 @@ does the most work and where every reader already expects to find it. That is on
 `docs/FEATURES.md` heading, and no schema change. The alternative is naming the new axis **Sections**,
 which is honest (it is a newspaper section) and which nobody will type into a search box.
 
-**This is D23 and it is Cam's call.** Everything below is written with the recommendation taken; if
-the answer is "Sections", it is a find-and-replace over one Go package and one proto message and
-nothing else moves.
+**This was D23, Cam's call — resolved 2026-07-31.** The recommendation above was taken: `TODO.md`
+"The naming pass — Smart vs Smart+" §N8 (2026-07-27) directs the rename as an unhedged, actionable
+checklist item rather than re-opening the question, which is read here as the answer. Everything
+below is written with the recommendation taken.
 
 ### 27.1 Three axes, and what each one is for
 
@@ -6649,7 +6724,7 @@ quietly worked around, with the argument stated so it can be disagreed with:
 > is a statement about today's payloads; that one is a statement about the boundary, and only the
 > second survives the next amendment.
 
-**Consent is two keys, and neither implies the other** — the precedent `smart.subscribe` set for
+**Consent is two keys, and neither implies the other** — the precedent `smart.follow` set for
 exactly this shape:
 
 | Key | Layer | Default | Governs |
@@ -6979,7 +7054,7 @@ correct behaviour and it is already the behaviour).
 | Id | Entry |
 |---|---|
 | **A41** | **One analysis pass per item, globally, and every per-item feature reads it.** No feature may re-derive from raw item text what `item_analysis` already holds, and no feature may make its own per-item model request — it registers a `Contributor` or it does without |
-| **D23** | **The word "category"** (§27.0a). Recommendation: rail's "Categories" → "Folders"; "Category" becomes the article axis. **Open — Cam's call** |
+| **D23** | **The word "category"** (§27.0a). Rail's "Categories" → "Folders"; "Category" becomes the article axis. **Resolved 2026-07-31 — see §27.0a** |
 | **R23** | **A wrong chip is worse than no chip.** Classification is the most visible surface in the app and the only one that is confidently wrong in public. Mitigated by refusing to classify (§27.3b), the corpus ratchet (§27.11), removals-as-evidence (§27.5), and shipping categories on / auto-tags off (§27.3e) |
 | **T24** | **`TestTaxonomyPrecision`** — the corpus ratchet (§27.11) |
 | **M29** | **Classification and the item pipeline.** §27. `internal/classify` · `internal/pipeline` · `0021` · `JobAnalyze` · fan-out reordering · Settings → Classification · the Unsorted view. Depends on M17 (Smart+ egress harness) for §27.4e and on nothing else |
@@ -7164,3 +7239,129 @@ It is a map of the field, not a specification. Nothing in `docs/COMPETITORS.md` 
 if a competitor has a feature and we have decided against it, the decision here wins, and A42 is the
 first place to check whether we already decided. The failure mode this section exists to prevent is
 a backlog assembled by reading somebody else's pricing page.
+
+---
+
+## 29. FluxCast — the editorial producer
+
+*Written 2026-07-31, per TODO 11.19, from decisions that were made in code and comments while
+building Tier 11 and never had a home outside them. §19 owns the narrator, the music and the
+on-screen slideshow — what the broadcast sounds and looks like. This section owns the layer
+underneath: what gets selected, how it is grouped and ordered, and what it costs. TODO.md Tier 11
+is the live build list and the authority on what is actually built today — this section does not
+duplicate that status and will not be kept in sync with it line by line; treat it as the settled
+design, not a progress report.*
+
+### 29.1 What it is, and the boundary it does not cross
+
+FluxCast turns a feed into a **programme**: it selects, groups, orders, allocates airtime and writes
+transitions, then hands a finished rundown to the narrator §19 already built. Three rules decide the
+shape of everything below, and none of them are negotiable per-feature calls — they were fixed once,
+for the whole tier:
+
+1. **FluxCast is a Smart+ add-on, and "add-on" means what it already means elsewhere in this
+   application.** There is no billing machinery here and this tier does not add any. Following the
+   pattern `tts.smartPlus` → `tts.digest` → `tts.podcast` already set — each *"a separate egress and a
+   separate bill"* — FluxCast is its own per-user preference (`flux.enabled`), default off, with its
+   own visible spend. Consenting to an article being read aloud is not consent to a model reading two
+   hundred headlines and writing a running order.
+2. **The rundown is Smart; the broadcast is Smart+.** Selection, clustering, grouping, ordering and
+   airtime are deterministic and cost nothing — they run on `home_ranking`, `corroborate` and the
+   category taxonomy. An instance with no API key still produces a real rundown, still shows it, and
+   still plays it with the per-item voice. The model is what makes it *sound like a programme*. This
+   is the free-tier answer and the reason FluxCast is designed around it rather than degrading to it.
+3. **The planner may shape, and may never rank.** `rank.Score` and, for Smart+ readers,
+   `Interest.RerankCandidates` are the two existing opinions about relevance in this application. A
+   third opinion with no `reasons_json` to explain itself is not an improvement, so the planner
+   **consumes** `home_ranking` — it decides segments, order, airtime and transitions, never what is
+   worth hearing.
+
+### 29.2 The audio-unit constraint, and why it decides the architecture
+
+`/speech` is reached with a per-item, AES-GCM sealed ticket
+(`speech\n<tenant>\n<user>\n<role>\n<itemID>\n<exp>`) minted by `GetItem`. One item is one audio file
+is one slide; `--fill` comes from that file's playhead, and read-state fires on `ended`. A segment
+spanning three stories would break the ticket, the slide boundary, the cue points and the
+bookkeeping at once — so **the rundown writes per segment and synthesises per story**: one model call
+produces a whole segment, transition included, as per-story prose blocks; each block is synthesised
+under its own item ticket exactly as today. Tickets, slides, cue points and read-state are untouched
+by any of this, and the three-second musical seam (§19) already covers the joins. Nothing in this
+tier may change that without redoing §19's clock.
+
+### 29.3 The model tiers (G6-gated: names only, no ids)
+
+Cam has named three model grades — **Sol**, **Terra**, **Luna** — in decreasing capability and price.
+**No model id may be written into this repository until G6 (`plan.md`/`TODO.md`'s open gate) is
+answered**, so the table below is written against tiers, not ids, and stays correct however G6
+resolves:
+
+| Call | Tier | Effort | Why |
+|---|---|---|---|
+| Editorial planner | Luna | `low` | Shapes ~200 pre-ranked rows into segments — cheap, frequent, and a wrong answer is visible in the rundown before anything is spoken. |
+| Segment writer | Terra | `low` | The only place quality is *heard*: full article text in, spoken prose out, once per selected story. |
+| Opening + transitions | Luna | `low` | Short and formulaic; promote to Terra only if G6 finds Luna cannot hold a manner. |
+| Anything else | — | — | Nothing in this tier uses Sol. Cost is per minute of audio produced, and a broadcast is produced continuously — a call that needs Sol is mis-specified. |
+
+The resolution rule this tier's model settings follow (TODO 11.13): `smart.model.small` /
+`smart.model.mid` / `smart.model.large` are the tier keys; a caller asking for an unset tier falls
+back to `smart.model`, the compatibility default every other Smart+ feature already used. An instance
+that sets only `smart.model` behaves exactly as it did before this tier existed.
+
+### 29.4 Three decisions invented under the items rather than by them
+
+*(TODO 11.22 — each was decided in a migration, a store comment or a struct comment while building
+this tier, each is now load-bearing, and none of them would be found by reading `plan.md`.)*
+
+- **`rundowns.state` has two values, not three.** `producing` while segments after the first are
+  still being written and synthesised on the durable queue (11.16); `complete` once every segment is
+  produced. There is deliberately no `failed`: the planner (11.7) falls back to the deterministic
+  selection (11.4) on any failure, and that fallback is itself *"a complete product"* by its own
+  done-when — so a rundown that never got a usable model plan is still a real, playable rundown that
+  simply never spent anything. What failed, if anything, belongs in the Activity log (11.12), not in
+  a state value nothing downstream would branch on.
+- **"The current rundown" means most recently created, not most recently incomplete.** The history
+  question ("what did it pick last night") and the resume question ("what was playing when the
+  process died") are both answered by the same row — the last one created — and a completed rundown
+  is exactly as valid an answer to "what is current" as one still producing its later segments in the
+  background. This is a guess, and it is one continuous mode (11.9) will make wrong the moment two
+  rundowns can validly exist at once; whoever builds 11.9 owns revisiting it here.
+- **`smart.SegmentGroup.PrevTheme` is a forward reference to `rundown.Segment.Theme`.** The two exist
+  in packages that cannot import each other — `internal/smart` writes prose, `internal/rundown` is
+  pure structure (29.2) — so an agent wiring the segment writer could not see the field it was
+  mirroring and named it independently. They agree by convention, not by type: whoever wires 11.16 is
+  the one place that reads both, and is the one place a rename of either has to be checked against the
+  other by hand.
+
+### 29.5 Two naming conventions, invented once and worth keeping
+
+*(TODO 11.29 — both were decided during integration and would otherwise only exist as a Go comment
+one package away from where the next reader needs them.)*
+
+- **`internal/fluxcast.Repo` is named for its suffix on purpose.** `internal/tools/guards`' fourth
+  check (`guardRepoScope`) enforces "every exported method on a type whose name ends in `Repo` takes a
+  `store.Scope`" by matching the receiver's type name alone, regardless of package. `fluxcast.Repo`
+  reads three scoped tables and writes a fourth, so naming it to end in `Repo` gets tenant-isolation
+  enforcement from CI structurally, instead of resting on a reviewer noticing a missing parameter. Any
+  future type outside `internal/store` that touches scoped rows should take the same naming shortcut
+  rather than reinventing the check.
+- **A story's title and its reasons both live in side-maps on `fluxcast.Produced`, not on
+  `rundown.Story`.** `rundown.Story` is `{ItemID, ClusterID, Role, Words, Sources}` — fixed by 11.2's
+  purity requirement, because the visual rundown (11.17) and the producer (11.16) must be the same
+  code or the screen lies about what will play. A title is display, not structure, and a story's
+  `reasons_json` is `store.RankReason`, a type `internal/rundown` cannot import without breaking that
+  purity. So `Produced.Titles map[string]string` and `Produced.Reasons map[string][]store.RankReason`
+  both key by item id and ride beside the pure `Rundown` rather than widening it. Any later field that
+  is about *display* rather than *what plays* belongs beside these, not inside `rundown.Story`.
+
+### 29.6 What FluxCast costs, and does without a key
+
+The answer this section exists to make findable without reading code: **FluxCast itself is free.**
+Turning it on (`flux.enabled`) costs nothing by default — selection, grouping, ordering and airtime
+are arithmetic over data this application already computed for the ranked homepage. A reader with no
+OpenAI key configured gets a complete, playable rundown: real segments, real ordering, real airtime,
+narrated by the same per-item voice §19 already ships. What that reader does not get is a *written*
+broadcast — a segment that reads like one thing rather than a list, an opening that greets them by
+name of the day's shape, transitions that are prose rather than silence. That is `tts.podcast`
+(§19), already its own opt-in with its own spend, and FluxCast's only Smart+ cost is the same two
+calls per segment (§29.3) layered on top of it — never billed, never made, until both `flux.enabled`
+and `tts.podcast` are on.
