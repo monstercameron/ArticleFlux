@@ -1,6 +1,6 @@
 package i18n
 
-// English copy for the add-a-feed dialog and the category editor
+// English copy for the add-a-feed dialog and the folder editor
 // (client/view/addfeed.go).
 func init() {
 	text(DefaultLocale, "addFeed", map[string]string{
@@ -16,14 +16,14 @@ func init() {
 		// catalog because a locale may want a local example domain.
 		"urlPlaceholder": "https://example.com/feed.xml",
 
-		"categoryLabel": "Category",
+		"categoryLabel": "Folder",
 		"categoryHint":  "Where it sits in the sidebar. You can move it later.",
-		"noCategory":    "No category",
+		"noCategory":    "No folder",
 		// The ＋ is part of the label rather than a separate glyph node: it is
 		// one control and it reads as one word.
 		"newCategory":            "＋ New",
-		"newCategoryPlaceholder": "Name the category",
-		"newCategoryAria":        "New category name",
+		"newCategoryPlaceholder": "Name the folder",
+		"newCategoryAria":        "New folder name",
 
 		"nameLabel":       "Name",
 		"nameHint":        "Your own name for it. Leave this blank to use the publisher's.",
@@ -63,6 +63,15 @@ func init() {
 		"smartAria":    "Smart+ follow — when an address has no feed, read the page and work out how to follow it",
 		"smartAnalyze": "Try again",
 		"smartWorking": "Reading the page…",
+		// The file lamp, beside the follow one on the same row. Its own name and
+		// sentence, because it is a separate consent for a separate request —
+		// see subscribe.go's smartCategorizePref. "File" rather than
+		// "categorize": it suggests a FOLDER (D23 gave "category" to the article
+		// axis), and "file" is the verb the rest of the app already uses for
+		// that — "File under {category}?", "Nothing filed here yet".
+		"categorizeSmartName": "Smart+ file",
+		"categorizeSmartAria": "Smart+ file — after adding a feed with no folder chosen, " +
+			"suggest one of your existing folders, or a new one, from the feed's title and description",
 		"smartNoKey": "This server has no OpenAI key. Whoever runs it adds one in " +
 			"Settings → Smart+.",
 		"smartRefused": "This site's robots.txt asks us not to read this page, so we won't.",
@@ -109,15 +118,15 @@ func init() {
 	// The receipt after following a page, so "it worked" is a number rather
 	// than a feeling.
 	text(DefaultLocale, "category", map[string]string{
-		"title":  "Category",
+		"title":  "Folder",
 		"close":  "Close",
 		"cancel": "Cancel",
 		"save":   "Save name",
 
 		"nameLabel": "Name",
-		"nameAria":  "Category name",
+		"nameAria":  "Folder name",
 
-		"delete":  "Delete category",
+		"delete":  "Delete folder",
 		"confirm": "Delete it",
 		// The typographic quotes are the design's, and a locale that uses
 		// different quote marks needs them here rather than in the code.

@@ -1738,8 +1738,15 @@ type SubscribeResponse struct {
 	// True when the source already existed and was simply attached. A14 means a
 	// popular feed is polled once no matter how many tenants subscribe.
 	SourceExisted bool `protobuf:"varint,2,opt,name=source_existed,json=sourceExisted,proto3" json:"source_existed,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// suggested_category and suggested_category_is_new are the Smart+
+	// categorizer's answer (internal/smart/categorize.go), set only when the
+	// reader left folder_id empty, has smart.categorize on, and Smart+ is
+	// configured — every other case leaves both unset, which the client reads
+	// as "no suggestion" rather than as an error.
+	SuggestedCategory      string `protobuf:"bytes,3,opt,name=suggested_category,json=suggestedCategory,proto3" json:"suggested_category,omitempty"`
+	SuggestedCategoryIsNew bool   `protobuf:"varint,4,opt,name=suggested_category_is_new,json=suggestedCategoryIsNew,proto3" json:"suggested_category_is_new,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *SubscribeResponse) Reset() {
@@ -1782,6 +1789,20 @@ func (x *SubscribeResponse) GetFeed() *Feed {
 func (x *SubscribeResponse) GetSourceExisted() bool {
 	if x != nil {
 		return x.SourceExisted
+	}
+	return false
+}
+
+func (x *SubscribeResponse) GetSuggestedCategory() string {
+	if x != nil {
+		return x.SuggestedCategory
+	}
+	return ""
+}
+
+func (x *SubscribeResponse) GetSuggestedCategoryIsNew() bool {
+	if x != nil {
+		return x.SuggestedCategoryIsNew
 	}
 	return false
 }
@@ -5656,6 +5677,414 @@ func (x *SteerInterestResponse) GetRebuilding() bool {
 	return false
 }
 
+// Recommendation is one open suggestion (§18.7).
+type Recommendation struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Domain  string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	FeedUrl string                 `protobuf:"bytes,2,opt,name=feed_url,json=feedUrl,proto3" json:"feed_url,omitempty"`
+	Title   string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Score   float64                `protobuf:"fixed64,4,opt,name=score,proto3" json:"score,omitempty"`
+	// rung names which signal surfaced this: 1 outlinks, 2 aggregator,
+	// 3 blogroll, 4 topic match (Smart+), 5 LLM + web search (Smart+).
+	Rung int32 `protobuf:"varint,5,opt,name=rung,proto3" json:"rung,omitempty"`
+	// evidence is shown verbatim — it IS the product; see recommend.go.
+	Evidence      string `protobuf:"bytes,6,opt,name=evidence,proto3" json:"evidence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Recommendation) Reset() {
+	*x = Recommendation{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Recommendation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Recommendation) ProtoMessage() {}
+
+func (x *Recommendation) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Recommendation.ProtoReflect.Descriptor instead.
+func (*Recommendation) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *Recommendation) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+func (x *Recommendation) GetFeedUrl() string {
+	if x != nil {
+		return x.FeedUrl
+	}
+	return ""
+}
+
+func (x *Recommendation) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *Recommendation) GetScore() float64 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *Recommendation) GetRung() int32 {
+	if x != nil {
+		return x.Rung
+	}
+	return 0
+}
+
+func (x *Recommendation) GetEvidence() string {
+	if x != nil {
+		return x.Evidence
+	}
+	return ""
+}
+
+type ListRecommendationsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRecommendationsRequest) Reset() {
+	*x = ListRecommendationsRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRecommendationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRecommendationsRequest) ProtoMessage() {}
+
+func (x *ListRecommendationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRecommendationsRequest.ProtoReflect.Descriptor instead.
+func (*ListRecommendationsRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{84}
+}
+
+type ListRecommendationsResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Recommendations []*Recommendation      `protobuf:"bytes,1,rep,name=recommendations,proto3" json:"recommendations,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ListRecommendationsResponse) Reset() {
+	*x = ListRecommendationsResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRecommendationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRecommendationsResponse) ProtoMessage() {}
+
+func (x *ListRecommendationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRecommendationsResponse.ProtoReflect.Descriptor instead.
+func (*ListRecommendationsResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *ListRecommendationsResponse) GetRecommendations() []*Recommendation {
+	if x != nil {
+		return x.Recommendations
+	}
+	return nil
+}
+
+type RefreshRecommendationsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshRecommendationsRequest) Reset() {
+	*x = RefreshRecommendationsRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshRecommendationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshRecommendationsRequest) ProtoMessage() {}
+
+func (x *RefreshRecommendationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshRecommendationsRequest.ProtoReflect.Descriptor instead.
+func (*RefreshRecommendationsRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{86}
+}
+
+type RefreshRecommendationsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefreshRecommendationsResponse) Reset() {
+	*x = RefreshRecommendationsResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefreshRecommendationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefreshRecommendationsResponse) ProtoMessage() {}
+
+func (x *RefreshRecommendationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefreshRecommendationsResponse.ProtoReflect.Descriptor instead.
+func (*RefreshRecommendationsResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{87}
+}
+
+type AcceptRecommendationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcceptRecommendationRequest) Reset() {
+	*x = AcceptRecommendationRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcceptRecommendationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcceptRecommendationRequest) ProtoMessage() {}
+
+func (x *AcceptRecommendationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcceptRecommendationRequest.ProtoReflect.Descriptor instead.
+func (*AcceptRecommendationRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *AcceptRecommendationRequest) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+type AcceptRecommendationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Feed          *Feed                  `protobuf:"bytes,1,opt,name=feed,proto3" json:"feed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcceptRecommendationResponse) Reset() {
+	*x = AcceptRecommendationResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[89]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcceptRecommendationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcceptRecommendationResponse) ProtoMessage() {}
+
+func (x *AcceptRecommendationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[89]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcceptRecommendationResponse.ProtoReflect.Descriptor instead.
+func (*AcceptRecommendationResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *AcceptRecommendationResponse) GetFeed() *Feed {
+	if x != nil {
+		return x.Feed
+	}
+	return nil
+}
+
+type RejectRecommendationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RejectRecommendationRequest) Reset() {
+	*x = RejectRecommendationRequest{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[90]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RejectRecommendationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RejectRecommendationRequest) ProtoMessage() {}
+
+func (x *RejectRecommendationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[90]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RejectRecommendationRequest.ProtoReflect.Descriptor instead.
+func (*RejectRecommendationRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{90}
+}
+
+func (x *RejectRecommendationRequest) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+type RejectRecommendationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RejectRecommendationResponse) Reset() {
+	*x = RejectRecommendationResponse{}
+	mi := &file_articleflux_v1_reader_proto_msgTypes[91]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RejectRecommendationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RejectRecommendationResponse) ProtoMessage() {}
+
+func (x *RejectRecommendationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_reader_proto_msgTypes[91]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RejectRecommendationResponse.ProtoReflect.Descriptor instead.
+func (*RejectRecommendationResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_reader_proto_rawDescGZIP(), []int{91}
+}
+
 var File_articleflux_v1_reader_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_reader_proto_rawDesc = "" +
@@ -5782,10 +6211,12 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x10SubscribeRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1b\n" +
 	"\tfolder_id\x18\x02 \x01(\tR\bfolderId\x12\x14\n" +
-	"\x05title\x18\x03 \x01(\tR\x05title\"d\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\"\xce\x01\n" +
 	"\x11SubscribeResponse\x12(\n" +
 	"\x04feed\x18\x01 \x01(\v2\x14.articleflux.v1.FeedR\x04feed\x12%\n" +
-	"\x0esource_existed\x18\x02 \x01(\bR\rsourceExisted\"1\n" +
+	"\x0esource_existed\x18\x02 \x01(\bR\rsourceExisted\x12-\n" +
+	"\x12suggested_category\x18\x03 \x01(\tR\x11suggestedCategory\x129\n" +
+	"\x19suggested_category_is_new\x18\x04 \x01(\bR\x16suggestedCategoryIsNew\"1\n" +
 	"\x12UnsubscribeRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"\x15\n" +
 	"\x13UnsubscribeResponse\"'\n" +
@@ -6069,7 +6500,26 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x15SteerInterestResponse\x12\x1e\n" +
 	"\n" +
 	"rebuilding\x18\x01 \x01(\bR\n" +
-	"rebuilding*\xb0\x01\n" +
+	"rebuilding\"\x9f\x01\n" +
+	"\x0eRecommendation\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x19\n" +
+	"\bfeed_url\x18\x02 \x01(\tR\afeedUrl\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x12\x14\n" +
+	"\x05score\x18\x04 \x01(\x01R\x05score\x12\x12\n" +
+	"\x04rung\x18\x05 \x01(\x05R\x04rung\x12\x1a\n" +
+	"\bevidence\x18\x06 \x01(\tR\bevidence\"\x1c\n" +
+	"\x1aListRecommendationsRequest\"g\n" +
+	"\x1bListRecommendationsResponse\x12H\n" +
+	"\x0frecommendations\x18\x01 \x03(\v2\x1e.articleflux.v1.RecommendationR\x0frecommendations\"\x1f\n" +
+	"\x1dRefreshRecommendationsRequest\" \n" +
+	"\x1eRefreshRecommendationsResponse\"5\n" +
+	"\x1bAcceptRecommendationRequest\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\"H\n" +
+	"\x1cAcceptRecommendationResponse\x12(\n" +
+	"\x04feed\x18\x01 \x01(\v2\x14.articleflux.v1.FeedR\x04feed\"5\n" +
+	"\x1bRejectRecommendationRequest\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\"\x1e\n" +
+	"\x1cRejectRecommendationResponse*\xb0\x01\n" +
 	"\tListScope\x12\x1a\n" +
 	"\x16LIST_SCOPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eLIST_SCOPE_ALL\x10\x01\x12\x13\n" +
@@ -6084,7 +6534,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x10STEER_LEVEL_MORE\x10\x01\x12\x16\n" +
 	"\x12STEER_LEVEL_NORMAL\x10\x02\x12\x14\n" +
 	"\x10STEER_LEVEL_LESS\x10\x03\x12\x15\n" +
-	"\x11STEER_LEVEL_NEVER\x10\x042\x82\x17\n" +
+	"\x11STEER_LEVEL_NEVER\x10\x042\xd1\x1a\n" +
 	"\rReaderService\x12P\n" +
 	"\tListFeeds\x12 .articleflux.v1.ListFeedsRequest\x1a!.articleflux.v1.ListFeedsResponse\x12P\n" +
 	"\tListItems\x12 .articleflux.v1.ListItemsRequest\x1a!.articleflux.v1.ListItemsResponse\x12J\n" +
@@ -6121,7 +6571,11 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x12UpdateFeedSettings\x12).articleflux.v1.UpdateFeedSettingsRequest\x1a*.articleflux.v1.UpdateFeedSettingsResponse\x12h\n" +
 	"\x11RecordEngagements\x12(.articleflux.v1.RecordEngagementsRequest\x1a).articleflux.v1.RecordEngagementsResponse\x12k\n" +
 	"\x12GetInterestProfile\x12).articleflux.v1.GetInterestProfileRequest\x1a*.articleflux.v1.GetInterestProfileResponse\x12\\\n" +
-	"\rSteerInterest\x12$.articleflux.v1.SteerInterestRequest\x1a%.articleflux.v1.SteerInterestResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
+	"\rSteerInterest\x12$.articleflux.v1.SteerInterestRequest\x1a%.articleflux.v1.SteerInterestResponse\x12n\n" +
+	"\x13ListRecommendations\x12*.articleflux.v1.ListRecommendationsRequest\x1a+.articleflux.v1.ListRecommendationsResponse\x12w\n" +
+	"\x16RefreshRecommendations\x12-.articleflux.v1.RefreshRecommendationsRequest\x1a..articleflux.v1.RefreshRecommendationsResponse\x12q\n" +
+	"\x14AcceptRecommendation\x12+.articleflux.v1.AcceptRecommendationRequest\x1a,.articleflux.v1.AcceptRecommendationResponse\x12q\n" +
+	"\x14RejectRecommendation\x12+.articleflux.v1.RejectRecommendationRequest\x1a,.articleflux.v1.RejectRecommendationResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
 
 var (
 	file_articleflux_v1_reader_proto_rawDescOnce sync.Once
@@ -6136,96 +6590,105 @@ func file_articleflux_v1_reader_proto_rawDescGZIP() []byte {
 }
 
 var file_articleflux_v1_reader_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 86)
+var file_articleflux_v1_reader_proto_msgTypes = make([]protoimpl.MessageInfo, 95)
 var file_articleflux_v1_reader_proto_goTypes = []any{
-	(ListScope)(0),                     // 0: articleflux.v1.ListScope
-	(SteerLevel)(0),                    // 1: articleflux.v1.SteerLevel
-	(*Feed)(nil),                       // 2: articleflux.v1.Feed
-	(*Item)(nil),                       // 3: articleflux.v1.Item
-	(*ScrollLiveViewRequest)(nil),      // 4: articleflux.v1.ScrollLiveViewRequest
-	(*ScrollLiveViewResponse)(nil),     // 5: articleflux.v1.ScrollLiveViewResponse
-	(*ListFeedsRequest)(nil),           // 6: articleflux.v1.ListFeedsRequest
-	(*ListFeedsResponse)(nil),          // 7: articleflux.v1.ListFeedsResponse
-	(*ListItemsRequest)(nil),           // 8: articleflux.v1.ListItemsRequest
-	(*ListItemsResponse)(nil),          // 9: articleflux.v1.ListItemsResponse
-	(*GetItemRequest)(nil),             // 10: articleflux.v1.GetItemRequest
-	(*GetItemResponse)(nil),            // 11: articleflux.v1.GetItemResponse
-	(*ItemRevision)(nil),               // 12: articleflux.v1.ItemRevision
-	(*GetItemRevisionsRequest)(nil),    // 13: articleflux.v1.GetItemRevisionsRequest
-	(*GetItemRevisionsResponse)(nil),   // 14: articleflux.v1.GetItemRevisionsResponse
-	(*SetItemStateRequest)(nil),        // 15: articleflux.v1.SetItemStateRequest
-	(*SetItemStateResponse)(nil),       // 16: articleflux.v1.SetItemStateResponse
-	(*MarkAllReadRequest)(nil),         // 17: articleflux.v1.MarkAllReadRequest
-	(*UndoMarkAllReadRequest)(nil),     // 18: articleflux.v1.UndoMarkAllReadRequest
-	(*UndoMarkAllReadResponse)(nil),    // 19: articleflux.v1.UndoMarkAllReadResponse
-	(*MarkAllReadResponse)(nil),        // 20: articleflux.v1.MarkAllReadResponse
-	(*SubscribeRequest)(nil),           // 21: articleflux.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),          // 22: articleflux.v1.SubscribeResponse
-	(*UnsubscribeRequest)(nil),         // 23: articleflux.v1.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil),        // 24: articleflux.v1.UnsubscribeResponse
-	(*ImportOpmlRequest)(nil),          // 25: articleflux.v1.ImportOpmlRequest
-	(*ImportSkip)(nil),                 // 26: articleflux.v1.ImportSkip
-	(*ImportOpmlResponse)(nil),         // 27: articleflux.v1.ImportOpmlResponse
-	(*ExportOpmlRequest)(nil),          // 28: articleflux.v1.ExportOpmlRequest
-	(*ExportOpmlResponse)(nil),         // 29: articleflux.v1.ExportOpmlResponse
-	(*AnalyzeSiteRequest)(nil),         // 30: articleflux.v1.AnalyzeSiteRequest
-	(*FeedCandidate)(nil),              // 31: articleflux.v1.FeedCandidate
-	(*ScrapeRule)(nil),                 // 32: articleflux.v1.ScrapeRule
-	(*ScrapeSample)(nil),               // 33: articleflux.v1.ScrapeSample
-	(*ScrapeProposal)(nil),             // 34: articleflux.v1.ScrapeProposal
-	(*AnalyzeSiteResponse)(nil),        // 35: articleflux.v1.AnalyzeSiteResponse
-	(*SubscribeScrapeRequest)(nil),     // 36: articleflux.v1.SubscribeScrapeRequest
-	(*SubscribeScrapeResponse)(nil),    // 37: articleflux.v1.SubscribeScrapeResponse
-	(*RefreshRequest)(nil),             // 38: articleflux.v1.RefreshRequest
-	(*RefreshResponse)(nil),            // 39: articleflux.v1.RefreshResponse
-	(*SearchRequest)(nil),              // 40: articleflux.v1.SearchRequest
-	(*SearchResponse)(nil),             // 41: articleflux.v1.SearchResponse
-	(*GetPrefsRequest)(nil),            // 42: articleflux.v1.GetPrefsRequest
-	(*GetPrefsResponse)(nil),           // 43: articleflux.v1.GetPrefsResponse
-	(*SetPrefsRequest)(nil),            // 44: articleflux.v1.SetPrefsRequest
-	(*SetPrefsResponse)(nil),           // 45: articleflux.v1.SetPrefsResponse
-	(*Tag)(nil),                        // 46: articleflux.v1.Tag
-	(*ListTagsRequest)(nil),            // 47: articleflux.v1.ListTagsRequest
-	(*ListTagsResponse)(nil),           // 48: articleflux.v1.ListTagsResponse
-	(*TagIDs)(nil),                     // 49: articleflux.v1.TagIDs
-	(*SetFeedTagRequest)(nil),          // 50: articleflux.v1.SetFeedTagRequest
-	(*SetFeedTagResponse)(nil),         // 51: articleflux.v1.SetFeedTagResponse
-	(*UpdateTagRequest)(nil),           // 52: articleflux.v1.UpdateTagRequest
-	(*UpdateTagResponse)(nil),          // 53: articleflux.v1.UpdateTagResponse
-	(*Folder)(nil),                     // 54: articleflux.v1.Folder
-	(*ListFoldersRequest)(nil),         // 55: articleflux.v1.ListFoldersRequest
-	(*ListFoldersResponse)(nil),        // 56: articleflux.v1.ListFoldersResponse
-	(*CreateFolderRequest)(nil),        // 57: articleflux.v1.CreateFolderRequest
-	(*CreateFolderResponse)(nil),       // 58: articleflux.v1.CreateFolderResponse
-	(*RenameFolderRequest)(nil),        // 59: articleflux.v1.RenameFolderRequest
-	(*RenameFolderResponse)(nil),       // 60: articleflux.v1.RenameFolderResponse
-	(*DeleteFolderRequest)(nil),        // 61: articleflux.v1.DeleteFolderRequest
-	(*DeleteFolderResponse)(nil),       // 62: articleflux.v1.DeleteFolderResponse
-	(*SetFeedFolderRequest)(nil),       // 63: articleflux.v1.SetFeedFolderRequest
-	(*SetFeedFolderResponse)(nil),      // 64: articleflux.v1.SetFeedFolderResponse
-	(*SetNoteRequest)(nil),             // 65: articleflux.v1.SetNoteRequest
-	(*SetNoteResponse)(nil),            // 66: articleflux.v1.SetNoteResponse
-	(*ListNotesRequest)(nil),           // 67: articleflux.v1.ListNotesRequest
-	(*ListNotesResponse)(nil),          // 68: articleflux.v1.ListNotesResponse
-	(*GetFeedSettingsRequest)(nil),     // 69: articleflux.v1.GetFeedSettingsRequest
-	(*GetFeedSettingsResponse)(nil),    // 70: articleflux.v1.GetFeedSettingsResponse
-	(*UpdateFeedSettingsResponse)(nil), // 71: articleflux.v1.UpdateFeedSettingsResponse
-	(*FeedSettings)(nil),               // 72: articleflux.v1.FeedSettings
-	(*UpdateFeedSettingsRequest)(nil),  // 73: articleflux.v1.UpdateFeedSettingsRequest
-	(*Engagement)(nil),                 // 74: articleflux.v1.Engagement
-	(*RecordEngagementsRequest)(nil),   // 75: articleflux.v1.RecordEngagementsRequest
-	(*RecordEngagementsResponse)(nil),  // 76: articleflux.v1.RecordEngagementsResponse
-	(*InterestTopic)(nil),              // 77: articleflux.v1.InterestTopic
-	(*InterestEntity)(nil),             // 78: articleflux.v1.InterestEntity
-	(*InterestFeed)(nil),               // 79: articleflux.v1.InterestFeed
-	(*InterestFactor)(nil),             // 80: articleflux.v1.InterestFactor
-	(*GetInterestProfileRequest)(nil),  // 81: articleflux.v1.GetInterestProfileRequest
-	(*GetInterestProfileResponse)(nil), // 82: articleflux.v1.GetInterestProfileResponse
-	(*SteerInterestRequest)(nil),       // 83: articleflux.v1.SteerInterestRequest
-	(*SteerInterestResponse)(nil),      // 84: articleflux.v1.SteerInterestResponse
-	nil,                                // 85: articleflux.v1.GetPrefsResponse.PrefsEntry
-	nil,                                // 86: articleflux.v1.SetPrefsRequest.PrefsEntry
-	nil,                                // 87: articleflux.v1.ListTagsResponse.BySourceEntry
+	(ListScope)(0),                         // 0: articleflux.v1.ListScope
+	(SteerLevel)(0),                        // 1: articleflux.v1.SteerLevel
+	(*Feed)(nil),                           // 2: articleflux.v1.Feed
+	(*Item)(nil),                           // 3: articleflux.v1.Item
+	(*ScrollLiveViewRequest)(nil),          // 4: articleflux.v1.ScrollLiveViewRequest
+	(*ScrollLiveViewResponse)(nil),         // 5: articleflux.v1.ScrollLiveViewResponse
+	(*ListFeedsRequest)(nil),               // 6: articleflux.v1.ListFeedsRequest
+	(*ListFeedsResponse)(nil),              // 7: articleflux.v1.ListFeedsResponse
+	(*ListItemsRequest)(nil),               // 8: articleflux.v1.ListItemsRequest
+	(*ListItemsResponse)(nil),              // 9: articleflux.v1.ListItemsResponse
+	(*GetItemRequest)(nil),                 // 10: articleflux.v1.GetItemRequest
+	(*GetItemResponse)(nil),                // 11: articleflux.v1.GetItemResponse
+	(*ItemRevision)(nil),                   // 12: articleflux.v1.ItemRevision
+	(*GetItemRevisionsRequest)(nil),        // 13: articleflux.v1.GetItemRevisionsRequest
+	(*GetItemRevisionsResponse)(nil),       // 14: articleflux.v1.GetItemRevisionsResponse
+	(*SetItemStateRequest)(nil),            // 15: articleflux.v1.SetItemStateRequest
+	(*SetItemStateResponse)(nil),           // 16: articleflux.v1.SetItemStateResponse
+	(*MarkAllReadRequest)(nil),             // 17: articleflux.v1.MarkAllReadRequest
+	(*UndoMarkAllReadRequest)(nil),         // 18: articleflux.v1.UndoMarkAllReadRequest
+	(*UndoMarkAllReadResponse)(nil),        // 19: articleflux.v1.UndoMarkAllReadResponse
+	(*MarkAllReadResponse)(nil),            // 20: articleflux.v1.MarkAllReadResponse
+	(*SubscribeRequest)(nil),               // 21: articleflux.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),              // 22: articleflux.v1.SubscribeResponse
+	(*UnsubscribeRequest)(nil),             // 23: articleflux.v1.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil),            // 24: articleflux.v1.UnsubscribeResponse
+	(*ImportOpmlRequest)(nil),              // 25: articleflux.v1.ImportOpmlRequest
+	(*ImportSkip)(nil),                     // 26: articleflux.v1.ImportSkip
+	(*ImportOpmlResponse)(nil),             // 27: articleflux.v1.ImportOpmlResponse
+	(*ExportOpmlRequest)(nil),              // 28: articleflux.v1.ExportOpmlRequest
+	(*ExportOpmlResponse)(nil),             // 29: articleflux.v1.ExportOpmlResponse
+	(*AnalyzeSiteRequest)(nil),             // 30: articleflux.v1.AnalyzeSiteRequest
+	(*FeedCandidate)(nil),                  // 31: articleflux.v1.FeedCandidate
+	(*ScrapeRule)(nil),                     // 32: articleflux.v1.ScrapeRule
+	(*ScrapeSample)(nil),                   // 33: articleflux.v1.ScrapeSample
+	(*ScrapeProposal)(nil),                 // 34: articleflux.v1.ScrapeProposal
+	(*AnalyzeSiteResponse)(nil),            // 35: articleflux.v1.AnalyzeSiteResponse
+	(*SubscribeScrapeRequest)(nil),         // 36: articleflux.v1.SubscribeScrapeRequest
+	(*SubscribeScrapeResponse)(nil),        // 37: articleflux.v1.SubscribeScrapeResponse
+	(*RefreshRequest)(nil),                 // 38: articleflux.v1.RefreshRequest
+	(*RefreshResponse)(nil),                // 39: articleflux.v1.RefreshResponse
+	(*SearchRequest)(nil),                  // 40: articleflux.v1.SearchRequest
+	(*SearchResponse)(nil),                 // 41: articleflux.v1.SearchResponse
+	(*GetPrefsRequest)(nil),                // 42: articleflux.v1.GetPrefsRequest
+	(*GetPrefsResponse)(nil),               // 43: articleflux.v1.GetPrefsResponse
+	(*SetPrefsRequest)(nil),                // 44: articleflux.v1.SetPrefsRequest
+	(*SetPrefsResponse)(nil),               // 45: articleflux.v1.SetPrefsResponse
+	(*Tag)(nil),                            // 46: articleflux.v1.Tag
+	(*ListTagsRequest)(nil),                // 47: articleflux.v1.ListTagsRequest
+	(*ListTagsResponse)(nil),               // 48: articleflux.v1.ListTagsResponse
+	(*TagIDs)(nil),                         // 49: articleflux.v1.TagIDs
+	(*SetFeedTagRequest)(nil),              // 50: articleflux.v1.SetFeedTagRequest
+	(*SetFeedTagResponse)(nil),             // 51: articleflux.v1.SetFeedTagResponse
+	(*UpdateTagRequest)(nil),               // 52: articleflux.v1.UpdateTagRequest
+	(*UpdateTagResponse)(nil),              // 53: articleflux.v1.UpdateTagResponse
+	(*Folder)(nil),                         // 54: articleflux.v1.Folder
+	(*ListFoldersRequest)(nil),             // 55: articleflux.v1.ListFoldersRequest
+	(*ListFoldersResponse)(nil),            // 56: articleflux.v1.ListFoldersResponse
+	(*CreateFolderRequest)(nil),            // 57: articleflux.v1.CreateFolderRequest
+	(*CreateFolderResponse)(nil),           // 58: articleflux.v1.CreateFolderResponse
+	(*RenameFolderRequest)(nil),            // 59: articleflux.v1.RenameFolderRequest
+	(*RenameFolderResponse)(nil),           // 60: articleflux.v1.RenameFolderResponse
+	(*DeleteFolderRequest)(nil),            // 61: articleflux.v1.DeleteFolderRequest
+	(*DeleteFolderResponse)(nil),           // 62: articleflux.v1.DeleteFolderResponse
+	(*SetFeedFolderRequest)(nil),           // 63: articleflux.v1.SetFeedFolderRequest
+	(*SetFeedFolderResponse)(nil),          // 64: articleflux.v1.SetFeedFolderResponse
+	(*SetNoteRequest)(nil),                 // 65: articleflux.v1.SetNoteRequest
+	(*SetNoteResponse)(nil),                // 66: articleflux.v1.SetNoteResponse
+	(*ListNotesRequest)(nil),               // 67: articleflux.v1.ListNotesRequest
+	(*ListNotesResponse)(nil),              // 68: articleflux.v1.ListNotesResponse
+	(*GetFeedSettingsRequest)(nil),         // 69: articleflux.v1.GetFeedSettingsRequest
+	(*GetFeedSettingsResponse)(nil),        // 70: articleflux.v1.GetFeedSettingsResponse
+	(*UpdateFeedSettingsResponse)(nil),     // 71: articleflux.v1.UpdateFeedSettingsResponse
+	(*FeedSettings)(nil),                   // 72: articleflux.v1.FeedSettings
+	(*UpdateFeedSettingsRequest)(nil),      // 73: articleflux.v1.UpdateFeedSettingsRequest
+	(*Engagement)(nil),                     // 74: articleflux.v1.Engagement
+	(*RecordEngagementsRequest)(nil),       // 75: articleflux.v1.RecordEngagementsRequest
+	(*RecordEngagementsResponse)(nil),      // 76: articleflux.v1.RecordEngagementsResponse
+	(*InterestTopic)(nil),                  // 77: articleflux.v1.InterestTopic
+	(*InterestEntity)(nil),                 // 78: articleflux.v1.InterestEntity
+	(*InterestFeed)(nil),                   // 79: articleflux.v1.InterestFeed
+	(*InterestFactor)(nil),                 // 80: articleflux.v1.InterestFactor
+	(*GetInterestProfileRequest)(nil),      // 81: articleflux.v1.GetInterestProfileRequest
+	(*GetInterestProfileResponse)(nil),     // 82: articleflux.v1.GetInterestProfileResponse
+	(*SteerInterestRequest)(nil),           // 83: articleflux.v1.SteerInterestRequest
+	(*SteerInterestResponse)(nil),          // 84: articleflux.v1.SteerInterestResponse
+	(*Recommendation)(nil),                 // 85: articleflux.v1.Recommendation
+	(*ListRecommendationsRequest)(nil),     // 86: articleflux.v1.ListRecommendationsRequest
+	(*ListRecommendationsResponse)(nil),    // 87: articleflux.v1.ListRecommendationsResponse
+	(*RefreshRecommendationsRequest)(nil),  // 88: articleflux.v1.RefreshRecommendationsRequest
+	(*RefreshRecommendationsResponse)(nil), // 89: articleflux.v1.RefreshRecommendationsResponse
+	(*AcceptRecommendationRequest)(nil),    // 90: articleflux.v1.AcceptRecommendationRequest
+	(*AcceptRecommendationResponse)(nil),   // 91: articleflux.v1.AcceptRecommendationResponse
+	(*RejectRecommendationRequest)(nil),    // 92: articleflux.v1.RejectRecommendationRequest
+	(*RejectRecommendationResponse)(nil),   // 93: articleflux.v1.RejectRecommendationResponse
+	nil,                                    // 94: articleflux.v1.GetPrefsResponse.PrefsEntry
+	nil,                                    // 95: articleflux.v1.SetPrefsRequest.PrefsEntry
+	nil,                                    // 96: articleflux.v1.ListTagsResponse.BySourceEntry
 }
 var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	2,  // 0: articleflux.v1.ListFeedsResponse.feeds:type_name -> articleflux.v1.Feed
@@ -6244,10 +6707,10 @@ var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	32, // 13: articleflux.v1.SubscribeScrapeRequest.rule:type_name -> articleflux.v1.ScrapeRule
 	2,  // 14: articleflux.v1.SubscribeScrapeResponse.feed:type_name -> articleflux.v1.Feed
 	3,  // 15: articleflux.v1.SearchResponse.items:type_name -> articleflux.v1.Item
-	85, // 16: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
-	86, // 17: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
+	94, // 16: articleflux.v1.GetPrefsResponse.prefs:type_name -> articleflux.v1.GetPrefsResponse.PrefsEntry
+	95, // 17: articleflux.v1.SetPrefsRequest.prefs:type_name -> articleflux.v1.SetPrefsRequest.PrefsEntry
 	46, // 18: articleflux.v1.ListTagsResponse.tags:type_name -> articleflux.v1.Tag
-	87, // 19: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
+	96, // 19: articleflux.v1.ListTagsResponse.by_source:type_name -> articleflux.v1.ListTagsResponse.BySourceEntry
 	46, // 20: articleflux.v1.SetFeedTagResponse.tag:type_name -> articleflux.v1.Tag
 	46, // 21: articleflux.v1.UpdateTagResponse.tag:type_name -> articleflux.v1.Tag
 	54, // 22: articleflux.v1.ListFoldersResponse.folders:type_name -> articleflux.v1.Folder
@@ -6264,78 +6727,88 @@ var file_articleflux_v1_reader_proto_depIdxs = []int32{
 	79, // 33: articleflux.v1.GetInterestProfileResponse.feeds:type_name -> articleflux.v1.InterestFeed
 	80, // 34: articleflux.v1.GetInterestProfileResponse.factors:type_name -> articleflux.v1.InterestFactor
 	1,  // 35: articleflux.v1.SteerInterestRequest.level:type_name -> articleflux.v1.SteerLevel
-	49, // 36: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
-	6,  // 37: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
-	8,  // 38: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
-	10, // 39: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
-	13, // 40: articleflux.v1.ReaderService.GetItemRevisions:input_type -> articleflux.v1.GetItemRevisionsRequest
-	4,  // 41: articleflux.v1.ReaderService.ScrollLiveView:input_type -> articleflux.v1.ScrollLiveViewRequest
-	15, // 42: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
-	18, // 43: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
-	17, // 44: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
-	21, // 45: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
-	23, // 46: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
-	25, // 47: articleflux.v1.ReaderService.ImportOpml:input_type -> articleflux.v1.ImportOpmlRequest
-	28, // 48: articleflux.v1.ReaderService.ExportOpml:input_type -> articleflux.v1.ExportOpmlRequest
-	30, // 49: articleflux.v1.ReaderService.AnalyzeSite:input_type -> articleflux.v1.AnalyzeSiteRequest
-	36, // 50: articleflux.v1.ReaderService.SubscribeScrape:input_type -> articleflux.v1.SubscribeScrapeRequest
-	38, // 51: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
-	40, // 52: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
-	42, // 53: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
-	44, // 54: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
-	47, // 55: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
-	50, // 56: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
-	52, // 57: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
-	55, // 58: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
-	57, // 59: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
-	59, // 60: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
-	61, // 61: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
-	63, // 62: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
-	65, // 63: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
-	67, // 64: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
-	69, // 65: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
-	73, // 66: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
-	75, // 67: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
-	81, // 68: articleflux.v1.ReaderService.GetInterestProfile:input_type -> articleflux.v1.GetInterestProfileRequest
-	83, // 69: articleflux.v1.ReaderService.SteerInterest:input_type -> articleflux.v1.SteerInterestRequest
-	7,  // 70: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
-	9,  // 71: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
-	11, // 72: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
-	14, // 73: articleflux.v1.ReaderService.GetItemRevisions:output_type -> articleflux.v1.GetItemRevisionsResponse
-	5,  // 74: articleflux.v1.ReaderService.ScrollLiveView:output_type -> articleflux.v1.ScrollLiveViewResponse
-	16, // 75: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
-	19, // 76: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
-	20, // 77: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
-	22, // 78: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
-	24, // 79: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
-	27, // 80: articleflux.v1.ReaderService.ImportOpml:output_type -> articleflux.v1.ImportOpmlResponse
-	29, // 81: articleflux.v1.ReaderService.ExportOpml:output_type -> articleflux.v1.ExportOpmlResponse
-	35, // 82: articleflux.v1.ReaderService.AnalyzeSite:output_type -> articleflux.v1.AnalyzeSiteResponse
-	37, // 83: articleflux.v1.ReaderService.SubscribeScrape:output_type -> articleflux.v1.SubscribeScrapeResponse
-	39, // 84: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
-	41, // 85: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
-	43, // 86: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
-	45, // 87: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
-	48, // 88: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
-	51, // 89: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
-	53, // 90: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
-	56, // 91: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
-	58, // 92: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
-	60, // 93: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
-	62, // 94: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
-	64, // 95: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
-	66, // 96: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
-	68, // 97: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
-	70, // 98: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
-	71, // 99: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
-	76, // 100: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
-	82, // 101: articleflux.v1.ReaderService.GetInterestProfile:output_type -> articleflux.v1.GetInterestProfileResponse
-	84, // 102: articleflux.v1.ReaderService.SteerInterest:output_type -> articleflux.v1.SteerInterestResponse
-	70, // [70:103] is the sub-list for method output_type
-	37, // [37:70] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	85, // 36: articleflux.v1.ListRecommendationsResponse.recommendations:type_name -> articleflux.v1.Recommendation
+	2,  // 37: articleflux.v1.AcceptRecommendationResponse.feed:type_name -> articleflux.v1.Feed
+	49, // 38: articleflux.v1.ListTagsResponse.BySourceEntry.value:type_name -> articleflux.v1.TagIDs
+	6,  // 39: articleflux.v1.ReaderService.ListFeeds:input_type -> articleflux.v1.ListFeedsRequest
+	8,  // 40: articleflux.v1.ReaderService.ListItems:input_type -> articleflux.v1.ListItemsRequest
+	10, // 41: articleflux.v1.ReaderService.GetItem:input_type -> articleflux.v1.GetItemRequest
+	13, // 42: articleflux.v1.ReaderService.GetItemRevisions:input_type -> articleflux.v1.GetItemRevisionsRequest
+	4,  // 43: articleflux.v1.ReaderService.ScrollLiveView:input_type -> articleflux.v1.ScrollLiveViewRequest
+	15, // 44: articleflux.v1.ReaderService.SetItemState:input_type -> articleflux.v1.SetItemStateRequest
+	18, // 45: articleflux.v1.ReaderService.UndoMarkAllRead:input_type -> articleflux.v1.UndoMarkAllReadRequest
+	17, // 46: articleflux.v1.ReaderService.MarkAllRead:input_type -> articleflux.v1.MarkAllReadRequest
+	21, // 47: articleflux.v1.ReaderService.Subscribe:input_type -> articleflux.v1.SubscribeRequest
+	23, // 48: articleflux.v1.ReaderService.Unsubscribe:input_type -> articleflux.v1.UnsubscribeRequest
+	25, // 49: articleflux.v1.ReaderService.ImportOpml:input_type -> articleflux.v1.ImportOpmlRequest
+	28, // 50: articleflux.v1.ReaderService.ExportOpml:input_type -> articleflux.v1.ExportOpmlRequest
+	30, // 51: articleflux.v1.ReaderService.AnalyzeSite:input_type -> articleflux.v1.AnalyzeSiteRequest
+	36, // 52: articleflux.v1.ReaderService.SubscribeScrape:input_type -> articleflux.v1.SubscribeScrapeRequest
+	38, // 53: articleflux.v1.ReaderService.Refresh:input_type -> articleflux.v1.RefreshRequest
+	40, // 54: articleflux.v1.ReaderService.Search:input_type -> articleflux.v1.SearchRequest
+	42, // 55: articleflux.v1.ReaderService.GetPrefs:input_type -> articleflux.v1.GetPrefsRequest
+	44, // 56: articleflux.v1.ReaderService.SetPrefs:input_type -> articleflux.v1.SetPrefsRequest
+	47, // 57: articleflux.v1.ReaderService.ListTags:input_type -> articleflux.v1.ListTagsRequest
+	50, // 58: articleflux.v1.ReaderService.SetFeedTag:input_type -> articleflux.v1.SetFeedTagRequest
+	52, // 59: articleflux.v1.ReaderService.UpdateTag:input_type -> articleflux.v1.UpdateTagRequest
+	55, // 60: articleflux.v1.ReaderService.ListFolders:input_type -> articleflux.v1.ListFoldersRequest
+	57, // 61: articleflux.v1.ReaderService.CreateFolder:input_type -> articleflux.v1.CreateFolderRequest
+	59, // 62: articleflux.v1.ReaderService.RenameFolder:input_type -> articleflux.v1.RenameFolderRequest
+	61, // 63: articleflux.v1.ReaderService.DeleteFolder:input_type -> articleflux.v1.DeleteFolderRequest
+	63, // 64: articleflux.v1.ReaderService.SetFeedFolder:input_type -> articleflux.v1.SetFeedFolderRequest
+	65, // 65: articleflux.v1.ReaderService.SetNote:input_type -> articleflux.v1.SetNoteRequest
+	67, // 66: articleflux.v1.ReaderService.ListNotes:input_type -> articleflux.v1.ListNotesRequest
+	69, // 67: articleflux.v1.ReaderService.GetFeedSettings:input_type -> articleflux.v1.GetFeedSettingsRequest
+	73, // 68: articleflux.v1.ReaderService.UpdateFeedSettings:input_type -> articleflux.v1.UpdateFeedSettingsRequest
+	75, // 69: articleflux.v1.ReaderService.RecordEngagements:input_type -> articleflux.v1.RecordEngagementsRequest
+	81, // 70: articleflux.v1.ReaderService.GetInterestProfile:input_type -> articleflux.v1.GetInterestProfileRequest
+	83, // 71: articleflux.v1.ReaderService.SteerInterest:input_type -> articleflux.v1.SteerInterestRequest
+	86, // 72: articleflux.v1.ReaderService.ListRecommendations:input_type -> articleflux.v1.ListRecommendationsRequest
+	88, // 73: articleflux.v1.ReaderService.RefreshRecommendations:input_type -> articleflux.v1.RefreshRecommendationsRequest
+	90, // 74: articleflux.v1.ReaderService.AcceptRecommendation:input_type -> articleflux.v1.AcceptRecommendationRequest
+	92, // 75: articleflux.v1.ReaderService.RejectRecommendation:input_type -> articleflux.v1.RejectRecommendationRequest
+	7,  // 76: articleflux.v1.ReaderService.ListFeeds:output_type -> articleflux.v1.ListFeedsResponse
+	9,  // 77: articleflux.v1.ReaderService.ListItems:output_type -> articleflux.v1.ListItemsResponse
+	11, // 78: articleflux.v1.ReaderService.GetItem:output_type -> articleflux.v1.GetItemResponse
+	14, // 79: articleflux.v1.ReaderService.GetItemRevisions:output_type -> articleflux.v1.GetItemRevisionsResponse
+	5,  // 80: articleflux.v1.ReaderService.ScrollLiveView:output_type -> articleflux.v1.ScrollLiveViewResponse
+	16, // 81: articleflux.v1.ReaderService.SetItemState:output_type -> articleflux.v1.SetItemStateResponse
+	19, // 82: articleflux.v1.ReaderService.UndoMarkAllRead:output_type -> articleflux.v1.UndoMarkAllReadResponse
+	20, // 83: articleflux.v1.ReaderService.MarkAllRead:output_type -> articleflux.v1.MarkAllReadResponse
+	22, // 84: articleflux.v1.ReaderService.Subscribe:output_type -> articleflux.v1.SubscribeResponse
+	24, // 85: articleflux.v1.ReaderService.Unsubscribe:output_type -> articleflux.v1.UnsubscribeResponse
+	27, // 86: articleflux.v1.ReaderService.ImportOpml:output_type -> articleflux.v1.ImportOpmlResponse
+	29, // 87: articleflux.v1.ReaderService.ExportOpml:output_type -> articleflux.v1.ExportOpmlResponse
+	35, // 88: articleflux.v1.ReaderService.AnalyzeSite:output_type -> articleflux.v1.AnalyzeSiteResponse
+	37, // 89: articleflux.v1.ReaderService.SubscribeScrape:output_type -> articleflux.v1.SubscribeScrapeResponse
+	39, // 90: articleflux.v1.ReaderService.Refresh:output_type -> articleflux.v1.RefreshResponse
+	41, // 91: articleflux.v1.ReaderService.Search:output_type -> articleflux.v1.SearchResponse
+	43, // 92: articleflux.v1.ReaderService.GetPrefs:output_type -> articleflux.v1.GetPrefsResponse
+	45, // 93: articleflux.v1.ReaderService.SetPrefs:output_type -> articleflux.v1.SetPrefsResponse
+	48, // 94: articleflux.v1.ReaderService.ListTags:output_type -> articleflux.v1.ListTagsResponse
+	51, // 95: articleflux.v1.ReaderService.SetFeedTag:output_type -> articleflux.v1.SetFeedTagResponse
+	53, // 96: articleflux.v1.ReaderService.UpdateTag:output_type -> articleflux.v1.UpdateTagResponse
+	56, // 97: articleflux.v1.ReaderService.ListFolders:output_type -> articleflux.v1.ListFoldersResponse
+	58, // 98: articleflux.v1.ReaderService.CreateFolder:output_type -> articleflux.v1.CreateFolderResponse
+	60, // 99: articleflux.v1.ReaderService.RenameFolder:output_type -> articleflux.v1.RenameFolderResponse
+	62, // 100: articleflux.v1.ReaderService.DeleteFolder:output_type -> articleflux.v1.DeleteFolderResponse
+	64, // 101: articleflux.v1.ReaderService.SetFeedFolder:output_type -> articleflux.v1.SetFeedFolderResponse
+	66, // 102: articleflux.v1.ReaderService.SetNote:output_type -> articleflux.v1.SetNoteResponse
+	68, // 103: articleflux.v1.ReaderService.ListNotes:output_type -> articleflux.v1.ListNotesResponse
+	70, // 104: articleflux.v1.ReaderService.GetFeedSettings:output_type -> articleflux.v1.GetFeedSettingsResponse
+	71, // 105: articleflux.v1.ReaderService.UpdateFeedSettings:output_type -> articleflux.v1.UpdateFeedSettingsResponse
+	76, // 106: articleflux.v1.ReaderService.RecordEngagements:output_type -> articleflux.v1.RecordEngagementsResponse
+	82, // 107: articleflux.v1.ReaderService.GetInterestProfile:output_type -> articleflux.v1.GetInterestProfileResponse
+	84, // 108: articleflux.v1.ReaderService.SteerInterest:output_type -> articleflux.v1.SteerInterestResponse
+	87, // 109: articleflux.v1.ReaderService.ListRecommendations:output_type -> articleflux.v1.ListRecommendationsResponse
+	89, // 110: articleflux.v1.ReaderService.RefreshRecommendations:output_type -> articleflux.v1.RefreshRecommendationsResponse
+	91, // 111: articleflux.v1.ReaderService.AcceptRecommendation:output_type -> articleflux.v1.AcceptRecommendationResponse
+	93, // 112: articleflux.v1.ReaderService.RejectRecommendation:output_type -> articleflux.v1.RejectRecommendationResponse
+	76, // [76:113] is the sub-list for method output_type
+	39, // [39:76] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_reader_proto_init() }
@@ -6352,7 +6825,7 @@ func file_articleflux_v1_reader_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_reader_proto_rawDesc), len(file_articleflux_v1_reader_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   86,
+			NumMessages:   95,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

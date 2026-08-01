@@ -248,6 +248,11 @@ func categoriesCSS(r func(string, string) css.Rule) {
 		r("display", "flex"), r("align-items", "center"),
 		r("justify-content", "space-between"), r("gap", "12px"),
 	)
+	// .af-lamps holds the address row's two lamps (Smart+ follow, Smart+
+	// categorize) side by side. A wrapper rather than a second aside slot on
+	// afFieldWith, because that function takes exactly one node and a row of
+	// two capabilities is one thing occupying it, not two things sharing it.
+	css.Global(".af-lamps", r("display", "flex"), r("align-items", "center"), r("gap", "8px"))
 	css.Global(".af-lamp",
 		r("display", "inline-flex"), r("align-items", "center"), r("gap", "7px"),
 		r("flex", "none"), r("padding", "3px 9px 3px 8px"),

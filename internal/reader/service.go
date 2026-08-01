@@ -237,19 +237,27 @@ func (s *Service) Search(ctx context.Context, sc store.Scope, query, sourceID st
 // added a feed and sees an empty list assumes it did not work. One fetch is a
 // second or two, and it is the difference between "added" and "added and here it
 // is".
-func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, folderID string) (store.Feed, bool, error) {
+// Description is the feed's own channel description, as of the poll this call
+// just ran — "" when the poll was skipped (an already-polling source) or when
+// the feed simply declares none. It exists on this return only for the
+// Smart+ categorizer (internal/smart/categorize.go), which wants the same
+// words a reader would judge the feed by; nothing else in this package reads
+// it, and it is not persisted (store.Feed carries no description column).
+func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, folderID string) (
+	feedOut store.Feed, existed bool, description string, err error) {
+
 	if rawURL == "" {
-		return store.Feed{}, false, errors.New("reader: no url")
+		return store.Feed{}, false, "", errors.New("reader: no url")
 	}
 	if urlnorm.Host(rawURL) == "" {
-		return store.Feed{}, false, fmt.Errorf("reader: %q is not a URL", rawURL)
+		return store.Feed{}, false, "", fmt.Errorf("reader: %q is not a URL", rawURL)
 	}
 
 	f, existed, err := s.repo.Subscribe(ctx, sc, store.NewSubscription{
 		NaturalKey: feed.NaturalKey(rawURL), FeedURL: rawURL, Title: title, FolderID: folderID,
 	})
 	if err != nil {
-		return store.Feed{}, false, err
+		return store.Feed{}, false, "", err
 	}
 
 	// A source another tenant already polls has items waiting, so only a genuinely
@@ -262,7 +270,8 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 	// an HTML page quietly succeeded where the first was refused, which is
 	// exactly the loophole the refusal exists to close.
 	if !existed || f.LastSuccess == "" {
-		if _, err := s.pollOne(ctx, store.SourceRow{ID: f.SourceID, FeedURL: rawURL}); err != nil {
+		_, desc, err := s.pollOneWithParsed(ctx, store.SourceRow{ID: f.SourceID, FeedURL: rawURL})
+		if err != nil {
 			// A refused ADDRESS is not a failed fetch, and the two cannot be
 			// treated the same. A feed that is briefly down deserves the
 			// subscription it just got — it will work tomorrow, and unsubscribing
@@ -277,7 +286,7 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 			// be fixed.
 			if errors.Is(err, netguard.ErrBlockedIP) || errors.Is(err, netguard.ErrScheme) {
 				s.rollback(ctx, sc, f.SourceID)
-				return store.Feed{}, false, err
+				return store.Feed{}, false, "", err
 			}
 			// Not a feed at all — an HTML page, usually, which is what most
 			// people paste. Same reasoning as a refused address and a different
@@ -289,20 +298,21 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 			// point.
 			if errors.Is(err, feed.ErrNotAFeed) {
 				s.rollback(ctx, sc, f.SourceID)
-				return store.Feed{}, false, err
+				return store.Feed{}, false, "", err
 			}
-			return f, existed, nil
+			return f, existed, "", nil
 		}
 		refreshed, ferr := s.repo.ListFeeds(ctx, sc)
 		if ferr == nil {
 			for _, rf := range refreshed {
 				if rf.SourceID == f.SourceID {
-					return rf, existed, nil
+					return rf, existed, desc, nil
 				}
 			}
 		}
+		return f, existed, desc, nil
 	}
-	return f, existed, nil
+	return f, existed, "", nil
 }
 
 // rollback undoes a subscription whose very first poll proved the address
@@ -395,6 +405,18 @@ func (s *Service) Refresh(ctx context.Context, sc store.Scope, sourceIDs []strin
 
 // pollOne fetches and ingests a single source, recording the outcome either way.
 func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error) {
+	n, _, err := s.pollOneWithParsed(ctx, src)
+	return n, err
+}
+
+// pollOneWithParsed is pollOne's body, plus the feed's own description on a
+// successful poll. Split out rather than widening pollOne itself, because
+// pollOne's (int, error) shape is also the `work func` signature
+// pollOneRecovered, PollDue and Refresh share (see pollOneRecovered's own
+// comment on why that seam exists) — every one of those is background work
+// nothing reads a description from, and widening it there would mean three
+// call sites and their tests carrying a value only Subscribe wants.
+func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (int, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
@@ -402,7 +424,8 @@ func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error)
 	// parser produces "not a recognisable feed" on every poll forever, which is
 	// how a feature like this silently never works.
 	if src.Kind == "scrape" {
-		return s.pollScrape(ctx, src)
+		n, err := s.pollScrape(ctx, src)
+		return n, "", err
 	}
 
 	parsed, err := s.fetcher.Fetch(ctx, src.FeedURL,
@@ -412,13 +435,13 @@ func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error)
 		// nudge. A poll that fails silently makes a dead feed look like a quiet
 		// one, and those need to look different.
 		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
-		return 0, err
+		return 0, "", err
 	}
 	if parsed.NotModified {
 		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, ETag: parsed.ETag, LastModified: parsed.LastModified,
 		})
-		return 0, nil
+		return 0, "", nil
 	}
 
 	items := make([]store.IngestItem, 0, len(parsed.Items))
@@ -432,7 +455,7 @@ func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error)
 	ing, err := s.repo.IngestItems(ctx, src.ID, items)
 	if err != nil {
 		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
-		return 0, err
+		return 0, "", err
 	}
 
 	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
@@ -447,7 +470,7 @@ func (s *Service) pollOne(ctx context.Context, src store.SourceRow) (int, error)
 	if len(ing.NewIDs) > 0 && s.onIngest != nil {
 		s.onIngest(src.ID, ing.NewIDs)
 	}
-	return ing.New, nil
+	return ing.New, parsed.Description, nil
 }
 
 // pollOneRecovered runs work (in production, always pollOne — see the

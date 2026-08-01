@@ -44,26 +44,27 @@ type addFeedWiring struct {
 	// The five closures are Reader's, not this file's. They are passed rather than moved
 	// because they are the loaders every other section calls too — relocating them here to
 	// satisfy one caller would just move the coupling somewhere less obvious.
-	addBusy      ui.State[bool]
-	addNewCat    ui.State[string]
-	addTitle     ui.State[string]
-	addURL       ui.State[string]
-	smartFollow  ui.State[bool]
-	client       ui.State[*data.Client]
-	feeds        ui.State[[]*pb.Feed]
-	feedsGen     ui.Ref[int]
-	folders      ui.State[[]*pb.Folder]
-	foldersGen   ui.Ref[int]
-	hostsRef     ui.Ref[map[string]string]
-	notice       ui.State[string]
-	sel          ui.State[scope]
-	totalUnread  ui.State[int]
-	unreadOnly   ui.State[bool]
-	loadFeeds    func()
-	loadFolders  func()
-	loadItems    func(scope, bool)
-	savePrefs    func(map[string]string)
-	subscribeURL func(string)
+	addBusy         ui.State[bool]
+	addNewCat       ui.State[string]
+	addTitle        ui.State[string]
+	addURL          ui.State[string]
+	smartFollow     ui.State[bool]
+	smartCategorize ui.State[bool]
+	client          ui.State[*data.Client]
+	feeds           ui.State[[]*pb.Feed]
+	feedsGen        ui.Ref[int]
+	folders         ui.State[[]*pb.Folder]
+	foldersGen      ui.Ref[int]
+	hostsRef        ui.Ref[map[string]string]
+	notice          ui.State[string]
+	sel             ui.State[scope]
+	totalUnread     ui.State[int]
+	unreadOnly      ui.State[bool]
+	loadFeeds       func()
+	loadFolders     func()
+	loadItems       func(scope, bool)
+	savePrefs       func(map[string]string)
+	subscribeURL    func(string)
 }
 
 // wire is called once, unconditionally, from Reader.
@@ -162,7 +163,7 @@ func (r addFeedWiring) wire() {
 					// message: it is about the thing the reader did. This one
 					// only speaks when nothing else has.
 					if r.addErr.Get() == "" {
-						r.addErr.Set(r.tr.T("reader", "errAnalyzeSite", i18n.Args{"err": err.Error()}))
+						r.addErr.Set(r.tr.T("reader", "errAnalyzeSite", i18n.Args{"err": serverText(r.tr, err)}))
 					}
 					return
 				}
@@ -201,6 +202,14 @@ func (r addFeedWiring) wire() {
 		next := !r.smartFollow.Get()
 		r.smartFollow.Set(next)
 		r.savePrefs(map[string]string{smartFollowPref: strconv.FormatBool(next)})
+	}
+
+	// toggleSmartCategorize is the categorize lamp's own standing consent,
+	// saved the same way toggleSmartFollow's is.
+	r.act.Get().toggleSmartCategorize = func() {
+		next := !r.smartCategorize.Get()
+		r.smartCategorize.Set(next)
+		r.savePrefs(map[string]string{smartCategorizePref: strconv.FormatBool(next)})
 	}
 
 	// addCandidate subscribes to a feed the ladder found, keeping the category
@@ -245,7 +254,7 @@ func (r addFeedWiring) wire() {
 				if err != nil {
 					ui.PostAsync(func() {
 						r.addBusy.Set(false)
-						r.addErr.Set(r.tr.T("reader", "errNewCategory", i18n.Args{"err": err.Error()}))
+						r.addErr.Set(r.tr.T("reader", "errNewCategory", i18n.Args{"err": serverText(r.tr, err)}))
 					})
 					return
 				}
@@ -277,7 +286,7 @@ func (r addFeedWiring) wire() {
 					r.folders.Set(folderList)
 				}
 				if err != nil {
-					r.addErr.Set(r.tr.T("reader", "errFollowPage", i18n.Args{"err": err.Error()}))
+					r.addErr.Set(r.tr.T("reader", "errFollowPage", i18n.Args{"err": serverText(r.tr, err)}))
 					return
 				}
 				r.addOpen.Set(false)

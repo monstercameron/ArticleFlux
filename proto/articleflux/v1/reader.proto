@@ -211,6 +211,27 @@ service ReaderService {
   // times.
   rpc GetInterestProfile(GetInterestProfileRequest) returns (GetInterestProfileResponse);
   rpc SteerInterest(SteerInterestRequest) returns (SteerInterestResponse);
+
+  // ListRecommendations returns the reader's open suggestions (§18.7, M16) —
+  // sites they do not follow yet, scored by internal/recommend and, when
+  // Smart+'s relevance gate ran, reviewed against two of the candidate's own
+  // posts first. Every entry's evidence is shown verbatim; see recommend.go's
+  // package doc for why an unexplained suggestion is worth less than none.
+  rpc ListRecommendations(ListRecommendationsRequest) returns (ListRecommendationsResponse);
+
+  // RefreshRecommendations enqueues a fresh scoring pass (internal/recommendjob).
+  // Async — the job runs on the pool, and the client re-polls ListRecommendations
+  // rather than blocking a request on a batch of validating fetches.
+  rpc RefreshRecommendations(RefreshRecommendationsRequest) returns (RefreshRecommendationsResponse);
+
+  // AcceptRecommendation subscribes to the suggestion's feed URL — the one
+  // internal/discover already validated, not a re-discovery from the domain —
+  // and marks the suggestion accepted so it stops appearing in the open list.
+  rpc AcceptRecommendation(AcceptRecommendationRequest) returns (AcceptRecommendationResponse);
+
+  // RejectRecommendation is permanent (§18.7): the domain is never suggested
+  // again on this account.
+  rpc RejectRecommendation(RejectRecommendationRequest) returns (RejectRecommendationResponse);
 }
 
 // Feed is one subscription as the sidebar needs it.
@@ -553,6 +574,13 @@ message SubscribeResponse {
   // True when the source already existed and was simply attached. A14 means a
   // popular feed is polled once no matter how many tenants subscribe.
   bool source_existed = 2;
+  // suggested_category and suggested_category_is_new are the Smart+
+  // categorizer's answer (internal/smart/categorize.go), set only when the
+  // reader left folder_id empty, has smart.categorize on, and Smart+ is
+  // configured — every other case leaves both unset, which the client reads
+  // as "no suggestion" rather than as an error.
+  string suggested_category = 3;
+  bool suggested_category_is_new = 4;
 }
 
 message UnsubscribeRequest { string source_id = 1; }
@@ -1185,3 +1213,40 @@ message SteerInterestResponse {
   // instead of leaving the reader to wonder whether the button did anything.
   bool rebuilding = 1;
 }
+
+// Recommendation is one open suggestion (§18.7).
+message Recommendation {
+  string domain = 1;
+  string feed_url = 2;
+  string title = 3;
+  double score = 4;
+  // rung names which signal surfaced this: 1 outlinks, 2 aggregator,
+  // 3 blogroll, 4 topic match (Smart+), 5 LLM + web search (Smart+).
+  int32 rung = 5;
+  // evidence is shown verbatim — it IS the product; see recommend.go.
+  string evidence = 6;
+}
+
+message ListRecommendationsRequest {}
+
+message ListRecommendationsResponse {
+  repeated Recommendation recommendations = 1;
+}
+
+message RefreshRecommendationsRequest {}
+
+message RefreshRecommendationsResponse {}
+
+message AcceptRecommendationRequest {
+  string domain = 1;
+}
+
+message AcceptRecommendationResponse {
+  Feed feed = 1;
+}
+
+message RejectRecommendationRequest {
+  string domain = 1;
+}
+
+message RejectRecommendationResponse {}

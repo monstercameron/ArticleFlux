@@ -83,6 +83,13 @@ type addFeedProps struct {
 	// smartStatus is why there is no proposal — see the proto's smart_status.
 	smartStatus string
 	proposal    *pb.ScrapeProposal
+	// smartCategorizeOn is this reader's standing consent for the model to
+	// suggest a category for the feed being added — the same shape as
+	// smartOn/smartFollowPref, for a different request (subscribe.go's
+	// smartCategorizePref). It has no busy/status of its own: unlike the
+	// ladder, filing happens after Subscribe already succeeded, and its
+	// result shows up as the list header's banner (panes.go), not here.
+	smartCategorizeOn bool
 }
 
 // The delegated actions this dialog dispatches.
@@ -100,6 +107,9 @@ const (
 	actAddSmart     = "add-feed-smart"
 	actAddAnalyze   = "add-feed-analyze"
 	actAddFollow    = "add-feed-follow"
+	// actAddCategorizeSmart is the standing consent for the category
+	// suggestion, its own lamp beside actAddSmart's (see smartLamp's callers).
+	actAddCategorizeSmart = "add-feed-categorize-smart"
 )
 
 // unfiledID is the sentinel for feeds with no category.
@@ -119,6 +129,12 @@ const unfiledID = "__unfiled__"
 // import of the server package into the client to save nine characters, and the
 // two are different jobs that happen to agree on a key.
 const smartFollowPref = "smart.follow"
+
+// smartCategorizePref is the standing consent for the model to suggest a
+// category for a newly-added feed, held server-side like smartFollowPref and
+// duplicated here for the same reason: the client's copy decides what the
+// lamp paints, the server's decides whether a request is ever sent.
+const smartCategorizePref = "smart.categorize"
 
 func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 	// The category picker: every category the reader has, plus none, plus a way
@@ -142,7 +158,12 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 	body := []ui.Node{
 		afFieldWith(tr.T("addFeed", "urlLabel"),
 			tr.T("addFeed", "urlHint"),
-			smartLamp(tr, p.smartOn),
+			html.Div(html.Props{Class: "af-lamps"},
+				smartLamp(tr, p.smartOn, actAddSmart,
+					tr.T("addFeed", "smartName"), tr.T("addFeed", "smartAria")),
+				smartLamp(tr, p.smartCategorizeOn, actAddCategorizeSmart,
+					tr.T("addFeed", "categorizeSmartName"), tr.T("addFeed", "categorizeSmartAria")),
+			),
 			html.Input(html.Props{
 				Class: "field af-input", Type: "url",
 				Placeholder: tr.T("addFeed", "urlPlaceholder"),
@@ -461,24 +482,29 @@ func afFieldWith(label, hint string, aside, control ui.Node) ui.Node {
 // It is deliberately not a chip. Chips in this app are choices among peers, and
 // this is not one of several options — it is a capability that is either armed
 // or not, and arming it changes what the button below does.
-func smartLamp(tr i18n.Runtime, on bool) ui.Node {
+func smartLamp(tr i18n.Runtime, on bool, action, name, aria string) ui.Node {
 	// The label is the setting's NAME and does not change with its state —
 	// "Smart+ follow", not "Smart+ on". A control whose label IS its state has to
 	// be read twice: once to learn what it is, once to learn what it is doing.
 	// The dot answers the second question, and answers it by SHAPE — hollow
 	// against filled — as well as by colour, so it survives a glance and it
 	// survives being colour-blind.
+	//
+	// Parameterised on action/name/aria rather than hard-coded to the follow
+	// lamp, so the categorize lamp beside it (addFeedDialog's af-lamps row) is
+	// the same control wearing different words rather than a second
+	// near-identical function.
 	return html.Button(html.Props{
 		Class: "af-lamp",
-		Raw:   map[string]any{"data-action": actAddSmart},
-		Title: tr.T("addFeed", "smartAria"),
+		Raw:   map[string]any{"data-action": action},
+		Title: aria,
 		Aria: map[string]string{
 			"pressed": strconv.FormatBool(on),
-			"label":   tr.T("addFeed", "smartAria"),
+			"label":   aria,
 		},
 	},
 		html.I(html.Props{Class: "af-lamp-dot", Aria: map[string]string{"hidden": "true"}}),
-		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(tr.T("addFeed", "smartName"))),
+		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(name)),
 	)
 }
 
