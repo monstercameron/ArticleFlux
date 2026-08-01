@@ -499,6 +499,7 @@ func Reader(p readerProps) ui.Node {
 	// rather than a key in the map above, mirroring the RPC: it is that map's
 	// complement, not another label in it.
 	uncatUnread := ui.UseState(-1)
+
 	smartModels := ui.UseState[[]string](nil)
 	// smartModelCustom is whether the reader asked for the free-text field
 	// over the live list. Reset on every settings load (below), so opening
@@ -1123,6 +1124,27 @@ func Reader(p readerProps) ui.Node {
 	// Same discipline as `loadGen` below for the item list: only the response to
 	// the MOST RECENT request is allowed to land.
 	feedsGen := ui.UseRef(0)
+
+	// applyRailNumbers writes a fetchRailNumbers result into the sidebar.
+	//
+	// Call it INSIDE a handler's own PostAsync, with the numbers fetched before
+	// that PostAsync was made — the pairing is the whole point, and it is why
+	// this is two pieces rather than one function that does both. See
+	// fetchRailNumbers for what kept going wrong when every handler wrote this
+	// out by hand.
+	applyRailNumbers := func(rn railNumbers) {
+		if rn.okFeeds {
+			feedsGen.Set(feedsGen.Get() + 1)
+			feeds.Set(rn.feeds)
+			hostsRef.Set(iconHostsOf(rn.feeds))
+			totalUnread.Set(int(rn.total))
+			rankedCount.Set(int(rn.ranked))
+		}
+		if rn.okCats {
+			topicUnread.Set(rn.cats)
+			uncatUnread.Set(int(rn.uncat))
+		}
+	}
 	loadFeeds := func() {
 		c := client.Get()
 		if c == nil {
@@ -1939,13 +1961,9 @@ func Reader(p readerProps) ui.Node {
 			// PostAsync had already run to completion (which is what got the
 			// "Checked N feeds" banner on screen), leaving the rail's unread
 			// counts frozen at their pre-refresh values indefinitely.
-			var feedList []*pb.Feed
-			var total int32
-			okFeeds := false
+			var nums railNumbers
 			if err == nil {
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
+				nums = fetchRailNumbers(c)
 			}
 
 			ui.PostAsync(func() {
@@ -1976,12 +1994,7 @@ func Reader(p readerProps) ui.Node {
 					msg += tr.T("reader", "refreshJoin") + tr.T("reader", "refreshFailed", i18n.Count(len(e)))
 				}
 				notice.Set(msg)
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				// The category counts, refetched rather than adjusted.
 				//
 				// This is the one path where the optimistic arithmetic cannot
@@ -2069,9 +2082,8 @@ func Reader(p readerProps) ui.Node {
 			// saw it. Fetching both up front and applying everything in one
 			// PostAsync sidesteps that gap rather than explaining it away.
 			var folderList []*pb.Folder
-			var feedList []*pb.Feed
-			var total int32
-			okFolders, okFeeds := false, false
+			var nums railNumbers
+			okFolders := false
 			if !errors.Is(err, data.ErrOffline) {
 				// A category created a moment ago survives a failed subscribe,
 				// so it is pulled in on every non-offline outcome: without this
@@ -2080,9 +2092,9 @@ func Reader(p readerProps) ui.Node {
 					folderList, okFolders = fl, true
 				}
 				if err == nil {
-					if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-						feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-					}
+					// Full: a new subscription brings items with it, so the
+					// classification counts move too.
+					nums = fetchRailNumbers(c)
 				}
 			}
 
@@ -2145,12 +2157,7 @@ func Reader(p readerProps) ui.Node {
 				} else {
 					catSuggestSourceID.Set("")
 				}
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -2188,16 +2195,13 @@ func Reader(p readerProps) ui.Node {
 			// applying everything in the one PostAsync this handler already
 			// makes sidesteps that gap rather than explaining it away.
 			var folderList []*pb.Folder
-			var feedList []*pb.Feed
-			var total int32
-			okFolders, okFeeds := false, false
+			var nums railNumbers
+			okFolders := false
 			if err == nil {
 				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
 					folderList, okFolders = fl, true
 				}
-				if res, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = res.GetFeeds(), res.GetTotalUnread(), true
-				}
+				nums = fetchRailNumbers(c)
 			}
 			ui.PostAsync(func() {
 				// Disarmed the moment the press that was confirmed is actually
@@ -2248,12 +2252,7 @@ func Reader(p readerProps) ui.Node {
 					foldersGen.Set(foldersGen.Get() + 1)
 					folders.Set(folderList)
 				}
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -3590,16 +3589,13 @@ func Reader(p readerProps) ui.Node {
 			// its feeds regrouped into Unfiled) could stay on screen indefinitely
 			// even though the delete had genuinely gone through.
 			var folderList []*pb.Folder
-			var feedList []*pb.Feed
-			var total int32
-			okFolders, okFeeds := false, false
+			var nums railNumbers
+			okFolders := false
 			if err == nil {
 				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
 					folderList, okFolders = fl, true
 				}
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
+				nums = fetchFeedNumbers(c)
 			}
 
 			ui.PostAsync(func() {
@@ -3615,12 +3611,7 @@ func Reader(p readerProps) ui.Node {
 					folders.Set(folderList)
 				}
 				// The feeds moved to Unfiled, so the sidebar's grouping is stale.
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				// And so is the list, if the reader was looking at the category
 				// that no longer exists.
 				if s := sel.Get(); s.FolderID == id {
@@ -3647,23 +3638,13 @@ func Reader(p readerProps) ui.Node {
 			// paints. Without this a server disagreement (the reconciling case
 			// this reload exists for) could leave the optimistic move on screen
 			// uncorrected.
-			var feedList []*pb.Feed
-			var total int32
-			okFeeds := false
-			if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-				feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-			}
+			nums := fetchFeedNumbers(c)
 
 			ui.PostAsync(func() {
 				if err != nil {
 					notice.Set(tr.T("reader", "errMoveFeed", i18n.Args{"err": err.Error()}))
 				}
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 			})
 		}()
 	}
@@ -5604,12 +5585,7 @@ func Reader(p readerProps) ui.Node {
 			// loadFeeds(), whose own nested PostAsync is the one that never
 			// paints, leaving the sidebar's name/count stale after a save that
 			// genuinely landed.
-			var feedList []*pb.Feed
-			var total int32
-			okFeeds := false
-			if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-				feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-			}
+			nums := fetchFeedNumbers(c)
 
 			ui.PostAsync(func() {
 				act.Get().feedSettingsLanded(res, err)
@@ -5617,12 +5593,7 @@ func Reader(p readerProps) ui.Node {
 				// this can change, so it is refetched rather than patched
 				// locally — one cheap request beats two representations that can
 				// disagree.
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 			})
 		}()
 	}
@@ -5718,13 +5689,9 @@ func Reader(p readerProps) ui.Node {
 			// loadFeeds(), whose own nested PostAsync is the one that never
 			// paints, leaving an unsubscribed feed sitting in the rail as if
 			// nothing had happened.
-			var feedList []*pb.Feed
-			var total int32
-			okFeeds := false
+			var nums railNumbers
 			if err == nil {
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
+				nums = fetchRailNumbers(c)
 			}
 
 			ui.PostAsync(func() {
@@ -5733,12 +5700,7 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				notice.Set(tr.T("reader", "unsubscribed", i18n.Args{"feed": name}))
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				// If they were reading it, that scope no longer exists.
 				if sel.Get().SourceID == id {
 					act.Get().pick(scope{Title: tr.T("stream", "all")})
@@ -6625,13 +6587,9 @@ func Reader(p readerProps) ui.Node {
 			// loadFeeds(), whose own nested PostAsync is the one that never
 			// paints, leaving the rail showing zero unread even though the
 			// undo genuinely restored the backlog.
-			var feedList []*pb.Feed
-			var total int32
-			okFeeds := false
+			var nums railNumbers
 			if err == nil {
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
+				nums = fetchRailNumbers(c)
 			}
 
 			ui.PostAsync(func() {
@@ -6640,12 +6598,7 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				notice.Set(tr.T("reader", "undoneRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				// The categories, for the reason markAllRead refetches them:
 				// this handler bypasses loadFeeds() by design, so the counts
 				// hook inside it never runs. An undo that restored the backlog
@@ -6715,18 +6668,15 @@ func Reader(p readerProps) ui.Node {
 			// Same discipline as subscribeURL's own success path: fetched HERE,
 			// before the one PostAsync below, not via loadFolders()/loadFeeds().
 			var folderList []*pb.Folder
-			var feedList []*pb.Feed
-			var total int32
-			okFolders, okFeeds := false, false
+			var nums railNumbers
+			okFolders := false
 			if isNew {
 				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
 					folderList, okFolders = fl, true
 				}
 			}
 			if err == nil {
-				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
-					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
-				}
+				nums = fetchFeedNumbers(c)
 			}
 
 			ui.PostAsync(func() {
@@ -6740,12 +6690,7 @@ func Reader(p readerProps) ui.Node {
 					notice.Set(tr.T("reader", "errFileCategory", i18n.Args{"err": err.Error()}))
 					return
 				}
-				if okFeeds {
-					feedsGen.Set(feedsGen.Get() + 1)
-					feeds.Set(feedList)
-					hostsRef.Set(iconHostsOf(feedList))
-					totalUnread.Set(int(total))
-				}
+				applyRailNumbers(nums)
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()

@@ -3,17 +3,103 @@
 package view
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 	"google.golang.org/protobuf/proto"
 )
+
+// railNumbers is every count the sidebar draws that a mutation can move.
+//
+// # Why this is a type and not four lines in each handler
+//
+// Eight handlers in reader.go bypass loadFeeds() on purpose — its nested
+// PostAsync lands after the render the handler already made, which is the
+// staleness they exist to avoid — and each of them re-implemented the fetch by
+// hand. Every one of them remembered the feed list and the total unread. NONE of
+// them remembered My Feed's ranked count, which rides on the very same response
+// and is one more field on it, and none remembered the classification counts,
+// which are a second call entirely.
+//
+// So Mark all read emptied a stream and left that stream's own badge reading
+// eight, next to an Uncategorised row still claiming ten, above a list with
+// nothing unread in it. Every other number on the screen was right, which is
+// what made it read as one broken badge rather than as a missing refresh.
+//
+// Bundling them is worth a type precisely because two of them do not come from
+// ListFeeds: a handler that has to remember a SECOND RPC is a handler that will
+// not remember it.
+type railNumbers struct {
+	feeds  []*pb.Feed
+	total  int32
+	ranked int32
+	cats   map[string]int32
+	uncat  int32
+	// Two flags rather than one. A failed count is not a failed sidebar — the
+	// half that answered is still worth applying, which is the same trade
+	// grpcsrv.ListFeeds makes when CountRanked fails.
+	okFeeds, okCats bool
+}
+
+// fetchRailNumbers asks for all of them. Call it in the handler's own goroutine,
+// BEFORE its PostAsync — see applyRailNumbers for the other half.
+//
+// For a mutation that changes what is UNREAD: a bulk mark and its undo, a poll,
+// a subscribe, an unsubscribe.
+func fetchRailNumbers(c *data.Client) railNumbers {
+	out := fetchFeedNumbers(c)
+	if c == nil {
+		return out
+	}
+	if counts, none, err := c.UnreadByCategory(context.Background(), categorySlugs()); err == nil {
+		out.cats, out.uncat, out.okCats = counts, none, true
+	}
+	return out
+}
+
+// fetchFeedNumbers is the same thing without the classification counts, for a
+// mutation that cannot move them: filing a feed under a category, renaming or
+// deleting one, reconciling a move.
+//
+// Its own function rather than a boolean argument, because the reason to skip
+// them is a cost and the cost is easy to forget: UnreadByCategory is a few
+// hundred milliseconds against a real database (store.UnreadByCategory says so
+// at length), and paying that on every drag of a feed between folders would be
+// buying a number that cannot have changed.
+//
+// The ranked count still rides along, because it is a field on a response this
+// already has — and one of these DOES move it: turning a feed's My Feed switch
+// off in its settings takes its items out of the ranked pool.
+func fetchFeedNumbers(c *data.Client) railNumbers {
+	var out railNumbers
+	if c == nil {
+		return out
+	}
+	if res, _, err := c.ListFeedsCached(context.Background()); err == nil {
+		out.feeds, out.total = res.GetFeeds(), res.GetTotalUnread()
+		out.ranked, out.okFeeds = res.GetRankedCount(), true
+	}
+	return out
+}
+
+// categorySlugs is the taxonomy the rail asks CountUnreadByCategory about, in
+// the client's own order. Sent rather than discovered, so a label with nothing
+// in it comes back as 0 instead of being absent — the rail renders all of them.
+func categorySlugs() []string {
+	out := make([]string, 0, len(design.Categories))
+	for _, cat := range design.Categories {
+		out = append(out, cat.Slug)
+	}
+	return out
+}
 
 // The reader's pure helpers: list edits, tag bookkeeping, and formatting.
 //

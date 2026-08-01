@@ -248,6 +248,49 @@ try {
       // (§18.7) and the one thing a screenshot of it cannot prove.
       else if (!evidence) fail('a Discover card carries no evidence');
     }
+
+    // The rail's numbers have to follow a bulk mark. Genuinely last, because it
+    // empties the fixture.
+    //
+    // Every handler that bypasses loadFeeds() refetches the sidebar by hand,
+    // and each of them remembered the feed list and forgot the two counts that
+    // are not on it — so Mark all read emptied My Feed and left its own badge
+    // reading eight, above a list with nothing unread in it. Every OTHER number
+    // was right, which is what made it read as one odd badge instead of a
+    // missing refresh, and is why this is checked by reading them all.
+    const railCounts = () => page.evaluate(() => {
+      const out = {};
+      for (const row of document.querySelectorAll('.feed-row')) {
+        const name = row.querySelector('.feed-name')?.textContent?.trim();
+        const n = row.querySelector('.feed-count')?.textContent?.trim();
+        if (name && n) out[name] = n;
+      }
+      return out;
+    });
+
+    await page.locator('.feed-row', { hasText: 'My Feed' }).first().click();
+    await page.locator('[data-action="mark-all-arm"]').first().waitFor({ timeout: SETTLE_MS });
+    const before = await railCounts();
+    await page.locator('[data-action="mark-all-arm"]').first().click();
+    await page.locator('[data-action="mark-all"]').first().click();
+
+    let after = before;
+    for (const deadline = Date.now() + SETTLE_MS; Date.now() < deadline; ) {
+      after = await railCounts();
+      if (!after['My Feed'] && !after['All articles']) break;
+      await page.waitForTimeout(250);
+    }
+    // The tags are the control: their badge is how many FEEDS carry the tag, not
+    // how many unread articles, so it is the one number that must NOT move — a
+    // check that passed because everything went blank would prove nothing.
+    const stale = Object.keys(after).filter((k) => !['longform', 'daily', 'keep'].includes(k));
+    console.log(`mark all read: ${Object.keys(before).length} rail counts before, ${stale.length} unread counts left after`);
+    if (stale.length) {
+      fail(`these rail counts survived Mark all read: ${stale.map((k) => `${k}=${after[k]}`).join(', ')}`);
+    }
+    if (!after.longform) {
+      fail('the tag counts vanished too — they count feeds, not unread articles, and must not move');
+    }
   }
 
   if (failedRequests.length) {

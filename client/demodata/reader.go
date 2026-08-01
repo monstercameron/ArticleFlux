@@ -51,6 +51,15 @@ func (s *readerService) ListFeeds(_ context.Context, _ *pb.ListFeedsRequest) (*p
 		res.TotalUnread += n
 		res.Feeds = append(res.Feeds, f.message(n))
 	}
+	// My Feed's badge rides with the sidebar, exactly as it does on the server
+	// (grpcsrv.ListFeeds calls CountRanked here) — and it was missing, so the
+	// demo's flagship stream was the one row in the rail with no number on it.
+	//
+	// That absence hid a real bug rather than merely looking bare: the client
+	// only ever applies this field, so a demo that never sent it could not show
+	// the count going stale after a bulk mark. It counts UNREAD ranked items,
+	// which is what makes it fall to nothing when My Feed is marked read.
+	res.RankedCount = int32(len(in.rankedForProfile()))
 	return res, nil
 }
 
