@@ -31,7 +31,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
-	"github.com/monstercameron/ArticleFlux/internal/cast"
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 	"github.com/monstercameron/ArticleFlux/internal/connpolicy"
@@ -42,6 +41,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/fanout"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/idem"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	"github.com/monstercameron/ArticleFlux/internal/jobs"
@@ -218,15 +218,15 @@ type App struct {
 	// hears the article or its digest, which is the right degradation — a queue
 	// instead of a programme, not silence.
 	podcast *smart.Podcast
-	// write is the beat-addressed writer (internal/cast), and is normally the
+	// write is the beat-addressed writer (internal/fluxcast), and is normally the
 	// same object as podcast above.
 	//
 	// A separate, narrower field for the reason `speak` is one: everything past
 	// the gates — the brief, the fallback, the cache key, the status a failure
 	// maps to — was otherwise reachable only by a request that ends in a paid
-	// call, and was therefore covered by nothing. The interface is cast.Writer,
-	// which is the same seam internal/cast defines for its own tests.
-	write cast.Writer
+	// call, and was therefore covered by nothing. The interface is fluxcast.Writer,
+	// which is the same seam internal/fluxcast defines for its own tests.
+	write fluxcast.Writer
 	// speechKey seals the listening tickets in an <audio src> (see SpeechURL).
 	//
 	// Its own key rather than assetKey, which is the one an obvious edit would

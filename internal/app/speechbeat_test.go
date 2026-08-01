@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/ArticleFlux/internal/cast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 )
 
-// The beat-addressed path (internal/cast), driven the way the player drives it.
+// The beat-addressed path (internal/fluxcast), driven the way the player drives it.
 //
 // These tests exist for the same reason podcastspeech_test.go does: everything
 // upstream of them stops at the gates, and the question a reader is actually
@@ -123,11 +123,11 @@ func TestTheKeyTheServerComputesIsTheOneTheClientPlanned(t *testing.T) {
 	got := voice.last().key
 
 	// What a client would compute for the same beat.
-	want := "beat:" + cast.ScriptKey(cast.Brief{
-		Kind: cast.BeatStory, Words: 95, Vibe: smart.DefaultVibe,
+	want := "beat:" + fluxcast.ScriptKey(fluxcast.Brief{
+		Kind: fluxcast.BeatStory, Words: 95, Vibe: smart.DefaultVibe,
 		Revision: smart.PromptVersion, Handover: -1,
-		Subject: cast.Subject{ItemID: item.ID},
-		Prev:    cast.Subject{ItemID: prev.ID},
+		Subject: fluxcast.Subject{ItemID: item.ID},
+		Prev:    fluxcast.Subject{ItemID: prev.ID},
 	})
 	if got != want {
 		t.Errorf("server key %q, client key %q", got, want)
@@ -232,10 +232,10 @@ func TestAnAbsurdBudgetIsNotHonoured(t *testing.T) {
 // bytes — which is otherwise reachable only through a paid call.
 type stubWriter struct{ err error }
 
-func (s *stubWriter) Write(_ context.Context, b cast.Brief) (cast.Draft, error) {
+func (s *stubWriter) Write(_ context.Context, b fluxcast.Brief) (fluxcast.Draft, error) {
 	if s.err != nil {
-		return cast.Draft{}, s.err
+		return fluxcast.Draft{}, s.err
 	}
 	text := "Written for " + b.Subject.ItemID + " at " + strconv.Itoa(b.Words) + " words."
-	return cast.Draft{Text: text, Words: cast.CountWords(text), Model: "stub"}, nil
+	return fluxcast.Draft{Text: text, Words: fluxcast.CountWords(text), Model: "stub"}, nil
 }

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/ArticleFlux/internal/cast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 )
 
 // ErrStaleRevision means a beat was commissioned against instructions this build
@@ -23,7 +23,7 @@ var ErrStaleRevision = errors.New("smart: this beat was planned against a differ
 
 // The bridge between the broadcast engine and the writer.
 //
-// internal/cast decides WHEN each beat happens, what it is for and how many
+// internal/fluxcast decides WHEN each beat happens, what it is for and how many
 // words it may have; this file turns one of its Briefs into the Segment call
 // that already exists here, and hands back what was written. Nothing about the
 // prose moves: the instructions, the vibes, the handover shapes and the cache
@@ -31,14 +31,14 @@ var ErrStaleRevision = errors.New("smart: this beat was planned against a differ
 // deliberately knows nothing about them.
 //
 // The one thing that crosses in the other direction is PromptVersion, which the
-// caller copies into cast.Profile.Script.Revision so that every beat's cache key
+// caller copies into fluxcast.Profile.Script.Revision so that every beat's cache key
 // changes when these instructions do. That direction matters: a copy of "v7"
-// inside internal/cast would be the same fact in two files, and the copy that
+// inside internal/fluxcast would be the same fact in two files, and the copy that
 // drifts is the one nobody rebuilt.
 
-// Write implements cast.Writer.
+// Write implements fluxcast.Writer.
 //
-// The mapping is deliberately total — every cast.BeatKind has an answer here,
+// The mapping is deliberately total — every fluxcast.BeatKind has an answer here,
 // including the one that has no answer:
 //
 //	OPENING   → OpenOnly, with the run-through
@@ -52,16 +52,16 @@ var ErrStaleRevision = errors.New("smart: this beat was planned against a differ
 // A total mapping rather than a default case: a new beat kind should fail to
 // compile into a writer that has not been taught what it is, rather than
 // silently coming out as an ordinary story segment.
-func (p *Podcast) Write(ctx context.Context, b cast.Brief) (cast.Draft, error) {
+func (p *Podcast) Write(ctx context.Context, b fluxcast.Brief) (fluxcast.Draft, error) {
 	if p == nil {
-		return cast.Draft{}, ErrNothingToSummarise
+		return fluxcast.Draft{}, ErrNothingToSummarise
 	}
 	if b.Revision != "" && b.Revision != PromptVersion {
 		// A commission written against instructions this build no longer has.
 		// Refused rather than served: the beat's cache key claims a revision,
 		// and answering with prose from a different one would put text under a
 		// key that does not describe it — permanently, and invisibly.
-		return cast.Draft{}, ErrStaleRevision
+		return fluxcast.Draft{}, ErrStaleRevision
 	}
 
 	seg := Segment{
@@ -76,7 +76,7 @@ func (p *Podcast) Write(ctx context.Context, b cast.Brief) (cast.Draft, error) {
 	}
 
 	switch b.Kind {
-	case cast.BeatOpening:
+	case fluxcast.BeatOpening:
 		seg.OpenOnly = true
 		seg.Open = &Opening{
 			PartOfDay: b.PartOfDay,
@@ -84,7 +84,7 @@ func (p *Podcast) Write(ctx context.Context, b cast.Brief) (cast.Draft, error) {
 			Stories:   b.Stories,
 			Lineup:    headlines(b.Lineup),
 		}
-	case cast.BeatStory:
+	case fluxcast.BeatStory:
 		if b.Opening() {
 			// The greeting rides on this segment: the format did not split it
 			// into a recording of its own.
@@ -101,33 +101,33 @@ func (p *Podcast) Write(ctx context.Context, b cast.Brief) (cast.Draft, error) {
 			// time — the date twice in ninety seconds.
 			seg.Opened = true
 		}
-	case cast.BeatTease:
+	case fluxcast.BeatTease:
 		seg.TeaseOnly = true
 		seg.Names = headlines(b.Lineup)
-	case cast.BeatRecap:
+	case fluxcast.BeatRecap:
 		seg.RecapOnly = true
 		seg.Names = headlines(b.Lineup)
-	case cast.BeatSignOff:
+	case fluxcast.BeatSignOff:
 		seg.CloseOnly = true
 		seg.Open = &Opening{Stories: b.Stories}
-	case cast.BeatBreak:
-		return cast.Draft{}, ErrNothingToSummarise
+	case fluxcast.BeatBreak:
+		return fluxcast.Draft{}, ErrNothingToSummarise
 	default:
-		return cast.Draft{}, ErrNothingToSummarise
+		return fluxcast.Draft{}, ErrNothingToSummarise
 	}
 
 	text, err := p.Segment(ctx, seg)
 	if err != nil {
-		return cast.Draft{}, err
+		return fluxcast.Draft{}, err
 	}
-	return cast.Draft{
+	return fluxcast.Draft{
 		Text:  text,
-		Words: cast.CountWords(text),
+		Words: fluxcast.CountWords(text),
 		Model: p.model(ctx),
 	}, nil
 }
 
-func headlines(in []cast.Headline) []Headline {
+func headlines(in []fluxcast.Headline) []Headline {
 	if len(in) == 0 {
 		return nil
 	}

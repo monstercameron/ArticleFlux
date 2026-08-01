@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/ArticleFlux/internal/cast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 )
 
 // seed writes a segment's answer into the cache, so a keyless writer can be
@@ -32,12 +32,12 @@ func seed(t *testing.T, p *Podcast, seg Segment, text string) string {
 	return text
 }
 
-func brief(kind cast.BeatKind) cast.Brief {
-	return cast.Brief{
+func brief(kind fluxcast.BeatKind) fluxcast.Brief {
+	return fluxcast.Brief{
 		BeatID: "show/x", Key: "k", Kind: kind, Words: 120, Vibe: "calm",
 		Revision: PromptVersion, Handover: 2,
-		Subject:   cast.Subject{ItemID: "item-2", Title: "Fsyncgate", Source: "LWN", Body: "the body"},
-		Prev:      cast.Subject{ItemID: "item-1", Title: "Postgres", Source: "Hacker News"},
+		Subject:   fluxcast.Subject{ItemID: "item-2", Title: "Fsyncgate", Source: "LWN", Body: "the body"},
+		Prev:      fluxcast.Subject{ItemID: "item-1", Title: "Postgres", Source: "Hacker News"},
 		PartOfDay: "evening", Date: "1 August 2026", Stories: 9, Position: 3,
 	}
 }
@@ -52,29 +52,29 @@ func TestWriteMapsEveryBeatKindToItsOwnScript(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		kind cast.BeatKind
+		kind fluxcast.BeatKind
 		seg  func(Segment) Segment
 		text string
 	}{
-		{cast.BeatOpening, func(s Segment) Segment {
+		{fluxcast.BeatOpening, func(s Segment) Segment {
 			s.OpenOnly = true
 			s.Open = &Opening{PartOfDay: "evening", Date: "1 August 2026", Stories: 9,
 				Lineup: []Headline{{Source: "A", Title: "One"}, {Source: "B", Title: "Two"}}}
 			s.Body = "the body"
 			return s
 		}, "Good evening."},
-		{cast.BeatStory, func(s Segment) Segment { return s }, "Staying with databases."},
-		{cast.BeatTease, func(s Segment) Segment {
+		{fluxcast.BeatStory, func(s Segment) Segment { return s }, "Staying with databases."},
+		{fluxcast.BeatTease, func(s Segment) Segment {
 			s.TeaseOnly = true
 			s.Names = []Headline{{Source: "A", Title: "One"}, {Source: "B", Title: "Two"}}
 			return s
 		}, "Still to come."},
-		{cast.BeatRecap, func(s Segment) Segment {
+		{fluxcast.BeatRecap, func(s Segment) Segment {
 			s.RecapOnly = true
 			s.Names = []Headline{{Source: "A", Title: "One"}, {Source: "B", Title: "Two"}}
 			return s
 		}, "What you missed."},
-		{cast.BeatSignOff, func(s Segment) Segment {
+		{fluxcast.BeatSignOff, func(s Segment) Segment {
 			s.CloseOnly = true
 			s.Open = &Opening{Stories: 9}
 			return s
@@ -83,21 +83,21 @@ func TestWriteMapsEveryBeatKindToItsOwnScript(t *testing.T) {
 
 	for _, c := range cases {
 		b := brief(c.kind)
-		if c.kind == cast.BeatTease || c.kind == cast.BeatRecap {
-			b.Lineup = []cast.Headline{{ItemID: "a", Title: "One", Source: "A"},
+		if c.kind == fluxcast.BeatTease || c.kind == fluxcast.BeatRecap {
+			b.Lineup = []fluxcast.Headline{{ItemID: "a", Title: "One", Source: "A"},
 				{ItemID: "b", Title: "Two", Source: "B"}}
 		}
-		if c.kind == cast.BeatOpening {
-			b.Lineup = []cast.Headline{{ItemID: "a", Title: "One", Source: "A"},
+		if c.kind == fluxcast.BeatOpening {
+			b.Lineup = []fluxcast.Headline{{ItemID: "a", Title: "One", Source: "A"},
 				{ItemID: "b", Title: "Two", Source: "B"}}
-			b.Prev = cast.Subject{}
+			b.Prev = fluxcast.Subject{}
 		}
 		base := Segment{
 			ItemID: "item-2", Source: "LWN", Title: "Fsyncgate", Body: "the body",
 			PrevID: "item-1", PrevSource: "Hacker News", PrevTitle: "Postgres",
 			Vibe: "calm",
 		}
-		if c.kind == cast.BeatOpening {
+		if c.kind == fluxcast.BeatOpening {
 			base.PrevID, base.PrevSource, base.PrevTitle = "", "", ""
 		}
 		want := seed(t, p, c.seg(base), c.text)
@@ -120,7 +120,7 @@ func TestABreakHasNoWords(t *testing.T) {
 	// Asking a writer for a break is a caller that has lost track of what it is
 	// playing. Answering would put prose under a beat the player never speaks.
 	p := keylessPodcast(t)
-	if _, err := p.Write(context.Background(), brief(cast.BeatBreak)); err == nil {
+	if _, err := p.Write(context.Background(), brief(fluxcast.BeatBreak)); err == nil {
 		t.Error("the writer wrote something for a break")
 	}
 }
@@ -130,7 +130,7 @@ func TestAStaleRevisionIsRefusedRatherThanServed(t *testing.T) {
 	// different one would put text under a key that does not describe it —
 	// permanently, and invisibly.
 	p := keylessPodcast(t)
-	b := brief(cast.BeatStory)
+	b := brief(fluxcast.BeatStory)
 	b.Revision = "v1"
 	_, err := p.Write(context.Background(), b)
 	if !errors.Is(err, ErrStaleRevision) {
@@ -143,8 +143,8 @@ func TestAFirstStoryWithNoGreetingIsToldTheShowAlreadyOpened(t *testing.T) {
 	// the opening's own recording and again at the top of the first story,
 	// because a segment with no predecessor infers it is the top of the show.
 	p := keylessPodcast(t)
-	b := brief(cast.BeatStory)
-	b.Prev = cast.Subject{}
+	b := brief(fluxcast.BeatStory)
+	b.Prev = fluxcast.Subject{}
 	b.Lineup = nil
 
 	opened := Segment{ItemID: "item-2", Source: "LWN", Title: "Fsyncgate", Body: "the body",

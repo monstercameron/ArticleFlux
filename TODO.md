@@ -7260,7 +7260,7 @@ sounds fine — so it is written down while there is still evidence.*
 
 ### The format file — consuming and producing a described programme (plan §29.7)
 
-*`internal/cast` landed 2026-08-01: profile, formats, the fitter, the timeline compiler, the player
+*`internal/fluxcast` landed 2026-08-01: profile, formats, the fitter, the timeline compiler, the player
 state machine, the script seam and the beat-addressed `/speech` path. What it does NOT have is a
 FILE — every format is a Go literal, so a show's shape can only be changed by somebody who can
 rebuild the server. plan.md §29.7 settles what that file may say and, more importantly, what it may
@@ -7268,9 +7268,9 @@ never say. These items build it. They are dependency-ordered: 11.30 and 11.31 ar
 everything after them is a field on it.*
 
 - [ ] **11.30 · The format file, parsed — and refused when it cannot be honoured.** JSON, per §29.7,
-      into the `cast.Format` types that already exist plus the ones §29.7 adds. Durations and gains
+      into the `fluxcast.Format` types that already exist plus the ones §29.7 adds. Durations and gains
       are strings (`"5m"`, `"-3dB"`) because a tuning file is read by people and `2600000000` is not
-      a number anybody can check against the thing they heard — `cast.Dur` already round-trips this
+      a number anybody can check against the thing they heard — `fluxcast.Dur` already round-trips this
       way and gains need the same treatment through `DB()`/`Gain()`. Every object accepts and
       ignores `why`, which is how a file with no comments keeps its reasoning; the cue sheet prints
       it. An unknown `version` is **refused, not guessed**: a format written against a schema this
@@ -7408,7 +7408,7 @@ everything after them is a field on it.*
       calls `readArticle`. So "eligibility is `read_at IS NULL AND heard_at IS NULL`" is currently
       half a rule, and every FluxCast programme is eligible to replay stories the listener has
       already been told.
-      `cast.ActHeard` is the event that fixes it: the player emits one per story played to the END,
+      `fluxcast.ActHeard` is the event that fixes it: the player emits one per story played to the END,
       and only there — skipping past a story is the opposite claim from hearing it out. Whether it
       also marks read stays the reader's (`flux.markRead`, default off), because hearing a
       forty-five-second segment is not reading the piece and the application must not claim it was.
@@ -7428,7 +7428,7 @@ everything after them is a field on it.*
       `from` set on an instance with no interest data degrades to nothing with a note rather than
       failing to plan.*
 
-- [ ] **11.41 · The cache key splits in two.** `cast.ScriptKey` currently hashes kind, item,
+- [ ] **11.41 · The cache key splits in two.** `fluxcast.ScriptKey` currently hashes kind, item,
       predecessor, vibe, revision, words, handover and lineup. It must hash the **effective
       direction** — voice, context, rules, direction, content — and must NOT hash `audio`, or every
       mix tweak silently re-buys the entire programme.

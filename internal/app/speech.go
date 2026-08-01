@@ -699,7 +699,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// costs one query.
 	// A BEAT of a planned programme, which is a different request from anything
 	// this handler answered before: the client has planned a whole show with
-	// internal/cast and is asking for one beat of it, at a word budget the
+	// internal/fluxcast and is asking for one beat of it, at a word budget the
 	// fitter chose. See speechbeat.go for why this is a second path rather than
 	// a rewrite of the one below — old clients are cached by a Service Worker
 	// and will keep asking the old way for as long as their bundle survives.

@@ -1,6 +1,15 @@
-// Package fluxcast is the seam TODO 11.1–11.5 left open: it reads a reader's
+// Package produce is the seam TODO 11.1–11.5 left open: it reads a reader's
 // already-computed homepage and turns it into a rundown, then persists the
 // result (plan.md §19 + §29).
+//
+// # Why it is a subpackage rather than part of the engine
+//
+// FluxCast is the name of the engine, and the engine is its parent package:
+// pure, no database, no clock, no network, which is what lets the wasm client
+// carry the player and the timeline compiler without carrying the store. This
+// package is the impure half — it reads SQLite — so it sits underneath rather
+// than beside, and the import direction (produce → fluxcast, never back) is
+// what keeps that purity from being an intention instead of a property.
 //
 // # Why this package exists at all
 //
@@ -31,7 +40,7 @@
 // its deterministic answer felt thin would break the one guarantee free-tier
 // readers were promised: FluxCast without a key is not a worse tier of a
 // feature that secretly requires one, it is the whole free-tier answer.
-package fluxcast
+package produce
 
 import (
 	"context"
@@ -162,17 +171,17 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 		return Produced{}, store.ErrNoScope
 	}
 	if p.Reader == nil {
-		return Produced{}, fmt.Errorf("fluxcast: Repo has no store.ReaderRepo")
+		return Produced{}, fmt.Errorf("produce: Repo has no store.ReaderRepo")
 	}
 
 	ranked, err := p.Reader.HomeRanking(ctx, s, MaxRanked)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: HomeRanking: %w", err)
+		return Produced{}, fmt.Errorf("produce: HomeRanking: %w", err)
 	}
 
 	clusters, err := p.Reader.HomeClusters(ctx, s)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: HomeClusters: %w", err)
+		return Produced{}, fmt.Errorf("produce: HomeClusters: %w", err)
 	}
 
 	// Every item id this call needs to look up: the ranked heads themselves
@@ -204,7 +213,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 
 	items, err := p.Reader.ItemsByID(ctx, allIDs)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: ItemsByID: %w", err)
+		return Produced{}, fmt.Errorf("produce: ItemsByID: %w", err)
 	}
 	itemByID := make(map[string]store.Item, len(items))
 	for _, it := range items {
@@ -213,7 +222,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 
 	feeds, err := p.Reader.ListFeeds(ctx, s)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: ListFeeds: %w", err)
+		return Produced{}, fmt.Errorf("produce: ListFeeds: %w", err)
 	}
 	sourceTitle := make(map[string]string, len(feeds))
 	for _, f := range feeds {
@@ -222,7 +231,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 
 	cats, err := p.Reader.CategoriesFor(ctx, s, rankedIDs)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: CategoriesFor: %w", err)
+		return Produced{}, fmt.Errorf("produce: CategoriesFor: %w", err)
 	}
 
 	// Eligibility for a rundown is read_at IS NULL AND heard_at IS NULL
@@ -232,7 +241,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 	// the other half.
 	heard, err := p.Reader.HeardItemIDs(ctx, s, rankedIDs)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: HeardItemIDs: %w", err)
+		return Produced{}, fmt.Errorf("produce: HeardItemIDs: %w", err)
 	}
 
 	// clusterInfo collects, per cluster id, every member's item id and the
@@ -372,7 +381,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 
 	id, err := p.Reader.CreateRundown(ctx, s, row, stories)
 	if err != nil {
-		return Produced{}, fmt.Errorf("fluxcast: CreateRundown: %w", err)
+		return Produced{}, fmt.Errorf("produce: CreateRundown: %w", err)
 	}
 
 	return Produced{ID: id, Rundown: built, Stories: stories, Titles: titles, Reasons: reasons}, nil

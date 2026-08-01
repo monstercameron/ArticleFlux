@@ -28,7 +28,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
-	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast/produce"
 	"github.com/monstercameron/ArticleFlux/internal/seedread"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -609,8 +609,8 @@ func fluxcastCmd(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	producer := fluxcast.NewRepo(a.Repo())
-	produced, err := producer.Produce(ctx, sc, fluxcast.Options{
+	producer := produce.NewRepo(a.Repo())
+	produced, err := producer.Produce(ctx, sc, produce.Options{
 		Title:          *title,
 		Target:         time.Duration(*minutes) * time.Minute,
 		Rate:           *rate,
@@ -630,7 +630,7 @@ func fluxcastCmd(log *slog.Logger, args []string) error {
 // and stories (source, role, words, estimated minutes), then the total —
 // exactly the shape the visual rundown (TODO 11.17) will eventually render,
 // because internal/rundown is the one place both read from.
-func printRundown(w io.Writer, p fluxcast.Produced, rate float64) {
+func printRundown(w io.Writer, p produce.Produced, rate float64) {
 	title := p.Rundown.Title
 	if title == "" {
 		title = "(untitled rundown)"

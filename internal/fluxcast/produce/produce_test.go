@@ -1,4 +1,4 @@
-package fluxcast_test
+package produce_test
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 	"github.com/monstercameron/ArticleFlux/internal/derive"
-	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast/produce"
 	"github.com/monstercameron/ArticleFlux/internal/pipeline"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -24,7 +24,7 @@ import (
 // (internal/derive/derive_test.go's setup/engage, internal/derive's
 // item_clusters_test.go's per-title-feed subscribe+ingest loop for a
 // same-story-from-many-sources fixture) plus the real analysis pass
-// internal/analyze/e2e_test.go runs over it, then fluxcast.Repo.Produce over
+// internal/analyze/e2e_test.go runs over it, then produce.Repo.Produce over
 // the whole thing — no fakes, no fluxcast-specific fixture style.
 var testNow = time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 
@@ -93,7 +93,7 @@ func buildFixture(t *testing.T) *fluxFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "fluxcast.db")})
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "produce.db")})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -183,7 +183,7 @@ func idFor(kind signals.Kind, itemID string) string {
 // the same call analyze.Service.Handle makes in production (internal/app.go's
 // wiring) — so item_analysis.genre and category_scores exist for
 // store.CategoriesFor to resolve. No Smart+: this is the free tier, which is
-// the only tier fluxcast.Repo.Produce is allowed to depend on.
+// the only tier produce.Repo.Produce is allowed to depend on.
 func (f *fluxFixture) analyzeAll(t *testing.T) {
 	t.Helper()
 	lx, err := classify.Compile(lexicon.Categories())
@@ -243,9 +243,9 @@ func TestProduceEndToEnd(t *testing.T) {
 		t.Fatalf("nimbus-chip has %d head rows in item_clusters, want exactly 1", heads)
 	}
 
-	repoF := fluxcast.NewRepo(f.repo)
+	repoF := produce.NewRepo(f.repo)
 	const target = 5 * time.Minute
-	produced, err := repoF.Produce(f.ctx, f.scope, fluxcast.Options{
+	produced, err := repoF.Produce(f.ctx, f.scope, produce.Options{
 		Title:          "Test Rundown",
 		Target:         target,
 		Rate:           1.0,
@@ -399,8 +399,8 @@ func TestHeardStoryIsNeverSelected(t *testing.T) {
 		t.Fatalf("SetItemState Heard: %v", err)
 	}
 
-	repoF := fluxcast.NewRepo(f.repo)
-	produced, err := repoF.Produce(f.ctx, f.scope, fluxcast.Options{
+	repoF := produce.NewRepo(f.repo)
+	produced, err := repoF.Produce(f.ctx, f.scope, produce.Options{
 		Target: 60 * time.Minute, Rate: 1.0, Style: store.StyleBalanced, AllowQuickHits: true,
 	})
 	if err != nil {
@@ -429,21 +429,21 @@ func TestHeardStoryIsNeverSelected(t *testing.T) {
 // silently reading or writing nobody's data.
 func TestProduceIsScopeGuarded(t *testing.T) {
 	f := buildFixture(t)
-	repoF := fluxcast.NewRepo(f.repo)
-	_, err := repoF.Produce(f.ctx, store.Scope{}, fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
+	repoF := produce.NewRepo(f.repo)
+	_, err := repoF.Produce(f.ctx, store.Scope{}, produce.Options{Target: 5 * time.Minute, Rate: 1})
 	if err != store.ErrNoScope {
 		t.Errorf("Produce with an empty Scope = %v, want store.ErrNoScope", err)
 	}
 }
 
-// A Repo assembled with fluxcast.NewRepo(nil), or a bare fluxcast.Repo{},
+// A Repo assembled with produce.NewRepo(nil), or a bare produce.Repo{},
 // must refuse rather than nil-deref the first time it touches p.Reader —
 // this is the caller-wiring mistake the error message names explicitly.
 func TestProduceNilReader(t *testing.T) {
-	repoF := fluxcast.NewRepo(nil)
+	repoF := produce.NewRepo(nil)
 	_, err := repoF.Produce(context.Background(),
 		store.Scope{TenantID: "t1", UserID: "u1", Role: "member"},
-		fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
+		produce.Options{Target: 5 * time.Minute, Rate: 1})
 	if err == nil {
 		t.Fatal("Produce with a nil Reader returned no error")
 	}
@@ -482,8 +482,8 @@ func openScope(t *testing.T) (*store.ReaderRepo, *store.DB, context.Context, sto
 // than an error — "nothing to broadcast" is not a failure state.
 func TestProduceOnEmptyAccountIsAnEmptyRundownNotAnError(t *testing.T) {
 	repo, _, ctx, sc := openScope(t)
-	repoF := fluxcast.NewRepo(repo)
-	produced, err := repoF.Produce(ctx, sc, fluxcast.Options{
+	repoF := produce.NewRepo(repo)
+	produced, err := repoF.Produce(ctx, sc, produce.Options{
 		Title: "Empty", Target: 5 * time.Minute, Rate: 1, Style: store.StyleBalanced,
 	})
 	if err != nil {
@@ -503,8 +503,8 @@ func TestProduceOnEmptyAccountIsAnEmptyRundownNotAnError(t *testing.T) {
 // not carry a value store.Rundown.Style was never declared to hold.
 func TestProduceNormalizesUnknownStyleForStorage(t *testing.T) {
 	repo, _, ctx, sc := openScope(t)
-	repoF := fluxcast.NewRepo(repo)
-	produced, err := repoF.Produce(ctx, sc, fluxcast.Options{
+	repoF := produce.NewRepo(repo)
+	produced, err := repoF.Produce(ctx, sc, produce.Options{
 		Target: 5 * time.Minute, Rate: 1, Style: "not-a-real-style",
 	})
 	if err != nil {
@@ -533,7 +533,7 @@ func dropTable(t *testing.T, db *store.DB, table string) {
 	}
 }
 
-// Every read Produce makes is wrapped with fmt.Errorf("fluxcast: <step>: %w",
+// Every read Produce makes is wrapped with fmt.Errorf("produce: <step>: %w",
 // err) so a caller can tell which of the five joins failed. HomeRanking is
 // the first one called and the cheapest to force: it queries unconditionally,
 // even for an account with nothing ranked yet.
@@ -541,9 +541,9 @@ func TestProduceWrapsHomeRankingError(t *testing.T) {
 	repo, db, ctx, sc := openScope(t)
 	dropTable(t, db, "home_ranking")
 
-	repoF := fluxcast.NewRepo(repo)
-	_, err := repoF.Produce(ctx, sc, fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
-	if err == nil || !strings.Contains(err.Error(), "fluxcast: HomeRanking:") {
+	repoF := produce.NewRepo(repo)
+	_, err := repoF.Produce(ctx, sc, produce.Options{Target: 5 * time.Minute, Rate: 1})
+	if err == nil || !strings.Contains(err.Error(), "produce: HomeRanking:") {
 		t.Errorf("err = %v, want a wrapped HomeRanking error", err)
 	}
 }
@@ -553,9 +553,9 @@ func TestProduceWrapsHomeClustersError(t *testing.T) {
 	repo, db, ctx, sc := openScope(t)
 	dropTable(t, db, "item_clusters")
 
-	repoF := fluxcast.NewRepo(repo)
-	_, err := repoF.Produce(ctx, sc, fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
-	if err == nil || !strings.Contains(err.Error(), "fluxcast: HomeClusters:") {
+	repoF := produce.NewRepo(repo)
+	_, err := repoF.Produce(ctx, sc, produce.Options{Target: 5 * time.Minute, Rate: 1})
+	if err == nil || !strings.Contains(err.Error(), "produce: HomeClusters:") {
 		t.Errorf("err = %v, want a wrapped HomeClusters error", err)
 	}
 }
@@ -567,9 +567,9 @@ func TestProduceWrapsListFeedsError(t *testing.T) {
 	repo, db, ctx, sc := openScope(t)
 	dropTable(t, db, "subscriptions")
 
-	repoF := fluxcast.NewRepo(repo)
-	_, err := repoF.Produce(ctx, sc, fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
-	if err == nil || !strings.Contains(err.Error(), "fluxcast: ListFeeds:") {
+	repoF := produce.NewRepo(repo)
+	_, err := repoF.Produce(ctx, sc, produce.Options{Target: 5 * time.Minute, Rate: 1})
+	if err == nil || !strings.Contains(err.Error(), "produce: ListFeeds:") {
 		t.Errorf("err = %v, want a wrapped ListFeeds error", err)
 	}
 }
@@ -583,9 +583,9 @@ func TestProduceWrapsCreateRundownError(t *testing.T) {
 	repo, db, ctx, sc := openScope(t)
 	dropTable(t, db, "rundowns")
 
-	repoF := fluxcast.NewRepo(repo)
-	_, err := repoF.Produce(ctx, sc, fluxcast.Options{Target: 5 * time.Minute, Rate: 1})
-	if err == nil || !strings.Contains(err.Error(), "fluxcast: CreateRundown:") {
+	repoF := produce.NewRepo(repo)
+	_, err := repoF.Produce(ctx, sc, produce.Options{Target: 5 * time.Minute, Rate: 1})
+	if err == nil || !strings.Contains(err.Error(), "produce: CreateRundown:") {
 		t.Errorf("err = %v, want a wrapped CreateRundown error", err)
 	}
 }
@@ -594,7 +594,7 @@ func TestProduceWrapsCreateRundownError(t *testing.T) {
 // ever reaching the database (see their own doc comments), so forcing THEIR
 // wrapped-error branches would need a ranked item on top of the dropped
 // table — strictly more fixture for the exact same one-line
-// fmt.Errorf("fluxcast: <step>: %w", err) pattern already demonstrated four
+// fmt.Errorf("produce: <step>: %w", err) pattern already demonstrated four
 // times above. Not worth the duplication.
 
 // Both home_ranking.item_id and item_clusters.item_id/cluster_id carry
@@ -602,7 +602,7 @@ func TestProduceWrapsCreateRundownError(t *testing.T) {
 // naming an item that no longer exists cannot be constructed at all —
 // deleting the item cascades away its ranking and cluster rows with it. That
 // rules out testing the "stale item" skip branches in Produce's candidate
-// loop (fluxcast.go comments them as "read, deleted or otherwise gone
+// loop (produce.go comments them as "read, deleted or otherwise gone
 // since"); the schema makes that state unreachable, not just untested.
 // Confirmed by hand: pointing ReplaceHomeRanking at a non-existent item id
 // fails its own FOREIGN KEY constraint before Produce ever runs.
@@ -668,8 +668,8 @@ func TestProduceCandidateLoopDefensiveBranches(t *testing.T) {
 		t.Fatalf("ReplaceHomeRanking: %v", err)
 	}
 
-	repoF := fluxcast.NewRepo(repo)
-	produced, err := repoF.Produce(ctx, sc, fluxcast.Options{
+	repoF := produce.NewRepo(repo)
+	produced, err := repoF.Produce(ctx, sc, produce.Options{
 		Target: 5 * time.Minute, Rate: 1, Style: store.StyleBalanced,
 	})
 	if err != nil {

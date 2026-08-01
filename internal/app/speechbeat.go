@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/ArticleFlux/internal/cast"
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
-// Beat-addressed speech: /speech for a programme planned by internal/cast.
+// Beat-addressed speech: /speech for a programme planned by internal/fluxcast.
 //
 // # Why this is a second path rather than a rewrite of the first
 //
@@ -33,7 +33,7 @@ import (
 // The audio cache is shared between readers, because the same article read in
 // the same voice is the same recording; a server that filed audio under a
 // caller-supplied key would let one reader write into another's slot. So the key
-// is recomputed here from resolved inputs (cast.ScriptKey) and the two ends
+// is recomputed here from resolved inputs (fluxcast.ScriptKey) and the two ends
 // agree by deriving the same answer rather than by trusting one another.
 //
 // Every id in the request is resolved through the reader's OWN SCOPE, which is
@@ -69,7 +69,7 @@ const (
 // Returns ok=false for a request with no word budget, which is every request
 // from a client that has not been rebuilt. That is not an error and must not be
 // logged as one.
-func castBeat(r *http.Request) (kind cast.BeatKind, words, handover int, rev string, ok bool) {
+func castBeat(r *http.Request) (kind fluxcast.BeatKind, words, handover int, rev string, ok bool) {
 	q := r.URL.Query()
 	raw := strings.TrimSpace(q.Get(beatWordsParam))
 	if raw == "" {
@@ -85,15 +85,15 @@ func castBeat(r *http.Request) (kind cast.BeatKind, words, handover int, rev str
 	}
 	switch strings.TrimSpace(q.Get(introParam)) {
 	case introOnly:
-		kind = cast.BeatOpening
+		kind = fluxcast.BeatOpening
 	case introClose:
-		kind = cast.BeatSignOff
+		kind = fluxcast.BeatSignOff
 	case introTease:
-		kind = cast.BeatTease
+		kind = fluxcast.BeatTease
 	case introRecap:
-		kind = cast.BeatRecap
+		kind = fluxcast.BeatRecap
 	default:
-		kind = cast.BeatStory
+		kind = fluxcast.BeatStory
 	}
 	handover = -1
 	if v, err := strconv.Atoi(strings.TrimSpace(q.Get(beatHandoverParam))); err == nil && v > 0 {
@@ -106,16 +106,16 @@ func castBeat(r *http.Request) (kind cast.BeatKind, words, handover int, rev str
 // authorised: the scope is resolved, the item is one this reader may read, and
 // the preferences have been checked.
 func (a *App) briefFor(ctx context.Context, sc store.Scope, r *http.Request,
-	it store.Item, kind cast.BeatKind, words, handover int, rev string) cast.Brief {
+	it store.Item, kind fluxcast.BeatKind, words, handover int, rev string) fluxcast.Brief {
 
 	prefs, _ := a.repo.GetPrefs(ctx, sc)
-	b := cast.Brief{
+	b := fluxcast.Brief{
 		Kind:     kind,
 		Words:    words,
 		Vibe:     smart.VibeFor(prefs[podcastVibePrefKey]),
 		Revision: rev,
 		Handover: handover,
-		Subject: cast.Subject{
+		Subject: fluxcast.Subject{
 			ItemID: it.ID,
 			Title:  it.Title,
 			Source: it.SourceTitle,
@@ -132,7 +132,7 @@ func (a *App) briefFor(ctx context.Context, sc store.Scope, r *http.Request,
 	// The predecessor, resolved through the same scope as everything else.
 	if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != it.ID {
 		if p, err := a.repo.GetItem(ctx, sc, pid); err == nil {
-			b.Prev = cast.Subject{ItemID: p.ID, Title: p.Title, Source: p.SourceTitle}
+			b.Prev = fluxcast.Subject{ItemID: p.ID, Title: p.Title, Source: p.SourceTitle}
 		}
 	}
 	// What this beat NAMES: the opening's run-through, a tease, a recap. Ids
@@ -143,7 +143,7 @@ func (a *App) briefFor(ctx context.Context, sc store.Scope, r *http.Request,
 	// A story beat carries a body; nothing else does. A greeting given the
 	// article it introduces summarises it, which is the one thing the opening
 	// must not do.
-	if kind != cast.BeatStory {
+	if kind != fluxcast.BeatStory {
 		b.Subject.Body = ""
 	}
 	return b
@@ -153,12 +153,12 @@ func (a *App) briefFor(ctx context.Context, sc store.Scope, r *http.Request,
 // WHICH stories were named, so an id that is dropped for having no headline has
 // to be dropped at both ends or the two keys disagree and nothing ever hits the
 // cache.
-func (a *App) castLineup(ctx context.Context, sc store.Scope, raw string) []cast.Headline {
+func (a *App) castLineup(ctx context.Context, sc store.Scope, raw string) []fluxcast.Headline {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || a.repo == nil {
 		return nil
 	}
-	out := make([]cast.Headline, 0, smart.MaxLineup)
+	out := make([]fluxcast.Headline, 0, smart.MaxLineup)
 	for _, id := range strings.Split(raw, ",") {
 		if len(out) >= smart.MaxLineup {
 			break
@@ -171,7 +171,7 @@ func (a *App) castLineup(ctx context.Context, sc store.Scope, raw string) []cast
 		if err != nil || strings.TrimSpace(it.Title) == "" {
 			continue
 		}
-		out = append(out, cast.Headline{ItemID: it.ID, Title: it.Title, Source: it.SourceTitle})
+		out = append(out, fluxcast.Headline{ItemID: it.ID, Title: it.Title, Source: it.SourceTitle})
 	}
 	if len(out) == 0 {
 		return nil
@@ -203,9 +203,9 @@ func (a *App) castLineup(ctx context.Context, sc store.Scope, raw string) []cast
 // fallback would be the last story a second time, which is not a degraded
 // goodbye — it is a bug with a voice. Those return an error, the player skips
 // the beat, and the programme carries on.
-func (a *App) writeBeat(ctx context.Context, b cast.Brief, it store.Item) (text, key string, err error) {
+func (a *App) writeBeat(ctx context.Context, b fluxcast.Brief, it store.Item) (text, key string, err error) {
 	if a.write == nil {
-		if b.Kind == cast.BeatStory {
+		if b.Kind == fluxcast.BeatStory {
 			return speechText(it), it.ID, nil
 		}
 		return "", "", errNoWriter
@@ -213,14 +213,14 @@ func (a *App) writeBeat(ctx context.Context, b cast.Brief, it store.Item) (text,
 	draft, werr := a.write.Write(ctx, b)
 	switch {
 	case werr == nil && strings.TrimSpace(draft.Text) != "":
-		return draft.Text, "beat:" + cast.ScriptKey(b), nil
+		return draft.Text, "beat:" + fluxcast.ScriptKey(b), nil
 	case errors.Is(werr, smart.ErrStaleRevision):
 		// Never fall back on this one. The client is running a plan this build
 		// cannot honour, and reading the article would hide that behind
 		// something that sounds nearly right — the programme would play, out of
 		// time, with a narrator that never appears.
 		return "", "", werr
-	case b.Kind != cast.BeatStory:
+	case b.Kind != fluxcast.BeatStory:
 		if werr == nil {
 			werr = smart.ErrNothingToSummarise
 		}

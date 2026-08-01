@@ -7420,7 +7420,7 @@ refusals, and the refusals are the load-bearing half.*
 | | owns | authority |
 |---|---|---|
 | the rundown (`home_ranking`, `internal/rundown`) | what is worth hearing, in what order | ranks — the only thing that may |
-| the profile (`cast.Profile`) | how it sounds — word budgets, ramps, gains, backstops | tuning |
+| the profile (`fluxcast.Profile`) | how it sounds — word budgets, ramps, gains, backstops | tuning |
 | **the format** (this section) | what happens, in what order, for how long, told how | shape |
 
 A format that could rank would be a third opinion with no `reasons_json` behind it, which §29.1's
@@ -7443,7 +7443,7 @@ schema coupling and an injection surface in a document a model may one day write
 POOL and the store owns the query, exactly as it names a track id and the catalogue owns the bytes.
 
 **JSON has no comments, so every object may carry `why`.** Ignored by the engine, printed in the cue
-sheet. Every number in `cast.Profile` carries its reasoning in a Go doc comment; a format file with
+sheet. Every number in `fluxcast.Profile` carries its reasoning in a Go doc comment; a format file with
 nowhere to put "0.25 because at five minutes one boosted story is a fifth of the show" would lose
 that the moment it left this repository.
 
@@ -7578,7 +7578,7 @@ is printable per show.
 #### 29.7.5 What is cached, and what is not
 
 The effective direction after the whole cascade is what changes the words, so it is what
-`cast.ScriptKey` hashes: `voice`, `context`, `rules`, `direction`, `content`. A hook or a block that
+`fluxcast.ScriptKey` hashes: `voice`, `context`, `rules`, `direction`, `content`. A hook or a block that
 changes only `audio` must not touch the key, or every mix tweak silently re-buys the whole
 programme.
 

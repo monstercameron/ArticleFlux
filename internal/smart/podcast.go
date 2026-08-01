@@ -87,12 +87,12 @@ import (
 // three", matching MaxLineup's cut from five to three.
 // v7: two new beats that did not exist in v6 at all — the TEASE ("coming up")
 // and the RECAP ("what you missed"), each with its own instruction text, added
-// so internal/cast's formats can schedule them. The same argument the group
+// so internal/fluxcast's formats can schedule them. The same argument the group
 // writer made under v4 applies: text written under v6 and text written under v7
 // must not be mistaken for interchangeable prose sharing one version number.
 //
-// Exported because it is the WRITER's identity and internal/cast carries it into
-// every beat's cache key (cast.Profile.Script.Revision). That package
+// Exported because it is the WRITER's identity and internal/fluxcast carries it into
+// every beat's cache key (fluxcast.Profile.Script.Revision). That package
 // deliberately does not know what the current revision is — a hardcoded copy
 // there would be the same fact in two files, and the copy that drifts is the one
 // nobody rebuilt.
