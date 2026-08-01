@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1526,23 +1527,6 @@ func (a *App) static(root string) http.Handler {
 			w.Header().Set("Content-Type", "application/manifest+json")
 		}
 
-		// Serve a precompressed sibling when one exists.
-		//
-		// G5 measured the bundle at 23.8 MB raw and 5.2 MB gzipped — a 4.5x
-		// difference that decides whether this is usable on a phone at all.
-		// Precompressed rather than on-the-fly because gzipping 24 MB per request
-		// would burn more CPU than the whole rest of the server combined, and the
-		// file only changes when the client is rebuilt.
-		if gz, ok := precompressed(root, p, r); ok {
-			w.Header().Set("Content-Encoding", "gzip")
-			// Vary is mandatory: without it a cache can hand the gzipped bytes to
-			// a client that did not ask for them, which fails as a corrupt wasm
-			// module rather than as anything legible.
-			w.Header().Add("Vary", "Accept-Encoding")
-			r = r.Clone(r.Context())
-			r.URL.Path = gz
-		}
-
 		// The wasm binary is rebuilt constantly during development, and a cached
 		// stale binary looks exactly like "my change did nothing".
 		// The manifest is here for a different reason from the two above it: it is
@@ -1562,6 +1546,48 @@ func (a *App) static(root string) http.Handler {
 				r = r.Clone(r.Context())
 				r.URL.Path = "/"
 			}
+		}
+
+		// Serve a precompressed sibling when one exists.
+		//
+		// G5 measured the bundle at 23.8 MB raw and 5.2 MB gzipped — a 4.5x
+		// difference that decides whether this is usable on a phone at all, and
+		// brotli takes another 30% off that again (7.0 MB against 4.9 MB on this
+		// build). Precompressed rather than on-the-fly because compressing 33 MB
+		// per request would burn more CPU than the whole rest of the server
+		// combined, and the file only changes when the client is rebuilt.
+		// cmd/precompress writes both siblings.
+		//
+		// AFTER the fallback above, not before it, so the shell is reachable.
+		// The shell is what "/" and every deep link resolve to, it is the first
+		// request of every cold load, and while this ran first it was the one
+		// asset that could never be compressed — a path with no extension
+		// matches no sibling. It was going out at 24 KB where it is 8 KB.
+		served := r.URL.Path
+		if served == "/" {
+			served = "/index.html"
+		}
+		if sib, enc, ok := precompressed(root, served, r); ok {
+			// The type comes from what the bytes DECOMPRESS to, so it is set
+			// from the original name here rather than left to FileServer, which
+			// would read ".br", find no type for it and answer
+			// application/octet-stream — and a browser does not apply a
+			// stylesheet it was handed as an octet stream. The switch above
+			// covers .wasm/.js/.webmanifest because those were the only three
+			// that ever had a sibling; this covers the rest without needing the
+			// two lists to be kept in step by hand.
+			if w.Header().Get("Content-Type") == "" {
+				if ct := mime.TypeByExtension(filepath.Ext(served)); ct != "" {
+					w.Header().Set("Content-Type", ct)
+				}
+			}
+			w.Header().Set("Content-Encoding", enc)
+			// Vary is mandatory: without it a cache can hand the compressed bytes
+			// to a client that did not ask for them, which fails as a corrupt
+			// wasm module rather than as anything legible.
+			w.Header().Add("Vary", "Accept-Encoding")
+			r = r.Clone(r.Context())
+			r.URL.Path = sib
 		}
 		fs.ServeHTTP(w, r)
 	})
@@ -2012,18 +2038,67 @@ func (a *App) StartPoller(ctx context.Context) {
 // Only wasm and js are considered: those are the large, static, rebuilt-rarely
 // assets where the 4.5x saving is worth a stat() per request. HTML is small
 // enough that compressing it would cost more in complexity than it saves.
-func precompressed(root, p string, r *http.Request) (string, bool) {
-	if !strings.HasSuffix(p, ".wasm") && !strings.HasSuffix(p, ".js") {
-		return "", false
-	}
-	if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-		return "", false
+// precompressed picks the best sibling this client will take, or nothing.
+//
+// Brotli first, because it is about a fifth smaller than gzip on the module —
+// 5.5 MB against 6.9 MB measured on this bundle, which is 1.4 MB a visitor does
+// not download. Gzip stays for everything that will not take brotli, and that is
+// not hypothetical: a proxy that rewrites Accept-Encoding down to gzip is common
+// enough that dropping the .gz would trade a small win for a 33 MB fallback.
+//
+// The extensions are the ones cmd/precompress writes siblings for. This used to
+// name only .wasm and .js, which is why prod served index.html uncompressed at
+// 24 KB on the first request of every cold load — the two lists have to agree,
+// and they are the only two places that decide this.
+func precompressed(root, p string, r *http.Request) (path, enc string, ok bool) {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".wasm", ".js", ".css", ".html", ".json", ".webmanifest", ".svg", ".txt":
+	default:
+		return "", "", false
 	}
 	rel := strings.TrimPrefix(filepath.ToSlash(p), "/")
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)+".gz")); err != nil {
-		return "", false
+	accepted := acceptedEncodings(r.Header.Get("Accept-Encoding"))
+	for _, c := range []struct{ enc, ext string }{{"br", ".br"}, {"gzip", ".gz"}} {
+		if !accepted[c.enc] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)+c.ext)); err != nil {
+			continue
+		}
+		return "/" + rel + c.ext, c.enc, true
 	}
-	return "/" + rel + ".gz", true
+	return "", "", false
+}
+
+// acceptedEncodings reads the header as the tokens it is, rather than by
+// searching the string for "gzip".
+//
+// A substring test gets `br;q=0` exactly backwards — that is a client saying it
+// will NOT take brotli, and handing it a .br produces a page of binary rather
+// than an error anybody can read. It also finds "br" inside a token that merely
+// contains those letters. Neither is theoretical enough to be worth the four
+// lines this costs.
+func acceptedEncodings(h string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(h, ",") {
+		token := strings.TrimSpace(part)
+		q := ""
+		if i := strings.IndexByte(token, ';'); i >= 0 {
+			q = strings.TrimSpace(token[i+1:])
+			token = strings.TrimSpace(token[:i])
+		}
+		// q=0 is a refusal. Anything else — absent, q=1, q=0.5 — is acceptance;
+		// this does not rank them, because the server's preference (brotli, then
+		// gzip) is the one worth having and both are always acceptable when
+		// offered at all.
+		if strings.HasPrefix(q, "q=0") && !strings.HasPrefix(q, "q=0.") {
+			continue
+		}
+		if token != "" {
+			out[strings.ToLower(token)] = true
+		}
+	}
+	return out
 }
 
 // audioDirOf is where the broadcast's music beds sit relative to the web root.

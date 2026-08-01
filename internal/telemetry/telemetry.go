@@ -403,7 +403,8 @@ func RouteClass(path string) attribute.KeyValue {
 	case "/":
 		return attribute.String("route", "/")
 	}
-	if strings.HasSuffix(p, ".wasm") || strings.HasSuffix(p, ".wasm.gz") {
+	if strings.HasSuffix(p, ".wasm") || strings.HasSuffix(p, ".wasm.gz") ||
+		strings.HasSuffix(p, ".wasm.br") {
 		return attribute.String("route", "wasm")
 	}
 	if strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") ||

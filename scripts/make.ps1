@@ -383,18 +383,18 @@ function Invoke-Wasm {
     # throws — means the browser silently runs the previous build. That failure
     # looks exactly like "my change did nothing", and it costs an hour every time.
     #
-    # CompressionLevel::Optimal, not SmallestSize: SmallestSize is .NET 5+, and on
-    # Windows PowerShell 5.1 it resolves to $null, which surfaces as an
-    # unrelated-looking "cannot find an overload for GZipStream".
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    foreach ($f in @($WasmOut, (Join-Path $OutDir 'wasm_exec.js'))) {
-        $tmp = "$f.gz.tmp"
-        $in  = [System.IO.File]::OpenRead($f)
-        $out = [System.IO.File]::Create($tmp)
-        $gz  = New-Object System.IO.Compression.GZipStream($out, [System.IO.Compression.CompressionLevel]::Optimal)
-        try { $in.CopyTo($gz) } finally { $gz.Dispose(); $out.Dispose(); $in.Dispose() }
-        Move-Item $tmp "$f.gz" -Force
-    }
+    # Both encodings now, and for everything in the web root worth compressing
+    # rather than the two files this loop named by hand.
+    #
+    # It was a .NET GZipStream loop here and a `gzip -9` loop in the Makefile:
+    # two implementations of one decision, in two languages, agreeing only by
+    # accident — and because both named app.wasm and wasm_exec.js explicitly,
+    # index.html and fonts.css shipped to production uncompressed for the life
+    # of the deployment. One Go tool, called by both, is how that stops being
+    # something anybody has to remember. cmd/precompress carries the rest of the
+    # reasoning, including why it still writes to a temp file and moves it into
+    # place.
+    Invoke-Checked 'precompress' { go run ./cmd/precompress $OutDir }
 
     # G5 / R4: the wasm size decides whether A5 (offline packs in the browser)
     # stays affordable. Print it every build so the number is never a surprise.

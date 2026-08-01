@@ -139,28 +139,71 @@ func TestHasExt(t *testing.T) {
 	}
 }
 
-// precompressed is the pure decision behind the static handler's gzip path:
-// only wasm/js are considered, the client has to have asked for gzip, and the
-// sibling has to actually exist on disk.
+// precompressed is the pure decision behind the static handler's compressed
+// path: the extension has to be one cmd/precompress writes siblings for, the
+// client has to have asked for the encoding, and the sibling has to exist.
 func TestPrecompressed(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "app.wasm.gz"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"app.wasm.gz", "app.wasm.br", "index.html.gz", "only.js.gz"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	gzReq := httptest.NewRequest(http.MethodGet, "/app.wasm", nil)
-	gzReq.Header.Set("Accept-Encoding", "gzip")
-	plainReq := httptest.NewRequest(http.MethodGet, "/app.wasm", nil)
+	req := func(ae string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/app.wasm", nil)
+		if ae != "" {
+			r.Header.Set("Accept-Encoding", ae)
+		}
+		return r
+	}
 
-	if got, ok := precompressed(dir, "/app.wasm", gzReq); !ok || got != "/app.wasm.gz" {
-		t.Errorf("precompressed = (%q, %v), want (/app.wasm.gz, true)", got, ok)
+	// Brotli wins when both siblings exist and the client takes either — it is
+	// about a fifth smaller on the module, which is the whole reason it is here.
+	if p, enc, ok := precompressed(dir, "/app.wasm", req("gzip, deflate, br")); !ok || enc != "br" || p != "/app.wasm.br" {
+		t.Errorf("got (%q, %q, %v), want (/app.wasm.br, br, true)", p, enc, ok)
 	}
-	if _, ok := precompressed(dir, "/app.wasm", plainReq); ok {
-		t.Error("precompressed = true with no Accept-Encoding: gzip")
+	// And gzip when brotli is not on offer — which is not hypothetical: a proxy
+	// that rewrites Accept-Encoding down to gzip is common.
+	if p, enc, ok := precompressed(dir, "/app.wasm", req("gzip")); !ok || enc != "gzip" || p != "/app.wasm.gz" {
+		t.Errorf("got (%q, %q, %v), want (/app.wasm.gz, gzip, true)", p, enc, ok)
 	}
-	if _, ok := precompressed(dir, "/index.html", gzReq); ok {
-		t.Error("precompressed = true for a non-wasm/js path")
+	// `br;q=0` is a REFUSAL. A substring test for "br" reads it as consent and
+	// answers with binary the client cannot decode.
+	if _, enc, ok := precompressed(dir, "/app.wasm", req("gzip, br;q=0")); !ok || enc != "gzip" {
+		t.Errorf("br;q=0 got %q/%v, want gzip — that header refuses brotli", enc, ok)
 	}
-	if _, ok := precompressed(dir, "/missing.js", gzReq); ok {
-		t.Error("precompressed = true for a sibling that does not exist")
+	// The gzip sibling, when only it exists.
+	if p, enc, ok := precompressed(dir, "/index.html", req("br, gzip")); !ok || enc != "gzip" || p != "/index.html.gz" {
+		t.Errorf("got (%q, %q, %v), want (/index.html.gz, gzip, true)", p, enc, ok)
+	}
+	if _, _, ok := precompressed(dir, "/app.wasm", req("")); ok {
+		t.Error("served a sibling to a client that asked for no encoding")
+	}
+	if _, _, ok := precompressed(dir, "/logo.png", req("gzip, br")); ok {
+		t.Error("considered a .png — re-compressing one spends CPU to make it bigger")
+	}
+	if _, _, ok := precompressed(dir, "/missing.js", req("gzip, br")); ok {
+		t.Error("claimed a sibling that does not exist")
+	}
+}
+
+func TestAcceptedEncodings(t *testing.T) {
+	cases := []struct {
+		header string
+		br, gz bool
+	}{
+		{"gzip, deflate, br", true, true},
+		{"br;q=1.0, gzip;q=0.8", true, true},
+		{"gzip, br;q=0", false, true},
+		{"br; q=0.5", true, false},
+		{"", false, false},
+		{"identity", false, false},
+	}
+	for _, c := range cases {
+		got := acceptedEncodings(c.header)
+		if got["br"] != c.br || got["gzip"] != c.gz {
+			t.Errorf("acceptedEncodings(%q) = br:%v gzip:%v, want br:%v gzip:%v",
+				c.header, got["br"], got["gzip"], c.br, c.gz)
+		}
 	}
 }

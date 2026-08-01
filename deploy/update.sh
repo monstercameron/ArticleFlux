@@ -209,9 +209,17 @@ exec_js="$goroot/lib/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || { echo "wasm_exec.js not found under $goroot — the client cannot boot without it"; exit 1; }
 cp "$exec_js" "$REPO/bin/web.new/wasm_exec.js"
-run gzip -9 -kf "$REPO/bin/web.new/app.wasm"
-run gzip -9 -kf "$REPO/bin/web.new/wasm_exec.js"
-note "client: $(du -h "$REPO/bin/web.new/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web.new/app.wasm.gz" | cut -f1) gzipped"
+# Precompressed siblings, both encodings, for everything in the web root worth
+# compressing.
+#
+# This was `gzip -9 -kf` on exactly two files, and it is the copy that decided
+# what production actually served — so index.html went out at 24 KB uncompressed
+# on the first request of every cold load, and nothing served brotli at all. It
+# was the third implementation of one rule (the Makefile and scripts/make.ps1
+# had the other two), which is how a decision comes to be made three times and
+# kept in step nowhere.
+run "$GO" run ./cmd/precompress "$REPO/bin/web.new"
+note "client: $(du -h "$REPO/bin/web.new/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web.new/app.wasm.gz" | cut -f1) gzipped, $(du -h "$REPO/bin/web.new/app.wasm.br" | cut -f1) brotli"
 note "boot shim: wasm_exec.js from $goroot"
 
 # The service worker caches by version string, so a client that ships without a

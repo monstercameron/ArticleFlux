@@ -188,9 +188,13 @@ wasm: deps
 	 [ -f "$$exec_js" ] || exec_js="$$(go env GOROOT)/misc/wasm/wasm_exec.js"; \
 	 [ -f "$$exec_js" ] || { echo "wasm_exec.js not found under $$(go env GOROOT)"; exit 1; }; \
 	 cp "$$exec_js" $(OUT)/wasm_exec.js
-	@for f in $(WASM) $(OUT)/wasm_exec.js; do \
-	  gzip -9 -c "$$f" > "$$f.gz.tmp" && mv -f "$$f.gz.tmp" "$$f.gz"; \
-	done
+	@# Precompressed siblings, both encodings, for everything in the web root
+	@# worth compressing — not the two files this loop used to name by hand. See
+	@# cmd/precompress for why it is a tool: this rule and make.ps1's copy of it
+	@# were two implementations of one decision, and both covered app.wasm and
+	@# wasm_exec.js only, which is how index.html shipped uncompressed to
+	@# production for the life of the deployment.
+	go run ./cmd/precompress $(OUT)
 	@# One decimal, matching what make.ps1 prints. Integer MB would report a 26.6 MB
 	@# bundle and a 25.9 MB one as the same number, which is most of the resolution
 	@# the G5 ratchet is watching for.
