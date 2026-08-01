@@ -9,6 +9,28 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Fixed
+
+- **A deploy that changed `update.sh` deployed nothing, and reported success.** The script re-execs
+  itself when a pull changes it — a real fix for a real problem — but the re-exec happens *after* the
+  pull, so the second process asked the working tree where the deploy started and was told the commit
+  it was supposed to be deploying. `old_sha == new_sha`, the no-op check fired, and it exited 0 in one
+  second. Every promotion whose diff touches the deploy script silently shipped nothing, which is
+  precisely the case where you least want it skipped. Today it happened for real: the promotion was
+  green, the webhook returned 202, `update.sh` said *"✓ Up to date in 0s"*, and production served the
+  previous build until somebody downloaded the wasm module and grepped the decompressed bytes. The
+  starting revision now crosses the exec, and the bootstrap case is handled too — the re-exec is
+  performed by the *pre-pull* copy of the script, which does not know to pass it, so a run that
+  arrives re-execed with no starting point treats that as proof there was something to do rather than
+  applying the fix one deploy late.
+- **Nothing could say which build production was running.** `buildver.Commit` is stamped into the
+  server binary by the deploy (`-ldflags -X`; the comment there records why `Version` deliberately is
+  not one) and returned as an `X-ArticleFlux-Commit` header on `/readyz` — additive, so the one-word
+  body §22.4 requires is untouched, and empty on any build that was not deployed. `promote.yml` no
+  longer ends at *"main moved"*: it polls the live server for up to ten minutes and only then says the
+  release is out, with a loud warning and where to look if it does not appear. Non-fatal by design —
+  `main` has already moved by that point and a red promotion cannot un-move it.
+
 ### Added
 
 - **Brotli, and compression for everything that was missing it.** The module went out gzipped and
