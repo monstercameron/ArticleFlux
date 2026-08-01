@@ -95,7 +95,13 @@ func Login(p loginProps) ui.Node {
 		if busy.Get() {
 			return
 		}
-		u, pw := username.Get(), password.Get()
+		u, pw := fieldOr("login-username", username.Get()), fieldOr("login-password", password.Get())
+		// State is kept in step with what was read, because the fields are
+		// controlled — `Value: username.Get()`. Submitting the field value
+		// while leaving state behind would make the very next render write the
+		// stale value back and blank a field the reader is looking at.
+		username.Set(u)
+		password.Set(pw)
 		if u == "" || pw == "" {
 			errMsg.Set(tr.T("login", "errEmpty"))
 			return
@@ -243,6 +249,33 @@ func Login(p loginProps) ui.Node {
 				html.Code(html.Props{}, html.Text(adduserCommand))),
 		),
 	)
+}
+
+// fieldOr reads the input carrying data-role=role, falling back to the state
+// behind it when the field is not in the document.
+//
+// # Why the field wins
+//
+// A password manager, and Chrome's own autofill, writes the value straight into
+// the element. Several of those paths dispatch no `input` event this component
+// can hear — the same synthetic-event problem platform.OnKeyDown carries a
+// comment about — so state stays empty while the screen visibly shows a filled
+// username and password. Submitting state then sends two empty strings and the
+// reader is told the credentials they can SEE are wrong.
+//
+// Measured before this existed: writing both values with no input event and
+// submitting produced "invalid username or password" on Enter AND on the
+// button. So this is not a keyboard bug, and fixing it in the key handler would
+// have left the same trap under the mouse.
+//
+// The fallback is not decoration: on the render before the field is in the
+// document, FieldValue returns "" and the prefilled dev default lives only in
+// state.
+func fieldOr(role, fallback string) string {
+	if v := platform.FieldValue(role); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // adduserCommand is a command line, not copy. It stays out of the catalog on
