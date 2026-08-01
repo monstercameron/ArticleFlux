@@ -7,3 +7,28 @@ lint:
 breaking:
   use:
     - FILE
+  # One file, two rules, one deliberate event — named this narrowly on purpose
+  # rather than by dropping the whole repository to WIRE.
+  #
+  # SEC1 (ef2b7bd) split `device_id` into a client-supplied, presentation-only
+  # `label` and a server-generated `refresh_record_id`, because a client-supplied
+  # device id let a second login install its own refresh token against somebody
+  # else's account. The field NUMBERS and types did not move, so the wire this
+  # project actually speaks — binary gRPC over the tunnel — is unchanged: an old
+  # cached client still sends its id at the same field, and it now arrives as the
+  # label, which is exactly what the fix wants it to be. Nothing here encodes
+  # protobuf as JSON, so FIELD_SAME_JSON_NAME is checking a format this
+  # application does not have.
+  #
+  # Keeping the old names would have meant a field whose name lied about what it
+  # holds, in the one file where that matters most.
+  #
+  # The cost, stated plainly: a future rename in auth.proto is not caught here.
+  # Every other file keeps FILE, and auth.proto keeps every rule about numbers,
+  # types and cardinality — the ones that would actually break a client in the
+  # wild.
+  ignore_only:
+    FIELD_SAME_NAME:
+      - proto/articleflux/v1/auth.proto
+    FIELD_SAME_JSON_NAME:
+      - proto/articleflux/v1/auth.proto
