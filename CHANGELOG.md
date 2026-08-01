@@ -9,6 +9,26 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-01
+
+### Fixed
+
+- **The long-read clamp cut the article instead of fading it.** Three faults in one arrangement, all
+  of them visible in a single screenshot of a 985-word piece. The fade was an absolutely-positioned
+  overlay at `bottom: 44px`, so it **finished 44px above the cut** and the last two lines rendered at
+  full opacity underneath it — the article looked as though it had been faded and then cut with
+  scissors. The chip was pinned at `bottom: 0` over a `padding-bottom: 56px` that reserved nothing,
+  because `overflow: hidden` clips at the *padding* box rather than the content box: the body painted
+  straight through the strip meant for the chip, and the chip sat on top of a live sentence. And the
+  gradient ended at `var(--bg)`, which is not this pane's ground — `.article::after` washes it in the
+  source hue — so the overlay drew a flat, differently-tinted rectangle over the wash, with edges.
+  The fade is now a **mask on the content** rather than something opaque drawn over it, which removes
+  all three by construction: nothing to mis-position, nothing to paint over the wash, and no colour to
+  keep in step with a background it cannot see. The chip returns to ordinary flow beneath the cut,
+  where it cannot overlap what is above it. The mask's opaque end is `currentColor` rather than the
+  usual `#000` — a mask reads alpha and ignores the rest, and a literal hex in the sheet is a value no
+  theme can reach.
+
 ## [1.1.0] — 2026-08-01
 
 The first tagged release, and the first build of this application a stranger can look at without a
