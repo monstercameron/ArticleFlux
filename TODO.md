@@ -7473,6 +7473,97 @@ everything after them is a field on it.*
       slideshow e2e suite passes unchanged.*
 
 
+### The two modes (plan §19, "Two modes, and the correction one of them makes")
+
+*One entry point plus a persisted toggle becomes two buttons, and the narrated one starts showing
+the words it is saying. These land inside 11.44's player rewrite rather than beside it: every one of
+them touches `showAudio`, and that state has twenty call sites in the most contended file in the
+tree. Ordered so that 11.46 — the correction — can ship even if the rest slips.*
+
+- [ ] **11.45 · Two entry points, so a mode cannot be entered by accident.** A second `glyphChip`
+      beside the existing one in `listHead` (`client/view/panes.go:1965`), with its own glyph.
+      *Slideshow* is what it is today with the voice machinery gone: clock-paced, no prerequisites,
+      no key, no spend, loops. *Podcast* is narrated. Both act on the feed the reader is looking at,
+      which is why they belong in the row with Refresh and Mark all read rather than beside the
+      article controls.
+      The chip is **absent, not disabled, when the list is empty** — the rule the slideshow chip
+      already follows, and for the same reason: a control offering a display of an empty list has
+      made a promise it cannot keep. The Podcast chip is a third case, *present and refusing*, and
+      that is 11.49.
+      Naming: the button says **Podcast**, not FluxCast. S8 settled that the brand appears on one
+      screen — Settings → FluxCast — and every control keeps a plain verb or noun.
+      *Done when: two chips render; pressing Slideshow starts a silent show on an instance with a
+      key configured and `tts.podcast` on, proving the mode no longer inherits a preference; and the
+      slideshow e2e suite passes with the Slideshow chip's selector unchanged.*
+
+- [ ] **11.46 · The slide shows the words that are being said.** The correction in §19, and it is a
+      bug fix wearing a feature's clothes. `slide-body` renders `parsedBody(raw)` — the article —
+      while the voice speaks a rewritten segment, and `slideAudio` scrolls that article from the
+      SEGMENT's playhead, sized by `full.GetWordCount()`, the article's length. The two texts
+      diverge within a paragraph and nothing has ever tested it, because both are plausible prose on
+      a screen.
+      In Podcast mode the same surface carries the SCRIPT. Not a caption band: the slide already has
+      a scrolling text surface with a type scale chosen to be read across a room and a measured
+      scroll (`slideMeasure`, `--scan`, `--shift`) that is already correct — the bug was what was
+      fed into it, and a band would add a second layout to fix a problem the first does not have.
+      The article's **lead image is kept**, its prose is not.
+      *Done when: in Podcast mode the visible text is the script; `slideMeasure` sizes the scroll
+      from the SCRIPT's length; a test asserts the rendered text and the requested audio come from
+      one beat key; and Slideshow mode still renders the article body unchanged.*
+
+- [ ] **11.47 · `as=text` — the script over the wire, free, and never on its own.** `/speech` gains
+      `as=text`: same handler, same four gates, same derived key, returns the script instead of
+      synthesising it. Free, because by the time the audio exists the script is in `podcast-cache`.
+      Two refusals make it safe. It **must never trigger a paid write on its own** — an uncached
+      script answers 204 and the mode runs without captions rather than quietly buying a second copy
+      of the programme. And it is not a second read path: the same ticket, the same scope, the same
+      404-not-403 rule for an item the reader cannot see.
+      Ordering matters and belongs in the client: fire the AUDIO request first, because it is the
+      long pole and it is what writes the script; ask for the text once the player reports `ready`,
+      when it is a cache read.
+      *Done when: `as=text` returns the script for a beat whose audio was already fetched, with no
+      call to the speaker; a cold key answers 204 and no write happens; and a ticket for another
+      reader's item answers 404.*
+
+- [ ] **11.48 · Captions without timings.** The provider returns no word timings and paying a second
+      model to align them would be a bill for a caption. So: split the script on sentence
+      boundaries, give each a share of the audio's REAL duration by character count, and drive the
+      emphasised sentence off `timeupdate`. Drift is bounded by the segment — 40 to 90 seconds — so
+      a caption is never more than a sentence out.
+      It is an estimate and the code says so. `chunkForSpeech` already splits on sentence boundaries
+      with a word-boundary fallback for the unpunctuated headlines feeds are full of; reuse it
+      rather than writing a second splitter that disagrees with it on the same input.
+      *Done when: `TestCaptionSharesSumToTheDuration` over a fixture script; a script with no
+      punctuation at all still produces advancing captions rather than one block; and the emphasised
+      sentence advances monotonically under a stepped virtual playhead.*
+
+- [ ] **11.49 · The prerequisites belong on the button, not on the slide.** `slidePrereqs`' four
+      conditions — Smart+ voice, `tts.podcast`, keep-playing, a server key — are discovered today
+      AFTER entering the mode, which is why there is a button on the slide explaining the silence
+      and a Settings tab behind it. On the Podcast chip they are its own state, said before it is
+      pressed, with the same wording (`slides` catalog, `voice.*`) so a requirement never has two
+      descriptions.
+      The server-key condition keeps its existing evidence rule: it is read off whether the story on
+      screen came with a listening ticket, and outside the show off the Smart+ config — never
+      inferred from a stopwatch, which is how software tells confident lies about its own
+      deployment.
+      The in-show explanation **stays**, as the fallback for a mid-show failure: a synthesis can fail
+      on the third story after two that worked, and a flag set at the door cannot see that.
+      *Done when: with `tts.podcast` off the Podcast chip states the missing condition and pressing
+      it opens the tab that fixes it; with everything satisfied it starts the programme; and the
+      in-show line still appears when a beat fails after a healthy start.*
+
+- [ ] **11.50 · `slides.audio` stops being a preference.** It is persisted today, so a reader can
+      press Slideshow and get a narrator because of a toggle they set last week. With two entry
+      points the mode is derived from which button was pressed and the preference has nothing left
+      to mean. `v` still switches mid-show, which is the one place a live toggle earns its keep.
+      The work is the twenty call sites of `showAudio` in `client/view/reader.go`, which is why this
+      is 11.44's job and not a lane: it is the same file and the same state the player rewrite is
+      already unpicking.
+      *Done when: `slides.audio` is neither read nor written; starting each mode twice in a session
+      never inherits the other's behaviour; and `v` still turns narration on and off inside a
+      running show.*
+
 ## Exploratory QA pass — reading pane, search, feed health (2026-07-31)
 
 *An agent drove the live dev instance (real browser, real 151-feed/5000+-article dataset, no

@@ -3307,6 +3307,49 @@ point during the afternoon, and what the reader finds when they look up is a dar
 explanation. The running order in the slug says which time round it is. Read-to-me does not loop: the
 narrator's session has its own end, and starting again from the top would re-read what was just heard.
 
+### Two modes, and the correction one of them makes
+
+*Decided 2026-08-01. Supersedes the single entry point plus `slides.audio` toggle described above.*
+
+**Two buttons, not one and a preference.** *Slideshow* is the display: clock-paced, no
+prerequisites, no key, no spend, loops forever, works on any instance. *Podcast* is the programme:
+narrated, and it shows what it is saying. A reader who wants one and gets the other has been
+surprised by a toggle they set last week, which is what a persisted `slides.audio` makes possible
+and what two entry points make unrepresentable.
+
+**The correction.** In read-to-me mode as shipped, `slide-body` renders `parsedBody(raw)` — **the
+article** — and `slideAudio` scrolls it from the audio playhead, sized by `full.GetWordCount()`.
+But the audio is the rewritten broadcast segment, not the article. So the text on screen is not the
+text being spoken, it is being scrolled at the pace of a different piece of writing, and a reader
+following along diverges from the narrator within a paragraph. This has been true since read-to-me
+landed and nothing tested it, because nothing could: the two texts are both plausible.
+
+So in Podcast mode **the scrolling surface carries the SCRIPT**, with the sentence being spoken
+emphasised. Deliberately not a caption band across the foot of the screen: the slide already has a
+scrolling text surface driven by the playhead, with a type scale chosen to be read from across a
+room and a measured scroll (`slideMeasure`, `--scan`, `--shift`) that is already correct. The bug
+was never the surface, it was what was fed into it. A band would add a second layout to fix a
+problem the first layout does not have.
+
+The article's **lead image is kept** and its prose is not. An ambient display with nothing but type
+on it is worse than one with a picture, and the picture is not a claim about what is being said.
+
+**Degradation is a real path, not a corner.** No key, an uncached script, a 204 — then the article
+body scrolls exactly as it does today and the slide says the captions are unavailable. The mode is
+correct without them, the same way it is correct without fullscreen and without a wake lock.
+
+**Captions are timed by proportion, not by alignment.** The speech endpoint returns no word
+timings, and paying a second model to align them would be a bill for a caption. Sentences take a
+share of the audio's real duration by character count, driven off `timeupdate`; drift is bounded by
+the segment, which runs 40 to 90 seconds, so a caption is never more than a sentence out. That is
+an estimate and the code says so rather than implying precision it does not have.
+
+**The prerequisites move onto the button.** `slidePrereqs`' four conditions are discovered today
+*after* entering the mode, which is why there is a "why the voice isn't speaking" button on the
+slide and a Settings tab explaining it. On a Podcast button they are its own state, said before it
+is pressed. The in-show explanation stays as the fallback for a mid-show failure — a synthesis can
+fail on the third story after two that worked — but it stops being how anybody learns.
+
 **Still to do.** Idle auto-start after N minutes (off by default), and the offline path from the trip
 pack — which remains the place a broken one would be most visible.
 
