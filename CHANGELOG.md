@@ -119,6 +119,52 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **`articleflux speech` — the answer to "why is read to me silent", where the answer is.** A reader
+  looking at four green prerequisites and a silent screen had nowhere to go, and neither did anyone
+  else. The client's message — "the voice didn't start" — is the truthful limit of what it can know:
+  an `<audio>` element reports a `MediaError` with a decode code and no HTTP status, so it genuinely
+  cannot tell a refused key from a request that never arrived. The server knows exactly and is
+  forbidden from saying, because the provider's message can quote the article being read aloud
+  (§22.11) — so the answer existed only in a log somebody had to know to open, which is not a
+  diagnosis, it is homework. The subcommand runs the same chain `/speech` runs and prints what each
+  step actually said. Free by default: is there a key, does the provider accept it, are the models
+  this instance is configured to use in the list that account can reach — and the third is the one
+  nobody thinks of, because a model id the account cannot use fails every call while the key is
+  valid, the switches are on and the prerequisite screen is entirely green. `-full` writes one real
+  segment and synthesises one sentence, which is the only way to prove the whole path and which
+  spends. It resolves the key through the app's own function rather than reading the setting
+  directly — the first version did the latter, reported "no key on this instance" against a server
+  that plainly had one, and would have sent its operator to look at settings that were never the
+  problem, because the resolution is stored-key first and `OPENAI_API_KEY` second. Two
+  implementations of "is there a key" is how a screen comes to say ready while the request answers
+  501; a tool built to explain that must not be a third. The key never reaches the output — length
+  and source only, with a test that fails if it ever does.
+- **What the last Smart+ attempt actually did** (`GetSmartConfig.last_error` / `last_error_at`,
+  additive fields 21/22). "An OpenAI key on the server: ready" is `strings.TrimSpace(key) != ""` — it
+  says a key is *stored*, which is all it can say without spending money, so an expired key, a
+  revoked key, a project with no credit and a model the account cannot reach all read as ready. The
+  missing half is not a better guess at whether the key works; it is a record of what happened the
+  last time it was used, printed on the FluxCast tab directly under the row it corrects, so "a key is
+  stored, and the last attempt two minutes ago was refused" becomes sayable. It is a **class** and
+  never the provider's words — key-refused, quota, model-unavailable, unreachable, refused — because
+  each class names a different remedy, and two failures a person would fix the same way should be one
+  class rather than four. It is **cleared by success**, from the single call site that records both
+  outcomes: a stale failure is worse than none, because an operator who fixed their key an hour ago
+  and still sees "refused" learns to ignore the field, and then it is furniture. An empty article is
+  **not** a refusal (`ErrNothingToSummarise` classifies to nothing), or every two-line link post would
+  look like a broken key — the same failure this field exists to end, arriving from the other side.
+- **The demo's own drift check** (`client/demodata/served_test.go`). Three comments in that package
+  claimed that adding a method to the proto broke its build. It was never true: each service embeds
+  its generated `pb.UnimplementedXServiceServer`, the generated interfaces require it, and that embed
+  answers every method nobody wrote — forever, with `Unimplemented`. The test now calls every method
+  on every registered `ServiceDesc`, and one that answers `Unimplemented` must appear in `notServed`
+  **with a reason**, so a new RPC is neither served nor declared and fails on the pull request that
+  adds it, naming the method. The reverse is checked too — a method since implemented and still
+  listed as unserved fails, because a list that only ever grows is how documentation rots. Six
+  methods are declared: the five auth RPCs, since there are no accounts and `DemoRoot` removes the
+  login screen, and `ScrollLiveView`, since the live view scrolls a page the server fetched.
+  `e2e/demo-smoke.mjs` gained the matching browser-level check — it opens Discover and requires cards
+  with evidence on them, because every other check passed while that screen was broken.
 - **A broadcast engine: `internal/fluxcast`** — the profile, the formats, the fitter, the timeline
   compiler and the player state machine, in one pure package. FluxCast had been tuned from four:
   role word budgets and the category cap in `internal/rundown`, the prompt revision and the lineup
@@ -363,6 +409,38 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **Three features had silently stopped being covered by the public demo.** Discover (§18.7), OPML
+  import and export, and the edit-history disclosure all shipped to GitHub Pages answering
+  `Unimplemented` — the newest screen in the application sat on *"Couldn't load recommendations"* for
+  every stranger who opened it, and nothing said so, because the bundle was well-formed, it booted,
+  and the rail was right. `client/demodata` now serves all three. Discover runs the **real** scorer:
+  the fixtures are candidates — what a harvest observed — and `internal/recommend.Score` turns them
+  into cards with the same defaulted `Thresholds{}` `internal/recommendjob` passes on a server, so the
+  evidence sentence under each card is written by `describe()`, the ordering is the scorer's, and the
+  three candidates that never appear are refused by `gate()` (silent for fourteen months, 900 posts a
+  week, and one linked nine times with no feed behind it). A fixture of finished cards would have
+  rendered identically and demonstrated nothing, because the argument of the feature is that the
+  evidence is derived and that the gate refuses more than it accepts. OPML goes through
+  `internal/opml`, the same parser and writer the server uses — the one pair a demo can honour
+  completely, since neither needs a key or a fetch — and an imported row keeps its own `xmlUrl` rather
+  than `addFeed`'s fabricated `host/feed.xml`, because a list that did not survive a round trip
+  through this reader is the thing an exporter exists to prevent. Alongside: `ListAudioTracks` answers
+  an empty list, which is what a deployment without the audio directory answers and what the picker
+  already reads as "offers silence", and `ListModels` / `SuggestTheme` / `ComposeTheme` refuse with
+  `FailedPrecondition` and a sentence rather than `Unimplemented`, which on this API means "this
+  server is older than your client" — a version skew that is not happening.
+- **A format's direction joined the TTS cache key even when there was no format.** Adding `Direction`
+  appended its separator unconditionally, so every reader with no format at all got a different key
+  for the same segment: the whole cached library missed at once, and every segment already paid for
+  was rewritten to say exactly the same thing. On an instance that had been listening for a while
+  that is a real bill, and it arrives as "the broadcast is slow now" rather than as anything that
+  looks like a bug. The prompt had the rule from the moment it was written — an empty direction leaves
+  the commission byte-identical, because adopting formats has to be inaudible until somebody writes
+  one — and `TestNoFormatMeansNoChangeToThePrompt` existed while its counterpart on the key did not.
+  It does now. Found while looking into a report of silent playback with every prerequisite green; it
+  is not the cause of that, since a segment that misses the cache is rewritten rather than refused,
+  but it turns a warm library cold, so every story that used to play from disk starts depending on
+  the provider answering.
 - **Four standing e2e failures were one selector looking in the wrong row.** `openSettings` searched
   `.list-tools` — the row of controls that act on the *feed* — while the gear has always lived in
   `.list-corner` beside the list's title. The two specs that use it timed out for two minutes each,
