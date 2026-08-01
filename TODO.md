@@ -7258,6 +7258,221 @@ sounds fine — so it is written down while there is still evidence.*
       ✅ Both written into `plan.md` §29.5, including `Produced.Reasons` (11.21's own side-map, same
       shape, folded in beside `Titles` rather than opening a fourth place this pattern is explained).
 
+### The format file — consuming and producing a described programme (plan §29.7)
+
+*`internal/cast` landed 2026-08-01: profile, formats, the fitter, the timeline compiler, the player
+state machine, the script seam and the beat-addressed `/speech` path. What it does NOT have is a
+FILE — every format is a Go literal, so a show's shape can only be changed by somebody who can
+rebuild the server. plan.md §29.7 settles what that file may say and, more importantly, what it may
+never say. These items build it. They are dependency-ordered: 11.30 and 11.31 are the spine and
+everything after them is a field on it.*
+
+- [ ] **11.30 · The format file, parsed — and refused when it cannot be honoured.** JSON, per §29.7,
+      into the `cast.Format` types that already exist plus the ones §29.7 adds. Durations and gains
+      are strings (`"5m"`, `"-3dB"`) because a tuning file is read by people and `2600000000` is not
+      a number anybody can check against the thing they heard — `cast.Dur` already round-trips this
+      way and gains need the same treatment through `DB()`/`Gain()`. Every object accepts and
+      ignores `why`, which is how a file with no comments keeps its reasoning; the cue sheet prints
+      it. An unknown `version` is **refused, not guessed**: a format written against a schema this
+      build does not have is a programme whose shape nobody can predict, and playing it anyway is
+      worse than not playing it.
+      *Done when: `TestFormatRoundTrips` marshals every stock format, reads it back and gets an
+      identical `Format`; a file with `"version": 99` is refused with a note naming the version; a
+      malformed duration is a note rather than a panic; and `why` survives a round trip without
+      reaching any code path that decides anything.*
+
+- [ ] **11.31 · One resolver, nine scopes, one merge rule.** §29.7.1's cascade, as a single function
+      that takes a `Format`, a `Program` and a beat index and returns the effective direction. Nine
+      scopes, resolved least-specific first, with **scalars overriding, lists appending and `energy`
+      summing**. One rule everywhere, because a format's reader must never have to ask which of two
+      mechanisms is in play.
+      Two properties are the whole point and both need their own test. Lifecycle scopes are
+      **positional, not structural** — `program:begin` is the first beat whatever kind it turns out
+      to be, so it still means something in a format with no greeting block. And hooks **select
+      beats, never insert them**: the moment a hook can emit a beat there are two ways to express
+      one programme and no way to say which won.
+      *Done when: `TestOneBeatBlockIsBothBeginAndEnd` gives a `take:1` block conflicting `:begin`
+      and `:end` scalars and asserts `end` wins; `TestLastBlockEndIsAlsoProgramEnd` asserts both
+      apply and the block wins; `TestRulesNeverIsAdditiveOnly` asserts a block cannot shorten the
+      writer's own NEVER list; and `TestPositionalScopesSurviveAMissingBlock` resolves
+      `program:begin` against the wire format, which has no greeting.*
+
+- [ ] **11.32 · Content controls, and the Base the fitter measures against.** `block.content` per
+      §29.7.3: `mode`, `groupBy`, `groupSize`, `length`, `depth`, `rate`, `transitions`, `order`.
+      Three of them have a trap each. `length` multiplies the beat's **`Base`**, not its `Words` —
+      bounds are relative to Base precisely so two fitting passes cannot compound, and a multiplier
+      applied to `Words` would spend the whole fit fighting the clamps. `rate` is a **relative
+      nudge clamped to ±15%** and must feed `estimate()`, or a nudged block misses its target by
+      exactly the nudge. `depth` is not length: the ladder is what the writer is told to INCLUDE, so
+      `analytical` on a sub-90-word budget is incoherent and is lowered with a note rather than
+      asked for and quietly ignored.
+      *Done when: `TestLengthMovesTheBoundsWithIt` fits a `tight` block twice and asserts no beat
+      lands outside bounds derived from its own Base; `TestRateFeedsTheEstimate` asserts a `+5%`
+      block's planned length is 5% shorter; `TestAnalyticalDepthIsLoweredWhenTheBudgetCannotCarryIt`
+      gets a note naming both the depth and the budget.*
+
+- [ ] **11.33 · Grouped writing — `WriteSegment` has been built and unused since it was written.**
+      `smart.WriteSegment(SegmentGroup) ([]SegmentBlock, error)` writes 2–4 stories in ONE model
+      call so the prose flows across them and returns them **split per story** under
+      `podcastGroupSchema`, which exists precisely so a caller never has to guess where one story
+      ends. Nothing calls it. `content.mode: "grouped"` is what finally does.
+      It stays a WRITE group, never a compound beat: playback remains one story per beat, so §29.2's
+      audio-unit constraint, the slide boundary, the seam and read-state are all untouched. Grouping
+      key comes from data that already exists — `item_clusters.cluster_id` for `groupBy: "cluster"`,
+      the segment theme for `"theme"`.
+      **A group write is one call, so one failure loses all of it.** The fallback must be to rewrite
+      its members solo, not to drop three stories: a single provider hiccup silently removing a
+      ninth of the programme is the worst version of this feature.
+      *Done when: a three-story cluster produces one `WriteSegment` call and three separately
+      synthesised beats; `TestAGroupFailureFallsBackToSoloWrites` asserts three solo calls and three
+      beats after an induced error; `TestGroupByClusterFallsBackToAdjacent` notes the fallback on a
+      pool with no clusters rather than silently producing one-story "groups".*
+
+- [ ] **11.34 · Exceptions, and the cap that stops them becoming a bubble.** §29.7.3's `exceptions`:
+      matchers, payload, `protect`, `raiseRole`, `stop`, `cap`. The line that decides every detail is
+      that an exception may **change how a story is told and protect it from the FORMAT's own
+      trimming, and may never promote it past the ranker** — `protect` exempts a story from the
+      category cap and from budget-driven demotion, which is a constraint on this engine's own
+      machinery rather than a second opinion about relevance.
+      `raiseRole` is capped at one band and **never reaches LEAD**, because 11.24 settled that the
+      top-scoring story is the lead unconditionally and a format that could mint a second one would
+      break the only signal that says where the top of the hour is.
+      `interest`-based matching **requires `minMentions`** and defaults it if absent. This is not
+      defensive: the strongest "thing you follow" on a real profile was **Pro Max, weight 37 from two
+      mentions** — one handset review read closely — and an exception on raw weight would have given
+      that the deep-dive treatment every morning.
+      *Done when: `TestAnExceptionCannotMintALead` asserts a `raiseRole: 3` on a MENTION lands at
+      STANDARD with a note; `TestTheCapDemotesTheBoostNotTheStory` asserts that when the cap binds
+      the lowest-scoring boosted stories revert to ordinary treatment and none are dropped;
+      `TestInterestMatchingRequiresEvidence` refuses a two-mention topic under the default floor.*
+
+- [ ] **11.35 · Per-block audio, in decibels.** `block.audio` per §29.7.3. The decision that makes it
+      tunable at all is that **levels are dB offsets from the profile's own bed**, never absolutes:
+      re-tuning `mix.bedLevel` then moves every block together, and a format cannot quietly become
+      the authority on loudness. `Gain()`/`DB()` already convert.
+      Six bed modes, and `fill` is the one with teeth — silent under speech, up between beats, which
+      is genuinely different from `duck` (never reaches zero) and produces audible silence in a block
+      whose beats leave no gaps. `inherit` is the default and should stay it: restarting a track at
+      every block boundary is the most audible mistake this feature can make. A block that switches
+      beds crossfades over `mix.bedFade` as ONE gesture, enforced the way the theme→bed handover
+      already is rather than asked for in a comment.
+      This item also needs `client/platform/music_wasm.go` **parameterised**: its levels and ramps
+      are consts today, so a profile that cannot reach them is a tuning surface that does nothing.
+      *Done when: a block at `"-3dB"` produces a cue 3dB under the profile's bed and re-tuning the
+      profile moves it; `TestFillOnAGaplessBlockIsNoted`; `TestABedSwitchIsOneCrossfade` asserts the
+      out and in durations are equal; and the wasm client honours a level the Go profile set.*
+
+- [ ] **11.36 · Every gap the show pays for, counted exactly once.** `choreoOverhead` currently counts
+      seams, the opening interlude, the outro tail and pads. §29.7 adds **waiting cues**, and a
+      `wait: true` cue longer than the seam it sits in lengthens the show. Six segment stingers that
+      nobody counted are eighteen seconds a fitted bulletin does not have — and the failure is
+      invisible, because the programme still plays and only the clock is wrong.
+      The rule is one function, three callers: `PlannedLength`, the fitter and `Compile` must all
+      read the same accounting or a fitted show misses its target by exactly the amount they
+      disagree about.
+      *Done when: `TestWaitingCuesAreInTheLength` asserts a format with six waiting stingers plans
+      longer than the same format without them by the exact sum; `TestOverlappingCuesCostNothing`
+      asserts the opposite for `wait: false`; and the existing
+      `TestSheetAccountsForEveryPlannedSecond` still passes with cues present.*
+
+- [ ] **11.37 · `profile.overrides`, and the paths a format may not touch.** A shape needs its own
+      tuning once it is short: at five minutes, default three-second seams across seven stories are
+      21 seconds, which is a whole story. `profile.preset` plus `overrides` keyed by the same
+      `cast:"path"` names the struct tags already carry.
+      The allowlist is the item. **Editorial paths only** — a format may tighten a seam and may not
+      touch `script.vibe` or playback rate, because those are the reader's: the first is their
+      narrator and the second is, for several people, an accessibility control. A refusal here is a
+      note naming the path, not a silent drop, or a format author will spend an afternoon wondering
+      why their file does nothing.
+      *Done when: `TestOverridesCannotTakeTheReadersManner` and `TestOverridesCannotSetPlaybackRate`
+      both produce notes and leave the value alone; an unknown path produces a note naming it; and
+      `TestAShortFormatTightensItsOwnSeams` asserts the five-minute round-up plans inside 3%.*
+
+- [ ] **11.38 · Source binding — named pools, never SQL.** `source{from, window, limit, exclude}` at
+      show and block level, resolving to the scopes `ListItemsRequest` already speaks (MEGAFEED,
+      FEED, ALL with source ids, STARRED, LIKED) plus `rundown:current`. Guard 3 is why this is a
+      NAME rather than a query: SQL outside `internal/store` fails the build, and SQL in a config
+      file would be worse — a schema coupling and an injection surface in a document a model may one
+      day write.
+      Two properties. Per-block override is what makes it worth building at all — "lead from My
+      Feed, round-up from the fun tag" is not expressible by filtering one pool. And the pool is
+      **resolved once, at plan time, and frozen into the Program**: the same snapshot property that
+      stops a background list reload deleting the story that is currently playing (the sign-off that
+      played after story one of sixty).
+      *Done when: a format with two different block sources produces beats from both pools;
+      `TestThePoolIsFrozenAtPlanTime` mutates the underlying list mid-show and asserts the programme
+      is unchanged; `exclude.heard` defaults on and a heard story does not appear.*
+
+- [ ] **11.39 · `heard_at` has never been written by anything.** Migration 0030 added it, `HeardItemIDs`
+      reads it, `fluxcast.Produce` filters on it, and no code path sets it — the player only ever
+      calls `readArticle`. So "eligibility is `read_at IS NULL AND heard_at IS NULL`" is currently
+      half a rule, and every FluxCast programme is eligible to replay stories the listener has
+      already been told.
+      `cast.ActHeard` is the event that fixes it: the player emits one per story played to the END,
+      and only there — skipping past a story is the opposite claim from hearing it out. Whether it
+      also marks read stays the reader's (`flux.markRead`, default off), because hearing a
+      forty-five-second segment is not reading the piece and the application must not claim it was.
+      *Done when: playing a programme to the end sets `heard_at` on every story and on nothing that
+      was skipped; a second programme planned immediately afterwards contains none of them; and
+      `flux.markRead` off leaves `read_at` untouched.*
+
+- [ ] **11.40 · `context.from`, and the egress list a reader can see.** `interest:top(N)`, `heard:Nd`,
+      `steer:more|less`. `heard:Nd` is the one worth building first and it is blocked on 11.39: it is
+      what stops a daily five-minute round-up re-explaining the same background every morning.
+      Every binding is an **egress**, so each emits a FIXED, declared payload — `heard:7d` emits
+      headlines and dates, never bodies — and the resolved list must be printable per show. §18.8 is
+      enforced by types with a named allowlist and is one of the two things CONTRIBUTING says are
+      never silent-decidable; this item extends that allowlist rather than working around it.
+      *Done when: each binding's payload is asserted field by field in a test that fails if a body,
+      a URL or a feed id ever joins one; the resolved list is available to the UI; and a format with
+      `from` set on an instance with no interest data degrades to nothing with a note rather than
+      failing to plan.*
+
+- [ ] **11.41 · The cache key splits in two.** `cast.ScriptKey` currently hashes kind, item,
+      predecessor, vibe, revision, words, handover and lineup. It must hash the **effective
+      direction** — voice, context, rules, direction, content — and must NOT hash `audio`, or every
+      mix tweak silently re-buys the entire programme.
+      Two prices this makes visible rather than hides, both of which belong in the commit message
+      when it lands: `block:begin` direction means the first story of a block is a different
+      recording from the second, and a grouped beat's key includes every member id in order, so
+      reordering one story invalidates the whole group's recordings.
+      *Done when: `TestAudioOnlyChangesDoNotInvalidateAudio` asserts an identical key after a bed
+      level change; `TestDirectionChangesTheKey` asserts a different one after an `energy` change;
+      and the server's independently-computed key still equals the client's
+      (`TestTheKeyTheServerComputesIsTheOneTheClientPlanned` extended to carry direction).*
+
+- [ ] **11.42 · The sheet has to say why.** `Timeline.Sheet` prints times, labels and estimates. With
+      a format in play it must also print the resolved direction per beat and, for a boosted story,
+      the EVIDENCE — `explanatory · protected (you follow Postgres, 6 mentions)` — plus each
+      object's `why`. Without it a reader cannot tell the difference between the engine understanding
+      them and the engine being wrong about them, and on this data it will sometimes be wrong about
+      them. Every other surface in this application explains its own rows; this one cannot be the
+      exception, and the reason it gives has to be checkable evidence rather than a verdict.
+      *Done when: a sheet for a format with exceptions names the matched rule and its evidence on
+      every boosted beat; `why` strings appear beside the objects that carried them; and a beat whose
+      direction differs from its block's says which scope changed it.*
+
+- [ ] **11.43 · `castfmt` — audition a format without playing it.** A CLI that takes a format file and
+      a pool and prints the sheet, the notes and the resolved egress list; optionally synthesises and
+      stitches the whole programme to one mp3 so a tuning change can be LISTENED to without a wasm
+      rebuild and a twenty-minute sitting. Add `-sweep` to render N seeded variants for comparison.
+      This is the item that makes every item above tunable rather than merely implemented: today the
+      only way to find out what a format does is to play it in a browser, which is how a twenty-minute
+      programme with 27 supporting stories and no lead survived until somebody dumped it to a
+      terminal (11.24).
+      *Done when: `articleflux castfmt -f five-minute-roundup.json` prints a sheet and its notes
+      against the live database; `-audio out.mp3` produces a playable file; `-sweep 5` prints five
+      variants' lengths and story counts side by side.*
+
+- [ ] **11.44 · The client plans from a format.** Blocked on the player rewrite. The client fetches
+      the format and the pool, calls `cast.Plan` once at the top of the show, and plays the resulting
+      Program — which is what finally deletes `showOrder`'s emptiness, the list arithmetic behind it,
+      and the class of bug where a background reload removed the story that was playing.
+      *Done when: starting the show plans a Program from the reader's format; the slideshow plays it
+      in its running order; a mid-show list reload changes nothing about what plays; and the existing
+      slideshow e2e suite passes unchanged.*
+
+
 ## Exploratory QA pass — reading pane, search, feed health (2026-07-31)
 
 *An agent drove the live dev instance (real browser, real 151-feed/5000+-article dataset, no

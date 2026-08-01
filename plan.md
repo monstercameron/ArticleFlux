@@ -7365,3 +7365,182 @@ name of the day's shape, transitions that are prose rather than silence. That is
 (§19), already its own opt-in with its own spend, and FluxCast's only Smart+ cost is the same two
 calls per segment (§29.3) layered on top of it — never billed, never made, until both `flux.enabled`
 and `tts.podcast` are on.
+
+### 29.7 The format file — the shape of a programme, as data
+
+*Written 2026-08-01. §29.1–29.6 settled what FluxCast selects and what it costs; this settles what
+an author may say about the SHAPE of a show without touching either. It is a schema and a set of
+refusals, and the refusals are the load-bearing half.*
+
+**Three documents, three jobs, and none may do another's.**
+
+| | owns | authority |
+|---|---|---|
+| the rundown (`home_ranking`, `internal/rundown`) | what is worth hearing, in what order | ranks — the only thing that may |
+| the profile (`cast.Profile`) | how it sounds — word budgets, ramps, gains, backstops | tuning |
+| **the format** (this section) | what happens, in what order, for how long, told how | shape |
+
+A format that could rank would be a third opinion with no `reasons_json` behind it, which §29.1's
+rule 3 rules out one layer down and rules out here for the same reason. A format that could set an
+absolute gain or an absolute playback rate would take a decision belonging to the tuning or to the
+listener. Everything below follows from those two sentences.
+
+**JSON, not XML, and the reason is not tooling.** The obvious argument for XML is simultaneity —
+music under speech, a bed rising through a theme's fade — and it does not apply, because none of
+that is authored. Overlap is DERIVED by the timeline compiler from the profile: `crossToBed` returns
+two cues that overlap by construction and `Profile.Validate` forces their durations equal, so an
+author writes "greeting block, then stories" and never writes "these two play at once". The one
+thing XML would genuinely win is mixed content — cues placed inside the spoken text, the way SSML
+does it — and that is a cue-sheet feature that would sit BELOW a beat, not a shape feature that sits
+above it. If it is ever built, it is XML and it is a different file.
+
+**No SQL, ever, and not as a matter of taste.** Guard 3 fails the build on SQL outside
+`internal/store`; a query in a config file would be worse than one in a handler, because it is a
+schema coupling and an injection surface in a document a model may one day write. A format names a
+POOL and the store owns the query, exactly as it names a track id and the catalogue owns the bytes.
+
+**JSON has no comments, so every object may carry `why`.** Ignored by the engine, printed in the cue
+sheet. Every number in `cast.Profile` carries its reasoning in a Go doc comment; a format file with
+nowhere to put "0.25 because at five minutes one boosted story is a fifth of the show" would lose
+that the moment it left this repository.
+
+#### 29.7.1 The cascade, and the one merge rule
+
+Direction resolves onto each beat in exactly this order, least specific first:
+
+    profile -> format -> program:begin|end -> block -> block:begin|end
+            -> block:<kind> -> block:<id> -> block:<id>:begin|end -> exceptions
+
+**Scalars override, lists append, `energy` sums and clamps.** One rule, everywhere, so a reader of a
+format never has to ask which of two mechanisms is in play. Lists appending is what makes
+`rules.never` additive-only: a format may add a constraint and may never remove one, which is what
+keeps a format file from becoming a jailbreak for the instance's own narrator.
+
+Lifecycle scopes are POSITIONAL, not structural: `program:begin` is the first beat whatever kind it
+turns out to be, so it still means something in a format with no greeting block at all. They select
+beats; they may never insert one. The moment a hook can emit a beat there are two ways to express
+the same programme and no way to say which won.
+
+Two consequences that are not corner cases. A one-beat block — `{"take": 1}`, the lead block of
+every bulletin — is both its own `:begin` and its own `:end`; both apply, `begin` first, so `end`
+wins a scalar conflict. And the last block's `:end` is also `program:end`; both apply, and block is
+the more specific.
+
+#### 29.7.2 What a format may never do
+
+Each of these is a refusal the schema enforces rather than a convention it asks for:
+
+- **Rank, reorder across blocks, or add a story the pool did not contain.** `order:
+  "theme-clustered"` reorders WITHIN a block, which is shaping.
+- **Name a narrator.** There is no `persona.name`, and its absence is deliberate: `noIdentityRule`
+  already refuses to invent a host, a station or a programme, because a manner is a way of saying
+  true things and a character is a person who does not exist.
+- **Remove a writer NEVER rule.** Lists append.
+- **Set an absolute playback rate.** `content.rate` is a relative nudge, clamped to ±15%, because
+  several people use playback speed as an accessibility control and a format taking it would be
+  taking that.
+- **Set an absolute gain.** Levels are decibel offsets from the profile's own bed, so re-tuning
+  `mix.bedLevel` moves every block together.
+- **Use a track against its catalogue role.** A piece written to open a programme and one written to
+  sit under speech are not interchangeable; getting it backwards is not a preference, it is a mix
+  nobody can listen to.
+- **Raise a story to LEAD.** An exception may raise a role by at most one band and never to LEAD,
+  because "the top-scoring story IS the lead, full stop" (TODO 11.24) is the one signal that says
+  where the top of the hour is.
+
+#### 29.7.3 The schema
+
+Durations are strings (`"5m"`, `"1.2s"`); gains are decibel strings (`"-3dB"`); every object accepts
+`why`.
+
+**Top level** — `name`, `version` (unknown versions are refused, never guessed), `target`,
+`tolerance`, `profile`, `source`, `voice`, `context`, `rules`, `on`, `exceptions`, `blocks`.
+
+**`profile`** — `preset` plus `overrides`, keyed by the same `cast:"path"` names the profile's own
+struct tags already carry. Editorial paths only: `script.vibe` and playback rate are the reader's
+and are refused with a note. A shape needs its own tuning at short lengths — at five minutes,
+default three-second seams across seven stories are 21 seconds, which is a whole story.
+
+**`source`** — `from` (`my-feed` · `all` · `feed:<id>` · `tag:<id>` · `folder:<id>` · `starred` ·
+`liked` · `rundown:current`), `window`, `limit`, `exclude{read, heard}`. Also settable per block, so
+a round-up can pull from a different pool than the lead. Resolved ONCE at plan time and frozen into
+the Program, which is the same snapshot property that stops a background list reload deleting the
+story that is playing. `exclude.heard` defaults on, because the eligibility rule is already
+`read_at IS NULL AND heard_at IS NULL`.
+
+**`voice`** — `manner` (the four vibes), `energy` (−2…+2, a modifier that composes with any manner),
+`colour`, `address`, `locale`, `lexicon` (pronunciation, not vocabulary). `manner` is a DEFAULT the
+reader's own `tts.podcastVibe` overrides; everything else is editorial and applies on top.
+
+**`context`** — `audience`, `standing[]`, `avoid[]` authored; `from[]` computed
+(`interest:top(N)` · `heard:Nd` · `steer:more|less`). Distinct from DERIVED context — part of day,
+date, story count, position, predecessor — which the engine supplies per beat and no format may set.
+
+**`rules`** — `never[]`, `always[]`. Additive only.
+
+**`on`** — lifecycle hooks keyed by scope, each taking `voice`, `context`, `rules`, `direction`,
+`mix`.
+
+**`exceptions`** — `cap` plus `rules[]`. Each rule has `when` (`themes` · `topics` · `steer` ·
+`interest` · `sources` · `feeds` · `minMentions`), a payload, and three exception-only fields:
+`protect` (exempt from the category cap and from budget-driven demotion — the ranker already put the
+story in, and it is the FORMAT's own trimming that would drop it to a namecheck), `raiseRole` (≤1,
+never LEAD), `stop`. All matching exceptions apply in file order.
+
+`cap` bounds the share of the word budget boosted stories may take, and it is not a nicety:
+unguarded, this feature is a bubble machine — five loved topics at `generous` and `explanatory` turn
+a twelve-minute bulletin into all favourites and no news, and it narrows every week as the interest
+layer feeds on what was played. When the cap binds, the lowest-scoring boosted stories lose their
+BOOST first and revert to ordinary treatment; they are never dropped, because losing a story to a
+favourites cap would be the feature deleting news to make room for itself.
+
+**`blocks[]`** — `name`, `kind` (`GREETING` · `STORIES` · `TEASE` · `RECAP` · `BREAK` · `SIGN_OFF`),
+`take`, `filter`, `target`/`min`/`max`, `at`/`pad`, `lineup`, `look`, `source`, `voice`, `context`,
+`rules`, `direction`, `content`, `audio`.
+
+**`block.content`** — `mode` (`solo` · `grouped`), `groupBy` (`cluster` · `theme` · `adjacent`),
+`groupSize` (2–4, the writer's own ceiling), `length` (`tight` · `normal` · `generous` or a
+multiplier, applied to the beat's BASE budget so the fitter's bounds move with it rather than
+fighting them), `depth` (`headline` · `brief` · `standard` · `explanatory` · `analytical` — what the
+writer is told to INCLUDE, which is not the same axis as length: a forty-word beat can be deep or
+shallow), `rate`, `transitions` (a policy naming a subset of the writer's shape pool; the shapes
+stay in `internal/smart`), `order`.
+
+Grouped mode is a WRITE group, not a compound beat: `smart.WriteSegment` already writes 2–4 stories
+in one call and returns them split per story under a JSON schema, so playback stays one story per
+beat and §29.2's audio-unit constraint is untouched. Inside a group the model wrote the transitions;
+`transitions` therefore governs only the gaps the ENGINE owns, and grouping reduces those to one per
+group.
+
+**`block.audio`** — `bed{mode, tracks, order, runtime, level, duck{depth, attack, release}, fade}`
+and `cues[]{at, track, gain, duck, trim, wait, every}`. Bed modes: `inherit` (the default, and it
+should almost always stay it — restarting a track at every block boundary is the most audible
+mistake this feature can make), `off`, `duck`, `flat`, `fill` (silent under speech, up between
+beats — genuinely distinct from `duck`, which never reaches zero), `feature`. A block that switches
+beds crossfades over `mix.bedFade` as ONE gesture, the same rule the theme→bed handover lives under.
+
+`cues[].wait` is the field that costs time: a waiting cue occupies the gap and lengthens the show if
+it is longer than the seam, so it is counted in `choreoOverhead` beside seams and pads. Six segment
+stingers nobody counted are eighteen seconds a fitted bulletin does not have.
+
+#### 29.7.4 Egress, and the list a reader can see
+
+`context.standing`, `context.avoid`, `direction` and everything `context.from` resolves to are sent
+to the provider with every beat. That puts them under §18.8's boundary alongside article text, and
+under this application's own blunter standard: *a feature that sends your articles somewhere and
+cannot produce that list is a feature that has not finished.* Each `from` binding therefore emits a
+FIXED, declared payload — `heard:7d` emits headlines and dates, never bodies — and the resolved list
+is printable per show.
+
+#### 29.7.5 What is cached, and what is not
+
+The effective direction after the whole cascade is what changes the words, so it is what
+`cast.ScriptKey` hashes: `voice`, `context`, `rules`, `direction`, `content`. A hook or a block that
+changes only `audio` must not touch the key, or every mix tweak silently re-buys the whole
+programme.
+
+Two prices this makes visible rather than hides. `block:begin` direction means **the first story of
+a block is a different recording from the second** — correct, because it is different prose, and it
+multiplies the cache. And a grouped beat's key includes every member id in order, because the prose
+was written for that neighbourhood: reordering one story invalidates the whole group's recordings,
+where solo mode would invalidate one.
