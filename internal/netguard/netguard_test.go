@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -182,7 +183,7 @@ func TestClientIgnoresEnvironmentProxy(t *testing.T) {
 
 func TestGetValidatesBeforeDialing(t *testing.T) {
 	c := Client(Options{Timeout: 2 * time.Second})
-	_, err := Get(context.Background(), c, "http://169.254.169.254/latest/meta-data/")
+	_, err := Get(context.Background(), c, "http://169.254.169.254/latest/meta-data/", false)
 	if !errors.Is(err, ErrBlockedIP) {
 		t.Errorf("Get = %v, want ErrBlockedIP", err)
 	}
@@ -331,5 +332,201 @@ func TestUnwrappingDoesNotSwallowRealAddresses(t *testing.T) {
 	}
 	if !IsBlockedIP(net.ParseIP("::")) || !IsNeverAllowed(net.ParseIP("::")) {
 		t.Error(":: is the unspecified address and must be blocked under every policy")
+	}
+}
+
+// A nil address is one that could not be understood, and IsNeverAllowed makes the
+// same fail-closed call IsBlockedIP does — a caller cannot tell "unparseable" from
+// "reachable" by getting false back.
+func TestIsNeverAllowedRejectsNil(t *testing.T) {
+	if !IsNeverAllowed(nil) {
+		t.Error("a nil address must be treated as blocked under the permissive policy too")
+	}
+}
+
+// unwrapV4's length guard only matters for a net.IP that is neither 4 nor 16 bytes —
+// To4 already handles every ordinary form net.ParseIP produces, so this is a
+// defensive branch reachable only with a hand-built, malformed-length IP.
+func TestUnwrapV4LeavesNonStandardLengthsAlone(t *testing.T) {
+	odd := net.IP([]byte{1, 2, 3, 4, 5})
+	if got := unwrapV4(odd); len(got) != len(odd) {
+		t.Errorf("unwrapV4 mangled a non-standard-length address: %v", got)
+	}
+}
+
+// Dialer's Control is exercised directly rather than only through a live dial —
+// that is the only way to reach its own error branches (a non-TCP network, an
+// address with no parseable port) without depending on OS-level dial failures.
+func TestDialerControlBranches(t *testing.T) {
+	d := Dialer(time.Second)
+
+	t.Run("non-tcp network is refused outright", func(t *testing.T) {
+		if err := d.Control("udp", "8.8.8.8:53", nil); !errors.Is(err, ErrBlockedIP) {
+			t.Errorf("udp = %v, want ErrBlockedIP", err)
+		}
+	})
+	t.Run("an address with no splittable port errors", func(t *testing.T) {
+		if err := d.Control("tcp", "not-a-host-port", nil); err == nil {
+			t.Error("expected a SplitHostPort error")
+		}
+	})
+	t.Run("a blocked resolved address is refused", func(t *testing.T) {
+		if err := d.Control("tcp", "127.0.0.1:80", nil); !errors.Is(err, ErrBlockedIP) {
+			t.Errorf("= %v, want ErrBlockedIP", err)
+		}
+	})
+	t.Run("a public resolved address is allowed", func(t *testing.T) {
+		if err := d.Control("tcp4", "8.8.8.8:443", nil); err != nil {
+			t.Errorf("= %v, want nil", err)
+		}
+	})
+}
+
+// PermissiveDialer's Control has the same three branches as Dialer's, but against
+// the narrower neverAllowed list — untested directly before this, since every
+// existing test reached it (if at all) only through IsNeverAllowed.
+func TestPermissiveDialerControlBranches(t *testing.T) {
+	d := PermissiveDialer(time.Second)
+
+	t.Run("non-tcp network is refused outright", func(t *testing.T) {
+		if err := d.Control("udp", "8.8.8.8:53", nil); !errors.Is(err, ErrBlockedIP) {
+			t.Errorf("udp = %v, want ErrBlockedIP", err)
+		}
+	})
+	t.Run("an address with no splittable port errors", func(t *testing.T) {
+		if err := d.Control("tcp", "not-a-host-port", nil); err == nil {
+			t.Error("expected a SplitHostPort error")
+		}
+	})
+	t.Run("loopback is allowed under the permissive policy", func(t *testing.T) {
+		if err := d.Control("tcp", "127.0.0.1:80", nil); err != nil {
+			t.Errorf("= %v, want nil — loopback is exactly what -allow-private unlocks", err)
+		}
+	})
+	t.Run("the metadata endpoint is still refused", func(t *testing.T) {
+		if err := d.Control("tcp", "169.254.169.254:80", nil); !errors.Is(err, ErrBlockedIP) {
+			t.Errorf("= %v, want ErrBlockedIP even under the permissive policy", err)
+		}
+	})
+}
+
+// Client(Options{AllowPrivate: true}) must actually swap in PermissiveDialer, not
+// merely accept the option — the only way to see that is a live request that
+// succeeds against loopback where the strict client (TestDialerRejectsResolvedLoopback)
+// fails, plus the redirect hook taking the permissive branch too.
+func TestClientAllowPrivateReachesLoopbackAndRedirects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := Client(Options{Timeout: 5 * time.Second, AllowPrivate: true})
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("a permissive client could not reach loopback: %v", err)
+	}
+	resp.Body.Close()
+
+	req, _ := http.NewRequest("GET", "http://example.invalid/", nil)
+	via := []*http.Request{req}
+
+	loopbackNext, _ := http.NewRequest("GET", srv.URL, nil)
+	if err := c.CheckRedirect(loopbackNext, via); err != nil {
+		t.Errorf("permissive redirect to loopback = %v, want nil", err)
+	}
+	metadataNext, _ := http.NewRequest("GET", "http://169.254.169.254/latest/meta-data/", nil)
+	if err := c.CheckRedirect(metadataNext, via); !errors.Is(err, ErrBlockedIP) {
+		t.Errorf("permissive redirect to the metadata endpoint = %v, want ErrBlockedIP", err)
+	}
+}
+
+// The Observer hook fires on every request, per hop, whether or not one ever
+// produced a response — a request refused at Control never reaches a status code,
+// and the zero-status case is what lets a dashboard tell "blocked" apart from
+// "the metric was never recorded".
+func TestObserverReceivesEveryRequest(t *testing.T) {
+	type call struct {
+		purpose string
+		status  int
+		err     error
+	}
+	var calls []call
+	orig := Observer
+	Observer = func(purpose string, _ time.Duration, status int, err error) {
+		calls = append(calls, call{purpose, status, err})
+	}
+	t.Cleanup(func() { Observer = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	permissive := Client(Options{Timeout: 5 * time.Second, AllowPrivate: true, Purpose: "ok"})
+	resp, err := permissive.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	strict := Client(Options{Timeout: 2 * time.Second, Purpose: "blocked"})
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	_, _ = strict.Do(req) // expected to be refused by Control before any response
+
+	if len(calls) != 2 {
+		t.Fatalf("got %d observer calls, want 2: %+v", len(calls), calls)
+	}
+	if calls[0].purpose != "ok" || calls[0].status != 200 || calls[0].err != nil {
+		t.Errorf("successful call = %+v, want purpose=ok status=200 err=nil", calls[0])
+	}
+	if calls[1].purpose != "blocked" || calls[1].status != 0 || calls[1].err == nil {
+		t.Errorf("refused call = %+v, want purpose=blocked status=0 with a non-nil error", calls[1])
+	}
+}
+
+// CheckURL only inspects a LITERAL IP host (its own doc comment: "A hostname is
+// NOT resolved here"), so a hostname like "localhost" sails past Get's own
+// pre-check and reaches the client — which is exactly where Control catches the
+// resolved loopback address. This is the two-layer design working as documented,
+// and it is what lets Get's request-construction and c.Do lines run at all.
+func TestGetPassesNonLiteralHostsToTheClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := Client(Options{Timeout: 2 * time.Second})
+	_, err = Get(context.Background(), c, "http://localhost:"+u.Port()+"/", false)
+	if err == nil {
+		t.Fatal("expected the dialer to refuse the resolved loopback address")
+	}
+	if !strings.Contains(err.Error(), "not publicly routable") {
+		t.Errorf("err = %v, want a dial-layer refusal, not a CheckURL rejection", err)
+	}
+}
+
+// BUG (netguard.go:408): Get always validates against the STRICT policy via
+// CheckURL, regardless of the policy the caller's *http.Client was actually built
+// with. A caller who built an AllowPrivate client — exactly what Client(Options{
+// AllowPrivate: true}) is for — still has Get refuse a private address before the
+// request ever reaches that client's permissive dialer. This is fail-closed (not an
+// SSRF hole) but it is a real inconsistency: every other entry point in this
+// package (the redirect hook in Client, CheckParsedURL vs CheckParsedURLPermissive)
+// threads AllowPrivate through consistently; Get does not. Left FAILING per this
+// task's instructions rather than silently patched.
+func TestGetShouldRespectThePermissiveClientsPolicy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := Client(Options{Timeout: 5 * time.Second, AllowPrivate: true})
+	_, err := Get(context.Background(), c, srv.URL, true) // srv.URL is a literal 127.0.0.1 address
+	if err != nil {
+		t.Errorf("Get refused a loopback URL despite an AllowPrivate client: %v", err)
 	}
 }

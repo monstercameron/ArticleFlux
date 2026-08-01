@@ -48,6 +48,12 @@ const (
 	FieldWordCount Field = "word_count"
 	FieldAge       Field = "age"
 	FieldLang      Field = "lang"
+	// FieldCategory and FieldGenre read the M29 classification pipeline's
+	// verdict (plan §27.8, TODO 10.29) — the reason 10.19 had to be fixed
+	// first: fan-out is what resolves these onto an Item, and a field an
+	// engine never populates is a rule that silently never matches.
+	FieldCategory Field = "category"
+	FieldGenre    Field = "genre"
 )
 
 // Op is a comparison.
@@ -131,6 +137,12 @@ type Item struct {
 	WordCount   int
 	PublishedAt time.Time
 	Lang        string
+	// Category and Genre are the classifier's resolved verdict (§27.8), empty
+	// when the item is Unsorted or was never analysed — which a plain string
+	// comparison already treats as "matches nothing", exactly as Lang does
+	// before an item's language is detected.
+	Category string
+	Genre    string
 }
 
 // Hit records that one rule matched, for rule_hits and the §13.4 preview.
@@ -331,6 +343,10 @@ func (c Condition) subject(item Item) string {
 		return item.FolderName
 	case FieldLang:
 		return item.Lang
+	case FieldCategory:
+		return item.Category
+	case FieldGenre:
+		return item.Genre
 	}
 	return ""
 }
@@ -501,7 +517,8 @@ func Validate(r Rule) error {
 func knownField(f Field) bool {
 	switch f {
 	case FieldTitle, FieldAuthor, FieldContent, FieldURL, FieldSource,
-		FieldFolder, FieldTag, FieldWordCount, FieldAge, FieldLang:
+		FieldFolder, FieldTag, FieldWordCount, FieldAge, FieldLang,
+		FieldCategory, FieldGenre:
 		return true
 	}
 	return false

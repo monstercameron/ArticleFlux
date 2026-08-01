@@ -404,8 +404,18 @@ func (t *uaTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // Get is the convenience path: validate, then fetch with a guarded client.
-func Get(ctx context.Context, c *http.Client, rawURL string) (*http.Response, error) {
-	if err := CheckURL(rawURL); err != nil {
+//
+// allowPrivate must match the policy c was built with (Client(Options{AllowPrivate: ...})).
+// A *http.Client carries no field this function can read the policy back out of — its
+// AllowPrivate is baked into closures over Dialer/CheckRedirect — so the caller states it
+// again here rather than this function silently assuming the strict policy and refusing a
+// private address the client itself was configured to reach.
+func Get(ctx context.Context, c *http.Client, rawURL string, allowPrivate bool) (*http.Response, error) {
+	check := CheckURL
+	if allowPrivate {
+		check = CheckURLPermissive
+	}
+	if err := check(rawURL); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)

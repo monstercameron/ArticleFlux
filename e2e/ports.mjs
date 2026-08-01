@@ -1,6 +1,6 @@
 import { closeSync, mkdirSync, openSync, rmSync, statSync, writeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // The ports this run owns.
 //
@@ -43,7 +43,19 @@ import { fileURLToPath } from 'node:url';
 // server would be on one port and the tests on another, and every test would
 // fail. That was the second version's bug — 19 of 21 failed, which looks like a
 // broken application and is a broken harness.
-const LOCK_DIR = join(dirname(fileURLToPath(import.meta.url)), '.tmp', 'ports');
+//
+// # The lock directory has to be checkout-independent, not just process-wide
+//
+// This used to live at `<repo>/e2e/.tmp/ports`, derived from this file's own
+// path. That coordinates workers within one run, but the claim in the header
+// above — "no concurrent run can have it" — was false across two checkouts, or
+// even one checkout reached by two different paths (a symlink, a mapped drive,
+// a worktree): each resolves to a *different* `LOCK_DIR`, so two runs can both
+// win an exclusive create and both believe they own the same 9400-range port.
+// The port numbers are a machine-wide resource; the lock coordinating them has
+// to be too, so it now lives under the OS temp directory rather than under this
+// file, keyed by name rather than by path.
+const LOCK_DIR = join(tmpdir(), 'articleflux-e2e-ports');
 
 // 9400, not 9100, and the reason is migration rather than taste.
 //

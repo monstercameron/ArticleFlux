@@ -7,11 +7,21 @@
 // and one place to put a budget meter and a breaker. Two would mean two of each,
 // and the second of each is the one nobody remembers to check.
 //
-// **The breaker and the in-flight bound are NOT built yet** (TODO 6.11). What is
-// here is a shared request timeout and a running token count. That gap is worth
-// stating rather than implying: a UI translation is ~10 batched calls, so a
-// provider outage during one costs ten failures and ten full timeouts instead of
-// one — which is exactly the case a breaker exists for.
+// **One deliberate exception: `GET /v1/models` (see Models).** It is a second
+// endpoint, and it is not an argument against there being one for everything
+// that egresses — it carries no reader content at all. The request is a bare
+// GET with the instance's own key and nothing else; there is no article text,
+// no prompt, no derived profile, nothing for egress.go's allowlist to audit,
+// because there is nothing being sent. It exists to answer one question —
+// which model ids can this key use — for the model picker on the Smart tab.
+//
+// **The breaker and the in-flight bound are built (see Guard, breaker.go) and
+// have no caller outside their own tests** (TODO 11.15). What every feature
+// gets today is a shared request timeout and a running token count; Guard sits
+// beside Client rather than inside it, unused, for the same reason a UI
+// translation is worth naming: it is ~10 batched calls, so a provider outage
+// during one costs ten failures and ten full timeouts instead of one — which
+// is exactly the case Guard exists for and is not yet wrapped around.
 //
 // Responses rather than chat completions specifically because:
 //
@@ -44,6 +54,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -351,4 +362,104 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 		return "", errors.New("llm: provider returned no text")
 	}
 	return b.String(), nil
+}
+
+// ModelsEndpoint is the provider's model-listing address — see the package
+// doc for why this is a second endpoint despite the "one endpoint" rule.
+const ModelsEndpoint = "https://api.openai.com/v1/models"
+
+// modelsReply is the wire shape of GET /v1/models: a bare array of ids and
+// nothing this package has any use for beyond them.
+type modelsReply struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// excludedModelPrefixes are real OpenAI models this picker has no business
+// offering. Every call this package makes is a Responses-API text/reasoning
+// call (Do), so a picker that also listed embedding, audio, moderation and
+// image models would be a dropdown where most entries fail the moment they
+// are chosen — a worse experience than the free-text field it replaces.
+var excludedModelPrefixes = []string{
+	"text-embedding", "whisper", "tts-", "dall-e", "gpt-image",
+	"omni-moderation", "text-moderation", "davinci", "babbage",
+}
+
+func excludedModel(id string) bool {
+	for _, p := range excludedModelPrefixes {
+		if strings.HasPrefix(id, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// Models asks the provider which model ids this key can use.
+//
+// A bare GET, unauthenticated by anything but the key itself and carrying no
+// body — see the package doc for why this is allowed to be a second
+// endpoint. Errors are the same shape Do's are: the provider's own message,
+// trimmed, because it can be informative ("insufficient_quota") without
+// needing to be treated as reader content.
+func (c *Client) Models(ctx context.Context) ([]string, error) {
+	key := strings.TrimSpace(c.keyOf(ctx))
+	if key == "" {
+		return nil, ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ModelsEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Checked against the request about to go out, exactly as Do does — a
+	// check that cannot see the value being used is a comment.
+	if req.URL.Hostname() != allowedHost {
+		return nil, fmt.Errorf("llm: refusing to call %q", req.URL.Hostname())
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	res, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	// 2 MB ceiling. The provider's full catalog is a few hundred entries of
+	// short strings; anything approaching this is not a models list.
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		var e modelsReply
+		_ = json.Unmarshal(raw, &e)
+		msg := strings.TrimSpace(string(raw))
+		if e.Error != nil && e.Error.Message != "" {
+			msg = e.Error.Message
+		}
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return nil, fmt.Errorf("llm: provider returned %d: %s", res.StatusCode, msg)
+	}
+
+	var reply modelsReply
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return nil, fmt.Errorf("llm: cannot read provider response: %w", err)
+	}
+
+	out := make([]string, 0, len(reply.Data))
+	for _, m := range reply.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || excludedModel(id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
 }

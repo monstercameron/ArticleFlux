@@ -92,6 +92,14 @@ type Produced struct {
 	// rundown_test.go and the visual rundown (11.17) both build against, and
 	// a title is display, not structure.
 	Titles map[string]string
+	// Reasons maps an item id to the same reasons_json home_ranking already
+	// carries for it (TODO 11.21: "Story cannot say why it is there"). Rides
+	// beside the pure Rundown for the same reason Titles does — a story's
+	// reasons are read.RankReason, a store type internal/rundown cannot
+	// import without breaking the purity 11.2 requires — so the visual
+	// rundown (11.17) answers "why is this here" by joining THIS map onto a
+	// Story.ItemID rather than internal/rundown growing a field for it.
+	Reasons map[string][]store.RankReason
 }
 
 // Repo composes rundown.Build with the store. It is the only place FluxCast's
@@ -217,6 +225,16 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 		return Produced{}, fmt.Errorf("fluxcast: CategoriesFor: %w", err)
 	}
 
+	// Eligibility for a rundown is read_at IS NULL AND heard_at IS NULL
+	// (TODO 11.10): a story already played in an earlier show is ground the
+	// programme has covered, whether or not the reader chose to have hearing
+	// it count as reading it. home_ranking already excludes read_at; this is
+	// the other half.
+	heard, err := p.Reader.HeardItemIDs(ctx, s, rankedIDs)
+	if err != nil {
+		return Produced{}, fmt.Errorf("fluxcast: HeardItemIDs: %w", err)
+	}
+
 	// clusterInfo collects, per cluster id, every member's item id and the
 	// head's own recorded OtherSources count (TODO 11.1's corroboration
 	// count) — read once here rather than per-candidate, since HomeClusters
@@ -240,7 +258,11 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 
 	cands := make([]rundown.Candidate, 0, len(ranked))
 	titles := make(map[string]string, len(ranked))
+	reasons := make(map[string][]store.RankReason, len(ranked))
 	for _, r := range ranked {
+		if heard[r.ItemID] {
+			continue
+		}
 		it, ok := itemByID[r.ItemID]
 		if !ok {
 			// Ranked minutes ago; read, deleted or otherwise gone since. The
@@ -307,6 +329,7 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 			OtherSources:  otherSources,
 		})
 		titles[r.ItemID] = it.Title
+		reasons[r.ItemID] = r.Reasons
 	}
 
 	built := rundown.Build(cands, rundown.Options{
@@ -352,5 +375,5 @@ func (p *Repo) Produce(ctx context.Context, s store.Scope, opts Options) (Produc
 		return Produced{}, fmt.Errorf("fluxcast: CreateRundown: %w", err)
 	}
 
-	return Produced{ID: id, Rundown: built, Stories: stories, Titles: titles}, nil
+	return Produced{ID: id, Rundown: built, Stories: stories, Titles: titles, Reasons: reasons}, nil
 }

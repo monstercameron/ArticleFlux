@@ -575,3 +575,232 @@ func TestUntaggingSurvivesARepeatFanout(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// Enqueue's own no-op: the ingest side already skips calling this for an
+// empty batch, but the guard exists at this layer too and must not put a
+// zero-item job on the queue if some future caller forgets that.
+func TestEnqueueOnEmptyItemIDsIsANoOp(t *testing.T) {
+	f := setup(t)
+	if err := f.svc.Enqueue(f.ctx, f.source, nil); err != nil {
+		t.Fatalf("Enqueue with no items returned an error: %v", err)
+	}
+	if _, err := f.repo.Claim(f.ctx, store.ClaimOptions{Worker: "w1", Kinds: []store.JobKind{store.JobFanout}}); err != store.ErrNoJob {
+		t.Errorf("Claim = %v, want ErrNoJob — an empty-item Enqueue queued a job anyway", err)
+	}
+}
+
+// The happy path: Enqueue's payload and priority are what Handle and the
+// scheduler actually depend on, not just "some job got created".
+func TestEnqueueQueuesAClaimableFanoutJob(t *testing.T) {
+	f := setup(t)
+	if err := f.svc.Enqueue(f.ctx, f.source, f.itemIDs); err != nil {
+		t.Fatal(err)
+	}
+	job, err := f.repo.Claim(f.ctx, store.ClaimOptions{Worker: "w1", Kinds: []store.JobKind{store.JobFanout}})
+	if err != nil {
+		t.Fatalf("queued job was not claimable: %v", err)
+	}
+	if job.Priority != 10 {
+		t.Errorf("priority = %d, want 10 — fan-out must outrank enrichment jobs (§13.2's comment on New)", job.Priority)
+	}
+	var p Payload
+	if err := json.Unmarshal([]byte(job.Payload), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.SourceID != f.source || len(p.ItemIDs) != len(f.itemIDs) {
+		t.Errorf("payload = %+v, want source %q and %d items", p, f.source, len(f.itemIDs))
+	}
+}
+
+// Handle's own empty-payload guard, distinct from Enqueue's: a payload that
+// deserializes fine but carries nothing actionable must not reach
+// SubscribersOf at all.
+func TestHandleNoopOnEmptyPayloadFields(t *testing.T) {
+	f := setup(t)
+	for _, p := range []Payload{
+		{SourceID: "", ItemIDs: f.itemIDs},
+		{SourceID: f.source, ItemIDs: nil},
+	} {
+		payload, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.svc.Handle(f.ctx, store.Job{Kind: store.JobFanout, Payload: string(payload)}); err != nil {
+			t.Errorf("Handle(%+v) = %v, want nil", p, err)
+		}
+	}
+}
+
+// Item IDs that name nothing (the item was deleted, or the id is stale) must
+// not error — ItemsByID legitimately returns an empty slice and the job is
+// just done, same as "no subscribers".
+func TestHandleNoopWhenNoItemsMatch(t *testing.T) {
+	f := setup(t)
+	payload, err := json.Marshal(Payload{SourceID: f.source, ItemIDs: []string{"nonexistent-item-id"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Handle(f.ctx, store.Job{Kind: store.JobFanout, Payload: string(payload)}); err != nil {
+		t.Errorf("Handle with unknown item ids = %v, want nil", err)
+	}
+}
+
+// SubscribersOf's error is wrapped and returned rather than swallowed —
+// unlike a per-subscriber failure (TestOneFailingSubscriberDoesNotBlockOthers,
+// below), a broken query has no per-subscriber fallback to fall back to.
+func TestHandleWrapsASubscribersOfError(t *testing.T) {
+	f := setup(t)
+	payload, err := json.Marshal(Payload{SourceID: f.source, ItemIDs: f.itemIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = f.svc.Handle(f.ctx, store.Job{Kind: store.JobFanout, Payload: string(payload)})
+	if err == nil {
+		t.Fatal("Handle succeeded against a closed database")
+	}
+}
+
+// forSubscriber's own error path: RulesFor rejects an invalid scope. Reached
+// directly rather than through Handle because SubscribersOf only ever
+// produces subscribers with a valid scope — this exercises the branch
+// forSubscriber has anyway, in case a future caller feeds it something else.
+func TestForSubscriberPropagatesRulesForError(t *testing.T) {
+	f := setup(t)
+	items, _, err := f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil || len(items) == 0 {
+		t.Fatal(err)
+	}
+	bad := store.Subscriber{TenantID: "", UserID: "", SourceID: f.source}
+	if err := f.svc.forSubscriber(f.ctx, bad, items, time.Now().UTC()); err == nil {
+		t.Error("forSubscriber with an invalid scope returned nil, want ErrNoScope")
+	}
+}
+
+// §13.2's own promise, exercised at the Handle level rather than at
+// forSubscriber's: one subscriber's rules being unreadable must not stop
+// fan-out from reaching a sibling subscriber on the SAME source, and Handle
+// must still report that first failure rather than swallowing it entirely.
+func TestOneFailingSubscriberDoesNotBlockOthers(t *testing.T) {
+	f := setup(t)
+	// Corrupt bob's subscription row directly: SubscribersOf will still
+	// return him (the query has no scope validity check), but his zeroed
+	// tenant_id fails Scope.Valid() once forSubscriber asks RulesFor for it.
+	// A real "" tenant row is inserted first so the FK on subscriptions.tenant_id
+	// still holds — this is corrupting the row's CONTENT, not its referential
+	// integrity.
+	if _, err := f.db.Write.ExecContext(f.ctx,
+		`INSERT INTO tenants (id, name, created_at) VALUES ('', 'corrupt', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Write.ExecContext(f.ctx,
+		`UPDATE subscriptions SET tenant_id = '' WHERE user_id = 'bob'`); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := json.Marshal(Payload{SourceID: f.source, ItemIDs: f.itemIDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleErr := f.svc.Handle(f.ctx, store.Job{Kind: store.JobFanout, Payload: string(payload)})
+	if handleErr == nil {
+		t.Error("Handle with one corrupt subscriber returned nil, want bob's RulesFor error")
+	}
+
+	// Alice, the sibling subscriber, still got her delivery despite bob's
+	// scope being unusable.
+	items, _, err := f.repo.ListItems(f.ctx, f.alice, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Errorf("alice sees %d items, want 2 — one subscriber's failure blocked another", len(items))
+	}
+}
+
+// The ticket's own example (TODO 10.29, plan §27.8): a rule on `category` and
+// `genre` fires from fan-out, which is only possible because 10.19 wired
+// JobFanout up in the first place — before that fix this test could not have
+// run against the real job at all.
+func TestCategoryAndGenreDriveARule(t *testing.T) {
+	f := setup(t)
+	if err := f.repo.UpsertAnalysis(f.ctx, []store.ItemAnalysis{{
+		ItemID:          f.itemIDs[0],
+		AnalyzerVersion: 1,
+		LexiconHash:     "h",
+		Genre:           "release",
+		CategoryScores:  map[string]float64{"security": 5.0},
+		AnalyzedAt:      time.Now().UTC(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.repo.CreateRule(f.ctx, f.alice, rules.Rule{
+		Name: "patch notes", Enabled: true,
+		Match: rules.Match{Conditions: []rules.Condition{
+			{Field: rules.FieldCategory, Op: rules.OpEquals, Value: "security"},
+			{Field: rules.FieldGenre, Op: rules.OpEquals, Value: "release"},
+		}},
+		Actions: []rules.Action{{Kind: rules.ActionTag, Value: "patch"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+
+	byItem, err := f.repo.ItemTags(f.ctx, f.alice, f.itemIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tagged int
+	for _, tags := range byItem {
+		for _, tag := range tags {
+			if tag.Name == "patch" {
+				tagged++
+			}
+		}
+	}
+	if tagged != 1 {
+		t.Errorf("%d items carry the category-driven tag, want 1", tagged)
+	}
+}
+
+// toRuleItem's own fallback: a summary-only item (content_html not yet
+// extracted, or the source never sends one) must still be matchable on
+// content, not silently exempt from every content rule.
+func TestToRuleItemFallsBackToSummaryWhenContentIsEmpty(t *testing.T) {
+	pub := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	it := store.Item{
+		Title: "t", ContentHTML: "", Summary: "just a summary",
+		PublishedAt: pub.Format(time.RFC3339Nano),
+	}
+	ri := toRuleItem(it, store.Subscriber{}, store.ItemCategory{})
+	if ri.Content != "just a summary" {
+		t.Errorf("Content = %q, want the summary fallback", ri.Content)
+	}
+	if !ri.PublishedAt.Equal(pub) {
+		t.Errorf("PublishedAt = %v, want %v", ri.PublishedAt, pub)
+	}
+}
+
+// The opposite branch: ContentHTML present must win over Summary, and is
+// sanitized to text (TestContentIsMatchedAsTextNotMarkup covers the
+// sanitizing itself; this just confirms the source picked).
+func TestToRuleItemPrefersContentHTMLOverSummary(t *testing.T) {
+	it := store.Item{ContentHTML: "<p>full body</p>", Summary: "short summary"}
+	ri := toRuleItem(it, store.Subscriber{}, store.ItemCategory{})
+	if ri.Content != "full body" {
+		t.Errorf("Content = %q, want the sanitized ContentHTML, not the summary", ri.Content)
+	}
+}
+
+// An unparseable published_at (empty, or a format that predates this field
+// being backfilled) must not panic toRuleItem — it degrades to the zero
+// time, which rules.Item's date conditions already treat as "no match"
+// rather than crashing fan-out for every item behind the bad one.
+func TestToRuleItemZeroTimeOnUnparseablePublishedAt(t *testing.T) {
+	ri := toRuleItem(store.Item{PublishedAt: "not-a-timestamp"}, store.Subscriber{}, store.ItemCategory{})
+	if !ri.PublishedAt.IsZero() {
+		t.Errorf("PublishedAt = %v, want zero time for an unparseable input", ri.PublishedAt)
+	}
+}

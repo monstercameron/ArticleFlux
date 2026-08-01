@@ -201,6 +201,22 @@ func TestExportOPMLRoundTrips(t *testing.T) {
 	}
 }
 
+// SkipCount is derived from len(Skips) so the two can never disagree — but it
+// has to keep counting past MaxImportSkips, where the list itself stops
+// growing (addSkip's own contract).
+func TestSkipCountKeepsCountingPastTheCap(t *testing.T) {
+	res := ImportResult{}
+	for i := 0; i < MaxImportSkips+5; i++ {
+		res.addSkip(ImportSkip{Title: "x"})
+	}
+	if len(res.Skips) != MaxImportSkips {
+		t.Fatalf("Skips len = %d, want capped at %d", len(res.Skips), MaxImportSkips)
+	}
+	if res.SkipCount() != MaxImportSkips+5 {
+		t.Errorf("SkipCount() = %d, want %d (the true count past the cap)", res.SkipCount(), MaxImportSkips+5)
+	}
+}
+
 // The corpus file internal/opml keeps, run through the whole service rather
 // than through the parser alone. It is a real FreshRSS export, which is the
 // only fixture that catches what real exporters do rather than what the

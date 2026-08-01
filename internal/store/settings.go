@@ -33,11 +33,23 @@ type SystemKey string
 const (
 	// KeyOpenAIAPIKey holds the Smart+ credential, encrypted at rest.
 	KeyOpenAIAPIKey SystemKey = "smart.openai_api_key"
-	// KeySmartModel is the model every Smart+ feature uses. One setting, not
-	// one per feature: a reader who wants to spend more should not have to find
-	// four dropdowns, and features that disagree about the model are features
-	// whose costs cannot be compared.
+	// KeySmartModel is the compatibility default: the model a call uses when
+	// it does not ask for a tier, and the fallback for a tier that has no
+	// model of its own set (TODO 11.13). It used to be documented as "the
+	// model every Smart+ feature uses. One setting, not one per feature" —
+	// true when every Smart+ call made one comparable request, which stopped
+	// being true the moment FluxCast made two calls with different economics
+	// in the same second (a cheap, frequent planner pass; an expensive,
+	// per-story writer). An instance that sets only this key still behaves
+	// exactly as before: every tier falls back to it.
 	KeySmartModel SystemKey = "smart.model"
+	// KeySmartModelSmall / KeySmartModelMid / KeySmartModelLarge hold the
+	// model id for one price/capability tier apiece (ModelTierSmall /
+	// ModelTierMid / ModelTierLarge). Unset means "use KeySmartModel" — see
+	// SettingsRepo.ModelForTier, the one place that fallback is implemented.
+	KeySmartModelSmall SystemKey = "smart.model.small"
+	KeySmartModelMid   SystemKey = "smart.model.mid"
+	KeySmartModelLarge SystemKey = "smart.model.large"
 	// KeyRetentionItemDays is how many days of articles this instance keeps.
 	// "0" — and an absent row — mean forever, which is the stated default
 	// (TODO F36). A SystemKey rather than a per-user preference because items
@@ -107,6 +119,53 @@ func (r *SettingsRepo) SystemValue(ctx context.Context, key SystemKey) (string, 
 		return raw, nil
 	}
 	return s, nil
+}
+
+// ModelTier is which of the three price/capability tiers a Smart+ call is
+// costed against (TODO 11.13, plan §29). A tier names RELATIVE cost, not a
+// specific model — the caller says "this is cheap and frequent" or "this is
+// the one place deliberation is the product being bought", and the
+// instance's settings say what that currently resolves to. No tier's model
+// id is written into this repository until G6 answers what Sol/Terra/Luna
+// actually are; this type and ModelForTier are the indirection that lets
+// that answer be a settings change instead of a call-site rewrite.
+type ModelTier string
+
+const (
+	ModelTierSmall ModelTier = "small"
+	ModelTierMid   ModelTier = "mid"
+	ModelTierLarge ModelTier = "large"
+)
+
+// tierKey maps a ModelTier to the SystemKey holding its model id. An
+// unrecognised tier resolves to KeySmartModel itself, so a caller passing a
+// zero-value ModelTier gets the same compatibility default a tier miss falls
+// back to, rather than reading a key that was never set for a different
+// reason.
+func tierKey(tier ModelTier) SystemKey {
+	switch tier {
+	case ModelTierSmall:
+		return KeySmartModelSmall
+	case ModelTierMid:
+		return KeySmartModelMid
+	case ModelTierLarge:
+		return KeySmartModelLarge
+	default:
+		return KeySmartModel
+	}
+}
+
+// ModelForTier resolves the model id a call at the given tier should use:
+// the tier's own setting if one is set, else KeySmartModel (TODO 11.13's
+// compatibility default), else ErrNoSetting — mirroring SystemValue's own
+// contract exactly, so the existing `if err != nil || strings.TrimSpace(m)
+// == "" { return llm.DefaultModel }` pattern at every current call site
+// needs no new branch to adopt this.
+func (r *SettingsRepo) ModelForTier(ctx context.Context, tier ModelTier) (string, error) {
+	if m, err := r.SystemValue(ctx, tierKey(tier)); err == nil && strings.TrimSpace(m) != "" {
+		return strings.TrimSpace(m), nil
+	}
+	return r.SystemValue(ctx, KeySmartModel)
 }
 
 // SetSystemValue writes a plain system setting. by is the user id to record, or

@@ -49,6 +49,10 @@ type ImportResult struct {
 	// Folders is how many categories the file's groups resolved to.
 	Folders int
 	Skips   []ImportSkip
+
+	// skipTotal is every skip, including the ones past MaxImportSkips that
+	// Skips itself does not hold — see addSkip and SkipCount.
+	skipTotal int
 }
 
 // MaxImportSkips bounds the report, not the import.
@@ -138,6 +142,7 @@ func (s *Service) ImportOPML(ctx context.Context, sc store.Scope, data []byte) (
 
 // addSkip records a skip, keeping the count exact past the cap on the list.
 func (r *ImportResult) addSkip(s ImportSkip) {
+	r.skipTotal++
 	if len(r.Skips) < MaxImportSkips {
 		r.Skips = append(r.Skips, s)
 	}
@@ -145,9 +150,10 @@ func (r *ImportResult) addSkip(s ImportSkip) {
 
 // SkipCount is how many rows did not make it, including any past MaxImportSkips.
 //
-// Derived rather than stored, because a counter beside a slice is a counter that
-// eventually disagrees with it.
-func (r ImportResult) SkipCount() int { return len(r.Skips) }
+// Stored rather than derived from len(Skips): the list itself is capped at
+// MaxImportSkips, so deriving the count from it silently undercounts every
+// import with more than MaxImportSkips failures.
+func (r ImportResult) SkipCount() int { return r.skipTotal }
 
 // ExportOPML writes this reader's subscriptions out as OPML.
 //

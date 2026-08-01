@@ -513,20 +513,23 @@ func betterRepresentative(a, b Candidate) bool {
 // — reading positions off an existing order, not forming a new opinion
 // about it.
 const (
-	// leadPercentile: only the top decile is even eligible for LEAD. Chosen
-	// against a programme that opens on something ordinary because nothing
-	// stronger happened to be corroborated — the top 10% is a tight enough
-	// band that landing in it is itself informative.
-	leadPercentile = 0.10
-	// leadMinCorroboration: LEAD additionally requires at least two other
-	// sources carrying the story. A single high score with no independent
-	// confirmation is one outlet's editorial judgement, not evidence the
-	// whole programme should open on it — corroboration is what turns "an
-	// algorithm liked this" into "this is actually the story of the hour".
+	// leadMinCorroboration: the threshold a SECOND story (never the top-scoring
+	// one — see roleFor) needs to be promoted to LEAD alongside it, in a show
+	// long enough to carry two (leadPromoteMinutes). TODO 11.24: the first real
+	// rundown against a live feed came back with 27 SUPPORTING stories and not
+	// one LEAD, because the old rule gated the TOP story itself on
+	// corroboration, and on real data the two are anti-correlated — a reader's
+	// highest-scoring story is very often a single-source exclusive, precisely
+	// because freshness, topic and entity terms score without needing a second
+	// outlet to confirm them. Corroboration now only ever ADDS a lead, never
+	// withholds the one the score already earned.
 	leadMinCorroboration = 2
-	// supportingPercentile: the next band down from LEAD gets SUPPORTING —
-	// strong enough to matter, whether or not it cleared LEAD's
-	// corroboration bar.
+	// leadPromoteMinutes: below this target, a second LEAD would crowd out too
+	// much of a short show's word budget, so the promotion in roleFor only
+	// fires for a target at or above it.
+	leadPromoteMinutes = 20
+	// supportingPercentile: the band below LEAD gets SUPPORTING — strong
+	// enough to matter.
 	supportingPercentile = 0.30
 	// standardPercentile: everything through the 70th percentile is an
 	// ordinary, complete story. Below it, a story only earns airtime as an
@@ -541,15 +544,50 @@ const (
 	quickHitMinCorroboration = 1
 )
 
+// promoteSecondLead finds the single best SUPPORTING-banded candidate — the
+// one with the highest corroboration, score breaking ties — and promotes it
+// to LEAD if that corroboration clears leadMinCorroboration (TODO 11.24).
+// Bounded to at most one promotion: "a second story to LEAD" is a claim
+// about the strongest OTHER candidate, and a show that opened on every
+// well-corroborated story would not have opened on anything.
+func promoteSecondLead(bandedList []banded) {
+	best := -1
+	for i, b := range bandedList {
+		if b.role != RoleSupporting {
+			continue
+		}
+		if best == -1 {
+			best = i
+			continue
+		}
+		bb, cb := bandedList[best], b
+		if cb.rep.Corroboration > bb.rep.Corroboration ||
+			(cb.rep.Corroboration == bb.rep.Corroboration && cb.rep.Score > bb.rep.Score) {
+			best = i
+		}
+	}
+	if best == -1 || bandedList[best].rep.Corroboration < leadMinCorroboration {
+		return
+	}
+	bandedList[best].role = RoleLead
+}
+
 // genreAnalysis mirrors pipeline.GenreAnalysis's stored value. Written as a
 // local string rather than imported, per Candidate.Genre's comment.
 const genreAnalysis = "analysis"
 
-// roleFor bands one candidate by its position in the deduplicated pool
-// (percentile, 0 = best), its corroboration count, and its genre.
-func roleFor(percentile float64, corroboration int, genre string) Role {
+// roleFor bands one candidate by its rank (0 = the single highest-scoring
+// story) and percentile position in the deduplicated pool, its corroboration
+// count and its genre. It never promotes a SECOND story to LEAD — that is
+// promoteSecondLead's job, run once over the whole banded list after this,
+// because "a second lead" is a statement about the best OTHER candidate, not
+// a threshold any one candidate can decide on its own (TODO 11.24).
+func roleFor(rank int, percentile float64, corroboration int, genre string) Role {
 	switch {
-	case percentile < leadPercentile && corroboration >= leadMinCorroboration:
+	case rank == 0:
+		// The top-scoring story IS the lead, full stop — never gated on
+		// corroboration. See leadMinCorroboration's comment for why gating it
+		// meant a real broadcast almost never had one.
 		return RoleLead
 	case percentile < supportingPercentile:
 		return RoleSupporting
@@ -651,12 +689,15 @@ func Build(cands []Candidate, opts Options) Rundown {
 		if n > 1 {
 			percentile = float64(i) / float64(n)
 		}
-		role := roleFor(percentile, cl.rep.Corroboration, cl.rep.Genre)
+		role := roleFor(i, percentile, cl.rep.Corroboration, cl.rep.Genre)
 		if role == RoleQuickHit && !opts.AllowQuickHits {
 			continue
 		}
 		priority := cl.rep.Score * styleWeight(opts.Style, cl.rep.Slot)
 		bandedList = append(bandedList, banded{cluster: cl, role: role, priority: priority})
+	}
+	if opts.Target >= leadPromoteMinutes*time.Minute {
+		promoteSecondLead(bandedList)
 	}
 
 	// Fill order: highest priority first. ItemID breaks ties so the order
@@ -669,7 +710,7 @@ func Build(cands []Candidate, opts Options) Rundown {
 	})
 
 	budget := wordBudget(opts.Target, opts.Rate)
-	chosen := fillToBudget(bandedList, budget)
+	chosen := fillToBudget(bandedList, budget, opts.AllowQuickHits)
 
 	return Rundown{
 		Title:    opts.Title,
@@ -678,16 +719,51 @@ func Build(cands []Candidate, opts Options) Rundown {
 	}
 }
 
+// categoryCapFraction bounds any one segment's share of the finished
+// rundown's word budget (TODO 11.25, and TODO 11.18(a)'s "no category above
+// 40%"). The first real rundown run against a live feed put 46% of a
+// twenty-minute show in one category — thirteen hardware stories back to
+// back at identical pacing — because §18.4's VolumePenalty caps a single
+// SOURCE's share and nothing capped a CATEGORY's.
+const categoryCapFraction = 0.40
+
+// fitInCategory checks whether b fits under theme's remaining share of the
+// category cap. first bypasses the cap entirely — the very first story
+// admitted to the whole rundown must never be blocked by it, for the same
+// reason it bypasses the overall budget below. A candidate that would push
+// its category over the cap is demoted to QUICK_HIT rather than admitted at
+// full length (TODO 11.25's "overflow demoted to quick hits ... not
+// appended"), and dropped outright if even a quick hit still overruns the
+// cap or the reader has quick hits off entirely — there is no cheaper role
+// left to fall back to.
+func fitInCategory(b banded, catWords map[string]float64, catCap float64, allowQuickHits, first bool) (banded, float64, bool) {
+	theme := themeFor(b.rep)
+	w := float64(RoleWords(b.role))
+	if first || catWords[theme]+w <= catCap {
+		return b, w, true
+	}
+	if !allowQuickHits || b.role == RoleQuickHit || b.role == RoleMention {
+		return banded{}, 0, false
+	}
+	b.role = RoleQuickHit
+	w = float64(wordsQuickHit)
+	if catWords[theme]+w > catCap {
+		return banded{}, 0, false
+	}
+	return b, w, true
+}
+
 // fillToBudget is a single first-fit pass over priorityOrder: it admits
-// every story that still fits the space left in the budget, in priority
-// order, but a story too big for what remains does not stop the scan — a
-// smaller, lower-priority story further down the list may still fit the
-// gap. This is what a producer actually does with a fixed clock: if the
-// next lead-sized piece will not fit the remaining ninety seconds, you do
-// not go to black, you reach for something shorter that will. The very
-// first story is always admitted regardless of its own size, so a target
-// smaller than even the cheapest role never produces an empty rundown when
-// at least one candidate exists.
+// every story that still fits the space left in the budget and its
+// category's cap (fitInCategory), in priority order, but a story too big
+// for what remains does not stop the scan — a smaller, lower-priority story
+// further down the list may still fit the gap. This is what a producer
+// actually does with a fixed clock: if the next lead-sized piece will not
+// fit the remaining ninety seconds, you do not go to black, you reach for
+// something shorter that will. The very first story is always admitted
+// regardless of its own size or category, so a target smaller than even the
+// cheapest role never produces an empty rundown when at least one candidate
+// exists.
 //
 // Word budgets only range 20–220, so a single pass can leave a real gap at
 // small targets (a five-minute, 750-word budget has few of any size left to
@@ -697,42 +773,65 @@ func Build(cands []Candidate, opts Options) Rundown {
 // nearer answer than a shortfall wider than the cheapest remaining story —
 // see TestTargetIsHit's 5-minute case, which needs exactly this to land
 // inside 10%.
-func fillToBudget(priorityOrder []banded, budget float64) []banded {
+func fillToBudget(priorityOrder []banded, budget float64, allowQuickHits bool) []banded {
 	chosenIdx := make([]bool, len(priorityOrder))
 	var chosen []banded
 	remaining := budget
-	for i, b := range priorityOrder {
-		w := float64(RoleWords(b.role))
-		if len(chosen) == 0 || w <= remaining {
+	catCap := budget * categoryCapFraction
+	catWords := make(map[string]float64, len(priorityOrder))
+
+	for i, orig := range priorityOrder {
+		first := len(chosen) == 0
+		b, w, ok := fitInCategory(orig, catWords, catCap, allowQuickHits, first)
+		if !ok {
+			continue
+		}
+		if first || w <= remaining {
 			chosen = append(chosen, b)
 			chosenIdx[i] = true
 			remaining -= w
+			catWords[themeFor(b.rep)] += w
 		}
 	}
 
 	if remaining > 0 {
 		bestIdx, bestOvershoot := -1, math.Inf(1)
-		for i, b := range priorityOrder {
+		var bestBanded banded
+		var bestWords float64
+		for i, orig := range priorityOrder {
 			if chosenIdx[i] {
 				continue
 			}
-			over := float64(RoleWords(b.role)) - remaining
+			b, w, ok := fitInCategory(orig, catWords, catCap, allowQuickHits, false)
+			if !ok {
+				continue
+			}
+			over := w - remaining
 			if over > 0 && over < bestOvershoot {
 				bestOvershoot = over
 				bestIdx = i
+				bestBanded = b
+				bestWords = w
 			}
 		}
 		if bestIdx >= 0 && bestOvershoot < remaining {
-			chosen = append(chosen, priorityOrder[bestIdx])
+			chosen = append(chosen, bestBanded)
+			catWords[themeFor(bestBanded.rep)] += bestWords
 		}
 	}
 	return chosen
 }
 
 // buildSegments groups the admitted stories by category and orders the
-// result: segments by segmentWeight descending, stories within a segment by
-// score descending. Grouping goes through a map, but the final order never
-// depends on map iteration — both sorts below have full tiebreaks.
+// result: segments by the score of their strongest story descending — the
+// editorial weight of what is actually in them, not the taxonomy's own
+// listing order (TODO 11.27: a programme opened on whichever category
+// lexicon.Categories() happens to list first is indefensible on a programme
+// whose entire claim is that it decided what mattered) — with the unsorted
+// "" segment forced last regardless of score (TODO 11.26: it is an "and
+// also", never an opener). Stories within a segment: score descending.
+// Grouping goes through a map, but the final order never depends on map
+// iteration — both sorts below have full tiebreaks.
 func buildSegments(chosen []banded) []Segment {
 	byTheme := make(map[string][]banded)
 	var themes []string
@@ -744,12 +843,28 @@ func buildSegments(chosen []banded) []Segment {
 		byTheme[theme] = append(byTheme[theme], b)
 	}
 
-	sort.SliceStable(themes, func(i, j int) bool {
-		wi, wj := segmentWeight(themes[i]), segmentWeight(themes[j])
-		if wi != wj {
-			return wi > wj
+	bestScore := make(map[string]float64, len(themes))
+	for theme, stories := range byTheme {
+		best := stories[0].rep.Score
+		for _, b := range stories[1:] {
+			if b.rep.Score > best {
+				best = b.rep.Score
+			}
 		}
-		return themes[i] < themes[j]
+		bestScore[theme] = best
+	}
+
+	sort.SliceStable(themes, func(i, j int) bool {
+		ti, tj := themes[i], themes[j]
+		if (ti == "") != (tj == "") {
+			// Exactly one of the two is the unsorted segment: it never sorts
+			// before a recognised one, whatever its best score.
+			return tj == ""
+		}
+		if bestScore[ti] != bestScore[tj] {
+			return bestScore[ti] > bestScore[tj]
+		}
+		return ti < tj
 	})
 
 	segments := make([]Segment, 0, len(themes))

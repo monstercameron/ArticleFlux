@@ -187,7 +187,7 @@ test.describe('tag settings', () => {
     await expect(atom).toHaveAttribute('aria-pressed', 'true');
 
     // The default is one of the choices, not an escape hatch beside them.
-    await panel.locator('.ts-glyph[aria-label="Default mark"]').click();
+    await panel.locator('.ts-glyph[aria-label="Default symbol"]').click();
     await expect(row.locator('.tag-dot')).toHaveCount(1, { timeout: 45_000 });
     await expect(row.locator('.tag-gl')).toHaveCount(0);
   });

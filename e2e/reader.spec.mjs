@@ -108,6 +108,53 @@ test.describe('reading', () => {
     await expect(page.locator('.item-title').first()).toHaveText(/lock/i);
   });
 
+  test('search runs on a pause in typing, with no Enter', async ({ page }) => {
+    await boot(page);
+
+    // pressSequentially, not fill: fill sets the value in one DOM write and
+    // fires a single input event, which would exercise the debounce timer
+    // exactly once regardless of how it is wired. Typing key by key is what
+    // proves each keystroke restarts the same timer rather than each one
+    // scheduling its own — if it did not, "sourdough" would fire nine
+    // overlapping searches instead of one.
+    const search = page.locator('[data-role="search"]');
+    await search.pressSequentially('sourdough', { delay: 80 });
+
+    // Still the unfiltered list a moment after the last keystroke: the
+    // debounce (client/view/reader_types.go's searchDebounce) has not run
+    // out yet.
+    await expect(page.locator('.list-title')).toHaveText('All articles');
+
+    // And the search itself lands without ever pressing Enter.
+    await expect(page.locator('.list-title')).toHaveText(/Results for/, { timeout: 2_000 });
+    await expect(page.locator('.item-row')).toHaveCount(1);
+    await expect(page.locator('.item-title')).toHaveText(/Sourdough hydration/);
+  });
+
+  test('clearing the search reverts on the same pause, not instantly', async ({ page }) => {
+    await boot(page);
+
+    const search = page.locator('[data-role="search"]');
+    await search.fill('sourdough');
+    await expect(page.locator('.list-title')).toHaveText(/Results for/, { timeout: 2_000 });
+
+    // Backspaced to empty rather than cleared in one write, for the same
+    // reason the test above types key by key: a real reader empties a box
+    // one character at a time, and each of those keystrokes restarts the
+    // same debounce rather than un-searching on the first one that happens
+    // to land on an empty string.
+    await search.press('Control+A');
+    await search.press('Backspace');
+
+    // The search result is still on screen immediately after clearing — the
+    // whole point of debouncing "back to nothing" the same as any other
+    // value: a reader mid-backspace-then-retype must not see the unfiltered
+    // list flash up before their next keystroke lands.
+    await expect(page.locator('.list-title')).toHaveText(/Results for/);
+    await expect(page.locator('.list-title')).toHaveText('All articles', { timeout: 2_000 });
+    await expect(page.locator('.item-row')).toHaveCount(5);
+  });
+
   test('unread-only hides what has been read', async ({ page }) => {
     await boot(page);
     const before = await page.locator('.item-row').count();

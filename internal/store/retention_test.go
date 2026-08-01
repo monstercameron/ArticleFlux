@@ -103,6 +103,48 @@ func TestASweepNeverRemovesWhatSomebodyKept(t *testing.T) {
 	}
 }
 
+// Analysis rows are DERIVED (0021's own comment says the sweep may discard
+// them freely), and item_analysis has no cascade from items — deliberately, so
+// a source cleanup never silently deletes work. That makes the sweep the only
+// thing that ever removes one, and TODO 10.28 filed this because the sweep
+// that landed with F36 did not know the table existed. It does now (see the
+// DELETE list in SweepItems) — this asserts it rather than trusting the read.
+func TestSweepDiscardsOrphanedAnalysis(t *testing.T) {
+	repo, _, _, ids := retentionFixture(t)
+	ctx := context.Background()
+
+	rows := make([]ItemAnalysis, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, ItemAnalysis{
+			ItemID:          id,
+			AnalyzerVersion: 1,
+			LexiconHash:     "h",
+			CategoryScores:  map[string]float64{"software": 5},
+			AnalyzedAt:      time.Now().UTC(),
+		})
+	}
+	if err := repo.UpsertAnalysis(ctx, rows); err != nil {
+		t.Fatalf("seed analysis: %v", err)
+	}
+	before, err := repo.AnalysisByIDs(ctx, ids)
+	if err != nil || len(before) != len(ids) {
+		t.Fatalf("seed: %d analysis rows, want %d (err %v)", len(before), len(ids), err)
+	}
+
+	if _, err := repo.SweepItems(ctx, time.Now().UTC(), true); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	after, err := repo.AnalysisByIDs(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(ids)-1 {
+		t.Fatalf("%d analysis rows survived, want %d — the removed item's row must go with it",
+			len(after), len(ids)-1)
+	}
+}
+
 // A dry run has to be exactly that.
 func TestADryRunCountsAndDeletesNothing(t *testing.T) {
 	repo, sc, _, _ := retentionFixture(t)

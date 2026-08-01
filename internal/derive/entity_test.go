@@ -110,6 +110,36 @@ func TestEntityWeightFollowsEngagementNotMentionCount(t *testing.T) {
 	}
 }
 
+// Q5 (2026-07-31 QA pass): a headline mentioning "Wall Street Journal" matched
+// BOTH "Wall Street" and "Street Journal" when a reader followed both as
+// separate entities — deriveEntities has no step that merges one phrase's
+// overlapping sub-phrases into it — and entityText then read "about Street
+// Journal and Wall Street, which you follow": two attributions for one
+// mention, neither of them the actual publication name. namedIn now resolves
+// overlapping matches to the longest one, which is the more specific phrase.
+func TestNamedInResolvesOverlappingEntitiesToTheLongestMatch(t *testing.T) {
+	followed := []store.Entity{
+		{Name: "wall street", Label: "Wall Street", Steer: store.SteerNormal},
+		{Name: "street journal", Label: "Street Journal", Steer: store.SteerNormal},
+	}
+	names, _ := namedIn("The Wall Street Journal reports a slowdown", followed)
+	if len(names) != 1 {
+		t.Fatalf("names = %v, want exactly one entity for one overlapping mention", names)
+	}
+	if names[0] != "Street Journal" {
+		t.Errorf("names[0] = %q, want the LONGER overlapping match (%q ends at the same "+
+			"point \"wall street\" starts short of)", names[0], "Street Journal")
+	}
+
+	// Two entities that do NOT overlap must both still surface — the fix is
+	// about overlap, not about capping the count at one.
+	followed = append(followed, store.Entity{Name: "android auto", Label: "Android Auto", Steer: store.SteerNormal})
+	names, _ = namedIn("Android Auto and the Wall Street Journal both had news today", followed)
+	if len(names) != 2 {
+		t.Fatalf("names = %v, want two entities: one non-overlapping pair", names)
+	}
+}
+
 // A suppression is an instruction, so it has to survive the next derivation.
 //
 // Without this the control is a gesture: the reader says "not something I follow", the

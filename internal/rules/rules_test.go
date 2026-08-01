@@ -21,6 +21,8 @@ func sample() Item {
 		WordCount:   1200,
 		PublishedAt: now.Add(-30 * time.Hour),
 		Lang:        "en",
+		Category:    "software",
+		Genre:       "release",
 	}
 }
 
@@ -57,6 +59,10 @@ func TestEveryFieldAndOperator(t *testing.T) {
 		{"folder", Condition{FieldFolder, OpContains, "programming"}, true},
 		{"lang", Condition{FieldLang, OpEquals, "en"}, true},
 		{"lang miss", Condition{FieldLang, OpEquals, "fr"}, false},
+		{"category", Condition{FieldCategory, OpEquals, "software"}, true},
+		{"category miss", Condition{FieldCategory, OpEquals, "security"}, false},
+		{"genre", Condition{FieldGenre, OpEquals, "release"}, true},
+		{"genre miss", Condition{FieldGenre, OpEquals, "review"}, false},
 
 		// --- tags: a list, so the semantics differ -------------------------
 		{"tag contains hit", Condition{FieldTag, OpContains, "rust"}, true},
@@ -425,5 +431,41 @@ func TestEvaluateDoesNotMutateTheCallersRuleSet(t *testing.T) {
 	other := Evaluate(sample(), shuffled, now)
 	if len(other.Hits) != len(res.Hits) || other.Hits[0].RuleID != res.Hits[0].RuleID {
 		t.Errorf("sorted and unsorted input disagree:\n sorted   %+v\n unsorted %+v", res.Hits, other.Hits)
+	}
+}
+
+// The ticket's own example (TODO 10.29, plan §27.8): "category = security AND
+// genre = release → tag 'patch'" is the rule this field pair exists to let
+// somebody write.
+func TestCategoryAndGenreCompose(t *testing.T) {
+	patch := Rule{
+		ID: "patch", Name: "patch", Enabled: true, Position: 1,
+		Match: Match{Conditions: []Condition{
+			{FieldCategory, OpEquals, "security"},
+			{FieldGenre, OpEquals, "release"},
+		}},
+		Actions: []Action{{Kind: ActionTag, Value: "patch"}},
+	}
+
+	cve := sample()
+	cve.Category, cve.Genre = "security", "release"
+	if res := Evaluate(cve, []Rule{patch}, now); len(res.Hits) != 1 {
+		t.Errorf("category+genre match: hits = %+v, want one", res.Hits)
+	}
+
+	analysis := sample()
+	analysis.Category, analysis.Genre = "security", "analysis"
+	if res := Evaluate(analysis, []Rule{patch}, now); len(res.Hits) != 0 {
+		t.Errorf("genre mismatch still hit: %+v", res.Hits)
+	}
+
+	// An item this pipeline never analysed carries the zero value for both
+	// fields, exactly as an item whose language was never detected carries
+	// Lang == "" — and it must not accidentally satisfy an `equals ""` a
+	// reader never wrote, which is why the sample fixture always sets both.
+	unanalysed := sample()
+	unanalysed.Category, unanalysed.Genre = "", ""
+	if res := Evaluate(unanalysed, []Rule{patch}, now); len(res.Hits) != 0 {
+		t.Errorf("unanalysed item hit a category rule: %+v", res.Hits)
 	}
 }

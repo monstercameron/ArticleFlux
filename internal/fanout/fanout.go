@@ -140,11 +140,24 @@ func (s *Service) forSubscriber(ctx context.Context, sub store.Subscriber,
 		return err
 	}
 
-	ruleItems := make([]rules.Item, len(items))
 	ids := make([]string, len(items))
 	for i, it := range items {
-		ruleItems[i] = toRuleItem(it, sub)
 		ids[i] = it.ID
+	}
+
+	// CategoriesFor (§27.8, TODO 10.29): resolved once per subscriber, matching
+	// RulesFor above, rather than once per batch — v1 has no per-reader
+	// taxonomy override yet (§27.3f, TODO 10.9) so today it returns the same
+	// answer for everyone, but the call already takes the Scope a per-reader
+	// override will need and there is nowhere else in fan-out that has it.
+	cats, err := s.repo.CategoriesFor(ctx, scope, ids)
+	if err != nil {
+		return err
+	}
+
+	ruleItems := make([]rules.Item, len(items))
+	for i, it := range items {
+		ruleItems[i] = toRuleItem(it, sub, cats[it.ID])
 	}
 
 	_, err = s.repo.FanoutItems(ctx, sub, ruleSet, ruleItems, ids, now)
@@ -157,7 +170,7 @@ func (s *Service) forSubscriber(ctx context.Context, sub store.Subscriber,
 // against raw markup would match a link to rust-lang.org in a footer, an image
 // filename, or a CSS class — none of which is what the person writing the rule
 // meant, and all of which are invisible when they check the article.
-func toRuleItem(it store.Item, sub store.Subscriber) rules.Item {
+func toRuleItem(it store.Item, sub store.Subscriber, cat store.ItemCategory) rules.Item {
 	body := it.ContentHTML
 	if body == "" {
 		body = it.Summary
@@ -175,5 +188,9 @@ func toRuleItem(it store.Item, sub store.Subscriber) rules.Item {
 		WordCount:   it.WordCount,
 		PublishedAt: published,
 		Lang:        sub.Lang,
+		// zero-valued (Unsorted, or never analysed) is indistinguishable from
+		// "no rule should match" — the same contract Lang already has above.
+		Category: cat.Primary,
+		Genre:    cat.Genre,
 	}
 }
