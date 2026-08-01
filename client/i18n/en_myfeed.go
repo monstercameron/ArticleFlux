@@ -103,6 +103,27 @@ func init() {
 		"levelNeverHint": "Never means the model stops using this to choose articles. " +
 			"Nothing is unsubscribed and nothing is hidden from your feeds.",
 
+		// --- deleting a row, resetting a category -----------------------------
+		//
+		// "Remove" here means the same thing Never already means on the dial —
+		// the model stops using this row, nothing is unsubscribed or hidden —
+		// so the copy borrows levelNeverHint's own claim rather than inventing
+		// a second, competing promise about what the word does.
+		"rowDelete":            "Remove",
+		"rowDeleteAria":        "Stop using this for My Feed",
+		"rowDeleteConfirm":     "Confirm remove?",
+		"rowDeleteConfirmAria": "Confirm: stop using this for My Feed",
+		"rowDeleteCancel":      "Cancel",
+		"rowDeleteCancelAria":  "Cancel, keep this as it is",
+
+		"catReset":            "Reset this list",
+		"catResetAria":        "Undo every change you have made in this list",
+		"catResetConfirm":     "Confirm reset?",
+		"catResetConfirmAria": "Confirm: undo every change you have made in this list",
+		"catResetCancelAria":  "Cancel, keep your changes",
+		"catResetWarn": "This undoes every Remove and every dial you have turned in this list — " +
+			"not the reading it was built from, which is why the row is here at all.",
+
 		// --- state -----------------------------------------------------------
 		"loadError": "Could not read the profile: {err}",
 		// A press that did not land, said as a note over a screen that is still

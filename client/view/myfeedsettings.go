@@ -64,6 +64,12 @@ type myFeedProps struct {
 	// how many buttons a person presses at once, and it lets the pressed row say
 	// so without a per-row state map.
 	pending string
+	// confirmDelete is the one row armed for delete, as "kind:target" — see
+	// reader.go's myFeedConfirmDelete. Empty when nothing is armed.
+	confirmDelete string
+	// confirmReset is the one category ("topics"/"entities"/"feeds") armed
+	// for a reset. Empty when nothing is armed.
+	confirmReset string
 }
 
 // The tab's actions, on the same delegated data-action path as everything else.
@@ -71,6 +77,36 @@ const (
 	actMyFeedTopic   = "mf-topic"
 	actMyFeedEntity  = "mf-entity"
 	actMyFeedRefresh = "mf-refresh"
+	// Deleting one row: arm asks, confirm does it, cancel backs out. Cancel
+	// exists here (and not on the category editor's delete) because a My Feed
+	// row sits in a scrolling list of many identical-looking controls, where
+	// the category editor's delete is one button in a small, focused dialog —
+	// a misarmed row here is easier to lose track of than a misarmed dialog.
+	actMyFeedDeleteArm     = "mf-delete-arm"
+	actMyFeedDeleteConfirm = "mf-delete-confirm"
+	actMyFeedDeleteCancel  = "mf-delete-cancel"
+	// Resetting a whole category back to default: same three-press shape.
+	actMyFeedResetArm     = "mf-reset-arm"
+	actMyFeedResetConfirm = "mf-reset-confirm"
+	actMyFeedResetCancel  = "mf-reset-cancel"
+)
+
+// myFeedCategory names the three row kinds a delete/reset action can target —
+// distinct from the topic/entity `mf-*` action names above because a reset
+// addresses a CATEGORY, not a row, and the two vocabularies must not be
+// interchangeable at the call site.
+const (
+	myFeedCatTopics   = "topics"
+	myFeedCatEntities = "entities"
+	myFeedCatFeeds    = "feeds"
+)
+
+// myFeedRowKind names what a single deletable row is, for
+// armMyFeedDelete/deleteMyFeedRow's `kind` argument.
+const (
+	myFeedRowTopic  = "topic"
+	myFeedRowEntity = "entity"
+	myFeedRowFeed   = "feed"
 )
 
 // steerLevels is the dial, in the order it is drawn.
@@ -113,7 +149,7 @@ func settingsMyFeed(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	out = append(out, myFeedFactors(tr, pr)...)
 	out = append(out, myFeedTopics(tr, p)...)
 	out = append(out, myFeedEntities(tr, p)...)
-	out = append(out, myFeedFeeds(tr, pr)...)
+	out = append(out, myFeedFeeds(tr, p)...)
 	out = append(out, html.Div(html.Props{Class: "set-actions"},
 		glyphChip(actMyFeedRefresh, glyphRefresh, tr.T("myFeed", "refresh"), false)))
 	return out
@@ -212,6 +248,9 @@ func myFeedTopics(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	out := []ui.Node{
 		fsGroup(glyphShared, tr.T("myFeed", "topicGroup"), tr.T("myFeed", "topicHint")),
 	}
+	if len(topics) > 0 {
+		out = append(out, mfResetControl(myFeedCatTopics, p.confirmReset == myFeedCatTopics, tr))
+	}
 	if len(topics) == 0 {
 		return append(out, html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("myFeed", "topicEmpty"))))
@@ -221,12 +260,14 @@ func myFeedTopics(tr i18n.Runtime, p myFeedProps) []ui.Node {
 			key: "mf-t-" + t.GetId(),
 			// The fingerprint, not the id: a derivation — including the one this
 			// row's own press schedules — regenerates every topic id.
-			target:   t.GetKey(),
-			action:   actMyFeedTopic,
-			name:     t.GetLabel(),
-			evidence: topicEvidence(tr, t),
-			level:    t.GetLevel(),
-			pending:  p.pending == t.GetId(),
+			target:      t.GetKey(),
+			action:      actMyFeedTopic,
+			kind:        myFeedRowTopic,
+			name:        t.GetLabel(),
+			evidence:    topicEvidence(tr, t),
+			level:       t.GetLevel(),
+			pending:     p.pending == t.GetId(),
+			armedDelete: p.confirmDelete == myFeedRowTopic+":"+t.GetKey(),
 		}, tr))
 	}
 	return out
@@ -270,19 +311,24 @@ func myFeedEntities(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	out := []ui.Node{
 		fsGroup(glyphYours, tr.T("myFeed", "entityGroup"), tr.T("myFeed", "entityHint")),
 	}
+	if len(ents) > 0 {
+		out = append(out, mfResetControl(myFeedCatEntities, p.confirmReset == myFeedCatEntities, tr))
+	}
 	if len(ents) == 0 {
 		return append(out, html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("myFeed", "entityEmpty"))))
 	}
 	for _, e := range ents {
 		out = append(out, mfRow(mfRowProps{
-			key:      "mf-e-" + e.GetName(),
-			target:   e.GetName(),
-			action:   actMyFeedEntity,
-			name:     e.GetLabel(),
-			evidence: entityEvidence(tr, e),
-			level:    e.GetLevel(),
-			pending:  p.pending == e.GetName(),
+			key:         "mf-e-" + e.GetName(),
+			target:      e.GetName(),
+			action:      actMyFeedEntity,
+			kind:        myFeedRowEntity,
+			name:        e.GetLabel(),
+			evidence:    entityEvidence(tr, e),
+			level:       e.GetLevel(),
+			pending:     p.pending == e.GetName(),
+			armedDelete: p.confirmDelete == myFeedRowEntity+":"+e.GetName(),
 		}, tr))
 	}
 	if total := int(p.profile.GetEntityCount()); total > len(ents) {
@@ -318,16 +364,23 @@ func entityEvidence(tr i18n.Runtime, e *pb.InterestEntity) string {
 
 // --- feeds ----------------------------------------------------------------------
 
-// myFeedFeeds is read-only, and deliberately so.
+// myFeedFeeds names the feed and its score, and now offers one write: taking
+// a feed OUT of the ranked pool (in_megafeed=false), reached through the same
+// delete-and-confirm control every other row here uses.
 //
-// Whether a feed reaches My Feed at all is `in_megafeed`, which lives in that
-// feed's own settings beside its poll interval and its mute. Duplicating the
-// control here would give one setting two homes that can disagree; naming where
-// it lives costs a sentence and cannot.
-func myFeedFeeds(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
+// It does not offer the dial's More/Normal/Less — that finer control lives in
+// the feed's own settings beside its poll interval and its mute, and
+// duplicating it here would give one setting two homes that can disagree.
+// Delete is a coarser, different fact — "leave the ranked pool entirely" —
+// which is why it gets its own control here rather than borrowing that one.
+func myFeedFeeds(tr i18n.Runtime, p myFeedProps) []ui.Node {
+	pr := p.profile
 	feeds := pr.GetFeeds()
 	out := []ui.Node{
 		fsGroup(glyphFeeds, tr.T("myFeed", "feedGroup"), tr.T("myFeed", "feedHint")),
+	}
+	if len(feeds) > 0 {
+		out = append(out, mfResetControl(myFeedCatFeeds, p.confirmReset == myFeedCatFeeds, tr))
 	}
 	if len(feeds) == 0 {
 		return append(out, html.Div(html.Props{Class: "set-note"},
@@ -335,7 +388,11 @@ func myFeedFeeds(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
 	}
 	for _, f := range feeds {
 		pct := int(f.GetScore()*100 + 0.5)
-		out = append(out, html.Div(html.Props{Class: "mf-row mf-row-static", Key: "mf-s-" + f.GetSourceId()},
+		id := f.GetSourceId()
+		out = append(out, html.Div(html.Props{
+			Class: "mf-row", Key: "mf-s-" + id,
+			Raw: map[string]any{"data-pending": strconv.FormatBool(p.pending == id)},
+		},
 			html.Div(html.Props{Class: "mf-main"},
 				html.Span(html.Props{Class: "mf-name"}, html.Text(f.GetTitle())),
 				html.Span(html.Props{Class: "mf-evidence"},
@@ -344,12 +401,17 @@ func myFeedFeeds(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
 						"shown": thousands(tr, int(f.GetImpressions())),
 					}))),
 			),
-			html.Div(html.Props{Class: "mf-control"},
-				ui.If(!f.GetOnMyFeed(), func() ui.Node {
-					return html.Span(html.Props{Class: "chip chip-static chip-off"},
-						html.Text(tr.T("myFeed", "feedOff")))
-				}),
-				html.Span(html.Props{Class: "mf-score"}, html.Text(strconv.Itoa(pct)+"%")),
+			html.Div(html.Props{Class: "mf-controls"},
+				html.Div(html.Props{Class: "mf-control"},
+					ui.If(!f.GetOnMyFeed(), func() ui.Node {
+						return html.Span(html.Props{Class: "chip chip-static chip-off"},
+							html.Text(tr.T("myFeed", "feedOff")))
+					}),
+					html.Span(html.Props{Class: "mf-score"}, html.Text(strconv.Itoa(pct)+"%")),
+				),
+				html.Div(html.Props{Class: "mf-control mf-control-delete"},
+					mfDeleteControl(myFeedRowFeed, id, p.confirmDelete == myFeedRowFeed+":"+id, tr)...,
+				),
 			),
 		))
 	}
@@ -366,13 +428,18 @@ func myFeedFeeds(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
 // --- the row and its dial -------------------------------------------------------
 
 type mfRowProps struct {
-	key      string
-	target   string
-	action   string
-	name     string
-	evidence string
-	level    pb.SteerLevel
-	pending  bool
+	key    string
+	target string
+	action string
+	// kind is myFeedRowTopic/myFeedRowEntity — which delete verb this row's
+	// control reaches, and half of the "kind:target" key armMyFeedDelete
+	// arms and deleteMyFeedRow reads back.
+	kind        string
+	name        string
+	evidence    string
+	level       pb.SteerLevel
+	pending     bool
+	armedDelete bool
 }
 
 func mfRow(p mfRowProps, tr i18n.Runtime) ui.Node {
@@ -390,11 +457,98 @@ func mfRow(p mfRowProps, tr i18n.Runtime) ui.Node {
 			html.Span(html.Props{Class: "mf-name"}, html.Text(p.name)),
 			html.Span(html.Props{Class: "mf-evidence"}, html.Text(p.evidence)),
 		),
-		html.Div(html.Props{Class: "mf-control", Role: "group",
-			Aria: map[string]string{"label": tr.T("myFeed", "level")}},
-			mfDial(p, tr)...,
+		// One flex wrapper around both controls, so .mf-row's space-between
+		// still sees exactly two children (the evidence and everything that
+		// acts on it) — a bare third child would open a gap of its own
+		// between the dial and the delete chip instead of a small, deliberate
+		// one.
+		html.Div(html.Props{Class: "mf-controls"},
+			html.Div(html.Props{Class: "mf-control", Role: "group",
+				Aria: map[string]string{"label": tr.T("myFeed", "level")}},
+				mfDial(p, tr)...,
+			),
+			html.Div(html.Props{Class: "mf-control mf-control-delete"},
+				mfDeleteControl(p.kind, p.target, p.armedDelete, tr)...,
+			),
 		),
 	)
+}
+
+// mfDeleteControl is the two-press remove: one chip that relabels itself and
+// arms red on the first press (settings.go's signOutGroup — `fs-danger` at
+// rest is an outline, `data-armed="true"` is what fills it, so the colour
+// arrives WITH the consequence, never before it), then acts on the second.
+//
+// A small Cancel rides beside it once armed, which signOutGroup's own single
+// button does not need. That screen is one control in a small dialog, easy
+// to back out of just by leaving; a My Feed row sits in a scrolling list of
+// near-identical rows, where an armed one the reader has scrolled past is
+// easy to forget about. settingsTabTo still disarms every row on leaving the
+// tab, as the same backstop signOutArmed gets.
+func mfDeleteControl(kind, target string, armed bool, tr i18n.Runtime) []ui.Node {
+	if target == "" {
+		return nil
+	}
+	label, action := tr.T("myFeed", "rowDelete"), actMyFeedDeleteArm
+	labelAria := tr.T("myFeed", "rowDeleteAria")
+	class := "chip chip-mini"
+	if armed {
+		label, action = tr.T("myFeed", "rowDeleteConfirm"), actMyFeedDeleteConfirm
+		labelAria = tr.T("myFeed", "rowDeleteConfirmAria")
+		class = "chip chip-mini fs-danger"
+	}
+	out := []ui.Node{html.Button(html.Props{
+		Class: class,
+		Raw: map[string]any{
+			"data-action": action, "data-for-item": target, "data-value": kind,
+			"data-armed": strconv.FormatBool(armed),
+		},
+		Aria: map[string]string{"label": labelAria},
+	}, html.Text(label))}
+	if armed {
+		out = append(out, html.Button(html.Props{
+			Class: "chip chip-mini",
+			Raw:   map[string]any{"data-action": actMyFeedDeleteCancel},
+			Aria:  map[string]string{"label": tr.T("myFeed", "rowDeleteCancelAria")},
+		}, html.Text(tr.T("myFeed", "rowDeleteCancel"))))
+	}
+	return out
+}
+
+// mfResetControl is the category-wide version of the same two-press shape,
+// one per group rather than one per row. See resetMyFeedCategory for what it
+// actually undoes in each of the three categories.
+func mfResetControl(category string, armed bool, tr i18n.Runtime) ui.Node {
+	label, action := tr.T("myFeed", "catReset"), actMyFeedResetArm
+	labelAria := tr.T("myFeed", "catResetAria")
+	class := "chip chip-mini"
+	if armed {
+		label, action = tr.T("myFeed", "catResetConfirm"), actMyFeedResetConfirm
+		labelAria = tr.T("myFeed", "catResetConfirmAria")
+		class = "chip chip-mini fs-danger"
+	}
+	kids := []ui.Node{html.Button(html.Props{
+		Class: class,
+		Raw: map[string]any{
+			"data-action": action, "data-value": category, "data-armed": strconv.FormatBool(armed),
+		},
+		Aria: map[string]string{"label": labelAria},
+	}, html.Text(label))}
+	if armed {
+		kids = append(kids,
+			html.Button(html.Props{
+				Class: "chip chip-mini",
+				Raw:   map[string]any{"data-action": actMyFeedResetCancel},
+				Aria:  map[string]string{"label": tr.T("myFeed", "catResetCancelAria")},
+			}, html.Text(tr.T("myFeed", "rowDeleteCancel"))),
+			// A live region, the same reason signOutGroup's warning is one: arming
+			// changes what the NEXT press does, across every row in the category,
+			// and that has to reach a reader who cannot see the button turn red.
+			html.Div(html.Props{Class: "set-note set-note-live", Role: "alert"},
+				html.Text(tr.T("myFeed", "catResetWarn"))),
+		)
+	}
+	return html.Div(html.Props{Class: "set-actions mf-reset"}, kids...)
 }
 
 func mfDial(p mfRowProps, tr i18n.Runtime) []ui.Node {
