@@ -5465,7 +5465,7 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       *Done when: a topic list exists to resolve ids against, topics are a scope, a wrong topic can be
       corrected, and the correction survives the next derivation pass.*
 
-- [ ] **F6 · Recommendations are harvested and discarded.** `internal/recommend` does outlink
+- [x] **F6 · Recommendations are harvested and discarded.** `internal/recommend` does outlink
       harvesting, aggregator pass-through, the health gate, evidence strings and scoring — and
       **nothing imports it**, verified: it has no consumer anywhere outside its own tests. (Not to be
       confused with My Feed's `explore` slot, which ships and serves under-served topics from feeds you
@@ -5475,6 +5475,27 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       "recommended for you".
       *Done when: `/discover` lists candidates with their evidence; a candidate can be dismissed
       permanently; and a trial subscription can be taken and then kept or dropped on a verdict.*
+
+      ✅ 2026-08-01 — verified against `c737d9c` (landed unreviewed; this is that review). `internal/
+      recommendjob` now consumes `internal/recommend` and is wired in `internal/app/app.go`
+      (`a.recommender`, `JobRecommend` handler). `ReaderServer.ListRecommendations`/
+      `AcceptRecommendation`/`RejectRecommendation` (`internal/transport/grpcsrv/reader.go`) are on
+      the wire with policy entries in `authzmap.go`; `RejectRecommendation` is permanent
+      (`repo.DismissRecommendation`, never resurfaced) and `AcceptRecommendation` subscribes through
+      the normal `svc.Subscribe` path. Client: `client/view/discover.go` renders the list with
+      `r.GetEvidence()` verbatim (per the ticket's own point about the sentence being the reason), and
+      accept/reject are wired delegated-click actions. Both native (`go build ./...`) and wasm
+      (`GOOS=js GOARCH=wasm go build ./client/...`) build clean; `internal/discover`,
+      `internal/recommend`, `internal/recommendjob`, `internal/smart` and
+      `reader_recommend_test.go` (`TestAcceptRecommendationSubscribesAndClearsIt`,
+      `TestRejectRecommendationIsPermanent`) all pass; `e2e/discover.spec.mjs` covers the tab
+      opening, the empty state and Refresh round-tripping.
+      **One soft spot against the letter of the Done-when:** "a trial subscription... kept or dropped
+      on a verdict" is not a distinct mechanism — Accept just subscribes like any other feed, and
+      dropping it afterward is the ordinary unsubscribe flow, not a purpose-built trial state. Judged
+      close enough to the spirit (evidence-backed candidates, permanent dismissal, and a
+      subscribe-then-unsubscribe path that already exists) to close rather than leave open on that
+      technicality.
 
 - [ ] **F7 · Preservation is invisible until it is too late.** `internal/preserve` does tiered archival,
       the distress sweep when a source starts failing, and eviction that can never drop an archive
@@ -6302,11 +6323,18 @@ byte-identical — and any new test added to this repo should be.
       *Done when: the pair is deleted, or the parser is fixed. Fixing a regex in a page nobody serves
       is the worse of the two, so decide the deletion question first.*
 
-- [ ] **Q6 · `item_revisions` has a schema, a content hash, a dedupe index — and has never had a row
+- [x] **Q6 · `item_revisions` has a schema, a content hash, a dedupe index — and has never had a row
       written to it.** The table is fully built and entirely unused. Either a feature is missing its
       write path, or the table is speculative schema that should not be carrying indexes.
       *Done when: something writes to it and a test asserts the dedupe actually dedupes, or it is
       dropped in a migration.*
+
+      ✅ 2026-08-01 — closed by **F34** (Article revisions, done 2026-07-31), which this ticket was
+      never cross-referenced against. `internal/store/ingest.go:118` now does `INSERT OR IGNORE INTO
+      item_revisions` on every edit-detected re-poll, and `internal/store/revisions_test.go`'s five
+      cases include the exact dedupe assertion this ticket's Done-when asks for ("a revert does not
+      duplicate a version"). `go test ./internal/store/...` passes. The table is neither unused nor
+      speculative; F34 just closed it under a different name.
 
 - [ ] **Q7 · The flood guard (§15.5 / T13) was specified in detail and never built.** A feed that
       suddenly emits thousands of items has nothing standing between it and the reader's database.
@@ -7409,3 +7437,31 @@ timer.*
       exact 80ms cadence does not, and a single manual check (typing "linux" once against the live
       `:9000` server) did not reproduce it. Watch for reports of a search query "not finding
       anything obvious" — that is what this looks like from the outside.
+
+## Completion sweep — checking every open box against the tree (2026-08-01)
+
+*Every unchecked item in this file (~70 boxes, Tiers 7/8/10/11, the F/Q/N series) read against the
+current source rather than taken on the doc's own word — the doc has been meticulously kept, so
+most held up exactly as filed. Two did not, both because a later ticket closed the same ground
+under a different name without a cross-reference back:*
+
+- **F6** (recommendations harvested and discarded) — closed. The `c737d9c` WIP cluster (flagged
+  unreviewed in its own commit message) turned out to build exactly what F6 asked for:
+  `ListRecommendations`/`AcceptRecommendation`/`RejectRecommendation` on the wire, `/discover` in
+  the client, permanent dismissal, both builds clean, Go-level and e2e coverage. One soft spot noted
+  in place — "trial subscription kept or dropped on a verdict" is just the ordinary subscribe/
+  unsubscribe flow, not a distinct mechanism — judged close enough to the spirit to close.
+- **Q6** (`item_revisions` never written) — closed. **F34** (article revisions, done 2026-07-31)
+  already gave the table a writer and a dedupe test; Q6 was never updated to say so.
+
+*Everything else checked out as still genuinely open* — Tier 10's remaining classification-pipeline
+items (10.7–10.40), the F-series field audit (rules engine screens, item tags, enclosure player,
+PWA trip packs, the account-lifecycle and desktop-app tracks, etc.), N5/N7a (confirmed real design
+gaps, not plumbing, as of their own 2026-07-31 re-review), and Tier 11's FluxCast items (11.7, 11.9,
+11.11–11.12, 11.15–11.18, 11.20, 11.23, S9) — spot-checked against the symbols each ticket names
+(no `breaker.NewGuard` caller, no `flux.continuous` reader, `showOrder` still never set, `tag_rules`
+still has no reader, no `DailyBudget`, etc.) rather than assumed absent. Verified two ways: `go
+build ./...` and `GOOS=js GOARCH=wasm go build ./client/...` both clean at the time of this pass,
+and the packages touched by the two reopened findings above were re-run (`go test
+./internal/discover/... ./internal/recommend/... ./internal/recommendjob/... ./internal/smart/...
+./internal/store/...`) rather than trusted from a prior session's word.
