@@ -59,6 +59,11 @@ var dynamicPrefixes = map[string]string{
 	// The slideshow's reason for not speaking, built as "voice."+p.voice from
 	// the slideVoice* constants in client/view.
 	"slides.voice.": "the slideVoice* constants, via view.slideBody",
+	// What the server last observed about the key, built as "refusal."+class
+	// from the refused* constants in internal/app. The server sends a class
+	// rather than the provider's own message, because that message can quote
+	// the article being read aloud (§22.11), so the words live here.
+	"podcast.refusal.": "the refused* classes in internal/app, via view.podcastRefusalRow",
 	// The prerequisites dialog names each requirement and says why, both keyed
 	// off slidePrereq.Key — the prereq* constants in client/view.
 	"slides.need.": "the prereq* constants, via view.slideNeedRow",

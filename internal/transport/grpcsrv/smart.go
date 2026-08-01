@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 
@@ -41,6 +42,16 @@ type SmartServer struct {
 	scopeOf func(context.Context) (store.Scope, error)
 	log     *slog.Logger
 
+	// refusalOf reports the most recent Smart+ failure this process observed.
+	//
+	// Optional and nil-safe. It exists because `configured` can only ever mean
+	// "a key is stored" — proving one works costs money, so it does not claim
+	// to — and an expired key, a revoked key, a project with no credit and a
+	// model this account cannot reach all read as configured. Beside a silent
+	// player that can only say "the voice didn't start", that left a reader
+	// with four green ticks and nowhere to look.
+	refusalOf func() (string, time.Time)
+
 	// The theming half (§20.16.3, theme.go). All three are optional and all three
 	// are installed together by WithTheming.
 	//
@@ -58,6 +69,13 @@ type SmartServer struct {
 func NewSmartServer(settings *store.SettingsRepo, client *llm.Client, tr *smart.Translator,
 	scopeOf func(context.Context) (store.Scope, error), log *slog.Logger) *SmartServer {
 	return &SmartServer{settings: settings, llm: client, tr: tr, scopeOf: scopeOf, log: log}
+}
+
+// WithRefusals installs the observation the screen needs to stop claiming more
+// than it knows: what happened the last time the key was actually used.
+func (s *SmartServer) WithRefusals(f func() (string, time.Time)) *SmartServer {
+	s.refusalOf = f
+	return s
 }
 
 // WithSpeechMeter installs the voice client whose spend the screen reports.
@@ -265,6 +283,17 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 		}
 	}
 	out.Configured = key != ""
+	// What was actually observed, beside what can be cheaply asserted. Evidence
+	// rather than a second opinion: set when a call fails, cleared when one
+	// succeeds, so the screen speaks about the most recent attempt rather than
+	// the worst one. A CLASS, never the provider's message — that can quote the
+	// article being read aloud (§22.11).
+	if s.refusalOf != nil {
+		if kind, at := s.refusalOf(); kind != "" {
+			out.LastError = kind
+			out.LastErrorAt = at.UTC().Format(time.RFC3339)
+		}
+	}
 	if n := len(key); n >= 4 {
 		out.KeyHint = key[n-4:]
 	}

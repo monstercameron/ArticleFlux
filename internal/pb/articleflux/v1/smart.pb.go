@@ -610,8 +610,29 @@ type GetSmartConfigResponse struct {
 	// The screen says so, because "I deleted the key and it still works" is
 	// otherwise unexplainable.
 	FromEnvironment bool `protobuf:"varint,20,opt,name=from_environment,json=fromEnvironment,proto3" json:"from_environment,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The last time a Smart+ call was REFUSED, and what class of refusal it was.
+	//
+	// `configured` above can only ever mean "a key is stored". Proving it works
+	// costs money, so it does not claim to — and an expired key, a revoked key, a
+	// project with no credit and a model this account cannot reach all read as
+	// configured, because from where that check stands they are. The result was a
+	// screen showing four green prerequisites beside a silent player, with the
+	// real answer only in a server log.
+	//
+	// So the server reports what it has actually observed. This is evidence, not
+	// a second opinion: it is set when a call fails and cleared when one
+	// succeeds, so "a key is stored, and the last attempt two minutes ago was
+	// refused" is sayable, and is the sentence that ends the confusion.
+	//
+	// last_error is a CLASS, never the provider's own message: that message can
+	// quote the article being read aloud, and §22.11 keeps request content out of
+	// anything that leaves the process. The operator gets the verbatim text from
+	// the log and from `articleflux speech`.
+	LastError string `protobuf:"bytes,21,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// RFC3339, empty when there has been no failure since this process started.
+	LastErrorAt   string `protobuf:"bytes,22,opt,name=last_error_at,json=lastErrorAt,proto3" json:"last_error_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetSmartConfigResponse) Reset() {
@@ -726,6 +747,20 @@ func (x *GetSmartConfigResponse) GetFromEnvironment() bool {
 		return x.FromEnvironment
 	}
 	return false
+}
+
+func (x *GetSmartConfigResponse) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *GetSmartConfigResponse) GetLastErrorAt() string {
+	if x != nil {
+		return x.LastErrorAt
+	}
+	return ""
 }
 
 type SetSmartConfigRequest struct {
@@ -1323,7 +1358,7 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\tsignature\x18\x03 \x01(\tR\tsignature\x12\x14\n" +
 	"\x05smart\x18\x04 \x01(\bR\x05smart\x125\n" +
 	"\arepairs\x18\x05 \x03(\v2\x1b.articleflux.v1.ThemeRepairR\arepairs\"\x17\n" +
-	"\x15GetSmartConfigRequest\"\xc4\x03\n" +
+	"\x15GetSmartConfigRequest\"\x87\x04\n" +
 	"\x16GetSmartConfigResponse\x12\x1e\n" +
 	"\n" +
 	"configured\x18\x01 \x01(\bR\n" +
@@ -1339,7 +1374,10 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\x0fspeech_requests\x18\r \x01(\x03R\x0espeechRequests\x12+\n" +
 	"\x11speech_characters\x18\x0e \x01(\x03R\x10speechCharacters\x12#\n" +
 	"\rspeech_cached\x18\x0f \x01(\x03R\fspeechCached\x12)\n" +
-	"\x10from_environment\x18\x14 \x01(\bR\x0ffromEnvironment\"w\n" +
+	"\x10from_environment\x18\x14 \x01(\bR\x0ffromEnvironment\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x15 \x01(\tR\tlastError\x12\"\n" +
+	"\rlast_error_at\x18\x16 \x01(\tR\vlastErrorAt\"w\n" +
 	"\x15SetSmartConfigRequest\x12$\n" +
 	"\x0eopenai_api_key\x18\x01 \x01(\tR\fopenaiApiKey\x12\"\n" +
 	"\rclear_api_key\x18\x02 \x01(\bR\vclearApiKey\x12\x14\n" +

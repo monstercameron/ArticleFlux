@@ -216,6 +216,28 @@ message GetSmartConfigResponse {
   // The screen says so, because "I deleted the key and it still works" is
   // otherwise unexplainable.
   bool from_environment = 20;
+
+  // The last time a Smart+ call was REFUSED, and what class of refusal it was.
+  //
+  // `configured` above can only ever mean "a key is stored". Proving it works
+  // costs money, so it does not claim to — and an expired key, a revoked key, a
+  // project with no credit and a model this account cannot reach all read as
+  // configured, because from where that check stands they are. The result was a
+  // screen showing four green prerequisites beside a silent player, with the
+  // real answer only in a server log.
+  //
+  // So the server reports what it has actually observed. This is evidence, not
+  // a second opinion: it is set when a call fails and cleared when one
+  // succeeds, so "a key is stored, and the last attempt two minutes ago was
+  // refused" is sayable, and is the sentence that ends the confusion.
+  //
+  // last_error is a CLASS, never the provider's own message: that message can
+  // quote the article being read aloud, and §22.11 keeps request content out of
+  // anything that leaves the process. The operator gets the verbatim text from
+  // the log and from `articleflux speech`.
+  string last_error = 21;
+  // RFC3339, empty when there has been no failure since this process started.
+  string last_error_at = 22;
 }
 
 message SetSmartConfigRequest {

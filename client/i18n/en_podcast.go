@@ -37,5 +37,25 @@ func init() {
 		// things with a reader's articles.
 		"spendNote": "The broadcast rewrites each article so it hands over from the one before it. " +
 			"That sends article text to OpenAI and costs money on the account this server uses.",
+
+		// --- what the server last OBSERVED about the key -----------------------
+		//
+		// The row above says a key is stored. These say what happened the last
+		// time one was used, and they exist because those are different facts:
+		// an expired key, a revoked key, a project with no credit and a model
+		// this account cannot reach all read as "ready", and beside a silent
+		// player that is a reader with four green ticks and nowhere to look.
+		//
+		// Each names a DIFFERENT remedy. A class two people would fix the same
+		// way would be one class, not four.
+		"refusal.key-refused":       "The last attempt was refused: this key was rejected. It may be expired, revoked, or from another project.",
+		"refusal.quota":             "The last attempt was refused: this account is over its quota or has no credit left.",
+		"refusal.model-unavailable": "The last attempt was refused: the model this server is set to use is not available to this account.",
+		"refusal.unreachable":       "The last attempt did not reach the provider. Nothing is wrong with the key.",
+		"refusal.refused":           "The last attempt was refused, and the reason was not one this screen recognises.",
+		// Where the verbatim message is. It is not shown here on purpose: the
+		// provider's text can quote the article being read aloud, so it stays
+		// in places that belong to whoever runs the server.
+		"refusalHint": "The provider's own message is in the server log, and in `articleflux speech`.",
 	})
 }

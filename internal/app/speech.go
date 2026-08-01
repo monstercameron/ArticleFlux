@@ -560,6 +560,7 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 		seg, err := a.podcastFor(ctx, it, prev, vibe, open, opened)
 		switch {
 		case err == nil:
+			a.refused.note(nil)
 			key := podcastKey(it.ID, prev.ID, vibe, open)
 			if opened {
 				// A first story that greets and one that does not are different
@@ -572,6 +573,11 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 			// A two-line link post is its own segment. Read it.
 			a.cfg.Log.Debug("broadcast segment skipped, reading the article", "item", it.ID)
 		default:
+			// Recorded as well as logged. The log is the operator's and the
+			// record is the screen's: a segment that could not be written is
+			// the most common way listening goes silent, and until now the only
+			// trace of it left this process in a line nobody was watching.
+			a.refused.note(err)
 			a.cfg.Log.Warn("broadcast segment failed, falling back",
 				"item", it.ID, "err", err)
 		}
@@ -923,6 +929,11 @@ func (a *App) serveSpoken(w http.ResponseWriter, r *http.Request,
 
 	voice := strings.TrimSpace(prefs["tts.voice"])
 	audio, err := a.speak.Speak(r.Context(), cacheKey, text, prefs["tts.model"], voice)
+	// Recorded either way, which is the whole cleared-by-success rule: a stale
+	// failure on a screen is worse than none, because an operator who fixed
+	// their key an hour ago and still sees "refused" learns to ignore the
+	// field, and then it is furniture.
+	a.refused.note(err)
 	if err != nil {
 		// The provider's own message can echo request content, and request
 		// content here is the user's article — so it goes to the log and never

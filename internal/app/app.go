@@ -218,6 +218,9 @@ type App struct {
 	// hears the article or its digest, which is the right degradation — a queue
 	// instead of a programme, not silence.
 	podcast *smart.Podcast
+	// refused is what the server has OBSERVED about the credential, as opposed
+	// to what it can cheaply assert about it. See refusal.go.
+	refused refusal
 	// smartKey resolves the Smart+ credential the way every caller must: the
 	// stored setting first, the environment second. Held so DoctorSpeech can
 	// answer with the app's own resolution rather than a second copy of it.
@@ -1156,6 +1159,9 @@ func (a *App) buildHandler() {
 			// The voice's spend, beside the model's (TODO P3). Nil on an instance
 			// with no key, which reports zeroes rather than nothing.
 			WithSpeechMeter(a.tts).
+			// What the last real call did, so "ready" stops being the only
+			// thing this screen can say about a key (see refusal.go).
+			WithRefusals(a.LastRefusal).
 			// Theming (§20.16.3). The repo comes with it because the drift is
 			// derived from this reader's topics, and the consent preference for a
 			// model-written palette is read from the same place.
