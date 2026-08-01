@@ -56,6 +56,21 @@ type Instance struct {
 	// legitimately arrives twice and the second one must change nothing.
 	applied map[string]bool
 
+	// recDismissed and recPasses are Discover's whole state (§18.7) — see
+	// discover.go, which keeps the fixtures and runs the real scorer over them.
+	//
+	// A dismissal is permanent and lives here rather than on the fixture,
+	// because the fixture is the harvest and this is the reader's answer to it;
+	// recPasses is which harvest has run, so Refresh has something to find.
+	recDismissed map[string]bool
+	recPasses    int
+
+	// revisions is the edit history behind §10.1's "this changed" disclosure,
+	// keyed by item id. Empty for all but one article, which is what it looks
+	// like on a real instance: an empty history means "no edit seen", never
+	// "no edit happened".
+	revisions map[string][]*pb.ItemRevision
+
 	rev   int64
 	seq   int64
 	polls int32
@@ -294,6 +309,18 @@ func (in *Instance) itemByID(id string) *item {
 func (in *Instance) folderByID(id string) *folder {
 	for _, f := range in.folders {
 		if f.id == id {
+			return f
+		}
+	}
+	return nil
+}
+
+// folderByName is the import's lookup (opml.go): an OPML group names a folder
+// rather than identifying one, so a re-run has to recognise the categories it
+// created last time instead of making a second set with the same names.
+func (in *Instance) folderByName(name string) *folder {
+	for _, f := range in.folders {
+		if strings.EqualFold(f.name, name) {
 			return f
 		}
 	}

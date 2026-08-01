@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/client/design"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // The sample instance.
@@ -104,6 +105,24 @@ type seedItem struct {
 	// held keeps an article out of the first load so the refresh button has
 	// something to find.
 	held bool
+
+	// revisedFrom is the version this article REPLACED, if we saw an earlier
+	// one — never the current text, which lives on the item itself. Exactly one
+	// fixture sets it, which is the proportion on a real instance: an edit
+	// caught in the window between two polls is rare, and the disclosure exists
+	// for the rare case.
+	//
+	// hoursAgo on each entry is when that version was seen, so the history reads
+	// as relative time like everything else in this fixture.
+	revisedFrom []seedRevision
+}
+
+// seedRevision is one superseded version of an article.
+type seedRevision struct {
+	hoursAgo int
+	title    string
+	summary  string
+	body     []string
 }
 
 var seedItems = []seedItem{
@@ -211,6 +230,19 @@ var seedItems = []seedItem{
 			"<p>The working group has published a revised timeline, moving two of the four contested behaviours out of the current milestone and leaving the origin-scoped quota rules substantially as drafted.</p>",
 			"<p>Implementers had objected that the eviction ordering was unimplementable without exposing information about other origins. The revision sidesteps this by declining to specify an order at all, which several commenters have described, not unfairly, as agreeing to disagree in public.</p>",
 		},
+		// A wire story that was edited after publication — quietly, as they
+		// almost always are. The headline lost a number and the standfirst lost
+		// a claim, and a reader who had already read it would otherwise have no
+		// way to know either happened.
+		revisedFrom: []seedRevision{{
+			hoursAgo: 1,
+			title:    "Standards body delays storage API by six months",
+			summary:  "All four contested behaviours are deferred to the next milestone, including the origin-scoped quota rules.",
+			body: []string{
+				"<p>The working group has delayed the storage API by six months, moving all four contested behaviours out of the current milestone.</p>",
+				"<p>Implementers had objected that the eviction ordering was unimplementable without exposing information about other origins.</p>",
+			},
+		}},
 	},
 	{
 		feed: 2, minsAgo: 3 * 60, weight: 1,
@@ -450,6 +482,10 @@ func seed(now func() time.Time) *Instance {
 		undo:    map[string][]string{},
 		applied: map[string]bool{},
 		calls:   map[string]int64{},
+		// Discover's state (§18.7). Nothing dismissed yet, and the harvest that
+		// had already run when the tab opened is pass zero — see discover.go.
+		recDismissed: map[string]bool{},
+		revisions:    map[string][]*pb.ItemRevision{},
 		// The dial over the interest profile (§18.2). Empty rather than nil: the
 		// screen writes into it the first time somebody disagrees with the model,
 		// which for this demo's fixtures is usually within a minute.
@@ -533,6 +569,16 @@ func seed(now func() time.Time) *Instance {
 		}
 		if it.note != "" {
 			it.noteAt = t.Add(-time.Duration(st.minsAgo/3) * time.Minute)
+		}
+		for _, rv := range st.revisedFrom {
+			in.revisions[it.id] = append(in.revisions[it.id], &pb.ItemRevision{
+				Title:       rv.title,
+				Summary:     rv.summary,
+				ContentHtml: strings.Join(rv.body, "\n"),
+				// When we SAW this version, not when it was written — a feed
+				// carries no honest signal for the latter.
+				SeenAt: stamp(t.Add(-time.Duration(rv.hoursAgo) * time.Hour)),
+			})
 		}
 		if st.held {
 			in.incoming = append(in.incoming, it)

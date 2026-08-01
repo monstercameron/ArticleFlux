@@ -80,6 +80,28 @@ func (s *systemService) CheckHealth(context.Context, *pb.CheckHealthRequest) (*p
 	return &pb.CheckHealthResponse{Status: pb.ServingStatus_SERVING_STATUS_SERVING}, nil
 }
 
+// ListAudioTracks answers with none, which is a real answer rather than a stub.
+//
+// FluxCast's music beds are files on disk beside the binary (§19), fetched a
+// track at a time over a server stream precisely so they are NOT in the module —
+// and a 6 MB demo that shipped a few megabytes of MP3 to play under narration
+// nobody can generate would be paying for the wrong half of the feature.
+//
+// An instance without the audio directory answers exactly this way, and both
+// the client and the picker already treat an empty list as "offers silence"
+// rather than as a failure — so this is the deployment the demo actually is,
+// stated in the API's own terms. Answering Unimplemented instead would put a
+// gRPC error in the reader's connection taxonomy for a condition that is not an
+// error anywhere else.
+//
+// GetAudioTrack, its other half, is a SERVER STREAM and is therefore refused by
+// Conn.NewStream with the rest of them (demodata.go) — nothing here can serve
+// bytes that do not exist regardless.
+func (s *systemService) ListAudioTracks(context.Context, *pb.ListAudioTracksRequest) (
+	*pb.ListAudioTracksResponse, error) {
+	return &pb.ListAudioTracksResponse{}, nil
+}
+
 // GetServerStats reports on the instance in the tab.
 //
 // The numbers are real — they are counted out of the same structures the reader
@@ -224,6 +246,31 @@ func (s *smartService) ListLanguages(context.Context, *pb.ListLanguagesRequest) 
 		})
 	}
 	return res, nil
+}
+
+// ListModels, SuggestTheme and ComposeTheme refuse the way SetSmartConfig does,
+// and the distinction is worth the three functions.
+//
+// Left unimplemented they would answer Unimplemented, which on this API means
+// "this server is older than your client" — a statement about a version skew
+// that is not happening. FailedPrecondition with a sentence means "this instance
+// has no key", which is the truth and is the condition the settings screen
+// already knows how to explain. Both land in ClassApplication, so the difference
+// is not the connection indicator; it is whether the reader is told something
+// accurate about why the button did nothing.
+func (s *smartService) ListModels(context.Context, *pb.ListModelsRequest) (*pb.ListModelsResponse, error) {
+	return nil, status.Error(codes.FailedPrecondition,
+		"listing models spends a call against the instance's own OpenAI key, and the demo has none")
+}
+
+func (s *smartService) SuggestTheme(context.Context, *pb.SuggestThemeRequest) (*pb.SuggestThemeResponse, error) {
+	return nil, status.Error(codes.FailedPrecondition,
+		"reading your taste into a palette needs a server with an OpenAI key")
+}
+
+func (s *smartService) ComposeTheme(context.Context, *pb.ComposeThemeRequest) (*pb.ComposeThemeResponse, error) {
+	return nil, status.Error(codes.FailedPrecondition,
+		"composing a theme from a phrase needs a server with an OpenAI key")
 }
 
 func (s *smartService) TranslateUI(_ context.Context, req *pb.TranslateUIRequest) (*pb.TranslateUIResponse, error) {
