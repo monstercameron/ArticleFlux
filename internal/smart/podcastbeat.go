@@ -97,6 +97,10 @@ func (p *Podcast) segmentFor(b fluxcast.Brief) (Segment, bool) {
 		PrevSource: b.Prev.Source,
 		PrevTitle:  b.Prev.Title,
 		Vibe:       b.Vibe,
+		// What the format says about this beat. Empty on an instance with no
+		// format, in which case nothing reaches the prompt and the commission
+		// is what it has always been.
+		Direction: b.Direction,
 	}
 	switch b.Kind {
 	case fluxcast.BeatOpening:

@@ -67,6 +67,13 @@ type Brief struct {
 	Vibe     string
 	Revision string
 
+	// Direction is everything the format says about HOW to write this beat,
+	// resolved down the cascade. Empty on an instance with no format, which is
+	// what keeps adopting one inaudible until somebody writes one.
+	//
+	// It is prompt input, and it is egress: see Direction's own comment.
+	Direction Direction
+
 	// Handover is which bridge construction to use, or -1 for none. Chosen at
 	// plan time so that a replayed programme sounds the same and a cache entry
 	// stays valid — a writer that picked its own would make both untrue.
@@ -153,6 +160,11 @@ func ScriptKey(b Brief) string {
 	w(b.Revision)
 	w(strconv.Itoa(b.Words))
 	w(strconv.Itoa(b.Handover))
+	// The direction changes the words, so it changes the recording. Without
+	// this, editing a format's house style would serve back every segment
+	// written under the old one — which is indistinguishable from the format
+	// not being read at all.
+	w(b.Direction.key())
 	// The greeting, a tease and a recap all depend on what they NAME and on
 	// when they were said; an ordinary story depends on neither, unless it is
 	// carrying the greeting itself.

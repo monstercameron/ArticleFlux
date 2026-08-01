@@ -45,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -375,6 +376,18 @@ type Segment struct {
 	// is selling and one is catching somebody up, and a recap that sells is
 	// telling a listener to look forward to something they already heard.
 	RecapOnly bool
+	// Direction is what the FORMAT says about how to write this beat: who is
+	// listening, what may be assumed, what to avoid, and any note for this
+	// beat alone (plan §29.7).
+	//
+	// It is rendered into the input rather than into the instructions, and the
+	// distinction is the cache: the instructions are one string per vibe,
+	// shared by every beat and versioned by PromptVersion, while this varies
+	// per beat and belongs with the rest of the per-beat commission.
+	//
+	// Empty on an instance with no format, in which case nothing is added and
+	// the prompt is byte-identical to what it was before formats existed.
+	Direction fluxcast.Direction
 	// Names are the stories a tease or a recap names. Ignored by every other
 	// mode: the opening's run-through travels in Open.Lineup, because it is
 	// part of the greeting rather than a beat of its own.
@@ -810,6 +823,11 @@ func writeOpening(in *strings.Builder, o *Opening, where string) {
 // longer emitted still reads perfectly.
 func podcastInput(seg Segment, body string) string {
 	var in strings.Builder
+	// The format's direction goes FIRST, before the story and before the
+	// handover, for the reason every other "read this before the article"
+	// block here goes first: a model shown an article and then told how to
+	// treat it has already decided how to treat it.
+	writeDirection(&in, seg.Direction)
 	// The sign-off takes nothing but what it is closing over, and takes it
 	// FIRST: everything below this line is a story to cover or to hand over
 	// from, and a model shown an article while being told the programme is over
@@ -989,9 +1007,12 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 		// opening itself follows, and for the same reason.
 		mode = "opened"
 	}
+	// The format's direction is part of the key because it is part of the TEXT.
+	// Editing a house style and being served back every segment written under
+	// the old one is indistinguishable from the format never having been read.
 	sum := sha256.Sum256([]byte(seg.ItemID + "\x00" + seg.PrevID + "\x00" +
 		model + "\x00" + PromptVersion + "\x00" + VibeFor(seg.Vibe) +
-		"\x00" + open + "\x00" + mode))
+		"\x00" + open + "\x00" + mode + "\x00" + seg.Direction.Summary()))
 	name := hex.EncodeToString(sum[:]) + ".txt"
 	// One level of fan-out, matching the digest and audio caches, so a long
 	// listener does not end up with one directory holding tens of thousands of
