@@ -155,11 +155,15 @@ message RegenerateRecoveryCodesResponse {
 }
 
 message RefreshSessionRequest {
-  // device_id names which device is refreshing. The refresh token alone would
-  // be enough to find the row, but naming the device means a token presented
-  // against the wrong device is a mismatch rather than a lookup that happens to
-  // succeed.
-  string device_id = 1;
+  // refresh_record_id names which device row is refreshing. Server-generated
+  // at Login/Setup time (§7.3a SEC1) — never accepted from a client as a
+  // primary key, because a client-chosen id that collides with someone else's
+  // row is exactly the cross-account session-minting bug this field replaced
+  // (`device_id` used to be a client-minted timestamp). The refresh token
+  // alone would be enough to find the row, but naming it means a token
+  // presented against the wrong record is a mismatch rather than a lookup
+  // that happens to succeed.
+  string refresh_record_id = 1;
   string refresh_token = 2;
 }
 
@@ -177,10 +181,12 @@ message LoginRequest {
   string username = 1;
   string password = 2;
 
-  // device_id groups sessions from one browser profile, so the account screen
-  // can later revoke a device rather than a token. The client generates and
-  // persists it; an empty value gets one assigned server-side.
-  string device_id = 3;
+  // label is a client-stable browser value ("this laptop"), for PRESENTATION
+  // ONLY (§7.3a SEC1). It is never used as a row identifier: the account
+  // screen can show it back, and nothing else may depend on it, because a
+  // label is a string the caller chose and a security boundary cannot be
+  // built on a string the caller chose.
+  string label = 3;
 }
 
 message LoginResponse {
@@ -193,9 +199,11 @@ message LoginResponse {
   string expires_at = 2;
   string username = 3;
   string role = 4;
-  // device_id echoes what the session was filed under — assigned here when the
-  // request left it empty.
-  string device_id = 5;
+  // refresh_record_id is the server-generated, unguessable id (idgen.DeviceID,
+  // 128 bits of CSPRNG) of the devices row this login registered. Present it
+  // to RefreshSession alongside refresh_token; it is never derived from, or
+  // equal to, anything the client sent (§7.3a SEC1).
+  string refresh_record_id = 5;
   // refresh_token is the FIRST token of this device's family (§7.3).
   //
   // Handed out at login rather than fetched later, because a client that has to
@@ -225,7 +233,8 @@ message SetupResponse {
   string expires_at = 2;
   string username = 3;
   string role = 4;
-  string device_id = 5;
+  // refresh_record_id — see LoginResponse.refresh_record_id.
+  string refresh_record_id = 5;
   string refresh_token = 6;
   // Shown once and never again: they are stored hashed, so this response is the
   // only moment they exist in readable form anywhere.

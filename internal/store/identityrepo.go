@@ -418,29 +418,62 @@ func (r *ReaderRepo) RevokeAPIToken(ctx context.Context, s Scope, tokenID string
 
 // --- devices and refresh families (§7.1) -----------------------------------
 
+// ErrDeviceOwnerMismatch means a refresh-record id already belongs to a
+// different user or tenant.
+//
+// §7.3a SEC1: before this existed, `RegisterDevice` used `ON CONFLICT(id) DO
+// UPDATE`, which replaced only `refresh_hash` and left the row's original
+// `user_id`/`tenant_id` in place. Combined with a client-chosen id (a
+// timestamp), that let a second login mint a refresh secret against the FIRST
+// user's row — a cross-account session-minting bug. The record id is now
+// always server-generated (idgen.DeviceID, 128 bits of CSPRNG), so a real
+// collision is not a practical risk; this guard is the failure-closed backstop
+// for it anyway, because "cryptographically unlikely" is not the same
+// assurance as "the write refuses".
+var ErrDeviceOwnerMismatch = errors.New("store: that refresh record belongs to a different account")
+
 // RegisterDevice records a refresh token's family.
 //
 // A refresh token belongs to a family, and presenting one that has already been
 // rotated means either a clone or a theft. The response to both is identical:
 // revoke the whole family, not the one token — which is why family_id is stored
 // rather than derived.
-func (r *ReaderRepo) RegisterDevice(ctx context.Context, s Scope, deviceID, familyID, refreshToken, label, clientVersion string) error {
+//
+// recordID is the server-generated refresh-record id (never anything a client
+// chose); label is the client's presentation-only browser label, stored and
+// never trusted for lookups. A write that collides with another account's
+// record fails with ErrDeviceOwnerMismatch and modifies nothing — see
+// ErrDeviceOwnerMismatch.
+func (r *ReaderRepo) RegisterDevice(ctx context.Context, s Scope, recordID, familyID, refreshToken, label, clientVersion string) error {
 	if !s.Valid() {
 		return ErrNoScope
 	}
 	now := stamp(time.Now().UTC())
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO devices (id, user_id, tenant_id, label, family_id, refresh_hash,
-			                     client_version, created_at, last_seen_at)
-			VALUES (?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(id) DO UPDATE SET
-			    refresh_hash = excluded.refresh_hash,
-			    client_version = excluded.client_version,
-			    last_seen_at = excluded.last_seen_at`,
-			deviceID, s.UserID, s.TenantID, nullify(label), familyID,
-			secret.HashToken(refreshToken), nullify(clientVersion), now, now)
-		return err
+		var existingUser, existingTenant string
+		err := tx.QueryRowContext(ctx,
+			`SELECT user_id, tenant_id FROM devices WHERE id = ?`, recordID).
+			Scan(&existingUser, &existingTenant)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO devices (id, user_id, tenant_id, label, family_id, refresh_hash,
+				                     client_version, created_at, last_seen_at)
+				VALUES (?,?,?,?,?,?,?,?,?)`,
+				recordID, s.UserID, s.TenantID, nullify(label), familyID,
+				secret.HashToken(refreshToken), nullify(clientVersion), now, now)
+			return err
+		case err != nil:
+			return err
+		case existingUser != s.UserID || existingTenant != s.TenantID:
+			return ErrDeviceOwnerMismatch
+		default:
+			_, err := tx.ExecContext(ctx, `
+				UPDATE devices SET refresh_hash = ?, client_version = ?, last_seen_at = ?
+				 WHERE id = ?`,
+				secret.HashToken(refreshToken), nullify(clientVersion), now, recordID)
+			return err
+		}
 	})
 }
 

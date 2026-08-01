@@ -93,9 +93,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `articleflux — a self-hosted feed reader
 
   articleflux serve   [-addr host:port] [-db path] [-web dir] [-origin url] [-dev]
-  articleflux init    -user name -password pass [-db path]
-  articleflux adduser -user name -password pass [-role member] [-db path]
-  articleflux passwd  -user name -password pass [-db path]
+  articleflux init    -user name [-db path]
+  articleflux adduser -user name [-role member] [-db path]
+  articleflux passwd  -user name [-db path]
   articleflux migrate [-db path]
   articleflux backup  -out path [-db path] [-keep n]
   articleflux seed    [-db path] [-feeds url,url,...]
@@ -111,6 +111,10 @@ local account with no login; that is refused on any bind but loopback.
 
 A fresh install needs "articleflux init" once — without an account there is
 nothing to log in as, and serve says so at boot rather than at the login screen.
+
+init/adduser/passwd ask for a password on a hidden terminal prompt, or read
+ARTICLEFLUX_PASSWORD for scripted use — never as a command-line flag, which
+would sit in shell history and process listings.
 `)
 }
 
@@ -505,7 +509,7 @@ func seed(log *slog.Logger, args []string) error {
 		}
 		// No category: the seed is a starter set, and inventing a taxonomy for
 		// someone before they have read anything is filing their post for them.
-		f, existed, err := a.Service().Subscribe(ctx, sc, u, "", "")
+		f, existed, _, err := a.Service().Subscribe(ctx, sc, u, "", "")
 		if err != nil {
 			// One unreachable feed must not abort the seed: the rest are still
 			// worth having, and the failure is visible in the log.

@@ -187,28 +187,33 @@ func (s *AuthServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordR
 		s.log.Error("hashing a new password", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
-	if err := s.repo.SetPasswordHash(ctx, sc.UserID, hash); err != nil {
-		s.log.Error("storing a new password", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+
+	// The family tied to THIS session, so it survives alongside the session
+	// itself — the person who just proved their password again should not be
+	// logged out of their own device for doing so. ErrNotFound (no family, or
+	// none live) just means there is nothing to except: every other family
+	// still goes.
+	keepFamily, ferr := s.repo.FamilyForSession(ctx, secret.HashToken(bearerToken(ctx)))
+	if ferr != nil {
+		keepFamily = ""
 	}
 
-	// The revocation comes AFTER the hash is stored, and the order is the
-	// security property: revoking first and then failing to store would log
-	// every device out while leaving the old password working, which is the
-	// worst of both — the reader believes they have changed it and the thief
-	// still has it.
+	// One transaction (§7.3a SEC3): the hash, every other session, and every
+	// other refresh family commit together or not at all. The previous shape
+	// stored the hash and revoked sessions as two writes, and reported success
+	// with an invented zero count when the second failed — which told a reader
+	// they had ended a thief's session when they had not. Here a failure at any
+	// point leaves the OLD password and OLD credentials consistently live,
+	// never half of each, and the RPC fails loudly instead of lying.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	ended, err := s.repo.RevokeOtherSessions(ctx, sc.UserID, secret.HashToken(bearerToken(ctx)), now)
+	ended, familiesEnded, err := s.repo.ChangePasswordAndRevoke(ctx, sc.UserID, hash,
+		secret.HashToken(bearerToken(ctx)), keepFamily, now)
 	if err != nil {
-		// The password IS changed. Reporting failure now would tell the reader
-		// the opposite of what happened and invite them to try again with a
-		// password that no longer works. Logged loudly instead, and the count
-		// comes back as zero.
-		s.log.Error("revoking other sessions after a password change",
-			"err", err, "user", sc.UserID)
-		ended = 0
+		s.log.Error("changing password and revoking sessions", "err", err, "user", sc.UserID)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
-	s.log.Info("password changed", "user", sc.UserID, "sessions_ended", ended)
+	s.log.Info("password changed", "user", sc.UserID, "sessions_ended", ended,
+		"families_ended", familiesEnded)
 	return &pb.ChangePasswordResponse{SessionsEnded: int32(ended)}, nil
 }
 

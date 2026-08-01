@@ -72,7 +72,11 @@ func newAuth(t *testing.T) (*AuthServer, *store.ReaderRepo) {
 		}
 		return sc, nil
 	}
-	return NewAuthServer(repo, scopeOf, log, false), repo
+	// Refresh-token issuance is gated off by default in production (§7.3a
+	// SEC4, WithRefreshTokens) because the wasm client does not yet consume
+	// one. This file's job is proving the rotation/reuse-detection machinery
+	// underneath is correct, so it opts back in.
+	return NewAuthServer(repo, scopeOf, log, false).WithRefreshTokens(true), repo
 }
 
 func withToken(tok string) context.Context {
@@ -81,6 +85,53 @@ func withToken(tok string) context.Context {
 }
 
 func codeOf(err error) codes.Code { return status.Code(err) }
+
+// §7.3a SEC4: the wasm client discards whatever refresh token it is handed —
+// it has no rotation, no versioned bundle, and no cross-tab coordination — so
+// issuing one anyway is an unconsumed credential sitting in a response,
+// useful to nobody but an attacker who can read it off the wire before the
+// client throws it away. WithRefreshTokens defaults to off, and this pins
+// that default directly against a server built the way NewAuthServer is
+// wired in production (internal/app/app.go), not against this file's own
+// opted-in fixture.
+func TestRefreshTokensAreGatedOffByDefault(t *testing.T) {
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "gate.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewReaderRepo(db)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hash, err := secret.HashPassword(testPassword, secret.DefaultParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateTenantAndUser(context.Background(), store.NewTenant{
+		TenantID: idgen.New(), Name: "Test",
+		UserID: idgen.New(), Username: "cam", Hash: hash, Role: "superadmin",
+		Now: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scopeOf := func(context.Context) (store.Scope, error) { return store.Scope{}, store.ErrNoScope }
+
+	// NewAuthServer with no .WithRefreshTokens call — the production shape.
+	s := NewAuthServer(repo, scopeOf, log, false)
+	res, err := s.Login(context.Background(), &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if res.GetRefreshToken() != "" || res.GetRefreshRecordId() != "" {
+		t.Error("a server built with the production defaults issued a refresh token " +
+			"nothing in the shipped client consumes")
+	}
+	if res.GetToken() == "" {
+		t.Error("gating refresh tokens off must not gate the access token off too")
+	}
+}
 
 func TestLoginIssuesAWorkingSession(t *testing.T) {
 	s, _ := newAuth(t)
@@ -93,8 +144,8 @@ func TestLoginIssuesAWorkingSession(t *testing.T) {
 	if res.GetToken() == "" {
 		t.Fatal("login returned an empty token")
 	}
-	if res.GetDeviceId() == "" {
-		t.Error("login did not assign a device id when the request omitted one")
+	if res.GetRefreshRecordId() == "" {
+		t.Error("login did not assign a refresh record id")
 	}
 	if res.GetRole() != "superadmin" {
 		t.Errorf("role = %q, want superadmin", res.GetRole())
@@ -199,6 +250,35 @@ func TestLogoutRevokesTheSession(t *testing.T) {
 	}
 	if _, err := s.Logout(context.Background(), &pb.LogoutRequest{}); err != nil {
 		t.Errorf("logout with no credential at all: %v", err)
+	}
+}
+
+// §7.3a SEC2: Logout used to revoke only the session, leaving the refresh
+// family standing — so a refresh token minted at the same login (another
+// tab, or a thief who had it and not the access token) could mint a
+// replacement session seconds after "logging out". Sign-out has to end the
+// AUTHORITY to come back, not just today's credential.
+func TestLogoutRevokesTheRefreshFamilyToo(t *testing.T) {
+	s, _ := newAuth(t)
+	res, err := s.Login(context.Background(),
+		&pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.GetRefreshToken() == "" {
+		t.Fatal("login issued no refresh token; nothing below proves anything")
+	}
+	ctx := withToken(res.GetToken())
+
+	if _, err := s.Logout(ctx, &pb.LogoutRequest{}); err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+
+	if _, err := s.RefreshSession(context.Background(), &pb.RefreshSessionRequest{
+		RefreshRecordId: res.GetRefreshRecordId(), RefreshToken: res.GetRefreshToken(),
+	}); err == nil {
+		t.Error("SECURITY: a refresh token minted at login still works after logout — " +
+			"signing out ended the session but not the renewal authority behind it")
 	}
 }
 
@@ -431,7 +511,7 @@ func TestAReplayedRefreshTokenRevokesTheFamily(t *testing.T) {
 
 	// The honest rotation.
 	first, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+		RefreshRecordId: in.GetRefreshRecordId(), RefreshToken: in.GetRefreshToken(),
 	})
 	if err != nil {
 		t.Fatalf("an honest refresh was refused: %v", err)
@@ -446,14 +526,14 @@ func TestAReplayedRefreshTokenRevokesTheFamily(t *testing.T) {
 
 	// The replay: the ORIGINAL token, already spent.
 	if _, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+		RefreshRecordId: in.GetRefreshRecordId(), RefreshToken: in.GetRefreshToken(),
 	}); err == nil {
 		t.Fatal("a spent refresh token was accepted")
 	}
 
 	// And the family is dead, so even the token that WAS valid no longer works.
 	if _, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: in.GetDeviceId(), RefreshToken: first.GetRefreshToken(),
+		RefreshRecordId: in.GetRefreshRecordId(), RefreshToken: first.GetRefreshToken(),
 	}); err == nil {
 		t.Error("the family survived a detected replay — a thief keeps working")
 	}
@@ -471,10 +551,10 @@ func TestRefreshFailuresAreIndistinguishable(t *testing.T) {
 	}
 
 	_, unknownDevice := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: "no-such-device", RefreshToken: in.GetRefreshToken(),
+		RefreshRecordId: "no-such-record", RefreshToken: in.GetRefreshToken(),
 	})
 	_, wrongToken := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: in.GetDeviceId(), RefreshToken: "not-the-right-token",
+		RefreshRecordId: in.GetRefreshRecordId(), RefreshToken: "not-the-right-token",
 	})
 	if unknownDevice == nil || wrongToken == nil {
 		t.Fatal("a bad refresh was accepted")
@@ -498,7 +578,7 @@ func TestARefreshedSessionBelongsToTheDevicesOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := s.RefreshSession(ctx, &pb.RefreshSessionRequest{
-		DeviceId: in.GetDeviceId(), RefreshToken: in.GetRefreshToken(),
+		RefreshRecordId: in.GetRefreshRecordId(), RefreshToken: in.GetRefreshToken(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -520,10 +600,10 @@ func TestRefreshRefusesEmptyInputs(t *testing.T) {
 	ctx := context.Background()
 	for name, req := range map[string]*pb.RefreshSessionRequest{
 		"nothing":    {},
-		"no device":  {RefreshToken: "something"},
-		"no token":   {DeviceId: "something"},
-		"both blank": {DeviceId: "", RefreshToken: ""},
-		"whitespace": {DeviceId: "   ", RefreshToken: "x"},
+		"no record":  {RefreshToken: "something"},
+		"no token":   {RefreshRecordId: "something"},
+		"both blank": {RefreshRecordId: "", RefreshToken: ""},
+		"whitespace": {RefreshRecordId: "   ", RefreshToken: "x"},
 	} {
 		if _, err := s.RefreshSession(ctx, req); err == nil {
 			t.Errorf("%s was accepted", name)

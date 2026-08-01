@@ -193,6 +193,156 @@ func (r *ReaderRepo) RevokeSession(ctx context.Context, tokenHash, now string) e
 	return err
 }
 
+// RevokeSessionAndFamily retires the calling session AND the refresh family
+// its device belongs to, in one transaction (§7.3a SEC2).
+//
+// Revoking only the session used to leave a live refresh family behind: the
+// access token died, but whoever also held the refresh secret — another tab
+// mid-rotation, a thief — could mint a brand new session with it seconds
+// later. Sign-out has to end the AUTHORITY to come back, not just today's
+// credential.
+//
+// Idempotent and silent about whether anything matched, for the same reason
+// RevokeSession is: a client retrying a logout, or logging out twice from two
+// tabs, must not see an error, and there is nothing useful a caller does
+// differently for "no such session" versus "already revoked".
+//
+// Unscoped by design — the token hash IS the authorisation, exactly as for
+// RevokeSession.
+func (r *ReaderRepo) RevokeSessionAndFamily(ctx context.Context, tokenHash, now string) error {
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+		var userID string
+		var deviceID sql.NullString
+		err := tx.QueryRowContext(ctx,
+			`SELECT user_id, device_id FROM sessions
+			  WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).
+			Scan(&userID, &deviceID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET revoked_at = ?
+			  WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash); err != nil {
+			return err
+		}
+		if !deviceID.Valid || deviceID.String == "" {
+			// Login/refresh recorded no working device row (RegisterDevice can
+			// fail non-fatally). No family exists to end.
+			return nil
+		}
+		var familyID string
+		err = tx.QueryRowContext(ctx,
+			`SELECT family_id FROM devices WHERE id = ? AND user_id = ?`,
+			deviceID.String, userID).Scan(&familyID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			`UPDATE devices SET revoked_at = ?, revoked_reason = 'signed_out'
+			  WHERE family_id = ? AND revoked_at IS NULL`, now, familyID)
+		return err
+	})
+}
+
+// FamilyForSession resolves the refresh family a live session's device
+// belongs to.
+//
+// What ChangePassword uses to keep exactly the calling session's family alive
+// while ending every other one (§7.3a SEC2): "keep this session" and "keep
+// this session's renewal authority" have to name the same family, or a caller
+// who just changed their password because they feared a stolen credential
+// would still be revoked out of their own device by the very action meant to
+// secure it.
+//
+// ErrNotFound covers both "no session" and "session has no device row" —
+// callers that only need "is there a family to keep" treat both the same way:
+// there is nothing to except from a full revocation.
+func (r *ReaderRepo) FamilyForSession(ctx context.Context, tokenHash string) (string, error) {
+	var familyID string
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT d.family_id
+		  FROM sessions s
+		  JOIN devices d ON d.id = s.device_id
+		 WHERE s.token_hash = ? AND s.revoked_at IS NULL AND d.revoked_at IS NULL`,
+		tokenHash).Scan(&familyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return familyID, err
+}
+
+// ChangePasswordAndRevoke replaces a user's password hash and revokes every
+// session and refresh family for that user EXCEPT the ones named, all in one
+// transaction (§7.3a SEC3).
+//
+// One transaction, not three writes, and that is the security property: the
+// previous shape stored the hash and revoked sessions as separate statements,
+// which let a revocation failure land after the RPC had already told the
+// caller "success" with an invented zero count. A reader who believed they
+// had ended a thief's session, and had not, is the exact failure this exists
+// to close. Here, either everything commits — new password, every other
+// session dead, every other refresh family dead — or NOTHING does: the old
+// password and old credentials stay consistently live, never half of each.
+//
+// keepSessionHash/keepFamilyID may be empty to keep nothing, which is what
+// the break-glass CLI reset and an eventual admin/recovery reset want — the
+// account is being recovered FROM a lost credential, so nothing survives.
+// An ordinary self-service change passes the caller's own session hash and
+// family id, so the person who just proved their password again is not
+// logged out for doing so.
+func (r *ReaderRepo) ChangePasswordAndRevoke(ctx context.Context, userID, newHash, keepSessionHash, keepFamilyID, now string) (sessionsEnded, familiesEnded int64, err error) {
+	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, userID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+
+		var sRes sql.Result
+		if keepSessionHash == "" {
+			sRes, err = tx.ExecContext(ctx,
+				`UPDATE sessions SET revoked_at = ?
+				  WHERE user_id = ? AND revoked_at IS NULL`, now, userID)
+		} else {
+			sRes, err = tx.ExecContext(ctx,
+				`UPDATE sessions SET revoked_at = ?
+				  WHERE user_id = ? AND token_hash <> ? AND revoked_at IS NULL`,
+				now, userID, keepSessionHash)
+		}
+		if err != nil {
+			return err
+		}
+		sessionsEnded, _ = sRes.RowsAffected()
+
+		var fRes sql.Result
+		if keepFamilyID == "" {
+			fRes, err = tx.ExecContext(ctx,
+				`UPDATE devices SET revoked_at = ?, revoked_reason = 'password_changed'
+				  WHERE user_id = ? AND revoked_at IS NULL`, now, userID)
+		} else {
+			fRes, err = tx.ExecContext(ctx,
+				`UPDATE devices SET revoked_at = ?, revoked_reason = 'password_changed'
+				  WHERE user_id = ? AND family_id <> ? AND revoked_at IS NULL`,
+				now, userID, keepFamilyID)
+		}
+		if err != nil {
+			return err
+		}
+		familiesEnded, _ = fRes.RowsAffected()
+		return nil
+	})
+	return sessionsEnded, familiesEnded, err
+}
+
 // PurgeExpiredSessions deletes sessions that expired or were revoked before cut.
 //
 // Rows that can never authenticate again are not history worth keeping — the

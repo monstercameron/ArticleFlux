@@ -141,7 +141,7 @@ func TestARefreshedSessionDoesNotInheritSudo(t *testing.T) {
 	}
 
 	ref, err := s.RefreshSession(context.Background(), &pb.RefreshSessionRequest{
-		DeviceId: res.GetDeviceId(), RefreshToken: res.GetRefreshToken(),
+		RefreshRecordId: res.GetRefreshRecordId(), RefreshToken: res.GetRefreshToken(),
 	})
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -222,6 +222,93 @@ func TestChangePasswordEndsOtherSessionsAndKeepsTheCallers(t *testing.T) {
 		Username: "cam", Password: testPassword,
 	}); err == nil {
 		t.Error("the OLD password still logs in")
+	}
+}
+
+// §7.3a SEC2's exploit, closed: a session ending is not enough if the
+// REFRESH FAMILY behind it still stands — a thief who only held the refresh
+// secret, never the access token, could mint a brand new session seconds
+// after "the other sessions" were revoked. ChangePassword has to end the
+// renewal authority too, not just today's credential, and it has to spare
+// the caller's OWN family or the person who just proved their password again
+// is logged off their own device by the action meant to protect it.
+func TestChangePasswordRevokesOtherRefreshFamiliesAndKeepsTheCallers(t *testing.T) {
+	s, _ := newAuth(t)
+
+	mineLogin, err := s.Login(context.Background(),
+		&pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	otherLogin, err := s.Login(context.Background(),
+		&pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatalf("second login: %v", err)
+	}
+	if mineLogin.GetRefreshToken() == "" || otherLogin.GetRefreshToken() == "" {
+		t.Fatal("logins issued no refresh token; nothing below proves anything")
+	}
+
+	if _, err := s.ChangePassword(withToken(mineLogin.GetToken()),
+		&pb.ChangePasswordRequest{NewPassword: "a-quite-different-passphrase"}); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+
+	// The stolen/other-device refresh token must be as dead as the session
+	// was — this is the part §7.3a found missing: revoking sessions alone
+	// left this call succeeding, minting a fresh session for a credential the
+	// password change was supposed to end.
+	if _, err := s.RefreshSession(context.Background(), &pb.RefreshSessionRequest{
+		RefreshRecordId: otherLogin.GetRefreshRecordId(),
+		RefreshToken:    otherLogin.GetRefreshToken(),
+	}); err == nil {
+		t.Error("SECURITY: another device's refresh family survived a password change " +
+			"— a stolen refresh token can still mint a new session")
+	}
+
+	// And the caller's OWN family must still work, or changing a password
+	// punishes the person who did the right thing.
+	if _, err := s.RefreshSession(context.Background(), &pb.RefreshSessionRequest{
+		RefreshRecordId: mineLogin.GetRefreshRecordId(),
+		RefreshToken:    mineLogin.GetRefreshToken(),
+	}); err != nil {
+		t.Errorf("the caller's own refresh family was revoked by their own password change: %v", err)
+	}
+}
+
+// §7.3a SEC3: a failure partway through must never leave the password
+// changed with the old credentials still counted as revoked, or vice versa —
+// and the RPC must never answer "success" over it. ChangePasswordAndRevoke's
+// first write is `UPDATE users ... WHERE id = ?`, so an unknown user id is a
+// real, reachable failure point rather than a synthetic one: it proves the
+// transaction rolls back rather than partially applying.
+func TestChangePasswordAndRevokeRollsBackWhollyOnFailure(t *testing.T) {
+	s, repo := newAuth(t)
+	ctx := context.Background()
+
+	before, err := repo.UserForLogin(ctx, "cam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := login(t, s)
+
+	_, _, err = repo.ChangePasswordAndRevoke(ctx, "no-such-user-id", "irrelevant-hash",
+		"", "", time.Now().UTC().Format(time.RFC3339Nano))
+	if err == nil {
+		t.Fatal("changing the password of a nonexistent user succeeded")
+	}
+
+	// The real account's hash must be untouched...
+	after, err := repo.UserForLogin(ctx, "cam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Hash != before.Hash {
+		t.Error("a failed ChangePasswordAndRevoke call on ANOTHER user id changed cam's hash")
+	}
+	// ...and nothing was revoked as a side effect of the attempt.
+	if _, err := s.WhoAmI(withToken(mine), &pb.WhoAmIRequest{}); err != nil {
+		t.Errorf("a failed ChangePasswordAndRevoke call revoked a live session anyway: %v", err)
 	}
 }
 

@@ -118,14 +118,14 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	// A fresh server-side ID, not anything derived from what the caller sent. An
 	// earlier draft seeded this from the username, which would have made the
 	// device identifier guessable from a name the reader chose in public.
-	device := idgen.DeviceID()
+	record := idgen.DeviceID()
 	expires := now.Add(SessionTTL)
 	if err := s.repo.CreateSession(ctx, store.NewSession{
 		SessionID: idgen.New(),
 		UserID:    userID,
 		TenantID:  tenantID,
 		TokenHash: secret.HashToken(token),
-		DeviceID:  device,
+		DeviceID:  record,
 		UserAgent: userAgent(ctx),
 		Now:       now.Format(time.RFC3339Nano),
 		ExpiresAt: expires.Format(time.RFC3339Nano),
@@ -137,26 +137,32 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 
-	// A device family, so the new session can refresh like any other. A failure
-	// costs the refresh token and nothing else — the account exists and the
-	// session works, and refusing setup over bookkeeping would be worse.
-	refresh := idgen.Token()
-	if err := s.repo.RegisterDevice(ctx, scope, device, idgen.New(), refresh,
-		"", clientStamp(ctx)); err != nil {
-		s.log.Warn("registering the setup device family", "err", err)
-		refresh = ""
+	// A device family, so the new session can refresh like any other — gated
+	// by WithRefreshTokens exactly as Login is (§7.3a SEC4). A failure costs
+	// the refresh token and nothing else — the account exists and the session
+	// works, and refusing setup over bookkeeping would be worse.
+	var refresh, refreshRecord string
+	if s.issueRefresh {
+		refresh = idgen.Token()
+		if err := s.repo.RegisterDevice(ctx, scope, record, idgen.New(), refresh,
+			"", clientStamp(ctx)); err != nil {
+			s.log.Warn("registering the setup device family", "err", err)
+			refresh = ""
+		} else {
+			refreshRecord = record
+		}
 	}
 
 	s.log.Info("instance claimed", "username", username, "role", "superadmin",
 		"email_given", email != "")
 	return &pb.SetupResponse{
-		Token:         token,
-		ExpiresAt:     expires.Format(time.RFC3339),
-		Username:      username,
-		Role:          "superadmin",
-		DeviceId:      device,
-		RefreshToken:  refresh,
-		RecoveryCodes: sheet,
+		Token:           token,
+		ExpiresAt:       expires.Format(time.RFC3339),
+		Username:        username,
+		Role:            "superadmin",
+		RefreshRecordId: refreshRecord,
+		RefreshToken:    refresh,
+		RecoveryCodes:   sheet,
 	}, nil
 }
 

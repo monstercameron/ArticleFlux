@@ -80,7 +80,6 @@ func initInstance(log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	dbPath := commonFlags(fs)
 	user := fs.String("user", "", "username for the first account (required)")
-	pass := fs.String("password", "", "password; empty reads ARTICLEFLUX_PASSWORD, then prompts")
 	tenant := fs.String("tenant", "Local", "display name for the tenant")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -88,7 +87,7 @@ func initInstance(log *slog.Logger, args []string) error {
 	if strings.TrimSpace(*user) == "" {
 		return errors.New("init: -user is required")
 	}
-	password, err := resolvePassword(*pass, *user)
+	password, err := resolvePassword(*user)
 	if err != nil {
 		return err
 	}
@@ -134,7 +133,6 @@ func addUser(log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("adduser", flag.ExitOnError)
 	dbPath := commonFlags(fs)
 	user := fs.String("user", "", "username (required)")
-	pass := fs.String("password", "", "password; empty reads ARTICLEFLUX_PASSWORD, then prompts")
 	role := fs.String("role", "member", "superadmin | admin | member | viewer")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -145,7 +143,7 @@ func addUser(log *slog.Logger, args []string) error {
 	if !roles[*role] {
 		return fmt.Errorf("adduser: unknown role %q (superadmin, admin, member, viewer)", *role)
 	}
-	password, err := resolvePassword(*pass, *user)
+	password, err := resolvePassword(*user)
 	if err != nil {
 		return err
 	}
@@ -197,14 +195,13 @@ func passwd(log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("passwd", flag.ExitOnError)
 	dbPath := commonFlags(fs)
 	user := fs.String("user", "", "username (required)")
-	pass := fs.String("password", "", "new password; empty reads ARTICLEFLUX_PASSWORD, then prompts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*user) == "" {
 		return errors.New("passwd: -user is required")
 	}
-	password, err := resolvePassword(*pass, *user)
+	password, err := resolvePassword(*user)
 	if err != nil {
 		return err
 	}
@@ -228,14 +225,17 @@ func passwd(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// One transaction (§7.3a SEC3): the new hash, every session and every
+	// refresh family for this account commit together or not at all — the
+	// same primitive the sudo-gated ChangePassword RPC uses, so the break-glass
+	// path cannot drift into leaving a stale credential half-revoked.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := a.Repo().SetPasswordHash(ctx, u.UserID, hash); err != nil {
+	sessions, families, err := a.Repo().ChangePasswordAndRevoke(ctx, u.UserID, hash, "", "", now)
+	if err != nil {
 		return err
 	}
-	if err := a.Repo().RevokeAllSessions(ctx, u.UserID, now); err != nil {
-		return err
-	}
-	log.Info("password reset", "user", u.Username, "sessions", "revoked")
+	log.Info("password reset", "user", u.Username, "sessions_revoked", sessions,
+		"families_revoked", families)
 	return nil
 }
 
@@ -360,20 +360,18 @@ func openAdmin(ctx context.Context, log *slog.Logger, dbPath string) (*app.App, 
 	return app.Open(ctx, app.Config{DBPath: dbPath, Log: log, Version: version})
 }
 
-// resolvePassword takes the password from the flag, the environment, or a
-// terminal prompt, in that order, and enforces §7.1's policy.
+// resolvePassword takes the password from the environment or a terminal
+// prompt, in that order, and enforces §7.1's policy.
 //
-// The environment is checked before prompting because these commands run from
-// provisioning scripts as often as from a keyboard. The flag is supported
-// because it is what people reach for first, but note the cost: a password on a
-// command line is in the shell history and in `ps` output for the life of the
-// process. That is what the ARTICLEFLUX_PASSWORD path is for, and why it is
-// mentioned in every flag's help text.
-func resolvePassword(flagValue, username string) (string, error) {
-	pw := flagValue
-	if pw == "" {
-		pw = os.Getenv("ARTICLEFLUX_PASSWORD")
-	}
+// §7.3a SEC5: there used to be a third source, a `-password` flag, checked
+// before both of these. It is gone on purpose. A password on a command line
+// sits in shell history and in `ps` output for the life of the process, and
+// the flag was the thing every usage example showed first — teaching the
+// exact habit this removal exists to stop. ARTICLEFLUX_PASSWORD is the
+// documented non-interactive path (provisioning scripts, systemd units); a
+// human gets a hidden, confirmed prompt.
+func resolvePassword(username string) (string, error) {
+	pw := os.Getenv("ARTICLEFLUX_PASSWORD")
 	if pw == "" {
 		var err error
 		pw, err = promptPassword("Password: ")

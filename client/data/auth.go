@@ -75,20 +75,28 @@ func setToken(t string) {
 	platform.LocalSet(tokenKey, t)
 }
 
-// deviceID returns this browser profile's stable id, minting one if needed.
+// clientLabel returns this browser profile's stable presentation label,
+// minting one if needed.
 //
 // Stable across logins so the account screen can eventually say "this laptop"
 // rather than listing a fresh anonymous session for every time someone signed
 // in. Deliberately NOT cleared by SignOut for the same reason — it identifies a
 // browser, not a session, and it is not a credential.
-func deviceID() string {
+//
+// §7.3a SEC1: this value travels as LoginRequest.label and the server never
+// treats it as anything more than presentation metadata — it is not, and must
+// never become, a row identifier. Before the fix a value shaped exactly like
+// this one WAS the devices table's primary key, which is what let a chosen or
+// guessed id mint a session for whoever already owned that row.
+func clientLabel() string {
 	if id := platform.LocalGet(deviceKey); id != "" {
 		return id
 	}
 	// Not idgen: that is a server package, and pulling it in would ship its
 	// dependencies into the wasm bundle for one string. A timestamp plus the
 	// tunnel's own randomness is enough — this value is a label, not a secret,
-	// and a collision costs two browsers sharing a row on a settings screen.
+	// and a collision costs two browsers sharing a name on a settings screen,
+	// nothing more, because the server no longer uses it as a lookup key.
 	id := "dev-" + time.Now().UTC().Format("20060102150405.000000000")
 	platform.LocalSet(deviceKey, id)
 	return id
@@ -187,7 +195,7 @@ func (c *Client) Login(parent context.Context, username, password string) (*pb.L
 	res, err := c.auth.Login(ctx, &pb.LoginRequest{
 		Username: username,
 		Password: password,
-		DeviceId: deviceID(),
+		Label:    clientLabel(),
 	})
 	if err != nil {
 		return nil, err

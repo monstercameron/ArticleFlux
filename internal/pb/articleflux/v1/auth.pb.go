@@ -294,14 +294,18 @@ func (x *RegenerateRecoveryCodesResponse) GetCodes() []string {
 
 type RefreshSessionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// device_id names which device is refreshing. The refresh token alone would
-	// be enough to find the row, but naming the device means a token presented
-	// against the wrong device is a mismatch rather than a lookup that happens to
-	// succeed.
-	DeviceId      string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	RefreshToken  string `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// refresh_record_id names which device row is refreshing. Server-generated
+	// at Login/Setup time (§7.3a SEC1) — never accepted from a client as a
+	// primary key, because a client-chosen id that collides with someone else's
+	// row is exactly the cross-account session-minting bug this field replaced
+	// (`device_id` used to be a client-minted timestamp). The refresh token
+	// alone would be enough to find the row, but naming it means a token
+	// presented against the wrong record is a mismatch rather than a lookup
+	// that happens to succeed.
+	RefreshRecordId string `protobuf:"bytes,1,opt,name=refresh_record_id,json=refreshRecordId,proto3" json:"refresh_record_id,omitempty"`
+	RefreshToken    string `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RefreshSessionRequest) Reset() {
@@ -334,9 +338,9 @@ func (*RefreshSessionRequest) Descriptor() ([]byte, []int) {
 	return file_articleflux_v1_auth_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *RefreshSessionRequest) GetDeviceId() string {
+func (x *RefreshSessionRequest) GetRefreshRecordId() string {
 	if x != nil {
-		return x.DeviceId
+		return x.RefreshRecordId
 	}
 	return ""
 }
@@ -416,10 +420,12 @@ type LoginRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Username string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	Password string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
-	// device_id groups sessions from one browser profile, so the account screen
-	// can later revoke a device rather than a token. The client generates and
-	// persists it; an empty value gets one assigned server-side.
-	DeviceId      string `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// label is a client-stable browser value ("this laptop"), for PRESENTATION
+	// ONLY (§7.3a SEC1). It is never used as a row identifier: the account
+	// screen can show it back, and nothing else may depend on it, because a
+	// label is a string the caller chose and a security boundary cannot be
+	// built on a string the caller chose.
+	Label         string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -468,9 +474,9 @@ func (x *LoginRequest) GetPassword() string {
 	return ""
 }
 
-func (x *LoginRequest) GetDeviceId() string {
+func (x *LoginRequest) GetLabel() string {
 	if x != nil {
-		return x.DeviceId
+		return x.Label
 	}
 	return ""
 }
@@ -486,9 +492,11 @@ type LoginResponse struct {
 	ExpiresAt string `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	Username  string `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
 	Role      string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
-	// device_id echoes what the session was filed under — assigned here when the
-	// request left it empty.
-	DeviceId string `protobuf:"bytes,5,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// refresh_record_id is the server-generated, unguessable id (idgen.DeviceID,
+	// 128 bits of CSPRNG) of the devices row this login registered. Present it
+	// to RefreshSession alongside refresh_token; it is never derived from, or
+	// equal to, anything the client sent (§7.3a SEC1).
+	RefreshRecordId string `protobuf:"bytes,5,opt,name=refresh_record_id,json=refreshRecordId,proto3" json:"refresh_record_id,omitempty"`
 	// refresh_token is the FIRST token of this device's family (§7.3).
 	//
 	// Handed out at login rather than fetched later, because a client that has to
@@ -558,9 +566,9 @@ func (x *LoginResponse) GetRole() string {
 	return ""
 }
 
-func (x *LoginResponse) GetDeviceId() string {
+func (x *LoginResponse) GetRefreshRecordId() string {
 	if x != nil {
-		return x.DeviceId
+		return x.RefreshRecordId
 	}
 	return ""
 }
@@ -744,13 +752,14 @@ func (x *SetupRequest) GetPassword() string {
 }
 
 type SetupResponse struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	Token        string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	ExpiresAt    string                 `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	Username     string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
-	Role         string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
-	DeviceId     string                 `protobuf:"bytes,5,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	RefreshToken string                 `protobuf:"bytes,6,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Token     string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	ExpiresAt string                 `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	Username  string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
+	Role      string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	// refresh_record_id — see LoginResponse.refresh_record_id.
+	RefreshRecordId string `protobuf:"bytes,5,opt,name=refresh_record_id,json=refreshRecordId,proto3" json:"refresh_record_id,omitempty"`
+	RefreshToken    string `protobuf:"bytes,6,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
 	// Shown once and never again: they are stored hashed, so this response is the
 	// only moment they exist in readable form anywhere.
 	RecoveryCodes []string `protobuf:"bytes,7,rep,name=recovery_codes,json=recoveryCodes,proto3" json:"recovery_codes,omitempty"`
@@ -816,9 +825,9 @@ func (x *SetupResponse) GetRole() string {
 	return ""
 }
 
-func (x *SetupResponse) GetDeviceId() string {
+func (x *SetupResponse) GetRefreshRecordId() string {
 	if x != nil {
-		return x.DeviceId
+		return x.RefreshRecordId
 	}
 	return ""
 }
@@ -938,26 +947,26 @@ const file_articleflux_v1_auth_proto_rawDesc = "" +
 	"\x0esessions_ended\x18\x01 \x01(\x05R\rsessionsEnded\" \n" +
 	"\x1eRegenerateRecoveryCodesRequest\"7\n" +
 	"\x1fRegenerateRecoveryCodesResponse\x12\x14\n" +
-	"\x05codes\x18\x01 \x03(\tR\x05codes\"Y\n" +
-	"\x15RefreshSessionRequest\x12\x1b\n" +
-	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12#\n" +
+	"\x05codes\x18\x01 \x03(\tR\x05codes\"h\n" +
+	"\x15RefreshSessionRequest\x12*\n" +
+	"\x11refresh_record_id\x18\x01 \x01(\tR\x0frefreshRecordId\x12#\n" +
 	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\"r\n" +
 	"\x16RefreshSessionResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x02 \x01(\tR\texpiresAt\x12#\n" +
-	"\rrefresh_token\x18\x03 \x01(\tR\frefreshToken\"c\n" +
+	"\rrefresh_token\x18\x03 \x01(\tR\frefreshToken\"\\\n" +
 	"\fLoginRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1b\n" +
-	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\"\xb6\x01\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x14\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\"\xc5\x01\n" +
 	"\rLoginResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x02 \x01(\tR\texpiresAt\x12\x1a\n" +
 	"\busername\x18\x03 \x01(\tR\busername\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1b\n" +
-	"\tdevice_id\x18\x05 \x01(\tR\bdeviceId\x12#\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12*\n" +
+	"\x11refresh_record_id\x18\x05 \x01(\tR\x0frefreshRecordId\x12#\n" +
 	"\rrefresh_token\x18\x06 \x01(\tR\frefreshToken\"\x0f\n" +
 	"\rLogoutRequest\"\x10\n" +
 	"\x0eLogoutResponse\"\x0f\n" +
@@ -965,14 +974,14 @@ const file_articleflux_v1_auth_proto_rawDesc = "" +
 	"\fSetupRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
 	"\x05email\x18\x02 \x01(\tR\x05email\x12\x1a\n" +
-	"\bpassword\x18\x03 \x01(\tR\bpassword\"\xdd\x01\n" +
+	"\bpassword\x18\x03 \x01(\tR\bpassword\"\xec\x01\n" +
 	"\rSetupResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1d\n" +
 	"\n" +
 	"expires_at\x18\x02 \x01(\tR\texpiresAt\x12\x1a\n" +
 	"\busername\x18\x03 \x01(\tR\busername\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1b\n" +
-	"\tdevice_id\x18\x05 \x01(\tR\bdeviceId\x12#\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12*\n" +
+	"\x11refresh_record_id\x18\x05 \x01(\tR\x0frefreshRecordId\x12#\n" +
 	"\rrefresh_token\x18\x06 \x01(\tR\frefreshToken\x12%\n" +
 	"\x0erecovery_codes\x18\a \x03(\tR\rrecoveryCodes\"\x99\x01\n" +
 	"\x0eWhoAmIResponse\x12\x1a\n" +

@@ -47,6 +47,10 @@ type AuthServer struct {
 	// onOutcome counts login results. Nil disables it; see WithLoginMetrics.
 	onOutcome func(context.Context, store.LoginOutcome)
 
+	// issueRefresh gates whether Login/Setup hand out a refresh token at all.
+	// Off by default; see WithRefreshTokens.
+	issueRefresh bool
+
 	// decoy is a real Argon2id hash of a random string, verified against when the
 	// username does not exist.
 	//
@@ -179,10 +183,15 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 
 	now := time.Now().UTC()
 	token := idgen.Token()
-	device := strings.TrimSpace(req.GetDeviceId())
-	if device == "" {
-		device = idgen.DeviceID()
-	}
+	// A fresh server-side id, ALWAYS — never anything the caller sent. §7.3a
+	// SEC1: this used to trust a client-supplied `device_id` (a timestamp) as
+	// the devices table's primary key, and RegisterDevice's upsert let a
+	// colliding id retain the FIRST row's owner while accepting the SECOND
+	// caller's refresh secret — a cross-account session-minting bug. Any
+	// client-stable value the caller sent travels as `label` below, which is
+	// presentation metadata and never a lookup key.
+	record := idgen.DeviceID()
+	label := strings.TrimSpace(req.GetLabel())
 	expires := now.Add(SessionTTL)
 
 	if err := s.repo.CreateSession(ctx, store.NewSession{
@@ -190,7 +199,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		UserID:    u.UserID,
 		TenantID:  u.TenantID,
 		TokenHash: secret.HashToken(token),
-		DeviceID:  device,
+		DeviceID:  record,
 		UserAgent: userAgent(ctx),
 		Now:       now.Format(time.RFC3339Nano),
 		ExpiresAt: expires.Format(time.RFC3339Nano),
@@ -230,22 +239,27 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// would turn a renewal problem into an authentication problem. The client
 	// gets no refresh token and re-authenticates when the session expires,
 	// which is the pre-6.1 behaviour rather than a broken one.
-	refresh := idgen.Token()
-	scope := store.Scope{TenantID: u.TenantID, UserID: u.UserID, Role: u.Role}
-	if err := s.repo.RegisterDevice(ctx, scope, device, idgen.New(), refresh,
-		"", clientStamp(ctx)); err != nil {
-		s.log.Warn("registering the device family", "err", err, "device", device)
-		refresh = ""
+	var refresh, refreshRecord string
+	if s.issueRefresh {
+		refresh = idgen.Token()
+		scope := store.Scope{TenantID: u.TenantID, UserID: u.UserID, Role: u.Role}
+		if err := s.repo.RegisterDevice(ctx, scope, record, idgen.New(), refresh,
+			label, clientStamp(ctx)); err != nil {
+			s.log.Warn("registering the device family", "err", err, "record", record)
+			refresh = ""
+		} else {
+			refreshRecord = record
+		}
 	}
 
-	s.log.Info("login", "username", u.Username, "role", u.Role, "device", device)
+	s.log.Info("login", "username", u.Username, "role", u.Role, "record", record)
 	return &pb.LoginResponse{
-		Token:        token,
-		ExpiresAt:    expires.Format(time.RFC3339),
-		Username:     u.Username,
-		Role:         u.Role,
-		DeviceId:     device,
-		RefreshToken: refresh,
+		Token:           token,
+		ExpiresAt:       expires.Format(time.RFC3339),
+		Username:        u.Username,
+		Role:            u.Role,
+		RefreshRecordId: refreshRecord,
+		RefreshToken:    refresh,
 	}, nil
 }
 
@@ -266,28 +280,28 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 // device. That is the correct trade only because the alternative is a stolen
 // refresh token working forever, silently.
 func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionRequest) (*pb.RefreshSessionResponse, error) {
-	device := strings.TrimSpace(req.GetDeviceId())
+	record := strings.TrimSpace(req.GetRefreshRecordId())
 	presented := req.GetRefreshToken()
-	if device == "" || presented == "" {
+	if record == "" || presented == "" {
 		return nil, errBadCredentials
 	}
 
 	replacement := idgen.Token()
-	if err := s.repo.RotateRefresh(ctx, device, presented, replacement); err != nil {
+	if err := s.repo.RotateRefresh(ctx, record, presented, replacement); err != nil {
 		if errors.Is(err, store.ErrRefreshReuse) {
 			// Every device in the family is now revoked. Logged at Warn rather
 			// than Info because this is either an attack or a client bug, and
 			// both are things an operator wants to see.
 			s.log.Warn("refresh token reuse detected; the device family was revoked",
-				"device", device)
+				"record", record)
 		}
-		// One answer for reuse, unknown device, and revoked family alike: a
+		// One answer for reuse, unknown record, and revoked family alike: a
 		// caller holding a token that does not work learns nothing about WHY,
 		// which is what stops the error from being an oracle for guessing.
 		return nil, errBadCredentials
 	}
 
-	sc, err := s.repo.ScopeForDevice(ctx, device)
+	sc, err := s.repo.ScopeForDevice(ctx, record)
 	if err != nil {
 		s.log.Error("resolving the device after a successful rotation", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
@@ -301,7 +315,7 @@ func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionR
 		UserID:    sc.UserID,
 		TenantID:  sc.TenantID,
 		TokenHash: secret.HashToken(token),
-		DeviceID:  device,
+		DeviceID:  record,
 		UserAgent: userAgent(ctx),
 		Now:       now.Format(time.RFC3339Nano),
 		ExpiresAt: expires.Format(time.RFC3339Nano),
@@ -382,6 +396,24 @@ func (s *AuthServer) WithLoginMetrics(fn func(context.Context, store.LoginOutcom
 	return s
 }
 
+// WithRefreshTokens turns on refresh-token issuance (§7.3a SEC4).
+//
+// Off unless a caller opts in, and production does not: the server has
+// minted refresh families since 6.1, but the wasm client discards them —
+// LoginResponse.RefreshToken is read once at Login and never stored, and
+// there is no code path that ever calls RefreshSession. Handing out a
+// credential nothing consumes is not a compensating control, it is a stolen
+// token waiting to be found, so this stays gated until the client
+// implements the versioned bundle, atomic rotation and cross-tab
+// coordination §7.3a specifies. Test code that exercises rotation directly
+// opts in with this; the RotateRefresh/ScopeForDevice/RegisterDevice
+// machinery underneath is unaffected either way — this only controls
+// whether Login and Setup ever hand a caller something to rotate.
+func (s *AuthServer) WithRefreshTokens(enabled bool) *AuthServer {
+	s.issueRefresh = enabled
+	return s
+}
+
 // Logout revokes the calling session.
 //
 // It reads the token from metadata rather than taking it in the request: the
@@ -395,9 +427,12 @@ func (s *AuthServer) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.Logou
 		// token it no longer has is the normal shape of "log out twice".
 		return &pb.LogoutResponse{}, nil
 	}
-	if err := s.repo.RevokeSession(ctx, secret.HashToken(tok),
+	// The session AND its refresh family (§7.3a SEC2) — a sign-out that only
+	// killed today's access token would leave the renewal authority standing,
+	// so a stolen refresh token could mint a replacement seconds later.
+	if err := s.repo.RevokeSessionAndFamily(ctx, secret.HashToken(tok),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		s.log.Error("revoking session", "err", err)
+		s.log.Error("revoking session and family", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 	return &pb.LogoutResponse{}, nil
