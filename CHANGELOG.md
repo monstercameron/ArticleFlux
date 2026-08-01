@@ -119,6 +119,156 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **A broadcast engine: `internal/fluxcast`** — the profile, the formats, the fitter, the timeline
+  compiler and the player state machine, in one pure package. FluxCast had been tuned from four:
+  role word budgets and the category cap in `internal/rundown`, the prompt revision and the lineup
+  ceiling in `internal/smart`, the card hold and the voice backstop in `client/view`, every gain and
+  ramp in `client/platform`. Changing how the show *feels* meant editing four packages and
+  rebuilding wasm to hear one number, and the numbers referred to each other across that boundary
+  without saying so — `music_wasm.go` documented `bedRise` as "matches `stingOut` exactly, because
+  the two are one gesture", in a different file from `stingOut`, enforced by a comment. Now
+  `Profile.Validate` checks those relationships instead of asserting them in prose, and `Default()`
+  is the shipped show to the millisecond and the gain, because adopting this had to be inaudible.
+  A **Format** is the second half and it is what makes a show a show rather than a queue with a
+  jingle: an ordered list of blocks — greeting, stories, tease, recap, break, sign-off — each with a
+  filter, an appetite and a length. Targets are honoured by **writing shorter, never by cutting
+  audio**, because spoken length is words over speaking rate and the only editorial lever is the
+  word budget; every beat has a floor and a ceiling from its role, and the fitter will miss a target
+  and say so rather than write a forty-word lead. Blocks can be anchored — the magazine's recap is
+  pinned to the half hour and the compiler pads with music to land it. Measured on an 80-story pool:
+  the 20-minute bulletin plans to 19:44.8 with 23 stories, the 40-minute magazine to 40:06.8 with
+  its recap starting at 20:00.0 after a 5.2s pad. `Trace.Calibrate` closes the loop planning cannot:
+  words per minute is a property of a synthesiser, a voice and prose nobody has written yet, so it
+  is measured from a played show, with the listener's own playback rate backed out so the number
+  describes the narrator rather than the session. The **Player** is the choreography the client has
+  today, with two differences — it takes `now` and returns actions, so twenty minutes of radio is
+  testable on a virtual clock, and it walks a `Program`, which is a **snapshot**. The bug where the
+  sign-off played after story one of sixty and the display restarted from the top happened because
+  the old player derived its running order from the live item list, so a background reload that
+  removed the playing story made "what comes next" indistinguishable from "there is nothing next";
+  against a fixed program that is unrepresentable (`TestTheProgrammeDoesNotEndBecauseAStoryEnded`).
+  Two behaviour changes are deliberate rather than ported: a failed segment now advances after a
+  hold instead of waiting for an `ended` that is never coming (the old show stalled on a 90s
+  backstop), and prefetch warms the next **beat's** key rather than the list's next item, so it can
+  no longer pay for a recording that will never be played. Shipped as `internal/cast` and renamed
+  the same day — the brand belonged on the engine, not on the smaller store-reading producer that
+  held the name, which is now `internal/fluxcast/produce`, *underneath* rather than beside so that
+  "the engine is pure and the producer imports it, never the reverse" is a property of the import
+  graph. **`client/view` does not import any of this yet**: the engine is exercised by its own 39
+  tests and by the server's beat path, and the client still plays the old way.
+
+- **Two new beats, and a script seam the engine cannot abuse** (`fluxcast.Writer`, implemented by
+  `internal/smart`). The engine decides when a beat happens, what it is for and how many words it
+  may have; it does not own a word of prose. It hands out a `Brief` and takes back a `Draft`, and a
+  Brief is deliberately narrower than the Beat it came from — a Beat carries ids, cache keys, block
+  indices and fitting state, and a writer that could read the cache key could be tempted to vary its
+  output by it, when the key exists precisely because the output does not vary except by what is in
+  the Brief. A **tease** names stories still to come; a **recap** names ones already covered. They
+  are not one prompt with the tense changed: one is selling and one is catching somebody up, and a
+  recap written in a tease's voice tells a listener to look forward to something they have already
+  heard. The tease's own failure mode is narrower and worse — it is one sentence away from being a
+  summary, and a tease that summarises has spent the listener's interest instead of buying it, so
+  the prompt says exactly that. Both go into the cache key by the stories they **name**, not just by
+  the mode. `podcastPromptVersion` is now the exported `PromptVersion` (v7), because the engine
+  carries it into every beat's key and deliberately does not know what the current revision is — a
+  hardcoded `"v7"` there would be the same fact in two files, and the copy that drifts is the one
+  nobody rebuilt. `Write` refuses a Brief whose revision it no longer has (`ErrStaleRevision`)
+  rather than answering it: serving prose under a key that claims a different revision is permanent
+  and invisible.
+
+- **`/speech` can serve one beat of a planned programme.** The client plans a whole show with
+  `internal/fluxcast` and asks for a single beat, which carries what it *is* — kind, fitted word
+  budget, predecessor, the stories it names, and the writer revision it was planned against. It is a
+  second path rather than a rewrite of the first, because the client is cached by a Service Worker
+  and old bundles exist in the wild by construction; one of them will keep asking the old way for as
+  long as it survives, and the honest answer to that request is the one it has always had. A **word
+  budget** is what selects the new path — the one thing the old client could not have sent, since
+  the show it plays has no fitter. What the client does **not** send is the cache key, and that is a
+  security property rather than an economy: the audio cache is shared between readers (the same
+  article in the same voice is the same recording), so a server filing audio under a caller-supplied
+  key would let one reader write into another's slot. Both ends derive it instead, from inputs the
+  server resolved through the reader's own scope; where they disagree the request misses the cache
+  and is written again, which is the correct failure. The free-tier fallback applies to exactly one
+  kind: a **story** whose script cannot be written falls back to reading the article, which is why
+  FluxCast can claim to work with no key at all. Nothing else falls back, because nothing else has
+  anything to fall back *to* — a greeting, a tease and a recap cover no story, and reading one out
+  in their place would play an article the programme is about to play properly, so they answer 501
+  or 422 and the player skips the beat. A stale plan is never softened: 409, because reading the
+  article instead would hide a client running against budgets and keys this build cannot honour
+  behind something that sounds nearly right.
+
+- **`/speech?as=text` — the script over the wire, free, and never on its own** (TODO 11.47). The
+  slide is going to show the words being spoken, which means the client needs the script as well as
+  the audio: same handler, same four gates, same ticket, same precedence chain, and it **never
+  writes**. Never writing is the whole feature — a caption request that could reach a model would
+  buy a second copy of the programme to put text on a screen. So it reads the caches and stops. The
+  test found a fork worth keeping: a script can be absent for two reasons that need opposite
+  answers. Not yet *written* (the caller asked before the audio request that pays for it) is a 204,
+  because captioning the slide with the article would show a text the narrator is not going to read.
+  *Cannot* be written, because the instance has no key, is not that — the audio path falls through
+  to reading the article, the article IS what the listener hears, and captioning it is correct
+  rather than a compromise. Answering 204 there would have left an uncaptioned display on a
+  deployment where everything was working as designed.
+
+- **A format's direction actually reaches the model.** The spec settled what a format may say about
+  how a beat is written — who is listening, what may be assumed, how deep to go, what to avoid, what
+  this one segment should do — and none of it was reaching a prompt; the Brief carried a vibe and a
+  word budget and stopped. `fluxcast.Direction` is that resolution as one struct, carrying the
+  cascade's rule with it: scalars override, lists append, energy sums and clamps. Lists appending is
+  what makes `never` additive-only, which is what keeps a format from becoming a jailbreak for the
+  instance's own narrator — the writer's own NEVER list is not addressable from a format at all, and
+  the prompt says so where a reader of it would look. It is rendered as plain labelled prose rather
+  than JSON, because what is being conveyed is editorial intent and a structure would be turned back
+  into sentences by the model anyway, at the cost of the author's own phrasing — the only part
+  carrying judgement. It goes into the input rather than the instructions (instructions are one
+  string per vibe, shared by every beat; this varies per beat) and it goes first, ahead of the
+  article, because a model shown a story and then told how to treat it has already decided how to
+  treat it. It is part of both cache keys, for the reason every text-affecting input is: editing a
+  house style and being served back every segment written under the old one is indistinguishable
+  from the format never having been read. The boring test is the one that matters — an empty
+  direction leaves the prompt byte-identical to what it was before any of this existed, so adopting
+  formats is inaudible until somebody writes one.
+
+- **The shape of a programme, as a file — specified, not yet built** (plan §29.7; the build list is
+  TODO 11.30–11.44). The engine landed with formats as Go literals, so a show's shape can only be
+  changed by somebody who can rebuild the server. §29.7 settles what a format file may say and, more
+  usefully, what it may **never** say — the refusals are the load-bearing half, and each protects a
+  decision already made elsewhere in the tree. A format that could rank would be a third opinion
+  with no `reasons_json` behind it. A format that could set an absolute gain or playback rate would
+  take a decision belonging to the tuning or to the listener, and playback rate is an accessibility
+  control for several people. No SQL, and not as taste: guard 3 fails the build on SQL outside
+  `internal/store`, and a query in a config file would be a schema coupling and an injection surface
+  in a document a model may one day write — so a format names a *pool* and the store owns the query.
+  JSON rather than XML, with the reasoning written down because the obvious argument runs the other
+  way: simultaneity is what makes XML look right and none of it is authored, since the engine emits
+  overlapping cues by construction. `internal/fluxcast/testdata/five-minute-roundup.json` is the
+  reference file, and it is in the tree rather than in the spec so that a change to §29.7 this file
+  cannot express is a change somebody has to argue for. Its numbers are worked rather than
+  plausible: 700 words of voice and ~17 seconds of choreography lands at 4:57 against a 5:00 target.
+
+- **Recommendations, Discover, and a Smart+ model list** — `ListRecommendations`,
+  `AcceptRecommendation` and `RejectRecommendation` on the wire, a `/discover` surface in the
+  client, permanent dismissal, concept-feedback and taste-example handling, a relevance scorer, and
+  `SmartService.ListModels`. This closes TODO F6, which asked for recommendations to be harvestable
+  and discardable by a reader rather than only computable by a job. **Filed with a caveat that
+  belongs in the record:** the cluster landed in the shared working tree from outside the session
+  that committed it (`c737d9c`), which flagged it as unreviewed rather than presenting it as
+  reviewed work; the whole-repo build and the affected packages' tests were green at the time. The
+  authorization map is the part worth a second look — the server refused to boot at one point
+  because `ListModels` had no policy entry, which is §7.5's fail-closed rule doing its job.
+
+- **Go statement coverage above 90% across roughly forty packages.** A package-by-package sweep with
+  real table-driven tests rather than coverage theater — `idgen`, `feeddate`, `clientaddr`,
+  `envfile`, `skew`, `fanout`, `idem`, `retention`, `recommendjob`, `preserve`, `degrade`, `authz`,
+  `opml`, `extract`, `pageproxy`, `mailparse`, `events`, `jobs`, `scrapesel`, `seedread`,
+  `settingsreg`, `telemetry`, `ratelimit`, `rank`, `signals`, `render`, `analyze`, `apierr`,
+  `timeutil`, `authn`, `assetproxy`, `attrsel`, `classify` and partial passes on the four largest
+  (`reader`, `store`, `app`, `grpcsrv`, held back by size and by a concurrent security rework on the
+  auth and session files). One production change came out of it: `smart.Classifier` held a concrete
+  `*llm.Client` while every sibling type in the package holds the `llmClient` interface seam that
+  exists for test fakes, so a fake could not substitute without a real billable call. The two real
+  bugs this sweep found (`netguard.Get`, `opmlio.SkipCount`) are recorded under Fixed below.
+
 - **Smart+ suggests a category when you add a feed** (`smart.categorize` preference, off by
   default). Reads the new feed's title and description, checks it against the reader's existing
   categories first — reusing one beats inventing another — and only proposes a new one when nothing
@@ -212,6 +362,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
   explains it), and logs whether the restart actually helped.
 
 ### Fixed
+
+- **Four standing e2e failures were one selector looking in the wrong row.** `openSettings` searched
+  `.list-tools` — the row of controls that act on the *feed* — while the gear has always lived in
+  `.list-corner` beside the list's title. The two specs that use it timed out for two minutes each,
+  on both projects, which is the "same two specs fail every time" the Playwright config's own comment
+  describes. They pass now. Landed alongside four browser-level specs for the two-mode split
+  (`e2e/podcast.spec.mjs`), which assert what only a browser can answer: which mode a show actually
+  opened in, that a mode is not inherited from the last session, and that with no script the slide
+  falls back to the article and says so in `data-captioned` — the state every keyless instance is in.
 
 - **FluxCast never produced a lead story.** `roleFor` required both a top-decile score AND two
   corroborating sources to reach `LEAD` — anti-correlated on real data, since a reader's
@@ -1034,6 +1193,25 @@ The full reasoning behind any entry lives in the commit message; this file is th
   `https://localhost.attacker.example`.
 
 ### Known
+
+- **The slideshow shows the article while the narrator reads the script** (TODO 11.46, plan §19).
+  In read-to-me mode as shipped, `slide-body` renders `parsedBody(raw)` — the **article** — and
+  `slideAudio` scrolls it from the audio playhead, sized by `full.GetWordCount()`, the article's
+  length. But the audio is the rewritten broadcast segment, not the article. So the text on screen is
+  not the text being spoken, and it is scrolled at the pace of a different piece of writing: a reader
+  following along diverges from the narrator within a paragraph. This has been true since read-to-me
+  landed and nothing caught it, because nothing could — both texts are plausible prose about the same
+  story, and only reading the two side by side gives it away. Found while splitting read-to-me out of
+  the slideshow into its own entry point, which is the shape of the fix: two buttons rather than one
+  and a persisted `slides.audio` toggle (which today lets a reader press Slideshow and get a narrator
+  on account of a setting from last week), with **Podcast** mode feeding the script into the
+  scrolling surface that is already correct. The design is settled in plan §19 and the build list is
+  TODO 11.45–11.50; the server half of the captions — `/speech?as=text` — has shipped, and nothing in
+  `client/view` calls it yet. **Nothing about this is fixed in the committed client**: at this
+  commit `slidesAudioPref` is still `slides.readToMe` and still persisted, so the mode a show opens
+  in can still arrive from a toggle set last week. The e2e specs for the split (`e2e/podcast.spec.mjs`)
+  are committed *ahead* of the client change they describe and will not pass until it lands; the item
+  ordering puts the correction first so it can ship even if the rest slips.
 
 - **An async state write does not repaint when nothing else changed** (TODO H11). With the empty-feed
   fix above in place, a feed with no items no longer shows the wrong articles — instead it shows a

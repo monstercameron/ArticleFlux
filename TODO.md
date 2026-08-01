@@ -6801,7 +6801,7 @@ longer wall clock everywhere, because the opening theme covers the wait by desig
       yields no two stories from the same cluster.* §18.4, §18.5
       ✅ Pre-existed; checkbox never ticked. `TestNoAPIKeyStillProducesAPlayableRundown` and
       `TestNoTwoStoriesShareACluster` pass; "every story can name its reasons_json" is now also true
-      through `fluxcast.Produced.Reasons` (TODO 11.21, this session).
+      through `produce.Produced.Reasons` (TODO 11.21, this session).
 
 - [x] **11.5 · `rundowns` + `rundown_stories` (migration 0029).** The rundown persists, and that is
       not an implementation detail: the visual rundown, resume-after-reload, continuous mode's memory
@@ -6877,9 +6877,11 @@ longer wall clock everywhere, because the opening theme covers the wait by desig
       index). `StateChange.Heard` on `SetItemState` (`internal/store/repo.go`) sets it independently of
       `Read` — never inferred, only set together when a caller (the eventual player, gated on
       `flux.markRead`) explicitly passes both. `ReaderRepo.HeardItemIDs` reports heard ids for a scope;
-      `fluxcast.Repo.Produce` now excludes them from the candidate pool before `rundown.Build` runs.
+      `produce.Repo.Produce` now excludes them from the candidate pool before `rundown.Build` runs.
       `TestHeardIsNotRead` (`internal/store/repo_test.go`) and `TestHeardStoryIsNeverSelected`
-      (`internal/fluxcast/fluxcast_test.go`) cover both halves. The `flux.markRead` **checkbox itself**
+      (`internal/fluxcast/produce/produce_test.go` — both symbols moved there in the `6e319e0`
+      rename, and `internal/fluxcast/fluxcast_test.go` is now the ENGINE's test file, not this one)
+      cover both halves. The `flux.markRead` **checkbox itself**
       is 11.11's client work, not built here — the store-level "set both fields atomically" contract
       it will call is what's done.
 
@@ -7102,9 +7104,9 @@ it is here rather than edited into the items above because the items were the br
 result of executing it.*
 
 - [ ] **11.20 · The rundown has no way out of the server.** Nothing in the first wave exposes a
-      rundown over gRPC or plays one from the client — `internal/fluxcast` produces and persists it,
-      and there it stops. This is the wiring that makes FluxCast audible rather than provable:
-      an RPC to produce/fetch the current rundown, and a client that walks it instead of walking the
+      rundown over gRPC or plays one from the client — `internal/fluxcast/produce` produces and
+      persists it, and there it stops. This is the wiring that makes FluxCast audible rather than
+      provable: an RPC to produce/fetch the current rundown, and a client that walks it instead of the
       item list. **It lands in `client/view/reader.go`, which is the largest and most contended file
       in the tree**, so it is a single-owner job and not a lane.
 
@@ -7136,11 +7138,11 @@ result of executing it.*
 - [x] **11.21 · `Story` cannot say why it is there.** `internal/rundown.Story` is `{ItemID, ClusterID,
       Role, Words, Sources}` — no reasons — so the visual rundown (11.17) has to join back to
       `home_ranking.reasons_json` through the item id to answer the question that whole screen exists
-      to answer. Either carry the reasons onto the story at build time or give `internal/fluxcast` a
+      to answer. Either carry the reasons onto the story at build time or give the producer a
       read that returns them alongside. **Decide before 11.17 is built, not during.**
-      ✅ Decided and built the second way — `fluxcast` reads them alongside — because
+      ✅ Decided and built the second way — `internal/fluxcast/produce` reads them alongside — because
       `internal/rundown` cannot import `store.RankReason` without breaking 11.2's purity requirement.
-      `fluxcast.Produced.Reasons map[string][]store.RankReason` is populated straight from
+      `produce.Produced.Reasons map[string][]store.RankReason` is populated straight from
       `RankedItem.Reasons` (already read by `HomeRanking`), keyed by item id, the same side-map shape
       `Produced.Titles` already uses (11.29 names this as a convention worth documenting). Extended
       `TestProduceEndToEnd` to assert every story in the built rundown has a non-empty entry.
@@ -7249,9 +7251,10 @@ sounds fine — so it is written down while there is still evidence.*
       needs and the mode could not do before.
       **Still open:** nothing SETS `showOrder` yet — that is the RPC half of 11.20.
 
-- [x] **11.29 · Two conventions invented during integration, undocumented.** `internal/fluxcast.Repo`
-      is named for its suffix on purpose — guard 4 matches receiver type names ending in `Repo`
-      regardless of package, so the "every method takes a Scope" check comes free. And `Produced.Titles`
+- [x] **11.29 · Two conventions invented during integration, undocumented.** `produce.Repo`
+      (`internal/fluxcast/produce`, `internal/fluxcast.Repo` when this was written — see 11.30's
+      preamble for the rename) is named for its suffix on purpose — guard 4 matches receiver type
+      names ending in `Repo` regardless of package, so "every method takes a Scope" comes free. And `Produced.Titles`
       is a side-map because `rundown.Story` has no title field (11.2 fixed that struct's shape), which
       is the same gap 11.21 names for reasons. Whoever builds 11.16/11.17 hits both. Write them into
       §29 rather than leaving them in a Go comment.
@@ -7266,6 +7269,19 @@ FILE — every format is a Go literal, so a show's shape can only be changed by 
 rebuild the server. plan.md §29.7 settles what that file may say and, more importantly, what it may
 never say. These items build it. They are dependency-ordered: 11.30 and 11.31 are the spine and
 everything after them is a field on it.*
+
+*Two facts about the package, both of which pre-date items written against the old names.
+**The engine shipped as `internal/cast` and was renamed to `internal/fluxcast` the same day**
+(`6e319e0`, plus `85a28ba` for its test file), because the brand belonged on the engine rather than
+on the smaller store-reading producer that already held the name; **that producer is now
+`internal/fluxcast/produce`** — underneath rather than beside, so "the engine is pure and the
+producer imports it, never the reverse" is a property of the import graph instead of an intention in
+a doc comment. `produce.Repo` keeps its suffix, so guard 4 still matches it. Anything above §29.7
+that says `internal/fluxcast` and means the producer is reading from before that rename; the ones
+found have been corrected in place. And **nothing in `client/view` imports the engine yet** — the
+player state machine, the fitter and the timeline compiler are exercised only by their own tests and
+by `internal/app`'s beat path, which is why 11.20's list-arithmetic audit and S9's backstop are still
+open against the OLD client player.*
 
 - [ ] **11.30 · The format file, parsed — and refused when it cannot be honoured.** JSON, per §29.7,
       into the `fluxcast.Format` types that already exist plus the ones §29.7 adds. Durations and gains
@@ -7296,6 +7312,16 @@ everything after them is a field on it.*
       apply and the block wins; `TestRulesNeverIsAdditiveOnly` asserts a block cannot shorten the
       writer's own NEVER list; and `TestPositionalScopesSurviveAMissingBlock` resolves
       `program:begin` against the wire format, which has no greeting.*
+      ◧ **Part of this landed ahead of the resolver, 2026-08-01 (`5257c60`) — read before starting.**
+      `fluxcast.Direction` (`internal/fluxcast/direction.go`) is the type the resolver will return,
+      and it already carries the merge rule as `Merge(over Direction)`: scalars override, lists
+      append via `appendNew`, `Energy` sums and clamps to ±2. `Never`/`Always` are additive-only by
+      construction — the writer's own NEVER list is not addressable from the type at all — so
+      `TestRulesNeverIsAdditiveOnly` has something to assert against today. What is still missing is
+      exactly the FUNCTION this item names: nothing walks a `Format` and a beat index to produce a
+      direction, so the nine scopes, their order, and both properties (positional lifecycle scopes;
+      hooks select, never insert) are unbuilt and untested. Build the resolver ONTO `Merge` rather
+      than beside it — a second merge rule is the thing this item exists to prevent.
 
 - [ ] **11.32 · Content controls, and the Base the fitter measures against.** `block.content` per
       §29.7.3: `mode`, `groupBy`, `groupSize`, `length`, `depth`, `rate`, `transitions`, `order`.
@@ -7440,6 +7466,14 @@ everything after them is a field on it.*
       level change; `TestDirectionChangesTheKey` asserts a different one after an `energy` change;
       and the server's independently-computed key still equals the client's
       (`TestTheKeyTheServerComputesIsTheOneTheClientPlanned` extended to carry direction).*
+      ◧ **The direction half landed 2026-08-01 (`5257c60`).** `Brief.Direction` exists and
+      `ScriptKey` hashes `Direction.key()` after the handover, so a house-style edit already
+      invalidates the segments written under the old one; `audio` was never in the key and still is
+      not. What remains is what the key hashes ONCE THERE IS A FORMAT: the direction it hashes today
+      is whatever the caller put on the Brief, and no caller resolves one from a format yet (11.31).
+      The two prices this item names are still unpaid and still belong in the commit that pays them —
+      `block:begin` making the first story of a block a different recording from the second, and a
+      grouped beat's key including every member id in order.
 
 - [ ] **11.42 · The sheet has to say why.** `Timeline.Sheet` prints times, labels and estimates. With
       a format in play it must also print the resolved direction per beat and, for a boosted story,
@@ -7465,8 +7499,8 @@ everything after them is a field on it.*
       variants' lengths and story counts side by side.*
 
 - [ ] **11.44 · The client plans from a format.** Blocked on the player rewrite. The client fetches
-      the format and the pool, calls `cast.Plan` once at the top of the show, and plays the resulting
-      Program — which is what finally deletes `showOrder`'s emptiness, the list arithmetic behind it,
+      the format and the pool, calls `fluxcast.Plan` once at the top of the show, and plays the
+      resulting Program — which is what finally deletes `showOrder`'s emptiness, the list arithmetic behind it,
       and the class of bug where a background reload removed the story that was playing.
       *Done when: starting the show plans a Program from the reader's format; the slideshow plays it
       in its running order; a mid-show list reload changes nothing about what plays; and the existing
@@ -7511,7 +7545,7 @@ tree. Ordered so that 11.46 — the correction — can ship even if the rest sli
       from the SCRIPT's length; a test asserts the rendered text and the requested audio come from
       one beat key; and Slideshow mode still renders the article body unchanged.*
 
-- [ ] **11.47 · `as=text` — the script over the wire, free, and never on its own.** `/speech` gains
+- [x] **11.47 · `as=text` — the script over the wire, free, and never on its own.** `/speech` gains
       `as=text`: same handler, same four gates, same derived key, returns the script instead of
       synthesising it. Free, because by the time the audio exists the script is in `podcast-cache`.
       Two refusals make it safe. It **must never trigger a paid write on its own** — an uncached
@@ -7524,6 +7558,28 @@ tree. Ordered so that 11.46 — the correction — can ship even if the rest sli
       *Done when: `as=text` returns the script for a beat whose audio was already fetched, with no
       call to the speaker; a cold key answers 204 and no write happens; and a ticket for another
       reader's item answers 404.*
+      ✅ Shipped 2026-08-01 (`26a9e33`), server half. `asParam`/`asText` in `internal/app/speech.go`
+      are read once, before either path, so the beat path and the legacy path answer the same way;
+      `cachedOnly` is a PARAMETER on `speechScript` rather than a parallel function, because two
+      copies of the precedence chain (podcast → digest → article, and which key each lands under)
+      would eventually disagree and the symptom would be captions from one script under audio from
+      another — the exact mismatch this feature exists to remove. `Podcast.Cached`/`Digest.Cached`
+      return a miss as `false` rather than as an error; nothing on this path can write.
+      **The test found a fork the item did not have:** a script can be absent for two reasons that
+      need opposite answers. Not yet WRITTEN → 204, because captioning the slide with the article
+      would show a text the narrator is not going to read. CANNOT be written, because the instance
+      has no key → the audio path falls through to reading the article, so the article IS what the
+      listener hears and captioning it is correct rather than a compromise; `Configured()` is what
+      tells them apart, and answering 204 there would have left an uncaptioned display on a
+      deployment where everything was working as designed. plan §19's degradation paragraph is
+      corrected to match. Also split out so two copies cannot silently diverge: `storySeg`/`introSeg`/
+      `outroSeg` (app) and `segmentFor` (smart) — a caption looked for under a key the writer never
+      used is a caption that never appears, and nothing would catch it.
+      Six tests (`internal/app/speechtext_test.go`), the two carrying the feature being
+      `TestScriptRequestNeverReachesTheWriter` and `TestTheScriptServedIsTheScriptSpoken`; gating and
+      the 404 rule are `TestAScriptRequestIsGatedLikeTheAudio` / `TestABrokenTicketCannotReadAScript`.
+      **The client half is not this item** — firing audio first and asking for the text on `ready` is
+      11.46/11.48's work, and nothing in `client/view` calls `as=text` yet.
 
 - [ ] **11.48 · Captions without timings.** The provider returns no word timings and paying a second
       model to align them would be a bill for a caption. So: split the script on sentence

@@ -3334,9 +3334,23 @@ problem the first layout does not have.
 The article's **lead image is kept** and its prose is not. An ambient display with nothing but type
 on it is worse than one with a picture, and the picture is not a claim about what is being said.
 
-**Degradation is a real path, not a corner.** No key, an uncached script, a 204 — then the article
-body scrolls exactly as it does today and the slide says the captions are unavailable. The mode is
-correct without them, the same way it is correct without fullscreen and without a wake lock.
+**Degradation is a real path, not a corner** — and it is two paths, not one. Writing `as=text`
+(TODO 11.47, shipped 2026-08-01) forced the distinction, which was wrong here first.
+
+A script that has **not been written yet** — the caller asked before the audio request that pays for
+it — is a 204: the article body scrolls exactly as it does today and the slide says the captions are
+unavailable. Captioning it with the article would put a text on screen the narrator is not going to
+read, which is the exact mismatch captions exist to remove.
+
+A script that **cannot be written**, because this instance has no key, is not that. The audio path
+already falls through to reading the article, so the article IS what the listener hears, and
+captioning it is *correct rather than a compromise* — the script endpoint follows the audio path
+down and serves it. `Configured()` is what tells the two apart. Answering 204 on a keyless instance
+would have left an uncaptioned display on a deployment where everything was working as designed,
+which is the free tier this feature is supposed to serve.
+
+Either way the mode is correct without captions, the same way it is correct without fullscreen and
+without a wake lock.
 
 **Captions are timed by proportion, not by alignment.** The speech endpoint returns no word
 timings, and paying a second model to align them would be a bill for a caption. Sentences take a
@@ -7380,14 +7394,22 @@ this tier, each is now load-bearing, and none of them would be found by reading 
 *(TODO 11.29 — both were decided during integration and would otherwise only exist as a Go comment
 one package away from where the next reader needs them.)*
 
-- **`internal/fluxcast.Repo` is named for its suffix on purpose.** `internal/tools/guards`' fourth
+*Both types were called `fluxcast.Repo` and `fluxcast.Produced` when this section was written. The
+store-reading producer moved to **`internal/fluxcast/produce`** on 2026-08-01, when the engine took
+the package name it describes (§29.7's preamble). The direction of that move is the point and it is
+load-bearing for the conventions below: the engine is pure — no database, no clock, no network,
+which is what lets the wasm client carry the player and the timeline compiler without carrying the
+store — so the producer imports the engine and the engine can never import the producer. A
+subpackage makes that a property of the import graph rather than an intention in a doc comment.*
+
+- **`produce.Repo` is named for its suffix on purpose.** `internal/tools/guards`' fourth
   check (`guardRepoScope`) enforces "every exported method on a type whose name ends in `Repo` takes a
-  `store.Scope`" by matching the receiver's type name alone, regardless of package. `fluxcast.Repo`
+  `store.Scope`" by matching the receiver's type name alone, regardless of package. `produce.Repo`
   reads three scoped tables and writes a fourth, so naming it to end in `Repo` gets tenant-isolation
   enforcement from CI structurally, instead of resting on a reviewer noticing a missing parameter. Any
   future type outside `internal/store` that touches scoped rows should take the same naming shortcut
   rather than reinventing the check.
-- **A story's title and its reasons both live in side-maps on `fluxcast.Produced`, not on
+- **A story's title and its reasons both live in side-maps on `produce.Produced`, not on
   `rundown.Story`.** `rundown.Story` is `{ItemID, ClusterID, Role, Words, Sources}` — fixed by 11.2's
   purity requirement, because the visual rundown (11.17) and the producer (11.16) must be the same
   code or the screen lies about what will play. A title is display, not structure, and a story's
@@ -7468,6 +7490,19 @@ Two consequences that are not corner cases. A one-beat block — `{"take": 1}`, 
 every bulletin — is both its own `:begin` and its own `:end`; both apply, `begin` first, so `end`
 wins a scalar conflict. And the last block's `:end` is also `program:end`; both apply, and block is
 the more specific.
+
+**As built, 2026-08-01.** The *result* of the cascade exists as `fluxcast.Direction`, and it carries
+the merge rule — `Merge(over Direction)`: scalars override, lists append, `energy` sums and clamps.
+It reaches the model: `internal/smart/direction.go` renders it as plain labelled prose into the
+INPUT rather than the instructions (instructions are one string per vibe, shared by every beat;
+this varies per beat) and puts it FIRST, ahead of the article, because a model shown a story and
+then told how to treat it has already decided how to treat it. The three ladders — depth, colour,
+address — are EXPANDED there rather than passed through: "depth: analytical" tells a model nothing,
+and the sentence saying what to include tells it everything, so an author writes one word and the
+prompt carries the paragraph. An empty direction leaves the prompt byte-identical to what it was
+before any of this existed, which is what makes adopting a format inaudible until somebody writes
+one. What does NOT exist yet is the resolver itself (TODO 11.31): nothing walks a `Format` and a
+beat index, so the nine scopes above are still spec.
 
 #### 29.7.2 What a format may never do
 
@@ -7575,6 +7610,11 @@ cannot produce that list is a feature that has not finished.* Each `from` bindin
 FIXED, declared payload — `heard:7d` emits headlines and dates, never bodies — and the resolved list
 is printable per show.
 
+**As built:** `Direction.Summary()` is that printer for the half of the list a format supplies —
+audience, standing, avoid, never, always, note, and the three ladders — and it exists because the
+struct crosses to the provider with every beat. `context.from`'s resolved payloads are the other
+half and are still TODO 11.40.
+
 #### 29.7.5 What is cached, and what is not
 
 The effective direction after the whole cascade is what changes the words, so it is what
@@ -7587,3 +7627,9 @@ a block is a different recording from the second** — correct, because it is di
 multiplies the cache. And a grouped beat's key includes every member id in order, because the prose
 was written for that neighbourhood: reordering one story invalidates the whole group's recordings,
 where solo mode would invalidate one.
+
+**As built:** `ScriptKey` hashes `Brief.Direction` today, after the handover — so editing a house
+style already invalidates every segment written under the old one, which is the failure this rule
+exists to prevent (being served back the old prose is indistinguishable from the format never having
+been read). `audio` was never in the key and still is not. The two prices above are unpaid, because
+no caller resolves a direction from a format yet.
