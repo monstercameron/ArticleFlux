@@ -218,6 +218,10 @@ type App struct {
 	// hears the article or its digest, which is the right degradation — a queue
 	// instead of a programme, not silence.
 	podcast *smart.Podcast
+	// smartKey resolves the Smart+ credential the way every caller must: the
+	// stored setting first, the environment second. Held so DoctorSpeech can
+	// answer with the app's own resolution rather than a second copy of it.
+	smartKey func(context.Context) string
 	// write is the beat-addressed writer (internal/fluxcast), and is normally the
 	// same object as podcast above.
 	//
@@ -491,6 +495,11 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		return strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
 	a.llm = llm.New(smartKey)
+	// Kept so the doctor asks the SAME question this does. Two implementations
+	// of "is there a key" is how a screen comes to say ready while the request
+	// answers 501 — which is the shape of every confusion this whole area has
+	// produced, and it is not worth repeating in the tool built to explain it.
+	a.smartKey = smartKey
 	a.translator = smart.NewTranslator(a.llm, a.settings)
 	a.palettes = smart.NewPalettes(a.llm, a.settings)
 	a.categorizer = smart.NewCategorizer(a.llm, a.settings)

@@ -71,6 +71,8 @@ func main() {
 		err = poll(log, args)
 	case "fluxcast":
 		err = fluxcastCmd(log, args)
+	case "speech":
+		err = speechCmd(log, args)
 	case "import":
 		err = importOPML(log, args)
 	case "export":
@@ -104,6 +106,7 @@ func usage() {
   articleflux import  -file feeds.opml [-db path] [-fetch]
   articleflux export  [-file feeds.opml] [-db path]
   articleflux fluxcast [-db path] [-minutes 20] [-style balanced] [-rate 1.0] [-quickhits]
+  articleflux speech   [-db path] [-full]
   articleflux version
 
 serve defaults to 127.0.0.1:9000 and REQUIRES a login. Pass -dev to serve the
@@ -622,6 +625,54 @@ func fluxcastCmd(log *slog.Logger, args []string) error {
 	}
 
 	printRundown(os.Stdout, produced, *rate)
+	return nil
+}
+
+// speechCmd answers "why is read to me silent" from the one place that can.
+//
+// The browser cannot: an <audio> element reports a decode code and no HTTP
+// status, so it genuinely cannot tell a refused key from a request that never
+// arrived. The server can, and is forbidden from saying — the provider's
+// message can quote the article being read aloud. So the answer lives here, in
+// a terminal belonging to whoever owns the account.
+//
+// Free by default. -full writes one real segment and synthesises one short
+// sentence, which is the only way to prove the whole path, and which spends.
+func speechCmd(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("speech", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	user := fs.String("user", devUsername, "username for the local account")
+	pass := fs.String("password", devPassword, "password, on first run only")
+	full := fs.Bool("full", false, "also write and synthesise one real segment (this spends money)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	a, err := app.Open(ctx, app.Config{DBPath: *dbPath, Log: log, Version: version, DevMode: true})
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+
+	sc, err := a.EnsureDevUser(ctx, *user, *pass)
+	if err != nil {
+		return err
+	}
+
+	steps := a.DoctorSpeech(ctx, sc, *full)
+	failed := false
+	for _, s := range steps {
+		fmt.Println(s)
+		if !s.OK {
+			failed = true
+		}
+	}
+	if failed {
+		// A non-zero exit so this is usable from a script and from CI, and so
+		// that "it printed something" is not mistaken for "it passed".
+		return fmt.Errorf("speech: at least one check did not pass")
+	}
 	return nil
 }
 
