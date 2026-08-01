@@ -107,7 +107,21 @@ type scope struct {
 	// it resolves to a list of source ids on the client, because the sidebar is
 	// already holding what it needs to work that out.
 	FolderID string
-	Search   string
+	// CategorySlug is a CLASSIFICATION label — "hardware", "ai" — as opposed to
+	// FolderID above, which is a grouping of feeds the reader made.
+	//
+	// The two share the word "category" and are not the same thing, which is
+	// why they are separate fields rather than one: a folder is a set of
+	// SOURCES and resolves to source ids on the client, while this is a
+	// property of the ARTICLE and crosses every feed. They are also the two
+	// halves of one rail band (railCategories), so a scope carrying both would
+	// be a list that is somehow two lists.
+	CategorySlug string
+	// Uncategorised is the articles the classifier gave no label. The
+	// complement of CategorySlug rather than one of its values, and NOT the
+	// same thing as an unfiled feed — see store.ListQuery.Uncategorised.
+	Uncategorised bool
+	Search        string
 }
 
 // actions is the current render's callbacks, reached through a Ref.
@@ -123,13 +137,18 @@ type scope struct {
 // listeners hold one address forever while every render refreshes what is inside
 // it. The listeners stay registered once; the behaviour is always current.
 type actions struct {
-	open             func(*pb.Item)
-	pick             func(scope)
-	more             func()
-	backRail         func()
-	backList         func()
-	refresh          func()
-	markAll          func()
+	open     func(*pb.Item)
+	pick     func(scope)
+	more     func()
+	backRail func()
+	backList func()
+	refresh  func()
+	markAll  func()
+	// armMarkAll opens Mark all read's confirmation and cancelMarkAll closes
+	// it; only markAll above actually marks anything. See markAllChip and
+	// markAllConfirm (panes.go).
+	armMarkAll       func()
+	cancelMarkAll    func()
 	toggleUnread     func()
 	addFeed          func()
 	toggleFeedFilter func()
@@ -142,12 +161,19 @@ type actions struct {
 	pickTag           func(id, name string)
 	// The categories: selecting one, folding one open, and the two dialogs that
 	// make and edit them.
-	pickFolder      func(id, name string)
-	toggleCategory  func(id string)
-	openAddFeed     func()
-	closeAddFeed    func()
-	pickAddFolder   func(id string)
-	toggleAddNewCat func()
+	pickFolder func(id, name string)
+	// refreshTopicCounts refills the rail's per-category unread numbers.
+	refreshTopicCounts func()
+	// pickCategory browses one classification label — see topicRows (panes.go).
+	pickCategory func(slug string)
+	// pickUncategorised browses the articles that got no label at all — the
+	// complement of pickCategory, and NOT the rail's Unfiled row.
+	pickUncategorised func()
+	toggleCategory    func(id string)
+	openAddFeed       func()
+	closeAddFeed      func()
+	pickAddFolder     func(id string)
+	toggleAddNewCat   func()
 	// The ladder (§11): looking for a feed at an address that is not one, and
 	// what happens when there is not one to find.
 	analyzeSite       func(smart bool)
@@ -212,7 +238,15 @@ type actions struct {
 	// because the two differ by a sign and by nothing else; slideOpen does not,
 	// because starting and stopping are genuinely different acts with different
 	// side effects (a wake lock, a fullscreen request, a voice).
-	slideStart  func()
+	// slideStart opens the display. `voice` is which of the two modes was asked
+	// for — Slideshow or Podcast — and it is a parameter rather than a stored
+	// preference so that the mode can only ever come from the button that was
+	// pressed (plan §19, TODO 11.50).
+	// warmAhead writes and synthesises what is coming while something plays, so
+	// a seam is not two paid round trips of silence. Driven from the moment a
+	// story starts AND from every body that lands, because either can be last.
+	warmAhead   func()
+	slideStart  func(voice bool)
 	slideStop   func()
 	slideStep   func(delta int)
 	slidePause  func()
@@ -315,6 +349,16 @@ type actions struct {
 	loadMyFeed  func()
 	steerTopic  func(topicID, level string)
 	steerEntity func(name, level string)
+	// Deleting one row (armed, then confirmed) and resetting a whole category
+	// back to default — kind is "topic"/"entity"/"feed", target is the id the
+	// dial already addresses that row with, category is "topics"/"entities"/
+	// "feeds". See reader.go's deleteMyFeedRow/resetMyFeedCategory.
+	armMyFeedDelete     func(kind, target string)
+	cancelMyFeedDelete  func()
+	deleteMyFeedRow     func(kind, target string)
+	armMyFeedReset      func(category string)
+	cancelMyFeedReset   func()
+	resetMyFeedCategory func(category string)
 
 	// Smart+ (§10.5, §18). Every one of these either changes the credential
 	// every Smart+ feature spends, or spends it.

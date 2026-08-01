@@ -86,8 +86,18 @@ func Setup(p setupProps) ui.Node {
 		if busy.Get() {
 			return
 		}
-		u := strings.TrimSpace(username.Get())
-		pw, cf := password.Get(), confirm.Get()
+		// The fields, not the state behind them — see fieldOr (login.go) for
+		// the autofill path that leaves the two disagreeing. Setup is filled by
+		// a password manager as readily as login is: generating the password is
+		// the moment a manager is most likely to be driving the form.
+		u := strings.TrimSpace(fieldOr("setup-username", username.Get()))
+		em := strings.TrimSpace(fieldOr("setup-email", email.Get()))
+		pw := fieldOr("setup-password", password.Get())
+		cf := fieldOr("setup-confirm", confirm.Get())
+		username.Set(u)
+		email.Set(em)
+		password.Set(pw)
+		confirm.Set(cf)
 		switch {
 		case u == "" || pw == "":
 			errMsg.Set(tr.T("setup", "errEmpty"))
@@ -115,7 +125,7 @@ func Setup(p setupProps) ui.Node {
 				c = dialed
 				clientRef.Set(c)
 			}
-			res, err := c.Setup(context.Background(), u, strings.TrimSpace(email.Get()), pw)
+			res, err := c.Setup(context.Background(), u, em, pw)
 			ui.PostAsync(func() {
 				busy.Set(false)
 				if err != nil {

@@ -365,7 +365,7 @@ func (r keyboardMap) wire() {
 			// the window, this gives it the screen — so the two sitting next to
 			// each other in the help sheet is the whole explanation.
 			case "s":
-				ui.PostAsync(func() { r.act.Get().slideStart() })
+				ui.PostAsync(func() { r.act.Get().slideStart(false) })
 			case "u":
 				ui.PostAsync(func() { r.act.Get().toggleUnread() })
 			}

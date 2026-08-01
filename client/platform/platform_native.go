@@ -72,6 +72,10 @@ func OnDelegatedWheel(containerSelector, attr string, fn func(value string, dx, 
 	return Listener{}
 }
 
+func OnDelegatedRowClick(containerSelector, rowAttr string, skipAttrs []string, fn func(value string)) Listener {
+	return Listener{}
+}
+
 func OnScrollMetrics(rootSelector, matchSelector string, fn func(scrollTop, viewport, content float64)) Listener {
 	return Listener{}
 }
@@ -139,7 +143,22 @@ func OnScrolledPast(rootSelector, matchSelector, attr string, fn func(value stri
 	return Listener{}
 }
 
-func PrefetchURL(src string) {}
+// PrefetchURL warms nothing natively: there is no browser cache here, so the
+// honest answer is that the file did not land — a caller that would go on to ask
+// for the script must not be told it is on disk.
+func PrefetchURL(src string, then func(ok bool)) {
+	if then != nil {
+		then(false)
+	}
+}
+
+// FetchText answers nothing natively: there is no network here and a caption
+// that never arrives is a slide without captions, which is a correct mode.
+func FetchText(src string, done func(text string, ok bool)) {
+	if done != nil {
+		done("", false)
+	}
+}
 
 // WatchVisible reports "visible" once and never changes its mind. There is no
 // viewport off the browser, and visible is the answer that suppresses the

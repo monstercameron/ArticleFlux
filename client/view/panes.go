@@ -239,6 +239,12 @@ const (
 	// feed and pressing play on an article have to look like different acts,
 	// because in this application they genuinely are.
 	glyphSlideshow = "\u25a4"
+	// The podcast (§19). A speaker cone, because the difference between the two
+	// entry points is sound: one shows the feed and one reads it. Deliberately
+	// not a microphone, which is recording rather than playback, and not the
+	// listen glyph, for the reason the slideshow's own comment gives — pressing
+	// play on a feed and pressing play on an article are different acts.
+	glyphPodcast = "🔊"
 )
 
 // lead renders a leading glyph. Hidden from assistive tech: the label beside it
@@ -256,6 +262,90 @@ func glyphChip(action, glyph, label string, pressed bool) ui.Node {
 		Raw:   map[string]any{"data-action": action},
 		Aria:  map[string]string{"pressed": strconv.FormatBool(pressed)},
 	}, lead(glyph), html.Text(label))
+}
+
+// podcastChip is the second entry point, and its state is the prerequisites.
+//
+// The four conditions read-to-me needs used to be discovered AFTER entering the
+// mode — which is why there is a button on the slide explaining the silence and
+// a settings tab behind it. Said here they are answerable before anything is
+// pressed, and the slide's explanation goes back to being what it should be: the
+// fallback for a failure that happens mid-programme, which a check at the door
+// cannot see.
+//
+// Blocked is a data attribute rather than `disabled`. A disabled control cannot
+// be focused, cannot be read by a screen reader that walks the tab order, and
+// cannot tell anybody why — and every condition here except the server's key is
+// one the reader can change from the screen this chip opens.
+func podcastChip(tr i18n.Runtime, blocked string) ui.Node {
+	label := tr.T("list", "podcast")
+	action := actPodcastOpen
+	data := map[string]string{}
+	if blocked != "" {
+		label = tr.T("list", "podcastBlocked")
+		action = actSlideNeeds
+		data["blocked"] = blocked
+	}
+	return html.Button(html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": action},
+		Data:  data,
+		Aria:  map[string]string{"pressed": "false"},
+	}, lead(glyphPodcast), html.Text(label))
+}
+
+// markAllChip is Mark all read: the control that OPENS the confirmation, and
+// never the one that performs the mark.
+//
+// The first version of this confirmation put both states on this one chip —
+// press once to arm, press again to mark — and that is the version this
+// replaces, because it put the confirming press exactly where the arming
+// press had just been. A double-click, which is a thing people do to buttons,
+// went straight through it: two clicks in the same spot destroyed a backlog
+// with a confirmation step that never had a frame in which it could be read.
+// It also changed the chip's own width and colour, so the toolbar jumped
+// under the pointer mid-press.
+//
+// So the chip's label never changes and it never turns red. It stays a
+// question being asked; markAllConfirm (below) is where it is answered, in a
+// different place, which is what makes the second press deliberate.
+func markAllChip(tr i18n.Runtime, armed bool) ui.Node {
+	return html.Button(html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": "mark-all-arm"},
+		// The chip reports that it OPENED something, which is what
+		// aria-expanded means and what a reader with the banner on screen
+		// needs to know about the control that put it there.
+		Aria: map[string]string{"expanded": strconv.FormatBool(armed)},
+	}, lead(glyphMarkRead), html.Text(tr.T("list", "markAllRead")))
+}
+
+// markAllConfirm is the confirmation, in the banner row under the toolbar.
+//
+// It names the SCOPE rather than counting the articles, and that is the whole
+// point of it: the question a reader needs answered before this press is
+// "which list is this about" — the bug it guards is a mark that reaches feeds
+// they were not looking at — and a count answers a different, smaller
+// question. The number they marked is reported afterwards, by the banner that
+// carries the undo, where it is a fact rather than a promise.
+//
+// Same shape as the category-suggestion banner above it: a line of text and
+// two chips, no icon and no colour of its own. Only the confirming chip is
+// destructive-styled, because it is the only thing here that does anything.
+func markAllConfirm(tr i18n.Runtime, title string) ui.Node {
+	return html.Div(html.Props{Class: "banner", Role: "alertdialog",
+		Aria: map[string]string{"live": "assertive", "label": tr.T("list", "markAllConfirmAria")}},
+		html.Span(html.Props{Class: "banner-text"},
+			html.Text(tr.T("list", "markAllConfirm", i18n.Args{"scope": title}))),
+		html.Button(html.Props{
+			Class: "chip chip-mini banner-undo fs-danger",
+			Raw:   map[string]any{"data-action": "mark-all", "data-armed": "true"},
+		}, html.Text(tr.T("list", "markAllConfirmGo"))),
+		html.Button(html.Props{
+			Class: "chip chip-mini banner-undo",
+			Raw:   map[string]any{"data-action": "mark-all-cancel"},
+		}, html.Text(tr.T("list", "markAllConfirmCancel"))),
+	)
 }
 
 // glyphItemChip is `itemChip` with a leading glyph, for the per-article controls.
@@ -334,6 +424,15 @@ type railProps struct {
 	catsClosed    bool
 	// folders are the categories, in rail order.
 	folders []*pb.Folder
+	// topicUnread is the unread count per classification label. Nil until the
+	// count RPC lands, which is a state the rail renders happily: a topic row
+	// without a number is a row, and the alternative is holding the whole
+	// sidebar back for an aggregate nobody navigates by.
+	topicUnread map[string]int32
+	// uncatUnread is the Uncategorised row's count. -1 means "not fetched
+	// yet", which is distinct from 0: a genuine zero renders no number, and a
+	// pending fetch must not render one either but for a different reason.
+	uncatUnread int
 	// openCats is which categories are unfolded, comma-joined. A string and not a
 	// set for the reason above: a map would compare by identity and the rail
 	// would re-render on every keystroke anywhere in the app.
@@ -442,10 +541,17 @@ func railPane(p railProps) ui.Node {
 			// It is also the number that makes the stream legible next to the row beneath:
 			// 123 against 3,733 unread says what My Feed is FOR in a way no label does.
 			specialRow(glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, p.ranked, p.sel.MyFeed),
+			// "All articles" is current only when NOTHING narrows the list, so
+			// every field on scope has to appear here. Three did not — FolderID,
+			// CategorySlug and Uncategorised — and each omission put two rows in
+			// aria-current="true" at once: the topic the reader picked, and this
+			// row still claiming to be where they are. A sighted reader sees two
+			// highlights; a screen reader is told the wrong list.
 			specialRow(glyphAll, tr.T("stream", "all"), streamAll, p.total,
 				p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
 					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && !p.sel.MyFeed &&
-					p.sel.TagID == ""),
+					p.sel.TagID == "" && p.sel.FolderID == "" &&
+					p.sel.CategorySlug == "" && !p.sel.Uncategorised),
 			specialRow(glyphUnread, tr.T("stream", "unread"), streamUnread, p.total, p.sel.Unread),
 			specialRow(glyphLater, tr.T("stream", "later"), streamLater, -1, p.sel.Later),
 			specialRow(glyphLiked, tr.T("stream", "liked"), streamLiked, -1, p.sel.Rating > 0),
@@ -556,15 +662,24 @@ func railPane(p railProps) ui.Node {
 //
 // Each category is itself a fold, because opening all of them at once is the
 // flat list again with headings in it.
+//
+// # The band is unconditional
+//
+// It used to return nothing at all when there were no categories and nothing
+// unfiled, on the reasoning that "the rail says nothing about a feature the
+// reader has not met". That argument had a hole in it, and the old comment
+// stated the hole without noticing: the ＋ that CREATES the first category
+// lives on this band, so hiding the band hid the only way to make one from the
+// rail — leaving the add-a-feed form as the sole route, which is a place you
+// only reach while doing something else entirely. A section that disappears
+// until you have used it, whose entry point is inside the section, cannot be
+// used a first time.
+//
+// So it renders always, like Streams and Feeds. Tags is still gated on having
+// any, and that asymmetry is intended rather than an oversight: a tag is
+// applied to an article from the article, so its band needs to carry no
+// bootstrap of its own.
 func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
-	if len(p.folders) == 0 && !hasUnfiled(p.feeds) {
-		// Nothing filed, no categories: the section would be a heading over an
-		// empty space. The way to get one is in the add-a-feed form and on the
-		// band's ＋ once there is a band, and until then the rail says nothing
-		// about a feature the reader has not met.
-		return nil
-	}
-
 	// The ＋ sits on the band rather than at the foot of the list: it is the
 	// same kind of control as the unread/all switch on the Feeds band, and a
 	// section's own actions belong on its heading.
@@ -584,13 +699,147 @@ func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
 	for _, f := range p.folders {
 		out = append(out, categoryRows(tr, p, f.GetId(), f.GetName(), groups[f.GetId()], true)...)
 	}
-	// Unfiled last, and only when it has something in it. It is where feeds
-	// added in a hurry land, so it is a working queue rather than a category —
-	// and an empty one is not worth a row.
-	if rest := groups[unfiledID]; len(rest) > 0 {
+	// Unfiled last, and only when it is telling the reader something.
+	//
+	// Two conditions, not one. It must have feeds in it — it is where feeds
+	// added in a hurry land, a working queue rather than a category, and an
+	// empty one is not worth a row.
+	//
+	// And at least one folder must actually hold a feed. A reader who has
+	// filed nothing has EVERY feed unfiled, so the row is a group containing
+	// the whole library: it partitions nothing, and its count is identical to
+	// All articles. Worse, it renders inside a band called CATEGORIES directly
+	// above the classification labels, so "Unfiled — 5,902" reads as "the
+	// articles with no category" and looks broken, because every article in it
+	// visibly carries a chip. That misread has now happened twice. It is a
+	// FEED with no folder; the articles inside it are classified normally, and
+	// the row that means "no label" is Uncategorised, below the topics.
+	//
+	// Once a single folder holds a feed the row means what it says — the
+	// leftovers — and its siblings on screen say which kind of leftover.
+	if rest := groups[unfiledID]; len(rest) > 0 && anyFolderHasFeeds(p.folders, groups) {
 		out = append(out, categoryRows(tr, p, unfiledID, tr.T("stream", "unfiled"), rest, false)...)
 	}
+	return append(out, topicRows(tr, p)...)
+}
+
+// topicRows are the classification labels, under the folders in the same band.
+//
+// # Why they are here at all
+//
+// They were computed and shown on every article — a Hardware chip, an AI chip
+// — and there was no way to ask for "the Hardware articles". The chip named a
+// set the reader could see the members of one at a time and never as a list.
+// internal/store/categoryread.go's own comment had been waiting for this:
+// "item_categories exists in the schema for browse-by-category later".
+//
+// # Why they share the band with folders
+//
+// Because both are what a reader means by "category", and giving them separate
+// top-level bands would make the rail answer that word in two places. A folder
+// is a set of FEEDS the reader made; a topic is a property of the ARTICLE the
+// classifier found. Different things, same question — so: one band, two
+// groups, folders first because they are the reader's own.
+//
+// # No heading over the topics
+//
+// There was a "BY TOPIC" rule between the two groups. It has gone, and the
+// separator with it: since the Unfiled row waits for something to actually be
+// filed (railCategories), the common state is a band that opens straight into
+// the labels — where a heading separates the list from nothing above it, and a
+// second piece of micro-caps directly under CATEGORIES reads as a second
+// section rather than a divider inside one. When folders ARE present they are
+// named rows with their own carets, which is already the boundary the rule was
+// drawing.
+//
+// All 26 render, including the ones nothing has scored for yet. A list that
+// grew and shrank as articles arrived would be a navigation surface that moves
+// under the hand, and the taxonomy's order is fixed (design.Categories, in
+// §27.3d's table order) precisely so this list is somewhere a reader can learn
+// by position.
+func topicRows(tr i18n.Runtime, p railProps) []ui.Node {
+	out := make([]ui.Node, 0, len(design.Categories)+1)
+	for _, c := range design.Categories {
+		out = append(out, topicRow(tr, c.Slug, p.sel.CategorySlug == c.Slug,
+			int(p.topicUnread[c.Slug])))
+	}
+	// Uncategorised last, after the taxonomy rather than inside it: it is what
+	// is left over when every label has had its say, and roughly a quarter of
+	// a real feed lands here (docs/FEATURES.md §76 — "None is the important
+	// one"). Without it that quarter is the only part of the database with no
+	// way in at all.
+	//
+	// It is NOT the rail's "Unfiled" row above, and the two being mistaken for
+	// each other is why this exists: Unfiled is a FEED nobody put in a folder,
+	// and its articles are classified normally. This is an ARTICLE the
+	// classifier gave no label.
+	out = append(out, uncategorisedRow(tr, p.sel.Uncategorised, p.uncatUnread))
 	return out
+}
+
+// uncategorisedRow is the leftover pile at the foot of the topic list.
+//
+// Its marker is hollow rather than coloured: every other row's dot carries its
+// label's hue, and this row is the absence of a label, so inventing a colour
+// for it would make "no category" look like one more category.
+func uncategorisedRow(tr i18n.Runtime, active bool, unread int) ui.Node {
+	name := tr.T("rail", "uncategorised")
+	label := name
+	if unread > 0 {
+		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
+	}
+	return html.Div(html.Props{Class: "feed-slot", Key: "topic-none"},
+		html.Button(html.Props{
+			Class: "feed-row topic-row",
+			Raw:   map[string]any{"data-category-none": "1"},
+			Aria:  map[string]string{"current": strconv.FormatBool(active), "label": label},
+		},
+			html.I(html.Props{Class: "feed-dot topic-dot topic-dot-none"}),
+			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
+			ui.If(unread > 0, func() ui.Node {
+				return html.Span(html.Props{Class: "feed-count"},
+					html.Text(strconv.Itoa(unread)))
+			}),
+		),
+	)
+}
+
+// topicRow is one classification label, shaped like every other rail row: a
+// marker in the marker column, then the name on the shared text axis.
+//
+// The marker carries the label's own hue — the same `--cat` the article chip
+// uses (catStyleFor) — so a colour learnt on a chip is the colour that finds
+// it in the rail.
+func topicRow(tr i18n.Runtime, slug string, active bool, unread int) ui.Node {
+	name := categoryName(tr, slug)
+	mark := html.Props{Class: "feed-dot topic-dot"}
+	if style := catStyleFor(slug); style != nil {
+		mark.Raw = style
+	}
+	// The accessible name carries the count, because the number beside it is
+	// rendered as decoration a screen reader would otherwise read as a bare
+	// integer after a word — the same shape railCategories' own aria uses.
+	label := name
+	if unread > 0 {
+		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
+	}
+	return html.Div(html.Props{Class: "feed-slot", Key: "topic-" + slug},
+		html.Button(html.Props{
+			Class: "feed-row topic-row",
+			Raw:   map[string]any{"data-category-slug": slug},
+			Aria:  map[string]string{"current": strconv.FormatBool(active), "label": label},
+		},
+			html.I(mark),
+			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
+			// Zero renders nothing rather than "0". A label with nothing in it
+			// is still worth showing — it is where an article will appear —
+			// but a column of noughts is twenty-six pieces of no information.
+			ui.If(unread > 0, func() ui.Node {
+				return html.Span(html.Props{Class: "feed-count"},
+					html.Text(strconv.Itoa(unread)))
+			}),
+		),
+	)
 }
 
 // categoryRows is one category's header row plus, when it is open, its feeds.
@@ -669,6 +918,20 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 // Derived on the client from the folder id ListFeeds already carries, rather
 // than asked for: it is a grouping of data that is present, and a second query
 // for it would be latency plus a second number that can disagree with the first.
+// anyFolderHasFeeds reports whether the reader has actually filed anything.
+//
+// Folders EXISTING is not the same as folders being used: an empty folder
+// leaves every feed unfiled just as surely as no folder does, so this counts
+// membership rather than folders. See railCategories for what depends on it.
+func anyFolderHasFeeds(folders []*pb.Folder, groups map[string][]*pb.Feed) bool {
+	for _, f := range folders {
+		if len(groups[f.GetId()]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func feedsByFolder(feeds []*pb.Feed) map[string][]*pb.Feed {
 	out := map[string][]*pb.Feed{}
 	for _, f := range feeds {
@@ -695,15 +958,6 @@ func folderSources(feeds []*pb.Feed, folderID string) []string {
 		return []string{"__none__"}
 	}
 	return out
-}
-
-func hasUnfiled(feeds []*pb.Feed) bool {
-	for _, f := range feeds {
-		if f.GetFolderId() == "" {
-			return true
-		}
-	}
-	return false
 }
 
 // catOpen reports whether a category is unfolded.
@@ -1281,6 +1535,14 @@ type listProps struct {
 	unread    int
 	busy      string
 	notice    string
+	// podcastBlocked is the first unmet prerequisite for the podcast, or "" when
+	// it can start. A key into the `slides` catalog's voice.* family, so a
+	// requirement never gets a second description (TODO 11.49).
+	podcastBlocked string
+	// markAllArmed is whether Mark all read is waiting for the confirming
+	// second press — see markAllChip. Reset on every scope change
+	// (selectScopeWithUnread), so an arm never survives to the wrong feed.
+	markAllArmed bool
 	// catSuggestName is the Smart+ category suggestion Subscribe attached to
 	// the last successful add (smart.categorize, off by default). Empty means
 	// none is pending — the same "empty means gone" contract undo/undoToken
@@ -1757,7 +2019,15 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			// All) rather than merely flipping unreadOnly, so a pressed chip
 			// always un-presses on click.
 			glyphChip("toggle-unread", glyphUnread, unreadLabel, effectiveUnread),
-			glyphChip("mark-all", glyphMarkRead, tr.T("list", "markAllRead"), false),
+			// Absent on Search and Notes, not disabled: neither list is
+			// expressible as a filter the mark can honour (see reader.go's
+			// selectorFor), so on those two the control could only mark
+			// something OTHER than what is on screen — which is the entire
+			// bug this scoping work exists to fix, and offering it greyed out
+			// would still be claiming it belongs there.
+			ui.If(p.sel.Search == "" && !p.sel.Notes, func() ui.Node {
+				return markAllChip(tr, p.markAllArmed)
+			}),
 			// The slideshow (§19). Here rather than beside the article controls,
 			// because it acts on the FEED you are looking at rather than on one
 			// story — it is the same kind of thing as Refresh and Mark all read,
@@ -1769,6 +2039,21 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			ui.If(len(p.items) > 0, func() ui.Node {
 				return glyphChip(actSlideOpen, glyphSlideshow,
 					tr.T("list", "slideshow"), false)
+			}),
+			// The podcast (§19, TODO 11.45). Its own entry point rather than a
+			// preference the slideshow reads, because a mode that arrives from
+			// somewhere other than the button just pressed is a surprise — and
+			// because the two are different things: one shows the feed, the
+			// other reads it and shows the words it is saying.
+			//
+			// Present and REFUSING rather than absent when a prerequisite is
+			// missing. Absent would be the slideshow chip's rule, and it is the
+			// wrong one here: the reader can fix every condition but the
+			// server's key, so a control that vanishes hides the thing they came
+			// to do. Pressing it says which condition and opens the tab that
+			// changes it.
+			ui.If(len(p.items) > 0, func() ui.Node {
+				return podcastChip(tr, p.podcastBlocked)
 			}),
 		),
 		// The banner is wrapped rather than conditional, so it can leave as well
@@ -1800,6 +2085,29 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 						}, html.Text(tr.T("list", "undo")))
 					}),
 				),
+			),
+		),
+		// The Mark all read confirmation, in its own slot for the reason the
+		// two below have theirs: it can be on screen at the same moment as an
+		// undo offer from a previous mark, and a question replacing a receipt
+		// unseen is how a reader answers the wrong one.
+		//
+		// Its CONTENT is conditional where the other two banners' is not, and
+		// that difference is deliberate. A closed slot is `opacity: 0` with a
+		// zero-height row (design/motion.go) — visually gone, still in the
+		// document, and therefore still in the accessibility tree. For a
+		// status message that costs nothing. For this it would leave a
+		// destructive "Mark read" button reachable by keyboard and screen
+		// reader while nothing on screen asked a question, which is a worse
+		// bug than the one the confirmation exists to prevent. The exit
+		// animation is what that costs, and a confirmation does not need to be
+		// watched leaving.
+		html.Div(html.Props{Class: "banner-slot",
+			Data: map[string]string{"open": strconv.FormatBool(p.markAllArmed)}},
+			html.Div(html.Props{Class: "banner-clip"},
+				ui.If(p.markAllArmed, func() ui.Node {
+					return markAllConfirm(tr, p.sel.Title)
+				}),
 			),
 		),
 		// The Smart+ category suggestion (subscribe.go's smart.categorize gate),
@@ -2168,7 +2476,8 @@ func itemRow(tr i18n.Runtime, it *pb.Item, active bool, hosts map[string]string,
 
 	meta := []ui.Node{
 		sourceMark(it.GetSourceId(), hosts, "item-mark"),
-		html.Span(html.Props{Class: "item-source"}, html.Text(it.GetSourceTitle())),
+		html.Span(html.Props{Class: "item-source", Raw: map[string]any{"data-source-id": it.GetSourceId()}},
+			html.Text(it.GetSourceTitle())),
 		html.I(html.Props{Class: "item-sep"}),
 		html.Span(html.Props{}, html.Text(relTime(tr, it.GetPublishedAt()))),
 	}
@@ -2533,7 +2842,8 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	},
 		html.Div(html.Props{Class: "article-eyebrow"},
 			sourceMark(it.GetSourceId(), p.iconHosts, "article-dot"),
-			html.Span(html.Props{Class: "item-source"}, html.Text(it.GetSourceTitle())),
+			html.Span(html.Props{Class: "item-source", Raw: map[string]any{"data-source-id": it.GetSourceId()}},
+				html.Text(it.GetSourceTitle())),
 			html.I(html.Props{Class: "item-sep"}),
 			html.Span(html.Props{}, html.Text(relTime(tr, it.GetPublishedAt()))),
 			// Only shown when it tells you something. Many feeds carry a
@@ -3346,6 +3656,10 @@ func noteSyncMark(tr i18n.Runtime, state string) ui.Node {
 type tagRef struct {
 	Label string
 	Name  string
+	// ID is the tag's server id — what data-tag-id needs to resolve back to a
+	// *pb.Tag in d.tags (reader_clicks.go's pickTag lookup is by id, not name).
+	// Empty while Pending, since the server has not minted one yet.
+	ID string
 	// Pending means the server has not confirmed it yet. The chip is drawn and
 	// the × is not, because the removal it offers would be of something that
 	// does not exist on the server to remove.
@@ -3383,17 +3697,26 @@ func tagChip(tr i18n.Runtime, t tagRef, itemID string) ui.Node {
 	}
 	// Keyed by the NAME, which is the stable identity: keying by the label would
 	// remount every chip for a tag the moment it was renamed.
+	//
+	// data-tag-id sits on the LABEL, data-action="remove-tag" on the X — two
+	// sibling hit targets, not one attribute stacked on the wrapping element.
+	// Both are delegated via closest(), and closest() from a click on the label
+	// would also match a data-action carried by an ANCESTOR, firing the remove
+	// alongside the navigate. Keeping them on siblings instead of nesting one
+	// inside the other's ancestor chain is what keeps the two clicks distinct.
 	return html.Button(html.Props{
 		Class: "chip chip-mini tag-chip",
 		Key:   "tag-" + t.Name,
-		Raw: map[string]any{
-			"data-action": "remove-tag", "data-for-item": itemID, "data-value": t.Name,
-		},
-		Title: tr.T("note", "tagRemove", i18n.Args{"tag": t.Label}),
-		Aria:  map[string]string{"label": tr.T("note", "tagRemoveAria", i18n.Args{"tag": t.Label})},
+		Title: tr.T("note", "tagOpen", i18n.Args{"tag": t.Label}),
 	},
-		html.Span(html.Props{}, html.Text(t.Label)),
-		html.Span(html.Props{Class: "tag-x", Aria: map[string]string{"hidden": "true"}},
+		html.Span(html.Props{Raw: map[string]any{"data-tag-id": t.ID}}, html.Text(t.Label)),
+		html.Span(html.Props{
+			Class: "tag-x",
+			Raw: map[string]any{
+				"data-action": "remove-tag", "data-for-item": itemID, "data-value": t.Name,
+			},
+			Aria: map[string]string{"label": tr.T("note", "tagRemoveAria", i18n.Args{"tag": t.Label})},
+		},
 			html.Text(glyphRemove)),
 	)
 }

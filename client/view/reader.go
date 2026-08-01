@@ -231,6 +231,40 @@ func Reader(p readerProps) ui.Node {
 	// is what the transport is doing, and speakSmart is the egress opt-in.
 	speakID := ui.UseState("")
 	speakState := ui.UseState("")
+	// The captions (plan §19, TODO 11.46). scripts holds the words being said,
+	// scriptText is the words being spoken NOW, and scriptFor is the exact
+	// request they belong to.
+	//
+	// Not a map keyed by item id, which is what this was and why the first
+	// story wore the greeting's subtitles: the opening is played AS the first
+	// story — it introduces it, and it is keyed to its id — so two different
+	// scripts share one id, the greeting's arrived first, and the guard against
+	// re-fetching cemented it there for the story that followed.
+	//
+	// There is exactly one narration at a time, so one string is the honest
+	// shape. scriptFor is what makes a late answer for a superseded beat
+	// harmless: a caption from the previous request is worse than none.
+	scriptText := ui.UseState("")
+	scriptFor := ui.UseRef("")
+	speakURL := ui.UseRef("")
+	// warmed is every audio URL already asked for, so a pipeline that is driven
+	// from two places does not pay for the same segment twice.
+	warmed := ui.UseRef(map[string]bool{})
+	// Where the story now playing sat in the queue when it started.
+	//
+	// Kept because the queue is derived from a list that moves underneath it:
+	// a poll lands, the list reloads, and the story being played — already
+	// marked read by the show that opened it — drops out of a ranked or
+	// unread-only page. Without this, "what comes after that one" and "I have
+	// never heard of that one" are the same answer, and the programme ends
+	// after its first story. See queueAfter.
+	speakAt := ui.UseRef(-1)
+	// said is which sentence is being spoken, and the sentences it indexes into
+	// — cached per story rather than re-split on every timeupdate, which
+	// arrives four times a second.
+	showSaid := ui.UseState(-1)
+	saidLines := ui.UseRef([]string(nil))
+	saidFor := ui.UseRef("")
 	speakSmart := ui.UseState(prefBool(saved, "tts.smartPlus", false))
 	// speakDigest reads a one-minute summary instead of the article. Server-side
 	// preference — /speech reads it too — so it is stored, not just held here.
@@ -429,6 +463,13 @@ func Reader(p readerProps) ui.Node {
 	// legitimate, common state — no key yet, or the listing call failed — and
 	// the picker's own fallback (a free-text field) is what renders then, not
 	// an error screen.
+	// topicUnread is the rail's per-category unread counts. Nil until the
+	// count RPC lands; the rail renders the labels without numbers meanwhile.
+	topicUnread := ui.UseState[map[string]int32](nil)
+	// uncatUnread is the count for the Uncategorised row. Its own handle
+	// rather than a key in the map above, mirroring the RPC: it is that map's
+	// complement, not another label in it.
+	uncatUnread := ui.UseState(-1)
 	smartModels := ui.UseState[[]string](nil)
 	// smartModelCustom is whether the reader asked for the free-text field
 	// over the live list. Reset on every settings load (below), so opening
@@ -456,6 +497,15 @@ func Reader(p readerProps) ui.Node {
 	// name — so the pressed row can say so. One at a time, because that is how
 	// many buttons a person presses at once.
 	myFeedPending := ui.UseState("")
+	// myFeedConfirmDelete is the row armed for the two-press delete, as
+	// "kind:target" (kind is topic/entity/feed; target is the same id the dial
+	// addresses that row with) — the same shape as the category editor's
+	// delete confirm (reader.go's deleteCategory), one string rather than a
+	// per-row bool map because only one row can be armed at a time.
+	myFeedConfirmDelete := ui.UseState("")
+	// myFeedConfirmReset is which category ("topics"/"entities"/"feeds") is
+	// armed for the two-press "reset this category" — same shape, same reason.
+	myFeedConfirmReset := ui.UseState("")
 	// Theming (§20.16.3). All transient: the prompt being typed, whether a
 	// composition is in flight, and what the readability floor reported about the
 	// last answer. The palette itself is not here — it lands in `look`, which is the
@@ -471,6 +521,12 @@ func Reader(p readerProps) ui.Node {
 	// a reader who reloads loses the offer, which is the right trade for keeping
 	// no per-user scratch state on disk.
 	undoToken := ui.UseState("")
+	// markAllArmed is Mark all read's confirm step: true between the first
+	// press (arms it) and either the second press (which marks and clears it)
+	// or a scope change (selectScopeWithUnread clears it too, alongside
+	// undoToken, for the same reason — a confirmation about THIS list must
+	// not silently apply to the next one).
+	markAllArmed := ui.UseState(false)
 	// The Smart+ category suggestion Subscribe attaches to a successful add
 	// (smart.categorize, off by default — see subscribeURL below). Cleared the
 	// same way undoToken is: an empty source id means no suggestion is on
@@ -508,12 +564,26 @@ func Reader(p readerProps) ui.Node {
 	showPhase := ui.UseState("card")
 	showPaused := ui.UseState(false)
 	// showAudio is read-to-me: the voice paces the slides instead of the clock.
-	// Persisted, because it is a decision about how this reader likes to consume
-	// the news rather than about this session.
-	showAudio := ui.UseState(prefBool(saved, slidesAudioPref, false))
+	//
+	// NOT persisted, and that is the whole of TODO 11.50. It used to be, which
+	// meant a reader could press Slideshow and get a narrator on account of a
+	// toggle they set last week — the mode arriving from somewhere other than
+	// the button they just pressed. Derived from which entry point was used, it
+	// cannot disagree with the press. `v` still switches mid-show, which is the
+	// one place a live toggle earns its keep.
+	showAudio := ui.UseState(false)
 	// showDwell is how long a story stays up, as the stored string — "auto", or
 	// a number of seconds. See dwellFor.
 	showDwell := ui.UseState(dwellPrefFrom(saved))
+	// The fixed landing view (Settings → Reading), stored as the same four-key
+	// shape as read.kind/value/title — see effectiveResumeScope. landingMode
+	// is empty (not "fixed") for the common case of no override, which is what
+	// lets the settings picker's "Resume where I left off" read as the
+	// default rather than as one more option among equals.
+	landingMode := ui.UseState(saved["landing.mode"])
+	landingKind := ui.UseState(saved["landing.kind"])
+	landingValue := ui.UseState(saved["landing.value"])
+	landingTitle := ui.UseState(saved["landing.title"])
 	// The clock, as three Refs because none of it paints anything: when the
 	// current slide started, how much of it had already run when it was paused,
 	// and the timer that is due to fire next.
@@ -1055,6 +1125,15 @@ func Reader(p readerProps) ui.Node {
 				// My Feed's count rides with the sidebar, so the badge is present on the
 				// first paint rather than appearing a beat after the row it belongs to.
 				rankedCount.Set(int(res.GetRankedCount()))
+				// The category counts do NOT ride with it — they are their own
+				// request, started here so they arrive with the rail rather
+				// than being held inside it. Everything that refreshes the
+				// sidebar's numbers refreshes these too, which is what keeps a
+				// category's count from disagreeing with the feed counts above
+				// it after a bulk mark.
+				if a := act.Get(); a != nil && a.refreshTopicCounts != nil {
+					a.refreshTopicCounts()
+				}
 			})
 		}()
 	}
@@ -1112,6 +1191,44 @@ func Reader(p readerProps) ui.Node {
 		nextCursor.Set("")
 		stream.Set(nil)
 		current.Set(nil)
+	}
+
+	// selectorFor resolves a scope to the three wire fields that say WHICH
+	// items it is about: the enum, one source id, and a set of them.
+	//
+	// One function, two callers — loadItems below and markAllRead — and that
+	// is the whole reason it exists rather than being inlined where it is
+	// read. The two used to resolve the same scope independently: the list
+	// understood My Feed, tags, categories and the verdict streams, while the
+	// mark understood one feed or everything and silently treated all seven of
+	// the others as "everything subscribed". So Mark all read on a category of
+	// four feeds marked the reader's whole account read (see store.MarkQuery).
+	// Sharing the resolution makes that class of divergence unrepresentable
+	// rather than merely fixed.
+	//
+	// Search and Notes are absent on purpose: neither is expressible as a
+	// filter over the item list — one is an FTS query, the other a join to the
+	// notes table — so they resolve to the zero value here and the Mark all
+	// read control is not offered on them at all (see listHead). A control
+	// that cannot honour the list it is pressed on should not be on it.
+	selectorFor := func(s scope) (pb.ListScope, string, []string) {
+		switch {
+		case s.MyFeed:
+			return pb.ListScope_LIST_SCOPE_MEGAFEED, "", nil
+		case s.Later:
+			return pb.ListScope_LIST_SCOPE_STARRED, "", nil
+		case s.Rating > 0:
+			return pb.ListScope_LIST_SCOPE_LIKED, "", nil
+		case s.Rating < 0:
+			return pb.ListScope_LIST_SCOPE_DISLIKED, "", nil
+		case s.SourceID != "":
+			return pb.ListScope_LIST_SCOPE_FEED, s.SourceID, nil
+		case s.TagID != "":
+			return pb.ListScope_LIST_SCOPE_ALL, "", tagSources(tags.Get(), tagFeeds.Get(), s.TagID)
+		case s.FolderID != "":
+			return pb.ListScope_LIST_SCOPE_ALL, "", folderSources(feeds.Get(), s.FolderID)
+		}
+		return pb.ListScope_LIST_SCOPE_ALL, "", nil
 	}
 
 	loadItems := func(s scope, unread bool) {
@@ -1190,33 +1307,32 @@ func Reader(p readerProps) ui.Node {
 					count = len(list)
 				}
 			} else {
+				listScope, sourceID, sourceIDs := selectorFor(s)
 				req := &pb.ListItemsRequest{
-					Scope: pb.ListScope_LIST_SCOPE_ALL, UnreadOnly: unread || s.Unread, Limit: 60,
+					Scope: listScope, SourceId: sourceID, SourceIds: sourceIDs,
+					// Independent of the scope above: a classification label
+					// crosses every feed, so it narrows whatever list the
+					// scope selected rather than replacing it.
+					CategorySlug:  s.CategorySlug,
+					Uncategorised: s.Uncategorised,
+					UnreadOnly:    unread || s.Unread, Limit: 60,
 				}
-				switch {
-				case s.MyFeed:
-					// First, because it is a different table rather than a filter, and
-					// because unread-only is meaningless here: the deriver only ranks
-					// unread items, so passing the flag would be a no-op that implied
-					// the toggle does something on this stream.
-					req.Scope = pb.ListScope_LIST_SCOPE_MEGAFEED
+				// Unread-only is dropped on the streams where it is meaningless
+				// rather than merely unhelpful. My Feed only ever ranks unread
+				// items, and a verdict or a saved article is something you acted
+				// on AFTER reading — so passing the flag would either be a no-op
+				// that implied the toggle does something here, or would empty a
+				// list the reader deliberately kept. It is NOT part of
+				// selectorFor: the mark has no use for it (the upsert only ever
+				// flips rows that are unread), and a shared helper returning a
+				// field one caller must remember to ignore is the drift that
+				// helper exists to prevent.
+				switch listScope {
+				case pb.ListScope_LIST_SCOPE_MEGAFEED,
+					pb.ListScope_LIST_SCOPE_STARRED,
+					pb.ListScope_LIST_SCOPE_LIKED,
+					pb.ListScope_LIST_SCOPE_DISLIKED:
 					req.UnreadOnly = false
-				case s.Later:
-					req.Scope = pb.ListScope_LIST_SCOPE_STARRED
-					req.UnreadOnly = false
-				case s.Rating > 0:
-					req.Scope = pb.ListScope_LIST_SCOPE_LIKED
-					req.UnreadOnly = false
-				case s.Rating < 0:
-					req.Scope = pb.ListScope_LIST_SCOPE_DISLIKED
-					req.UnreadOnly = false
-				case s.SourceID != "":
-					req.Scope = pb.ListScope_LIST_SCOPE_FEED
-					req.SourceId = s.SourceID
-				case s.TagID != "":
-					req.SourceIds = tagSources(tags.Get(), tagFeeds.Get(), s.TagID)
-				case s.FolderID != "":
-					req.SourceIds = folderSources(feeds.Get(), s.FolderID)
 				}
 				var res *pb.ListItemsResponse
 				// Cached fallback: on a TRANSPORT failure this returns the last
@@ -1386,6 +1502,7 @@ func Reader(p readerProps) ui.Node {
 		}
 		setItems(withRead(itemsRef.Get(), it.GetId(), true))
 		adjustUnread(feeds, totalUnread, it.GetSourceId(), -1)
+		adjustTopicUnread(topicUnread, it, -1)
 		// My Feed's badge follows the same optimistic path as the unread counts.
 		//
 		// A read item LEAVES the ranked page (RankedItems filters on read_at), so a badge
@@ -1405,6 +1522,7 @@ func Reader(p readerProps) ui.Node {
 				ui.PostAsync(func() {
 					setItems(withRead(itemsRef.Get(), it.GetId(), false))
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), 1)
+					adjustTopicUnread(topicUnread, it, 1)
 					if ranked {
 						adjustRanked(rankedCount, 1)
 					}
@@ -1835,6 +1953,22 @@ func Reader(p readerProps) ui.Node {
 					hostsRef.Set(iconHostsOf(feedList))
 					totalUnread.Set(int(total))
 				}
+				// The category counts, refetched rather than adjusted.
+				//
+				// This is the one path where the optimistic arithmetic cannot
+				// work: a bulk mark touches items that were never on screen, so
+				// there is no set of Items to read categories off. It is also
+				// the path where being wrong is most visible — the reader just
+				// emptied a category and is looking straight at its number.
+				//
+				// It has to be asked for HERE. This handler deliberately does
+				// not call loadFeeds() (see the fetch above for why), and the
+				// counts hook lives inside loadFeeds — so before this line a
+				// bulk mark refreshed every number in the rail except these,
+				// which is exactly what it looked like.
+				if a := act.Get(); a != nil && a.refreshTopicCounts != nil {
+					a.refreshTopicCounts()
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -2000,8 +2134,15 @@ func Reader(p readerProps) ui.Node {
 		if c == nil {
 			return
 		}
+		// Resolved on the click, from the scope the reader is looking at, by
+		// the same function the list itself is loaded with — so what is marked
+		// is what is listed.
+		markScope, markSource, markSources := selectorFor(sel.Get())
+		markCategory := sel.Get().CategorySlug
+		markNone := sel.Get().Uncategorised
 		go func() {
-			n, undo, err := c.MarkAllRead(context.Background(), sel.Get().SourceID)
+			n, undo, err := c.MarkAllRead(context.Background(),
+				markScope, markSource, markSources, markCategory, markNone)
 			// The refreshed sidebar is fetched HERE, in the same goroutine, right
 			// after the mark and before the single PostAsync below — not by
 			// calling loadFolders()/loadFeeds() from inside that PostAsync.
@@ -2030,6 +2171,12 @@ func Reader(p readerProps) ui.Node {
 				}
 			}
 			ui.PostAsync(func() {
+				// Disarmed the moment the press that was confirmed is actually
+				// spent — on every exit below, not only success. A failed or
+				// offline attempt leaving the chip armed would have the NEXT
+				// press mark everything read with no confirmation at all,
+				// which is worse than requiring the reader to arm it again.
+				markAllArmed.Set(false)
 				// The one mutation that is deliberately NOT queued: each call
 				// mints a fresh undo batch, so replaying it would leave two and
 				// an undo offer that reverses half its own work (§20.19.8).
@@ -2180,6 +2327,9 @@ func Reader(p readerProps) ui.Node {
 		// The offer is about the list you were looking at. Carrying it to another
 		// feed would put an undo button next to something it does not undo.
 		undoToken.Set("")
+		// Same reasoning, for the same kind of reason: a confirm armed on THIS
+		// list must not survive to mark a different one read.
+		markAllArmed.Set(false)
 		rememberScope(s)
 		sel.Set(s)
 		// The OLD feed's rows go now, not when the new feed's answer arrives.
@@ -2618,6 +2768,14 @@ func Reader(p readerProps) ui.Node {
 		// A continuous session may have been waiting for exactly this body: the
 		// listening ticket is minted by GetItem, so until it lands there is
 		// nothing to play. Ignored unless this is the article being waited on.
+		// The pipeline's other trigger. A body arriving is the moment a story
+		// first HAS a listening ticket, and therefore the first moment its
+		// audio can be warmed at all — without this, a body that lost the race
+		// against the play it was fetched for was never warmed and its seam
+		// paid the full two round trips.
+		if w := act.Get().warmAhead; w != nil {
+			w()
+		}
 		if p := act.Get().playLoaded; p != nil {
 			p(full)
 		}
@@ -2672,6 +2830,7 @@ func Reader(p readerProps) ui.Node {
 		setItems(withRead(itemsRef.Get(), it.GetId(), false))
 		setLocalRead(stream, bodies, it.GetId(), false)
 		adjustUnread(feeds, totalUnread, it.GetSourceId(), 1)
+		adjustTopicUnread(topicUnread, it, 1)
 		// No suppression needed: the topmost handler only acts when a DIFFERENT
 		// article becomes current, and this one already is. Scrolling away and
 		// back is what would re-mark it, which is the correct behaviour.
@@ -2684,6 +2843,7 @@ func Reader(p readerProps) ui.Node {
 					setItems(withRead(itemsRef.Get(), it.GetId(), true))
 					setLocalRead(stream, bodies, it.GetId(), true)
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), -1)
+					adjustTopicUnread(topicUnread, it, -1)
 					notice.Set(tr.T("reader", "errMarkUnread"))
 				})
 			}
@@ -2700,7 +2860,42 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().search = runSearch
 	act.Get().refresh = refresh
+	// loadTopicCounts fills the rail's per-category numbers.
+	//
+	// Its own call, fired beside the sidebar rather than inside it: the count
+	// is a few hundred milliseconds against a real database (see
+	// store.UnreadByCategory) and the feeds must not wait behind it. A failure
+	// leaves the numbers absent, which the rail already renders — nobody
+	// navigates by a count, and a banner about a missing one would be louder
+	// than the thing it is about.
+	loadTopicCounts := func() {
+		c := client.Get()
+		if c == nil {
+			return
+		}
+		slugs := make([]string, 0, len(design.Categories))
+		for _, cat := range design.Categories {
+			slugs = append(slugs, cat.Slug)
+		}
+		go func() {
+			counts, none, err := c.UnreadByCategory(context.Background(), slugs)
+			if err != nil {
+				return
+			}
+			ui.PostAsync(func() {
+				topicUnread.Set(counts)
+				uncatUnread.Set(int(none))
+			})
+		}()
+	}
+	act.Get().refreshTopicCounts = loadTopicCounts
+
 	act.Get().markAll = markAllRead
+	// armMarkAll opens the confirmation; cancelMarkAll closes it. Neither
+	// marks anything — markAllRead above, reached from the confirmation's own
+	// button, is the only thing that does.
+	act.Get().armMarkAll = func() { markAllArmed.Set(true) }
+	act.Get().cancelMarkAll = func() { markAllArmed.Set(false) }
 	act.Get().addFeed = subscribe
 	act.Get().toggleUnread = func() {
 		dest, next, leaving := toggleUnreadResult(tr, sel.Get(), unreadOnly.Get())
@@ -3158,12 +3353,52 @@ func Reader(p readerProps) ui.Node {
 	act.Get().pickFolder = func(id, name string) {
 		selectScope(scope{FolderID: id, Title: name})
 	}
+	// A topic is titled with its own name for the same reason a folder is: the
+	// reader pressed that word, and saying "Category: Hardware" back at them
+	// adds a noun they did not need.
+	act.Get().pickCategory = func(slug string) {
+		selectScope(scope{CategorySlug: slug, Title: categoryName(tr, slug)})
+	}
+	act.Get().pickUncategorised = func() {
+		selectScope(scope{Uncategorised: true, Title: tr.T("rail", "uncategorised")})
+	}
 	// Folding one category open is not a preference. Which categories you are
 	// looking inside is about the minute you are in; whether the whole section is
 	// folded away is a lasting decision, and that one IS saved.
 	act.Get().toggleCategory = func(id string) {
 		openCats.Set(toggleCat(openCats.Get(), id))
 	}
+
+	// onLandingEdit commits a fixed landing view straight from the settings
+	// picker's onChange — one gesture, not a draft-then-save pair like the
+	// Smart+ key, because a <select> already asks "which one" before it fires.
+	//
+	// v is landingResumeValue for "no, resume as before", or "kind:value" —
+	// see landingViewPicker for the encoding. The title is resolved here,
+	// from the live feeds/tags/folders lists, because scopeOf cannot invent
+	// a feed's name and the picker only had ids to put in the option value.
+	onLandingEdit := ui.UseEvent(func(v string) {
+		if v == "" || v == landingResumeValue {
+			landingMode.Set("")
+			landingKind.Set("")
+			landingValue.Set("")
+			landingTitle.Set("")
+			savePrefs(map[string]string{
+				"landing.mode": "", "landing.kind": "", "landing.value": "", "landing.title": "",
+			})
+			return
+		}
+		kind, value, _ := strings.Cut(v, ":")
+		title := landingTitleFor(kind, value, tr, feeds.Get(), tags.Get(), folders.Get())
+		landingMode.Set(landingModeFixed)
+		landingKind.Set(kind)
+		landingValue.Set(value)
+		landingTitle.Set(title)
+		savePrefs(map[string]string{
+			"landing.mode": landingModeFixed, "landing.kind": kind,
+			"landing.value": value, "landing.title": title,
+		})
+	})
 
 	// --- the add-a-feed dialog ----------------------------------------------
 	//
@@ -3506,7 +3741,7 @@ func Reader(p readerProps) ui.Node {
 		// behaves as it always did. queueNext never wraps in either mode — a
 		// programme that silently restarts is a second reading of what was just
 		// played.
-		next := showItem(queueNext(showQ(), done))
+		next := showItem(queueAfter(showQ(), done, speakAt.Get()))
 		if done != "" {
 			// Through readArticle rather than markRead, so it takes the same
 			// path as every other way an article gets marked read — including
@@ -3633,6 +3868,111 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 
+	// fetchScript asks for the WORDS of the recording that is playing.
+	//
+	// After `playing` rather than before it, and that ordering is the whole
+	// economy of the feature: the audio request is what writes the script, so
+	// asking first would either answer 204 or — on a server that wrote on
+	// demand — buy a second copy of the programme to put text on a screen. By
+	// the time a beat is audible its script is on disk and this is a cache read.
+	//
+	// A failure is silence, not an error. 204 is the ordinary answer for a beat
+	// nobody has paid for yet, and a slide without captions is a correct slide.
+	fetchScript := func(url string) {
+		if url == "" || scriptFor.Get() == url {
+			return
+		}
+		sep := "&"
+		if !strings.Contains(url, "?") {
+			sep = "?"
+		}
+		platform.FetchText(url+sep+"as=text", func(text string, ok bool) {
+			ui.PostAsync(func() {
+				// The answer to a request that has been superseded. A caption
+				// from the beat before this one is worse than no caption: it is
+				// the wrong words, presented with the same confidence as the
+				// right ones.
+				if speakURL.Get() != url {
+					return
+				}
+				if !ok {
+					return
+				}
+				if text = strings.TrimSpace(text); text == "" {
+					return
+				}
+				scriptFor.Set(url)
+				scriptText.Set(text)
+			})
+		})
+	}
+
+	// warmAhead writes and synthesises what is coming, while something is
+	// playing.
+	//
+	// A broadcast segment is two paid round trips — the model writes it, then it
+	// is spoken — and both happen the first time the audio is ASKED for. Asked
+	// at the seam, that is ten to thirty seconds of silence between stories.
+	// Asked while the previous story is still running, it is nothing.
+	//
+	// The version this replaces did the same thing in one line inside
+	// startPlayback, and had one gap that mattered: it warmed only if the next
+	// story's BODY had already landed, and if it had not, it did nothing and
+	// never came back. The listening ticket is minted by GetItem, so no body
+	// means no URL to warm — and slideOpen's own body prefetch races the play.
+	// So this is driven from both ends: from the moment a story starts, and
+	// again every time a body arrives (see bodyLanded). Whichever happens last
+	// is the one that warms it.
+	//
+	// Two ahead rather than one, because the cost of being early is a request
+	// for a segment that will be played in ninety seconds, and the cost of
+	// being late is the gap this exists to remove. It stops at the first story
+	// it cannot resolve rather than skipping over it: warming beat N+2 needs
+	// N+1's id as its predecessor, since a segment is written per ordered PAIR
+	// and one written after the wrong story is a different recording.
+	warmAhead := func() {
+		if !speakAuto.Get() || !speakPodcast.Get() {
+			return
+		}
+		q := showQ()
+		i := queueIndex(q, speakID.Get())
+		if i < 0 {
+			// The playing story has left the loaded list — a poll landed. Its
+			// remembered position is what the advance itself falls back on.
+			i = speakAt.Get()
+		}
+		if i < 0 {
+			return
+		}
+		prevID := speakID.Get()
+		for n := 1; n <= warmDepth && i+n < len(q); n++ {
+			id := q[i+n]
+			// showItem kicks a body fetch for anything it does not hold, which
+			// is the other half of the pipeline: no body, no ticket, no URL.
+			if showItem(id) == nil {
+				return
+			}
+			b := bodies.Get()[id]
+			if b == nil || b.GetSpeechUrl() == "" {
+				return
+			}
+			u := speechFrom(b.GetSpeechUrl(), speechAsk{
+				prevID:  prevID,
+				podcast: true,
+				// The same value the real request will carry. A warm URL that
+				// differs from the one that gets played is a segment paid for
+				// twice and a seam that stalls anyway.
+				intro: introAskFor(id),
+			})
+			if u != "" && !warmed.Get()[u] {
+				warmed.Get()[u] = true
+				platform.PrefetchURL(u)
+			}
+			prevID = id
+		}
+	}
+	act.Get().warmAhead = warmAhead
+
 	startPlayback = func(it *pb.Item) {
 		if it == nil {
 			return
@@ -3708,6 +4048,11 @@ func Reader(p readerProps) ui.Node {
 					// button means nothing to anybody.
 					return
 				case "playing":
+					// The words, now that the recording that carries them
+					// exists. See fetchScript for why not sooner.
+					if speakPodcast.Get() {
+						fetchScript(speakURL.Get())
+					}
 					if introFor.Get() != "" {
 						platform.StingUnder()
 					}
@@ -3786,7 +4131,11 @@ func Reader(p readerProps) ui.Node {
 				if introWaiting.Get() || seamWaiting.Get() {
 					lead = -1
 				}
-				platform.PlayAudioIn(speechFrom(src, speechAsk{
+				// The exact URL, kept so the captions can ask for the SCRIPT of
+				// the recording that is actually playing rather than rebuilding
+				// the request and hoping the two agree. A caption from a
+				// different beat is worse than no caption at all.
+				spoken := speechFrom(src, speechAsk{
 					prevID:  prev,
 					podcast: speakPodcast.Get(),
 					// Read here rather than once at mount: a broadcast started
@@ -3800,41 +4149,22 @@ func Reader(p readerProps) ui.Node {
 					// most interesting few of what follows.
 					lineup: queueLineup(showQ(), it.GetId(), slideMaxLineup, showTitle, showInterest),
 					intro:  introAskFor(it.GetId()),
-				}), lead, onState)
-				// Warm the NEXT article's audio while this one plays.
-				//
-				// Without this a continuous session is forty seconds of silence
-				// between every segment, because synthesis only starts when the
-				// <audio> element asks for the file. One speculative GET during
-				// a track the reader is already listening to turns the seam into
-				// nothing — the server has the mp3 on disk before it is wanted.
-				//
-				// Only when Keep playing is on: otherwise it is a paid synthesis
-				// of an article nobody asked to hear.
-				if speakAuto.Get() {
-					// The queue's next, not the list's. A broadcast segment is
-					// cached per ordered PAIR, so warming the wrong successor
-					// pays for a recording that will never be played and leaves
-					// the real one still to be synthesised when it is wanted.
-					if nx := showItem(queueNext(showQ(), it.GetId())); nx != nil {
-						if b := bodies.Get()[nx.GetId()]; b != nil && b.GetSpeechUrl() != "" {
-							// With the SAME handover the real request will carry.
-							// A broadcast segment is written per ordered pair, so
-							// prefetching the bare URL would warm a recording of
-							// the next story after nothing — which is a different
-							// file, still has to be synthesised when it is wanted,
-							// and has now been paid for twice.
-							// No opening parameters: the story after this one has a
-							// predecessor by construction, so it is never the top
-							// of the broadcast — and sending them would warm a URL
-							// the real request will not ask for.
-							platform.PrefetchURL(speechFrom(b.GetSpeechUrl(), speechAsk{
-								prevID:  it.GetId(),
-								podcast: speakPodcast.Get(),
-							}))
-						}
-					}
+				})
+				// A new beat: whatever was on screen belonged to the last one.
+				// Cleared here rather than when the next script arrives, so the
+				// gap shows the article instead of the wrong words.
+				if speakURL.Get() != spoken {
+					scriptText.Set("")
+					scriptFor.Set("")
 				}
+				speakURL.Set(spoken)
+				speakAt.Set(queueIndex(showQ(), it.GetId()))
+				platform.PlayAudioIn(spoken, lead, onState)
+				// Write and synthesise what is coming, while this plays. See
+				// warmAhead — it is driven from here AND from every body that
+				// lands, because the one that arrives last is the one that can
+				// actually do it.
+				warmAhead()
 				return
 			}
 			notice.Set(tr.T("reader", "noSmartVoice"))
@@ -4124,12 +4454,53 @@ func Reader(p readerProps) ui.Node {
 	// stale the way a cached config response can. An unfetched story reports
 	// false, which is right: nothing is known yet, and the dialog says "not on
 	// this server" only once something has been asked.
+	// slideKeyState answers "does this server have a key" with THREE answers,
+	// because two was the bug.
+	//
+	// The evidence inside the show is whether the story on screen came with a
+	// listening ticket — SpeechURL mints one only on an instance that can
+	// synthesise. That is a good answer and it ARRIVES LATE: the body is
+	// fetched asynchronously by slideOpen, so for the first moment of a show
+	// there is no evidence at all.
+	//
+	// Collapsing that moment to "no key" is what made pressing Podcast produce
+	// a silent show complaining about a key that was fine. slideListenOn ran in
+	// the same tick as slideOpen, read an absent body as an absent key, set the
+	// voice line and returned without ever starting the narrator — and because
+	// that line is non-empty, slideStep's own narrate was gated off too. Only
+	// play/pause, which calls listen() directly and consults no prerequisites,
+	// could start it.
+	//
+	// It is the same lesson podcastProps.keyUnknown already learned on the
+	// settings screen: "the honest answer for one second was a wrong one".
+	slideKeyState := func() (present, known bool) {
+		cfg := smartCfg.Get()
+		b := bodies.Get()[showID.Get()]
+		return slideKeyKnown(cfg != nil, cfg.GetConfigured(), b != nil, b.GetSpeechUrl() != "")
+	}
+
 	slidePrereqsNow := func() []slidePrereq {
-		key := false
-		if b := bodies.Get()[showID.Get()]; b != nil && b.GetSpeechUrl() != "" {
-			key = true
-		}
+		key, _ := slideKeyState()
 		return slidePrereqs(speakSmart.Get(), speakPodcast.Get(), speakAuto.Get(), key)
+	}
+
+	// slideStartBlocked is what may REFUSE TO START the narrator, as opposed to
+	// what may be reported about it.
+	//
+	// The difference is the unknown state. A condition the reader owns — the
+	// Smart+ switch, the broadcast switch, keep playing — is known the instant
+	// it is asked, and refusing on one of those is correct and actionable. The
+	// server's key is not known until something has been fetched, and refusing
+	// on evidence that has not arrived is how a working instance gets told it
+	// has no key.
+	//
+	// So an unknown key does not block. The cost of being wrong that way is one
+	// request that answers 501 and reports itself immediately; the cost of
+	// being wrong the other way is a show that never starts and blames the
+	// server.
+	slideStartBlocked := func() string {
+		_, known := slideKeyState()
+		return slideStartBlockedBy(slidePrereqsNow(), known)
 	}
 
 	// settingsPrereqs is the same list, asked from OUTSIDE the slideshow.
@@ -4152,6 +4523,23 @@ func Reader(p readerProps) ui.Node {
 			key = true
 		}
 		return slidePrereqs(speakSmart.Get(), speakPodcast.Get(), speakAuto.Get(), key)
+	}
+
+	// podcastBlockedNow is the ONE answer to "may the podcast start", used by
+	// the chip that offers it and by the handler that runs it.
+	//
+	// One function because two nearly-identical ones is exactly how this broke:
+	// the chip was taught that an unknown key is not a missing one, the handler
+	// was not, and the result was a control that enabled itself and then
+	// silently refused every press — which is, word for word, the failure
+	// podcastStart's own comment already described from the last time.
+	//
+	// smartCfg is fetched when the FluxCast tab is opened, so on a fresh page
+	// load it is nil and the key is unknown. Unknown does not refuse: the
+	// conditions the reader owns still do, and a server with no key reports
+	// itself the moment anything is asked of it.
+	podcastBlockedNow := func() string {
+		return slideStartBlockedBy(settingsPrereqs(), smartCfg.Get() != nil)
 	}
 
 	// slideOpen puts one story on screen and starts its clock from zero.
@@ -4496,7 +4884,12 @@ func Reader(p readerProps) ui.Node {
 			showStart.Set(time.Now())
 			showHeld.Set(0)
 		}
-		it, _ := slideAt(showID.Get())
+		// showItem for the reason slideAudio uses it: a story that has left the
+		// LOADED LIST has not left the programme, and stepping past it is how
+		// the display used to jump back to the top mid-show (queueStep's
+		// i < 0 recovery). showItem answers from the fetched bodies as well,
+		// and kicks a fetch for anything it does not hold.
+		it := showItem(showID.Get())
 		if it == nil {
 			act.Get().slideStep(1)
 			return
@@ -4559,9 +4952,43 @@ func Reader(p readerProps) ui.Node {
 			act.Get().listenPause()
 			return
 		}
-		it, _ := slideAt(showID.Get())
+		// showItem, not slideAt. The narrator is AUDIBLE; whether the story it
+		// is reading is still in the loaded list is a fact about a list that
+		// moved underneath it, and it must not decide whether the voice is
+		// allowed to pace the picture.
+		//
+		// This is the bug reported as "the voice didn't start, so this is
+		// playing silently" with every prerequisite green and audio being
+		// synthesised successfully on the server. A background reload — a poll
+		// finding new items — replaces the list, and the story on screen has
+		// already been marked read by the show that opened it, so it drops out
+		// of a ranked or unread-only page. slideAt then returned nil, this
+		// function returned before setting showNarrating, the narrator never
+		// "proved it was playing", and ninety seconds later the display
+		// announced that the voice had not started. It had.
+		it := showItem(showID.Get())
 		if it == nil {
 			return
+		}
+		// Which sentence is being spoken. An estimate by character share —
+		// there are no word timings to have and buying them would be a second
+		// model call for a caption — so it is recomputed from the playhead
+		// rather than scheduled, which is also what makes it correct after a
+		// scrub or a pause.
+		//
+		// The sentences are cached per story: this runs four times a second and
+		// re-splitting a two-hundred-word script on every tick is work for an
+		// answer that only changes when the story does.
+		if script := scriptText.Get(); script != "" {
+			if saidFor.Get() != scriptFor.Get() {
+				saidFor.Set(scriptFor.Get())
+				saidLines.Set(scriptSentences(script))
+			}
+			if want := scriptCursor(saidLines.Get(), pos, dur); want != showSaid.Get() {
+				showSaid.Set(want)
+			}
+		} else if showSaid.Get() != -1 {
+			showSaid.Set(-1)
 		}
 		// The narrator has proved it is playing, so it may take the clock. This
 		// is the ONLY place that claim is made, and it is made from a timeupdate
@@ -4607,7 +5034,7 @@ func Reader(p readerProps) ui.Node {
 		slideVars(fill, scan)
 	}
 
-	act.Get().slideStart = func() {
+	act.Get().slideStart = func(voice bool) {
 		list := itemsRef.Get()
 		if len(list) == 0 {
 			notice.Set(tr.T("reader", "slidesEmpty"))
@@ -4622,6 +5049,12 @@ func Reader(p readerProps) ui.Node {
 				start = it
 			}
 		}
+		// The mode comes from the button, not from a remembered preference.
+		// Set before showOpen, because the lifecycle effects below read it on
+		// the commit that opens the show and a mode arriving one commit late is
+		// a silent first story.
+		showAudio.Set(voice)
+		showVoice.Set("")
 		showPaused.Set(false)
 		showOpen.Set(true)
 		// The transport is up when the mode opens and fades a few seconds later.
@@ -4747,7 +5180,7 @@ func Reader(p readerProps) ui.Node {
 		// because pressing it is the whole remedy. A server with no key is not —
 		// there is nothing in that dialog they can act on, so it says so on the
 		// slide and the show carries on.
-		switch slidePrereqBlocked(slidePrereqsNow()) {
+		switch slideStartBlocked() {
 		case "":
 			showVoice.Set("")
 		case prereqServerKey:
@@ -4766,7 +5199,9 @@ func Reader(p readerProps) ui.Node {
 			speakAuto.Set(true)
 			savePrefs(map[string]string{"tts.autoplay": "true"})
 		}
-		if it, i := slideAt(showID.Get()); i >= 0 {
+		// showItem, not slideAt: a story the list has since dropped is still the
+		// story on screen, and it is still the one to read.
+		if it := showItem(showID.Get()); it != nil {
 			slideNarrate(it)
 		}
 	}
@@ -4803,21 +5238,35 @@ func Reader(p readerProps) ui.Node {
 	// slideNeedsStart assumes it is already inside the slideshow — it was written
 	// for a dialog that could only be reached from there.
 	//
-	// The gate here has to be settingsPrereqs, not slidePrereqsNow: this button
-	// is pressed BEFORE any slide is open, so showID is still "" (or the id of
-	// whatever show last closed) and bodies[showID] can never carry a fetched
-	// SpeechUrl yet — slidePrereqsNow's serverKey condition would therefore be
-	// false unconditionally, and slideStart below would never run no matter
-	// what the reader's settings actually are. That was the bug: the button
-	// looked live but silently no-opped on every press. settingsPrereqs asks
-	// the same four questions from the answer that IS available out here — the
-	// server's Smart+ config — which is exactly what this call site has.
+	// The gate is podcastBlockedNow, which is the SAME function the control that
+	// invokes this is rendered from. That is the whole requirement, and it has
+	// now been got wrong twice.
+	//
+	// First: this button is pressed BEFORE any slide is open, so showID is ""
+	// and bodies[showID] can never carry a fetched SpeechUrl — slidePrereqsNow's
+	// serverKey condition was false unconditionally and the button silently
+	// no-opped on every press.
+	//
+	// Then: the chip was taught that an unknown key is not a missing one and
+	// this was not, so the control enabled itself and the handler refused —
+	// the same symptom, from the opposite direction, reintroduced by a fix.
+	//
+	// One predicate, one answer. And a refusal goes somewhere the reader can
+	// act, because a button that does nothing is worse than one that says no.
 	act.Get().podcastStart = func() {
-		if !slidePrereqsMet(settingsPrereqs()) {
+		// Blocked goes SOMEWHERE. A handler that returns silently is a button
+		// that does nothing, which is worse than one that refuses out loud —
+		// and it is what this line used to do.
+		if blocked := podcastBlockedNow(); blocked != "" {
+			act.Get().slideNeeds()
 			return
 		}
-		act.Get().slideStart()
-		act.Get().slideNeedsStart()
+		// slideStart(true) starts the narrator itself now, so this is the whole
+		// of it. It used to call slideNeedsStart as well, which re-ran the same
+		// prerequisite check, reset the clock and asked for a second playback of
+		// the same story — harmless only because the check it re-ran happened to
+		// refuse.
+		act.Get().slideStart(true)
 	}
 	// One switch, flipped for real and at once. Not staged behind an Apply: a
 	// staged copy of four preferences is a second source of truth for them, and
@@ -4850,7 +5299,6 @@ func Reader(p readerProps) ui.Node {
 		showNarrating.Set(false)
 		if !showAudio.Get() {
 			showAudio.Set(true)
-			savePrefs(map[string]string{slidesAudioPref: "true"})
 		}
 		act.Get().slideListenOn()
 	}
@@ -4858,7 +5306,6 @@ func Reader(p readerProps) ui.Node {
 	act.Get().slideListen = func() {
 		next := !showAudio.Get()
 		showAudio.Set(next)
-		savePrefs(map[string]string{slidesAudioPref: strconv.FormatBool(next)})
 		if !showOpen.Get() {
 			return
 		}
@@ -5251,6 +5698,123 @@ func Reader(p readerProps) ui.Node {
 			return client.Get().SteerEntity(context.Background(), name, l)
 		})
 	}
+
+	// --- deleting one row, resetting a category (§18.9) -----------------------
+	//
+	// "Delete" is not a fourth verb the server has to learn. A topic or an
+	// entity already HAS a way to stop influencing the page — Never, the
+	// dial's own last position — so deleting one is steerOne with that level,
+	// same as pressing Never on the dial, just reached through a control that
+	// asks first. A feed has no dial here at all (myFeedFeeds is read-only by
+	// design; see its doc comment), so its "delete" is the one write that
+	// already excludes a feed from the ranked pool: in_megafeed=false, the
+	// same field feedsettings.go's own toggle sets.
+	act.Get().armMyFeedDelete = func(kind, target string) {
+		myFeedConfirmDelete.Set(kind + ":" + target)
+	}
+	act.Get().cancelMyFeedDelete = func() { myFeedConfirmDelete.Set("") }
+	act.Get().deleteMyFeedRow = func(kind, target string) {
+		myFeedConfirmDelete.Set("")
+		switch kind {
+		case myFeedRowTopic:
+			act.Get().steerTopic(target, "never")
+		case myFeedRowEntity:
+			act.Get().steerEntity(target, "never")
+		case myFeedRowFeed:
+			c := client.Get()
+			if c == nil || target == "" {
+				return
+			}
+			myFeedPending.Set(target)
+			myFeedNote.Set("")
+			myFeedNoteBad.Set(false)
+			off := false
+			go func() {
+				_, err := c.UpdateFeedSettings(context.Background(),
+					&pb.UpdateFeedSettingsRequest{SourceId: target, InMegafeed: &off})
+				ui.PostAsync(func() {
+					myFeedPending.Set("")
+					if err != nil {
+						myFeedNote.Set(tr.T("myFeed", "steerFailed", i18n.Args{"err": serverText(tr, err)}))
+						myFeedNoteBad.Set(true)
+						act.Get().loadMyFeed()
+						return
+					}
+					myFeedNoteBad.Set(false)
+					myFeedNote.Set(tr.T("myFeed", "saved"))
+					act.Get().loadMyFeed()
+				})
+			}()
+		}
+	}
+
+	// resetMyFeedCategory undoes every override in one category, back to
+	// Normal for topics/entities or back onto the ranked pool for feeds.
+	//
+	// One RPC per row that needs it, sequential in the same goroutine, then
+	// ONE refetch at the end — never a per-row refetch. SteerInterestRequest
+	// is explicitly one-target-per-call (see the proto's own comment on why a
+	// batch RPC was rejected), so a bulk server verb does not exist to call
+	// instead; a bulk CLIENT verb that still settles in a single reconciling
+	// PostAsync is the shape markAllRead's own handler uses for the same
+	// reason — see its comment for why nested refetches must not each paint.
+	act.Get().armMyFeedReset = func(category string) { myFeedConfirmReset.Set(category) }
+	act.Get().cancelMyFeedReset = func() { myFeedConfirmReset.Set("") }
+	act.Get().resetMyFeedCategory = func(category string) {
+		myFeedConfirmReset.Set("")
+		c := client.Get()
+		pr := myFeedProfile.Get()
+		if c == nil || pr == nil {
+			return
+		}
+		myFeedNote.Set("")
+		myFeedNoteBad.Set(false)
+		go func() {
+			var lastErr error
+			switch category {
+			case myFeedCatTopics:
+				for _, t := range pr.GetTopics() {
+					if effectiveLevel(t.GetLevel()) == pb.SteerLevel_STEER_LEVEL_NORMAL {
+						continue
+					}
+					if _, err := c.SteerTopic(context.Background(), t.GetKey(), pb.SteerLevel_STEER_LEVEL_NORMAL); err != nil {
+						lastErr = err
+					}
+				}
+			case myFeedCatEntities:
+				for _, e := range pr.GetEntities() {
+					if effectiveLevel(e.GetLevel()) == pb.SteerLevel_STEER_LEVEL_NORMAL {
+						continue
+					}
+					if _, err := c.SteerEntity(context.Background(), e.GetName(), pb.SteerLevel_STEER_LEVEL_NORMAL); err != nil {
+						lastErr = err
+					}
+				}
+			case myFeedCatFeeds:
+				for _, f := range pr.GetFeeds() {
+					if f.GetOnMyFeed() {
+						continue
+					}
+					on := true
+					if _, err := c.UpdateFeedSettings(context.Background(),
+						&pb.UpdateFeedSettingsRequest{SourceId: f.GetSourceId(), InMegafeed: &on}); err != nil {
+						lastErr = err
+					}
+				}
+			}
+			ui.PostAsync(func() {
+				if lastErr != nil {
+					myFeedNote.Set(tr.T("myFeed", "steerFailed", i18n.Args{"err": serverText(tr, lastErr)}))
+					myFeedNoteBad.Set(true)
+				} else {
+					myFeedNoteBad.Set(false)
+					myFeedNote.Set(tr.T("myFeed", "saved"))
+				}
+				act.Get().loadMyFeed()
+			})
+		}()
+	}
+
 	act.Get().settingsTabTo = func(id string) {
 		setTab.Set(id)
 		// Leaving the Account tab disarms the sign-out. A confirm that survives
@@ -5258,6 +5822,10 @@ func Reader(p readerProps) ui.Node {
 		// giving — the same rule the category editor's delete follows, and the
 		// stakes here are a session rather than a folder.
 		signOutArmed.Set(false)
+		// Same rule for My Feed's row delete and category reset — armed by one
+		// press, forgotten the moment the reader leaves the tab that showed it.
+		myFeedConfirmDelete.Set("")
+		myFeedConfirmReset.Set("")
 		// The server tabs are the only ones with anything to fetch, and fetching
 		// on every tab click would re-query while someone flicks through.
 		switch settingsTab(id) {
@@ -5907,6 +6475,14 @@ func Reader(p readerProps) ui.Node {
 					hostsRef.Set(iconHostsOf(feedList))
 					totalUnread.Set(int(total))
 				}
+				// The categories, for the reason markAllRead refetches them:
+				// this handler bypasses loadFeeds() by design, so the counts
+				// hook inside it never runs. An undo that restored the backlog
+				// everywhere except the category the reader emptied would be
+				// the same bug wearing the opposite sign.
+				if a := act.Get(); a != nil && a.refreshTopicCounts != nil {
+					a.refreshTopicCounts()
+				}
 				loadItems(sel.Get(), unreadOnly.Get())
 			})
 		}()
@@ -6077,7 +6653,7 @@ func Reader(p readerProps) ui.Node {
 			case "toggle-feed-filter":
 				a.toggleFeedFilter()
 			case actSlideOpen:
-				a.slideStart()
+				a.slideStart(false)
 			case "listen":
 				a.listen("")
 			case "read-later":
@@ -6398,9 +6974,14 @@ func Reader(p readerProps) ui.Node {
 				rate := speechRateFrom(p)
 				speakRate.Set(rate)
 				platform.SetSpeechRate(speechRateValue(rate))
-				if v, ok := p[slidesAudioPref]; ok {
-					showAudio.Set(v == "true")
-				}
+				landingMode.Set(p["landing.mode"])
+				landingKind.Set(p["landing.kind"])
+				landingValue.Set(p["landing.value"])
+				landingTitle.Set(p["landing.title"])
+				// slides.readToMe is deliberately NOT restored (TODO 11.50).
+				// The mode comes from the button that was pressed; a value
+				// restored at boot is how pressing Slideshow used to produce a
+				// narrator.
 				// Not `if ok`, unlike the flags above: the empty string is not a
 				// valid pace and dwellPrefFrom resolves it to auto, so passing the
 				// whole map keeps the fallback in one place.
@@ -6472,13 +7053,17 @@ func Reader(p readerProps) ui.Node {
 				// filter, the rail filter and the appearance are settings, not
 				// places, and a link to a feed says nothing about them.
 				addressed := bootAddressed
-				resume := resumeScope(p, tr)
+				// effectiveResumeScope, not resumeScope directly: a fixed landing
+				// view (Settings → Reading) outranks A30's resume the same way
+				// here as it does in bootRoute — see that function's call for why
+				// this decision has to be made twice.
+				resume := effectiveResumeScope(p, tr)
 				if v := p["read.value"]; p["read.kind"] == "search" && v != "" && !addressed {
 					searchText.Set(v)
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
 				if !addressed {
-					resumeItem.Set(p["read.item"])
+					resumeItem.Set(effectiveResumeItem(p))
 				}
 
 				// What an installed app was opened FOR outranks what it was doing
@@ -6914,7 +7499,7 @@ func Reader(p readerProps) ui.Node {
 		focusMode: focusMode, showOpen: showOpen,
 		fsOpen: fsOpen, tsOpen: tsOpen,
 		paletteActive: paletteActive, look: look,
-		openItem:      openItem, refresh: refresh,
+		openItem: openItem, refresh: refresh,
 	}.wire()
 
 	// --- the slideshow's lifecycle (§19) --------------------------------------
@@ -7213,6 +7798,8 @@ func Reader(p readerProps) ui.Node {
 				feeds:           feeds.Get(),
 				tags:            tags.Get(),
 				folders:         folders.Get(),
+				topicUnread:     topicUnread.Get(),
+				uncatUnread:     uncatUnread.Get(),
 				openCats:        openCats.Get(),
 				catsClosed:      railCatsClosed.Get(),
 				total:           totalUnread.Get(),
@@ -7249,19 +7836,32 @@ func Reader(p readerProps) ui.Node {
 				// the badge is how many are unread — and two nearly-identical
 				// numbers side by side read as an off-by-one bug rather than as two
 				// different measurements.
-				ranked:         rankedCount.Get(),
-				iconHosts:      hosts,
-				hiddenCats:     catHidden.Get(),
-				fresh:          freshItems.Get(),
-				scrollTop:      scrollTop.Get(),
-				viewport:       viewport.Get(),
-				conn:           conn.Get(),
-				connFix:        fixAction,
-				connFixLabel:   fixLabel,
-				staleNote:      staleNote,
-				unread:         totalUnread.Get(),
-				busy:           busy.Get(),
-				notice:         notice.Get(),
+				ranked:       rankedCount.Get(),
+				iconHosts:    hosts,
+				hiddenCats:   catHidden.Get(),
+				fresh:        freshItems.Get(),
+				scrollTop:    scrollTop.Get(),
+				viewport:     viewport.Get(),
+				conn:         conn.Get(),
+				connFix:      fixAction,
+				connFixLabel: fixLabel,
+				staleNote:    staleNote,
+				unread:       totalUnread.Get(),
+				busy:         busy.Get(),
+				notice:       notice.Get(),
+				markAllArmed: markAllArmed.Get(),
+				// Asked from OUTSIDE the show, where the server-key condition
+				// cannot be read off a story on screen because there is none.
+				//
+				// And it uses the START rule, not the display rule: smartCfg is
+				// fetched when the FluxCast tab is opened, so on a fresh page
+				// load it is nil and the key is UNKNOWN — which this chip was
+				// rendering as "needs setting up" on every reload of an instance
+				// that was set up. Unknown is not missing. The chip offers the
+				// mode; the conditions the reader actually owns still refuse it,
+				// and a server with no key reports itself the moment something
+				// is asked of it.
+				podcastBlocked: podcastBlockedNow(),
 				catSuggestName: catSuggestName.Get(),
 				catSuggestBusy: catSuggestBusy.Get(),
 				searchValue:    searchText.Get(),
@@ -7271,36 +7871,44 @@ func Reader(p readerProps) ui.Node {
 			grip(tr, "list"),
 			ui.If(pane.Get() == viewSettings, func() ui.Node {
 				return settingsPane(tr, settingsProps{
-					tab:          settingsTab(setTab.Get()),
-					client:       client.Get(),
-					conn:         conn.Get(),
-					reconnects:   reconnects,
-					connHealth:   connHealth,
-					feeds:        len(feeds.Get()),
-					unread:       totalUnread.Get(),
-					loadedItems:  len(items.Get()),
-					totalItems:   totalItems.Get(),
-					unreadOnly:   unreadOnly.Get(),
-					unreadFeeds:  unreadFeedsOnly.Get(),
-					markOnPast:   markOnPast.Get(),
-					look:         look.Get(),
-					speakSmart:   speakSmart.Get(),
-					speakDigest:  speakDigest.Get(),
-					speakAuto:    speakAuto.Get(),
-					speakPodcast: speakPodcast.Get(),
-					speakVibe:    speakVibe.Get(),
-					speakBed:     speakBed.Get(),
-					bedTracks:    bedTracks.Get(),
-					speakRate:    speakRate.Get(),
-					slideDwell:   showDwell.Get(),
-					slideAudio:   showAudio.Get(),
-					busy:         busy.Get(),
-					stats:        serverStats.Get(),
-					logs:         serverLogs.Get(),
-					logLevel:     logLevel.Get(),
-					loading:      statsLoading.Get(),
-					statsErr:     statsErr.Get(),
-					serverURL:    platform.Origin(),
+					tab:            settingsTab(setTab.Get()),
+					client:         client.Get(),
+					conn:           conn.Get(),
+					reconnects:     reconnects,
+					connHealth:     connHealth,
+					feeds:          len(feeds.Get()),
+					unread:         totalUnread.Get(),
+					loadedItems:    len(items.Get()),
+					totalItems:     totalItems.Get(),
+					unreadOnly:     unreadOnly.Get(),
+					unreadFeeds:    unreadFeedsOnly.Get(),
+					markOnPast:     markOnPast.Get(),
+					look:           look.Get(),
+					speakSmart:     speakSmart.Get(),
+					speakDigest:    speakDigest.Get(),
+					speakAuto:      speakAuto.Get(),
+					speakPodcast:   speakPodcast.Get(),
+					speakVibe:      speakVibe.Get(),
+					speakBed:       speakBed.Get(),
+					bedTracks:      bedTracks.Get(),
+					speakRate:      speakRate.Get(),
+					slideDwell:     showDwell.Get(),
+					slideAudio:     showAudio.Get(),
+					landingMode:    landingMode.Get(),
+					landingKind:    landingKind.Get(),
+					landingValue:   landingValue.Get(),
+					landingTitle:   landingTitle.Get(),
+					landingFeeds:   feeds.Get(),
+					landingTags:    tags.Get(),
+					landingFolders: folders.Get(),
+					onLandingEdit:  onLandingEdit,
+					busy:           busy.Get(),
+					stats:          serverStats.Get(),
+					logs:           serverLogs.Get(),
+					logLevel:       logLevel.Get(),
+					loading:        statsLoading.Get(),
+					statsErr:       statsErr.Get(),
+					serverURL:      platform.Origin(),
 					session: sessionProps{
 						present:  hadSession.Get(),
 						armed:    signOutArmed.Get(),
@@ -7329,12 +7937,14 @@ func Reader(p readerProps) ui.Node {
 					// about the server that only the Smart+ config can answer.
 					needs: settingsPrereqs(),
 					myFeed: myFeedProps{
-						profile: myFeedProfile.Get(),
-						loading: myFeedLoading.Get(),
-						err:     myFeedErr.Get(),
-						note:    myFeedNote.Get(),
-						noteBad: myFeedNoteBad.Get(),
-						pending: myFeedPending.Get(),
+						profile:       myFeedProfile.Get(),
+						loading:       myFeedLoading.Get(),
+						err:           myFeedErr.Get(),
+						note:          myFeedNote.Get(),
+						noteBad:       myFeedNoteBad.Get(),
+						pending:       myFeedPending.Get(),
+						confirmDelete: myFeedConfirmDelete.Get(),
+						confirmReset:  myFeedConfirmReset.Get(),
 					},
 					classify: classifySettingsProps{
 						hiddenCats: catHidden.Get(),
@@ -7499,11 +8109,14 @@ func Reader(p readerProps) ui.Node {
 				audio:      showAudio.Get(),
 				speakState: speakState.Get(),
 				voice:      showVoice.Get(),
-				needs:      slidePrereqsNow(),
-				hud:        showHud.Get(),
-				index:      i,
-				total:      len(q),
-				hosts:      hosts,
+				// The words being said, and which of them is being said now.
+				script: scriptText.Get(),
+				said:   showSaid.Get(),
+				needs:  slidePrereqsNow(),
+				hud:    showHud.Get(),
+				index:  i,
+				total:  len(q),
+				hosts:  hosts,
 			})
 		}(),
 		palette(tr, paletteProps{

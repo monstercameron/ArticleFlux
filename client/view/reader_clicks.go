@@ -71,14 +71,19 @@ func (d delegatedClicks) wire() {
 	// also why this survives pagination without re-registering.
 
 	ui.UseEffect(func() func() {
-		l := platform.OnDelegatedClick("#app", "data-item-id", func(id string) {
-			ui.PostAsync(func() {
-				a := d.act.Get()
-				if it := a.itemByID(id); it != nil {
-					a.open(it)
-				}
+		// A row also carries a category chip and a feed-title link now (both
+		// route elsewhere on click) — OnDelegatedRowClick, not OnDelegatedClick,
+		// so a click on either of those wins instead of also opening the row's
+		// article. See its doc comment.
+		l := platform.OnDelegatedRowClick("#app", "data-item-id",
+			[]string{"data-category-slug", "data-source-id"}, func(id string) {
+				ui.PostAsync(func() {
+					a := d.act.Get()
+					if it := a.itemByID(id); it != nil {
+						a.open(it)
+					}
+				})
 			})
-		})
 		return l.Release
 	}, []any{})
 
@@ -208,6 +213,10 @@ func (d delegatedClicks) wire() {
 					a.openExtern(id)
 				case "refresh":
 					a.refresh()
+				case "mark-all-arm":
+					a.armMarkAll()
+				case "mark-all-cancel":
+					a.cancelMarkAll()
 				case "mark-all":
 					a.markAll()
 				case "toggle-unread":
@@ -337,6 +346,23 @@ func (d delegatedClicks) wire() {
 					a.steerEntity(id, value)
 				case actMyFeedRefresh:
 					a.loadMyFeed()
+				case actMyFeedDeleteArm:
+					// The chip names the row's kind in data-value and the row's own
+					// target (topic key / entity name / feed source id) in
+					// data-for-item — the same split mfDial already uses.
+					a.armMyFeedDelete(value, id)
+				case actMyFeedDeleteConfirm:
+					a.deleteMyFeedRow(value, id)
+				case actMyFeedDeleteCancel:
+					a.cancelMyFeedDelete()
+				case actMyFeedResetArm:
+					// The category names itself in data-value; there is no row to
+					// carry in data-for-item, so id is unused here.
+					a.armMyFeedReset(value)
+				case actMyFeedResetConfirm:
+					a.resetMyFeedCategory(value)
+				case actMyFeedResetCancel:
+					a.cancelMyFeedReset()
 				case "settings-loglevel":
 					a.setLogLevel(value)
 				case actSignOut:
@@ -472,7 +498,9 @@ func (d delegatedClicks) wire() {
 				case "toggle-digest":
 					a.digestVoice()
 				case actSlideOpen:
-					a.slideStart()
+					a.slideStart(false)
+				case actPodcastOpen:
+					a.podcastStart()
 				case actSlideLeave:
 					a.slideStop()
 				case actSlidePause:
@@ -534,6 +562,24 @@ func (d delegatedClicks) wire() {
 					}
 				}
 			})
+		})
+		return l.Release
+	}, []any{})
+
+	// A classification label's row. Its own attribute again, for the reason
+	// the folder row has one: a folder and a topic resolve to different
+	// scopes, and a shared attribute would make "which kind of thing is this"
+	// a guess at the click.
+	ui.UseEffect(func() func() {
+		l := platform.OnDelegatedClick("#app", "data-category-slug", func(slug string) {
+			ui.PostAsync(func() { d.act.Get().pickCategory(slug) })
+		})
+		return l.Release
+	}, []any{})
+
+	ui.UseEffect(func() func() {
+		l := platform.OnDelegatedClick("#app", "data-category-none", func(string) {
+			ui.PostAsync(func() { d.act.Get().pickUncategorised() })
 		})
 		return l.Release
 	}, []any{})

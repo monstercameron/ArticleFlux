@@ -345,9 +345,18 @@ test.describe('reading', () => {
 
   test('mark all read empties the unread view and zeroes the counts', async ({ page }) => {
     await boot(page);
+    // Mark all read now arms on the first press and only marks on the
+    // second — see markAllChip (client/view/panes.go).
+    await page.locator('[data-action="mark-all-arm"]').click();
     await page.locator('[data-action="mark-all"]').click();
 
-    await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);
+    // Filtered rather than a bare `.banner` locator: the extra confirm click
+    // this now takes gives an unrelated category-suggestion banner (from an
+    // earlier subscribe in the fixture) time to land on screen at the same
+    // moment, and a bare locator resolving to two banners fails strict mode
+    // regardless of which one is right.
+    await expect(page.locator('.banner').filter({ hasText: /Marked \d+ read/ }))
+      .toBeVisible();
     // Scoped to SUBSCRIPTION rows: `.feed-row` without `.stream-row`.
     //
     // A bare `.feed-count` counts the rail's built-in streams too, and theirs

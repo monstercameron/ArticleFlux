@@ -91,9 +91,11 @@ func Sheet() {
 	paletteCSS(r)
 	helpCSS(r)
 	feedSettingsCSS(r)
+	discoverCSS(r)
 	loginCSS(r)
 	homeCSS(r)
 	categoriesCSS(r)
+	railTopicsCSS(r)
 	glyphs(r)
 	mobile(r)
 	appearanceCSS(r)
@@ -625,6 +627,10 @@ func list(r func(string, string) css.Rule) {
 		// has to come down to where a word set in it is readable. See Sheet().
 		r("color", "var(--ink, var(--soft))"), r("font-weight", "500"),
 		r("overflow", "hidden"), r("text-overflow", "ellipsis"),
+		// Carries data-source-id everywhere it's drawn (list row and article
+		// eyebrow alike) — a click routes to that feed, so it needs its own
+		// affordance even though it sits inside a larger clickable row.
+		r("cursor", "pointer"),
 		// The one element on this line that yields, and it is the right one: a source
 		// name is still identifiable from its coloured mark and its first few
 		// characters, so "BGR: The Three Bigg…" costs nothing. Everything else here is
@@ -633,6 +639,7 @@ func list(r func(string, string) css.Rule) {
 		// explicit shrink and the flex line divided the loss evenly.
 		r("flex", "0 1 auto"), r("min-width", "3ch"),
 	)
+	css.Global(".item-source:hover", r("text-decoration", "underline"))
 	// A 3px dot at half opacity as the field separator. A middot sits on the
 	// baseline and reads as punctuation; this reads as structure.
 	css.Global(".item-sep",
@@ -1046,11 +1053,18 @@ func reader(r func(string, string) css.Rule) {
 	css.Global(".tag-x",
 		r("color", "var(--mute)"), r("font-size", "13px"), r("line-height", "1"),
 	)
-	// The × warms on hover rather than the whole chip lighting up: the chip is
-	// destructive, and it should look destructive before it is clicked, not
-	// merely interactive.
+	// The × warms on hover rather than the whole chip lighting up: the label and
+	// the × are two separate hit targets now (label opens the tag view, × still
+	// removes), so a hover over the label must not read as "this will delete" —
+	// only a hover that actually lands on the × does.
 	css.Global(".tag-chip:hover .tag-x", r("color", "var(--neg)"))
-	css.Global(".tag-chip:hover", r("border-color", "var(--neg)"))
+	css.Global(".tag-chip:has(.tag-x:hover)", r("border-color", "var(--neg)"))
+	css.Global(".tag-chip .tag-x", r("cursor", "pointer"))
+	// The label half: underline on hover is the one thing left to say "this is
+	// its own click", now that it can no longer borrow the chip-wide red warmth.
+	css.Global(".tag-chip [data-tag-id]",
+		r("cursor", "pointer"), r("text-decoration", "none"))
+	css.Global(".tag-chip [data-tag-id]:hover", r("text-decoration", "underline"))
 
 	// A tag that has been applied but not yet acknowledged.
 	//
@@ -1926,6 +1940,190 @@ func feedSettingsCSS(r func(string, string) css.Rule) {
 	css.Global(".feed-gap", css.Media(css.MaxW(900), r("width", "22px"))...)
 }
 
+// discoverCSS styles the Discover settings tab (§18.7, M16): sites the reader
+// does not follow yet. Cards, not rows — .mf-row's list is a form of many
+// small corrections and reads as a table; a recommendation is a single,
+// separate case being made for one site, and each one gets its own bordered
+// block so it does not blur into its neighbours the way an unstyled div list
+// does.
+//
+// # The evidence is the rationale, and it gets top billing
+//
+// recommend.go's whole argument (§18.7) is that an unexplained suggestion is
+// worth less than none — every card's Evidence sentence is not a caption
+// under the title, it IS why the card exists, so it takes the reading face
+// (.mf-evidence already sets this precedent) at a size that competes with the
+// title rather than receding under it like a domain string would.
+func discoverCSS(r func(string, string) css.Rule) {
+	css.Global(".discover-page",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "18px"),
+	)
+	css.Global(".discover-head",
+		r("display", "flex"), r("align-items", "flex-start"),
+		r("justify-content", "space-between"), r("gap", "16px"),
+	)
+	css.Global(".discover-title",
+		r("font-family", "var(--dsp)"), r("font-size", "20px"),
+		r("font-weight", "500"), r("color", "var(--cream)"), r("margin", "0"),
+	)
+	css.Global(".discover-hint",
+		r("font-family", "var(--rd)"), r("font-size", "13px"),
+		r("line-height", "1.5"), r("color", "var(--mute)"),
+		r("margin", "4px 0 0"), r("max-width", "56ch"),
+	)
+	// Same shape as .btn, coloured like the accent rather than neutral: this is
+	// the one action on the tab that is not a per-card decision, so it earns
+	// the tone every other button on this page deliberately does not use.
+	css.Global(".discover-refresh",
+		r("flex", "none"), r("font-size", "13px"), r("font-weight", "500"),
+		r("padding", "8px 15px"), r("border-radius", "99px"),
+		r("border", "1px solid var(--cc)"), r("color", "var(--cc)"),
+		r("background", "transparent"),
+		r("transition", "background var(--t1) var(--e-out), color var(--t1) var(--e-out)"),
+	)
+	css.Global(".discover-refresh:hover:not(:disabled)",
+		r("background", "var(--cc)"), r("color", "var(--bg)"),
+	)
+	css.Global(".discover-refresh:disabled", r("opacity", "0.5"))
+	css.Global(".discover-head-actions",
+		r("display", "flex"), r("align-items", "center"), r("gap", "8px"), r("flex", "none"),
+	)
+	// Same coloured-when-active convention as verdicts' like/dislike chips —
+	// neutral until pressed, so an unreviewed instance shows one quiet button
+	// rather than a switch that reads as already half-on.
+	css.Global(".discover-smartplus[aria-pressed='true']",
+		r("background", "var(--cc)"), r("border-color", "var(--cc)"), r("color", "var(--bg)"),
+	)
+
+	// flex, not text-align: text-align only centers inline content, and
+	// .spin-ring is a block-level div — the ring was pinned to the left edge
+	// until this matched .page-frame-spin's own centering (Cam, 2026-08-01).
+	css.Global(".discover-status",
+		r("display", "flex"), r("flex-direction", "column"),
+		r("align-items", "center"), r("justify-content", "center"), r("gap", "10px"),
+		r("padding", "40px 0"), r("text-align", "center"),
+		r("font-family", "var(--rd)"), r("font-size", "13px"), r("color", "var(--mute)"),
+	)
+	css.Global(".discover-status-error", r("color", "var(--neg)"))
+
+	css.Global(".discover-empty",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "6px"),
+		r("padding", "36px 20px"), r("text-align", "center"),
+		r("border", "1px dashed var(--line)"), r("border-radius", "14px"),
+	)
+	css.Global(".discover-empty > p",
+		r("margin", "0"), r("font-family", "var(--rd)"),
+		r("font-size", "13.5px"), r("color", "var(--soft)"), r("line-height", "1.6"),
+	)
+	css.Global(".discover-empty > .discover-hint", r("color", "var(--mute)"), r("margin", "0 auto"))
+	// .discover-gate reuses .discover-empty's box (dashed border, centred
+	// text) but its third child is a BUTTON, not a <p> — a flex column
+	// stretches that to the box's full width by default, which is why this
+	// needs its own align-items/margin rather than inheriting the parent's.
+	css.Global(".discover-gate", r("align-items", "center"))
+	css.Global(".discover-gate > .discover-smartplus", r("margin-top", "4px"))
+
+	css.Global(".discover-list",
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "12px"),
+	)
+	css.Global(".discover-card",
+		r("border", "1px solid var(--line)"), r("border-radius", "14px"),
+		r("padding", "16px 18px"), r("background", "var(--sur)"),
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "10px"),
+	)
+	css.Global(".discover-card-head",
+		r("display", "flex"), r("align-items", "baseline"),
+		r("gap", "8px"), r("flex-wrap", "wrap"),
+	)
+	css.Global(".discover-card-title",
+		r("font-size", "14.5px"), r("font-weight", "500"), r("color", "var(--cream)"),
+	)
+	css.Global(".discover-card-domain",
+		r("font-size", "12px"), r("color", "var(--mute)"),
+		r("font-variant-numeric", "tabular-nums"),
+	)
+	// The rationale. Reading face, and sized closer to the title than to a
+	// caption — see the package doc above for why this is not decoration.
+	css.Global(".discover-card-evidence",
+		r("margin", "0"), r("font-family", "var(--rd)"),
+		r("font-size", "13.5px"), r("line-height", "1.6"), r("color", "var(--soft)"),
+	)
+	css.Global(".discover-card-actions",
+		r("display", "flex"), r("gap", "8px"), r("padding-top", "2px"),
+	)
+	// Accept and reject share .btn's shape (padding, radius, border) and only
+	// differ in the accent they take, exactly as the like/dislike verdict chips
+	// already establish (verdicts' .chip[data-action='like'/'dislike']) — a
+	// reader who knows that pairing recognises this one without re-learning it.
+	css.Global(".discover-accept, .discover-reject",
+		r("font-size", "13px"), r("font-weight", "500"),
+		r("padding", "7px 14px"), r("border-radius", "99px"),
+		r("border", "1px solid var(--line)"), r("color", "var(--soft)"),
+	)
+	css.Global(".discover-accept:hover:not(:disabled)",
+		r("background", "var(--pos)"), r("border-color", "var(--pos)"), r("color", "var(--bg)"),
+	)
+	css.Global(".discover-reject:hover:not(:disabled)",
+		r("background", "var(--neg)"), r("border-color", "var(--neg)"), r("color", "var(--bg)"),
+	)
+	css.Global(".discover-accept:disabled, .discover-reject:disabled", r("opacity", "0.5"))
+
+	// Phone: the refresh button drops under the heading rather than squeezing
+	// the title into a narrower column, matching .fs-row's stacking rule.
+	css.Global(".discover-head", css.Media(css.MaxW(900),
+		r("flex-direction", "column"))...)
+
+	// The exit animation (Cam, 2026-08-01: Accept/Reject removed a card with
+	// no animation at all; asked for "a positive animation that shows
+	// retention" on Accept specifically). max-height is the collapse trick —
+	// "auto" cannot be a keyframe endpoint, so the card declares a ceiling far
+	// above any real content and animates down to 0.
+	css.Global(".discover-card", r("max-height", "800px"), r("overflow", "hidden"))
+
+	// Accept: a brief pos-tinted wash before it collapses — "kept, not just
+	// removed" is the whole ask, so the colour that means success gets to be
+	// seen before the card leaves rather than the card just vanishing.
+	leaveAccept := css.Keyframes("discover-leave-accept",
+		css.At("0%",
+			r("opacity", "1"), r("transform", "scale(1)"),
+			r("max-height", "800px"), r("background", "var(--sur)")),
+		css.At("40%",
+			r("background", "color-mix(in srgb, var(--pos) 22%, var(--sur))")),
+		css.At("100%",
+			r("opacity", "0"), r("transform", "scale(0.97)"), r("max-height", "0"),
+			r("padding-top", "0"), r("padding-bottom", "0"), r("border-width", "0"),
+			r("background", "var(--sur)")),
+	)
+	css.Global(".discover-card[data-leaving='accept']",
+		leaveAccept,
+		r("animation-duration", "var(--t3)"),
+		r("animation-timing-function", "var(--e-out)"),
+		r("animation-fill-mode", "forwards"),
+		r("pointer-events", "none"),
+	)
+	// Reject: the same shape, neg-tinted — a dismissal is still a decision
+	// that landed, so it gets the same acknowledgement Accept does, just in
+	// the other accent.
+	leaveReject := css.Keyframes("discover-leave-reject",
+		css.At("0%",
+			r("opacity", "1"), r("transform", "scale(1)"),
+			r("max-height", "800px"), r("background", "var(--sur)")),
+		css.At("40%",
+			r("background", "color-mix(in srgb, var(--neg) 18%, var(--sur))")),
+		css.At("100%",
+			r("opacity", "0"), r("transform", "scale(0.97)"), r("max-height", "0"),
+			r("padding-top", "0"), r("padding-bottom", "0"), r("border-width", "0"),
+			r("background", "var(--sur)")),
+	)
+	css.Global(".discover-card[data-leaving='reject']",
+		leaveReject,
+		r("animation-duration", "var(--t3)"),
+		r("animation-timing-function", "var(--e-out)"),
+		r("animation-fill-mode", "forwards"),
+		r("pointer-events", "none"),
+	)
+}
+
 // glyphs styles the two positions, and the difference between them is the whole
 // point of having a rule: a LEADING glyph names what something is, a TRAILING one
 // warns what will happen. Nothing decorative is allowed on the right, because
@@ -2236,6 +2434,18 @@ func mobile(r func(string, string) css.Rule) {
 		r("justify-content", "flex-end"), r("flex", "none"),
 		r("align-items", "center"),
 	)
+	// Wraps the dial (or the score) AND the delete control as one unit, so
+	// .mf-row's space-between sees exactly two children — evidence on one
+	// side, everything that acts on it on the other — rather than opening a
+	// third gap of its own between two controls that belong together.
+	css.Global(".mf-controls",
+		r("display", "flex"), r("gap", "10px"), r("flex-wrap", "wrap"),
+		r("align-items", "center"), r("flex", "none"),
+	)
+	// The delete control rides quieter than the dial until armed — a resting
+	// "Remove" chip is ordinary, not already red (see mfDeleteControl's own
+	// comment on why the colour arrives with the confirm press, not before).
+	css.Global(".mf-control-delete", r("padding-left", "8px"), r("border-left", "1px solid var(--hair)"))
 	// A row the reader has struck out stays legible and stops looking current.
 	// Dimmed rather than hidden, and this is the whole reason AllEntities exists:
 	// a correction you cannot see is one you cannot undo.
@@ -2266,6 +2476,22 @@ func mobile(r func(string, string) css.Rule) {
 	// on the screen that is not an invitation to press something.
 	css.Global(".pc-need[data-required='false'] .mf-name", r("color", "var(--soft)"))
 	css.Global(".pc-need[data-on='false'] .mf-name", r("color", "var(--cream)"))
+
+	// The refusal, under the key row it corrects (plan §19).
+	//
+	// Marked as a fault rather than styled as an ordinary row, because it
+	// CONTRADICTS the line above it: "ready" is true — a key is stored — and it
+	// is not the whole truth when every call is coming back refused. A reader
+	// scanning green ticks has to be stopped by this one.
+	css.Global(".pc-refused",
+		// --neg is the theme's own "something is wrong" colour, and this is
+		// one: a claim on the row above is not holding.
+		r("border-left", "3px solid var(--neg)"),
+		r("padding-left", "14px"),
+		r("margin-top", "-4px"),
+	)
+	css.Global(".pc-refused .mf-label", r("color", "var(--cream)"))
+	css.Global(".pc-refused .mf-hint", r("color", "var(--soft)"), r("opacity", ".8"))
 	css.Global(".chip-static.is-missing",
 		r("color", "var(--neg)"),
 		r("border-color", "color-mix(in srgb, var(--neg) 40%, var(--line))"),

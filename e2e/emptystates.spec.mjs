@@ -61,8 +61,15 @@ test.describe('empty states', () => {
 
   test('Unread says all caught up, once everything has been read via the u toggle', async ({ page }) => {
     await boot(page);
+    // Mark all read now arms on the first press and only marks on the
+    // second — see markAllChip (client/view/panes.go).
+    await page.locator('[data-action="mark-all-arm"]').click();
     await page.locator('[data-action="mark-all"]').click();
-    await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);
+    // Filtered rather than a bare `.banner` locator — see reader.spec.mjs's
+    // mark-all test for why a second, unrelated banner can be on screen at
+    // the same moment now that this takes an extra confirm click.
+    await expect(page.locator('.banner').filter({ hasText: /Marked \d+ read/ }))
+      .toBeVisible();
 
     // The TOGGLE route, not the rail's "Unread" stream row — see the paired
     // regression test below for why that distinction is load-bearing here.
@@ -87,8 +94,15 @@ test.describe('empty states', () => {
     // this session; worth a live confirmation pass before trusting this
     // fully).
     await boot(page);
+    // Mark all read now arms on the first press and only marks on the
+    // second — see markAllChip (client/view/panes.go).
+    await page.locator('[data-action="mark-all-arm"]').click();
     await page.locator('[data-action="mark-all"]').click();
-    await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);
+    // Filtered rather than a bare `.banner` locator — see reader.spec.mjs's
+    // mark-all test for why a second, unrelated banner can be on screen at
+    // the same moment now that this takes an extra confirm click.
+    await expect(page.locator('.banner').filter({ hasText: /Marked \d+ read/ }))
+      .toBeVisible();
 
     await openStream(page, 'Unread');
 

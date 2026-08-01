@@ -9,9 +9,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/monstercameron/GoWebComponents/v5/ui"
+
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
 )
 
@@ -511,22 +514,45 @@ func equalStringSets(a, b []string) bool {
 	return true
 }
 
-func TestHasUnfiled(t *testing.T) {
+// The Categories band is UNCONDITIONAL: nothing hides it.
+//
+// This replaces TestHasUnfiled, which covered the predicate that used to gate
+// the band on having something filed. The predicate is gone with the gate —
+// see railCategories for why the gate was wrong (the ＋ that creates the first
+// category lives on the band it was hiding). A test naming the property is
+// worth more than one naming the helper: the helper was an implementation of a
+// rule that turned out to be the bug.
+func TestCategoriesBandRendersWithNothingFiled(t *testing.T) {
 	cases := []struct {
-		name  string
-		feeds []*pb.Feed
-		want  bool
+		name string
+		p    railProps
 	}{
-		{"nil slice", nil, false},
-		{"empty slice", []*pb.Feed{}, false},
-		{"all filed", []*pb.Feed{{FolderId: "a"}, {FolderId: "b"}}, false},
-		{"one unfiled among several", []*pb.Feed{{FolderId: "a"}, {FolderId: ""}}, true},
-		{"all unfiled", []*pb.Feed{{FolderId: ""}, {FolderId: ""}}, true},
+		{"no folders, no feeds at all", railProps{}},
+		{"no folders, every feed unfiled", railProps{
+			feeds: []*pb.Feed{{FolderId: ""}, {FolderId: ""}},
+		}},
+		{"a folder with nothing in it", railProps{
+			folders: []*pb.Folder{{Id: "f1", Name: "Empty"}},
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := hasUnfiled(c.feeds); got != c.want {
-				t.Errorf("hasUnfiled(%v) = %v, want %v", c.feeds, got, c.want)
+			p := c.p
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(p) })
+			// Through railPane rather than railCategories directly: what is
+			// being pinned is that the rail SHOWS the band, and a helper
+			// returning nodes nobody composes in would satisfy a narrower
+			// test while the rail stayed empty.
+			if !strings.Contains(out, actCats) {
+				t.Fatalf("the rail rendered no Categories band — it must always be "+
+					"present, because the control that creates the first category is "+
+					"on it\n--- output ---\n%s", out)
+			}
+			// The ＋ specifically, not merely the heading: a band without its
+			// own entry point is the same trap one level down.
+			if !strings.Contains(out, actCatNew) {
+				t.Errorf("the band rendered without its add-a-category control (%s)",
+					actCatNew)
 			}
 		})
 	}
@@ -749,5 +775,69 @@ func TestParsedBodyCacheEvictsWhollyAtMax(t *testing.T) {
 	}
 	if _, present := bodyCache["brand-new"]; !present {
 		t.Errorf("the entry that triggered the clear was not itself inserted afterwards")
+	}
+}
+
+// The Unfiled row appears only once the reader has actually filed something.
+//
+// # What went wrong twice
+//
+// "Unfiled" is a FEED with no folder. Its articles are classified normally, so
+// opening it shows a list full of category chips. That is correct and it is
+// also, twice now, the thing that got read as a bug — because with nothing
+// filed the row holds EVERY feed, so it renders inside a band called
+// CATEGORIES, directly above the classification labels, with a count identical
+// to All articles. A row named "Unfiled" showing 5,902 of 5,902 items, all of
+// them chipped, is indistinguishable from "articles with no category, and it
+// is broken".
+//
+// The row was never wrong; it was unreadable in the one state that is also the
+// default state. A group containing everything partitions nothing, so it is
+// not rendered until a sibling exists to give it a meaning.
+//
+// The complement — the row that really does mean "no label" — is Uncategorised,
+// at the foot of the topic list. See uncategorisedRow.
+func TestUnfiledRowWaitsForSomethingToBeFiled(t *testing.T) {
+	filed := &pb.Feed{SourceId: "s1", FolderId: "f1"}
+	loose := &pb.Feed{SourceId: "s2", FolderId: ""}
+
+	cases := []struct {
+		name string
+		p    railProps
+		want bool
+	}{
+		{"no folders at all, so every feed is unfiled", railProps{
+			feeds: []*pb.Feed{loose, {SourceId: "s3"}},
+		}, false},
+		{"a folder exists but holds nothing", railProps{
+			folders: []*pb.Folder{{Id: "f1", Name: "Work"}},
+			feeds:   []*pb.Feed{loose},
+		}, false},
+		{"a folder holds a feed, so the leftovers mean something", railProps{
+			folders: []*pb.Folder{{Id: "f1", Name: "Work"}},
+			feeds:   []*pb.Feed{filed, loose},
+		}, true},
+		{"everything is filed, so there are no leftovers", railProps{
+			folders: []*pb.Folder{{Id: "f1", Name: "Work"}},
+			feeds:   []*pb.Feed{filed},
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := c.p
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(p) })
+			got := strings.Contains(out, `data-folder-id="`+unfiledID+`"`)
+			if got != c.want {
+				t.Errorf("Unfiled row present = %v, want %v\n--- output ---\n%s",
+					got, c.want, out)
+			}
+			// Whatever happens to Unfiled, the row that actually answers "no
+			// category" is always there — the two are not alternatives, and a
+			// change that traded one for the other would be the same confusion
+			// with the labels swapped.
+			if !strings.Contains(out, "data-category-none") {
+				t.Errorf("the Uncategorised row went missing\n--- output ---\n%s", out)
+			}
+		})
 	}
 }

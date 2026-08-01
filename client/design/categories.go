@@ -23,8 +23,25 @@ func categoriesCSS(r func(string, string) css.Rule) {
 	// The caret is a sibling of the row, absolutely placed over the space the
 	// row leaves for it — a button inside a button is invalid, and the browser's
 	// repair puts the click somewhere other than where it was drawn.
+	// left:5px puts this caret's centre exactly on the band chevrons' — both at
+	// 24px from the rail body — so every disclosure in the rail sits in one
+	// column.
+	//
+	// It was at 1px, which put it 4px LEFT of that column: not a separate
+	// column, just a ragged one. Measured in the browser rather than reasoned
+	// about, because the caret is positioned against `.feed-slot` while the
+	// band chevron is laid out by flex inside `.rail-band`, and the two have
+	// different origins — arithmetic from the stylesheet alone gets this wrong,
+	// as an earlier attempt at 7px did (centre 26, still 2px out).
+	//
+	// Sharing the column with the bands is deliberate and is NOT what made
+	// categories read as top-level sections. What did that was the row's type:
+	// `--cream` at weight 500 is the treatment a SELECTED row wears, and the
+	// text sat 10px off the axis every other row uses. Both are fixed below.
+	// The hierarchy is carried by type and by that axis; the caret column is
+	// just "things here fold", which is true of bands and categories alike.
 	css.Global(".cat-caret",
-		r("position", "absolute"), r("left", "1px"), r("top", "50%"),
+		r("position", "absolute"), r("left", "5px"), r("top", "50%"),
 		r("transform", "translateY(-50%)"),
 		r("width", "18px"), r("height", "20px"),
 		r("display", "grid"), r("place-items", "center"),
@@ -37,14 +54,31 @@ func categoriesCSS(r func(string, string) css.Rule) {
 	css.Global(".cat-slot[data-open='true'] .cat-caret",
 		r("transform", "translateY(-50%) rotate(90deg)"),
 	)
-	// The row leaves the caret its column, so the category's name starts on the
-	// same axis whether or not it is open.
-	css.Global(".cat-row", r("padding-left", "21px"))
-	// A category is a heading over rows, so it is set like one: the cream a
-	// selected feed gets, at the weight the band labels use. It is not shouting —
-	// there are at most a dozen of these against 151 feeds.
+	// 31px: the rail's SINGLE TEXT AXIS, and the reason this number is not
+	// arbitrary.
+	//
+	// Every other row in the rail starts its text there. A stream row says so
+	// outright — `padding: 5px 10px 5px 31px`, inset by the marker column it
+	// does not use, "so the rail keeps a single text axis from the top of the
+	// list to the bottom". A feed and a tag arrive at the same place by
+	// construction: 10px of padding, a 12px marker, a 9px gap.
+	//
+	// A category was at 21px, ten pixels left of everything else — the one row
+	// in the rail off the axis, and off it in the direction that reads as a
+	// level UP. That is most of why the section looked broken with two rows in
+	// it: nothing about their position said they were inside anything.
+	css.Global(".cat-row", r("padding-left", "31px"))
+	// Weight, not colour, is what says "this is a group of rows".
+	//
+	// It used to take `--cream` as well, on the reasoning that a category is a
+	// heading and should be set like one. But cream at 500 is EXACTLY the
+	// treatment `.feed-row[aria-current='true'] .feed-name` gives the selected
+	// row — so every category permanently wore the app's one selection signal,
+	// competing with the actual selection three rows above it. `--soft` is the
+	// ordinary row colour; the weight alone still separates a group from the
+	// feeds under it, which is all the distinction it needed.
 	css.Global(".cat-row .feed-name",
-		r("color", "var(--cream)"), r("font-weight", "500"),
+		r("color", "var(--soft)"), r("font-weight", "500"),
 	)
 	// The gear is the feed gear in the same position, so hovering a category
 	// reveals its controls exactly where hovering a feed does.

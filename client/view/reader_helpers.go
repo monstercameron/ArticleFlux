@@ -194,6 +194,54 @@ func adjustRanked(ranked ui.State[int], delta int) {
 	}
 }
 
+// adjustTopicUnread moves the rail's per-category counts by delta for every
+// label the item belongs to.
+//
+// EVERY label, not just the primary. An article is in a category when that
+// category's score clears its floor (store.ListQuery.CategorySlug), so the
+// chips on a row — one primary and its secondaries — are all lists the article
+// appears in, and decrementing only the primary would leave the others
+// counting an article that is no longer unread.
+//
+// Optimistic, like adjustUnread above and correct for the same reason: the
+// authoritative number is refetched whenever the sidebar reloads, so a local
+// estimate that drifts is corrected within one refresh rather than persisting.
+// It exists because the alternative is a 265ms round trip per article read
+// (store.UnreadByCategory), which is a number moving a beat after the row it
+// belongs to on every single keypress.
+//
+// Nil counts stay nil: before the first fetch there is nothing to adjust, and
+// inventing a map here would render numbers the server has not yet agreed to.
+func adjustTopicUnread(counts ui.State[map[string]int32], it *pb.Item, delta int) {
+	cur := counts.Get()
+	if cur == nil || it == nil {
+		return
+	}
+	slugs := make([]string, 0, 4)
+	if c := it.GetCategory(); c != "" {
+		slugs = append(slugs, c)
+	}
+	slugs = append(slugs, it.GetSecondaryCategories()...)
+	if len(slugs) == 0 {
+		return
+	}
+	next := make(map[string]int32, len(cur))
+	for k, v := range cur {
+		next[k] = v
+	}
+	for _, slug := range slugs {
+		if slug == "" {
+			continue
+		}
+		n := next[slug] + int32(delta)
+		if n < 0 {
+			n = 0
+		}
+		next[slug] = n
+	}
+	counts.Set(next)
+}
+
 func adjustUnread(feeds ui.State[[]*pb.Feed], total ui.State[int], sourceID string, delta int) {
 	cur := feeds.Get()
 	next := make([]*pb.Feed, len(cur))
@@ -357,7 +405,7 @@ func tagLabelsBySource(tags []*pb.Tag, bySource map[string][]string,
 		refs := make([]tagRef, 0, len(ids))
 		for _, id := range ids {
 			if t := byID[id]; t != nil {
-				refs = append(refs, tagRef{Label: tagDisplay(t), Name: t.GetName()})
+				refs = append(refs, tagRef{Label: tagDisplay(t), Name: t.GetName(), ID: t.GetId()})
 			}
 		}
 		// Stable order, because these are chips with a destructive control on

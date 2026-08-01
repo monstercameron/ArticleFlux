@@ -12,10 +12,29 @@ func init() {
 		// "all quiet". One key so a locale can reorder the two halves.
 		"mastheadSub": "{feeds} · {state}",
 
-		"bandStreams":    "Streams",
-		"bandFeeds":      "Feeds",
-		"bandTags":       "Tags",
-		"bandCategories": "Folders",
+		"bandStreams": "Streams",
+		"bandFeeds":   "Feeds",
+		"bandTags":    "Tags",
+		// CATEGORIES, not "Folders". The rail has exactly four top-level
+		// sections — Streams, Feeds, Categories, Tags — and this is the third
+		// of them. It is the name the code has always used (railCategories,
+		// actCats = "toggle-rail-categories", categoryRows) and the name the
+		// section had until 63f912c, the Smart/Smart+ naming pass, relabelled
+		// it in passing. That commit was about which features are Smart and
+		// which are Smart+; renaming a rail band was not in its remit, and the
+		// result was a generic container called Folders holding the thing the
+		// reader was looking for.
+		"bandCategories": "Categories",
+		// The rule inside the Categories band, between the reader's own folders
+		// and the classifier's labels. "By topic" rather than "Classification"
+		// or "Auto": it says what the rows below select ON, which is the only
+		// thing a reader needs from a divider, and it does not make them learn
+		// the name of the engine that produced them.
+		// The leftover pile at the foot of the topic list. "Uncategorised"
+		// rather than "Unfiled", which is the row above it and means a FEED
+		// with no folder — the two being read as each other is the confusion
+		// this row was added to end.
+		"uncategorised": "Uncategorised",
 
 		"filterPlaceholder": "Filter feeds",
 		"filterAria":        "Filter feeds by name",
@@ -55,6 +74,13 @@ func init() {
 		One:   "{name}, 1 feed",
 		Other: "{name}, {count} feeds",
 	})
+	// A topic row's accessible name when it carries a count, so a screen
+	// reader hears "Hardware, 1,495 unread" rather than the name and a bare
+	// integer after it.
+	plural(DefaultLocale, "rail", "categoryUnreadAria", map[PluralCategory]string{
+		One:   "{name}, 1 unread",
+		Other: "{name}, {count} unread",
+	})
 	plural(DefaultLocale, "rail", "unreadCount", map[PluralCategory]string{
 		One:   "1 unread",
 		Other: "{count} unread",
@@ -90,13 +116,39 @@ func init() {
 		"unreadOnly":        "Unread only",
 		"showingUnread":     "Showing unread",
 		"markAllRead":       "Mark all read",
+		// The confirmation (panes.go's markAllConfirm). It names the LIST
+		// rather than a number, because "which articles does this reach" is
+		// the question worth answering before the press — this control used to
+		// mark every feed whatever list you were on — and the count is
+		// reported afterwards by the banner that carries the undo.
+		//
+		// "everything in" rather than "all of": the scope name is already a
+		// plural noun phrase ("All feeds", "My Feed", a category's name), and
+		// "all of All feeds" is not a sentence.
+		"markAllConfirm":       "Mark everything in {scope} as read?",
+		"markAllConfirmGo":     "Mark read",
+		"markAllConfirmCancel": "Cancel",
+		// Named for what the dialog is FOR, not for what it contains: it is
+		// announced assertively the moment it opens, and a screen reader
+		// reaching it should hear the decision being asked for.
+		"markAllConfirmAria": "Confirm marking this list read",
 		// The slideshow's entry point, named for what it makes rather than for
 		// what it does to the window: "Fullscreen" would describe the mechanism
 		// and leave the reader to guess that the stories advance by themselves.
 		"slideshow": "Slideshow",
-		"settings":  "Settings",
-		"shortcuts": "Keyboard shortcuts",
-		"undo":      "Undo",
+		// The second entry point (§19). Named for what a reader gets rather
+		// than for the engine that makes it: FluxCast is the machinery and it
+		// is named on one screen, Settings → FluxCast. A control says what it
+		// does.
+		"podcast": "Podcast",
+		// The same control when a prerequisite is missing. It stays a control
+		// rather than becoming a disabled shape, and it says what pressing it
+		// will do — open the screen where the missing condition lives — because
+		// every condition but the server's key is one the reader can change.
+		"podcastBlocked": "Podcast — needs setting up",
+		"settings":       "Settings",
+		"shortcuts":      "Keyboard shortcuts",
+		"undo":           "Undo",
 
 		// The Smart+ category suggestion Subscribe attaches to a successful add
 		// (smart.categorize, off by default). One line and two chips — see
@@ -363,6 +415,7 @@ func init() {
 		"tagAddingAria": "Adding tag {tag}",
 		"tagRemove":     "Remove {tag} from this feed",
 		"tagRemoveAria": "Remove tag {tag}",
+		"tagOpen":       "Open the {tag} tag",
 	})
 
 	// --- the keyboard sheet ----------------------------------------------------

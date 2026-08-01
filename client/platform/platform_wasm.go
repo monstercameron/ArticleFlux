@@ -473,6 +473,51 @@ func OnDelegatedClick(containerSelector, attr string, fn func(value string)) Lis
 	return Listener{target: el, event: "click", fn: f}
 }
 
+// OnDelegatedRowClick is OnDelegatedClick, except a nested element carrying
+// one of skipAttrs wins over rowAttr when both match on the same click.
+//
+// closest() alone can't express that: called with just "[rowAttr]" it walks
+// past a chip nested inside the row (the chip has no rowAttr of its own) and
+// finds the row every time, so a click on a category chip or feed-title link
+// living inside an item row would also fire the row's own "open article"
+// handler. Folding every attr into one selector and checking which one the
+// NEAREST match actually carries — instead of asking two separate listeners
+// to agree — is what lets the more specific element close the ancestor out.
+func OnDelegatedRowClick(containerSelector, rowAttr string, skipAttrs []string, fn func(value string)) Listener {
+	doc := js.Global().Get("document")
+	el := doc.Call("querySelector", containerSelector)
+	if !el.Truthy() {
+		return Listener{}
+	}
+	sel := "[" + rowAttr + "]"
+	for _, a := range skipAttrs {
+		sel += ",[" + a + "]"
+	}
+	f := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		target := args[0].Get("target")
+		if !target.Truthy() {
+			return nil
+		}
+		match := target.Call("closest", sel)
+		if !match.Truthy() {
+			return nil
+		}
+		v := match.Call("getAttribute", rowAttr)
+		if !v.Truthy() {
+			// Nearest match was one of skipAttrs, not the row — the more
+			// specific element's own listener handles this click instead.
+			return nil
+		}
+		fn(v.String())
+		return nil
+	})
+	el.Call("addEventListener", "click", f)
+	return Listener{target: el, event: "click", fn: f}
+}
+
 // OnDelegatedWheel reports wheel deltas over elements carrying attr, coalesced
 // to one callback per animation frame.
 //
@@ -1473,6 +1518,19 @@ func releaseSpeech() {
 	speechChunks = nil
 }
 
+// ChunkForSpeech is chunkForSpeech, exported for the captions.
+//
+// The slide shows the words being spoken (plan §19), which means client/view
+// has to split a script into the units a caption advances through — and it has
+// to split it the SAME WAY the browser's own synthesiser does, or the emphasis
+// lands in one place and the voice in another on exactly the inputs feeds are
+// full of: unpunctuated headlines, code blocks, tables flattened to text.
+//
+// A wrapper rather than a rename because every caller in this file uses the
+// lower-case one, and a rename would be a diff about capitalisation across a
+// file whose whole subject is audio.
+func ChunkForSpeech(s string, max int) []string { return chunkForSpeech(s, max) }
+
 // chunkForSpeech splits text on sentence boundaries, then on any whitespace when
 // a "sentence" is longer than the limit (which happens in feeds constantly —
 // unpunctuated headlines, code blocks, tables flattened to text).
@@ -1775,6 +1833,72 @@ func OnScrolledPast(rootSelector, matchSelector, attr string, fn func(value stri
 	return Listener{target: root, event: "scroll", fn: f, capture: true}
 }
 
+// FetchText reads a URL as text, for the captions (plan §19, TODO 11.47).
+//
+// Separate from PrefetchURL, which drains a response to warm the browser cache
+// and deliberately throws the bytes away. This one keeps them.
+//
+// `done` is called with the text and true on a 200, and with "" and false on
+// anything else — including the 204 the server answers when a script has not
+// been written yet, which is the ordinary case rather than an error. A caption
+// that has not arrived is a slide without captions, and the mode is correct
+// without them.
+func FetchText(src string, done func(text string, ok bool)) {
+	if src == "" || done == nil {
+		return
+	}
+	fetch := js.Global().Get("fetch")
+	if !fetch.Truthy() {
+		done("", false)
+		return
+	}
+	opts := js.Global().Get("Object").New()
+	opts.Set("credentials", "same-origin")
+	p := fetch.Invoke(src, opts)
+	if !p.Truthy() || !p.Get("then").Truthy() {
+		done("", false)
+		return
+	}
+	var onRes, onText, onErr js.Func
+	release := func() {
+		onRes.Release()
+		onText.Release()
+		onErr.Release()
+	}
+	onText = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer release()
+		if len(args) == 0 || !args[0].Truthy() {
+			done("", false)
+			return nil
+		}
+		done(args[0].String(), true)
+		return nil
+	})
+	onErr = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		defer release()
+		done("", false)
+		return nil
+	})
+	onRes = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 || !args[0].Truthy() {
+			release()
+			done("", false)
+			return nil
+		}
+		res := args[0]
+		// 204 is the server saying "not yet", which is not a failure and must
+		// not be logged as one — see /speech's asParam.
+		if !res.Get("ok").Bool() || res.Get("status").Int() == 204 {
+			release()
+			done("", false)
+			return nil
+		}
+		res.Call("text").Call("then", onText).Call("catch", onErr)
+		return nil
+	})
+	p.Call("then", onRes).Call("catch", onErr)
+}
+
 // PrefetchURL asks the browser to fetch a URL and does nothing with it.
 //
 // For the next track in a continuous listening session. Synthesising an article
@@ -1788,12 +1912,25 @@ func OnScrolledPast(rootSelector, matchSelector, attr string, fn func(value stri
 // possible outcome is that the next track starts faster; a prefetch that 403s
 // because a ticket expired must not surface anything, because the real request
 // is going to happen anyway and will report properly if it fails too.
-func PrefetchURL(src string) {
+//
+// `then` is called exactly once, with whether the file actually arrived, and it
+// is what makes the SECOND half of a segment free: the request that warms the
+// audio is the request that writes the script, so the moment this reports true
+// the script is on disk and asking for it is a cache read. A caller with no
+// interest in that passes nil.
+func PrefetchURL(src string, then func(ok bool)) {
+	report := func(ok bool) {
+		if then != nil {
+			then(ok)
+		}
+	}
 	if src == "" {
+		report(false)
 		return
 	}
 	fetch := js.Global().Get("fetch")
 	if !fetch.Truthy() {
+		report(false)
 		return
 	}
 	opts := js.Global().Get("Object").New()
@@ -1803,6 +1940,7 @@ func PrefetchURL(src string) {
 	opts.Set("credentials", "same-origin")
 	p := fetch.Invoke(src, opts)
 	if !p.Truthy() || !p.Get("then").Truthy() {
+		report(false)
 		return
 	}
 	// The body has to be DRAINED, not just requested. A fetch whose body is
@@ -1811,19 +1949,31 @@ func PrefetchURL(src string) {
 	// whole file again — the synthesis was saved, which is the expensive half,
 	// but a megabyte still crosses the network twice. Reading it to completion
 	// is what turns the prefetch into a cache entry.
-	var drain, done js.Func
-	release := func() {
+	//
+	// Draining is also what makes `then` worth having: the response is a cache
+	// entry, and the script certainly on disk, only once the last byte has been
+	// read. Reporting on headers would hand the caller a promise the browser has
+	// not kept yet.
+	var drain, landed, failed js.Func
+	answered := false
+	finish := func(ok bool) {
+		if answered {
+			return
+		}
+		answered = true
 		drain.Release()
-		done.Release()
+		landed.Release()
+		failed.Release()
+		report(ok)
 	}
 	drain = js.FuncOf(func(_ js.Value, args []js.Value) any {
 		if len(args) == 0 || !args[0].Truthy() {
-			release()
+			finish(false)
 			return nil
 		}
 		res := args[0]
 		if !res.Get("ok").Bool() || !res.Get("blob").Truthy() {
-			release()
+			finish(false)
 			return nil
 		}
 		// blob() rather than arrayBuffer(): the bytes are handed straight back
@@ -1832,20 +1982,24 @@ func PrefetchURL(src string) {
 		// heap spike.
 		b := res.Call("blob")
 		if b.Truthy() && b.Get("then").Truthy() {
-			b.Call("then", done, done)
+			b.Call("then", landed, failed)
 			return nil
 		}
-		release()
+		finish(false)
 		return nil
 	})
-	done = js.FuncOf(func(_ js.Value, _ []js.Value) any {
-		release()
+	landed = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		finish(true)
+		return nil
+	})
+	failed = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		finish(false)
 		return nil
 	})
 	// Both arms of then(), so a rejection releases the funcs instead of leaking
 	// them — and so an unhandled rejection is never a red line in the console
 	// for work that was never guaranteed to succeed.
-	p.Call("then", drain, done)
+	p.Call("then", drain, failed)
 }
 
 // WatchVisible reports whether one element is on screen, and keeps reporting as
