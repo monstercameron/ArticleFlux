@@ -49,8 +49,13 @@ var dynamicPrefixes = map[string]string{
 	// view.serverText from a key that arrives over the wire, so no literal in
 	// client/view mentions any of them. internal/transport/grpcsrv is the other
 	// half of this contract.
-	"srv.":                "gRPC ErrorDetail keys, via view.serverText",
-	"settings.tab.":       "the settingsTab constants",
+	"srv.":          "gRPC ErrorDetail keys, via view.serverText",
+	"settings.tab.": "the settingsTab constants",
+	// The strip's three headed groups, built as "group."+string(g) from the
+	// settingsGroup constants in view.settingsPane — the same shape as the tab
+	// ids above it, and missed when the groups were added because three keys
+	// that ARE rendered look exactly like three keys that are not.
+	"settings.group.":     "the settingsGroup constants, via view.settingsPane",
 	"palette.cmd.":        "the palette command ids",
 	"feedSettings.poll.":  "the pollChoices values",
 	"feedSettings.cache.": "the cacheChoices values",

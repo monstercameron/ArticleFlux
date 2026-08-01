@@ -330,12 +330,3 @@ func choreoOverhead(beats []Beat, prof Profile) time.Duration {
 	}
 	return total
 }
-
-func (p Program) hasKind(k BeatKind) bool {
-	for _, b := range p.Beats {
-		if b.Kind == k {
-			return true
-		}
-	}
-	return false
-}

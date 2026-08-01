@@ -32,9 +32,9 @@ func allValues() map[string]string {
 // explainer appears wherever the app teaches this vocabulary, not only on the
 // Smart+ tab itself).
 var smartBareExemptions = map[string]bool{
-	"home.edgeLede":            true, // "Smart is deterministic... Smart+ is the tier..."
-	"classify.catGroupHint":    true, // "Smart categories: the 26 sections..."
-	"appearance.attuneByHue":   true, // "This is Smart colours: worked out..."
+	"home.edgeLede":          true, // "Smart is deterministic... Smart+ is the tier..."
+	"classify.catGroupHint":  true, // "Smart categories: the 26 sections..."
+	"appearance.attuneByHue": true, // "This is Smart colours: worked out..."
 }
 
 // TestSmartAlwaysMeansSmartPlus is N2: "Smart" bare is a false statement about
@@ -77,13 +77,19 @@ var tierLabelRe = regexp.MustCompile(`^Smart\+(?: [a-z]+){0,2}$`)
 // renamed onto a fresh coinage, has to widen this list in the same commit —
 // which is the review hook N1 asks for.
 var canonicalTierLabels = map[string]bool{
-	"Smart+":          true, // the bare brand, used as a group heading
-	"Smart+ ranking":  true, // smart.feedPlusLabel — My Feed's paid reorder
-	"Smart+ colours":  true, // appearance.attuneSmartLabel — the paid palette
-	"Smart+ follow":   true, // addFeed.smartName — rung 5 of the discovery ladder
-	"Smart+ voice":    true, // Smart+-only; never paired with a bare "Smart voice" (N4)
-	"Smart+ file":     true, // addFeed.categorizeSmartName — suggests a folder
-	"Smart+ model":    true, // smart.modelAria — the model picker, not a capability pair
+	"Smart+":         true, // the bare brand, used as a group heading
+	"Smart+ ranking": true, // smart.feedPlusLabel — My Feed's paid reorder
+	"Smart+ colours": true, // appearance.attuneSmartLabel — the paid palette
+	"Smart+ follow":  true, // addFeed.smartName — rung 5 of the discovery ladder
+	"Smart+ voice":   true, // Smart+-only; never paired with a bare "Smart voice" (N4)
+	"Smart+ file":    true, // addFeed.categorizeSmartName — suggests a folder
+	"Smart+ model":   true, // smart.modelAria — the model picker, not a capability pair
+	// discover.smartPlusToggle — the consent gate on the Discover page. It names
+	// the "2 posts reviewed" check (a candidate's own posts read against what
+	// the reader reads) and, with it on, rung 5's web search. A capability, not
+	// a control: with the toggle off there is no Discover page at all, so this
+	// label is the whole feature's name where the reader meets it.
+	"Smart+ review": true,
 }
 
 func TestTierPrefixedLabelsMatchCanonicalList(t *testing.T) {
@@ -153,6 +159,23 @@ var categorySenseAllow = map[string]bool{
 	"home.edgeLede": true, "home.findClassH": true, "home.findClassP": true,
 	// The tab that edits the article axis is itself named "Categories" (D23).
 	"settings.tab.classify": true,
+	// The rail's third band, and the leftover pile inside it (2026-08-01).
+	//
+	// D23 resolved to "Folders" for the rail on 2026-07-31, and this is the
+	// other half of that decision arriving: the band now holds BOTH the
+	// reader's own folders and the classifier's labels, divided by a "By topic"
+	// rule, so it is not the folder sense wearing the article axis's word — it
+	// is a container for both, and "Folders" made it a generic box holding the
+	// thing the reader was looking for. `rail.uncategorised` is unambiguously
+	// the article axis: the pile with no topic label, deliberately not
+	// "Unfiled", which is the row above it and means a FEED with no folder.
+	//
+	// This narrows D23 rather than reversing it — every string that names ONLY
+	// the folder sense still says folder, which is what the rest of this test
+	// keeps in force. Flagged for Cam: plan.md §27.0a records D23 as resolved
+	// the other way, and the register should say which of the two this is.
+	"rail.bandCategories": true,
+	"rail.uncategorised":  true,
 	// Contrasts OUR word against the OPML standard's own attribute name for a
 	// reader arriving from another reader's export — both words are doing
 	// necessary, disambiguated work in the one sentence that says so.

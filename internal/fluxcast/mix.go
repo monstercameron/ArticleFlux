@@ -148,13 +148,6 @@ func duckBed(p Profile) MusicCue {
 	}
 }
 
-func restBed(p Profile) MusicCue {
-	return MusicCue{
-		Channel: ChannelBed, Op: MusicLevel, Level: p.Mix.BedLevel, Over: p.Mix.BedFade,
-		Why: "back to resting",
-	}
-}
-
 // seamBed is the lift between stories — above resting rather than at it,
 // because a bed that merely stops ducking reads as a gap and one that comes up
 // reads as the programme breathing. Quicker than an ordinary fade, since a seam

@@ -161,6 +161,17 @@ func (a *App) DoctorSpeech(ctx context.Context, sc store.Scope, full bool) []Doc
 	}
 
 	text, werr := a.podcastFor(ctx, it, store.Item{}, smart.DefaultVibe, nil, false)
+	if strings.TrimSpace(text) == "" {
+		// The BROADCAST's fallback, because that is what this check is
+		// diagnosing — the same rendering writeBeat would have used. See
+		// speechAnnounced.
+		//
+		// Applied BEFORE the step is reported, not after: it used to run below
+		// the switch, where nothing read it again, so the fallback was computed
+		// and thrown away and the step said "0 words" about a segment the
+		// reader would have heard in full.
+		text = speechAnnounced(it)
+	}
 	switch {
 	case errors.Is(werr, smart.ErrNothingToSummarise):
 		add(DoctorStep{Name: "write a segment",
@@ -171,12 +182,6 @@ func (a *App) DoctorSpeech(ctx context.Context, sc store.Scope, full bool) []Doc
 	default:
 		add(DoctorStep{Name: "write a segment", OK: true,
 			Detail: fmt.Sprintf("%d words", len(strings.Fields(text)))})
-	}
-	if strings.TrimSpace(text) == "" {
-		// The BROADCAST's fallback, because that is what this check is
-		// diagnosing — the same rendering writeBeat would have used. See
-		// speechAnnounced.
-		text = speechAnnounced(it)
 	}
 
 	// One short sentence rather than the segment: this proves the endpoint, the

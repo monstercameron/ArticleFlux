@@ -85,10 +85,6 @@ type Filter struct {
 	Roles []string
 }
 
-func (f Filter) empty() bool {
-	return len(f.Themes) == 0 && len(f.NotThemes) == 0 && len(f.Roles) == 0
-}
-
 func (f Filter) admits(s Story) bool {
 	if len(f.Themes) > 0 && !containsFold(f.Themes, s.Theme) {
 		return false

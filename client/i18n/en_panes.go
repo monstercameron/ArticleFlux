@@ -111,8 +111,6 @@ func init() {
 
 		"searchPlaceholder": "Search",
 		"searchAria":        "Search articles",
-		"connTitle":         "Connection to the server",
-		"refresh":           "Refresh",
 		"unreadOnly":        "Unread only",
 		"showingUnread":     "Showing unread",
 		"markAllRead":       "Mark all read",
@@ -413,7 +411,6 @@ func init() {
 
 		"tagAdding":     "Adding {tag} to this feed…",
 		"tagAddingAria": "Adding tag {tag}",
-		"tagRemove":     "Remove {tag} from this feed",
 		"tagRemoveAria": "Remove tag {tag}",
 		"tagOpen":       "Open the {tag} tag",
 	})

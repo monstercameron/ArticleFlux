@@ -291,8 +291,6 @@ func newRun(t *testing.T, prog Program) *run {
 	return r
 }
 
-func (r *run) at(d time.Duration) *run { r.now = d; return r }
-
 func (r *run) advance(d time.Duration) *run {
 	// Ticks the way the client does, so a test cannot accidentally depend on
 	// a resolution the real player does not have.

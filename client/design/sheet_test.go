@@ -60,10 +60,14 @@ func TestEveryTokenReadIsAlsoDefined(t *testing.T) {
 	//	--mf-fill      how full one factor's bar is, inline on the bar
 	//	               (view.myFeedFactors). Read WITH a fallback, so an absent
 	//	               one draws an empty track rather than dropping the rule.
+	//	--cat          one category's colour, inline on each chip
+	//	               (view.catStyleFor). Deliberately unset for a slug with no
+	//	               colour, so every rule reading it in design/classify.go
+	//	               carries its own fallback — the --mf-fill arrangement.
 	runtime := map[string]bool{
 		"--c": true, "--acc": true, "--thm-accent": true,
 		"--i": true, "--cursor": true, "--pane": true, "--strip": true,
-		"--mf-fill": true,
+		"--mf-fill": true, "--cat": true,
 	}
 
 	defined := map[string]bool{}
@@ -113,6 +117,12 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// Set per element from Go: the spawn stagger index, and the list
 		// cursor's offset down the scroller.
 		"--i": true, "--cursor": true,
+		// One category's colour, written onto a chip by view.catStyleFor the
+		// same way a source's hue is written by hueVarFor. A property of the
+		// row it is on rather than of the palette — and deliberately unset for
+		// an unknown slug, which is why every rule that reads it in
+		// design/classify.go carries its own fallback.
+		"--cat": true,
 		// The filmstrip's coordinates: a pane's position in the strip, and the
 		// position currently showing. Geometry, not palette.
 		"--pane": true, "--strip": true,

@@ -99,6 +99,24 @@ func guardNoSQLOutsideStore(root string) *guard {
 			strings.HasPrefix(rel, "migrations/") {
 			return
 		}
+		// Tests may hold SQL; production code may not. That is the line this
+		// guard is actually drawing — "a second place that understands the
+		// schema" is a liability when it SHIPS, and two cases here cannot be
+		// written any other way:
+		//
+		//   - internal/fanout deliberately corrupts a subscription row to prove
+		//     the defence against a corrupt one fires. It cannot go through the
+		//     store API, because the store API is what prevents that state.
+		//   - internal/reader counts rows in a table the repository has no
+		//     reader for, and adding one would be production surface with a
+		//     single test caller.
+		//
+		// The cost is real and worth naming: a test that quietly reimplements a
+		// production query is no longer caught here. It is still caught by the
+		// query being wrong.
+		if strings.HasSuffix(rel, "_test.go") {
+			return
+		}
 		g.checked++
 		// Only string literals are inspected — a comment quoting a query is
 		// documentation, not a second place that understands the schema.
@@ -252,27 +270,27 @@ var unscopedByDesign = map[string]string{
 	// thing that ends one. Note what is NOT here: Identity takes a Scope, because
 	// "who am I" is a question about an authenticated caller and answering it
 	// unscoped would let any session read any user's row.
-	"UserForLogin":           "produces the identity a Scope is built from; there is none yet",
-	"CreateSession":          "creates the credential a Scope is resolved from",
-	"RevokeSession":          "the token hash IS the authorisation to revoke it",
-	"SweepItems":             "retention over GLOBAL items (A14) — an item belongs to no tenant, so a window is instance-wide by construction; it deletes nothing anybody starred, annotated, tagged, archived, shared or corrected",
-	"RecordSweep":            "writes the retention ledger, which accounts for rows that belong to no tenant",
-	"RecentSweeps":           "reads that ledger: counts only, never titles, so it cannot become a record of anybody's reading",
-	"ShareBySlug":            "the slug IS the credential; a public feed's reader has no identity to scope by",
-	"ShareSources":           "reads the scope behind a slug the caller already presented; the owner comes from the share row",
-	"SessionAuthenticatedAt": "reads one session's sudo stamp by token hash; the hash IS the session, exactly as for RevokeSession",
-	"StampAuthenticated":     "records a re-authentication against the token hash the caller just proved it holds",
-	"RevokeOtherSessions":    "the token hash IS the session being kept; the user id comes from the scope it resolved to",
-	"RevokeSessionAndFamily": "the token hash IS the authorisation to revoke it, exactly as for RevokeSession",
-	"FamilyForSession":       "resolves a family from a session token hash the caller has already proved it holds, exactly as for SessionAuthenticatedAt",
+	"UserForLogin":            "produces the identity a Scope is built from; there is none yet",
+	"CreateSession":           "creates the credential a Scope is resolved from",
+	"RevokeSession":           "the token hash IS the authorisation to revoke it",
+	"SweepItems":              "retention over GLOBAL items (A14) — an item belongs to no tenant, so a window is instance-wide by construction; it deletes nothing anybody starred, annotated, tagged, archived, shared or corrected",
+	"RecordSweep":             "writes the retention ledger, which accounts for rows that belong to no tenant",
+	"RecentSweeps":            "reads that ledger: counts only, never titles, so it cannot become a record of anybody's reading",
+	"ShareBySlug":             "the slug IS the credential; a public feed's reader has no identity to scope by",
+	"ShareSources":            "reads the scope behind a slug the caller already presented; the owner comes from the share row",
+	"SessionAuthenticatedAt":  "reads one session's sudo stamp by token hash; the hash IS the session, exactly as for RevokeSession",
+	"StampAuthenticated":      "records a re-authentication against the token hash the caller just proved it holds",
+	"RevokeOtherSessions":     "the token hash IS the session being kept; the user id comes from the scope it resolved to",
+	"RevokeSessionAndFamily":  "the token hash IS the authorisation to revoke it, exactly as for RevokeSession",
+	"FamilyForSession":        "resolves a family from a session token hash the caller has already proved it holds, exactly as for SessionAuthenticatedAt",
 	"ChangePasswordAndRevoke": "the CLI break-glass reset has no session (like SetPasswordHash); the RPC caller's authorisation is the fresh sudo window `requireSudo` already checked, and the user id it acts on is the scope that produced",
-	"PurgeExpiredSessions":   "maintenance over every tenant's dead rows",
-	"PurgeIdempotency":       "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
-	"Audit":                  "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
-	"CountUsers":             "asked at boot, before any Scope can exist",
-	"RevokeAllSessions":      "the CLI break-glass reset has no session of its own",
-	"SetPasswordHash":        "the CLI break-glass reset has no session",
-	"AddUser":                "the operator creating an account has no session",
+	"PurgeExpiredSessions":    "maintenance over every tenant's dead rows",
+	"PurgeIdempotency":        "maintenance over every tenant's expired keys, like PurgeExpiredSessions",
+	"Audit":                   "the actor may be a tombstoned user and the tenant may be one being deleted (§7.9); the whole value of an audit log is surviving what it describes. AuditTrail, which READS it, does take a Scope.",
+	"CountUsers":              "asked at boot, before any Scope can exist",
+	"RevokeAllSessions":       "the CLI break-glass reset has no session of its own",
+	"SetPasswordHash":         "the CLI break-glass reset has no session",
+	"AddUser":                 "the operator creating an account has no session",
 	// System settings (§6.3, scope='system'). Instance configuration, not user
 	// data: the OpenAI API key, the Smart+ model, the translated UI catalogs.
 	// Global rows in the same sense sources and items are global under A14.
@@ -280,8 +298,13 @@ var unscopedByDesign = map[string]string{
 	// accidentally exempt a Get on some future tenant-scoped repository.
 	// Authorisation is at the transport, where the caller is checked for being
 	// an owner.
-	"SystemValue":       "reads a scope='system' row; instance config, no tenant owns it",
-	"SetSystemValue":    "writes a scope='system' row; instance config, no tenant owns it",
+	"SystemValue":    "reads a scope='system' row; instance config, no tenant owns it",
+	"SetSystemValue": "writes a scope='system' row; instance config, no tenant owns it",
+	// Two SystemValue reads and a fallback between them, so it is exempt for
+	// exactly SystemValue's reason and no new one: which model a tier uses is a
+	// property of the instance and its OpenAI account, not of whoever happens to
+	// be reading when the call is made.
+	"ModelForTier":      "resolves a tier's model from scope='system' rows; instance config, no tenant owns it",
 	"SystemSecret":      "reads the instance's encrypted credential",
 	"SetSystemSecret":   "writes the instance's encrypted credential",
 	"DeleteSystemValue": "removes a scope='system' row",
