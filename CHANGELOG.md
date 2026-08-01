@@ -9,6 +9,50 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Added
+
+- **Brotli, and compression for everything that was missing it.** The module went out gzipped and
+  nothing else did: `index.html` was served at **24 KB uncompressed on the first request of every
+  cold load**, `fonts.css` at 5 KB, and no asset was offered brotli at all. The cause was that the
+  rule lived in three places — `gzip -9` in the Makefile, a .NET `GZipStream` loop in
+  `scripts/make.ps1`, and a third `gzip -9 -kf` in `deploy/update.sh`, which is the copy that decided
+  what production actually served. All three named `app.wasm` and `wasm_exec.js` by hand, so anything
+  added to the web root afterwards shipped raw. One tool now does it for all three
+  (`cmd/precompress`), over an allowlist of compressible extensions rather than a list of filenames.
+  Measured on this build: **33.6 MB raw → 7.0 MB gzip → 4.9 MB brotli**, and the shell 24 KB → 8 KB —
+  about **2.1 MB less per cold load**. Gzip is still written and still served to anything that will
+  not take brotli, because a proxy that rewrites `Accept-Encoding` down to gzip is common enough that
+  dropping it would trade a small win for a 33 MB fallback. `Accept-Encoding` is now parsed as the
+  tokens it is: a substring test reads `br;q=0` — a refusal — as consent, and answers it with binary
+  the client cannot decode.
+- Two things that fell out of testing it against a running server rather than a unit test. The
+  compressed sibling is chosen **after** the SPA fallback, so the shell — the first request of every
+  cold load, and what every deep link resolves to — is reachable at all; while the check ran first, a
+  path with no extension matched no sibling and `/` could never be compressed. And `Content-Type` is
+  now set from the *original* name: `FileServer` types the response from the file it opens, finds no
+  type for `.br`, and answers `application/octet-stream` — which a browser will not apply as a
+  stylesheet. Only `.wasm`, `.js` and `.webmanifest` had explicit types, which is exactly why this was
+  safe until the day something else got a sibling.
+
+### Fixed
+
+- **Mark all read emptied a stream and left its badge showing the old number.** Eight handlers in
+  `reader.go` refetch the sidebar by hand — they bypass `loadFeeds()` on purpose, because its nested
+  `PostAsync` lands after the render they have already made. Every one of them remembered the feed
+  list and the total unread; **none** remembered My Feed's ranked count, which rides on the very same
+  `ListFeeds` response, and none remembered the classification counts, which are a second call that
+  `markAllRead` never made at all. So after a bulk mark every feed row, every folder, All articles and
+  Unread fell to nothing while My Feed still read 8 and Uncategorised still read 10, above a list with
+  nothing unread in it — every *other* number being right is what made it look like one odd badge
+  rather than a refresh that had not happened. Replaced by a `railNumbers` type with one fetcher and
+  one applier, which nine hand-written copies collapse into; a second fetcher omits the
+  classification counts for the three mutations that cannot move them, because `UnreadByCategory`
+  costs a few hundred milliseconds and paying it to drag a feed between folders buys a number that
+  cannot have changed. The demo's `ListFeeds` never sent `RankedCount`, which is why the demo could
+  not show this: the client only ever applies that field. `e2e/demo-smoke.mjs` now marks My Feed read
+  and asserts every unread count in the rail follows, with the tag counts as the control — they count
+  feeds, not unread articles, so they are the one number that must not move.
+
 ## [1.1.1] — 2026-08-01
 
 ### Fixed
