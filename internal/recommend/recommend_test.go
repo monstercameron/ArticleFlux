@@ -193,6 +193,54 @@ func TestEvidenceReadsAsASentence(t *testing.T) {
 	}
 }
 
+// "Say the fucking source" (Cam, 2026-08-01): when SourceTitles is populated,
+// the evidence sentence names the actual feeds rather than a bare count, and
+// still reports the topic match as a concrete concept name — the exact shape
+// Cam asked to see: "Linked from 2 posts in Alpha Journal and Beta Notes ·
+// matches your NPU Inference reading · posts ~10 a week".
+func TestEvidenceNamesRealSourcesWhenAvailable(t *testing.T) {
+	c := good("named.example")
+	c.Evidence = Evidence{
+		LinkCount: 2, DistinctSources: 2,
+		SourceTitles: []string{"Alpha Journal", "Beta Notes"},
+		TopicScore:   0.7, TopicLabel: "NPU Inference",
+	}
+	c.Health.PostsPerWeek = 10
+
+	res := Score([]Candidate{c}, nil, Thresholds{}, now)
+	if len(res.Recommendations) != 1 {
+		t.Fatal("candidate did not survive")
+	}
+	got := res.Recommendations[0].Evidence
+
+	want := "Linked from 2 posts in Alpha Journal and Beta Notes · matches your NPU Inference reading · posts ~10 a week"
+	if got != want {
+		t.Errorf("evidence = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "writers you read linked here") {
+		t.Errorf("evidence %q fell back to the count phrasing despite SourceTitles being set", got)
+	}
+}
+
+// More sources exist than got named (SourceTitles is capped upstream at
+// store.sourceTitleCap) — the sentence must say so rather than silently
+// under-crediting the evidence that produced the score.
+func TestEvidenceNamesSourcesAndCountsTheRest(t *testing.T) {
+	c := good("many-sources.example")
+	c.Evidence = Evidence{
+		LinkCount: 5, DistinctSources: 5,
+		SourceTitles: []string{"Alpha Journal", "Beta Notes", "Gamma Weekly"},
+	}
+
+	res := Score([]Candidate{c}, nil, Thresholds{}, now)
+	got := res.Recommendations[0].Evidence
+
+	want := "Linked from 5 posts in Alpha Journal, Beta Notes, Gamma Weekly and 2 more"
+	if !strings.Contains(got, want) {
+		t.Errorf("evidence = %q, want it to contain %q", got, want)
+	}
+}
+
 func TestEvidenceSingularAndPlural(t *testing.T) {
 	c := good("solo.example")
 	c.Evidence = Evidence{LinkCount: 1, DistinctSources: 1, EngagementWeight: 1,
@@ -342,6 +390,68 @@ func TestRelevanceGateAdmitsAConfirmedCandidateAndNamesTheReview(t *testing.T) {
 	ev := res.Recommendations[0].Evidence
 	if !strings.Contains(ev, "2 posts reviewed") || !strings.Contains(ev, "NPU inference") {
 		t.Errorf("evidence = %q, want the review named in it", ev)
+	}
+}
+
+// "Steer by rejection" (Cam, 2026-08-01): a candidate in a topic the reader
+// has repeatedly dismissed scores lower than an evidence-identical candidate
+// in a topic with no dismissal history, and enough repetition pushes it below
+// MinScore entirely — while a topic with zero dismissals is untouched.
+func TestTopicPenaltySuppressesARepeatedlyDismissedTopic(t *testing.T) {
+	// A large count so the (capped) penalty is at its ceiling — good()'s base
+	// score is high enough that anything less would not clear MinScore below.
+	dismissals := map[string]int{"Cooking": 200}
+
+	fresh := good("fresh-topic.example")
+	fresh.Evidence.TopicLabel = "Distributed Systems"
+
+	stale := good("stale-topic.example")
+	stale.Evidence.TopicLabel = "Cooking"
+
+	res := Score([]Candidate{fresh, stale}, nil,
+		Thresholds{MinScore: 4, TopicDismissals: dismissals}, now)
+
+	var sawFresh, sawStale bool
+	for _, r := range res.Recommendations {
+		if r.Domain == "fresh-topic.example" {
+			sawFresh = true
+		}
+		if r.Domain == "stale-topic.example" {
+			sawStale = true
+		}
+	}
+	if !sawFresh {
+		t.Error("fresh-topic.example (no dismissal history) was suppressed — the penalty is not topic-scoped")
+	}
+	if sawStale {
+		t.Error("stale-topic.example survived despite 8 dismissals in its topic — topicPenalty is not being applied")
+	}
+}
+
+// One dismissal must not be enough to suppress a whole topic — a reader who
+// rejected a single site in a topic they otherwise want more of should not
+// have that topic quietly stop being recommended.
+func TestOneDismissalDoesNotBlockAWholeTopic(t *testing.T) {
+	c := good("one-strike.example")
+	c.Evidence.TopicLabel = "Npu Inference" // matches good()'s own TopicScore/TopicLabel setup
+
+	res := Score([]Candidate{c}, nil,
+		Thresholds{TopicDismissals: map[string]int{"Npu Inference": 1}}, now)
+
+	if len(res.Recommendations) != 1 {
+		t.Errorf("recommendations = %+v, want the candidate to survive a single dismissal in its topic", res.Recommendations)
+	}
+}
+
+// A topic absent from TopicDismissals (including a nil map — the state on
+// every run before any dismissal exists) must produce zero penalty.
+func TestNoDismissalHistoryMeansNoPenalty(t *testing.T) {
+	c := good("untouched.example")
+	c.Evidence.TopicLabel = "Whatever"
+
+	res := Score([]Candidate{c}, nil, Thresholds{}, now)
+	if len(res.Recommendations) != 1 {
+		t.Errorf("recommendations = %+v, want the candidate kept with a nil TopicDismissals map", res.Recommendations)
 	}
 }
 

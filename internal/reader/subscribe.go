@@ -591,6 +591,7 @@ func (s *Service) ingestScraped(ctx context.Context, sourceID string, res scrape
 	if err != nil {
 		return 0, err
 	}
+	s.mineOutlinks(ctx, sourceID, ing.NewIDs)
 	return ing.New, nil
 }
 

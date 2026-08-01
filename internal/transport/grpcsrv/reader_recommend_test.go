@@ -139,7 +139,7 @@ func TestRejectRecommendationIsPermanent(t *testing.T) {
 // reach the job queue — not just return success.
 func TestRefreshRecommendationsEnqueuesAJob(t *testing.T) {
 	srv, sc, repo := subscribeFixture(t)
-	rec := recommendjob.New(repo, nil, nil, nil, nil)
+	rec := recommendjob.New(repo, nil, nil, nil, nil, nil, nil)
 	srv.WithRecommendations(repo, rec)
 
 	if _, err := srv.RefreshRecommendations(context.Background(), &pb.RefreshRecommendationsRequest{}); err != nil {

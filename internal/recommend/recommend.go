@@ -91,6 +91,12 @@ type Evidence struct {
 	// writers linking once each is much stronger than one linking six times,
 	// and this field is why the scorer can tell them apart.
 	DistinctSources int
+	// SourceTitles names up to a few of the DistinctSources feeds (Cam,
+	// 2026-08-01: name the actual source, not just a count). May be shorter
+	// than DistinctSources or empty — see store.OutlinkEvidence.SourceTitles,
+	// which this is populated from — in which case describe() falls back to
+	// naming a count instead of naming nothing.
+	SourceTitles []string
 	// EngagementWeight is the summed engagement with the LINKING articles,
 	// 0..1 each. A link inside something skimmed is worth less than a link
 	// inside something read twice and starred.
@@ -106,6 +112,13 @@ type Evidence struct {
 	TopicLabel string
 	// FromBlogrollOf names the site whose blogroll listed this, if any.
 	FromBlogrollOf string
+	// WebSearchReason is rung 5's own evidence (Cam, 2026-08-01) — the
+	// model's one-line reason a web search surfaced this domain for the
+	// reader's topics. Distinct from every field above, all of which are
+	// something a person can independently check about their OWN reading;
+	// this one is the model's claim about the candidate, shown as such
+	// rather than dressed up as an observation nobody made.
+	WebSearchReason string
 	// Adjacent marks a deliberately different candidate (§18.7's guardrail).
 	Adjacent bool
 }
@@ -169,6 +182,12 @@ type Recommendation struct {
 	// Adjacent marks the one or two deliberately-different suggestions, which
 	// the UI labels as such.
 	Adjacent bool
+	// TopicLabel is the topic this candidate matched, carried through from
+	// Evidence.TopicLabel so the caller can persist it structurally — "steer
+	// by rejection" (Cam, 2026-08-01) needs it back after a dismissal, and
+	// re-parsing it out of the rendered Evidence sentence would tie scoring
+	// policy to prose wording.
+	TopicLabel string
 }
 
 // Rejection records a candidate that was refused and why.
@@ -201,6 +220,17 @@ type Thresholds struct {
 	// AdjacentSlots is how many deliberately-different candidates to include
 	// (§18.7's anti-filter-bubble guardrail). Zero means 2.
 	AdjacentSlots int
+	// TopicDismissals is "steer by rejection" (Cam, 2026-08-01): how many
+	// times the reader has dismissed a recommendation carrying each topic
+	// label, keyed by that label. Nil or a label with zero dismissals means
+	// completely unaffected — see topicPenalty for the curve and why one
+	// rejection cannot block an entire topic.
+	//
+	// This is computed and applied ENTIRELY LOCALLY. It never becomes an
+	// input to internal/llm/relevance.go's rung-5 check — §18.8 permits only
+	// topic TERMS there, and "the reader dismissed N sites in this topic" is
+	// reading history, not a term.
+	TopicDismissals map[string]int
 }
 
 func (t Thresholds) withDefaults() Thresholds {
@@ -241,7 +271,7 @@ func Score(candidates []Candidate, known map[string]State, th Thresholds, now ti
 			res.Rejected = append(res.Rejected, Rejection{Domain: domain, Reason: reason})
 			continue
 		}
-		score := scoreOf(c)
+		score := scoreOf(c) - topicPenalty(c.Evidence.TopicLabel, th.TopicDismissals)
 		if score < th.MinScore {
 			res.Rejected = append(res.Rejected, Rejection{
 				Domain: domain,
@@ -250,13 +280,14 @@ func Score(candidates []Candidate, known map[string]State, th Thresholds, now ti
 			continue
 		}
 		kept = append(kept, Recommendation{
-			Domain:   domain,
-			FeedURL:  c.FeedURL,
-			Title:    c.Title,
-			Rung:     c.Rung,
-			Score:    score,
-			Evidence: describe(c, now),
-			Adjacent: c.Evidence.Adjacent,
+			Domain:     domain,
+			FeedURL:    c.FeedURL,
+			Title:      c.Title,
+			Rung:       c.Rung,
+			Score:      score,
+			Evidence:   describe(c, now),
+			Adjacent:   c.Evidence.Adjacent,
+			TopicLabel: c.Evidence.TopicLabel,
 		})
 	}
 
@@ -363,6 +394,31 @@ func scoreOf(c Candidate) float64 {
 	return score
 }
 
+// topicPenalty is "steer by rejection" (Cam, 2026-08-01): the more sites in a
+// topic the reader has already dismissed, the less that topic's evidence
+// counts toward a NEW candidate's score, without ever hard-blocking the
+// topic — a reader who rejected one site is very plausibly still interested
+// in the topic generally, just not that particular one, so this should make
+// a marginal candidate in that topic harder to clear MinScore, not
+// impossible to.
+//
+// Logarithmic and capped, matching scoreOf's own house style for the same
+// reason: the first dismissal barely moves it (0.5*ln(2) ≈ 0.35, well under
+// a single distinct-source's worth of evidence), it grows with repeated
+// rejection, and it flattens at 1.5 so no amount of dismissing can push an
+// otherwise well-evidenced candidate below zero on its own — MinScore, not
+// this, is what still decides "not enough evidence yet".
+func topicPenalty(topicLabel string, dismissals map[string]int) float64 {
+	if topicLabel == "" || dismissals == nil {
+		return 0
+	}
+	n := dismissals[topicLabel]
+	if n <= 0 {
+		return 0
+	}
+	return math.Min(1.5, 0.5*math.Log1p(float64(n)))
+}
+
 // describe assembles the evidence sentence, shown verbatim.
 //
 // Built from the same fields that produced the score, in the order a person
@@ -374,15 +430,31 @@ func describe(c Candidate, now time.Time) string {
 	var parts []string
 
 	if e.LinkCount > 0 {
-		writers := "1 writer you read"
-		if e.DistinctSources > 1 {
-			writers = fmt.Sprintf("%d writers you read", e.DistinctSources)
+		if len(e.SourceTitles) > 0 {
+			// Name the source, not just a count (Cam, 2026-08-01): "Linked
+			// from 2 posts in Alpha Journal and Beta Notes", not "2 writers
+			// you read linked here 2 times" — a reader deciding whether to
+			// trust a recommendation wants to know WHO vouched for it.
+			posts := "1 post"
+			if e.LinkCount > 1 {
+				posts = fmt.Sprintf("%d posts", e.LinkCount)
+			}
+			parts = append(parts, fmt.Sprintf("Linked from %s in %s", posts, joinSourceNames(e.SourceTitles, e.DistinctSources)))
+		} else {
+			// Fallback for the cases SourceTitles cannot cover — rung 2
+			// (aggregator) evidence never sets it, and even rung 1 can miss a
+			// title when the linking source's own `sources` row has none. A
+			// count is worse than a name but still better than silence.
+			writers := "1 writer you read"
+			if e.DistinctSources > 1 {
+				writers = fmt.Sprintf("%d writers you read", e.DistinctSources)
+			}
+			times := "once"
+			if e.LinkCount > 1 {
+				times = fmt.Sprintf("%d times", e.LinkCount)
+			}
+			parts = append(parts, fmt.Sprintf("%s linked here %s", writers, times))
 		}
-		times := "once"
-		if e.LinkCount > 1 {
-			times = fmt.Sprintf("%d times", e.LinkCount)
-		}
-		parts = append(parts, fmt.Sprintf("%s linked here %s", writers, times))
 	}
 
 	if e.StarredViaAggregator > 0 {
@@ -418,6 +490,14 @@ func describe(c Candidate, now time.Time) string {
 		}
 	}
 
+	if e.WebSearchReason != "" {
+		// Rung 5 (Cam, 2026-08-01) — the only evidence clause that is the
+		// MODEL's claim rather than something observed about the reader, and
+		// it says so plainly ("Web search:") rather than being worded to
+		// sound like the others.
+		parts = append(parts, "Web search: "+e.WebSearchReason)
+	}
+
 	if e.Adjacent {
 		parts = append(parts, "different from what you usually read")
 	}
@@ -429,6 +509,28 @@ func describe(c Candidate, now time.Time) string {
 		return "surfaced from your reading"
 	}
 	return strings.Join(parts, " · ")
+}
+
+// joinSourceNames renders a short, human list of source titles — "Alpha
+// Journal", "Alpha Journal and Beta Notes", "Alpha Journal, Beta Notes and 2
+// more" — capping at how many names got this far (SourceTitles is already
+// capped upstream; total is DistinctSources, which can be larger when a title
+// resolved for fewer sources than actually linked).
+func joinSourceNames(titles []string, total int) string {
+	if len(titles) == 0 {
+		return ""
+	}
+	if total > len(titles) {
+		// A "more" suffix always gets its own "and" at the end, so the named
+		// titles are a plain comma list — "Alpha, Beta, Gamma and 2 more" —
+		// rather than colliding with an oxford "and" before the last named
+		// title, which would read as "Alpha, Beta and Gamma and 2 more".
+		return fmt.Sprintf("%s and %d more", strings.Join(titles, ", "), total-len(titles))
+	}
+	if len(titles) == 1 {
+		return titles[0]
+	}
+	return strings.Join(titles[:len(titles)-1], ", ") + " and " + titles[len(titles)-1]
 }
 
 // cadence phrases a publishing rate the way a person would say it.

@@ -60,13 +60,23 @@ func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
 		t.Fatalf("callCount = %d, want 1", fake.callCount())
 	}
 
+	// The request now goes out as prose rather than as the marshalled struct
+	// (llm.RelevancePayload.Prompt — the configured model could not read the
+	// JSON form), so the boundary is asserted the way it now holds: the
+	// outbound text must be EXACTLY what rendering the allowlisted payload
+	// produces. That is the same guarantee the key audit gave — nothing can
+	// reach the wire that is not a field on the payload type — expressed
+	// against the shape actually sent. The key allowlist itself is still
+	// exercised, on the marshalled struct, in internal/llm/relevance_test.go.
 	req := fake.callN(0)
-	bad, err := llm.AuditRelevance([]byte(req.Input))
-	if err != nil {
-		t.Fatal(err)
+	want := llm.RelevancePayload{Topic: "distributed systems"}
+	for _, s := range twoSamples {
+		want.Samples = append(want.Samples, llm.RelevanceSample{Title: s.Title, Summary: s.Summary})
 	}
-	if len(bad) != 0 {
-		t.Errorf("the outbound relevance request carried keys not on RelevanceKeys: %v", bad)
+	want, _ = want.Trim()
+	if req.Input != want.Prompt() {
+		t.Errorf("the outbound relevance request is not a pure rendering of the "+
+			"allowlisted payload:\n got: %q\nwant: %q", req.Input, want.Prompt())
 	}
 }
 
@@ -216,5 +226,57 @@ func TestRelevanceCheckerModelEmptyWithNilSettings(t *testing.T) {
 	c := NewRelevanceChecker(&fakeLLM{}, nil)
 	if got := c.model(context.Background()); got != "" {
 		t.Errorf("model = %q with nil settings, want empty", got)
+	}
+}
+
+// A topic sent to the relevance gate must describe an INTEREST, not a story.
+//
+// Measured on the development instance before this: the phrase was
+//
+//	"AI Agent Safety, Nvidia-OpenAI Financing Talks, Samsung Galaxy Devices,
+//	 Chatbot Revenue Growth, Chinese EV Deliveries"
+//
+// — five headlines from one week. The gate then asked whether a candidate's two
+// most recent posts were about those, and in the same run rejected twenty
+// candidates out of twenty. A reader with a perfectly good harvest saw "No
+// suggestions yet" because the question being asked was unanswerable.
+func TestTopicTermsCarriesTheDurableVocabularyNotJustTheHeadline(t *testing.T) {
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "rel.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewReaderRepo(db)
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "T", UserID: "u1", Username: "u",
+		Hash: "x", Role: "member", Now: relnow.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sc := store.Scope{TenantID: "t1", UserID: "u1", Role: "member"}
+	// A label shaped exactly like the ones that caused the problem: a story,
+	// not a subject.
+	if err := repo.ReplaceTopics(ctx, sc, []topics.Topic{
+		{Label: "Nvidia-OpenAI Financing Talks",
+			TopTerms: []string{"nvidia", "openai", "chips", "datacenter"},
+			Members:  nil, Trend: topics.TrendSteady},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := TopicTerms(ctx, repo, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The label stays — it is what makes the phrase readable — but the cluster's
+	// own terms have to be in there, because they are the half that still
+	// describes the reader next week.
+	if !strings.Contains(got, "(") {
+		t.Errorf("TopicTerms = %q, want the cluster's own terms alongside the "+
+			"label; a label alone names one week's story", got)
 	}
 }

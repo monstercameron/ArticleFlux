@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
@@ -63,7 +65,24 @@ type OutlinkEvidence struct {
 	// Subscribed is true when the reader already follows this domain, so the
 	// caller can filter without a second query.
 	Subscribed bool
+	// SourceTitles names up to sourceTitleCap of the feeds that did the
+	// linking (Cam, 2026-08-01: "say the fucking source"). May be shorter than
+	// DistinctSources — capped for the same reason the evidence sentence caps
+	// anything else it lists — and may be empty if none of the linking
+	// sources resolved to a title (their `sources` row was pruned, or the
+	// fuzzy domain match found nothing), in which case describe() falls back
+	// to naming a count instead of naming nothing.
+	SourceTitles []string
 }
+
+// sourceTitleCap bounds how many source names one evidence sentence names —
+// see SourceTitles.
+const sourceTitleCap = 3
+
+// sourceTitleSep is a control character, not punctuation, deliberately: a
+// feed title is free text a publisher wrote and may itself contain commas,
+// pipes or any other printable separator, and group_concat has no quoting.
+const sourceTitleSep = "\x1e"
 
 // OutlinkCandidates finds domains linked from what this reader engaged with.
 //
@@ -79,12 +98,35 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 		limit = 100
 	}
 
+	// source_titles is a correlated subquery rather than a third JOIN on the
+	// outer query, deliberately: the outer query's engagements JOIN produces
+	// one row per (outlink, engaged item) and is what LinkCount/EngagementWeight
+	// count over, so joining `sources` onto it directly would multiply those
+	// counts by however many titles a domain has — wrong evidence for a
+	// column that exists to be counted. The subquery re-derives its own
+	// (sourceID, engaged-item) pairs for the same domain, de-duplicates by
+	// title with SELECT DISTINCT (SQLite's group_concat has no DISTINCT
+	// modifier of its own), and caps at sourceTitleCap — see SourceTitles.
 	rows, err := r.db.Read.QueryContext(ctx, `
 		SELECT o.target_domain,
 		       count(*)                       AS link_count,
 		       count(DISTINCT o.source_id)    AS distinct_sources,
 		       count(DISTINCT e.item_id)      AS engaged_items,
-		       max(CASE WHEN sub.source_id IS NOT NULL THEN 1 ELSE 0 END) AS subscribed
+		       max(CASE WHEN sub.source_id IS NOT NULL THEN 1 ELSE 0 END) AS subscribed,
+		       (SELECT group_concat(t, '`+sourceTitleSep+`') FROM (
+		            SELECT DISTINCT srcs.title AS t
+		              FROM outlinks o2
+		              JOIN engagements e2
+		                ON e2.item_id = o2.item_id
+		               AND e2.user_id = ?
+		               AND e2.at >= ?
+		               AND e2.kind NOT IN ('impression','bulk_read','sync_read')
+		              JOIN sources srcs ON srcs.id = o2.source_id
+		             WHERE o2.target_domain = o.target_domain
+		               AND srcs.title != ''
+		             ORDER BY t
+		             LIMIT `+fmt.Sprint(sourceTitleCap)+`
+		       )) AS source_titles
 		  FROM outlinks o
 		  JOIN engagements e
 		    ON e.item_id = o.item_id
@@ -96,7 +138,8 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 		    ON sub.source_id = src.id AND sub.user_id = ?
 		 GROUP BY o.target_domain
 		 ORDER BY distinct_sources DESC, link_count DESC
-		 LIMIT ?`, s.UserID, sinceMS, s.UserID, limit)
+		 LIMIT ?`,
+		s.UserID, sinceMS, s.UserID, sinceMS, s.UserID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +149,9 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 	for rows.Next() {
 		var e OutlinkEvidence
 		var engaged, subscribed int
+		var titles sql.NullString
 		if err := rows.Scan(&e.Domain, &e.LinkCount, &e.DistinctSources,
-			&engaged, &subscribed); err != nil {
+			&engaged, &subscribed, &titles); err != nil {
 			return nil, err
 		}
 		// Engagement weight is the count of distinct engaged articles that
@@ -116,6 +160,9 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 		// read three times is still one article pointing.
 		e.EngagementWeight = float64(engaged)
 		e.Subscribed = subscribed == 1
+		if titles.Valid && titles.String != "" {
+			e.SourceTitles = strings.Split(titles.String, sourceTitleSep)
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -123,13 +170,18 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 
 // StoredRecommendation is one row of the recommendations table.
 type StoredRecommendation struct {
-	Domain   string
-	FeedURL  string
-	Title    string
-	Score    float64
-	Rung     int
-	Evidence string
-	Status   string
+	Domain     string
+	FeedURL    string
+	Title      string
+	Score      float64
+	Rung       int
+	Evidence   string
+	Status     string
+	// TopicLabel is the topic this candidate matched, when it has one — rungs
+	// 1-2 usually don't (see 0031's migration comment). Persisted structurally
+	// so DismissedTopics can steer future scoring by topic without re-parsing
+	// the evidence sentence.
+	TopicLabel string
 }
 
 // ReplaceRecommendations rewrites a user's open recommendations.
@@ -154,14 +206,15 @@ func (r *ReaderRepo) ReplaceRecommendations(ctx context.Context, s Scope, recs [
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO recommendations
 				    (id, user_id, domain, feed_url, title, score, rung, evidence_json,
-				     status, first_seen_at, last_scored_at)
-				VALUES (?,?,?,?,?,?,?,?,'new',?,?)
+				     topic_label, status, first_seen_at, last_scored_at)
+				VALUES (?,?,?,?,?,?,?,?,?,'new',?,?)
 				ON CONFLICT(user_id, domain) DO UPDATE SET
 				    score = excluded.score,
 				    evidence_json = excluded.evidence_json,
+				    topic_label = excluded.topic_label,
 				    last_scored_at = excluded.last_scored_at`,
 				idgen.New(), s.UserID, rec.Domain, nullify(rec.FeedURL), nullify(rec.Title),
-				rec.Score, rec.Rung, rec.Evidence, now, now); err != nil {
+				rec.Score, rec.Rung, rec.Evidence, nullify(rec.TopicLabel), now, now); err != nil {
 				return err
 			}
 		}
@@ -179,7 +232,7 @@ func (r *ReaderRepo) Recommendations(ctx context.Context, s Scope, limit int) ([
 	}
 	rows, err := r.db.Read.QueryContext(ctx, `
 		SELECT domain, ifnull(feed_url,''), ifnull(title,''), score, rung,
-		       evidence_json, status
+		       evidence_json, status, ifnull(topic_label,'')
 		  FROM recommendations
 		 WHERE user_id = ? AND status = 'new'
 		 ORDER BY score DESC, domain ASC
@@ -193,7 +246,7 @@ func (r *ReaderRepo) Recommendations(ctx context.Context, s Scope, limit int) ([
 	for rows.Next() {
 		var rec StoredRecommendation
 		if err := rows.Scan(&rec.Domain, &rec.FeedURL, &rec.Title, &rec.Score,
-			&rec.Rung, &rec.Evidence, &rec.Status); err != nil {
+			&rec.Rung, &rec.Evidence, &rec.Status, &rec.TopicLabel); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
@@ -259,6 +312,42 @@ func (r *ReaderRepo) DismissedDomains(ctx context.Context, s Scope) (map[string]
 	return out, rows.Err()
 }
 
+// DismissedTopics counts how many dismissed recommendations shared each topic
+// label — the local signal "steer by rejection" (Cam, 2026-08-01) is built
+// from. Unlabelled dismissals (rungs 1-2, which carry no TopicLabel) are
+// excluded rather than counted under an empty key: they say nothing about
+// which TOPIC to avoid, only which domain, and that domain is already
+// handled by DismissedDomains.
+//
+// This never leaves the process — internal/recommendjob reads it to adjust
+// local scoring only; nothing here reaches internal/llm (§18.8).
+func (r *ReaderRepo) DismissedTopics(ctx context.Context, s Scope) (map[string]int, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT topic_label, count(*)
+		  FROM recommendations
+		 WHERE user_id = ? AND status = 'dismissed'
+		   AND topic_label IS NOT NULL AND topic_label != ''
+		 GROUP BY topic_label`, s.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var label string
+		var n int
+		if err := rows.Scan(&label, &n); err != nil {
+			return nil, err
+		}
+		out[label] = n
+	}
+	return out, rows.Err()
+}
+
 // RecommendationByDomain reads one open suggestion, for /discover's Accept
 // action — it needs the feed URL recommendjob already validated rather than
 // re-discovering it from a bare domain the reader clicked.
@@ -269,11 +358,11 @@ func (r *ReaderRepo) RecommendationByDomain(ctx context.Context, s Scope, domain
 	var rec StoredRecommendation
 	err := r.db.Read.QueryRowContext(ctx, `
 		SELECT domain, ifnull(feed_url,''), ifnull(title,''), score, rung,
-		       evidence_json, status
+		       evidence_json, status, ifnull(topic_label,'')
 		  FROM recommendations
 		 WHERE user_id = ? AND domain = ? AND status = 'new'`, s.UserID, domain).
 		Scan(&rec.Domain, &rec.FeedURL, &rec.Title, &rec.Score, &rec.Rung,
-			&rec.Evidence, &rec.Status)
+			&rec.Evidence, &rec.Status, &rec.TopicLabel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StoredRecommendation{}, false, nil
 	}

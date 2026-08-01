@@ -14,6 +14,8 @@ func TestRelevancePayloadCarriesOnlyWhatIsPermitted(t *testing.T) {
 			{Title: "Consensus without a coordinator", Summary: "A walkthrough of leaderless replication."},
 			{Title: "Why your WAL fsyncs matter", Summary: "Durability tradeoffs in embedded stores."},
 		},
+		PositiveExamples: []string{"Consensus without a coordinator"},
+		NegativeExamples: []string{"10 Racing Facts You Won't Believe"},
 	}
 
 	bad, err := AuditRelevance(mustJSON(t, p))
@@ -69,6 +71,31 @@ func TestRelevanceTrimCapsSamplesAndSummaries(t *testing.T) {
 	}
 	if rep.Empty() {
 		t.Error("rep.Empty() = true, but the payload was trimmed")
+	}
+}
+
+func TestRelevanceTrimCapsTheExamples(t *testing.T) {
+	over := make([]string, MaxRelevanceExamples+2)
+	for i := range over {
+		over[i] = "title"
+	}
+	p := RelevancePayload{Topic: "topic", PositiveExamples: over, NegativeExamples: over[:MaxRelevanceExamples+1]}
+
+	trimmed, rep := p.Trim()
+	if len(trimmed.PositiveExamples) != MaxRelevanceExamples {
+		t.Errorf("trimmed.PositiveExamples has %d entries, want %d", len(trimmed.PositiveExamples), MaxRelevanceExamples)
+	}
+	if len(trimmed.NegativeExamples) != MaxRelevanceExamples {
+		t.Errorf("trimmed.NegativeExamples has %d entries, want %d", len(trimmed.NegativeExamples), MaxRelevanceExamples)
+	}
+	if rep.PositiveDropped != 2 {
+		t.Errorf("rep.PositiveDropped = %d, want 2", rep.PositiveDropped)
+	}
+	if rep.NegativeDropped != 1 {
+		t.Errorf("rep.NegativeDropped = %d, want 1", rep.NegativeDropped)
+	}
+	if rep.Empty() {
+		t.Error("rep.Empty() = true, but examples were trimmed")
 	}
 }
 

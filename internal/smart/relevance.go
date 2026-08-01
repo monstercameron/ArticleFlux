@@ -42,16 +42,37 @@ func TopicTerms(ctx context.Context, repo *store.ReaderRepo, sc store.Scope) (st
 		if t.Suppressed {
 			continue
 		}
-		label := strings.TrimSpace(t.Label)
-		if label != "" {
-			parts = append(parts, label)
-			continue
-		}
 		terms := t.TopTerms
 		if len(terms) > maxRecommendTopicTerms {
 			terms = terms[:maxRecommendTopicTerms]
 		}
-		if len(terms) > 0 {
+		// The label AND its terms, not the label alone.
+		//
+		// A cluster label is written to name a STORY — measured on the
+		// development instance, this produced:
+		//
+		//	"AI Agent Safety, Nvidia-OpenAI Financing Talks, Samsung Galaxy
+		//	 Devices, Chatbot Revenue Growth, Chinese EV Deliveries"
+		//
+		// Every one of those is a headline from one particular week, and the
+		// relevance gate then asks whether a candidate's two most recent posts
+		// are about them. Almost nothing can pass that: it is not a description
+		// of what the reader is interested in, it is a description of what the
+		// news was doing on Tuesday. In the same run, twenty candidates were
+		// reviewed and twenty were rejected, so Discover had nothing to show
+		// however well the harvest had gone.
+		//
+		// TopTerms are the cluster's own vocabulary — the durable half, and
+		// what "topic terms only" in §18.8 always meant. Keeping the label too
+		// costs a few words and keeps the phrase readable to a human reading
+		// the log; the terms are what make it a topic rather than an event.
+		label := strings.TrimSpace(t.Label)
+		switch {
+		case label != "" && len(terms) > 0:
+			parts = append(parts, label+" ("+strings.Join(terms, ", ")+")")
+		case label != "":
+			parts = append(parts, label)
+		case len(terms) > 0:
 			parts = append(parts, strings.Join(terms, " "))
 		}
 	}
@@ -154,20 +175,18 @@ func (c *RelevanceChecker) Check(
 	}
 	payload, _ = payload.Trim()
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return false, "", err
-	}
-
 	call, cancel := context.WithTimeout(ctx, interestTimeout)
 	defer cancel()
 
 	out, err := c.llm.Do(call, llm.Request{
 		Model:        c.model(ctx),
 		Instructions: llm.RelevanceInstructions,
-		Input:        string(body),
-		SchemaName:   "recommendation_relevance",
-		Schema:       llm.RelevanceSchema,
+		// Prose, not the marshalled struct — see RelevancePayload.Prompt for
+		// the measurement. The payload type is still what decides what may
+		// leave; only its rendering changed.
+		Input:      payload.Prompt(),
+		SchemaName: "recommendation_relevance",
+		Schema:     llm.RelevanceSchema,
 		// Short: this is a two-post read against a topic string, not a
 		// judgement over forty candidates — the rerank call's budget would be
 		// paying for headroom this task cannot use.

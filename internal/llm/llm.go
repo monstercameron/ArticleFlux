@@ -178,6 +178,12 @@ type Request struct {
 	// where the answer is in front of the model and more deliberation buys
 	// nothing but tokens. Left empty by callers whose task genuinely needs it.
 	Effort string
+	// Tools lists hosted Responses-API tools to enable, by type string — see
+	// WebSearchTool. Empty means none, which is every existing caller as of
+	// this field's addition (Cam, 2026-08-01): a feature has to opt in to
+	// letting the model reach outside the request, the same as it opts in to
+	// a schema or a reasoning effort.
+	Tools []string
 }
 
 // responsesRequest is the wire shape. Kept separate from Request so the public
@@ -189,8 +195,31 @@ type responsesRequest struct {
 	Text            *responsesText     `json:"text,omitempty"`
 	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
 	Reasoning       *responsesThinking `json:"reasoning,omitempty"`
+	Tools           []responsesTool    `json:"tools,omitempty"`
 	Store           bool               `json:"store"`
 }
+
+// responsesTool is one entry in the wire "tools" array. Only the hosted
+// tools this package explicitly enables ever appear here — see
+// WebSearchTool's own doc for the one this repo currently uses and the
+// uncertainty attached to its exact type string.
+type responsesTool struct {
+	Type string `json:"type"`
+}
+
+// WebSearchTool is the Responses-API hosted tool type string for web search.
+//
+// **Confidence flag (Cam, 2026-08-01): this string is not verified against a
+// live call.** OpenAI's Responses API has, across its rollout, used
+// "web_search_preview" for the original preview release of hosted web search
+// and later "web_search" once/if the tool graduated out of preview. This
+// package targets "web_search" on the theory that a preview-suffixed name is
+// unlikely to still be current, but that is inference from naming
+// convention, not a checked fact — if every call using this tool starts
+// failing with an "invalid tool type" (or similar) error from the provider,
+// this is the first thing to check, and the fix is a one-line change here
+// (every caller goes through this constant, not a literal).
+const WebSearchTool = "web_search"
 
 type responsesThinking struct {
 	Effort string `json:"effort"`
@@ -264,6 +293,13 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 	}
 	if e := strings.TrimSpace(r.Effort); e != "" {
 		wire.Reasoning = &responsesThinking{Effort: e}
+	}
+	for _, t := range r.Tools {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		wire.Tools = append(wire.Tools, responsesTool{Type: t})
 	}
 	if len(r.Schema) > 0 {
 		name := r.SchemaName
