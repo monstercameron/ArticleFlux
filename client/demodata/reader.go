@@ -17,10 +17,16 @@ import (
 // readerService is the demo's ReaderService.
 //
 // It implements the generated server interface rather than something shaped
-// like it, so the day a method is added to the proto this file stops compiling.
-// That is the whole reason the demo routes through gRPC: a fake that drifts is
-// worse than no fake, because it demonstrates an application that no longer
-// exists.
+// like it. That is the whole reason the demo routes through gRPC: a fake that
+// drifts is worse than no fake, because it demonstrates an application that no
+// longer exists.
+//
+// What it does NOT do is fail to compile when a method is added to the proto —
+// this comment claimed that for months and it was never true. The embedded
+// UnimplementedReaderServiceServer below is required by the generated interface
+// and answers every method nobody wrote, forever, with Unimplemented. Drift is
+// therefore silent, and three features had already gone missing from the demo
+// that way. served_test.go is what actually catches it now.
 type readerService struct {
 	pb.UnimplementedReaderServiceServer
 	inst *Instance
