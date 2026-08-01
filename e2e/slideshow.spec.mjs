@@ -60,7 +60,13 @@ async function startShow(page) {
  * all, and the failure arrives later as "the setting did not save".
  */
 async function openSettings(page) {
-  await page.locator('.list-tools').getByRole('button', { name: 'Settings' }).click();
+  // `.list-corner`, not `.list-tools`. The gear sits in the corner beside the
+  // list's title — "Settings is reachable from the phone's tab bar and from a
+  // comma; neither is discoverable on a desktop, so it also gets a gear here."
+  // The action row below it holds controls that act on the FEED, and settings
+  // is not one of those. This helper looked in the row for years and the two
+  // tests that use it timed out waiting for a button that was never there.
+  await page.locator('.list-corner').getByRole('button', { name: 'Settings' }).click();
   await expect(page.locator('.pane-settings')).toBeVisible();
 }
 
