@@ -3955,10 +3955,12 @@ func Reader(p readerProps) ui.Node {
 	//
 	// Two ahead rather than one, because the cost of being early is a request
 	// for a segment that will be played in ninety seconds, and the cost of
-	// being late is the gap this exists to remove. It stops at the first story
-	// it cannot resolve rather than skipping over it: warming beat N+2 needs
-	// N+1's id as its predecessor, since a segment is written per ordered PAIR
-	// and one written after the wrong story is a different recording.
+	// being late is the gap this exists to remove. A beat it cannot resolve is
+	// SKIPPED rather than ending the walk — the running order is known from the
+	// queue whether or not a body has landed, so one slow fetch costs that one
+	// beat its warm instead of every beat behind it. The predecessor still
+	// advances across the gap, since a segment is written per ordered PAIR and
+	// one written after the wrong story is a different recording. See warmURLs.
 	warmAhead := func() {
 		if !speakAuto.Get() || !speakPodcast.Get() {
 			return
@@ -3973,31 +3975,48 @@ func Reader(p readerProps) ui.Node {
 		if i < 0 {
 			return
 		}
-		prevID := speakID.Get()
-		for n := 1; n <= warmDepth && i+n < len(q); n++ {
-			id := q[i+n]
+		for _, u := range warmURLs(q, i, warmDepth, func(id, prev string) string {
 			// showItem kicks a body fetch for anything it does not hold, which
 			// is the other half of the pipeline: no body, no ticket, no URL.
 			if showItem(id) == nil {
-				return
+				return ""
 			}
 			b := bodies.Get()[id]
 			if b == nil || b.GetSpeechUrl() == "" {
-				return
+				return ""
 			}
-			u := speechFrom(b.GetSpeechUrl(), speechAsk{
-				prevID:  prevID,
+			return speechFrom(b.GetSpeechUrl(), speechAsk{
+				prevID:  prev,
 				podcast: true,
 				// The same value the real request will carry. A warm URL that
 				// differs from the one that gets played is a segment paid for
 				// twice and a seam that stalls anyway.
 				intro: introAskFor(id),
 			})
-			if u != "" && !warmed.Get()[u] {
-				warmed.Get()[u] = true
-				platform.PrefetchURL(u)
+		}) {
+			if warmed.Get()[u] {
+				continue
 			}
-			prevID = id
+			warmed.Get()[u] = true
+			warm := u
+			platform.PrefetchURL(warm, func(ok bool) {
+				if !ok {
+					return
+				}
+				// The audio landed, so the script that produced it is on disk —
+				// and `as=text` is a cache read that can never trigger a paid
+				// write. Fetched HERE, while the previous story is still
+				// playing, so that when this beat starts its captions are
+				// already local: the words go up with the first of them rather
+				// than a round trip later, which is the window in which the
+				// slide used to show the article instead.
+				platform.FetchText(scriptURL(warm), func(text string, ok bool) {
+					if !ok || strings.TrimSpace(text) == "" {
+						return
+					}
+					ui.PostAsync(func() { scripts.Get().put(warm, strings.TrimSpace(text)) })
+				})
+			})
 		}
 	}
 	act.Get().warmAhead = warmAhead
@@ -4033,6 +4052,16 @@ func Reader(p readerProps) ui.Node {
 				// wait would be a broadcast that goes quiet before it starts.
 				switch s {
 				case "ready":
+					// The words, at the earliest moment they can be had for
+					// nothing: `ready` means the audio has arrived, and the
+					// request that fetched it is the one that wrote the script.
+					// Asking here rather than at `playing` puts the caption up
+					// before the first word instead of after it — and on the
+					// ordinary path warmAhead has already put it in the cache,
+					// so this costs a map lookup. See fetchScript.
+					if speakPodcast.Get() {
+						fetchScript(speakURL.Get())
+					}
 					// THE HANDOVER, and it happens BEFORE a word is spoken.
 					// `ready` is the player saying the segment could start now;
 					// it is being held for introLead while the theme leaves and
@@ -4077,8 +4106,11 @@ func Reader(p readerProps) ui.Node {
 					// button means nothing to anybody.
 					return
 				case "playing":
-					// The words, now that the recording that carries them
-					// exists. See fetchScript for why not sooner.
+					// A backstop for the words: `ready` above is what normally
+					// asks, and this catches the case where the element never
+					// emitted one — a cached response can go straight to
+					// playing on some browsers. fetchScript is idempotent, so
+					// the ordinary path costs nothing here.
 					if speakPodcast.Get() {
 						fetchScript(speakURL.Get())
 					}
@@ -4180,11 +4212,20 @@ func Reader(p readerProps) ui.Node {
 					intro:  introAskFor(it.GetId()),
 				})
 				// A new beat: whatever was on screen belonged to the last one.
-				// Cleared here rather than when the next script arrives, so the
-				// gap shows the article instead of the wrong words.
+				// Cleared here rather than when the next script arrives, because
+				// the previous beat's words under this one's headline are the
+				// exact mistake captions exist to avoid.
+				//
+				// The WAIT is cleared with them: nothing has been asked for yet,
+				// so between here and `ready` the article is the honest body —
+				// there is no narration to disagree with, and a blank slide
+				// waiting on a request nobody has made would be a mode that
+				// looks broken while it works.
 				if speakURL.Get() != spoken {
 					scriptText.Set("")
 					scriptFor.Set("")
+					scriptAsked.Set("")
+					scriptWait.Set(false)
 				}
 				speakURL.Set(spoken)
 				speakAt.Set(queueIndex(showQ(), it.GetId()))
@@ -8140,7 +8181,10 @@ func Reader(p readerProps) ui.Node {
 				voice:      showVoice.Get(),
 				// The words being said, and which of them is being said now.
 				script: scriptText.Get(),
-				said:   showSaid.Get(),
+				// And whether they are still on their way, which is a different
+				// state from not having any — see slideProse.
+				scriptWait: scriptWait.Get(),
+				said:       showSaid.Get(),
 				needs:  slidePrereqsNow(),
 				hud:    showHud.Get(),
 				index:  i,
