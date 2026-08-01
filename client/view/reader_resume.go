@@ -9,6 +9,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // The functions that turn stored preferences back into a reader's last position.
@@ -90,6 +91,76 @@ func toggleUnreadResult(tr i18n.Runtime, sel scope, unreadOnly bool) (dest scope
 		return scope{Title: tr.T("stream", "all")}, false, true
 	}
 	return sel, !unreadOnly, false
+}
+
+// effectiveResumeScope is resumeScope, except a reader who has chosen a
+// fixed landing view (Settings → Reading) gets THAT instead of A30's
+// "wherever I left off" — on every boot, not just the first one after they
+// set it.
+//
+// landing.mode/kind/value/title are four flat keys shaped exactly like
+// read.kind/value/title (see rememberScope's doc comment for why four keys
+// rather than one encoded string), scoped separately so a fixed landing
+// choice and the ordinary place-you-left-off tracking never collide — the
+// reader can pick "always open My Feed" and the app still remembers that
+// they were, in fact, reading in Alpha Journal a moment ago.
+//
+// Delegated to scopeOf, the same codec resumeScope and the address bar
+// share, so a landing choice this build cannot resolve (a deleted feed, a
+// renamed build's dropped kind) falls through to the ordinary resume rather
+// than to a blank scope.
+func effectiveResumeScope(p map[string]string, tr i18n.Runtime) scope {
+	if p["landing.mode"] == landingModeFixed {
+		if sc, ok := scopeOf(p["landing.kind"], p["landing.value"], p["landing.title"], tr); ok {
+			return sc
+		}
+	}
+	return resumeScope(p, tr)
+}
+
+// effectiveResumeItem pairs with effectiveResumeScope: a fixed landing view
+// opens fresh, not on whatever article the reader happened to be on last —
+// the whole point of choosing "always open My Feed" is to land on the LIST,
+// not to be dropped back into yesterday's piece under a different banner.
+func effectiveResumeItem(p map[string]string) string {
+	if p["landing.mode"] == landingModeFixed {
+		return ""
+	}
+	return p["read.item"]
+}
+
+// landingTitleFor resolves the display name a fixed landing choice is stored
+// with, the same way pickFolder/pickTag/pickCategory resolve one at the
+// moment of a click — scopeOf itself cannot do this for feed/tag/folder
+// kinds because, unlike a stream, their name isn't fixed copy: it is
+// whatever this reader called the feed, the tag or the folder, looked up in
+// the live list the settings picker was built from.
+func landingTitleFor(kind, value string, tr i18n.Runtime, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) string {
+	switch kind {
+	case kindFeed:
+		for _, f := range feeds {
+			if f.GetSourceId() == value {
+				return f.GetTitle()
+			}
+		}
+	case kindTag:
+		for _, t := range tags {
+			if t.GetId() == value {
+				return tagDisplay(t)
+			}
+		}
+	case kindFolder:
+		for _, fo := range folders {
+			if fo.GetId() == value {
+				return fo.GetName()
+			}
+		}
+	default:
+		if sc, ok := scopeOf(kind, value, "", tr); ok {
+			return sc.Title
+		}
+	}
+	return ""
 }
 
 func prefBool(p map[string]string, key string, def bool) bool {

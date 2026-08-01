@@ -125,6 +125,18 @@ const (
 	kindSearch   = "search"
 )
 
+// landingModeFixed is the value of the `landing.mode` preference when a
+// reader has chosen a fixed landing view (Settings → Reading) rather than
+// A30's default of resuming wherever they left off. See
+// effectiveResumeScope (reader_resume.go).
+const landingModeFixed = "fixed"
+
+// landingResumeValue is the settings picker's own sentinel for "no, resume
+// as before" — never stored, and never a valid landing.kind: scopeOf has no
+// case for it, so writing it by mistake would fall through to All rather
+// than to something that looks chosen.
+const landingResumeValue = "resume"
+
 // The path segments that are not simply the kind.
 //
 // `category` rather than `folder` because that is the word on screen — the rail

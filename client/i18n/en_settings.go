@@ -29,8 +29,8 @@ func init() {
 		// the stories up" — because a button named after a brand is a button that
 		// has stopped saying what it does. A reader looking for why the slideshow
 		// will not speak still arrives here, from the slide itself.
-		"tab.podcast":  "FluxCast",
-		"tab.smart":    "Smart+",
+		"tab.podcast": "FluxCast",
+		"tab.smart":   "Smart+",
 		// Was "Classification" — D23 (plan.md §27.0a) gave the word "category" to
 		// the article axis this tab edits, once the rail's folders stopped using
 		// it (§10/§27.0a). The mechanism word loses to the noun on a strip of
@@ -52,6 +52,11 @@ func init() {
 		"tab.speed":    "Speed",
 
 		// --- reading
+		"landingGroup":     "Where you land",
+		"landingGroupHint": "What opens when you launch ArticleFlux fresh — a bookmark, a home-screen icon, a new browser profile.",
+		"landingLabel":     "Landing view",
+		"landingHint":      "Resumes where you left off by default. Pick a stream, a feed, a tag or a folder to always open there instead.",
+		"landingResume":    "Resume where I left off",
 		"listGroup":        "What the list shows",
 		"articlesLabel":    "Articles",
 		"articlesHint":     "Whether the list hides what you have already read.",
@@ -138,7 +143,7 @@ func init() {
 		"bed":              "Opening sting and music",
 		"bedHint": "Three notes when the broadcast starts — they fill the pause while the first segment is being written — and a track underneath it afterwards, " +
 			"quiet enough to sit under speech. The music is only downloaded when you first play it, and only the piece you chose. " +
-				"The opening notes are picked at random each broadcast, not from this list — a different one most evenings is expected, not a bug.",
+			"The opening notes are picked at random each broadcast, not from this list — a different one most evenings is expected, not a bug.",
 		// The value, inside a chip the row above has already named — so
 		// lowercase, and "off" rather than "no music", because it sits in a row
 		// of titles and has to read as the absence of one.

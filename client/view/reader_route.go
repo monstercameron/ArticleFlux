@@ -337,7 +337,7 @@ func (d addressBar) apply(base string, lastPath ui.Ref[string], lastRoute ui.Ref
 	case dialogShow:
 		// Started here and NOT at boot; see bootRoute.
 		if !d.showOpen.Get() {
-			a.slideStart()
+			a.slideStart(false)
 		}
 	}
 }
@@ -398,8 +398,9 @@ func bootRoute(saved map[string]string, tr i18n.Runtime) (boot route, addressed 
 	path, query := platform.Path(), platform.Query()
 
 	if len(pathSegments(base, path)) == 0 {
-		// A bare address. Resume, exactly as before this file existed.
-		return route{sel: resumeScope(saved, tr), item: saved["read.item"]}, false
+		// A bare address. Resume, exactly as before this file existed — unless
+		// the reader has since chosen a fixed landing view, which outranks it.
+		return route{sel: effectiveResumeScope(saved, tr), item: effectiveResumeItem(saved)}, false
 	}
 
 	r := parseRoute(base, path, query, tr)

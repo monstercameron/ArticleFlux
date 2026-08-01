@@ -147,6 +147,20 @@ type settingsProps struct {
 	// choice the screen has to be able to show as chosen.
 	slideDwell string
 	slideAudio bool
+	// The fixed landing view (§ landing view setting): empty landingMode
+	// means "resume where I left off" (A30, the default); landingModeFixed
+	// means land on landingKind/landingValue instead, named for display by
+	// landingTitle. landingFeeds/landingTags/landingFolders are the live
+	// lists the picker offers alongside the built-in streams — the same
+	// lists the rail already holds, threaded through rather than refetched.
+	landingMode    string
+	landingKind    string
+	landingValue   string
+	landingTitle   string
+	landingFeeds   []*pb.Feed
+	landingTags    []*pb.Tag
+	landingFolders []*pb.Folder
+	onLandingEdit  ui.Handler
 	// look is the whole visual preference — theme, accent, reading size, motion.
 	// One field rather than four, because the Appearance screen needs them
 	// together to resolve anything: which accents to offer depends on the
@@ -271,6 +285,11 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 			vibe:       p.speakVibe,
 			digest:     p.speakDigest,
 			keyUnknown: p.smart.cfg == nil,
+			// What the server last OBSERVED, beside what it can cheaply
+			// assert. The key row says a key is stored; this says whether the
+			// last call using it came back refused.
+			lastError:   p.smart.cfg.GetLastError(),
+			lastErrorAt: p.smart.cfg.GetLastErrorAt(),
 		})
 	case setSmart:
 		body = settingsSmart(tr, p.smart)
@@ -281,6 +300,24 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 		// rather than through settingsProps like every sibling tab — it is a
 		// live server-driven list with per-row async actions (accept/reject),
 		// not a form over preferences already loaded when the pane opened.
+		//
+		// Mounted only once there IS a client, which is what DiscoverProps has
+		// always claimed to carry ("the already-connected client"). A reload
+		// that restores this tab renders it while the tunnel is still coming
+		// up, and the component mounted against a nil client never got another
+		// chance to ask for its preferences — its load effect is a one-shot per
+		// client, and this pane was not re-rendered when the connection
+		// arrived. The visible result was a Discover tab that sat spinning, and
+		// a Smart+ toggle that could not be operated at all, until the reader
+		// happened to switch tabs and back. Deferring the mount by a beat costs
+		// nothing and makes the props doc true.
+		if p.client == nil {
+			body = []ui.Node{html.Div(html.Props{Class: "discover-status"},
+				html.Div(html.Props{Class: "spin-ring", Aria: map[string]string{"hidden": "true"}}),
+				html.Span(html.Props{Class: "spin-label"}, html.Text(tr.T("discover", "loading"))),
+			)}
+			break
+		}
 		body = []ui.Node{ui.CreateElement(Discover, DiscoverProps{Client: p.client})}
 	case setFeeds:
 		body = settingsFeeds(tr, p)
@@ -334,6 +371,10 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 		markLabel = tr.T("settings", "markOnOpen")
 	}
 	return []ui.Node{
+		fsGroup(glyphAll, tr.T("settings", "landingGroup"), tr.T("settings", "landingGroupHint")),
+		setRow(tr.T("settings", "landingLabel"), tr.T("settings", "landingHint"),
+			landingViewPicker(tr, p)),
+
 		fsGroup(glyphAll, tr.T("settings", "listGroup"), ""),
 		setRow(tr.T("settings", "articlesLabel"), tr.T("settings", "articlesHint"),
 			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly)),
@@ -455,6 +496,99 @@ func slideDwellPicker(tr i18n.Runtime, current string) ui.Node {
 	}
 	return html.Span(html.Props{Class: "set-picks", Role: "group",
 		Aria: map[string]string{"label": tr.T("settings", "slidesPace")}}, chips...)
+}
+
+// landingViewChoices are the built-in streams a fixed landing view can name,
+// in the order the rail offers them. Liked/disliked and search are left out
+// on purpose: a landing view is a PLACE to always open, and "always open
+// what I liked" or "always open last week's search" are not places, they are
+// answers that go stale the moment the underlying data changes shape.
+var landingViewChoices = []struct{ kind, label string }{
+	{kindAll, "all"}, {kindUnread, "unread"}, {kindMyFeed, "myFeed"},
+	{kindLater, "later"}, {kindNotes, "notes"},
+}
+
+// landingViewPicker is a native <select> rather than a row of chips, unlike
+// every other picker on this tab: the option set here is not a fixed handful
+// of words, it is every feed, tag and folder this reader has — which for a
+// reader with forty feeds is forty chips wrapping across the settings panel.
+// A <select> is the one control on the page that already knows how to be
+// long (see smartsettings.go's model picker for the same trade).
+//
+// Committed on change (onLandingEdit), not staged behind a Save button: the
+// picker already asks "which one" in a single, reversible gesture, and a
+// second step here would only be a place to lose the choice on the way to
+// confirming it.
+func landingViewPicker(tr i18n.Runtime, p settingsProps) ui.Node {
+	current := landingResumeValue
+	if p.landingMode == landingModeFixed {
+		current = p.landingKind
+		if p.landingValue != "" {
+			current += ":" + p.landingValue
+		}
+	}
+	opt := func(value, label string, selected bool) ui.Node {
+		return html.Option(html.Props{Value: value, Selected: selected}, html.Text(label))
+	}
+	// optgroup has no dedicated constructor in html — Tag is the same escape
+	// hatch smartsettings.go's own <select> would reach for if it grouped.
+	group := func(label string, kids []ui.Node) ui.Node {
+		return html.Tag("optgroup", html.Props{Raw: map[string]any{"label": label}}, kids...)
+	}
+
+	options := []ui.Node{opt(landingResumeValue, tr.T("settings", "landingResume"), current == landingResumeValue)}
+	known := current == landingResumeValue
+
+	for _, c := range landingViewChoices {
+		options = append(options, opt(c.kind, tr.T("stream", c.label), current == c.kind))
+		known = known || current == c.kind
+	}
+	if len(p.landingFeeds) > 0 {
+		kids := make([]ui.Node, 0, len(p.landingFeeds))
+		for _, f := range p.landingFeeds {
+			v := kindFeed + ":" + f.GetSourceId()
+			kids = append(kids, opt(v, f.GetTitle(), v == current))
+			known = known || v == current
+		}
+		options = append(options, group(tr.T("rail", "bandFeeds"), kids))
+	}
+	if len(p.landingTags) > 0 {
+		kids := make([]ui.Node, 0, len(p.landingTags))
+		for _, t := range p.landingTags {
+			v := kindTag + ":" + t.GetId()
+			kids = append(kids, opt(v, tagDisplay(t), v == current))
+			known = known || v == current
+		}
+		options = append(options, group(tr.T("rail", "bandTags"), kids))
+	}
+	if len(p.landingFolders) > 0 {
+		kids := make([]ui.Node, 0, len(p.landingFolders))
+		for _, fo := range p.landingFolders {
+			v := kindFolder + ":" + fo.GetId()
+			kids = append(kids, opt(v, fo.GetName(), v == current))
+			known = known || v == current
+		}
+		options = append(options, group(tr.T("rail", "bandCategories"), kids))
+	}
+	// The current choice may name a feed, tag or folder this build's lists no
+	// longer contain — deleted since, or not yet loaded on this render. An
+	// option for it is added anyway, exactly as the Smart+ model picker adds
+	// one for a model its live list did not include: the alternative is the
+	// select silently falling back to its first option, which would rewrite
+	// the reader's choice to "All" the next time they so much as opened this
+	// select, without their ever having chosen that.
+	if !known {
+		label := p.landingTitle
+		if label == "" {
+			label = current
+		}
+		options = append(options, opt(current, label, true))
+	}
+
+	return html.Select(html.Props{
+		Class: "field", OnChange: p.onLandingEdit,
+		Aria: map[string]string{"label": tr.T("settings", "landingLabel")},
+	}, options...)
 }
 
 // --- listening -----------------------------------------------------------------
