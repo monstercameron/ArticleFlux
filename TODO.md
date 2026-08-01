@@ -7827,3 +7827,41 @@ build ./...` and `GOOS=js GOARCH=wasm go build ./client/...` both clean at the t
 and the packages touched by the two reopened findings above were re-run (`go test
 ./internal/discover/... ./internal/recommend/... ./internal/recommendjob/... ./internal/smart/...
 ./internal/store/...`) rather than trusted from a prior session's word.
+
+## A theme change after a navigation leaves the ground behind (2026-08-01)
+
+*Found while regenerating the homepage screenshots, not by a test. The shot script was taught to
+rotate the theme between captures — every picture in a different palette — and two full runs came
+out with settings rows whose titles were missing. It looked like a capture-timing problem and was
+treated as one twice (longer settles, then longer settles again) before being measured.*
+
+- [ ] **A theme switched AFTER a client-side navigation updates `:root` but not `<body>`.** The
+      custom properties on the root element take the new theme's values; the body keeps the previous
+      theme's background. Switch to **Contrast** having navigated while in **Daylight** and you get
+      Contrast's white type drawn on Daylight's paper ground: every secondary label — rail entries,
+      settings row titles, inactive tab names — goes invisible, while the descriptions underneath
+      them (a different token) stay readable. A reader who changes theme from anywhere except a
+      freshly loaded page can land on an unreadable screen, and the way out is a reload they have no
+      reason to think of.
+
+      **Repro** (Playwright against `:9000`, measured off the DOM rather than eyeballed):
+
+      | step | `body` background | type token |
+      |---|---|---|
+      | fresh load, Contrast | `rgb(0,0,0)` | `#FFFFFF` |
+      | switch to Daylight | `rgb(247,242,233)` | `#241C30` |
+      | navigate to `/myfeed` | `rgb(247,242,233)` | `#241C30` |
+      | **switch to Contrast** | **`rgb(247,242,233)`** ← stale | `#FFFFFF` |
+      | reload | `rgb(0,0,0)` | `#FFFFFF` |
+
+      Switching twice *within one uninterrupted settings session* does NOT reproduce it — the
+      navigation between the two switches is the trigger, which is why nothing caught it: the
+      appearance e2e specs set a theme and assert on the same page they set it from.
+
+      *Done when: a theme change repaints the body ground with no reload, from any route and after
+      any number of navigations; and an e2e spec navigates between two switches and asserts the
+      computed `body` background matches the theme it just chose — the assertion the existing specs
+      cannot make.*
+
+      Worked around in `e2e/home-shots.mjs`, which reloads after every theme change and says why.
+      The workaround is not the fix and the comment there says so.
