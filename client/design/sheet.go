@@ -1259,18 +1259,45 @@ func verdicts(r func(string, string) css.Rule) {
 
 	// The clamp on a long article. A fixed max-height plus a fade, so the cut is
 	// obviously a cut rather than an article that happens to end mid-sentence.
-	css.Global(".article-clamp",
-		r("position", "relative"), r("max-height", "34em"),
-		r("overflow", "hidden"), r("padding-bottom", "56px"),
+	//
+	// # The fade is a MASK, and the three bugs that says
+	//
+	// It was an absolutely-positioned overlay painting
+	// `linear-gradient(transparent, var(--bg))` at `bottom: 44px`, with the chip
+	// pinned at `bottom: 0` over `padding-bottom: 56px`. Every part of that
+	// arrangement was wrong in a way the screenshot showed at once:
+	//
+	//  1. The overlay stopped 44px short of the cut, so the last two lines under
+	//     it rendered at FULL opacity below a fade that had already finished —
+	//     the article looked like it had been cut with scissors after being
+	//     faded, which is the opposite of the effect.
+	//  2. `padding-bottom` reserved nothing. `overflow: hidden` clips at the
+	//     PADDING box, not the content box, so the body painted straight through
+	//     the 56px meant for the chip, and the chip sat on top of a live
+	//     sentence.
+	//  3. The gradient ended at `var(--bg)`, and this pane's ground is not
+	//     `var(--bg)` — `.article::after` washes it in the source hue. So the
+	//     overlay drew a flat, differently-tinted rectangle over the wash, which
+	//     is visible as a panel with edges.
+	//
+	// A mask fixes all three by construction: the CONTENT fades to nothing
+	// rather than something opaque being drawn on top of it, so there is nothing
+	// to mis-position, nothing to paint over the wash, and no colour to keep in
+	// step with a background it cannot see. The chip goes back into flow under
+	// the cut, where it cannot overlap anything.
+	css.Global(".article-clamp", r("position", "relative"))
+	//
+	// `currentColor` rather than the usual `#000`, and it is not a colour here:
+	// a mask reads ALPHA and ignores everything else, so the opaque end only has
+	// to be opaque. Writing black would put a literal in the sheet that no theme
+	// can reach — which is a rule worth keeping even where the value is not
+	// really a colour, because the next hex somebody adds will be.
+	css.Global(".article-clamp-cut",
+		r("max-height", "34em"), r("overflow", "hidden"),
+		r("-webkit-mask-image", "linear-gradient(to bottom, currentColor calc(100% - 9em), transparent)"),
+		r("mask-image", "linear-gradient(to bottom, currentColor calc(100% - 9em), transparent)"),
 	)
-	css.Global(".clamp-fade",
-		r("position", "absolute"), r("left", "0"), r("right", "0"),
-		r("bottom", "44px"), r("height", "9em"), r("pointer-events", "none"),
-		r("background", "linear-gradient(to bottom, transparent, var(--bg))"),
-	)
-	css.Global(".article-clamp .chip",
-		r("position", "absolute"), r("bottom", "0"), r("left", "0"), r("z-index", "1"),
-	)
+	css.Global(".article-clamp .chip", r("margin-top", "10px"))
 
 	// The proxied page (§10.1b). It breaks the reading measure deliberately:
 	// the article column is set to a comfortable line length for prose, and a

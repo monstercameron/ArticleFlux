@@ -2993,9 +2993,18 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 			}
 			// The clamp is a wrapper, not a class on the body, so the reading
 			// column's own type and measure are untouched by it.
+			//
+			// Two elements rather than one: the cut carries the height and the
+			// mask that fades the text out, and the chip is its SIBLING in
+			// ordinary flow. It used to be absolutely positioned inside the cut
+			// over a reserved strip of padding — which reserved nothing, because
+			// overflow clips at the padding box, so the chip sat on top of a
+			// live sentence. A control in flow cannot overlap the thing above
+			// it, and the fade cannot swallow the control that escapes it.
 			return html.Div(html.Props{Class: "article-clamp"},
-				articleBody(tr, it.GetId(), body),
-				html.Div(html.Props{Class: "clamp-fade"}),
+				html.Div(html.Props{Class: "article-clamp-cut"},
+					articleBody(tr, it.GetId(), body),
+				),
 				itemChip("expand", tr.T("article", "readTheRest", i18n.Args{"time": readingTime(tr, full.GetWordCount())}), false, it.GetId()),
 			)
 		}),

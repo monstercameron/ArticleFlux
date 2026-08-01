@@ -533,9 +533,19 @@ func motionWarm(r func(string, string) css.Rule) {
 	// the element and its background together. Two placeholders for one wait is
 	// one too many.
 
-	// The clamp on a long article: the fade at the cut and the chip under it.
-	css.Global(".article-clamp", r("transition", "max-height "+slow))
-	css.Global(".clamp-fade", r("transition", "opacity "+slow))
+	// The clamp on a long article. The height lives on the cut now, so the
+	// transition follows it there — and `.clamp-fade` is gone, because the fade
+	// is a mask on the content rather than an element drawn over it (see
+	// sheet.go for the three bugs that overlay had).
+	//
+	// Worth stating rather than leaving as a mystery for whoever reads this
+	// next: neither of these has ever been visible. Expanding does not raise the
+	// max-height, it renders a different tree with no clamp in it at all, so
+	// there is no interpolation for the transition to run on. It stays because
+	// the day the clamp animates open properly is the day it should already be
+	// declared here, and a rule that costs nothing is a poor thing to delete on
+	// a release branch.
+	css.Global(".article-clamp-cut", r("transition", "max-height "+slow))
 }
 
 // --- mark: the thing that says "you are here" --------------------------------
