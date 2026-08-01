@@ -77,3 +77,43 @@ func TestWarmDepthIsAtLeastOneAndBounded(t *testing.T) {
 		t.Errorf("warmDepth = %d — a reader who leaves early pays for all of it", warmDepth)
 	}
 }
+
+// A listen outside the show is a listen, not a programme.
+//
+// Both halves have to be true, and the half that was missing is the occasion:
+// the preference alone made pressing play on a single article in the feed
+// produce a greeting, the date and a run-through of stories nobody had asked to
+// hear, in place of the article.
+func TestOnlyTheShowProducesABroadcast(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		pref, inShow bool
+		want         bool
+	}{
+		{"the show, with the preference on", true, true, true},
+		{"the show, with it off — a narrated slideshow, not a programme", false, true, false},
+		{"the feed, with the preference on", true, false, false},
+		{"the feed, with it off", false, false, false},
+	} {
+		if got := castMode(c.pref, c.inShow); got != c.want {
+			t.Errorf("%s: castMode = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The consequence, at the URL that is actually sent: a plain listen carries
+// none of the broadcast's parameters, so the server reads the article (or its
+// summary) and the browser plays the same recording it would have cached.
+func TestAPlainListenAsksForTheArticle(t *testing.T) {
+	const ticket = "/speech?t=SEALED"
+	got := speechFrom(ticket, speechAsk{
+		podcast: castMode(true, false),
+		now:     "2026-08-01T10:00:00-04:00",
+		stories: 11,
+		lineup:  []string{"a", "b", "c"},
+		intro:   askIntroWith,
+	})
+	if got != ticket {
+		t.Errorf("a listen outside the show asked for a broadcast: %q", got)
+	}
+}

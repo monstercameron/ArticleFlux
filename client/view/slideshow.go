@@ -468,6 +468,30 @@ func clamp01(v float64) float64 {
 	}
 }
 
+// castMode says whether a listen is a BROADCAST, and it takes two answers
+// because the question has two halves.
+//
+// `pref` is `tts.podcast`: the reader has asked that stories be joined up. That
+// is a standing preference about how a programme should sound, and it used to be
+// the whole test — which made every listen a programme. Press play on one
+// article in the feed and the segment opened with a greeting, the date and a
+// run-through of stories nobody had asked to hear, then retold the article
+// instead of reading it. The reader had asked for a broadcast in the show; they
+// had not asked for one here.
+//
+// `inShow` is the occasion: this narration belongs to the slideshow, which is the
+// only place a programme is produced. Outside it a listen is a listen — the
+// article, or its summary when the digest is on — which is what the free and
+// Smart+ paths have always done and what the server still does for a request
+// carrying none of the broadcast's parameters.
+//
+// A function rather than an `&&` at the call site because four things build
+// requests from it — the segment, the warm ahead of it, the captions under it
+// and the sign-off after it — and two of those must produce URLs that match
+// exactly. A warm URL that disagrees with the one played is a segment paid for
+// twice and a seam that stalls anyway.
+func castMode(pref, inShow bool) bool { return pref && inShow }
+
 // speechFrom names the story a broadcast segment hands over from.
 //
 // The listening ticket is minted by GetItem, long before anyone knows what the

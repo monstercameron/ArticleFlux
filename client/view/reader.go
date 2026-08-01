@@ -285,6 +285,23 @@ func Reader(p readerProps) ui.Node {
 	// handing over from the one played before it (§19). Server-side like the
 	// digest — /speech reads it — and default off like every other paid switch.
 	speakPodcast := ui.UseState(prefBool(saved, "tts.podcast", false))
+	// castRun says the narration now running belongs to the SHOW, which is the
+	// only place a broadcast is produced.
+	//
+	// The preference above answers "does this reader want a programme". It does
+	// not answer "is this playback one", and read alone it made every listen a
+	// broadcast: pressing play on a single article in the feed opened with a
+	// greeting, the date and a run-through of stories nobody had asked to hear,
+	// and then retold the article instead of reading it. So the preference gates
+	// the SOUND and this gates the OCCASION, and both have to be true — see
+	// castOn, which is the only place the two are combined.
+	//
+	// A Ref rather than state, and that is load-bearing rather than an economy:
+	// it is set inside the click that opens the show and read further down the
+	// same synchronous call, where a scheduled state write may not have landed
+	// yet. A first story that read this one commit late would lose exactly the
+	// opening the mode exists for.
+	castRun := ui.UseRef(false)
 	// outroDone says the sign-off for THIS run of the queue has been played, so
 	// a programme cannot say goodbye twice.
 	//
@@ -3723,6 +3740,17 @@ func Reader(p readerProps) ui.Node {
 	// starts has to know what to do when it ends.
 	var startPlayback func(it *pb.Item)
 
+	// castOn is the ONE answer to "is this playback a broadcast".
+	//
+	// Both halves of it: the reader asked for a programme (`tts.podcast`) and
+	// this narration IS one (castRun). Everything that would otherwise be shaped
+	// like a broadcast asks HERE rather than reading the preference for itself —
+	// the segment, the warm ahead of it, the captions under it and the sign-off
+	// after it — because two of those build URLs that have to match exactly. A
+	// warm URL that disagrees with the one played is a segment paid for twice
+	// and a seam that stalls anyway.
+	castOn := func() bool { return castMode(speakPodcast.Get(), castRun.Get()) }
+
 	// introAskFor says which half of a split opening this request is, if either.
 	//
 	// Three answers and all three are load-bearing: the greeting on its own, the
@@ -3801,7 +3829,12 @@ func Reader(p readerProps) ui.Node {
 				outroDone.Set(false)
 				notice.Set(tr.T("reader", "queueFinished"))
 			}
-			if speakPodcast.Get() && !outroDone.Get() && done != "" {
+			// castOn rather than the preference: a sign-off ends a PROGRAMME. A
+			// plain chain that has been reading articles one after another has
+			// no show to close, and "that's the eleven" after it would be a
+			// broadcast arriving in the last forty words of something that was
+			// never one.
+			if castOn() && !outroDone.Get() && done != "" {
 				if b := bodies.Get()[done]; b != nil && b.GetSpeechUrl() != "" {
 					outroDone.Set(true)
 					speakState.Set("loading")
@@ -3962,7 +3995,19 @@ func Reader(p readerProps) ui.Node {
 	// advances across the gap, since a segment is written per ordered PAIR and
 	// one written after the wrong story is a different recording. See warmURLs.
 	warmAhead := func() {
-		if !speakAuto.Get() || !speakPodcast.Get() {
+		// NOT gated on broadcast mode, which is what it used to be. A plain
+		// Smart+ chain pays synthesis at exactly the same seam — a whole
+		// article's worth of it, which is the longest wait of the three — and
+		// warming it costs nothing extra: with no broadcast to shape it the URL
+		// is the listening ticket unchanged, so the prefetch and the play are
+		// the same request and the second one is a cache hit.
+		//
+		// Smart+ IS required, and not as an optimisation. The browser's own
+		// synthesiser has nothing to fetch, and a ticket is minted whenever the
+		// SERVER has a key rather than when this reader opted in (see
+		// mintSpeech) — so warming without this would send articles to a voice
+		// the reader had deliberately left off.
+		if !speakAuto.Get() || !speakSmart.Get() {
 			return
 		}
 		q := showQ()
@@ -3975,7 +4020,19 @@ func Reader(p readerProps) ui.Node {
 		if i < 0 {
 			return
 		}
-		for _, u := range warmURLs(q, i, warmDepth, func(id, prev string) string {
+		// One ahead outside the show, two inside it, and the difference is what
+		// a warmed unit COSTS. A broadcast beat is a couple of hundred words
+		// fitted to a budget, so warming two of them buys a seam's cover for
+		// very little; a plain listen is the whole article, which is the most
+		// expensive thing this voice ever says. One is the minimum that covers
+		// the seam at all, and everything past it is paid for by a reader who
+		// stops early. See warmDepth for the same trade stated from the other
+		// end.
+		depth := 1
+		if castOn() {
+			depth = warmDepth
+		}
+		for _, u := range warmURLs(q, i, depth, func(id, prev string) string {
 			// showItem kicks a body fetch for anything it does not hold, which
 			// is the other half of the pipeline: no body, no ticket, no URL.
 			if showItem(id) == nil {
@@ -3986,8 +4043,13 @@ func Reader(p readerProps) ui.Node {
 				return ""
 			}
 			return speechFrom(b.GetSpeechUrl(), speechAsk{
-				prevID:  prev,
-				podcast: true,
+				prevID: prev,
+				// The same answer startPlayback will give, from the same
+				// function, for the reason the next comment gives. Outside the
+				// show this is false and speechFrom hands the ticket back
+				// untouched — which is the whole plain path: warm the article,
+				// play the article, one recording.
+				podcast: castOn(),
 				// The same value the real request will carry. A warm URL that
 				// differs from the one that gets played is a segment paid for
 				// twice and a seam that stalls anyway.
@@ -4000,7 +4062,12 @@ func Reader(p readerProps) ui.Node {
 			warmed.Get()[u] = true
 			warm := u
 			platform.PrefetchURL(warm, func(ok bool) {
-				if !ok {
+				// castOn as well as the fetch having worked: captions are the
+				// words of a WRITTEN beat, and a plain article has none to
+				// fetch — the words are the article, already on screen. Asking
+				// anyway would be a request per track whose only possible
+				// answer is 204.
+				if !ok || !castOn() {
 					return
 				}
 				// The audio landed, so the script that produced it is on disk —
@@ -4059,7 +4126,7 @@ func Reader(p readerProps) ui.Node {
 					// before the first word instead of after it — and on the
 					// ordinary path warmAhead has already put it in the cache,
 					// so this costs a map lookup. See fetchScript.
-					if speakPodcast.Get() {
+					if castOn() {
 						fetchScript(speakURL.Get())
 					}
 					// THE HANDOVER, and it happens BEFORE a word is spoken.
@@ -4111,7 +4178,7 @@ func Reader(p readerProps) ui.Node {
 					// emitted one — a cached response can go straight to
 					// playing on some browsers. fetchScript is idempotent, so
 					// the ordinary path costs nothing here.
-					if speakPodcast.Get() {
+					if castOn() {
 						fetchScript(speakURL.Get())
 					}
 					if introFor.Get() != "" {
@@ -4197,8 +4264,13 @@ func Reader(p readerProps) ui.Node {
 				// the request and hoping the two agree. A caption from a
 				// different beat is worse than no caption at all.
 				spoken := speechFrom(src, speechAsk{
-					prevID:  prev,
-					podcast: speakPodcast.Get(),
+					prevID: prev,
+					// The occasion, not just the preference. Outside the show
+					// this is false and speechFrom returns the ticket
+					// untouched: no handover, no clock, no lineup, no
+					// greeting — the server reads the article, or its summary
+					// when the digest is on. See castOn.
+					podcast: castOn(),
 					// Read here rather than once at mount: a broadcast started
 					// this evening and resumed tomorrow morning should be greeted
 					// for the morning, and a value captured at boot would greet it
@@ -4678,6 +4750,18 @@ func Reader(p readerProps) ui.Node {
 		if it == nil {
 			return
 		}
+		// This narration is the show's, which is what makes it a broadcast when
+		// the preference asks for one (castOn). Set HERE rather than from
+		// showOpen, because this is the one function every narrated story in the
+		// mode goes through — the first one, and every advance after it — and it
+		// runs inside the click that started the show, where a state write may
+		// not be visible to the same call stack yet.
+		//
+		// Nothing clears it on the way past: a reader who pauses and presses
+		// play again is resuming the same programme, and listen() is the same
+		// entry point the feed uses. slideStop is what ends the session, and it
+		// is what puts this back.
+		castRun.Set(true)
 		// A reader who skips during the interlude has chosen a different story,
 		// and the timer waiting to start the old one has to go with the choice.
 		// Without this, the news starts twice: once where they went, and once
@@ -5163,6 +5247,12 @@ func Reader(p readerProps) ui.Node {
 		// leaving it running would start a narrator half a minute after the
 		// reader shut the show.
 		introCancel()
+		// The programme is over, so the next thing anybody presses play on is a
+		// listen and not a segment of it. Put back here rather than anywhere
+		// else because this function is idempotent and is reached by every way
+		// out of the mode, including the one the browser performs itself when
+		// fullscreen is left.
+		castRun.Set(false)
 		introFor.Set("")
 		introOwed.Set("")
 		introSplit.Set(false)
@@ -8185,11 +8275,11 @@ func Reader(p readerProps) ui.Node {
 				// state from not having any — see slideProse.
 				scriptWait: scriptWait.Get(),
 				said:       showSaid.Get(),
-				needs:  slidePrereqsNow(),
-				hud:    showHud.Get(),
-				index:  i,
-				total:  len(q),
-				hosts:  hosts,
+				needs:      slidePrereqsNow(),
+				hud:        showHud.Get(),
+				index:      i,
+				total:      len(q),
+				hosts:      hosts,
 			})
 		}(),
 		palette(tr, paletteProps{
