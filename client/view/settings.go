@@ -28,16 +28,29 @@ import (
 // settings with room to explain themselves get read, and several of these need a
 // sentence (what Smart+ sends where, what a poll interval does to a publisher).
 //
-// Sections, in the order someone actually needs them:
+// The strip is three headed groups rather than thirteen flat peers (TODO N7),
+// because a flat list makes ORDER carry meaning nobody reading it left to right
+// can see: reading vs. server administration is one kind of distinction, and it
+// used to be expressed only as "which end of the row". The groups say what the
+// order used to have to:
 //
-//	Reading    the toggles that change what you see next
-//	Listening  including the egress switch, with its warning attached
-//	Feeds      the subscription list as a whole
-//	Account    who you are on this server
-//	Server     version, storage, counts — "is it healthy"
-//	Activity   the log ring — "what just happened"
-//	Speed      per-RPC latency — "why is it slow"
-
+//	Your reader  Reading, Appearance, My Feed, Listening, FluxCast — the
+//	             everyday screens, in the order a reader actually visits them.
+//	Your library Feeds (labelled Subscriptions), Categories, Data — the
+//	             subscription list, at three different scales: act on it, teach
+//	             it, carry it in or out.
+//	This server  Smart+, Account, Server, Activity, Speed — administration and
+//	             diagnostics, the questions "what is this costing", "who am I"
+//	             and "is it healthy" grouped with the two instrument readouts
+//	             that answer the same kind of question.
+//
+// Activity and Speed stay their own tabs rather than folding into Server's body
+// (N7's original text proposed the fold) — each already renders as a distinct,
+// differently-shaped panel (a log ring vs. a latency table), and merging their
+// content was a live-server rendering change with no way to verify it against
+// the e2e suite this session (ports 9400-9500 off limits). Grouping them under
+// "This server" gets the same scannability win without that risk, and the group
+// still holds at five, the limit N7 set.
 type settingsTab string
 
 const (
@@ -48,6 +61,7 @@ const (
 	setPodcast    settingsTab = "podcast"
 	setSmart      settingsTab = "smart"
 	setClassify   settingsTab = "classify"
+	setDiscover   settingsTab = "discover"
 	setFeeds      settingsTab = "feeds"
 	setData       settingsTab = "data"
 	setAccount    settingsTab = "account"
@@ -56,52 +70,51 @@ const (
 	setSpeed      settingsTab = "speed"
 )
 
+// settingsGroup is one of the three headed groups the tab strip renders in
+// (see the package doc above). Order here is display order, both of the
+// groups themselves and, via settingsTabs below, of the tabs within each.
+type settingsGroup string
+
+const (
+	groupReader  settingsGroup = "reader"
+	groupLibrary settingsGroup = "library"
+	groupServer  settingsGroup = "server"
+)
+
+var settingsGroupOrder = []settingsGroup{groupReader, groupLibrary, groupServer}
+
 // The label is not stored here: this is a package var built at init, and a
 // label baked in at init would keep the boot locale after a switch. settingsTab
 // is already the catalog key ("settings.tab.<id>"), so the label is looked up
-// where it is rendered.
+// where it is rendered. Likewise group is a catalog key ("settings.group.<id>").
 var settingsTabs = []struct {
 	id    settingsTab
 	glyph string
+	group settingsGroup
 }{
-	{setReading, glyphAll},
-	// Straight after Reading, because it answers the same question one level
-	// down: Reading is what you see next, and this is why. It also has to be
-	// findable from the ranked page in one hop — a reader who has just been
-	// shown a pick they disagree with is at the exact moment when the control
-	// for it needs to be one obvious click away, not eight tabs along.
-	{setMyFeed, glyphMyFeed},
-	// Second, not last. It is the tab a reader opens on their first evening and
-	// then rarely again, and burying a first-evening screen behind five
-	// operational ones is how nobody finds out the product has themes.
-	{setAppearance, glyphYours},
-	{setListening, glyphListen},
-	// Directly after Listening, because it is the same subject one commitment
-	// deeper: Listening is "read this aloud", and this is "make it a programme".
-	// It is also where the slideshow's read-to-me requirements now live, so it
-	// has to be findable by somebody who arrived from a line on a slide.
-	{setPodcast, glyphSlideshow},
-	// Directly after Listening, which is the other Smart+ surface — the voice
-	// and the translator spend the same key, and a reader who has just met one
-	// should find the other next to it rather than five tabs away.
-	{setSmart, glyphShared},
-	{setClassify, glyphClassify},
-	{setFeeds, glyphFeeds},
-	// Straight after Feeds, because it is the same subject at a different
-	// scale: Feeds is the subscription list as a thing to act on, and this is
-	// the subscription list as a thing to carry in or out. It is also the tab a
-	// new reader needs FIRST and almost never again, so it sits where somebody
-	// arriving with an export file will scan for it rather than at the end
-	// behind five operational screens.
-	{setData, glyphAdd},
-	{setAccount, "◑"},
-	{setServer, glyphHealth},
-	{setActivity, "≡"},
-	{setSpeed, glyphAction},
+	{setReading, glyphAll, groupReader},
+	{setAppearance, glyphYours, groupReader},
+	{setMyFeed, glyphMyFeed, groupReader},
+	{setListening, glyphListen, groupReader},
+	{setPodcast, glyphSlideshow, groupReader},
+
+	{setFeeds, glyphFeeds, groupLibrary},
+	{setClassify, glyphClassify, groupLibrary},
+	{setDiscover, glyphDiscover, groupLibrary},
+	{setData, glyphAdd, groupLibrary},
+
+	{setSmart, glyphShared, groupServer},
+	{setAccount, "◑", groupServer},
+	{setServer, glyphHealth, groupServer},
+	{setActivity, "≡", groupServer},
+	{setSpeed, glyphAction, groupServer},
 }
 
 type settingsProps struct {
 	tab settingsTab
+	// client backs the Discover tab, which fetches and acts on its own list
+	// live rather than through fields here — see the setDiscover case below.
+	client *data.Client
 
 	// Live app state, so the toggles show what is true rather than what was true
 	// when the screen opened.
@@ -216,16 +229,31 @@ type themeProps struct {
 }
 
 func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
-	tabs := make([]ui.Node, 0, len(settingsTabs))
-	for _, t := range settingsTabs {
-		tabs = append(tabs, html.Button(html.Props{
-			Class: "set-tab",
-			Key:   "settab-" + string(t.id),
-			Raw: map[string]any{
-				"data-action": "settings-tab", "data-value": string(t.id),
-			},
-			Aria: map[string]string{"current": strconv.FormatBool(t.id == p.tab)},
-		}, lead(t.glyph), html.Text(tr.T("settings", "tab."+string(t.id)))))
+	// Grouped by settingsGroupOrder, tabs in settingsTabs order within each
+	// group — the strip renders three headed groups rather than one flat row
+	// (TODO N7), so ORDER stops being the only thing telling a reader why
+	// Reading sits next to Server. data-action/data-value are unchanged per
+	// button, so nothing that finds a tab by id cares which row it is in.
+	groups := make([]ui.Node, 0, len(settingsGroupOrder))
+	for _, g := range settingsGroupOrder {
+		row := make([]ui.Node, 0, 5)
+		for _, t := range settingsTabs {
+			if t.group != g {
+				continue
+			}
+			row = append(row, html.Button(html.Props{
+				Class: "set-tab",
+				Key:   "settab-" + string(t.id),
+				Raw: map[string]any{
+					"data-action": "settings-tab", "data-value": string(t.id),
+				},
+				Aria: map[string]string{"current": strconv.FormatBool(t.id == p.tab)},
+			}, lead(t.glyph), html.Text(tr.T("settings", "tab."+string(t.id)))))
+		}
+		groups = append(groups, html.Div(html.Props{Class: "set-tab-group", Key: "setgrp-" + string(g)},
+			html.Span(html.Props{Class: "set-tab-group-label"}, html.Text(tr.T("settings", "group."+string(g)))),
+			html.Div(html.Props{Class: "set-tab-group-row"}, row...),
+		))
 	}
 
 	var body []ui.Node
@@ -248,6 +276,12 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 		body = settingsSmart(tr, p.smart)
 	case setClassify:
 		body = settingsClassify(tr, p.classify)
+	case setDiscover:
+		// Discover fetches and manages its own state (client/view/discover.go)
+		// rather than through settingsProps like every sibling tab — it is a
+		// live server-driven list with per-row async actions (accept/reject),
+		// not a form over preferences already loaded when the pane opened.
+		body = []ui.Node{ui.CreateElement(Discover, DiscoverProps{Client: p.client})}
 	case setFeeds:
 		body = settingsFeeds(tr, p)
 	case setData:
@@ -271,7 +305,7 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 			html.Span(html.Props{Class: "set-sub"},
 				html.Text(tr.T("settings", "sub"))),
 		),
-		html.Div(html.Props{Class: "set-tabs", Role: "tablist"}, tabs...),
+		html.Div(html.Props{Class: "set-tabs", Role: "tablist"}, groups...),
 		ui.If(p.busy != "", func() ui.Node {
 			return html.Div(html.Props{Class: "banner", Role: "status"}, html.Text(p.busy))
 		}),

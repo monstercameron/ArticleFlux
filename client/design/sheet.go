@@ -512,21 +512,47 @@ func list(r func(string, string) css.Rule) {
 
 	// The mockup's `.hello`: the list pane names what you are looking at in the
 	// display face. This is what the design has instead of a top bar.
-	css.Global(".list-head", r("padding", "30px 24px 20px"), r("flex", "0 0 auto"))
+	//
+	// Relative, so .list-corner (below) can plant itself in the space beside
+	// the title without pulling the title itself out of flow.
+	css.Global(".list-head", r("padding", "30px 24px 20px"), r("flex", "0 0 auto"),
+		r("position", "relative"))
 	css.Global(".list-title",
 		r("margin", "0"), r("font-family", "var(--dsp)"),
 		r("font-variation-settings", `"SOFT" 50, "WONK" 1, "opsz" 48`),
 		r("font-size", "26px"), r("font-weight", "500"),
 		r("letter-spacing", "-.02em"), r("line-height", "1.2"),
+		// The corner buttons sit over this space; keep the title's own text
+		// out from under them rather than trusting every stream's name to stay
+		// short.
+		r("padding-right", "72px"),
 	)
 	css.Global(".list-sub",
 		r("margin", "7px 0 0"), r("font-size", "13.5px"), r("color", "var(--mute)"),
 	)
+	// The app-level pair (settings, shortcuts) act on the whole app, not on
+	// this feed or this list, so they live in the corner beside the title
+	// instead of the tools row — genuinely free space next to a short title,
+	// not room borrowed from the row that carries the search field.
+	css.Global(".list-corner",
+		r("position", "absolute"), r("top", "30px"), r("right", "24px"),
+		r("display", "flex"), r("gap", "7px"),
+	)
+	// The search row: the connection dot rides inside the field as a leading
+	// mark rather than beside it in its own slot, so the field itself can span
+	// edge to edge.
+	css.Global(".list-search",
+		r("position", "relative"), r("margin-top", "16px"),
+	)
+	css.Global(".list-search .field", r("width", "100%"), r("padding-left", "30px"))
+	css.Global(".list-search .conn",
+		r("position", "absolute"), r("left", "12px"), r("top", "50%"),
+		r("transform", "translateY(-50%)"), r("pointer-events", "none"),
+	)
 	css.Global(".list-tools",
-		r("display", "flex"), r("gap", "7px"), r("margin-top", "16px"),
+		r("display", "flex"), r("gap", "7px"), r("margin-top", "10px"),
 		r("flex-wrap", "wrap"), r("align-items", "center"),
 	)
-	css.Global(".list-tools .field", r("flex", "1 1 6rem"), r("min-width", "0"))
 
 	css.Global(".chip",
 		r("font-size", "12.5px"), r("padding", "5px 13px"),
@@ -1943,6 +1969,20 @@ func glyphs(r func(string, string) css.Rule) {
 		r("display", "flex"), r("gap", "6px"), r("align-items", "center"),
 		r("justify-content", "flex-end"), r("flex-wrap", "wrap"),
 	)
+
+	// The switch between the model picker's two controls (smartsettings.go).
+	// A quiet text button rather than a chip: it is not the action on this
+	// row — saving is — it is a way to change which INPUT is offered, and
+	// giving it the same weight as "Save model" would make two things look
+	// equally important when only one of them is.
+	css.Global(".fs-model-toggle", r("margin-top", "8px"), r("text-align", "right"))
+	css.Global(".fs-link",
+		r("background", "none"), r("border", "none"), r("padding", "0"),
+		r("font-family", "var(--rd)"), r("font-size", "13px"),
+		r("color", "var(--mute)"), r("cursor", "pointer"),
+		r("text-decoration", "underline"), r("text-underline-offset", "2px"),
+	)
+	css.Global(".fs-link:hover", r("color", "var(--soft)"))
 }
 
 // skeletons are the loading placeholders.
@@ -2065,12 +2105,20 @@ func mobile(r func(string, string) css.Rule) {
 	// The tabs are a row of pills, not a sidebar inside a sidebar. This pane is
 	// already the third column on a wide screen and the ONLY column on a phone,
 	// and nesting a second navigation rail in it would spend exactly the width
-	// the settings themselves need.
+	// the settings themselves need. The strip is three headed groups (TODO N7)
+	// stacked vertically — .set-tabs is the column, .set-tab-group-row is each
+	// group's own wrapping row of pills.
 	css.Global(".set-tabs",
-		r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"),
+		r("display", "flex"), r("flex-direction", "column"), r("gap", "14px"),
 		r("padding-bottom", "18px"), r("border-bottom", "1px solid var(--hair)"),
 		r("margin-bottom", "6px"),
 	)
+	css.Global(".set-tab-group-label",
+		r("display", "block"), r("font-size", "11px"), r("font-weight", "600"),
+		r("text-transform", "uppercase"), r("letter-spacing", ".07em"),
+		r("color", "var(--mute)"), r("margin-bottom", "6px"),
+	)
+	css.Global(".set-tab-group-row", r("display", "flex"), r("gap", "6px"), r("flex-wrap", "wrap"))
 	css.Global(".set-tab",
 		r("display", "inline-flex"), r("align-items", "center"),
 		r("font-size", "13px"), r("padding", "6px 13px"),

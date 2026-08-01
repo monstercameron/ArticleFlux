@@ -1,12 +1,11 @@
 package i18n
 
-// English copy for the Smart+ tab (client/view/smartsettings.go).
-//
-// Two things live on this screen and they are deliberately together: the API
-// key, and the language of the interface. They are together because the
-// language picker SPENDS the key — a translation is a call to OpenAI — and a
-// picker that looked like a free preference sitting three tabs away from the
-// thing that pays for it would be a bill nobody expected.
+// English copy for the Smart+ tab (client/view/smartsettings.go) — the "smart"
+// keys below. The "lang" keys under it still live here (this is the language
+// picker SPENDING the key), but the picker itself paints from Appearance now
+// (N7a): discoverability beat proximity, and langHint's own sentence — "a
+// language you have used before is free" — is what actually prevents the
+// surprise bill, not which tab the control sits on.
 func init() {
 	text(DefaultLocale, "smart", map[string]string{
 		// --- what Smart+ is, said once, at the top
@@ -33,12 +32,15 @@ func init() {
 		"cannotStore":     "This server has no encryption key on disk, so it will not store a credential. Set OPENAI_API_KEY in its environment instead.",
 
 		// --- the model
-		"modelGroup":   "Model",
-		"modelLabel":   "Model",
-		"modelHint":    "One model for every Smart+ feature, so what they cost can be compared. Leave it blank for the default.",
-		"modelAria":    "Smart+ model",
-		"modelDefault": "Default: {model}",
-		"modelSave":    "Save model",
+		"modelGroup":      "Model",
+		"modelLabel":      "Model",
+		"modelHint":       "One model for every Smart+ feature, so what they cost can be compared. Leave it blank for the default.",
+		"modelAria":       "Smart+ model",
+		"modelPickerAria": "Choose a Smart+ model from the ones your key can use",
+		"modelDefault":    "Default: {model}",
+		"modelSave":       "Save model",
+		"modelUseCustom":  "Type a model id instead",
+		"modelUseList":    "Choose from the list instead",
 
 		// --- per-feature opt-ins
 		//
@@ -52,7 +54,7 @@ func init() {
 		// does.
 		"featureGroup":  "What Smart+ is allowed to do",
 		"featureHint":   "Each one is off until you turn it on, and each one is a separate bill.",
-		"feedPlusLabel": "Rank My Feed",
+		"feedPlusLabel": "Smart+ ranking",
 		"feedPlusHint": "Sends the top forty headlines and a summary of your interests each " +
 			"time your feed is rebuilt — after every fetch, and shortly after you read " +
 			"something. My Feed works without this; the model only reorders what it already chose.",

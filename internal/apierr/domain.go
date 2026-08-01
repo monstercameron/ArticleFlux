@@ -82,7 +82,7 @@ func FromDomain(err error) error {
 		// waits longer than it needs to makes the feature look broken after the
 		// provider recovered.
 		return Unavailable("srv.smartUnavailable",
-			"Smart features are paused while the provider recovers",
+			"Smart+ features are paused while the provider recovers",
 			llm.OpenFor).WithCause(err)
 
 	case errors.Is(err, llm.ErrBusy):

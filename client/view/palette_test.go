@@ -171,7 +171,7 @@ func TestPaletteNeverOffersTheDislikedStream(t *testing.T) {
 		}
 	}
 
-	full := buildPalette(tr, nil, nil)
+	full := buildPalette(tr, nil, nil, false)
 	for _, e := range full {
 		if e.ID == streamDisliked {
 			return

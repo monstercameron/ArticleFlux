@@ -30,13 +30,13 @@ func init() {
 		// --- the summary -----------------------------------------------------
 		"summaryGroup": "Right now",
 		"factPicks":    "Picks on the page",
-		"factTopics":   "Topics",
+		"factTopics":   "Interests",
 		"factThings":   "Things you follow",
 		"factFeeds":    "Feeds competing",
 		// Said plainly, and without a number: §18.4's cold start is not a
 		// percentage anyone can act on. What matters is that the most personal
 		// term is missing and that reading is what supplies it.
-		"cold": "No pick has matched a topic yet. Topics need a few weeks of reading before " +
+		"cold": "No pick has matched an interest yet. Interests need a few weeks of reading before " +
 			"they mean anything — until then My Feed ranks on freshness, the feeds you open " +
 			"most, and the things named below.",
 
@@ -47,12 +47,12 @@ func init() {
 		"factorCount": "{n} of {total}",
 		"factorEmpty": "Nothing is ranked yet, so there is nothing to explain.",
 
-		// --- topics ----------------------------------------------------------
-		"topicGroup": "Topics",
+		// --- interests ---------------------------------------------------------
+		"topicGroup": "Interests",
 		"topicHint": "Clusters of what you have read, named from the words they have in " +
-			"common. A cluster whose words look like furniture rather than a subject is one " +
+			"common. An interest whose words look like furniture rather than a subject is one " +
 			"to turn down.",
-		"topicEmpty": "No topics yet.",
+		"topicEmpty": "No interests yet.",
 		"topicMore":  "and {n} more",
 		// Trend is a fact about the cluster, not a judgement of the reader.
 		"trend.rising":  "rising",
@@ -125,20 +125,21 @@ func init() {
 		// in prose ("several feeds you follow carried this"), reduced to what
 		// fits a label. Both halves ship on the wire for that reason — see
 		// Item.rank_reason_terms in reader.proto.
-		"factor.topic":         "Matched a topic",
-		"factor.entity":        "Named something you follow",
-		"factor.feed":          "From a feed you read closely",
-		"factor.domain":        "Pointed at a site you open",
-		"factor.fresh":         "Recent",
-		"factor.corroboration": "Carried by several feeds",
-		"factor.manual":        "A rule of yours",
-		"factor.volume":        "Demoted for volume",
-		"factor.duplicate":     "Demoted as a near-duplicate",
-		"factor.negative":      "Demoted as not an interest",
-		"factor.skipped":       "Demoted for being scrolled past",
-		"factor.external":      "Widely discussed at the source",
-		"factor.deliberate":    "Something you starred or noted",
-		"factor.smartplus":     "Moved up by Smart+",
+		"factor.topic":            "Matched an interest",
+		"factor.entity":           "Named something you follow",
+		"factor.feed":             "From a feed you read closely",
+		"factor.domain":           "Pointed at a site you open",
+		"factor.fresh":            "Recent",
+		"factor.corroboration":    "Carried by several feeds",
+		"factor.manual":           "A rule of yours",
+		"factor.volume":           "Demoted for volume",
+		"factor.duplicate":        "Demoted as a near-duplicate",
+		"factor.negative":         "Demoted as not an interest",
+		"factor.skipped":          "Demoted for being scrolled past",
+		"factor.external":         "Widely discussed at the source",
+		"factor.deliberate":       "Something you starred or noted",
+		"factor.concept_feedback": "Related to something you liked or disliked",
+		"factor.smartplus":        "Moved up by Smart+ ranking",
 	})
 
 	// The two counted lines, as plurals. Both are rendered on every row of a

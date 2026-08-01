@@ -52,7 +52,7 @@ func init() {
 		"bomBin":  "binary, no runtime dependencies",
 
 		"shotDesktopAlt": "The ArticleFlux reader: a sidebar of 151 feeds with unread counts, a middle column of articles each carrying its source's colour on its left edge, and an open article with Listen, Smart+ voice and Summarise controls.",
-		"shotDesktopCap": "The reader against real feeds — 151 subscriptions, 4,198 unread. Every source owns a colour, and it runs through the rail dot, the row edge and the wash behind the article. On a phone a 3px edge answers who wrote this faster than a byline does.",
+		"shotDesktopCap": "The reader against real feeds — 151 subscriptions, 4,198 unread. Every source owns a colour, and it runs through the sidebar dot, the row edge and the wash behind the article. On a phone a 3px edge answers who wrote this faster than a byline does.",
 		"shotPhoneAlt":   "ArticleFlux on a phone: one column of articles, each with a coloured left edge, and a tab bar reading Read, Feeds, Notes, Settings.",
 
 		// Alternative text for the screenshots. Prose by definition, so it is
@@ -64,7 +64,7 @@ func init() {
 		"shotPhoneArticleAlt": "An article open on a phone, with its source's colour beside the byline and the like, dislike, read-later and listen controls beneath it.",
 		"shotPaletteAlt":      "The command palette open over the reader, matching feeds, tags and commands against two typed letters.",
 		"shotSearchAlt":       "A full-text search across every subscribed feed, with the matching articles listed.",
-		"shotAddAlt":          "The add-a-feed dialog: an address, a name, and the category to file it under.",
+		"shotAddAlt":          "The add-a-feed dialog: an address, a name, and the folder to file it under.",
 		"shotKeysAlt":         "The keyboard shortcut sheet, grouped by where each key works rather than alphabetically.",
 		"shotMyFeedAlt":       "My Feed: a ranked list of articles, each row carrying a short line saying why it was picked — close to your YouTube reading, another feed you follow carried this too.",
 		"shotSlideAlt":        "The slideshow: one article filling the screen, with a position counter and a play, pause and skip transport.",
@@ -101,7 +101,7 @@ func init() {
 		"readHueP1":   "Seven hand-picked colours and seventeen generated at the same lightness — 24 distinguishable, handed out by a pure function of the source id, so the server and the client agree on a colour without ever coordinating.",
 		"readHueP2":   "A read row keeps its hue at full strength and dims only the edge. State must not overwrite identity: a read article still needs to say who wrote it.",
 		"readThemeH":  "Five themes, seven accents, three reading sizes",
-		"readThemeP1": "A theme is a set of variable values rather than a stylesheet, written onto the root element at runtime — so switching costs a paint, not a re-render, with 151 rail rows on screen. This page is painted from those same tokens, which is why it is wearing your theme right now.",
+		"readThemeP1": "A theme is a set of variable values rather than a stylesheet, written onto the root element at runtime — so switching costs a paint, not a re-render, with 151 sidebar rows on screen. This page is painted from those same tokens, which is why it is wearing your theme right now.",
 		"readThemeP2": "Larger type gives a narrower column, not a longer line. The measure stays at 66 characters.",
 		"readPhoneH":  "One client, down to the phone",
 		"readPhoneP":  "Below 1220px the panes slide instead of hiding each other, and on a phone the same WebAssembly module becomes a single column with a tab bar. Not a separate app, not a scaled-down mode.",
@@ -119,7 +119,7 @@ func init() {
 		"findTagH":    "Tags, notes, read later, likes",
 		"findTagP":    "A tag has a name and a glyph, which are two different things. A note is attached to the article and saved without leaving the keyboard. Likes and dislikes feed the ranking layer rather than a counter.",
 		"findOpmlH":   "Folders, per-feed settings, OPML both ways",
-		"findOpmlP":   "Import names every row that did not make it, with its reason — a silent partial import is how a subscription list goes missing. Export writes the categories back out with it.",
+		"findOpmlP":   "Import names every row that did not make it, with its reason — a silent partial import is how a subscription list goes missing. Export writes the folders back out with it.",
 		"findUndoH":   "Mark all read, with undo",
 		"findUndoP":   "The most destructive button in any reader, made reversible. A bulk read is also recorded as neutral, so it never poisons what the ranking layer thinks you like.",
 		"findSetH":    "Settings as a page, with thirteen tabs",
@@ -210,7 +210,7 @@ func init() {
 
 		// --- 2. reading, continued ----------------------------------------
 		"readPanesH":   "Three panes, and a grip between each",
-		"readPanesP":   "The rail, the list and the article, resizable and remembered. Below 1220px they stop hiding each other and slide instead — a filmstrip, so the gesture that got you here is the gesture that gets you back.",
+		"readPanesP":   "The sidebar, the list and the article, resizable and remembered. Below 1220px they stop hiding each other and slide instead — a filmstrip, so the gesture that got you here is the gesture that gets you back.",
 		"readRowH":     "Fixed rows, because a virtual list cannot do otherwise",
 		"readRowP":     "Each density mode has one row height, settled before the row was designed. That is the constraint a virtualised list imposes, and designing against it afterwards is how a list ends up stuttering at exactly the size it was built for.",
 		"readSkelH":    "Skeletons, not spinners",
@@ -261,7 +261,7 @@ func init() {
 		"rankOutboxH":  "An outbox, not a firehose",
 		"rankOutboxP":  "Events batch and coalesce, ship at twenty-five or on a tick, keep a failed batch in order for the next attempt, and bound the backlog at five hundred by dropping the OLDEST, because recent signal is worth more. It flushes on both page-hide and a hidden tab, since neither fires reliably alone.",
 		"rankArgueH":   "The profile is a screen, not a black box",
-		"rankArgueP":   "Topics and named things, each with the evidence behind it and a four-way dial to say more, less, never, or that it has you wrong. Shipped as a surface; the dial is the part still being wired.",
+		"rankArgueP":   "Interests and named things, each with the evidence behind it and a four-way dial to say more, less, never, or that it has you wrong. Shipped as a surface; the dial is the part still being wired.",
 
 		// --- 5. listening, continued --------------------------------------
 		"listenSlideCap": "The slideshow: the same queue, full screen, paced by the voice if you want it to be.",

@@ -605,6 +605,14 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 				html.Text(systemMotionNote(tr, motionOn)))
 		}),
 	)
+	// The interface language (N7a, TODO.md "The naming pass"). It moved here
+	// from the Smart+ tab: the picker spends the key, which is a real argument
+	// for keeping it beside the thing that pays for it, but it loses to
+	// discoverability — nobody hunts for their language under an AI tab. What
+	// actually prevents the surprise bill is langHint's own sentence ("a
+	// language you have used before is free"), not the proximity, and that
+	// sentence travels with the section unchanged.
+	out = append(out, smartLanguageSection(tr, p.smart)...)
 	return out
 }
 

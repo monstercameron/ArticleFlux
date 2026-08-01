@@ -34,7 +34,7 @@ func init() {
 		"reportFrom":     "From {name}",
 		"factSubscribed": "Subscribed",
 		"factAlready":    "You already had",
-		"factFolders":    "Categories",
+		"factFolders":    "Folders",
 		// A14: one source, polled once, however many people here read it. Worth
 		// saying, because "151 new feeds" sounds like 151 new requests.
 		"factShared":  "Already on this server",
@@ -47,7 +47,7 @@ func init() {
 		// and a label that reads identically to the one above it makes a reader
 		// check twice which direction they are about.
 		"exportLabel": "Your feeds",
-		"exportHint":  "Downloads an OPML file with your feeds and their categories.",
+		"exportHint":  "Downloads an OPML file with your feeds and their folders.",
 		"exportBusy":  "Preparing…",
 		// {name} is the filename the browser was handed, so the sentence and the
 		// thing now sitting in a downloads folder agree.
@@ -55,7 +55,7 @@ func init() {
 		// Said plainly rather than implied. An export that a reader believes
 		// contains their articles and notes is one they will rely on as a
 		// backup, and find out otherwise at the worst moment.
-		"outNote": "Feeds and categories only — not the articles, and not your notes, ratings or tags.",
+		"outNote": "Feeds and folders only — not the articles, and not your notes, ratings or tags.",
 
 		// --- what went wrong
 		//

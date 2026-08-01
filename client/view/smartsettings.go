@@ -3,7 +3,9 @@
 package view
 
 import (
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
@@ -14,11 +16,11 @@ import (
 
 // The Smart+ tab.
 //
-// The API key and the interface language share one screen because the language
-// picker SPENDS the key: translating the UI is a call to OpenAI billed to
-// whoever owns that credential. A language picker filed under Appearance would
-// look like a free preference, and the first anyone would learn otherwise is
-// from an invoice.
+// The interface language picker (smartLanguageSection) renders from Appearance
+// now, not from here — N7a. It still reads this file's smartProps (the key,
+// the languages, the busy state), because Appearance receives the whole
+// settingsProps and the picker still needs to know whether a key exists. Only
+// where it PAINTS moved; what it needs to know did not.
 //
 // Everything here is owner-only server-side. The screen still renders for a
 // member — it just gets PermissionDenied on load, which shows as the error row
@@ -29,6 +31,9 @@ const (
 	actSmartKeySave  = "smart-key-save"
 	actSmartKeyClear = "smart-key-clear"
 	actSmartModel    = "smart-model-save"
+	// actSmartModelCustom switches the model picker between the live list and
+	// the free-text field — a local UI toggle, not a save.
+	actSmartModelCustom = "smart-model-custom"
 	// actSmartLang carries the target locale in data-value. The empty value is
 	// English, which is a choice like any other rather than an absence.
 	actSmartLang        = "smart-language"
@@ -53,6 +58,18 @@ type smartProps struct {
 	modelDraft  string
 	onKeyEdit   ui.Handler
 	onModelEdit ui.Handler
+
+	// models is what ListModels last returned: the provider's own model ids,
+	// filtered and sorted (see internal/llm.Client.Models). Empty means either
+	// nothing has been fetched yet or the call failed — both render the same
+	// way, as the free-text field alone, because a listing failure must never
+	// make the model unconfigurable.
+	models []string
+	// modelCustom is true when the reader asked for the free-text field
+	// instead of the live list, even though one is available. Local UI state,
+	// not a preference — it resets to the list on the next visit, which is
+	// right for a control whose whole point is to make the list the default.
+	modelCustom bool
 
 	// busy is the locale currently being translated, empty when idle. A locale
 	// rather than a bool because the chip that was pressed is the one that
@@ -90,7 +107,6 @@ func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
 	// on wants the bill in the same glance.
 	out = append(out, smartFeatureSection(tr, p)...)
 	out = append(out, smartSpendSection(tr, p)...)
-	out = append(out, smartLanguageSection(tr, p)...)
 
 	if p.notice != "" {
 		out = append(out, html.Div(html.Props{Class: "set-note", Role: "status",
@@ -158,24 +174,91 @@ func smartKeySection(tr i18n.Runtime, p smartProps) []ui.Node {
 	return rows
 }
 
+// smartModelSection is the model picker.
+//
+// ONE control is on screen at a time, never both. The live list (ListModels)
+// is the default when one could be fetched; the free-text field is what a
+// listing failure, an account whose models lag the picker's cache, or a
+// deliberate "something not on this list" falls back to. Showing the select
+// and the input stacked together — both holding the same value — was the
+// actual defect a reader would see as "this looks broken", not a styling
+// detail to polish later; a picker only ever asks one question at a time.
 func smartModelSection(tr i18n.Runtime, p smartProps) []ui.Node {
-	return []ui.Node{
+	current := strings.TrimSpace(p.modelDraft)
+	if current == "" {
+		current = strings.TrimSpace(p.cfg.GetModel())
+	}
+
+	// Custom entry is offered whenever there IS a list to fall back from, and
+	// forced when there is not — an empty list is not a choice between two
+	// controls, it is the only control there has ever been.
+	showList := len(p.models) > 0 && !p.modelCustom
+
+	var control ui.Node
+	if showList {
+		seen := map[string]bool{}
+		options := make([]ui.Node, 0, len(p.models)+1)
+		// The currently configured model is always an option, even one the
+		// live list did not include — an account that has lost access to a
+		// model, or a value typed in before this list existed, must not
+		// silently vanish from the picker just because the list could not
+		// confirm it is still valid.
+		if current != "" && !slices.Contains(p.models, current) {
+			options = append(options, html.Option(
+				html.Props{Value: current, Selected: true}, html.Text(current)))
+			seen[current] = true
+		}
+		for _, m := range p.models {
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			options = append(options, html.Option(
+				html.Props{Value: m, Selected: m == current}, html.Text(m)))
+		}
+		control = html.Div(html.Props{Class: "fs-rename"},
+			html.Select(html.Props{
+				Class: "field fs-field", OnChange: p.onModelEdit,
+				Data: map[string]string{"role": "smart-model-select"},
+				Aria: map[string]string{"label": tr.T("smart", "modelPickerAria")},
+			}, options...),
+			actionButton(actSmartModel, "chip", tr.T("smart", "modelSave")),
+		)
+	} else {
+		control = html.Div(html.Props{Class: "fs-rename"},
+			html.Input(html.Props{
+				Class: "field fs-field", Type: "text",
+				Placeholder: p.cfg.GetDefaultModel(),
+				Value:       p.modelDraft,
+				OnInput:     p.onModelEdit,
+				Data:        map[string]string{"role": "smart-model"},
+				Aria:        map[string]string{"label": tr.T("smart", "modelAria")},
+				Raw:         map[string]any{"autocomplete": "off", "spellcheck": "false"},
+			}),
+			actionButton(actSmartModel, "chip", tr.T("smart", "modelSave")),
+		)
+	}
+
+	rows := []ui.Node{
 		fsGroup(glyphYours, tr.T("smart", "modelGroup"), tr.T("smart", "modelHint")),
 		setRow(tr.T("smart", "modelLabel"),
 			tr.T("smart", "modelDefault", i18n.Args{"model": p.cfg.GetDefaultModel()}),
-			html.Div(html.Props{Class: "fs-rename"},
-				html.Input(html.Props{
-					Class: "field fs-field", Type: "text",
-					Placeholder: p.cfg.GetDefaultModel(),
-					Value:       p.modelDraft,
-					OnInput:     p.onModelEdit,
-					Data:        map[string]string{"role": "smart-model"},
-					Aria:        map[string]string{"label": tr.T("smart", "modelAria")},
-					Raw:         map[string]any{"autocomplete": "off", "spellcheck": "false"},
-				}),
-				actionButton(actSmartModel, "chip", tr.T("smart", "modelSave")),
-			)),
+			control),
 	}
+	// The toggle only exists where there is something to toggle TO — a
+	// reader with no live list has one field and nothing to switch between.
+	if len(p.models) > 0 {
+		toggleLabel := tr.T("smart", "modelUseCustom")
+		if p.modelCustom {
+			toggleLabel = tr.T("smart", "modelUseList")
+		}
+		rows = append(rows, html.Div(html.Props{Class: "fs-model-toggle"},
+			html.Button(html.Props{
+				Class: "fs-link",
+				Raw:   map[string]any{"data-action": actSmartModelCustom},
+			}, html.Text(toggleLabel))))
+	}
+	return rows
 }
 
 // smartFeatureSection is the per-feature opt-ins.

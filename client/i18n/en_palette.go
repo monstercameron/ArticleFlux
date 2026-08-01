@@ -10,9 +10,12 @@ package i18n
 // translates it.
 func init() {
 	text(DefaultLocale, "palette", map[string]string{
-		"title":       "Command palette",
-		"placeholder": "Go to a feed, or type a command…",
-		"searchAria":  "Search feeds and commands",
+		"title": "Command palette",
+		// Names what is actually ranked — feeds, tags and streams, the way
+		// kindTag and kindStream already are — not just the two the old copy
+		// mentioned.
+		"placeholder": "Go to a feed, a tag or a stream, or type a command…",
+		"searchAria":  "Search feeds, tags, streams and commands",
 		"empty":       "Nothing matches “{query}”.",
 		// The footer's keys are glyphs plus three verbs. One key rather than
 		// six: the separators are part of the line's rhythm and a translator
@@ -24,11 +27,15 @@ func init() {
 		"kindCommand": "Command",
 		"kindStream":  "Stream",
 
-		// Commands, keyed by their dispatch id.
+		// Commands, keyed by their dispatch id. filterPalette ranks by PREFIX
+		// (see this file's head comment and palette.go's), so two commands
+		// that begin with the same word are indistinguishable until a reader
+		// types past it — "toggle-unread" and "toggle-feed-filter" dropped the
+		// shared "Toggle" for that reason.
 		"cmd.refresh":            "Refresh feeds",
 		"cmd.mark-all":           "Mark all read",
-		"cmd.toggle-unread":      "Toggle unread only",
-		"cmd.toggle-feed-filter": "Toggle feeds with unread",
+		"cmd.toggle-unread":      "Unread articles only",
+		"cmd.toggle-feed-filter": "Feeds with unread only",
 		// Names the feed rather than the screen: "Start the slideshow" would leave
 		// a reader wondering which stories are in it, and the answer — the ones
 		// they are looking at — is the whole point of the entry.
@@ -39,12 +46,23 @@ func init() {
 		"cmd.like":          "Like this article",
 		"cmd.dislike":       "Dislike this article",
 		"cmd.open-original": "Open the original",
-		"cmd.toggle-motion": "Reduce motion",
-		"cmd.appearance":    "Change the theme",
+		// Two labels for one command, chosen by the state motion is actually in
+		// — the same "name both directions" rule cmd.theme already follows for
+		// five destinations. A fixed "Reduce motion" is only ever true half the
+		// time the entry is on screen.
+		"cmd.toggle-motion-off": "Reduce motion",
+		"cmd.toggle-motion-on":  "Full motion",
+		"cmd.appearance":        "Change the theme",
 		// {theme} is the theme's own translated label. The prefix is separate
 		// so "Theme: Daylight" can become "Thème : Lumière du jour" — and, more
 		// to the point, so a language that puts the qualifier last can.
 		"cmd.theme": "Theme: {theme}",
+		// The three destinations a reader most often wants from the palette and
+		// could not reach from it (N12): the settings screen itself, the dialog
+		// that starts a subscription, and the sheet that lists every other key.
+		"cmd.settings":   "Open settings",
+		"cmd.add-feed":   "Add a feed",
+		"cmd.shortcuts":  "Show keyboard shortcuts",
 	})
 
 	// Feed and tag hints. Both are counts, both are plural, and neither is a

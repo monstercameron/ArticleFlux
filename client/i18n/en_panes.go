@@ -15,7 +15,7 @@ func init() {
 		"bandStreams":    "Streams",
 		"bandFeeds":      "Feeds",
 		"bandTags":       "Tags",
-		"bandCategories": "Categories",
+		"bandCategories": "Folders",
 
 		"filterPlaceholder": "Filter feeds",
 		"filterAria":        "Filter feeds by name",
@@ -25,7 +25,7 @@ func init() {
 		"emptyNoUnread": "Nothing new. Showing feeds with unread only.",
 
 		"addCategory":   "＋ NEW",
-		"addCategoryA":  "Add a category",
+		"addCategoryA":  "Add a folder",
 		"addFeed":       "Add a feed",
 		"categoryEmpty": "Nothing filed here yet.",
 		// Accessible names built around a category or feed name.
@@ -97,6 +97,14 @@ func init() {
 		"settings":  "Settings",
 		"shortcuts": "Keyboard shortcuts",
 		"undo":      "Undo",
+
+		// The Smart+ category suggestion Subscribe attaches to a successful add
+		// (smart.categorize, off by default). One line and two chips — see
+		// panes.go's own comment on why it is its own banner rather than
+		// sharing the Undo one above.
+		"categorySuggest":        "File under {category}?",
+		"categorySuggestAccept":  "File it",
+		"categorySuggestDismiss": "Not now",
 
 		// Connection states. Words as well as a coloured dot, because a dot
 		// alone does not survive being colour-blind or being glanced at.
@@ -191,7 +199,7 @@ func init() {
 		"emptyTag":          "Nothing tagged here yet",
 		"emptyTagHint":      "Add this tag to a feed from an article's note panel.",
 		"emptyCategory":     "Nothing filed here yet",
-		"emptyCategoryHint": "Move a feed into this category from its settings ⚙.",
+		"emptyCategoryHint": "Move a feed into this folder from its settings ⚙.",
 
 		// Row furniture.
 		"ageNew":   "new",
@@ -269,17 +277,20 @@ func init() {
 		// The proxy pair. "View page" rather than "Proxy" or "Snapshot": the
 		// reader is choosing what to look at, not which mechanism fetches it,
 		// and the mechanism is explained inside the page itself where it
-		// matters. "Full width" says what changes, which is the only difference
-		// the reader can act on.
+		// matters. "Expand page" rather than "Full width" — article.focusOn
+		// already owns that phrase for the whole reading pane, and this control
+		// only widens the proxy frame beside it.
 		"viewPage":      "View page",
-		"viewPageFull":  "Full width",
+		"viewPageFull":  "Expand page",
 		"viewPageClose": "Close page",
 		// The two modes, named by what you get rather than by how it is made.
 		// "Rendered" would describe our plumbing; "Live view" describes a page
 		// being painted for you right now, which is the thing the reader is
-		// choosing.
+		// choosing. "Text" rather than "Page" — the latter is a tautology inside
+		// a control called "View page" — and it names the distinction the hint
+		// below already draws: you can select and search it.
 		"viewPageModes":    "How to show this page",
-		"viewPageModeDoc":  "Page",
+		"viewPageModeDoc":  "Text",
 		"viewPageModeLive": "Live view",
 		// Said in the mode it applies to, because a reader who picks Live and
 		// then cannot select a quote will conclude the feature is broken rather
@@ -408,7 +419,7 @@ func init() {
 		"aria":     "Sections",
 		"read":     "Read",
 		"feeds":    "Feeds",
-		"notes":    "Notes",
+		"myFeed":   "My Feed",
 		"settings": "Settings",
 	})
 }

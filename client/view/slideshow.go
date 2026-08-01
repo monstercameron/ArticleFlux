@@ -4,7 +4,9 @@ package view
 
 import (
 	"math"
+	"math/rand/v2"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -607,32 +609,65 @@ func queueNext(q []string, id string) string {
 	return queueStep(q, id, 1, false)
 }
 
-// queueLineup is the headline run-through the broadcast opens with: this story
-// and the few after it, in the order they will actually be told.
+// queueLineup is the headline run-through the broadcast opens with: this
+// story, then the MOST INTERESTING few of what is coming — not simply the
+// next few in queue order.
 //
 // `title` resolves an id, and returns "" for a story the caller cannot see yet.
 // Those are skipped rather than waited for — the server drops untitled entries
 // anyway, so sending one spends a lookup to be told so, and a run-through is a
 // nicety that must never be the reason a broadcast does not start.
-func queueLineup(q []string, fromID string, max int, title func(string) string) []string {
+//
+// `interest` scores a candidate; higher is more interesting, and 0 is what a
+// story with no ranking signal at all gets (see showInterest) — a plain feed
+// carries no rank, so every candidate ties there, and the tie-break below is a
+// shuffle rather than queue order, which is what keeps a plain feed's
+// run-through from naming the same few headlines every single broadcast.
+func queueLineup(q []string, fromID string, max int, title func(string) string, interest func(string) int) []string {
 	if fromID == "" || max <= 0 {
 		return nil
 	}
 	out := make([]string, 0, max)
 	found := false
+	var pool []string
+	poolPos := make(map[string]int, len(q))
 	for _, id := range q {
-		if !found && id != fromID {
+		if !found {
+			if id != fromID {
+				continue
+			}
+			found = true
+			if strings.TrimSpace(title(id)) != "" {
+				out = append(out, id)
+			}
 			continue
 		}
-		found = true
 		if strings.TrimSpace(title(id)) == "" {
 			continue
 		}
-		out = append(out, id)
-		if len(out) >= max {
-			break
-		}
+		poolPos[id] = len(pool)
+		pool = append(pool, id)
 	}
+	if len(out) == 0 && len(pool) == 0 {
+		return nil
+	}
+	// Shuffled BEFORE the interest sort, so a stable sort afterward leaves
+	// ties — including the tie every candidate is in when there is no ranking
+	// signal at all — in a random relative order rather than queue order
+	// every time.
+	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+	sort.SliceStable(pool, func(i, j int) bool { return interest(pool[i]) > interest(pool[j]) })
+	picked := pool
+	if limit := max - len(out); limit < len(picked) {
+		picked = picked[:limit]
+	}
+	// Back into programme order: the run-through is heard in the order the
+	// stories will actually play, narrowed to the ones worth naming rather
+	// than reordered by how interesting each one is — a listener hearing "and
+	// third, the thing we'll actually cover fifth" has been told something
+	// that does not match what follows.
+	sort.Slice(picked, func(i, j int) bool { return poolPos[picked[i]] < poolPos[picked[j]] })
+	out = append(out, picked...)
 	if len(out) < 2 {
 		// One headline is not a run-through, it is the story about to be told.
 		return nil
@@ -643,7 +678,13 @@ func queueLineup(q []string, fromID string, max int, title func(string) string) 
 // slideMaxLineup mirrors smart.MaxLineup. Duplicated across the wasm boundary
 // for the reason the vibe names are — the server clamps anyway, so the worst a
 // drift costs is a couple of ids resolved and discarded.
-const slideMaxLineup = 5
+//
+// Three, cut from five: a run-through is a trailer, not the programme, and at
+// five headlines-with-colour it had started to run longer than some of the
+// stories it was previewing. Per product direction, the run-through also picks
+// the most interesting three rather than simply the next three in the queue —
+// see queueLineup's use of showInterest.
+const slideMaxLineup = 3
 
 // speechAsk is everything the client adds to a minted listening ticket.
 //

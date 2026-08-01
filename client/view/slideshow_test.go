@@ -795,28 +795,94 @@ func TestAnIDThatLeftTheQueueRestartsAtTheTop(t *testing.T) {
 }
 
 // The greeting teases what is ACTUALLY coming, in programme order, and skips
-// what it cannot name rather than waiting for it.
+// what it cannot name rather than waiting for it. noInterest ties every
+// candidate, which is what a plain feed with no ranking signal produces —
+// with a pool this small every candidate still fits within max, so the
+// random tie-break has nothing to narrow and the result stays exactly the
+// programme order these assertions check.
 func TestTheRunThroughFollowsTheRunningOrder(t *testing.T) {
 	q := []string{"1", "10", "4", "7"}
 	titles := map[string]string{"1": "First", "10": "Tenth", "4": "Fourth", "7": ""}
 	title := func(id string) string { return titles[id] }
+	noInterest := func(string) int { return 0 }
 
-	got := queueLineup(q, "1", 5, title)
+	got := queueLineup(q, "1", 5, title, noInterest)
 	if len(got) != 3 || got[0] != "1" || got[1] != "10" || got[2] != "4" {
 		t.Fatalf("the run-through was %v, wanted the programme order minus the untitled one", got)
 	}
 	// Starting midway names what follows from there, not from the top.
-	if mid := queueLineup(q, "10", 5, title); len(mid) != 2 || mid[0] != "10" {
+	if mid := queueLineup(q, "10", 5, title, noInterest); len(mid) != 2 || mid[0] != "10" {
 		t.Errorf("a mid-programme run-through was %v", mid)
 	}
 	// One headline is not a run-through.
-	if lone := queueLineup(q, "4", 5, title); lone != nil {
+	if lone := queueLineup(q, "4", 5, title, noInterest); lone != nil {
 		t.Errorf("a single remaining story produced a run-through: %v", lone)
 	}
 	// A story nobody has loaded yet cannot be teased, and must not stop the rest.
 	blank := func(string) string { return "" }
-	if none := queueLineup(q, "1", 5, blank); none != nil {
+	if none := queueLineup(q, "1", 5, blank, noInterest); none != nil {
 		t.Errorf("an unloaded programme produced %v", none)
+	}
+}
+
+// When the pool is bigger than the run-through has room for, the run-through
+// picks the highest-interest candidates rather than simply the next few in
+// queue order.
+func TestTheRunThroughPicksTheMostInterestingWhenThereIsAChoice(t *testing.T) {
+	q := []string{"1", "2", "3", "4", "5", "6"}
+	titles := map[string]string{
+		"1": "First", "2": "Second", "3": "Third", "4": "Fourth", "5": "Fifth", "6": "Sixth",
+	}
+	title := func(id string) string { return titles[id] }
+	// Only "4" and "6" carry any ranking signal; everything else is a flat
+	// zero, the way a plain feed's stories would be.
+	interest := func(id string) int {
+		switch id {
+		case "4":
+			return 5
+		case "6":
+			return 2
+		default:
+			return 0
+		}
+	}
+
+	got := queueLineup(q, "1", 3, title, interest)
+	if len(got) != 3 {
+		t.Fatalf("run-through was %v, want exactly 3 (max)", got)
+	}
+	if got[0] != "1" {
+		t.Fatalf("run-through was %v, want the current story first", got)
+	}
+	// "4" outranks everything and "6" is the second-highest, so both should
+	// have beaten out "2", "3" and "5" for the two remaining slots — and back
+	// in programme order, "4" (position 3) comes before "6" (position 5).
+	if got[1] != "4" || got[2] != "6" {
+		t.Errorf("run-through was %v, want the current story then the two "+
+			"highest-interest candidates in programme order ([1 4 6])", got)
+	}
+}
+
+// The random tie-break actually varies the pick across calls — otherwise a
+// plain feed's run-through (every candidate tied at zero interest) would
+// name the same three headlines every single broadcast, which is the exact
+// staleness this feature exists to remove.
+func TestTheRunThroughVariesWhenEveryCandidateTies(t *testing.T) {
+	q := []string{"1", "2", "3", "4", "5", "6", "7", "8"}
+	title := func(string) string { return "T" }
+	noInterest := func(string) int { return 0 }
+
+	seen := map[string]bool{}
+	for range 50 {
+		got := queueLineup(q, "1", 3, title, noInterest)
+		if len(got) != 3 {
+			t.Fatalf("run-through was %v, want exactly 3", got)
+		}
+		seen[strings.Join(got[1:], ",")] = true
+	}
+	if len(seen) < 2 {
+		t.Error("the same two follow-up headlines were picked every time over 50 draws — " +
+			"the tie-break looks deterministic, not randomised")
 	}
 }
 

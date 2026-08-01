@@ -177,18 +177,17 @@ const (
 	glyphNotes    = "\u270e" // notes — a pencil, your own writing
 	glyphFeeds    = "\u2263" // a list of sources
 	glyphTags     = "\u2317" // a label
-	// A category is a container, where a tag is a label stuck on one \u2014 so it is
+	// A folder is a container, where a tag is a label stuck on one \u2014 so it is
 	// a box shape rather than the tag's ticket, and the two sections stay
 	// distinguishable at 12px in a column of 151 rows.
 	glyphCats = "\u2337"
-	// The Classification settings tab (client/view/classifysettings.go) gets its
-	// own mark rather than reusing glyphCats. docs/FEATURES.md \u00a776 flags that
-	// "category" already names two different things in this app \u2014 the rail's
-	// folders (\u00a710) and the classifier's 26 article sections \u2014 and D23, which of
-	// the two keeps the word, is still open. Sharing a glyph on top of sharing a
-	// name would make that ambiguity visible in the one place a glyph is meant
-	// to remove it. A crosshatched grid rather than glyphCats' solid box: many
-	// small cells, for a taxonomy with 26 members, instead of one container.
+	// The Categories settings tab (client/view/classifysettings.go) gets its own
+	// mark rather than reusing glyphCats \u2014 D23 (plan.md \u00a727.0a) gave "category" to
+	// the classifier's 26 article sections and the rail's containers became
+	// Folders, but the two glyphs still sit side by side in the rail and sharing
+	// one would undo the distinction the rename just drew. A crosshatched grid
+	// rather than glyphCats' solid box: many small cells, for a taxonomy with 26
+	// members, instead of one container.
 	glyphClassify = "\u25a6"
 	glyphAdd      = "\uff0b"
 	glyphSearch   = "\u2315"
@@ -196,6 +195,7 @@ const (
 	glyphMarkRead = "\u2713"
 	glyphSettings = "\u2699"
 	glyphHelp     = "?"
+	glyphDiscover = "\u2733" // section 18.7, M16: sites you don't follow yet
 	glyphListen   = "\u25b6"
 	glyphPause    = "\u23f8"
 	glyphStop     = "\u25a0"
@@ -1277,11 +1277,20 @@ type listProps struct {
 	// unmistakable, and it is right to: a list that silently shows yesterday's
 	// articles during an outage is the failure the connection indicator exists
 	// to prevent, wearing a different hat.
-	staleNote   string
-	unread      int
-	busy        string
-	notice      string
-	searchValue string
+	staleNote string
+	unread    int
+	busy      string
+	notice    string
+	// catSuggestName is the Smart+ category suggestion Subscribe attached to
+	// the last successful add (smart.categorize, off by default). Empty means
+	// none is pending — the same "empty means gone" contract undo/undoToken
+	// use. Whether it is a brand-new category or an existing one is not
+	// distinguished here: the banner asks the same question either way (see
+	// panes.go's own comment), and Accept reads that from the state that
+	// drives the action, not from this render-only prop.
+	catSuggestName string
+	catSuggestBusy bool
+	searchValue    string
 	// Handlers are created ONCE in Reader, at the top level, and passed down.
 	// They cannot be created here: listPane returns early in three places, and a
 	// hook behind an early return binds to the wrong slot.
@@ -1662,6 +1671,37 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		// article was marked read — a subtitle flickering under the reader's hand
 		// on every press of j.
 		html.Div(html.Props{Class: "list-sub", Key: "ls-" + p.sel.Title}, html.Text(sub)),
+		// Settings and the shortcut sheet act on the whole app, not on this feed
+		// or this list, so they live in the head's own corner rather than
+		// crowding the tools row below — the row that carries the search field
+		// and the actions this particular stream offers. The corner is otherwise
+		// empty space beside the title, so this is free real estate, not a
+		// squeeze.
+		html.Div(html.Props{Class: "list-corner"},
+			// Settings is reachable from the phone's tab bar and from a comma.
+			// Neither is discoverable on a desktop, so it also gets a gear here.
+			html.Button(html.Props{
+				Class: "chip chip-mini",
+				Raw:   map[string]any{"data-action": "open-discover"},
+				Title: tr.T("discover", "title"),
+				Aria:  map[string]string{"label": tr.T("discover", "title")},
+			}, lead(glyphDiscover)),
+			html.Button(html.Props{
+				Class: "chip chip-mini",
+				Raw:   map[string]any{"data-action": "open-settings"},
+				Title: tr.T("list", "settings"),
+				Aria:  map[string]string{"label": tr.T("list", "settings")},
+			}, lead(glyphSettings)),
+			// The one visible pointer to the keyboard layer. Without it, an app
+			// whose best interface is its keys is keyboard-first for exactly one
+			// person — the one who wrote it.
+			html.Button(html.Props{
+				Class: "chip chip-mini",
+				Raw:   map[string]any{"data-action": "help-open"},
+				Title: tr.T("list", "shortcuts"),
+				Aria:  map[string]string{"label": tr.T("list", "shortcuts")},
+			}, lead(glyphHelp)),
+		),
 		// The cached-fallback badge (§12.3). Rendered in the subtitle line
 		// rather than as a toast because it describes the LIST, and it has to
 		// stay visible for as long as the list is the thing it describes — a
@@ -1671,15 +1711,35 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			return html.Div(html.Props{Class: "list-stale", Key: "lstale"},
 				html.Text(p.staleNote))
 		}),
-		html.Div(html.Props{Class: "list-tools"},
-			// Always-visible connection state: a reader that has silently stopped
-			// receiving looks identical to a quiet news day.
-			html.Span(html.Props{Class: "conn", Title: tr.T("list", "connTitle"),
-				Data: map[string]string{"state": string(p.conn)}},
+		// The search field, full width and on its own row — it is the one
+		// thing here a reader might actually type into, and it earns the row
+		// to itself rather than sharing it with whatever fits beside it.
+		//
+		// The connection state rides inside it as a leading dot instead of its
+		// own slot: always visible, not written out in words beside it — a
+		// dot alone doesn't survive being colour-blind or being glanced at
+		// (connLabel's own doc comment), but it doesn't need the row's width
+		// to say so; a hover or a screen reader gets the same five words the
+		// row used to carry permanently, via Title/Aria below.
+		html.Div(html.Props{Class: "list-search"},
+			html.Span(html.Props{
+				Class: "conn", Title: connLabel(tr, p.conn),
+				Data: map[string]string{"state": string(p.conn)},
+				Aria: map[string]string{"label": connLabel(tr, p.conn)},
+			},
 				html.I(html.Props{Class: "conn-dot"}),
-				html.Text(connLabel(tr, p.conn)),
 			),
-			// The remedy, when there is one a press can achieve.
+			html.Input(html.Props{
+				Class: "field", Type: "search", Placeholder: tr.T("list", "searchPlaceholder"),
+				Value:   p.searchValue,
+				OnInput: p.onSearchInput, OnKeyDown: p.onSearchKey,
+				Data: map[string]string{"role": "search"},
+				Aria: map[string]string{"label": tr.T("list", "searchAria")},
+			}),
+		),
+		html.Div(html.Props{Class: "list-tools"},
+			// The remedy, when there is one a press can achieve, leads the
+			// action row now that it no longer sits beside the search field.
 			//
 			// This is what earns the twenty-second backoff cap its headroom
 			// (§20.19.5): a wait somebody can see and skip is not a hang, so the
@@ -1688,14 +1748,6 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			// only correct action — there is no Retry for "no network", because
 			// the browser has already said it would fail.
 			connFix(p.connFix, p.connFixLabel),
-			html.Input(html.Props{
-				Class: "field", Type: "search", Placeholder: tr.T("list", "searchPlaceholder"),
-				Value:   p.searchValue,
-				OnInput: p.onSearchInput, OnKeyDown: p.onSearchKey,
-				Data: map[string]string{"role": "search"},
-				Aria: map[string]string{"label": tr.T("list", "searchAria")},
-			}),
-			glyphChip("refresh", glyphRefresh, tr.T("list", "refresh"), false),
 			// Pressed state reflects the EFFECTIVE filter (see effectiveUnread
 			// above), not just p.unreadOnly — otherwise the chip reads
 			// unpressed while the rail's Unread stream is filtering to
@@ -1718,25 +1770,6 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 				return glyphChip(actSlideOpen, glyphSlideshow,
 					tr.T("list", "slideshow"), false)
 			}),
-			// Settings is reachable from the phone's tab bar and from a comma.
-			// Neither is discoverable on a desktop, so it also gets a gear here —
-			// beside the other controls that act on the whole app rather than on
-			// one article.
-			html.Button(html.Props{
-				Class: "chip chip-mini",
-				Raw:   map[string]any{"data-action": "open-settings"},
-				Title: tr.T("list", "settings"),
-				Aria:  map[string]string{"label": tr.T("list", "settings")},
-			}, lead(glyphSettings)),
-			// The one visible pointer to the keyboard layer. Without it, an app
-			// whose best interface is its keys is keyboard-first for exactly one
-			// person — the one who wrote it.
-			html.Button(html.Props{
-				Class: "chip chip-mini",
-				Raw:   map[string]any{"data-action": "help-open"},
-				Title: tr.T("list", "shortcuts"),
-				Aria:  map[string]string{"label": tr.T("list", "shortcuts")},
-			}, lead(glyphHelp)),
 		),
 		// The banner is wrapped rather than conditional, so it can leave as well
 		// as arrive.
@@ -1766,6 +1799,33 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 							Raw:   map[string]any{"data-action": "undo-mark-all"},
 						}, html.Text(tr.T("list", "undo")))
 					}),
+				),
+			),
+		),
+		// The Smart+ category suggestion (subscribe.go's smart.categorize gate),
+		// as its own banner-slot rather than sharing the one above: a bulk-mark
+		// undo and a filing question can land in the same session, and each
+		// deserves its own row rather than one replacing the other unseen.
+		//
+		// Deliberately plain — a text line and two chips, no icon, no colour of
+		// its own — matching this codebase's "no polish pass" for a low-effort
+		// build (see addFeed's own banner-free dialog for the same restraint).
+		html.Div(html.Props{Class: "banner-slot",
+			Data: map[string]string{"open": strconv.FormatBool(p.catSuggestName != "")}},
+			html.Div(html.Props{Class: "banner-clip"},
+				html.Div(html.Props{Class: "banner", Role: "status",
+					Data: map[string]string{"busy": strconv.FormatBool(p.catSuggestBusy)},
+					Aria: map[string]string{"live": "polite"}},
+					html.Span(html.Props{Class: "banner-text"},
+						html.Text(tr.T("list", "categorySuggest", i18n.Args{"category": p.catSuggestName}))),
+					html.Button(html.Props{
+						Class: "chip chip-mini banner-undo",
+						Raw:   map[string]any{"data-action": "accept-category-suggestion"},
+					}, html.Text(tr.T("list", "categorySuggestAccept"))),
+					html.Button(html.Props{
+						Class: "chip chip-mini banner-undo",
+						Raw:   map[string]any{"data-action": "dismiss-category-suggestion"},
+					}, html.Text(tr.T("list", "categorySuggestDismiss"))),
 				),
 			),
 		),
@@ -3555,12 +3615,15 @@ func tabBar(tr i18n.Runtime, active view, sel scope) ui.Node {
 			html.Span(html.Props{Class: "tab-label"}, html.Text(label)),
 		)
 	}
-	home := active != viewRail && active != viewSettings && !sel.Notes
+	home := active != viewRail && active != viewSettings && !sel.Notes && !sel.MyFeed
 	return html.Nav(html.Props{Class: "tabbar",
 		Aria: map[string]string{"label": tr.T("tabs", "aria")}},
 		tab("tab-home", "◈", tr.T("tabs", "read"), home),
 		tab("tab-feeds", "≣", tr.T("tabs", "feeds"), active == viewRail),
-		tab("tab-notes", "✎", tr.T("tabs", "notes"), sel.Notes && active != viewSettings),
+		// My Feed replaces Notes (N13): the flagship ranked stream reachable in
+		// one tap earns the slot more than a stream that already has a row in
+		// the rail's Streams band beside its siblings, which Notes keeps.
+		tab("tab-myfeed", glyphMyFeed, tr.T("tabs", "myFeed"), sel.MyFeed && active != viewSettings),
 		tab("tab-settings", "⚙", tr.T("tabs", "settings"), active == viewSettings),
 	)
 }

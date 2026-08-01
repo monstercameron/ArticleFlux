@@ -73,10 +73,10 @@ func init() {
 		"attuneProgress":   "About {percent}% of the way to a room built around your {why} reading.",
 		"attuneArrived":    "Arrived: this is the room your {why} reading built. It will start moving again when your interests do.",
 		"attuneReset":      "Start over from my theme",
-		"attuneSmartLabel": "Let Smart+ choose the colours",
+		"attuneSmartLabel": "Smart+ colours",
 		"attuneSmartHint":  "Off, the room is tinted toward your top interest's own colour — free, and nothing leaves the machine. On, Smart+ writes a palette for what you read, and only the interest names are sent.",
 		"attuneBySmart":    "This room was written by Smart+.",
-		"attuneByHue":      "This room was worked out on this machine, from your top interest's colour.",
+		"attuneByHue":      "This is Smart colours: worked out on this machine, from your top interest's colour.",
 	})
 
 	// The two counted repair notes.

@@ -74,7 +74,7 @@ type paletteProps struct {
 //
 // The Hints are keyboard shortcuts — key names the browser reports, not copy —
 // so they stay literal here.
-func paletteCommands(tr i18n.Runtime) []paletteEntry {
+func paletteCommands(tr i18n.Runtime, motionOn bool) []paletteEntry {
 	cmds := []struct{ id, hint string }{
 		{"refresh", "r"},
 		{"mark-all", ""},
@@ -92,12 +92,27 @@ func paletteCommands(tr i18n.Runtime) []paletteEntry {
 		{"open-original", "o"},
 		{"toggle-motion", ""},
 		{"appearance", ""},
+		// N12: the three destinations a reader most often wants from a fast
+		// lane and could not previously reach from it.
+		{"settings", ","},
+		{"add-feed", ""},
+		{"shortcuts", "?"},
 	}
 	out := make([]paletteEntry, 0, len(cmds))
 	for _, c := range cmds {
+		key := "cmd." + c.id
+		// toggle-motion names BOTH directions, the way cmd.theme names every
+		// theme rather than one "next theme" verb — a reader should see what
+		// pressing it will DO, not a fixed word that is only true half the time.
+		if c.id == "toggle-motion" {
+			key = "cmd.toggle-motion-off"
+			if !motionOn {
+				key = "cmd.toggle-motion-on"
+			}
+		}
 		out = append(out, paletteEntry{
 			Kind: paletteCommand, ID: c.id,
-			Label: tr.T("palette", "cmd."+c.id), Hint: c.hint,
+			Label: tr.T("palette", key), Hint: c.hint,
 		})
 	}
 	return out
@@ -152,8 +167,8 @@ func paletteStreams(tr i18n.Runtime) []paletteEntry {
 }
 
 // buildPalette assembles every destination and command, unfiltered.
-func buildPalette(tr i18n.Runtime, feeds []*pb.Feed, tags []*pb.Tag) []paletteEntry {
-	streams, cmds, themes := paletteStreams(tr), paletteCommands(tr), themeCommands(tr)
+func buildPalette(tr i18n.Runtime, feeds []*pb.Feed, tags []*pb.Tag, motionOn bool) []paletteEntry {
+	streams, cmds, themes := paletteStreams(tr), paletteCommands(tr, motionOn), themeCommands(tr)
 	out := make([]paletteEntry, 0, len(feeds)+len(tags)+len(streams)+len(cmds)+len(themes))
 	out = append(out, streams...)
 	for _, f := range feeds {

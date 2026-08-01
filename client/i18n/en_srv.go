@@ -61,8 +61,11 @@ func init() {
 		"ambiguousUser": "this account name exists in more than one workspace",
 		// §22.8's breaker is open. "Paused" and "recovers" rather than "failed",
 		// because it resumes on its own and a reader told something failed will
-		// go looking for a setting to fix.
-		"smartUnavailable": "Smart features are paused while the provider recovers",
+		// go looking for a setting to fix. Names Smart+ specifically: the
+		// deterministic half — ranking, the lexicon, the hue tint, discovery
+		// rungs 1-2 — is unaffected by an OpenAI outage and keeps working, and
+		// "Smart features" would tell the reader everything derived has stopped.
+		"smartUnavailable": "Smart+ features are paused while the provider recovers",
 		"noEncryptionKey":  "this server cannot store credentials until an encryption key is configured",
 		// §22.10. Never actually rendered from this key in the normal path —
 		// the client classifies the sentinel in the message and shows its own

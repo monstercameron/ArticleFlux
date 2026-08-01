@@ -10,7 +10,7 @@ package i18n
 // language's feed readers already use rather than for a fresh translation.
 func init() {
 	text(DefaultLocale, "stream", map[string]string{
-		"all": "All feeds",
+		"all": "All articles",
 		// "My Feed", not "Recommended" or "For You".
 		//
 		// The vocabulary note above says to use the words readers already know, and

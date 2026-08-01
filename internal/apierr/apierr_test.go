@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -321,6 +322,101 @@ func TestEveryConstructorCarriesACatalogKey(t *testing.T) {
 		if e.Message == "" {
 			t.Errorf("%s carries no English fallback", name)
 		}
+	}
+}
+
+// Every domain sentinel FromDomain knows about maps to its documented kind and
+// carries its cause for the log, not just the two the earlier tests happened
+// to exercise through Status.
+func TestFromDomainClassifiesEverySentinel(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		kind Kind
+	}{
+		{"unscoped query", store.ErrNoScope, KindUnauthenticated},
+		{"idempotency conflict", store.ErrIdemConflict, KindFailedPrecondition},
+		{"invalid invite", store.ErrInviteInvalid, KindInvalidArgument},
+		{"bad reset token", store.ErrBadResetToken, KindInvalidArgument},
+		{"refresh reuse", store.ErrRefreshReuse, KindUnauthenticated},
+		{"ambiguous user", store.ErrAmbiguousUser, KindFailedPrecondition},
+		{"llm circuit open", llm.ErrCircuitOpen, KindUnavailable},
+		{"llm busy", llm.ErrBusy, KindResourceExhausted},
+		{"no encryption key", store.ErrNoKey, KindFailedPrecondition},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := FromDomain(fmt.Errorf("wrapped: %w", c.err))
+			if KindOf(got) != c.kind {
+				t.Errorf("kind = %d, want %d", KindOf(got), c.kind)
+			}
+			if !errors.Is(got, c.err) {
+				t.Error("the cause was not preserved for the log")
+			}
+		})
+	}
+}
+
+// The two errors this package cannot answer with a specific field, at all,
+// but that a client still has to be told to wait for.
+func TestUnavailableAndUnimplementedCarryTheirDetail(t *testing.T) {
+	unavail := Unavailable("srv.smartUnavailable", "paused", 30*time.Second)
+	if unavail.Kind != KindUnavailable || unavail.RetryAfter != 30*time.Second {
+		t.Errorf("Unavailable = %+v", unavail)
+	}
+	if status.Code(Status(unavail)) != codes.Unavailable {
+		t.Errorf("Status code = %v, want Unavailable", status.Code(Status(unavail)))
+	}
+
+	unimpl := Unimplemented("srv.notWired", "this deployment lacks the feature")
+	if unimpl.Kind != KindUnimplemented {
+		t.Errorf("Unimplemented = %+v", unimpl)
+	}
+	if status.Code(Status(unimpl)) != codes.Unimplemented {
+		t.Errorf("Status code = %v, want Unimplemented", status.Code(Status(unimpl)))
+	}
+}
+
+// The log sees cause: msg; the two forms of Error() are both real code paths,
+// not just the cause-carrying one every other test happens to build.
+func TestErrorStringWithAndWithoutACause(t *testing.T) {
+	bare := New(KindInternal, "srv.internal", "internal error")
+	if bare.Error() != "internal error" {
+		t.Errorf("Error() = %q, want the bare message", bare.Error())
+	}
+	withCause := New(KindInternal, "srv.internal", "internal error").WithCause(errors.New("disk full"))
+	if withCause.Error() != "internal error: disk full" {
+		t.Errorf("Error() = %q, want the message plus the cause", withCause.Error())
+	}
+}
+
+// Status and KindOf both have a fallback for an error that was never routed
+// through FromDomain at all — a handler that calls Status or KindOf directly
+// on a bare error, which every other test in this file avoids by going
+// through FromDomain first.
+func TestStatusAndKindOfFallBackOnABareError(t *testing.T) {
+	bare := errors.New("something broke")
+	if status.Code(Status(bare)) != codes.Internal {
+		t.Errorf("Status(bare) code = %v, want Internal", status.Code(Status(bare)))
+	}
+	if KindOf(bare) != KindInternal {
+		t.Errorf("KindOf(bare) = %d, want KindInternal", KindOf(bare))
+	}
+}
+
+// HTTPStatus's body carries field and doc_ref exactly when the error does —
+// the two keys TestTheHTTPMappingForTheSyncAPI never has a reason to set.
+func TestHTTPStatusCarriesFieldAndDocRef(t *testing.T) {
+	_, body := HTTPStatus(Invalid("feed_url", "srv.badURL", "bad address"))
+	if body["field"] != "feed_url" {
+		t.Errorf("field = %q, want feed_url", body["field"])
+	}
+
+	withDoc := Precondition("srv.noEncryptionKey", "no key configured")
+	withDoc.DocRef = "deploy/RUNBOOK.md#encryption-key"
+	_, body = HTTPStatus(withDoc)
+	if body["doc_ref"] != "deploy/RUNBOOK.md#encryption-key" {
+		t.Errorf("doc_ref = %q", body["doc_ref"])
 	}
 }
 
