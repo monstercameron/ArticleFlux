@@ -1255,6 +1255,24 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		out = out[:MaxRanked]
 	}
 
+	// Saturation BEFORE the model, and the order of these two is load-bearing.
+	//
+	// applyDiversityRerank rebuilds the order from score and saturation penalties alone
+	// — it does not read the order it was handed — so running it after Smart+ threw the
+	// model's answer away entirely. The paid tier reordered the head, and then the free
+	// tier's rerank put everything back, so promoted rows arrived below unpromoted ones
+	// carrying a `smart_plus` tier that described a position they no longer held. That
+	// is the worst version of the bug: the reader was billed for a reorder, told which
+	// rows it produced, and the rows were not where it put them
+	// (TestSmartPlusPromotesItsPicks).
+	//
+	// The model's word is last, which is what "the model is asked which of these to lead
+	// with" means. Diversity is part of deciding which candidates won; it belongs on the
+	// free tier's side of that line.
+	if len(out) > 1 {
+		out = applyDiversityRerank(out)
+	}
+
 	// Smart+ re-orders the head of the list, and only the head.
 	//
 	// Free Smart still does all of recall and all of the scoring; the model is shown the
@@ -1270,9 +1288,6 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 	if plus != nil {
 		positiveExamples := topEngagedTitles(engaged, MaxTasteExamples)
 		plusTier = s.applySmartPlus(ctx, plus, out, topicSet, feeds, positiveExamples, dislikedTitles)
-	}
-	if len(out) > 1 {
-		out = applyDiversityRerank(out)
 	}
 
 	rows := make([]store.RankedItem, 0, len(out))
