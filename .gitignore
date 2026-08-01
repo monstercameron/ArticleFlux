@@ -9,6 +9,15 @@
 *.db-shm
 /data/
 /backups/
+# And their dated copies, which the rule above does not catch: the globs anchor
+# on the END of the name, so `articleflux.db` is ignored and
+# `articleflux.db.backup-20260801-011439` is a 114 MB file full of somebody's
+# reading history sitting in `git status` waiting to be added by a `git add -A`.
+# The suffix a backup carries is whatever was typed at the time, so this matches
+# on the `.db` in the middle rather than on the end.
+*.db.backup*
+*.db-wal.backup*
+*.db-shm.backup*
 
 # Synthesised speech. Every file here is one of the reader's articles read aloud
 # and cached on disk — the same privacy class as the database, in a directory
@@ -137,6 +146,12 @@ service-account*.json
 *.local.*
 /scratch/
 /tmp/
+# The same two directories the e2e rules above already cover, at the repository
+# root — which is where they land when the suite or a tool is run from here
+# rather than from e2e/. Both were untracked and visible in `git status` for a
+# session, which is how an artifact ends up in a commit that meant to be source.
+/.tmp/
+/test-results/
 
 # Go build and test output.
 *.exe
