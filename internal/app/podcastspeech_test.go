@@ -426,8 +426,18 @@ func TestTurningBroadcastOffGoesBackToTheArticle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := voice.last().key; got != ids[0] {
-		t.Errorf("cache key = %q, want the plain item id", got)
+	// The plain read's key, which carries speechRev: what the plain voice says
+	// has changed at least once (it stopped announcing the publication), and a
+	// key that did not move with it would answer the new words with a recording
+	// of the old ones. What matters here is that it is NOT a broadcast key.
+	want := ids[0] + "#" + speechRev
+	if got := voice.last().key; got != want {
+		t.Errorf("cache key = %q, want the plain read's key %q", got, want)
+	}
+	// And the plain read is the item itself: no station identifier, because
+	// nothing about this request is a programme any more.
+	if got := voice.last().text; strings.Contains(got, "From Cast Weekly") {
+		t.Errorf("broadcast off still announced the publication: %q", got)
 	}
 }
 
@@ -688,5 +698,54 @@ func TestIsCloseRequest(t *testing.T) {
 			t.Errorf("isCloseRequest(%q, %v) = %v, want %v",
 				tc.intro, tc.podcast, got, tc.want)
 		}
+	}
+}
+
+// **The regression test for "I pressed play on one article and got a radio show".**
+//
+// Broadcast mode is ON for this account — it is what broadcastApp sets — and the
+// request is a plain listen: a sealed ticket and nothing else. No handover, no
+// clock, no story count, no run-through, because the reader did not open a
+// programme; they pressed play on one article in their feed.
+//
+// Before this, the preference alone selected the broadcast writer, so the
+// listener got a greeting and the date in front of an article retold rather than
+// read. Now the request decides too (castRequest), and the two answers are told
+// apart by the KEY as much as by the words: a programme falling back to the
+// article reads it the announced way under `<id>`, and this is neither.
+func TestAPlainListenIsNotABroadcastEvenWithTheSwitchOn(t *testing.T) {
+	a, voice, sc, ids := broadcastApp(t)
+
+	it, err := a.repo.GetItem(t.Context(), sc, ids[0])
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+
+	rec := speak(t, a, "item="+ids[0])
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	got := voice.last()
+
+	// The item, and only the item: its headline, then its content.
+	if !strings.HasPrefix(got.text, it.Title+".") {
+		t.Errorf("a plain listen did not open on the headline: %q", got.text)
+	}
+	if !strings.Contains(got.text, "story body") {
+		t.Errorf("a plain listen lost the content: %q", got.text)
+	}
+	// Nothing this application wrote. No station identifier, and nothing that
+	// only a broadcast has.
+	for _, bad := range []string{"From Cast Weekly", "Good morning", "Good afternoon",
+		"Good evening", "coming up"} {
+		if strings.Contains(got.text, bad) {
+			t.Errorf("a plain listen carried %q: %q", bad, got.text)
+		}
+	}
+	// The plain read's key. `<id>` alone would be the broadcast's fallback, which
+	// is a different rendering of the same article and must not be served for
+	// this one.
+	if want := ids[0] + "#" + speechRev; got.key != want {
+		t.Errorf("cache key = %q, want the plain read's key %q", got.key, want)
 	}
 }

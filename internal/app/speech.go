@@ -43,6 +43,27 @@ const digestPrefKey = "tts.digest"
 // and there is no meaningful "a digest of a broadcast segment".
 const podcastPrefKey = "tts.podcast"
 
+// speechRev names the current RENDERING of an article for the plain voice, and
+// it is part of the audio cache key for the same reason smart's promptVersion is
+// part of the digest's text key: when the words change, the recording of the old
+// words must not go on being served for them.
+//
+// Without it, dropping the "From Hacker News." announcement would have been
+// audible only on articles nobody had listened to yet — and the difference
+// between the two halves of a library is invisible, permanent, and reads as the
+// change not having worked.
+//
+// Bump it whenever what the plain voice SAYS changes: the rules in speechText,
+// or the summariser's instructions in internal/smart. It costs one
+// re-synthesis per already-heard article, which is what it means for the words
+// to be different.
+//
+// Deliberately NOT part of the broadcast's keys. Those are podcastKey and
+// fluxcast.ScriptKey and they carry their own revisions; sharing this one would
+// make every adjustment to the plain voice re-bill a programme that had not
+// changed at all.
+const speechRev = "r2"
+
 // prevItemParam names the story that was just played, so a broadcast segment can
 // hand over from it.
 //
@@ -128,6 +149,40 @@ const (
 	asParam = "as"
 	asText  = "text"
 )
+
+// castRequest reports whether this request is part of a PROGRAMME, as opposed to
+// one article somebody pressed play on.
+//
+// The preference used to be the whole test, and it was the wrong question. It
+// says how a broadcast should SOUND; it does not say that this playback is one.
+// So a reader who turned "join the stories up" on for the show, then pressed
+// play on a single article in their feed, got a greeting, the date and the
+// article retold in place of the article — and no combination of client-side
+// restraint could prevent it, because the server never looked at the request.
+//
+// What it looks for is the parameters only a programme sends: a handover, a
+// position in the split opening, the listener's clock, the story count, the
+// run-through, or a fitted beat's budget. Every request the show makes carries
+// at least one — the top of a show sends the clock and the count, every story
+// after it sends a handover, the opening and the sign-off name themselves — and
+// a plain listen carries none of them, because it is a sealed ticket and nothing
+// else.
+//
+// Deliberately NOT a new parameter of its own. A flag saying "this is a
+// broadcast" would be a second source of truth for something the request already
+// answers, and the first client to send the flag without the parameters would
+// get a segment written to hand over from a story it never named.
+func castRequest(q url.Values) bool {
+	for _, p := range []string{
+		prevItemParam, introParam, openNowParam, openStoriesParam,
+		openLineupParam, beatWordsParam,
+	} {
+		if strings.TrimSpace(q.Get(p)) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 // wantsOpening decides whether this request gets a greeting attached.
 //
@@ -402,6 +457,39 @@ func (a *App) podcastOutro(ctx context.Context, it store.Item, vibe string,
 	return a.podcast.Segment(ctx, outroSeg(it, vibe, open))
 }
 
+// digestKey names the recording of a SHORTENED article.
+//
+// Distinct from the plain read's key, which is the point — the summary and the
+// article are two different sets of words about the same item, and a key that
+// could not tell them apart would serve one for the other. That much has always
+// been true; what it now also carries is speechRev, so that changing what the
+// summary SAYS retires the recordings of what it used to say.
+func digestKey(it store.Item) string { return it.ID + "#digest:" + speechRev }
+
+// digestSpoken is the summary as it is heard: the item's headline, then the
+// shortened content.
+//
+// The headline is here so that "summarise" means only that — the same item the
+// plain voice reads, with the content made shorter — rather than a differently
+// shaped thing that also happens to be brief. It is the item's own text, not
+// something written for it.
+//
+// The summariser itself never sees it (speechBody is what it is fed, and
+// speechBody excludes the title): a model handed the headline summarises the
+// headline, and what comes back is a sentence about what the article is called.
+func digestSpoken(it store.Item, digest string) string {
+	digest = strings.TrimSpace(digest)
+	head := speechHead(it)
+	switch {
+	case digest == "":
+		return head
+	case head == "":
+		return digest
+	default:
+		return head + "\n\n" + digest
+	}
+}
+
 // podcastKey names an audio recording by the PAIR of articles it covers, not by
 // the article.
 //
@@ -466,9 +554,16 @@ func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
 // each lands under. Two copies of that chain would disagree eventually, and the
 // symptom would be captions from one script under audio from another, which
 // reads as the narrator saying something other than what is written.
+// # podcast, and why it is a parameter rather than another read of `prefs`
+//
+// Because the preference does not answer the question this branch asks. It says
+// the reader wants a programme to sound joined up; it does not say that THIS
+// request is part of one, and reading it here is what turned every single-article
+// listen into a broadcast with a greeting on the front. The caller decides, from
+// the preference AND the request — see castRequest — and passes the answer in.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item, open *smart.Opening, intro, opened, closing, cachedOnly bool) (text, cacheKey string) {
-	text, cacheKey = speechText(it), it.ID
+	it store.Item, prev store.Item, open *smart.Opening, podcast, intro, opened, closing, cachedOnly bool) (text, cacheKey string) {
+	text, cacheKey = speechText(it), it.ID+"#"+speechRev
 
 	// The sign-off, on its own, after every story. Checked FIRST because it is
 	// the one mode that is not a rendering of the item at all — the item is
@@ -531,7 +626,18 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 		}
 	}
 
-	if prefs[podcastPrefKey] == "true" {
+	if podcast {
+		// The fallback for everything below, set BEFORE any of it can fail.
+		//
+		// A programme that cannot be written reads the article, and it reads it
+		// the way a programme does: the station identifier, then the headline,
+		// then the body — under the key it has always used. That is unchanged
+		// behaviour and it has to stay unchanged, which is exactly why the plain
+		// voice's own rendering is a different function with a different key.
+		// While the two shared one, dropping the announcement from a single
+		// reader's listen also dropped it from every broadcast whose writer was
+		// down. See speechAnnounced.
+		text, cacheKey = speechAnnounced(it), it.ID
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
 		if cachedOnly {
 			if txt, ok := a.podcast.Cached(ctx, storySeg(it, prev, vibe, open, opened)); ok {
@@ -586,7 +692,7 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 	if prefs[digestPrefKey] == "true" {
 		if cachedOnly {
 			if txt, ok := a.digest.Cached(ctx, it.ID); ok {
-				return txt, it.ID + "#digest"
+				return digestSpoken(it, txt), digestKey(it)
 			}
 			if a.digest != nil && a.digest.Configured(ctx) {
 				return "", ""
@@ -597,7 +703,7 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 		d, err := a.digestFor(ctx, it)
 		switch {
 		case err == nil:
-			return d, it.ID + "#digest"
+			return digestSpoken(it, d), digestKey(it)
 		case errors.Is(err, smart.ErrNothingToSummarise):
 			// Nothing to condense is not a failure — an item with two lines of
 			// body IS its own summary. Read it.
@@ -807,13 +913,19 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// text they would have spoken.
 	wantScript := strings.TrimSpace(r.URL.Query().Get(asParam)) == asText
 
+	// Broadcast mode, and BOTH halves of it: the reader asked for a programme,
+	// and this request is one. Everything below that used to read the preference
+	// on its own now reads this — see castRequest for the failure that came of
+	// asking only the first half.
+	podcastOn := prefs[podcastPrefKey] == "true" && castRequest(r.URL.Query())
+
 	// A BEAT of a planned programme, which is a different request from anything
 	// this handler answered before: the client has planned a whole show with
 	// internal/fluxcast and is asking for one beat of it, at a word budget the
 	// fitter chose. See speechbeat.go for why this is a second path rather than
 	// a rewrite of the one below — old clients are cached by a Service Worker
 	// and will keep asking the old way for as long as their bundle survives.
-	if kind, words, handover, rev, ok := castBeat(r); ok && prefs[podcastPrefKey] == "true" {
+	if kind, words, handover, rev, ok := castBeat(r); ok && podcastOn {
 		b := a.briefFor(r.Context(), sc, r, it, kind, words, handover, rev)
 		if wantScript {
 			// Cache-only, for the reason asParam gives. A beat whose script has
@@ -843,16 +955,16 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// broadcast mode, and only ever at the top: a request carrying both an intro
 	// flag and a predecessor is a client that has lost track of where it is, and
 	// the flag loses.
-	intro := isIntroRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
+	intro := isIntroRequest(r.URL.Query().Get(introParam), podcastOn)
 	// The sign-off, asked for on its own after the last story. Like the opening
 	// it is its own recording, and for a related reason: the music has to come
 	// back up under it and then end, which can only be timed against a file.
-	closing := isCloseRequest(r.URL.Query().Get(introParam), prefs[podcastPrefKey] == "true")
+	closing := isCloseRequest(r.URL.Query().Get(introParam), podcastOn)
 	// The other half of the split: the greeting has already been recorded, so
 	// this story must not open the show a second time.
-	opened := prefs[podcastPrefKey] == "true" &&
+	opened := podcastOn &&
 		strings.TrimSpace(r.URL.Query().Get(introParam)) == introDone
-	if prefs[podcastPrefKey] == "true" {
+	if podcastOn {
 		if pid := strings.TrimSpace(r.URL.Query().Get(prevItemParam)); pid != "" && len(pid) <= 64 && pid != id {
 			// An unreadable or unknown predecessor is simply no predecessor. It
 			// is not an error the listener can act on, and refusing to speak
@@ -889,7 +1001,7 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// them; a sign-off has every story behind it by definition, and the one it
 	// names travels as the item rather than as `p`.
 	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open,
-		intro && prev.ID == "", opened && prev.ID == "", closing, wantScript)
+		podcastOn, intro && prev.ID == "", opened && prev.ID == "", closing, wantScript)
 	if text != "" && wantScript {
 		serveScript(w, r, text)
 		return
@@ -984,48 +1096,81 @@ var (
 	paraRE  = regexp.MustCompile(`\n\s*\n\s*`)
 )
 
-// speechText reduces an item to what should be read aloud.
+// speechText is the FEED ITEM, spoken: its headline, then its content, and
+// nothing this application wrote.
 //
-// The title first, then the body, because a voice that starts mid-article gives
-// the listener nothing to hang it on. Markup is stripped rather than sent: the
-// provider bills per character, and `<div class="wp-block-group">` is neither
-// speech nor cheap.
+// It used to open with "From Hacker News." — the station identifier below — on
+// the reasoning that a queue with no visual needs to say where a story came
+// from. That reasoning belongs to a broadcast and it had leaked into the plain
+// read: someone who pressed play on an article got a sentence they had not asked
+// for, announcing a publication whose name was already on the card in front of
+// them. Per product direction the plain voice reads the item and adds nothing.
+//
+// The headline is not an addition — it is the item's own first line, and a voice
+// that starts mid-article gives the listener nothing to hang it on. Markup is
+// stripped rather than sent: the provider bills per character, and
+// `<div class="wp-block-group">` is neither speech nor cheap.
 func speechText(it store.Item) string {
 	body := speechBody(it)
-	if intro := speechIntro(it); intro != "" {
+	if head := speechHead(it); head != "" {
 		if body == "" {
-			return intro
+			return head
 		}
-		return intro + "\n\n" + body
+		return head + "\n\n" + body
 	}
 	return body
 }
 
-// speechIntro is the announcement that opens a segment.
+// speechHead is the item's headline as a spoken sentence, or "" when it has
+// none.
 //
-// Source AND title, not the title alone, because of how this is actually used:
-// a continuous session plays one article after another with no visual, and
-// "Fsyncgate" arriving cold tells a listener what it is called but not where it
-// came from — which is most of how anyone decides whether to keep listening.
-// Naming the publication is the difference between a queue and a radio station.
+// A full stop rather than a colon or nothing at all: a synthesiser reads a colon
+// as a pause of no particular length, and a headline run into the first
+// paragraph comes out as one sentence that parses as neither.
+func speechHead(it store.Item) string {
+	title := strings.TrimSpace(it.Title)
+	if title == "" {
+		return ""
+	}
+	return title + "."
+}
+
+// speechAnnounced is the BROADCAST's rendering of an article: the station
+// identifier, the headline, then the body.
 //
-// Written as a sentence with a full stop rather than a colon: a synthesiser
-// reads a colon as a pause of no particular length, and "From Hacker News:
-// Fsyncgate" comes out as one run-on. The full stop is what makes it land as a
-// station identifier followed by a headline.
-func speechIntro(it store.Item) string {
+// This is what speechText used to be, kept under its own name and unchanged,
+// because the two callers want different things and one of them is the podcast.
+// A programme whose written segment failed falls back to reading the article,
+// and in that context "From Hacker News. Fsyncgate." is right — it is a running
+// show with no visual, one story after another, and naming the publication is
+// the difference between a queue and a radio station.
+//
+// Split rather than shared so that the plain voice owes the broadcast nothing.
+// While these were one function, a change to what a reader hears when they press
+// play on one article was also a change to what a programme says when its writer
+// is down, and neither could be adjusted without the other moving.
+func speechAnnounced(it store.Item) string {
+	body := speechBody(it)
 	title := strings.TrimSpace(it.Title)
 	source := strings.TrimSpace(it.SourceTitle)
+	var head string
 	switch {
 	case title == "" && source == "":
-		return ""
+		head = ""
 	case title == "":
-		return "From " + source + "."
+		head = "From " + source + "."
 	case source == "":
-		return title + "."
+		head = title + "."
 	default:
-		return "From " + source + ". " + title + "."
+		head = "From " + source + ". " + title + "."
 	}
+	if head == "" {
+		return body
+	}
+	if body == "" {
+		return head
+	}
+	return head + "\n\n" + body
 }
 
 // speechBody is the article itself, with the markup taken out.

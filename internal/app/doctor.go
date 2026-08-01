@@ -173,7 +173,10 @@ func (a *App) DoctorSpeech(ctx context.Context, sc store.Scope, full bool) []Doc
 			Detail: fmt.Sprintf("%d words", len(strings.Fields(text)))})
 	}
 	if strings.TrimSpace(text) == "" {
-		text = speechText(it)
+		// The BROADCAST's fallback, because that is what this check is
+		// diagnosing — the same rendering writeBeat would have used. See
+		// speechAnnounced.
+		text = speechAnnounced(it)
 	}
 
 	// One short sentence rather than the segment: this proves the endpoint, the

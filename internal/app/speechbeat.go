@@ -206,7 +206,12 @@ func (a *App) castLineup(ctx context.Context, sc store.Scope, raw string) []flux
 func (a *App) writeBeat(ctx context.Context, b fluxcast.Brief, it store.Item) (text, key string, err error) {
 	if a.write == nil {
 		if b.Kind == fluxcast.BeatStory {
-			return speechText(it), it.ID, nil
+			// speechAnnounced, not speechText: this is a PROGRAMME reading the
+			// article because its segment could not be written, and a show with
+			// no visual says where a story came from. The plain voice reads the
+			// item alone and is deliberately a different function — see
+			// speechAnnounced for why the two were split.
+			return speechAnnounced(it), it.ID, nil
 		}
 		return "", "", errNoWriter
 	}
@@ -230,7 +235,7 @@ func (a *App) writeBeat(ctx context.Context, b fluxcast.Brief, it store.Item) (t
 		a.cfg.Log.Warn("broadcast beat failed, reading the article",
 			"item", it.ID, "kind", string(b.Kind), "err", werr)
 	}
-	return speechText(it), it.ID, nil
+	return speechAnnounced(it), it.ID, nil
 }
 
 // errNoWriter is an instance with no broadcast writer at all. Distinct from a

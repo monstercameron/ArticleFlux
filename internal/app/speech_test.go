@@ -396,36 +396,75 @@ func TestSpeechTextStripsMarkup(t *testing.T) {
 	}
 }
 
-// A continuous session plays one article after another with no visual, so a
-// segment that opens with the headline alone tells the listener what it is
-// called but not where it came from — which is most of how anyone decides
-// whether to keep listening.
-func TestSpeechIntroNamesTheSource(t *testing.T) {
-	got := speechIntro(store.Item{SourceTitle: "Hacker News", Title: "Fsyncgate"})
-	if got != "From Hacker News. Fsyncgate." {
-		t.Fatalf("intro = %q", got)
+// **The plain voice reads the ITEM and adds nothing.**
+//
+// It used to open with "From Hacker News." — a station identifier that belongs
+// to a broadcast and had leaked into the plain read, so someone who pressed play
+// on one article heard a sentence they had not asked for, naming a publication
+// already on the card in front of them.
+func TestThePlainVoiceReadsTheItemAndNothingElse(t *testing.T) {
+	got := speechText(store.Item{
+		SourceTitle: "Hacker News",
+		Title:       "Fsyncgate",
+		ContentHTML: "<p>The kernel drops the page.</p>",
+	})
+	if strings.Contains(got, "From Hacker News") || strings.Contains(got, "Hacker News") {
+		t.Errorf("the plain read announces the publication: %q", got)
+	}
+	if !strings.HasPrefix(got, "Fsyncgate.") {
+		t.Errorf("the plain read does not open on the headline: %q", got)
+	}
+	if !strings.Contains(got, "The kernel drops the page.") {
+		t.Errorf("the plain read lost the content: %q", got)
+	}
+}
+
+// Every combination has to produce something sayable. An item with no headline
+// is real, and a lone full stop read aloud is a fault.
+func TestSpeechHeadDegradesCleanly(t *testing.T) {
+	cases := []struct{ title, want string }{
+		{"Fsyncgate", "Fsyncgate."},
+		{"", ""},
+		{"  ", ""},
+	}
+	for _, c := range cases {
+		if got := speechHead(store.Item{SourceTitle: "Hacker News", Title: c.title}); got != c.want {
+			t.Errorf("speechHead(%q) = %q, want %q", c.title, got, c.want)
+		}
+	}
+}
+
+// The BROADCAST keeps the announcement, and keeps it in a function of its own.
+//
+// A programme whose segment could not be written falls back to reading the
+// article, and there the station identifier is right: a running show with no
+// visual, one story after another. The two renderings are separate so that
+// changing what a reader hears on one article cannot change what a programme
+// says when its writer is down.
+func TestTheBroadcastFallbackStillNamesTheSource(t *testing.T) {
+	it := store.Item{SourceTitle: "Hacker News", Title: "Fsyncgate",
+		ContentHTML: "<p>The kernel drops the page.</p>"}
+	got := speechAnnounced(it)
+	if !strings.HasPrefix(got, "From Hacker News. Fsyncgate.") {
+		t.Errorf("the broadcast fallback lost its announcement: %q", got)
+	}
+	if !strings.Contains(got, "The kernel drops the page.") {
+		t.Errorf("the broadcast fallback lost the article: %q", got)
 	}
 	// A full stop rather than a colon, because a synthesiser reads a colon as a
 	// pause of no particular length and the two run together.
 	if strings.Contains(got, ":") {
-		t.Errorf("the intro uses a colon, which does not survive being spoken: %q", got)
+		t.Errorf("the announcement uses a colon, which does not survive being spoken: %q", got)
 	}
-}
-
-// Every combination has to produce something sayable. A feed with no title and
-// an item with no headline are both real, and "From ." read aloud is a fault.
-func TestSpeechIntroDegradesCleanly(t *testing.T) {
-	cases := []struct{ source, title, want string }{
-		{"Hacker News", "Fsyncgate", "From Hacker News. Fsyncgate."},
+	for _, c := range []struct{ source, title, want string }{
 		{"", "Fsyncgate", "Fsyncgate."},
 		{"Hacker News", "", "From Hacker News."},
 		{"", "", ""},
 		{"  ", "  ", ""},
-	}
-	for _, c := range cases {
-		got := speechIntro(store.Item{SourceTitle: c.source, Title: c.title})
+	} {
+		got := speechAnnounced(store.Item{SourceTitle: c.source, Title: c.title})
 		if got != c.want {
-			t.Errorf("speechIntro(%q, %q) = %q, want %q", c.source, c.title, got, c.want)
+			t.Errorf("speechAnnounced(%q, %q) = %q, want %q", c.source, c.title, got, c.want)
 		}
 	}
 }
@@ -449,10 +488,14 @@ func TestSpeechBodyExcludesTheAnnouncement(t *testing.T) {
 		t.Errorf("the body is missing its own text: %q", body)
 	}
 
-	// And speechText is the two of them joined, in that order.
+	// And speechText is the headline and the body joined, in that order, with
+	// no announcement between them.
 	full := speechText(it)
-	if !strings.HasPrefix(full, "From Hacker News. Fsyncgate.") {
-		t.Errorf("speechText does not lead with the announcement: %q", full)
+	if !strings.HasPrefix(full, "Fsyncgate.") {
+		t.Errorf("speechText does not lead with the headline: %q", full)
+	}
+	if strings.Contains(full, "From Hacker News") {
+		t.Errorf("speechText announces the publication: %q", full)
 	}
 	if !strings.Contains(full, "The kernel drops the page.") {
 		t.Errorf("speechText lost the body: %q", full)
@@ -551,18 +594,27 @@ func TestSpeechScriptFallsBackWhenAWiredWriterFails(t *testing.T) {
 	prev := store.Item{ID: "item-1", Title: "Postgres", SourceTitle: "Hacker News"}
 
 	text, key := a.speechScript(context.Background(), map[string]string{digestPrefKey: "true"},
-		it, prev, nil, false, false, false, false)
+		it, prev, nil, false, false, false, false, false)
 	if !strings.Contains(text, "The body.") {
 		t.Errorf("digest configured-but-failing: article was not read aloud: %q", text)
 	}
-	if key != it.ID {
-		t.Errorf("digest configured-but-failing: cache key = %q, want the plain item id", key)
+	// The PLAIN read's key: this listen is not part of a programme, so what the
+	// reader hears is the item, and speechRev is what stops an older rendering
+	// of it being served in its place.
+	if want := it.ID + "#" + speechRev; key != want {
+		t.Errorf("digest configured-but-failing: cache key = %q, want %q", key, want)
 	}
 
 	text2, key2 := a.speechScript(context.Background(), map[string]string{podcastPrefKey: "true"},
-		it, prev, nil, false, false, false, false)
+		it, prev, nil, true, false, false, false, false)
 	if !strings.Contains(text2, "The body.") {
 		t.Errorf("podcast configured-but-failing: article was not read aloud: %q", text2)
+	}
+	// The BROADCAST's fallback, and therefore the broadcast's rendering and its
+	// long-standing key: a programme reading the article still says where the
+	// story came from.
+	if !strings.HasPrefix(text2, "From LWN. Fsyncgate.") {
+		t.Errorf("the broadcast fallback lost its announcement: %q", text2)
 	}
 	if key2 != it.ID {
 		t.Errorf("podcast configured-but-failing: cache key = %q, want the plain item id", key2)
@@ -660,15 +712,27 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 		{digestPrefKey: "true"},
 		{podcastPrefKey: "true", digestPrefKey: "true"},
 	} {
-		text, key := a.speechScript(context.Background(), prefs, it, prev, nil, false, false, false, false)
+		podcast := prefs[podcastPrefKey] == "true"
+		text, key := a.speechScript(context.Background(), prefs, it, prev, nil,
+			podcast, false, false, false, false)
 		if !strings.Contains(text, "The body.") {
 			t.Errorf("prefs %v: the article was not read aloud: %q", prefs, text)
 		}
 		// The key has to fall back with the text. A key that said "podcast" over
 		// the plain article would poison the audio cache for the day the writer
 		// starts working.
-		if key != it.ID {
-			t.Errorf("prefs %v: cache key = %q, want the plain item id", prefs, key)
+		//
+		// WHICH plain key depends on who was asking. A programme falling back
+		// reads the article the way a programme does, under the key it has
+		// always used; a plain listen reads the item, under the plain read's
+		// own key. Two renderings, two keys, and neither may be served for the
+		// other.
+		want := it.ID + "#" + speechRev
+		if podcast {
+			want = it.ID
+		}
+		if key != want {
+			t.Errorf("prefs %v: cache key = %q, want %q", prefs, key, want)
 		}
 	}
 }

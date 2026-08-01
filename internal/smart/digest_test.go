@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -183,9 +184,26 @@ func TestInstructionsForbidTheThingsThatBreakSpeech(t *testing.T) {
 			t.Errorf("the instructions no longer mention %q", must)
 		}
 	}
-	// The requested length has to come from the constant, or the two drift.
-	if !strings.Contains(digestInstructions, "180") {
+	// The requested length has to come from the constant, or the two drift —
+	// which is exactly what this assertion used to do, pinned at the literal
+	// 180 while the constant moved.
+	if !strings.Contains(digestInstructions, strconv.Itoa(targetWords)) {
 		t.Error("the instructions do not carry the target word count")
+	}
+	// A summary is SHORTER than the thing it summarises, and the reference is
+	// the feed copy already on the card rather than an abstract minute of
+	// speech: at 180 words this came out longer than the blurb somebody
+	// pressed play to avoid reading.
+	if targetWords > 100 {
+		t.Errorf("targetWords = %d, which stops being a summary", targetWords)
+	}
+	// And it opens on the substance. A digest is not a broadcast segment:
+	// nothing came before it and nothing follows it, so a greeting, a date or
+	// a "coming up" is a show that does not exist.
+	for _, must := range []string{"no introduction", "greet", "announce the publication"} {
+		if !strings.Contains(lower, must) {
+			t.Errorf("the instructions no longer forbid %q", must)
+		}
 	}
 }
 

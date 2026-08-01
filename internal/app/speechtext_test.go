@@ -32,13 +32,49 @@ func TestScriptIsNotServedBeforeItIsWritten(t *testing.T) {
 	a.podcast = smart.NewPodcast(llm.New(func(context.Context) string { return "a-key" }),
 		nil, t.TempDir())
 
+	// A handover, because that is what makes this a request the broadcast
+	// writer will answer. Without one it is a plain listen — the article gets
+	// read, so the article IS the caption and 200 is the right answer (see
+	// castRequest, and the test below for the same 200 arrived at differently).
+	// The client sends the handover here too: the caption URL is the audio URL
+	// plus `as=text`, so the two describe one recording by construction.
 	q := url.Values{}
 	q.Set("item", ids[1])
+	q.Set(prevItemParam, ids[0])
 	q.Set(asParam, asText)
 	rec := speak(t, a, q.Encode())
 
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("status %d, want 204 for an unwritten script: %s", rec.Code, rec.Body.String())
+	}
+	if voice.count() != 0 {
+		t.Errorf("a caption request synthesised %d times", voice.count())
+	}
+}
+
+// The same instance, the same configured writer, and a request that is NOT part
+// of a programme: no handover, no opening, no beat — one article somebody
+// pressed play on.
+//
+// It answers with the article rather than 204, and that is the whole point of
+// the fix this test was written for. Nothing is going to be written for a
+// request like this, so there is no script to wait for: the reader hears the
+// article (or its summary), and the article is the honest caption for it.
+func TestAPlainListenIsCaptionedWithTheArticle(t *testing.T) {
+	a, voice, _, ids := broadcastApp(t)
+	a.podcast = smart.NewPodcast(llm.New(func(context.Context) string { return "a-key" }),
+		nil, t.TempDir())
+
+	q := url.Values{}
+	q.Set("item", ids[1])
+	q.Set(asParam, asText)
+	rec := speak(t, a, q.Encode())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "story body") {
+		t.Errorf("a plain listen was not captioned with the article: %q", rec.Body.String())
 	}
 	if voice.count() != 0 {
 		t.Errorf("a caption request synthesised %d times", voice.count())

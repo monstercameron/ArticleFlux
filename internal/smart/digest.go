@@ -9,7 +9,9 @@
 // So this does not "shorten the article". It rewrites it for the ear, and the
 // difference shows up in the prompt: no bullets, no headings, no "in this
 // article we will", and never a sentence whose structure only parses on a second
-// look. What comes back is roughly a minute of speech that keeps the argument.
+// look. What comes back is about twenty-five seconds of speech that keeps the
+// argument — shorter than the feed copy it sits beside rather than longer, which
+// is what a summary has to be to be worth pressing play on. See targetWords.
 //
 // # What it costs and how often
 //
@@ -43,15 +45,22 @@ import (
 // instructions below that nobody can invalidate is a change that only applies to
 // articles nobody has listened to yet, and the difference between the two
 // halves of the library would be invisible and permanent.
-const promptVersion = "v1"
+const promptVersion = "v2"
 
 // targetWords is the length the instructions ask for.
 //
-// About a minute of speech. Long enough to carry an argument rather than
-// announce that one exists — the failure mode of a shorter digest is that it
-// tells you the topic and leaves you to go and read the thing anyway, which is
-// the trip this feature exists to save.
-const targetWords = 180
+// It asked for 180 — about a minute — on the reasoning that a shorter digest
+// tells you the topic and leaves you to go and read the thing anyway. Per
+// product direction that was the wrong end of the trade in practice: set beside
+// the feed copy it is summarising, a minute of speech is LONGER than the thing
+// somebody pressed play to avoid, and it stopped sounding like a summary at all.
+//
+// Seventy words is twenty-five seconds or so — recognisably shorter than the
+// article, in the same neighbourhood as the blurb already on the card, and still
+// enough for a finding and its reason. The rules below carry the rest of the
+// weight: what protects the argument at this length is "lead with the finding"
+// and "keep the specifics", not the word count.
+const targetWords = 70
 
 // maxInputChars bounds what is sent to the model.
 //
@@ -62,8 +71,10 @@ const targetWords = 180
 const maxInputChars = 60 << 10
 
 // maxOutputTokens has to cover the model's THINKING as well as the answer (see
-// llm.Request). A 180-word answer is ~250 tokens; the rest is headroom so a
-// model that deliberates does not truncate mid-sentence, which is audible.
+// llm.Request). A seventy-word answer is ~100 tokens; the rest is headroom so a
+// model that deliberates does not truncate mid-sentence, which is audible. Left
+// where it was when the target came down — the headroom was never about the
+// answer's length, and a tighter ceiling would buy nothing but truncation.
 const digestMaxTokens = 4000
 
 // ErrNothingToSummarise means the item had no usable text. Distinct so the
@@ -105,10 +116,12 @@ func (d *Digest) Configured(ctx context.Context) bool {
 // being typed twice. Two copies of the same number, one in the prompt and one in
 // the code, is the kind of thing that stays wrong for months because each half
 // looks correct on its own.
-var digestInstructions = `You rewrite an article to be LISTENED to, as one segment of a personal audio digest.
+var digestInstructions = `You SHORTEN an article so it can be listened to. The same article, in fewer words. You are not retelling it, not presenting it and not introducing it.
 
 Write about ` + strconv.Itoa(targetWords) + ` words of continuous spoken prose. Rules:
 
+- Add NOTHING. No framing, no scene-setting, no context the article did not give, no opinion of your own about it, and no conclusion it did not draw. Every sentence you write must be something the article itself says.
+- NO INTRODUCTION OF ANY KIND. Do not greet the listener, do not say good morning, do not announce the publication, the headline, the date or what is coming. The first words out are the substance. There is no show around this: nothing came before it and nothing follows it, so anything that hands over, sets a scene or signs off is wrong here.
 - Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown of any kind. Every character you emit will be read aloud by a speech synthesiser, so a hyphen or an asterisk becomes a noise.
 - Lead with the actual finding, claim or event. Never open with "This article discusses" or "The author argues that" — say the thing itself.
 - Keep the argument, not just the topic. A listener should finish knowing what was concluded and why, not merely what the subject was.
