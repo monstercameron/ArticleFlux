@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strconv"
 	"strings"
 
@@ -63,7 +64,30 @@ func (p *Podcast) Write(ctx context.Context, b fluxcast.Brief) (fluxcast.Draft, 
 		// key that does not describe it — permanently, and invisibly.
 		return fluxcast.Draft{}, ErrStaleRevision
 	}
+	seg, ok := p.segmentFor(b)
+	if !ok {
+		return fluxcast.Draft{}, ErrNothingToSummarise
+	}
+	text, err := p.Segment(ctx, seg)
+	if err != nil {
+		return fluxcast.Draft{}, err
+	}
+	return fluxcast.Draft{
+		Text:  text,
+		Words: fluxcast.CountWords(text),
+		Model: p.model(ctx),
+	}, nil
+}
 
+// segmentFor is the Brief-to-Segment mapping, split out of Write so that the
+// captions can ask "is this beat's script on disk" without a second, drifting
+// copy of the same switch. A caption looked for under a key the writer never
+// used is a caption that never appears, and nothing would catch it.
+//
+// The mapping is deliberately total — every fluxcast.BeatKind has an answer,
+// including the one whose answer is "no": a BREAK has no words, and asking for
+// them is a caller that has lost track of what it is playing.
+func (p *Podcast) segmentFor(b fluxcast.Brief) (Segment, bool) {
 	seg := Segment{
 		ItemID:     b.Subject.ItemID,
 		Source:     b.Subject.Source,
@@ -74,7 +98,6 @@ func (p *Podcast) Write(ctx context.Context, b fluxcast.Brief) (fluxcast.Draft, 
 		PrevTitle:  b.Prev.Title,
 		Vibe:       b.Vibe,
 	}
-
 	switch b.Kind {
 	case fluxcast.BeatOpening:
 		seg.OpenOnly = true
@@ -110,21 +133,51 @@ func (p *Podcast) Write(ctx context.Context, b fluxcast.Brief) (fluxcast.Draft, 
 	case fluxcast.BeatSignOff:
 		seg.CloseOnly = true
 		seg.Open = &Opening{Stories: b.Stories}
-	case fluxcast.BeatBreak:
-		return fluxcast.Draft{}, ErrNothingToSummarise
 	default:
-		return fluxcast.Draft{}, ErrNothingToSummarise
+		return Segment{}, false
 	}
+	return seg, true
+}
 
-	text, err := p.Segment(ctx, seg)
-	if err != nil {
-		return fluxcast.Draft{}, err
+// Cached returns a segment's text only if it is already on disk, and never
+// writes one.
+//
+// It exists for the captions (§19, TODO 11.47). The slide shows the words being
+// spoken, which means the client needs the SCRIPT as well as the audio — and a
+// second request that could trigger a model call would buy a second copy of the
+// programme to put text on a screen. So this reads the cache and stops.
+//
+// A miss is `false`, not an error: by the time the audio for a beat exists its
+// script is on disk, so a miss means the caller asked too early, and the honest
+// answer is "not yet" rather than a failure the caller has to interpret.
+//
+// The key is `cachePath`'s, unchanged — the same key `Segment` would write
+// under. Computing it a second way here would be the one bug this method could
+// have that nothing would catch: captions that never appear because they are
+// being looked for in the wrong place.
+func (p *Podcast) Cached(ctx context.Context, seg Segment) (string, bool) {
+	if p == nil {
+		return "", false
 	}
-	return fluxcast.Draft{
-		Text:  text,
-		Words: fluxcast.CountWords(text),
-		Model: p.model(ctx),
-	}, nil
+	path := p.cachePath(seg, p.model(ctx))
+	if path == "" {
+		return "", false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 {
+		return "", false
+	}
+	return string(b), true
+}
+
+// CachedBeat is Cached for a beat-addressed brief, so the two paths agree about
+// which segment a caption belongs to without the caller rebuilding a Segment.
+func (p *Podcast) CachedBeat(ctx context.Context, b fluxcast.Brief) (string, bool) {
+	seg, ok := p.segmentFor(b)
+	if !ok {
+		return "", false
+	}
+	return p.Cached(ctx, seg)
 }
 
 func headlines(in []fluxcast.Headline) []Headline {

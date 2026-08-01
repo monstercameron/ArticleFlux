@@ -114,6 +114,19 @@ const (
 	// where in the programme this request sits — and a second flag would make
 	// "i=1&c=1" expressible, which is a request with no meaning.
 	introClose = "2"
+	// asParam asks for the SCRIPT rather than the audio: `as=text`.
+	//
+	// It exists because the slide shows the words being spoken (§19), which
+	// means the client needs the text as well as the file — and it is free,
+	// because by the time a beat's audio exists its script is already on disk.
+	//
+	// The rule that makes it safe is that it NEVER writes: a script that is not
+	// cached answers 204 and the display runs without captions rather than
+	// quietly buying a second copy of the programme to put text on a screen. So
+	// this is not a cheaper way to reach a model; it is a way to read something
+	// already paid for.
+	asParam = "as"
+	asText  = "text"
 )
 
 // wantsOpening decides whether this request gets a greeting attached.
@@ -305,7 +318,17 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
 	if a.podcast == nil {
 		return "", smart.ErrNothingToSummarise
 	}
-	return a.podcast.Segment(ctx, smart.Segment{
+	return a.podcast.Segment(ctx, storySeg(it, prev, vibe, open, opened))
+}
+
+// The three segment shapes, built in one place.
+//
+// Split out so that the captions can ask "is this exact segment on disk" without
+// a second copy of the construction (TODO 11.47). A caption looked for under a
+// key the writer never used is a caption that never appears, and the two copies
+// would drift on the first field anybody added.
+func storySeg(it, prev store.Item, vibe string, open *smart.Opening, opened bool) smart.Segment {
+	return smart.Segment{
 		ItemID: it.ID,
 		Source: it.SourceTitle,
 		Title:  it.Title,
@@ -319,7 +342,34 @@ func (a *App) podcastFor(ctx context.Context, it store.Item, prev store.Item,
 		PrevID:     prev.ID,
 		PrevSource: prev.SourceTitle,
 		PrevTitle:  prev.Title,
-	})
+	}
+}
+
+func introSeg(it store.Item, vibe string, open *smart.Opening) smart.Segment {
+	return smart.Segment{
+		ItemID:   it.ID,
+		Source:   it.SourceTitle,
+		Title:    it.Title,
+		Vibe:     vibe,
+		Open:     open,
+		OpenOnly: true,
+	}
+}
+
+func outroSeg(it store.Item, vibe string, open *smart.Opening) smart.Segment {
+	return smart.Segment{
+		ItemID: it.ID,
+		Vibe:   vibe,
+		Open:   open,
+		// The last story goes in the PREV fields rather than the current ones,
+		// which is not a quirk: from the sign-off's point of view every story is
+		// behind it, and the prompt's vocabulary for "the story you have just
+		// finished covering" is already exactly that.
+		PrevID:     it.ID,
+		PrevSource: it.SourceTitle,
+		PrevTitle:  it.Title,
+		CloseOnly:  true,
+	}
 }
 
 // podcastIntro writes the top of the broadcast on its own: the greeting, the
@@ -332,14 +382,7 @@ func (a *App) podcastIntro(ctx context.Context, it store.Item, vibe string,
 	if a.podcast == nil {
 		return "", smart.ErrNothingToSummarise
 	}
-	return a.podcast.Segment(ctx, smart.Segment{
-		ItemID:   it.ID,
-		Source:   it.SourceTitle,
-		Title:    it.Title,
-		Vibe:     vibe,
-		Open:     open,
-		OpenOnly: true,
-	})
+	return a.podcast.Segment(ctx, introSeg(it, vibe, open))
 }
 
 // podcastOutro writes the sign-off on its own: the programme is over.
@@ -356,19 +399,7 @@ func (a *App) podcastOutro(ctx context.Context, it store.Item, vibe string,
 	if a.podcast == nil {
 		return "", smart.ErrNothingToSummarise
 	}
-	return a.podcast.Segment(ctx, smart.Segment{
-		ItemID: it.ID,
-		Vibe:   vibe,
-		Open:   open,
-		// The last story goes in the PREV fields rather than the current ones,
-		// which is not a quirk: from the sign-off's point of view every story is
-		// behind it, and the prompt's vocabulary for "the story you have just
-		// finished covering" is already exactly that.
-		PrevID:     it.ID,
-		PrevSource: it.SourceTitle,
-		PrevTitle:  it.Title,
-		CloseOnly:  true,
-	})
+	return a.podcast.Segment(ctx, outroSeg(it, vibe, open))
 }
 
 // podcastKey names an audio recording by the PAIR of articles it covers, not by
@@ -421,8 +452,22 @@ func podcastKey(itemID, prevID, vibe string, open *smart.Opening) string {
 // reporting. That is the same policy the digest has always had and it matters
 // more here: a listener whose narrator falls over should hear the article, which
 // is less pleasant than what they asked for and infinitely better than silence.
+//
+// # cachedOnly, and why it is a parameter rather than a second function
+//
+// The captions need the SCRIPT as well as the audio (§19, TODO 11.47), and a
+// caption request that could reach a model would buy a second copy of the
+// programme to put text on a screen. So `cachedOnly` reads the caches and never
+// writes: a mode whose script is not on disk yet returns "" and the caller
+// answers 204.
+//
+// A parameter rather than a parallel function because the thing that must never
+// drift is the PRECEDENCE — podcast over digest over the article, and which key
+// each lands under. Two copies of that chain would disagree eventually, and the
+// symptom would be captions from one script under audio from another, which
+// reads as the narrator saying something other than what is written.
 func (a *App) speechScript(ctx context.Context, prefs map[string]string,
-	it store.Item, prev store.Item, open *smart.Opening, intro, opened, closing bool) (text, cacheKey string) {
+	it store.Item, prev store.Item, open *smart.Opening, intro, opened, closing, cachedOnly bool) (text, cacheKey string) {
 	text, cacheKey = speechText(it), it.ID
 
 	// The sign-off, on its own, after every story. Checked FIRST because it is
@@ -439,6 +484,12 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 	// sign-off has always done.
 	if closing {
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		if cachedOnly {
+			if txt, ok := a.podcast.Cached(ctx, outroSeg(it, vibe, open)); ok {
+				return txt, podcastKey(it.ID, "", vibe, open) + "#outro"
+			}
+			return "", ""
+		}
 		txt, err := a.podcastOutro(ctx, it, vibe, open)
 		if err != nil {
 			a.cfg.Log.Warn("broadcast sign-off failed, ending without one",
@@ -458,6 +509,20 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 	// answer: the reader loses the greeting and still gets the news.
 	if intro && open != nil {
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		if cachedOnly {
+			if txt, ok := a.podcast.Cached(ctx, introSeg(it, vibe, open)); ok {
+				return txt, podcastKey(it.ID, "", vibe, open) + "#intro"
+			}
+			if a.podcast != nil && a.podcast.Configured(ctx) {
+				// It is going to be written; it has not been yet. No
+				// fall-through, because captioning the first story under a
+				// greeting request would put the wrong words on screen — the
+				// caller asked too early and 204 says so.
+				return "", ""
+			}
+			// It cannot be written on this instance, so the audio path will
+			// fall through too. Follow it.
+		}
 		if txt, err := a.podcastIntro(ctx, it, vibe, open); err == nil {
 			return txt, podcastKey(it.ID, "", vibe, open) + "#intro"
 		} else if !errors.Is(err, smart.ErrNothingToSummarise) {
@@ -468,6 +533,30 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 
 	if prefs[podcastPrefKey] == "true" {
 		vibe := smart.VibeFor(prefs[podcastVibePrefKey])
+		if cachedOnly {
+			if txt, ok := a.podcast.Cached(ctx, storySeg(it, prev, vibe, open, opened)); ok {
+				key := podcastKey(it.ID, prev.ID, vibe, open)
+				if opened {
+					key += "#opened"
+				}
+				return txt, key
+			}
+			// Two reasons a segment is not on disk, and they need opposite
+			// answers.
+			//
+			// It has not been WRITTEN yet — the caller asked before the audio
+			// request that pays for it. Falling through to the article would
+			// caption the slide with a text the narrator is not going to read,
+			// which is the exact mismatch captions exist to remove. 204.
+			//
+			// Or it CANNOT be written, because this instance has no key. Then
+			// the audio path below falls through to the article as well, the
+			// article IS what the listener will hear, and captioning it is
+			// correct rather than a compromise. Fall through with it.
+			if a.podcast != nil && a.podcast.Configured(ctx) {
+				return "", ""
+			}
+		}
 		seg, err := a.podcastFor(ctx, it, prev, vibe, open, opened)
 		switch {
 		case err == nil:
@@ -489,6 +578,16 @@ func (a *App) speechScript(ctx context.Context, prefs map[string]string,
 	}
 
 	if prefs[digestPrefKey] == "true" {
+		if cachedOnly {
+			if txt, ok := a.digest.Cached(ctx, it.ID); ok {
+				return txt, it.ID + "#digest"
+			}
+			if a.digest != nil && a.digest.Configured(ctx) {
+				return "", ""
+			}
+			// Same fork as the broadcast branch above: unconfigured means the
+			// article is what gets read, so the article is the caption.
+		}
 		d, err := a.digestFor(ctx, it)
 		switch {
 		case err == nil:
@@ -697,6 +796,11 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// a caller-supplied id safe (see prevItemParam) — and it is only looked up at
 	// all when the preference that uses it is on, so the ordinary listen still
 	// costs one query.
+	// The SCRIPT rather than the audio. Read here, before either path, because
+	// both of them answer it the same way and the difference is only in which
+	// text they would have spoken.
+	wantScript := strings.TrimSpace(r.URL.Query().Get(asParam)) == asText
+
 	// A BEAT of a planned programme, which is a different request from anything
 	// this handler answered before: the client has planned a whole show with
 	// internal/fluxcast and is asking for one beat of it, at a word budget the
@@ -705,6 +809,19 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// and will keep asking the old way for as long as their bundle survives.
 	if kind, words, handover, rev, ok := castBeat(r); ok && prefs[podcastPrefKey] == "true" {
 		b := a.briefFor(r.Context(), sc, r, it, kind, words, handover, rev)
+		if wantScript {
+			// Cache-only, for the reason asParam gives. A beat whose script has
+			// not been written answers 204: the caller asked before the audio
+			// request that pays for it, and captioning the slide with anything
+			// else would put words on screen the narrator is not going to say.
+			txt, ok := a.podcastCachedBeat(r.Context(), b)
+			if !ok {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			serveScript(w, r, txt)
+			return
+		}
 		text, key, err := a.writeBeat(r.Context(), b, it)
 		if err != nil {
 			a.beatError(w, r, id, err)
@@ -766,7 +883,18 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	// them; a sign-off has every story behind it by definition, and the one it
 	// names travels as the item rather than as `p`.
 	text, cacheKey := a.speechScript(r.Context(), prefs, it, prev, open,
-		intro && prev.ID == "", opened && prev.ID == "", closing)
+		intro && prev.ID == "", opened && prev.ID == "", closing, wantScript)
+	if text != "" && wantScript {
+		serveScript(w, r, text)
+		return
+	}
+	if text == "" && wantScript {
+		// Nothing on disk yet. 204 rather than an error: the request was
+		// understood, the answer is "not yet", and the display is correct
+		// without captions.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if text == "" {
 		if closing {
 			// 204 rather than 422: the request was understood and correct, and

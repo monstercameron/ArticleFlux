@@ -243,6 +243,27 @@ func cleanForSpeech(s string) string {
 }
 
 // model is the instance's Smart+ model, or the built-in default.
+// Cached returns a digest only if it is already on disk, and never writes one.
+//
+// The captions' half of the same bargain Podcast.Cached makes (TODO 11.47): the
+// slide shows the words being spoken, and a request that could trigger a model
+// call would buy a second summary to put text on a screen. A miss is `false`
+// rather than an error, because by the time the audio exists the digest does.
+func (d *Digest) Cached(ctx context.Context, itemID string) (string, bool) {
+	if d == nil || itemID == "" {
+		return "", false
+	}
+	path := d.cachePath(itemID, d.model(ctx))
+	if path == "" {
+		return "", false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 {
+		return "", false
+	}
+	return string(b), true
+}
+
 func (d *Digest) model(ctx context.Context) string {
 	if d.settings == nil {
 		return llm.DefaultModel

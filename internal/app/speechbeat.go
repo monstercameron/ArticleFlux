@@ -274,3 +274,28 @@ func (a *App) beatError(w http.ResponseWriter, r *http.Request, id string, err e
 		http.Error(w, "couldn't write that", http.StatusBadGateway)
 	}
 }
+
+// podcastCachedBeat reads a beat's script from disk, or reports that it is not
+// there yet. Through the writer seam so a test can substitute one.
+func (a *App) podcastCachedBeat(ctx context.Context, b fluxcast.Brief) (string, bool) {
+	if a.podcast == nil {
+		return "", false
+	}
+	return a.podcast.CachedBeat(ctx, b)
+}
+
+// serveScript writes a script as plain text.
+//
+// Private and short-lived in the cache, like the audio it belongs to: this is
+// one reader's article rewritten, and a shared cache holding it would serve it
+// to whoever asked next. No Content-Disposition and no filename — it is read by
+// a fetch, never downloaded.
+func serveScript(w http.ResponseWriter, r *http.Request, text string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(text)))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write([]byte(text))
+}

@@ -551,7 +551,7 @@ func TestSpeechScriptFallsBackWhenAWiredWriterFails(t *testing.T) {
 	prev := store.Item{ID: "item-1", Title: "Postgres", SourceTitle: "Hacker News"}
 
 	text, key := a.speechScript(context.Background(), map[string]string{digestPrefKey: "true"},
-		it, prev, nil, false, false, false)
+		it, prev, nil, false, false, false, false)
 	if !strings.Contains(text, "The body.") {
 		t.Errorf("digest configured-but-failing: article was not read aloud: %q", text)
 	}
@@ -560,7 +560,7 @@ func TestSpeechScriptFallsBackWhenAWiredWriterFails(t *testing.T) {
 	}
 
 	text2, key2 := a.speechScript(context.Background(), map[string]string{podcastPrefKey: "true"},
-		it, prev, nil, false, false, false)
+		it, prev, nil, false, false, false, false)
 	if !strings.Contains(text2, "The body.") {
 		t.Errorf("podcast configured-but-failing: article was not read aloud: %q", text2)
 	}
@@ -660,7 +660,7 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 		{digestPrefKey: "true"},
 		{podcastPrefKey: "true", digestPrefKey: "true"},
 	} {
-		text, key := a.speechScript(context.Background(), prefs, it, prev, nil, false, false, false)
+		text, key := a.speechScript(context.Background(), prefs, it, prev, nil, false, false, false, false)
 		if !strings.Contains(text, "The body.") {
 			t.Errorf("prefs %v: the article was not read aloud: %q", prefs, text)
 		}
