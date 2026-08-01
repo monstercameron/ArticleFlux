@@ -2,6 +2,7 @@ package reader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -351,7 +352,7 @@ func TestSubscribingToAPageIsRefused(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 
-	_, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", "")
+	_, _, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", "")
 	if err == nil {
 		t.Fatal("an HTML page became a subscription")
 	}
@@ -376,7 +377,7 @@ func TestSubscribingToAPageIsRefusedTwice(t *testing.T) {
 	ctx := context.Background()
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if _, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", ""); err == nil {
+		if _, _, _, err := svc.Subscribe(ctx, sc, srv.URL+"/blog", "", ""); err == nil {
 			t.Fatalf("attempt %d: an HTML page became a subscription", attempt)
 		}
 		feeds, _ := repo.ListFeeds(ctx, sc)
@@ -504,3 +505,243 @@ func TestSubscribeJSONRefusesAForeignDataAddress(t *testing.T) {
 		t.Fatalf("err = %v, want a refusal naming the site rule", err)
 	}
 }
+
+// --- AnalyzeSite: the free rungs that need no LLM ---------------------
+
+func TestAnalyzeSiteRejectsAnEmptyOrUnparseableURL(t *testing.T) {
+	svc, _, sc := testService(t)
+	ctx := context.Background()
+	if _, err := svc.AnalyzeSite(ctx, sc, "", true); err == nil {
+		t.Error("AnalyzeSite(\"\") returned no error")
+	}
+	if _, err := svc.AnalyzeSite(ctx, sc, "not a url at all", true); err == nil {
+		t.Error("AnalyzeSite on an unparseable host returned no error")
+	}
+}
+
+// A service with no site analysis wired (WithSiteAnalysis never called) is a
+// working reader with fewer verbs, not a broken one — but AnalyzeSite is one
+// of the verbs it does not have.
+func TestAnalyzeSiteWithoutSiteAnalysisWiredFails(t *testing.T) {
+	_, repo, sc := testService(t)
+	svc := New(repo, feed.New(feed.Config{AllowPrivateAddresses: true})) // WithSiteAnalysis never called
+	if _, err := svc.AnalyzeSite(context.Background(), sc, "https://example.com", true); !errors.Is(err, ErrNoAnalyzer) {
+		t.Errorf("err = %v, want ErrNoAnalyzer", err)
+	}
+}
+
+// Rung 3 — "what was typed IS a feed" — short-circuits everything else,
+// including asking for Smart+, because a declared feed is strictly better
+// evidence than any proposal a model could produce (AnalyzeSite's own
+// comment: "spending money to get a worse answer").
+func TestAnalyzeSiteFindsADeclaredFeedWithoutAskingForSmart(t *testing.T) {
+	svc, _, sc := testService(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte(rssFeed))
+	}))
+	defer srv.Close()
+
+	got, err := svc.AnalyzeSite(context.Background(), sc, srv.URL, false)
+	if err != nil {
+		t.Fatalf("AnalyzeSite: %v", err)
+	}
+	if len(got.Feeds) != 1 || got.Feeds[0].How != "declared" {
+		t.Fatalf("Feeds = %+v, want one declared candidate", got.Feeds)
+	}
+	if got.Status != "" {
+		t.Errorf("Status = %q, want empty — a found feed does not climb further", got.Status)
+	}
+}
+
+// Without useSmart, a site with no feed reports StatusNotAsked rather than
+// silently doing nothing — the caller needs to know free discovery came back
+// empty on its own, distinctly from "we asked the model and it had nothing".
+func TestAnalyzeSiteWithoutUseSmartReportsNotAsked(t *testing.T) {
+	svc, _, sc := testService(t)
+	s := newSite()
+	srv := httptest.NewServer(s.handler())
+	defer srv.Close()
+
+	got, err := svc.AnalyzeSite(context.Background(), sc, srv.URL+"/blog", false)
+	if err != nil {
+		t.Fatalf("AnalyzeSite: %v", err)
+	}
+	if got.Status != StatusNotAsked {
+		t.Errorf("Status = %q, want %q", got.Status, StatusNotAsked)
+	}
+}
+
+// --- pollScrape / pollJSON: robots.txt can change between polls ---------
+
+// A poll must obey robots.txt on the REFRESH path, not only at subscribe
+// time — pollScrape's own comment, "a site that changed its mind is obeyed".
+//
+// discover.Fetcher caches a host's robots.txt for robotsTTL (six hours), so
+// re-disallowing through the SAME Fetcher instance a moment later would only
+// prove the cache works, not that the poll checks at all. This subscribes
+// through one Service/Fetcher (while allowed) and refreshes through a SECOND
+// one built fresh against the same database — a fresh Fetcher has no cached
+// entry, so it fetches robots.txt for the first time on the refresh, which is
+// what exercises pollScrape's own check honestly.
+func TestPollScrapeStopsWhenRobotsDisallows(t *testing.T) {
+	repo, sc := testRepoOnly(t)
+	var disallow atomicBool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			if disallow.get() {
+				_, _ = w.Write([]byte("User-agent: *\nDisallow: /blog\n"))
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>
+			<article class="post"><h2><a href="/a">A</a></h2></article>
+			<article class="post"><h2><a href="/b">B</a></h2></article></body></html>`))
+	}))
+	defer srv.Close()
+
+	f, _, err := serviceOn(repo).SubscribeScrape(context.Background(), sc, srv.URL+"/blog", "", "", blogRule())
+	if err != nil {
+		t.Fatalf("SubscribeScrape: %v", err)
+	}
+	disallow.set(true)
+
+	if _, err := serviceOn(repo).Refresh(context.Background(), sc, []string{f.SourceID}); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	feeds, err := repo.ListFeeds(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+	for _, fd := range feeds {
+		if fd.SourceID == f.SourceID && !strings.Contains(fd.LastError, "robots.txt") {
+			t.Errorf("last_error = %q, want it to name robots.txt", fd.LastError)
+		}
+	}
+}
+
+// The JSON-rule counterpart: pollJSON's own robots check, on a fresh
+// Fetcher's refresh, for the same reason described above.
+func TestPollJSONStopsWhenRobotsDisallows(t *testing.T) {
+	var disallow atomicBool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			if disallow.get() {
+				_, _ = w.Write([]byte("User-agent: *\nDisallow: /api/comics/x\n"))
+			}
+		case "/comics/x":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><title>A Series</title></head><body>
+				<div id="app"><p>Loading</p></div></body></html>`))
+		case "/api/comics/x":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"comic":{"title":"A Series","chapters":[
+				{"full_title":"Round 1","url":"/read/x/ch/1","published_on":"2026-07-20T09:00:00Z","slug":"x-1"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	repo, sc := testRepoOnly(t)
+	f, n, err := serviceOn(repo).SubscribeJSON(context.Background(), sc, srv.URL+"/comics/x", "", "", jsonsel.Rule{
+		DataURL: srv.URL + "/api/comics/x", ItemsPath: "comic.chapters",
+		TitlePath: "full_title", LinkPath: "url", DatePath: "published_on", IDPath: "slug",
+	})
+	if err != nil {
+		t.Fatalf("SubscribeJSON: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("seeded %d items, want 1", n)
+	}
+	disallow.set(true)
+
+	if _, err := serviceOn(repo).Refresh(context.Background(), sc, []string{f.SourceID}); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	feeds, err := repo.ListFeeds(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+	for _, fd := range feeds {
+		if fd.SourceID == f.SourceID && !strings.Contains(fd.LastError, "robots.txt") {
+			t.Errorf("last_error = %q, want it to name robots.txt", fd.LastError)
+		}
+	}
+}
+
+// serviceOn builds a fresh Service (and, crucially, a fresh discover.Fetcher
+// with an empty robots.txt cache) against an already-migrated repo — see
+// TestPollScrapeStopsWhenRobotsDisallows for why a fresh Fetcher matters.
+func serviceOn(repo *store.ReaderRepo) *Service {
+	return New(repo, feed.New(feed.Config{AllowPrivateAddresses: true})).
+		WithSiteAnalysis(
+			discover.New(discover.Config{AllowPrivateAddresses: true}),
+			extract.New(extract.Config{AllowPrivateAddresses: true}),
+			nil,
+		)
+}
+
+// The JSON poll's "found nothing" health signal, mirrored from
+// TestBrokenRuleIsCountedRatherThanSwallowed's scrape version: an API that
+// starts returning zero entries must be counted as an empty poll, not
+// swallowed as an ordinary success.
+func TestPollJSONCountsAnEmptyResponseRatherThanSwallowingIt(t *testing.T) {
+	var empty atomicBool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/comics/y":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><title>Y</title></head><body>
+				<div id="app"><p>Loading</p></div></body></html>`))
+		case "/api/comics/y":
+			w.Header().Set("Content-Type", "application/json")
+			if empty.get() {
+				_, _ = w.Write([]byte(`{"comic":{"title":"Y","chapters":[]}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"comic":{"title":"Y","chapters":[
+				{"full_title":"Round 1","url":"/read/y/ch/1","published_on":"2026-07-20T09:00:00Z","slug":"y-1"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	svc, repo, sc := testService(t)
+	f, _, err := svc.SubscribeJSON(context.Background(), sc, srv.URL+"/comics/y", "", "", jsonsel.Rule{
+		DataURL: srv.URL + "/api/comics/y", ItemsPath: "comic.chapters",
+		TitlePath: "full_title", LinkPath: "url", DatePath: "published_on", IDPath: "slug",
+	})
+	if err != nil {
+		t.Fatalf("SubscribeJSON: %v", err)
+	}
+	empty.set(true)
+
+	if _, err := svc.Refresh(context.Background(), sc, []string{f.SourceID}); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	feeds, err := repo.ListFeeds(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+	for _, fd := range feeds {
+		if fd.SourceID == f.SourceID && fd.LastError == "" {
+			t.Error("an API that started returning zero entries left no error on the feed")
+		}
+	}
+}
+
+// atomicBool is a tiny helper for the handlers above, which flip behaviour
+// between the subscribe request and the refresh that follows it and are
+// called concurrently with the test goroutine reading the flag back via
+// ListFeeds.
+type atomicBool struct {
+	mu sync.Mutex
+	v  bool
+}
+
+func (a *atomicBool) set(v bool) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
+func (a *atomicBool) get() bool  { a.mu.Lock(); defer a.mu.Unlock(); return a.v }

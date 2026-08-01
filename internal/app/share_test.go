@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/xml"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -237,5 +238,139 @@ func TestAnUnknownAddressLooksExactlyLikeARevokedOne(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d for an address that never existed", res.StatusCode)
+	}
+}
+
+// Only GET and HEAD are meaningful for a feed. Anything else must name what it
+// accepts rather than just refusing.
+func TestServePublicShareRejectsOtherMethods(t *testing.T) {
+	_, srv, sh, _ := sharedInstance(t)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/pub/"+sh.Slug, nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", res.StatusCode)
+	}
+	if got := res.Header.Get("Allow"); got != "GET, HEAD" {
+		t.Errorf("Allow = %q", got)
+	}
+}
+
+// An empty slug or one that tries to smuggle a second path segment must 404
+// before ever reaching the store.
+func TestServePublicShareRejectsAMalformedSlug(t *testing.T) {
+	_, srv, _, _ := sharedInstance(t)
+
+	for _, path := range []string{"/pub/", "/pub/one/two"} {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", path, res.StatusCode)
+		}
+	}
+}
+
+// A HEAD request answers with the same headers and no body, so a poller can
+// check freshness without paying for the document.
+func TestServePublicShareHeadCarriesNoBody(t *testing.T) {
+	_, srv, sh, _ := sharedInstance(t)
+
+	req, _ := http.NewRequest(http.MethodHead, srv.URL+"/pub/"+sh.Slug, nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	body, _ := io.ReadAll(res.Body)
+	if len(body) != 0 {
+		t.Errorf("HEAD returned %d bytes of body", len(body))
+	}
+	if res.Header.Get("ETag") == "" {
+		t.Error("HEAD is missing the ETag a conditional GET would need")
+	}
+}
+
+// publicURL follows the request, not a hardcoded host — a self-hosted app
+// whose feed always said "http://localhost" would be wrong for everyone but
+// its author.
+func TestPublicURLReflectsTheRequestScheme(t *testing.T) {
+	a := &App{}
+
+	plain := httptest.NewRequest(http.MethodGet, "http://reader.example/pub/x", nil)
+	plain.Host = "reader.example"
+	if got := a.publicURL(plain); got != "http://reader.example" {
+		t.Errorf("plain = %q", got)
+	}
+
+	forwarded := httptest.NewRequest(http.MethodGet, "http://reader.example/pub/x", nil)
+	forwarded.Host = "reader.example"
+	forwarded.Header.Set("X-Forwarded-Proto", "https")
+	if got := a.publicURL(forwarded); got != "https://reader.example" {
+		t.Errorf("forwarded = %q, want https since the proxy said so", got)
+	}
+}
+
+// The feed's `updated` tracks the newest item rather than the share's creation
+// time, so a subscriber's reader can tell a share is still alive.
+func TestBuildShareFeedUpdatedTracksTheNewestItem(t *testing.T) {
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	ps := store.PublishedShare{Share: store.Share{Slug: "abc", Title: "T", CreatedAt: created}}
+	items := []store.Item{{ID: "i1", PublishedAt: newer.Format(time.RFC3339Nano)}}
+
+	feed := buildShareFeed(ps, items, "https://reader.example")
+	if feed.Updated != newer.UTC().Format(time.RFC3339) {
+		t.Errorf("Updated = %q, want the newest item's date %q", feed.Updated, newer.UTC().Format(time.RFC3339))
+	}
+
+	// An item older than the share's creation must not move `updated` backwards.
+	older := created.Add(-time.Hour)
+	itemsOld := []store.Item{{ID: "i2", PublishedAt: older.Format(time.RFC3339Nano)}}
+	feedOld := buildShareFeed(ps, itemsOld, "https://reader.example")
+	if feedOld.Updated != created.UTC().Format(time.RFC3339) {
+		t.Errorf("Updated = %q, an older item must not move it back", feedOld.Updated)
+	}
+}
+
+// An entry carries its author when the item has one — bylines are part of what
+// makes a shared feed worth reading.
+func TestBuildShareFeedIncludesTheAuthorWhenPresent(t *testing.T) {
+	ps := store.PublishedShare{Share: store.Share{Slug: "abc", Title: "T", CreatedAt: time.Now().UTC()}}
+	items := []store.Item{{ID: "i1", Title: "Piece", Author: "J. Writer"}}
+	feed := buildShareFeed(ps, items, "https://reader.example")
+	if len(feed.Entries) != 1 {
+		t.Fatalf("got %d entries", len(feed.Entries))
+	}
+	if feed.Entries[0].Author == nil || feed.Entries[0].Author.Name != "J. Writer" {
+		t.Errorf("author = %+v, want J. Writer", feed.Entries[0].Author)
+	}
+
+	unattributed := buildShareFeed(ps, []store.Item{{ID: "i2", Title: "No byline"}}, "https://reader.example")
+	if unattributed.Entries[0].Author != nil {
+		t.Errorf("author = %+v, want none for an item with no byline", unattributed.Entries[0].Author)
+	}
+}
+
+// A timestamp that will not parse falls back to the share's creation time
+// rather than "now" — an entry whose date moves on every fetch looks new on
+// every poll, which is how a reader is notified about the same article forever.
+func TestAtomTimeFallsBackOnAnUnparseableTimestamp(t *testing.T) {
+	fallback := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	if got := atomTime("not a timestamp", fallback); got != fallback.UTC().Format(time.RFC3339) {
+		t.Errorf("atomTime = %q, want the fallback", got)
+	}
+	good := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	if got := atomTime(good.Format(time.RFC3339Nano), fallback); got != good.UTC().Format(time.RFC3339) {
+		t.Errorf("atomTime = %q, want the parsed value", got)
 	}
 }

@@ -106,6 +106,51 @@ func TestMalformedLineIsReported(t *testing.T) {
 	}
 }
 
+// A line with nothing before the '=' is a key nobody wrote, not a variable
+// named "". Applying it would call os.Setenv("", val), which is itself an
+// error on most platforms — better to report the malformed line than reach it.
+func TestEmptyKeyIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("=novalue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a line with an empty key was accepted")
+	}
+}
+
+// The error message is bounded because the offending line may itself be a
+// mistyped secret; a 40+ char line must come back truncated with an ellipsis,
+// not pasted whole into an error that flows into a log.
+func TestLongMalformedLineIsTruncatedInTheError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	long := strings.Repeat("x", 80) // no '=', well past the 40-char bound
+	if err := os.WriteFile(path, []byte(long+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("a malformed line with no '=' was accepted")
+	}
+	if strings.Contains(err.Error(), long) {
+		t.Errorf("error echoed the full 80-char line verbatim: %v", err)
+	}
+	if !strings.Contains(err.Error(), "…") {
+		t.Errorf("error does not show truncation: %v", err)
+	}
+}
+
+// A path Open cannot even attempt — as opposed to a merely absent file — is a
+// real failure the operator wrote on purpose and must be told about, not the
+// silent nil,nil that a missing file gets.
+func TestUnopenableFileIsReported(t *testing.T) {
+	if _, err := Load("bad\x00path"); err == nil {
+		t.Fatal("an invalid path was silently treated as a missing file")
+	}
+}
+
 // Values are taken verbatim. A parser that stripped a trailing `# ...` would
 // silently change a password that happens to contain one.
 func TestValuesAreVerbatim(t *testing.T) {

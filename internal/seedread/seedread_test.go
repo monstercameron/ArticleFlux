@@ -232,6 +232,188 @@ func TestSeedRefusesAnEmptyDatabase(t *testing.T) {
 	}
 }
 
+// A closed database is the one realistic way ListItems fails mid-run — not a fabricated
+// error, since a store already closed underneath a caller is an ordinary lifecycle bug this
+// package cannot paper over.
+func TestRunPropagatesAListItemsError(t *testing.T) {
+	ctx := context.Background()
+	repo, sc := setup(t)
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "unused.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	closedRepo := store.NewReaderRepo(db)
+	if _, err := Run(ctx, closedRepo, sc, Options{Now: now}); err == nil {
+		t.Error("Run against a closed database reported success")
+	}
+	_ = repo // repo/sc from setup only establish a comparable scope shape; the query itself is on closedRepo
+}
+
+// Zero Options.Now anchors the run to the real clock rather than erroring or silently no-oping.
+func TestRunDefaultsNowToTheRealClockWhenZero(t *testing.T) {
+	ctx := context.Background()
+	repo, sc := setup(t)
+	res, err := Run(ctx, repo, sc, Options{Focus: []string{"android"}, Seed: 1})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Items == 0 {
+		t.Fatal("no items were considered with a zero Now")
+	}
+}
+
+// An item published after the anchor "now" has not happened yet from the simulated reader's
+// perspective and must not be walked at all — a seeder that reads the future would corrupt
+// the reproducibility the whole package exists to provide.
+func TestFutureDatedItemsAreSkipped(t *testing.T) {
+	ctx := context.Background()
+	repo, sc := setup(t)
+
+	feeds, err := repo.ListFeeds(ctx, sc)
+	if err != nil || len(feeds) == 0 {
+		t.Fatalf("ListFeeds: %v (feeds=%d)", err, len(feeds))
+	}
+	future := store.IngestItem{
+		GUID: "future-1", URL: "https://tech.example/p/future",
+		Title: "Android Auto announces a feature from next year", Summary: "s", ContentHTML: "<p>s</p>",
+		PublishedAt: now.Add(365 * 24 * time.Hour), WordCount: 800,
+	}
+	if _, err := repo.IngestItems(ctx, feeds[0].SourceID, []store.IngestItem{future}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(ctx, repo, sc, Options{Focus: []string{"android"}, Now: now, Seed: 1})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The fixture has 8 items already in the past; the future one must not raise that count.
+	if res.Items != 8 {
+		t.Errorf("Items = %d, want 8; a future-dated item was walked", res.Items)
+	}
+
+	items, _, err := repo.ListItems(ctx, sc, store.ListQuery{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var futureID string
+	for _, it := range items {
+		if it.Title == future.Title {
+			futureID = it.ID
+		}
+	}
+	if futureID == "" {
+		t.Fatal("the future item was not even stored")
+	}
+	sigs, err := repo.ItemSignals(ctx, sc, []string{futureID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := sigs[futureID]; ok && len(s.Counts) > 0 {
+		t.Errorf("the future item received engagement signals: %+v", s.Counts)
+	}
+}
+
+// The switch in Run has four branches: opened, interesting-but-skipped, bounced, and neither
+// (silent). Titles below are chosen so their fnv hash lands in each branch deterministically —
+// pinned rather than looped-until-lucky, so the test says exactly why each one lands where it
+// does.
+func TestRunEngagementBranchesAreAllReachable(t *testing.T) {
+	ctx := context.Background()
+	repo, sc := setup(t)
+	feeds, err := repo.ListFeeds(ctx, sc)
+	if err != nil || len(feeds) == 0 {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+
+	titles := []string{
+		"Gizmos guide entry 3",      // interesting, roll 0.0194 < 0.6: opened, and hashMod(like,4)==0
+		"Gizmos manual part 1",      // interesting, roll 0.2107 < 0.6: opened, and hashMod(reread,5)==0
+		"Gizmos explained volume 0", // interesting, roll 0.6799 >= 0.6: skipped, not opened
+		"Gadget review number 7 today", // not interesting, hashMod(bounce,12)==0: bounced
+	}
+	var ingest []store.IngestItem
+	for i, title := range titles {
+		ingest = append(ingest, store.IngestItem{
+			GUID: fmt.Sprintf("branch-%d", i), URL: fmt.Sprintf("https://tech.example/p/branch-%d", i),
+			Title: title, Summary: title, ContentHTML: "<p>" + title + "</p>",
+			PublishedAt: now.Add(-time.Duration(i+1) * time.Hour), WordCount: 800,
+		})
+	}
+	if _, err := repo.IngestItems(ctx, feeds[0].SourceID, ingest); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(ctx, repo, sc, Options{Focus: []string{"gizmos"}, Now: now, Seed: 1})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Liked == 0 {
+		t.Error("expected the pinned like-branch title to produce a Liked event")
+	}
+	if res.Reread == 0 {
+		t.Error("expected the pinned reread-branch title to produce a Reread event")
+	}
+	if res.Skipped == 0 {
+		t.Error("expected the pinned interesting-but-not-read title to count as skipped")
+	}
+	if res.Bounced == 0 {
+		t.Error("expected the pinned off-focus title to bounce")
+	}
+}
+
+// The paging loop over ListItems (bounded by store.MaxLimit per page) and the batching loop in
+// write (bounded by store.MaxEngagementBatch) are both single-page/single-batch in every other
+// test in this file, which is exactly the bug the package doc warns about: "seeded a history
+// over 200 of 3,848 items and reported success". This corpus is sized past both limits.
+func TestSeedHandlesLargeCorporaAcrossPagesAndBatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large-corpus seeding is slow under -short")
+	}
+	ctx := context.Background()
+	repo, sc := setup(t)
+	feeds, err := repo.ListFeeds(ctx, sc)
+	if err != nil || len(feeds) == 0 {
+		t.Fatalf("ListFeeds: %v", err)
+	}
+
+	const n = 260 // > store.MaxLimit (200), so ListItems needs at least two pages
+	var ingest []store.IngestItem
+	for i := 0; i < n; i++ {
+		ingest = append(ingest, store.IngestItem{
+			GUID: fmt.Sprintf("big-%d", i), URL: fmt.Sprintf("https://tech.example/p/big-%d", i),
+			Title:       fmt.Sprintf("Widgetcraft roundup entry number %d", i),
+			Summary:     "s", ContentHTML: "<p>s</p>",
+			PublishedAt: now.Add(-time.Duration(i+100) * time.Hour), WordCount: 800,
+		})
+	}
+	if _, err := repo.IngestItems(ctx, feeds[0].SourceID, ingest); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(ctx, repo, sc, Options{Focus: []string{"widgetcraft"}, Read: 1, Now: now, Seed: 1})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The 8 items from setup() plus the n new ones; every one of the new ones is
+	// interesting and Read=1, so paging correctness shows up directly in the count.
+	if want := 8 + n; res.Items != want {
+		t.Errorf("Items = %d, want %d — the paging loop stopped early", res.Items, want)
+	}
+	if res.Completed < n {
+		t.Errorf("Completed = %d, want at least %d", res.Completed, n)
+	}
+
+	counts := kindCounts(t, repo, sc)
+	var total int
+	for _, c := range counts {
+		total += c
+	}
+	if total <= store.MaxEngagementBatch {
+		t.Fatalf("only %d engagements were recorded; the batching loop was never exercised past one call", total)
+	}
+}
+
 func kindCounts(t *testing.T, repo *store.ReaderRepo, sc store.Scope) map[signals.Kind]int {
 	t.Helper()
 	evs, err := repo.EngagementsSince(t.Context(), sc, 0, 20000)
@@ -271,4 +453,129 @@ func anyDwellReads(t *testing.T, repo *store.ReaderRepo, sc store.Scope) bool {
 		}
 	}
 	return false
+}
+
+// words is the tokenizer every hash decision is keyed off of, so its boundary handling — case
+// folding, digit handling, and what counts as a separator — is worth pinning directly rather
+// than only indirectly through Run.
+func TestWords(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"punctuation only", "!!! --- ...", nil},
+		{"mixed case folds to lower", "Android AUTO", []string{"android", "auto"}},
+		{"digits are kept inside a word", "gpt5 launches", []string{"gpt5", "launches"}},
+		{"unicode letters are treated as separators", "café résumé", []string{"caf", "r", "sum"}},
+		{"single trailing word with no separator after it", "trailingword", []string{"trailingword"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := words(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("words(%q) = %v, want %v", c.in, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("words(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMatchesFocus(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		focus []string
+		want  bool
+	}{
+		{"no focus at all never matches", "Android news today", nil, false},
+		{"matches one of several focus terms", "A story about cycling gear", []string{"android", "cycling"}, true},
+		{"case-insensitive via the same tokenizer", "ANDROID auto update", []string{"android"}, true},
+		{"no overlap", "Sourdough starter guide", []string{"android", "cycling"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := matchesFocus(c.title, c.focus); got != c.want {
+				t.Errorf("matchesFocus(%q, %v) = %v, want %v", c.title, c.focus, got, c.want)
+			}
+		})
+	}
+}
+
+// hashMod and hashUnit are what make a seeded history reproducible; the property that matters
+// is determinism (same input, same output) plus hashMod's defensive n<=0 case, which Run never
+// triggers since it only ever calls it with fixed positive divisors.
+func TestHashModAndHashUnit(t *testing.T) {
+	if hashMod("x", "salt", 0) != 0 {
+		t.Error("hashMod with n<=0 should return 0 rather than dividing by zero")
+	}
+	if hashMod("x", "salt", -5) != 0 {
+		t.Error("hashMod with a negative n should return 0")
+	}
+	if a, b := hashMod("same-key", "s", 12), hashMod("same-key", "s", 12); a != b {
+		t.Errorf("hashMod is not deterministic: %d != %d", a, b)
+	}
+	if a, b := hashUnit("same-key", "s", 7), hashUnit("same-key", "s", 7); a != b {
+		t.Errorf("hashUnit is not deterministic: %v != %v", a, b)
+	}
+	// A different seed is expected to (usually) move the roll — this is what lets two dev
+	// databases run different simulated readers over the same corpus.
+	if hashUnit("k", "read", 1) == hashUnit("k", "read", 2) {
+		t.Error("two different seeds produced the exact same roll for the same key (extremely unlikely, check the seed mixing)")
+	}
+	for i := 0; i < 200; i++ {
+		if u := hashUnit(fmt.Sprintf("item-%d", i), "read", uint64(i)); u < 0 || u >= 1 {
+			t.Fatalf("hashUnit out of [0,1): %v", u)
+		}
+	}
+}
+
+// deriveFocus's two edge branches: a corpus with no word appearing at least three times (no
+// focus can be derived), and a corpus with more candidates than the FocusTerms*4 window (the
+// window must be capped rather than scanning everything).
+func TestDeriveFocusEdgeCases(t *testing.T) {
+	t.Run("no repeated substantial words yields nil", func(t *testing.T) {
+		items := []store.Item{
+			{Title: "Alpha unique headline"},
+			{Title: "Bravo distinct story"},
+			{Title: "Charlie singular report"},
+		}
+		if got := deriveFocus(items, 1); got != nil {
+			t.Errorf("deriveFocus = %v, want nil", got)
+		}
+	})
+	t.Run("short words under six letters never become candidates", func(t *testing.T) {
+		items := []store.Item{
+			{Title: "cat dog cat dog"},
+			{Title: "cat dog"},
+			{Title: "cat dog"},
+		}
+		if got := deriveFocus(items, 1); got != nil {
+			t.Errorf("deriveFocus = %v, want nil; every candidate word is under six letters", got)
+		}
+	})
+	t.Run("window is capped past FocusTerms*4 candidates", func(t *testing.T) {
+		// 24 distinct >=6-letter words, each appearing exactly 3 times: comfortably more
+		// than the FocusTerms*4 (16) window.
+		var items []store.Item
+		for w := 0; w < 24; w++ {
+			word := fmt.Sprintf("keyword%02d", w)
+			for n := 0; n < 3; n++ {
+				items = append(items, store.Item{Title: fmt.Sprintf("Story about %s today", word)})
+			}
+		}
+		got := deriveFocus(items, 3)
+		if len(got) != FocusTerms {
+			t.Fatalf("deriveFocus returned %d terms, want %d", len(got), FocusTerms)
+		}
+		gotB := deriveFocus(items, 11)
+		if fmt.Sprintf("%v", got) == fmt.Sprintf("%v", gotB) {
+			t.Error("two different seeds over a wide candidate pool picked the identical focus set")
+		}
+	})
 }

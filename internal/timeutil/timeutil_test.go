@@ -134,3 +134,47 @@ func TestParseWindowRejectsGarbage(t *testing.T) {
 		t.Error("an unknown zone should fail at parse time, not at evaluation time")
 	}
 }
+
+// The start half can be well-formed while the end half is garbage; both halves
+// have to be checked, not just the first.
+func TestParseWindowRejectsAGoodStartWithABadEnd(t *testing.T) {
+	if _, err := ParseWindow("07:00-25:00", "UTC"); err == nil {
+		t.Error("ParseWindow(\"07:00-25:00\") should have failed on the end half")
+	}
+}
+
+// Now and UTC are one-line wrappers, but they are the only two places "what
+// time is it" and "normalise to UTC" are spelled — worth pinning so a future
+// edit cannot silently change the zone or the clock source.
+func TestNowAndUTC(t *testing.T) {
+	if Now().Location() != time.UTC {
+		t.Error("Now() is not UTC")
+	}
+	local := time.Date(2026, 7, 1, 12, 0, 0, 0, time.FixedZone("x", 3600))
+	if got := UTC(local); got.Location() != time.UTC || !got.Equal(local) {
+		t.Errorf("UTC(%v) = %v, want the same instant in UTC", local, got)
+	}
+}
+
+// A zone that fails to load must refuse rather than silently answer "not
+// inside" for a window whose Contains and NextOccurrence are never actually
+// evaluated correctly.
+func TestUnloadableZoneIsRefusedNotSilentlyFalse(t *testing.T) {
+	w := Window{StartMin: 0, EndMin: 100, Zone: "Nowhere/Fictional"}
+	if w.Contains(time.Now()) {
+		t.Error("an unloadable zone reported Contains = true")
+	}
+	if _, ok := w.NextOccurrence(time.Now(), 9, 0); ok {
+		t.Error("an unloadable zone reported a next occurrence")
+	}
+}
+
+// An hour/minute pair that never normalises to itself (invalid wall-clock
+// input) must not search forever silently succeeding on some other time; it
+// has to give up and report false within the bounded search.
+func TestNextOccurrenceGivesUpOnAnImpossibleWallClock(t *testing.T) {
+	w := Window{Zone: "UTC"}
+	if _, ok := w.NextOccurrence(time.Now(), 25, 70); ok {
+		t.Error("an impossible hour:minute produced an occurrence")
+	}
+}

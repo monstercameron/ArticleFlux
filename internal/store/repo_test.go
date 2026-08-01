@@ -153,6 +153,60 @@ func TestItemStatePersists(t *testing.T) {
 	}
 }
 
+// TestHeardIsNotRead is TODO 11.10: hearing a FluxCast segment must not, by
+// itself, mark the article read — that is a separate, explicit choice a
+// caller makes by setting BOTH fields in the same StateChange — and
+// HeardItemIDs must report exactly the items marked heard.
+func TestHeardIsNotRead(t *testing.T) {
+	db := openTest(t)
+	repo, sc := seedReader(t, db)
+	ctx := context.Background()
+
+	items, _, err := repo.ListItems(ctx, sc, ListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) < 2 {
+		t.Fatal("need at least two seeded items")
+	}
+	heardOnly, heardAndRead := items[0].ID, items[1].ID
+
+	yes := true
+	if _, err := repo.SetItemState(ctx, sc, heardOnly, StateChange{Heard: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SetItemState(ctx, sc, heardAndRead, StateChange{Heard: &yes, Read: &yes}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.GetItem(ctx, sc, heardOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Read {
+		t.Error("marking Heard alone marked the item read too")
+	}
+
+	got2, err := repo.GetItem(ctx, sc, heardAndRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got2.Read {
+		t.Error("a caller that explicitly set Read alongside Heard did not get it")
+	}
+
+	heard, err := repo.HeardItemIDs(ctx, sc, []string{heardOnly, heardAndRead, items[2].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !heard[heardOnly] || !heard[heardAndRead] {
+		t.Errorf("HeardItemIDs = %v, want both %q and %q", heard, heardOnly, heardAndRead)
+	}
+	if heard[items[2].ID] {
+		t.Errorf("HeardItemIDs reported an item that was never marked heard: %v", heard)
+	}
+}
+
 // T1: the isolation test. A second tenant must not see the first's items, and
 // must get NotFound rather than a permission error — the latter would confirm
 // the row exists.

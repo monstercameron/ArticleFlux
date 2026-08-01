@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // keyless is a Digest that cannot reach a provider. Every test here uses one:
@@ -197,5 +198,36 @@ func TestNilDigestIsSafe(t *testing.T) {
 	}
 	if NewDigest(nil, nil, "").Configured(context.Background()) {
 		t.Fatal("a Digest with no client reports itself configured")
+	}
+}
+
+// --- model ------------------------------------------------------------------
+//
+// Every other test in this file constructs a Digest with nil settings, which
+// exercises only model()'s first branch. These three pin down the rest —
+// same three-way shape as SiteAnalyzer.model in scrape_test.go.
+
+func TestDigestModelNilSettingsReturnsTheDefault(t *testing.T) {
+	d := NewDigest(&fakeLLM{}, nil, t.TempDir())
+	if got := d.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestDigestModelUnsetSettingReturnsTheDefault(t *testing.T) {
+	d := NewDigest(&fakeLLM{}, newSettings(t), t.TempDir())
+	if got := d.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestDigestModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	d := NewDigest(&fakeLLM{}, settings, t.TempDir())
+	if got := d.model(context.Background()); got != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5", got)
 	}
 }

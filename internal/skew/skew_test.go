@@ -29,6 +29,9 @@ func TestParse(t *testing.T) {
 		{"2", Version{2, 0, 0}, true},
 		{" 1.2.3 ", Version{1, 2, 3}, true},
 		{"10.20.30", Version{10, 20, 30}, true},
+		// A fourth component is silently dropped, not rejected — a stamp with an
+		// extra segment is still comparable on the three that matter.
+		{"1.2.3.4", Version{1, 2, 3}, true},
 		{"", Version{}, false},
 		{"nightly", Version{}, false},
 		{"1.x.0", Version{}, false},
@@ -225,5 +228,73 @@ func TestTheStampIsReadFromTheHeaderTheClientSends(t *testing.T) {
 	}
 	if got := StampFrom(context.Background()); got != "" {
 		t.Errorf("a context with no metadata yielded %q", got)
+	}
+}
+
+// Metadata can be present without the stamp key ever having been set — a call
+// from a peer that attaches its own unrelated metadata. That must read as
+// unstamped, not panic on an empty Get result.
+func TestStampFromWithMetadataButNoStampKey(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("other-key", "v"))
+	if got := StampFrom(ctx); got != "" {
+		t.Errorf("StampFrom = %q, want empty when the stamp key is absent", got)
+	}
+}
+
+// The refusal path is exercised above by GetVersion's exemption; this is the
+// ordinary allow path — a current client on a non-exempt method must reach
+// the handler, or every call in the system would need the exemption.
+func TestUnaryAllowsAnUnrefusedNonExemptCall(t *testing.T) {
+	inter := Unary(policy("1.4.0"))
+	ctx := metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs(MetadataKey, "1.4.0"))
+
+	ran := false
+	_, err := inter(ctx, nil,
+		&grpc.UnaryServerInfo{FullMethod: "/articleflux.v1.ReaderService/ListItems"},
+		func(context.Context, any) (any, error) { ran = true; return "ok", nil })
+	if err != nil || !ran {
+		t.Errorf("a current client on a non-exempt method was refused: %v", err)
+	}
+}
+
+type fakeStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f fakeStream) Context() context.Context { return f.ctx }
+
+// Stream carries the same policy as Unary, but through ServerStream.Context
+// instead of the RPC context directly — it needs its own coverage because a
+// stale client left holding an open stream costs a goroutine, not one round trip.
+func TestStreamAppliesTheSamePolicyAsUnary(t *testing.T) {
+	inter := Stream(policy("9.9.9"))
+	stale := fakeStream{ctx: metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs(MetadataKey, "0.0.1"))}
+
+	ran := false
+	err := inter(nil, stale, &grpc.StreamServerInfo{FullMethod: "/articleflux.v1.SystemService/GetVersion"},
+		func(any, grpc.ServerStream) error { ran = true; return nil })
+	if err != nil || !ran {
+		t.Errorf("GetVersion stream was refused for skew (%v)", err)
+	}
+
+	err = inter(nil, stale, &grpc.StreamServerInfo{FullMethod: "/articleflux.v1.ReaderService/WatchItems"},
+		func(any, grpc.ServerStream) error {
+			t.Error("the stream handler ran for a client below the minimum")
+			return nil
+		})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("= %v, want FailedPrecondition", status.Code(err))
+	}
+
+	current := fakeStream{ctx: metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs(MetadataKey, "9.9.9"))}
+	ran = false
+	err = inter(nil, current, &grpc.StreamServerInfo{FullMethod: "/articleflux.v1.ReaderService/WatchItems"},
+		func(any, grpc.ServerStream) error { ran = true; return nil })
+	if err != nil || !ran {
+		t.Errorf("a current client's stream was refused: %v", err)
 	}
 }

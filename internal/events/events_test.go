@@ -3,6 +3,7 @@ package events
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -260,6 +261,118 @@ func TestCloseIsIdempotentAndUnregisters(t *testing.T) {
 	s.Close() // must not panic on a double close
 	if b.Subscribers("t") != 0 {
 		t.Error("the subscription was not removed")
+	}
+}
+
+// The message is what ends up in a server log when a client falls too far
+// behind, so it has to actually say which sequence was asked for and which
+// was the oldest still held — not just that a resync happened.
+func TestErrResyncRequiredMessage(t *testing.T) {
+	// Asked: 0 exercises itoa's own n==0 special case; Oldest: 12345 exercises
+	// its general multi-digit loop.
+	err := ErrResyncRequired{Oldest: 12345, Asked: 0}
+	got := err.Error()
+	if !strings.Contains(got, "12345") {
+		t.Errorf("message %q does not mention the oldest held sequence", got)
+	}
+	if !strings.Contains(got, "asked for 0") {
+		t.Errorf("message %q does not mention what was asked for", got)
+	}
+}
+
+// wants' tenant check is never actually reachable through Publish — every
+// Subscription lives in the tenantBuffer its own tenant owns, so Publish only
+// ever calls wants with an event whose TenantID already matches. Called
+// directly (this file is `package events`, not `events_test`) so the guard
+// itself is still exercised rather than left as an untested belt-and-braces
+// check.
+func TestWantsRejectsAMismatchedTenantDirectly(t *testing.T) {
+	s := &Subscription{tenantID: "a", userID: "u"}
+	if s.wants(Event{TenantID: "b", UserID: "u"}) {
+		t.Error("wants() accepted an event for a different tenant")
+	}
+}
+
+// oldestSeq's seq==0 branch is dead code through Replay: since is a uint64,
+// so since >= tb.seq(0) is always true for a fresh tenant and Replay returns
+// before ever calling oldestSeq. Called directly to exercise it anyway.
+func TestOldestSeqOnAFreshTenant(t *testing.T) {
+	b := New()
+	tb := b.bufferFor("fresh")
+	if got := tb.oldestSeq(); got != 0 {
+		t.Errorf("oldestSeq on a tenant with no events = %d, want 0", got)
+	}
+}
+
+// Replay's ring-corruption check is documented as unreachable under normal
+// operation ("only possible if BufferSize events were published between the
+// bound check and here, which cannot happen under the lock") — it exists as
+// a belt-and-braces guard against future refactors. The only way to exercise
+// it is to violate the invariant directly, which same-package access allows:
+// advance seq without writing the matching ring slots, exactly the state the
+// comment says append's own bookkeeping should prevent.
+func TestReplayCatchesARingItDidNotWrite(t *testing.T) {
+	b := New()
+	tb := b.bufferFor("corrupt")
+	tb.mu.Lock()
+	tb.seq = 3 // no matching append(): the ring stays all zero-value Events.
+	tb.mu.Unlock()
+
+	_, err := b.Replay("corrupt", "u", 0)
+	var resync ErrResyncRequired
+	if !errors.As(err, &resync) {
+		t.Fatalf("a ring with no matching events was not caught: %v", err)
+	}
+}
+
+// bufferFor double-checks under the write lock because two callers can both
+// miss the read-lock fast path for a brand-new tenant at once; only one may
+// create the buffer, and losing that race and returning the winner's buffer
+// is the code path this drives.
+//
+// A plain "fire N goroutines at once" burst does not reliably provoke it: an
+// uncontended bufferFor call is so fast that, in practice, the first goroutine
+// scheduled usually finishes the entire read-check-write sequence before a
+// second one is even running, so every later caller just hits the RLock fast
+// path and the race window is never entered. This test manufactures the
+// window instead of hoping for it: it holds b.mu itself (same-package access)
+// so every goroutine's first RLock blocks, waits until all of them are
+// queued there, and only then releases the lock — sync.RWMutex wakes blocked
+// readers as a batch, so every one of them passes the "not found" check at
+// once and all but the winner of the subsequent Lock() race land on line 202.
+func TestBufferForConcurrentFirstAccessRaces(t *testing.T) {
+	b := New()
+	const n = 64
+
+	b.mu.Lock() // every bufferFor call below blocks on its own RLock here
+	var ready sync.WaitGroup
+	ready.Add(n)
+	bufs := make(chan *tenantBuffer, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			ready.Done()
+			bufs <- b.bufferFor("racing-tenant")
+		}()
+	}
+	ready.Wait()
+	// ready.Done() fires just before the blocking bufferFor call, not after
+	// it — this margin is for the goroutine to actually reach and block on
+	// RLock, not merely to have been scheduled.
+	time.Sleep(50 * time.Millisecond)
+	b.mu.Unlock() // releases every blocked reader together
+
+	got := make([]*tenantBuffer, n)
+	for i := 0; i < n; i++ {
+		got[i] = <-bufs
+	}
+
+	if b.Tenants() != 1 {
+		t.Fatalf("Tenants() = %d, want exactly 1 buffer for the one tenant id", b.Tenants())
+	}
+	for i := 1; i < n; i++ {
+		if got[i] != got[0] {
+			t.Fatal("concurrent first access to one tenant id produced two different buffers")
+		}
 	}
 }
 

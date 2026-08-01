@@ -250,6 +250,55 @@ func TestHashOfIsDeterministic(t *testing.T) {
 	}
 }
 
+// --- readCache malformed data --------------------------------------------------
+
+// A cache row that is not valid JSON — corrupted, or written by a future
+// version with an incompatible shape — must surface as an error from
+// readCache rather than a zero-valued cached{} that looks like a cold cache.
+func TestReadCacheMalformedJSONIsAnError(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(),
+		store.UITranslationKey("fr"), "not json", ""); err != nil {
+		t.Fatalf("seeding a corrupt cache row: %v", err)
+	}
+	tr := NewTranslator(nil, settings)
+	if _, err := tr.readCache(context.Background(), "fr"); err == nil {
+		t.Fatal("a corrupt cache row was read as if it were valid")
+	}
+}
+
+// --- model ------------------------------------------------------------------
+//
+// unconfigured() carries a real *llm.Client (fine for the guard tests above),
+// but every one of them also passes nil OR a real settings repo without ever
+// pinning down model()'s three-way shape directly the way SiteAnalyzer.model
+// and Digest.model's tests do.
+
+func TestTranslatorModelNilSettingsReturnsTheDefault(t *testing.T) {
+	tr := NewTranslator(&fakeLLM{}, nil)
+	if got := tr.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestTranslatorModelUnsetSettingReturnsTheDefault(t *testing.T) {
+	tr := NewTranslator(&fakeLLM{}, newSettings(t))
+	if got := tr.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestTranslatorModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	tr := NewTranslator(&fakeLLM{}, settings)
+	if got := tr.model(context.Background()); got != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5", got)
+	}
+}
+
 // --- helpers -------------------------------------------------------------------
 
 // seedCache writes a cache entry exactly the way a real translation would have

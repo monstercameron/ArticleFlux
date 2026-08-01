@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -211,5 +212,22 @@ func TestThePageProxyRefusesToRunOnTheAppsOwnOrigin(t *testing.T) {
 	})
 	if b.pages == nil {
 		t.Error("the page proxy refused even with a separate origin configured")
+	}
+}
+
+// Preflight runs the authorization coverage check FIRST, and its failure has
+// to reach the caller through the whole boot path — not just through
+// checkPolicyCoverage called directly, which is what TestPreflightRefusesAnUncoveredAPI
+// (authz_test.go) pins for the check itself.
+func TestPreflightFailsBootWhenThePolicyDoesNotCoverTheAPI(t *testing.T) {
+	a := openFor(t, Config{DevMode: true})
+	a.policy = authz.NewMap()
+
+	err := a.Preflight(t.Context())
+	if err == nil {
+		t.Fatal("Preflight passed with a policy that covers none of the registered RPCs")
+	}
+	if !strings.Contains(err.Error(), "DefaultPolicy") {
+		t.Errorf("Preflight's error does not point at the fix: %v", err)
 	}
 }

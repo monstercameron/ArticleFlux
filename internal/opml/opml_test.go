@@ -162,6 +162,98 @@ func TestParseRejectsNonOPML(t *testing.T) {
 	}
 }
 
+// An <outline> with neither a URL nor children is noise from a hand-edited
+// file or a broken exporter — not a folder with nothing in it. It must not
+// show up in Folders, and it must not stop the sibling feed from parsing.
+func TestParseSkipsEmptyLeaf(t *testing.T) {
+	doc, err := Parse(strings.NewReader(`<opml><body>
+	  <outline text="Nothing Here"/>
+	  <outline type="rss" text="A" xmlUrl="https://a.example/f"/>
+	</body></opml>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Feeds) != 1 {
+		t.Fatalf("got %d feeds, want 1", len(doc.Feeds))
+	}
+	if len(doc.Folders) != 0 {
+		t.Errorf("folders = %v, want none: an empty leaf is not a folder", doc.Folders)
+	}
+}
+
+// A feed with neither text nor title AND a URL with no scheme (a malformed
+// export, or a relative xmlUrl someone hand-wrote) has no "://" to split on.
+// The fallback must still hand back something rather than panic or return "".
+func TestUntitledFeedWithSchemelessURL(t *testing.T) {
+	doc, err := Parse(strings.NewReader(
+		`<opml><body><outline type="rss" xmlUrl="feed.xml"/></body></opml>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Feeds[0].Title != "feed.xml" {
+		t.Errorf("title = %q, want the raw URL", doc.Feeds[0].Title)
+	}
+}
+
+// Exports declare encodings they do not use. charsetPassthrough must let a
+// declared non-UTF-8 encoding through rather than refusing the whole file.
+func TestParseAcceptsDeclaredNonUTF8Charset(t *testing.T) {
+	doc, err := Parse(strings.NewReader(
+		`<?xml version="1.0" encoding="ISO-8859-1"?><opml><body>` +
+			`<outline type="rss" text="A" xmlUrl="https://a.example/f"/>` +
+			`</body></opml>`))
+	if err != nil {
+		t.Fatalf("a declared charset must not fail the parse: %v", err)
+	}
+	if len(doc.Feeds) != 1 {
+		t.Fatalf("got %d feeds, want 1", len(doc.Feeds))
+	}
+}
+
+// Write must group by folder, not just dump a flat list — that's the whole
+// point of exporting rather than concatenating xmlUrl strings. This also
+// covers the untitled-document fallback, since a title-less export is a real
+// case (a document built from scratch, not round-tripped from a parse).
+func TestWriteGroupsByFolderAndDefaultsTitle(t *testing.T) {
+	doc := &Document{
+		Feeds: []Feed{
+			{Title: "Top", FeedURL: "https://top.example/f"},
+			{Title: "A", FeedURL: "https://a.example/f", Folder: "Tech"},
+		},
+	}
+	var buf strings.Builder
+	if err := Write(&buf, doc); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "<title>ArticleFlux</title>") {
+		t.Errorf("an untitled document should default its title, got: %s", out)
+	}
+	if !strings.Contains(out, `<outline text="Tech">`) {
+		t.Errorf("folder wrapper missing: %s", out)
+	}
+
+	again, err := Parse(strings.NewReader(out))
+	if err != nil {
+		t.Fatalf("re-parsing our own folder output failed: %v", err)
+	}
+	if len(again.Feeds) != 2 {
+		t.Fatalf("got %d feeds, want 2", len(again.Feeds))
+	}
+	var sawTopLevel, sawTech bool
+	for _, f := range again.Feeds {
+		switch f.Folder {
+		case "":
+			sawTopLevel = true
+		case "Tech":
+			sawTech = true
+		}
+	}
+	if !sawTopLevel || !sawTech {
+		t.Errorf("folder grouping did not round-trip: %+v", again.Feeds)
+	}
+}
+
 // An importer without an exporter is a roach motel, so the round trip is the
 // thing worth testing.
 func TestRoundTrip(t *testing.T) {

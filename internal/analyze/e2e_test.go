@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -627,6 +629,487 @@ func TestEscalateNeverSpendsNothing(t *testing.T) {
 	got, _ := repo.AnalysisByIDs(ctx, ids)
 	if len(got) != len(ids) {
 		t.Fatalf("%d rows for %d items", len(got), len(ids))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handle — edge cases the happy-path tests above never take
+// ---------------------------------------------------------------------------
+
+// A payload the queue never actually produces, but Handle must still refuse
+// it cleanly rather than panic — the job pool hands this straight from the
+// jobs table, which is not typed.
+func TestHandleRejectsUnreadablePayload(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	err := svc.Handle(context.Background(), store.Job{Payload: "{not json"})
+	if err == nil {
+		t.Fatal("expected an error for an unreadable payload")
+	}
+}
+
+// An empty item list is a no-op, not an error — it must not retry forever
+// against a payload that will never grow items.
+func TestHandleWithNoItemsIsANoOp(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	body, err := json.Marshal(analyze.Payload{ItemIDs: nil, SourceID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Handle(context.Background(), store.Job{Payload: string(body)}); err != nil {
+		t.Fatalf("an empty item list must be a no-op, got %v", err)
+	}
+}
+
+// An item with no ContentHTML — a summary-only entry, or one whose body
+// extraction failed — must still be analysed on its summary rather than
+// treated as empty.
+func TestHandleFallsBackToSummaryWithNoBody(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	sourceID, ids := seedItems(t, repo, []store.IngestItem{{
+		GUID:    "summary-only",
+		Title:   "A quiet weekend",
+		Summary: strings.Repeat("The vulnerability allowed remote code execution before a patch. ", 6),
+		// ContentHTML deliberately empty.
+		URL:         "https://example.com/summary-only",
+		PublishedAt: now,
+		WordCount:   40,
+	}})
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	if err := svc.Enqueue(ctx, sourceID, ids); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, repo, svc)
+
+	got, err := repo.AnalysisByIDs(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row, ok := got[ids[0]]; !ok || row.AnalyzerVersion == 0 {
+		t.Errorf("a summary-only item was not analysed: %+v", got)
+	}
+}
+
+// Entities are the free tier's own NER-lite pass over the title and summary —
+// it needs no key and no consent, and this pins that the row it writes
+// carries what the pass actually found rather than dropping it silently.
+func TestHandleWritesEntitiesFromTheFreeTier(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	sourceID, ids := seedItems(t, repo, []store.IngestItem{{
+		GUID:  "entity-1",
+		Title: "A quiet weekend for developers",
+		// Sentence case with a capitalised pair, so textvec.Phrases has a real
+		// signal to find — a Title Case headline yields nothing (§27.3e, textvec).
+		Summary: "Engineers at GitHub Copilot released a plugin this week for editors everywhere.",
+		ContentHTML: "<p>" + strings.Repeat(
+			"The tomatoes came in early this year and the weather held. ", 6) + "</p>",
+		URL:         "https://example.com/entity-1",
+		PublishedAt: now,
+		WordCount:   40,
+	}})
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	if err := svc.Enqueue(ctx, sourceID, ids); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, repo, svc)
+
+	got, err := repo.AnalysisByIDs(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := got[ids[0]]
+	if !ok {
+		t.Fatal("no analysis row written")
+	}
+	found := false
+	for _, e := range row.Entities {
+		if e.Name == "github copilot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a \"github copilot\" entity, got %+v", row.Entities)
+	}
+}
+
+// The analysis is written and durable by the time fan-out is attempted, so a
+// downstream enqueue failure must be logged and swallowed, never fail the
+// job — refusing here would re-run the whole batch, including any model
+// spend, just to retry a queue insert.
+func TestHandleSwallowsAFanoutFailure(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+
+	sourceID, ids := seedItems(t, repo, realArticles())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var fanoutCalls atomic.Int64
+	svc := analyze.New(repo, newPipeline(t), logger).
+		WithFanout(func(context.Context, string, []string) error {
+			fanoutCalls.Add(1)
+			return errors.New("queue is full")
+		})
+
+	if err := svc.Enqueue(ctx, sourceID, ids); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, repo, svc) // fails the test if a fan-out error failed the job
+
+	if fanoutCalls.Load() == 0 {
+		t.Fatal("fan-out was never attempted")
+	}
+	got, err := repo.AnalysisByIDs(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("%d analysis rows for %d items — a fan-out failure lost the analysis", len(got), len(ids))
+	}
+}
+
+// Enqueue must surface a store failure rather than silently drop the batch —
+// a closed database is the simplest way to force one deterministically.
+func TestEnqueuePropagatesAStoreError(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Enqueue(context.Background(), "s1", []string{"i1"}); err == nil {
+		t.Fatal("expected an error enqueuing against a closed database")
+	}
+}
+
+// Handle must surface a store failure reading items rather than silently
+// dropping the batch or reporting success.
+func TestHandlePropagatesAStoreErrorReadingItems(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+	body, err := json.Marshal(analyze.Payload{ItemIDs: []string{"i1"}, SourceID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Handle(context.Background(), store.Job{Payload: string(body)}); err == nil {
+		t.Fatal("expected an error reading items from a closed database")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backfill (plan.md §27.9, TODO 10.17)
+// ---------------------------------------------------------------------------
+
+// Every item ingested before the analyzer was wired has no analysis row at
+// all — that is the case the feature exists for, and it must be queued.
+func TestBackfillQueuesEveryUnanalysedItem(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	_, ids := seedItems(t, repo, realArticles())
+
+	n, err := svc.Backfill(ctx, 0) // limit<=0 defaults to BackfillPerSweep
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if n != len(ids) {
+		t.Fatalf("queued %d, want %d", n, len(ids))
+	}
+
+	// One job holds the whole batch here — MaxBatch is 40 and there are only
+	// four items — so the assertion worth making is that a job exists at all,
+	// not a one-job-per-item count.
+	depth, err := repo.QueueDepth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depth[store.JobAnalyze].Queued < 1 {
+		t.Errorf("queue depth is %+v after backfilling %d items", depth[store.JobAnalyze], len(ids))
+	}
+}
+
+// Zero queued is the steady state, not an error: once every item has current
+// analysis, a sweep must find nothing to do.
+func TestBackfillIsANoOpOnceEverythingIsCurrent(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	seedItems(t, repo, realArticles())
+	if _, err := svc.Backfill(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, repo, svc)
+
+	n, err := svc.Backfill(ctx, 0)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Backfill queued %d items that are already current", n)
+	}
+}
+
+// A lexicon or analyzer change makes an existing row STALE BUT VALID (§27.9);
+// this pins that StaleAnalysis's version/hash mismatch is what finds it,
+// separately from "no row at all".
+func TestBackfillRequeuesAnalysisFromAnOlderBuild(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	pipe := newPipeline(t)
+	svc := analyze.New(repo, pipe, nil)
+
+	_, ids := seedItems(t, repo, realArticles()[:1])
+	// Written directly with a stamp from a build that no longer exists, rather
+	// than going through Handle — the point under test is StaleAnalysis's
+	// comparison, not the write path the other tests already cover.
+	if err := repo.UpsertAnalysis(ctx, []store.ItemAnalysis{{
+		ItemID:          ids[0],
+		AnalyzerVersion: pipe.Version() + 1000,
+		LexiconHash:     pipe.LexiconVersion(),
+		AnalyzedAt:      time.Now().UTC(),
+	}}); err != nil {
+		t.Fatalf("seeding a stale analysis row: %v", err)
+	}
+
+	n, err := svc.Backfill(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("Backfill queued %d, want the 1 stale row", n)
+	}
+}
+
+// The ceiling exists so a stalled analyzer does not get 125 more items every
+// fifteen minutes forever while nothing drains the queue — it must stop
+// filling once the queue is already at or past the ceiling, silently.
+func TestBackfillStopsAtTheQueueCeiling(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	ctx := context.Background()
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	// Filler jobs, not real items — Backfill's ceiling check reads queue depth
+	// before it ever looks at which items are stale.
+	for i := 0; i < 400; i++ {
+		if _, err := repo.Enqueue(ctx, store.NewJob{
+			Kind: store.JobAnalyze, Priority: 1, Payload: "{}",
+		}); err != nil {
+			t.Fatalf("seeding filler job %d: %v", i, err)
+		}
+	}
+	seedItems(t, repo, realArticles())
+
+	n, err := svc.Backfill(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("Backfill queued %d items past the ceiling; it must wait for the pool to drain", n)
+	}
+}
+
+// RunBackfill sweeps once immediately, before its first tick — a reader who
+// just upgraded should see the newest articles pick up categories within a
+// minute, not after the first quarter-hour of an empty screen.
+func TestRunBackfillSweepsImmediatelyAndStopsOnCancel(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	seedItems(t, repo, realArticles())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		svc.RunBackfill(ctx, time.Hour) // an interval long enough that only the immediate sweep can fire
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		depth, err := repo.QueueDepth(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if depth[store.JobAnalyze].Queued > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	depth, err := repo.QueueDepth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depth[store.JobAnalyze].Queued == 0 {
+		t.Fatal("RunBackfill did not sweep immediately; the queue is still empty")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunBackfill did not return after its context was cancelled")
+	}
+}
+
+// A non-positive interval must fall back to the standard one and still run
+// the immediate sweep — the default is a fallback for a bad caller argument,
+// not a reason to skip the "see results within a minute" guarantee.
+func TestRunBackfillDefaultsANonPositiveInterval(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+	seedItems(t, repo, realArticles())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		svc.RunBackfill(ctx, 0) // <=0 must default to BackfillInterval, not busy-loop
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var queued int
+	for time.Now().Before(deadline) {
+		depth, err := repo.QueueDepth(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued = depth[store.JobAnalyze].Queued
+		if queued > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if queued == 0 {
+		t.Fatal("the immediate sweep did not run with a non-positive interval")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunBackfill did not stop after cancel")
+	}
+}
+
+// The ticker is what makes this a sweep rather than a one-shot: seeded work
+// that arrives after the immediate sweep has already run must still be picked
+// up on the next tick.
+func TestRunBackfillFiresOnTheTicker(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		svc.RunBackfill(ctx, 30*time.Millisecond)
+		close(done)
+	}()
+
+	// Nothing exists yet, so the immediate sweep queues nothing. Seeding only
+	// after giving it time to run means anything queued afterwards can only
+	// be the ticker's doing.
+	time.Sleep(100 * time.Millisecond)
+	seedItems(t, repo, realArticles())
+
+	deadline := time.Now().Add(5 * time.Second)
+	var queued int
+	for time.Now().Before(deadline) {
+		depth, err := repo.QueueDepth(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued = depth[store.JobAnalyze].Queued
+		if queued > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if queued == 0 {
+		t.Fatal("RunBackfill's ticker never fired a second sweep")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunBackfill did not stop after cancel")
+	}
+}
+
+// A sweep that fails must be logged and must not stop the loop — the next
+// tick gets another chance, which is the whole point of a sweep over a
+// one-shot backfill.
+func TestRunBackfillLogsAndSurvivesAStoreError(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	svc := analyze.New(repo, newPipeline(t), logger)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		svc.RunBackfill(ctx, time.Hour)
+		close(done)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunBackfill did not stop after cancel despite a store error")
+	}
+
+	if !strings.Contains(logBuf.String(), "could not run") {
+		t.Errorf("expected the backfill failure to be logged, got: %s", logBuf.String())
+	}
+}
+
+// A closed database fails QueueDepth, and Backfill must surface that rather
+// than report a false "nothing to do".
+func TestBackfillPropagatesAStoreError(t *testing.T) {
+	db := openDB(t)
+	repo := store.NewReaderRepo(db)
+	svc := analyze.New(repo, newPipeline(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Backfill(context.Background(), 0); err == nil {
+		t.Fatal("expected an error backfilling against a closed database")
 	}
 }
 

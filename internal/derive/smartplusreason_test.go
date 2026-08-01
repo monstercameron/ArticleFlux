@@ -55,7 +55,7 @@ func TestSmartPlusRecordsWhyItMovedAnItem(t *testing.T) {
 
 	// Promote the third and fourth, with a reason.
 	plus := &fakePlus{rerank: []int{2, 3}, why: "reports the filing, not the rumour"}
-	tier := s.applySmartPlus(context.Background(), plus, out, nil, nil)
+	tier := s.applySmartPlus(context.Background(), plus, out, nil, nil, nil, nil)
 
 	if len(tier) != 2 {
 		t.Fatalf("marked %d rows as paid, want 2", len(tier))
@@ -98,7 +98,7 @@ func TestSmartPlusReasonCarriesNoScoreDelta(t *testing.T) {
 	out := scored("a", "b", "c")
 	before := []float64{out[0].res.Score, out[1].res.Score, out[2].res.Score}
 
-	s.applySmartPlus(context.Background(), &fakePlus{rerank: []int{2}, why: "explains the mechanism"}, out, nil, nil)
+	s.applySmartPlus(context.Background(), &fakePlus{rerank: []int{2}, why: "explains the mechanism"}, out, nil, nil, nil, nil)
 
 	for _, sc := range out {
 		for _, r := range sc.res.Reasons {
@@ -129,7 +129,7 @@ func TestSmartPlusPromotesWithoutAReason(t *testing.T) {
 	out := scored("a", "b", "c")
 
 	tier := s.applySmartPlus(context.Background(),
-		&fakePlus{rerank: []int{2}, why: ""}, out, nil, nil)
+		&fakePlus{rerank: []int{2}, why: ""}, out, nil, nil, nil, nil)
 
 	if len(tier) != 1 {
 		t.Fatalf("marked %d rows as paid, want 1", len(tier))
@@ -157,7 +157,7 @@ func TestSmartPlusReasonFollowsTheItemNotThePosition(t *testing.T) {
 	// Only "d" (index 3) is promoted, so it lands at position 0 and must be the one that
 	// carries the reason.
 	s.applySmartPlus(context.Background(),
-		&fakePlus{rerank: []int{3}, why: "the only one with numbers"}, out, nil, nil)
+		&fakePlus{rerank: []int{3}, why: "the only one with numbers"}, out, nil, nil, nil, nil)
 
 	if out[0].item.ID != "d" {
 		t.Fatalf("position 0 holds %q, want %q", out[0].item.ID, "d")
@@ -195,7 +195,7 @@ func TestAnUnmovedPickKeepsNeitherBadgeNorReason(t *testing.T) {
 
 	// The model picks index 0 — already first — and index 2, which really does move.
 	tier := s.applySmartPlus(context.Background(),
-		&fakePlus{rerank: []int{0, 2}, why: "the model's account"}, out, nil, nil)
+		&fakePlus{rerank: []int{0, 2}, why: "the model's account"}, out, nil, nil, nil, nil)
 
 	// "a" did not move, so it is not a paid pick and must not claim to be one.
 	if tier[out[0].item.ID] {
@@ -251,7 +251,7 @@ func TestSmartPlusReasonIsAppendedLast(t *testing.T) {
 	s := New(nil, nil)
 	out := scored("a", "b")
 	s.applySmartPlus(context.Background(),
-		&fakePlus{rerank: []int{1}, why: "explains it"}, out, nil, nil)
+		&fakePlus{rerank: []int{1}, why: "explains it"}, out, nil, nil, nil, nil)
 
 	rs := out[0].res.Reasons
 	if len(rs) == 0 || rs[len(rs)-1].Term != "smartplus" {

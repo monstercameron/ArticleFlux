@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -178,6 +179,35 @@ func TestHSTSNeedsRealTLS(t *testing.T) {
 	).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
 		t.Errorf("plain http must not set HSTS, got %q", got)
+	}
+}
+
+// An empty root means static serving is off entirely, so there is no shell to
+// hash and inlineScriptHashes must say so without touching the filesystem.
+func TestInlineScriptHashesWithNoRoot(t *testing.T) {
+	if got := inlineScriptHashes(""); got != nil {
+		t.Errorf("inlineScriptHashes(\"\") = %v, want nil", got)
+	}
+}
+
+// A configured root with no index.html yet — mid-build, or a misconfigured
+// deploy — yields a policy with no script hash rather than an error: Preflight
+// is what refuses to boot over this, not the CSP builder.
+func TestInlineScriptHashesWithNoShellFile(t *testing.T) {
+	if got := inlineScriptHashes(t.TempDir()); got != nil {
+		t.Errorf("inlineScriptHashes on an empty dir = %v, want nil", got)
+	}
+}
+
+// overTLS is true directly from a real TLS connection, independent of
+// -behind-proxy or any header — the common case of terminating TLS in this
+// process rather than at a reverse proxy.
+func TestOverTLSTrueForARealTLSConnection(t *testing.T) {
+	a := &App{}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.TLS = &tls.ConnectionState{}
+	if !a.overTLS(r) {
+		t.Error("overTLS = false for a request with a populated TLS connection state")
 	}
 }
 

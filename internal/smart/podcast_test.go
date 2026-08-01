@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // keylessPodcast is a Podcast that cannot reach a provider, for the reason
@@ -733,6 +734,29 @@ func TestSegmentGroupInstructionsRestrictGreetingAndRestatement(t *testing.T) {
 	}
 }
 
+// TestTransitionsAreNotCanned is TODO 11.8: the planner emits metadata
+// (SegmentGroup.PrevTheme here — previous_theme/next_theme/transition_type
+// live on the planner call itself, TODO 11.7), and the WRITER produces the
+// words. A broadcast that reused a fixed connective from a table is a
+// broadcast nobody leaves running, so no canned phrase may appear in the
+// instructions as something the model is TOLD to say — only as a named
+// example of what it must avoid — and the theme metadata must actually
+// reach the prompt.
+func TestTransitionsAreNotCanned(t *testing.T) {
+	instr := podcastGroupInstructionsFor(DefaultVibe)
+	if !strings.Contains(instr, `Never a stock phrase like "in other news" or "turning now to" standing in for an actual thought`) {
+		t.Error("instructions no longer name the canned connectives as forbidden")
+	}
+
+	in := segmentGroupInput(SegmentGroup{
+		PrevTheme: "the transit budget fight",
+		Stories:   []SegmentStory{{ItemID: "a"}, {ItemID: "b"}},
+	}, []string{"x", "y"})
+	if !strings.Contains(in, "the transit budget fight") {
+		t.Error("the segment's PrevTheme metadata did not reach the model's input")
+	}
+}
+
 // The input's SHAPE is the contract with the instructions above, and — as
 // with podcastInput — it is the half that rots silently. The opening must
 // appear exactly once, ahead of every story, however many stories the group
@@ -903,22 +927,22 @@ func TestHandoverShapeReachesTheModelOnlyWhenThereIsAHandover(t *testing.T) {
 	}
 }
 
-// Deterministic, because the alternative poisons the cache: a segment rewritten
-// after a miss must be the same segment, or the same story after the same story
-// sounds different on Tuesday and reads as the cache being broken.
-func TestHandoverShapeIsStableForAPair(t *testing.T) {
-	a := handoverShapeFor("one", "two")
-	for range 20 {
-		if got := handoverShapeFor("one", "two"); got != a {
-			t.Fatalf("the shape for a pair moved: %q then %q", a, got)
-		}
+// v5's contract here was determinism — the same pair always drew the same
+// shape, because the reasoning then was that randomness would poison the
+// cache. v6 replaced that with genuine randomness per product direction: see
+// handoverShapeFor's own comment for why the cache is not actually at risk —
+// what gets cached is the finished TEXT, keyed on the pair, so a listener who
+// has already heard a pair always hears the same recording. This test checks
+// the new contract instead: the same pair does NOT reliably draw the same
+// shape, which is what "more varied and randomized" actually requires.
+func TestHandoverShapeVariesAcrossCallsForTheSamePair(t *testing.T) {
+	seen := map[string]bool{}
+	for range 200 {
+		seen[handoverShapeFor("one", "two")] = true
 	}
-	// And it is ORDERED: B-after-A is a different piece of writing from
-	// A-after-B, which is the same reason the cache key carries both ids.
-	if handoverShapeFor("two", "one") == a {
-		// Not a failure on its own — with six shapes a collision is expected
-		// about one time in six — so this only reports, it does not fail.
-		t.Logf("note: the reversed pair drew the same shape; that is a collision, not a bug")
+	if len(seen) < 2 {
+		t.Fatalf("the same pair drew only %d distinct shape(s) over 200 calls — "+
+			"handoverShapeFor looks deterministic again", len(seen))
 	}
 }
 
@@ -933,5 +957,98 @@ func TestHandoverShapesActuallyRotate(t *testing.T) {
 	if len(seen) < len(handoverShapes) {
 		t.Errorf("only %d of %d handover shapes were ever drawn over 200 pairs",
 			len(seen), len(handoverShapes))
+	}
+}
+
+// --- podcastInstructionsOf: the OpenOnly branch ---------------------------------
+//
+// TestOutroUsesTheSignOffInstructions above covers CloseOnly (and CloseOnly
+// winning over OpenOnly when both are set); this is the remaining branch.
+
+func TestPodcastInstructionsOfOpenOnlyUsesTheIntroInstructions(t *testing.T) {
+	got := podcastInstructionsOf(Segment{OpenOnly: true, Vibe: VibeCalm})
+	want := podcastIntroInstructions(VibeCalm)
+	if got != want {
+		t.Error("an OpenOnly segment did not get the intro instructions")
+	}
+}
+
+// --- model -------------------------------------------------------------------
+//
+// Every other test in this file constructs a Podcast with nil settings, which
+// exercises only model()'s first branch. Same three-way shape as
+// SiteAnalyzer.model in scrape_test.go.
+
+func TestPodcastModelNilSettingsReturnsTheDefault(t *testing.T) {
+	p := NewPodcast(&fakeLLM{}, nil, t.TempDir())
+	if got := p.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestPodcastModelUnsetSettingReturnsTheDefault(t *testing.T) {
+	p := NewPodcast(&fakeLLM{}, newSettings(t), t.TempDir())
+	if got := p.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestPodcastModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	p := NewPodcast(&fakeLLM{}, settings, t.TempDir())
+	if got := p.model(context.Background()); got != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5", got)
+	}
+}
+
+// --- cachePath / groupCachePath guards ----------------------------------------
+
+func TestCachePathEmptyWithNoDirOrNoItemID(t *testing.T) {
+	withDir := NewPodcast(&fakeLLM{}, nil, t.TempDir())
+	if got := withDir.cachePath(Segment{}, "m"); got != "" {
+		t.Errorf("cachePath with no ItemID = %q, want empty", got)
+	}
+	noDir := NewPodcast(&fakeLLM{}, nil, "")
+	if got := noDir.cachePath(Segment{ItemID: "a"}, "m"); got != "" {
+		t.Errorf("cachePath with no dir = %q, want empty", got)
+	}
+}
+
+func TestGroupCachePathGuards(t *testing.T) {
+	g := SegmentGroup{Stories: []SegmentStory{{ItemID: "a"}, {ItemID: "b"}}}
+	withDir := NewPodcast(&fakeLLM{}, nil, t.TempDir())
+	if got := withDir.groupCachePath(g, -1, "m"); got != "" {
+		t.Errorf("groupCachePath with idx=-1 = %q, want empty", got)
+	}
+	if got := withDir.groupCachePath(g, 2, "m"); got != "" {
+		t.Errorf("groupCachePath with idx past the end = %q, want empty", got)
+	}
+	noID := SegmentGroup{Stories: []SegmentStory{{ItemID: ""}}}
+	if got := withDir.groupCachePath(noID, 0, "m"); got != "" {
+		t.Errorf("groupCachePath for a story with no ItemID = %q, want empty", got)
+	}
+	noDir := NewPodcast(&fakeLLM{}, nil, "")
+	if got := noDir.groupCachePath(g, 0, "m"); got != "" {
+		t.Errorf("groupCachePath with no dir = %q, want empty", got)
+	}
+}
+
+// A group WITH an opening and the same group withOUT one must not share a
+// cache entry — same argument cachePath's own Open handling makes: the
+// opening is part of block 1's text.
+func TestGroupCachePathDiffersWithAndWithoutAnOpening(t *testing.T) {
+	p := NewPodcast(&fakeLLM{}, nil, t.TempDir())
+	g := SegmentGroup{Stories: []SegmentStory{{ItemID: "a"}, {ItemID: "b"}}}
+	bare := p.groupCachePath(g, 0, "m")
+
+	withOpen := g
+	withOpen.Open = &Opening{PartOfDay: "morning", Date: "Monday", Stories: 5,
+		Lineup: []Headline{{Source: "LWN", Title: "One"}}}
+	opened := p.groupCachePath(withOpen, 0, "m")
+	if bare == opened {
+		t.Error("a group with an opening shares a cache entry with the same group without one")
 	}
 }

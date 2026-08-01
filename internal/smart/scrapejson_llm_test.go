@@ -153,6 +153,45 @@ func TestProposeJSONIgnoresAnUnexpectedExtraField(t *testing.T) {
 	}
 }
 
+// --- guards reachable without a request ----------------------------------------
+
+func TestProposeJSONWithAnUnconfiguredClientIsErrNotConfigured(t *testing.T) {
+	a := NewSiteAnalyzer(&fakeLLM{configured: false}, newSettings(t))
+	_, err := a.ProposeJSON(context.Background(), "https://example.com/x",
+		"https://example.com/api/x", "comic.chapters", []byte(jsonBody))
+	if !errors.Is(err, llm.ErrNotConfigured) {
+		t.Fatalf("err = %v, want ErrNotConfigured", err)
+	}
+}
+
+// A body that is not JSON at all outlines to nothing (OutlineJSON returns ""
+// on an unmarshal error) and is refused before spending a request — same
+// contract as the HTML side's empty-outline guard.
+func TestProposeJSONUnparsableBodyIsErrNoRuleWithoutCallingTheProvider(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodJSONAnswer()}
+	a := NewSiteAnalyzer(fake, newSettings(t))
+	_, err := a.ProposeJSON(context.Background(), "https://example.com/x",
+		"https://example.com/api/x", "", []byte(`not json`))
+	if !errors.Is(err, ErrNoRule) {
+		t.Fatalf("err = %v, want ErrNoRule", err)
+	}
+	if n := fake.callCount(); n != 0 {
+		t.Fatalf("provider called %d times on an unparsable body, want 0", n)
+	}
+}
+
+func TestProposeJSONEmptyItemsPathWithNoNotesIsPlainErrNoList(t *testing.T) {
+	fake := &fakeLLM{configured: true,
+		text: `{"items_path":"","title_path":"","link_path":"","link_template":"","id_path":"",` +
+			`"date_path":"","summary_path":"","image_path":"","author_path":"","notes":""}`}
+	a := NewSiteAnalyzer(fake, newSettings(t))
+	_, err := a.ProposeJSON(context.Background(), "https://example.com/x",
+		"https://example.com/api/x", "comic.chapters", []byte(jsonBody))
+	if !errors.Is(err, ErrNoList) {
+		t.Fatalf("err = %v, want ErrNoList", err)
+	}
+}
+
 func TestProposeJSONProviderErrorSurfacesWithoutRetry(t *testing.T) {
 	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
 	a := NewSiteAnalyzer(fake, newSettings(t))

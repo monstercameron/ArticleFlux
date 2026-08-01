@@ -121,6 +121,69 @@ func TestTheProxyLimiterIsOffInDevMode(t *testing.T) {
 	}
 }
 
+// A request with no discernible client address at all (RemoteAddr empty) is
+// let through unlimited rather than refused or given a shared key — there is
+// nothing safe to key a bucket on, and an unsigned request behind that bucket
+// is what the signature check exists to police.
+func TestLimitProxyWithNoClientAddressPassesThrough(t *testing.T) {
+	h := proxyHandler(&App{})
+	r := proxyReq("203.0.113.7")
+	r.RemoteAddr = ""
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d, want 200 — no key means nothing to rate-limit on", rec.Code)
+	}
+}
+
+// shareLimit is /pub's own budget, separate from the proxy limiter's and not
+// exempted in DevMode — a share is public in development too.
+func shareHandler(a *App) http.Handler {
+	return a.shareLimit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
+func TestShareLimitRefusesPastItsOwnBurstWithRetryAfter(t *testing.T) {
+	h := shareHandler(&App{})
+	served, _ := serveN(h, "203.0.113.20", ratelimit.PublicSharePerIP.Burst)
+	if served != ratelimit.PublicSharePerIP.Burst {
+		t.Fatalf("served %d of %d within the burst", served, ratelimit.PublicSharePerIP.Burst)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, proxyReq("203.0.113.20"))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429 past the burst", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After on a 429")
+	}
+}
+
+// Unlike the proxy limiter, shareLimit is NOT exempted in DevMode: a share is
+// public in development too, and the limit is high enough that no honest use
+// meets it.
+func TestShareLimitIsNotExemptInDevMode(t *testing.T) {
+	h := shareHandler(&App{cfg: Config{DevMode: true}})
+	served, _ := serveN(h, "203.0.113.21", ratelimit.PublicSharePerIP.Burst+5)
+	if served != ratelimit.PublicSharePerIP.Burst {
+		t.Errorf("served %d, want exactly the burst %d even in DevMode",
+			served, ratelimit.PublicSharePerIP.Burst)
+	}
+}
+
+func TestShareLimitWithNoClientAddressPassesThrough(t *testing.T) {
+	h := shareHandler(&App{})
+	r := proxyReq("203.0.113.7")
+	r.RemoteAddr = ""
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d, want 200", rec.Code)
+	}
+}
+
 // Behind a trusted proxy the key is the forwarded address, so two readers
 // arriving through the same nginx get a bucket each rather than sharing one.
 // This is the half of 7.3d that makes the other half worth having.

@@ -1,6 +1,9 @@
 package app
 
 import (
+	"context"
+	"io"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,5 +81,52 @@ func TestPreflightRefusesAnUncoveredAPI(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DefaultPolicy") {
 		t.Errorf("the failure must say where to fix it, got: %v", err)
+	}
+}
+
+// A method with no slash at all — not a shape gRPC ever actually sends, but a
+// defensive fallback worth pinning — must come back unchanged rather than
+// panicking on an index that is not there.
+func TestShortMethodWithNoSlashReturnsItUnchanged(t *testing.T) {
+	if got := shortMethod("NoSlashAtAll"); got != "NoSlashAtAll" {
+		t.Errorf("shortMethod(%q) = %q", "NoSlashAtAll", got)
+	}
+	if got := shortMethod("/articleflux.v1.ReaderService/ListItems"); got != "ListItems" {
+		t.Errorf("shortMethod = %q, want ListItems", got)
+	}
+}
+
+// checkPolicyCoverage before buildHandler has run — a.grpc and a.policy are
+// both still nil — has nothing to check yet and must say so rather than
+// panicking on a nil server.
+func TestCheckPolicyCoverageBeforeTheServerIsBuilt(t *testing.T) {
+	a := &App{}
+	if err := a.checkPolicyCoverage(); err != nil {
+		t.Errorf("err = %v, want nil before buildHandler has registered anything", err)
+	}
+}
+
+// recordDenial's "unmapped" reason is a deployment bug (an RPC shipped with no
+// policy entry) and gets its own metric class from "denied" (the policy
+// working as intended) — read back through the same /metrics text a scraper
+// would see, since that is the actual contract.
+func TestRecordDenialLabelsAnUnmappedRPCDifferentlyFromADenial(t *testing.T) {
+	a := newTestAppForAuthz(t)
+
+	a.recordDenial(context.Background(), "/articleflux.v1.ReaderService/ListItems", false)
+	a.recordDenial(context.Background(), "/articleflux.v1.ReaderService/ListItems", true)
+
+	rec := httptest.NewRecorder()
+	a.tel.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `class="unmapped"`) {
+		t.Errorf("no unmapped-class sample in /metrics:\n%s", text)
+	}
+	if !strings.Contains(text, `class="denied"`) {
+		t.Errorf("no denied-class sample in /metrics:\n%s", text)
 	}
 }

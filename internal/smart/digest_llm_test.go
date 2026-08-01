@@ -202,3 +202,17 @@ func TestSpeakableTruncatesOversizedBodyOnAWordBoundary(t *testing.T) {
 		t.Errorf("the body was cut mid-word: %q", trimmed[len(trimmed)-20:])
 	}
 }
+
+// The word-boundary cut falls back to a hard cut when the run up to
+// maxInputChars has no space at all.
+func TestSpeakableHardCutsWhenNoWordBoundaryExists(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: "a digest"}
+	d := NewDigest(fake, nil, t.TempDir())
+	body := strings.Repeat("x", maxInputChars+1000) // one giant "word", no spaces
+	if _, err := d.Speakable(context.Background(), "item-1", "", "", body); err != nil {
+		t.Fatalf("Speakable: %v", err)
+	}
+	if len(fake.callN(0).Input) >= len(body) {
+		t.Error("a spaceless oversized body was not truncated")
+	}
+}

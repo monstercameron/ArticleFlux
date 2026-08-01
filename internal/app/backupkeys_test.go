@@ -199,6 +199,56 @@ func TestBackingUpIntoTheDataDirectoryLeavesTheKeysAlone(t *testing.T) {
 	}
 }
 
+// secrets.key is the one file whose loss is fatal: a backup that could not
+// keep it is unrestorable, and CopyKeyFiles must say so rather than reporting
+// success with a Warning that is easy to miss.
+func TestCopyKeyFilesFailsFatallyWhenSecretsKeyCannotBeWritten(t *testing.T) {
+	dataDir, backupDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, SecretKeyFile), []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory sitting where the backup's secrets.key should go: ReadFile of
+	// the source succeeds, but writing the destination fails for a reason other
+	// than "does not exist" or "unchanged".
+	if err := os.Mkdir(filepath.Join(backupDir, SecretKeyFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := CopyKeyFiles(dataDir, backupDir)
+	if err == nil {
+		t.Fatal("CopyKeyFiles succeeded despite being unable to write secrets.key")
+	}
+	if !strings.Contains(err.Error(), SecretKeyFile) {
+		t.Errorf("error does not name secrets.key: %v", err)
+	}
+	if len(out.Copied) != 0 {
+		t.Errorf("Copied = %v, want none — the fatal error must stop the run being reported as a success", out.Copied)
+	}
+}
+
+// An optional key (proxy.key, speech.key) that cannot be written is a
+// Warning, not a fatal error — those sign URLs a restart invalidates anyway.
+func TestCopyKeyFilesWarnsWhenAnOptionalKeyCannotBeWritten(t *testing.T) {
+	dataDir, backupDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "proxy.key"), []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(backupDir, "proxy.key"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := CopyKeyFiles(dataDir, backupDir)
+	if err != nil {
+		t.Fatalf("an optional key's failure must not be fatal: %v", err)
+	}
+	if len(out.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", out.Warnings)
+	}
+	if !strings.Contains(out.Warnings[0].Error(), "proxy.key") {
+		t.Errorf("the warning does not name proxy.key: %v", out.Warnings[0])
+	}
+}
+
 // An instance holding its key in ARTICLEFLUX_SECRET_KEY has nothing on disk to
 // copy, and that is correct rather than a failure — but it must be reported,
 // because it looks identical to a key that went missing.

@@ -446,6 +446,143 @@ func TestDeepNestingIsBounded(t *testing.T) {
 	}
 }
 
+// mime/multipart auto-decodes quoted-printable transfer encoding on any part
+// it reads, so decodeTransfer's own quoted-printable branch is only reachable
+// on a top-level, non-multipart message.
+func TestQuotedPrintableTopLevelBody(t *testing.T) {
+	msg := `From: a@b.com
+Subject: QP top level
+Date: Mon, 20 Jul 2026 09:00:00 +0000
+Message-ID: <x@y>
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: quoted-printable
+
+<p>caf=C3=A9</p>
+`
+	it := parse(t, msg)
+	if !strings.Contains(it.Text, "café") {
+		t.Errorf("quoted-printable top-level body was not decoded: %q", it.Text)
+	}
+}
+
+// A part that lies about its own encoding is common in the wild (a sender's
+// base64 encoder truncates, a proxy mangles the body). walk must drop that one
+// part rather than failing the whole message.
+func TestCorruptTransferEncodingPartIsSkipped(t *testing.T) {
+	msg := `From: a@b.com
+Subject: Corrupt
+Date: Mon, 20 Jul 2026 09:00:00 +0000
+Message-ID: <x@y>
+Content-Type: multipart/alternative; boundary="B"
+
+--B
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+
+!!!not-valid-base64-at-all!!!
+--B
+Content-Type: text/html
+
+<p>good part</p>
+--B--
+`
+	it := parse(t, msg)
+	if !strings.Contains(it.Text, "good part") {
+		t.Errorf("the readable alternative was lost alongside the corrupt one: %q", it.Text)
+	}
+}
+
+// A multipart Content-Type with no boundary parameter cannot be walked at
+// all; the message has to fail cleanly rather than panic on multipart.NewReader.
+func TestMultipartMissingBoundaryFailsCleanly(t *testing.T) {
+	msg := `From: a@b.com
+Subject: NoBoundary
+Date: Mon, 20 Jul 2026 09:00:00 +0000
+Message-ID: <x@y>
+Content-Type: multipart/alternative
+
+--B
+Content-Type: text/plain
+
+body
+--B--
+`
+	if _, err := Parse(strings.NewReader(normalise(msg)), now); err == nil {
+		t.Error("a multipart message with no boundary parameter was accepted")
+	}
+}
+
+// RFC 2047's CharsetReader hook only fires for charsets net/mime does not
+// already decode by itself — utf-8, us-ascii and, as of Go's mime package,
+// iso-8859-1 are all built in. windows-1252 is not, so a subject encoded in
+// it is what actually exercises decodeHeader's own CharsetReader closure.
+func TestDecodeHeaderNonUTF8Charset(t *testing.T) {
+	msg := `From: a@b.com
+Subject: =?windows-1252?Q?caf=E9?=
+Date: Mon, 20 Jul 2026 09:00:00 +0000
+Message-ID: <x@y>
+Content-Type: text/plain
+
+body
+`
+	it := parse(t, msg)
+	if it.Subject != "café" {
+		t.Errorf("subject = %q, want %q", it.Subject, "café")
+	}
+}
+
+// Excess blank lines between paragraphs must not produce an empty <p></p>;
+// a wall of empty tags is exactly the "renders a wall" failure this function
+// exists to avoid.
+func TestTextToHTMLSkipsBlankParagraphs(t *testing.T) {
+	got := textToHTML("First.\n\n\n\nSecond.")
+	if strings.Contains(got, "<p></p>") {
+		t.Errorf("an empty paragraph survived: %q", got)
+	}
+	if strings.Count(got, "<p>") != 2 {
+		t.Errorf("want exactly two paragraphs, got %q", got)
+	}
+}
+
+// truncate is exercised directly because Parse's Subject/Summary fallbacks
+// only reach the truncation branch with lengths tuned exactly to trip the
+// word-boundary logic, and getting that indirectly right is more fragile
+// than asserting it here.
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"under the limit is returned unchanged", "short", 10, "short"},
+		{"exactly at the limit is returned unchanged", "exactlyten", 10, "exactlyten"},
+		{
+			"cuts at the last space when it is past the midpoint",
+			"hello world foo", 12, "hello world…",
+		},
+		{
+			"a space too close to the start is not used as the cut point",
+			"hello world foo", 10, "hello worl…",
+		},
+		{
+			"no space at all cuts at exactly n",
+			"abcdefghijklmnop", 10, "abcdefghij…",
+		},
+		{
+			"trailing punctuation left by the word-boundary cut is trimmed",
+			"One, two, three, four, five", 6, "One…",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncate(tt.s, tt.n); got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

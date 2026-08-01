@@ -132,10 +132,28 @@ func TestSegmentSendsThePodcastInstructionsAndAssembledInput(t *testing.T) {
 	if req.Instructions != podcastInstructionsFor(seg.Vibe) {
 		t.Error("the podcast instructions were not sent")
 	}
-	if req.Input != podcastInput(seg, "the body") {
-		t.Errorf("Do was not sent the same input podcastInput would build:\ngot  %q\nwant %q",
-			req.Input, podcastInput(seg, "the body"))
+	// The handover shape is chosen at random now (v6, handoverShapeFor), so a
+	// second, independent call to podcastInput below draws its OWN random
+	// shape and cannot be compared to req.Input byte-for-byte. maskShape
+	// replaces whichever shape actually appears with a fixed placeholder in
+	// both strings, so the comparison checks everything ELSE the input
+	// assembles — which is the thing this test actually exists to catch.
+	if got, want := maskShape(req.Input), maskShape(podcastInput(seg, "the body")); got != want {
+		t.Errorf("Do was not sent the same input podcastInput would build (shape masked):\ngot  %q\nwant %q",
+			got, want)
 	}
+}
+
+// maskShape replaces whichever handoverShapes entry appears in s with a fixed
+// placeholder, so two independently-built inputs that drew different random
+// shapes can still be compared on everything the shape is not.
+func maskShape(s string) string {
+	for _, shape := range handoverShapes {
+		if strings.Contains(s, shape) {
+			return strings.Replace(s, shape, "<<SHAPE>>", 1)
+		}
+	}
+	return s
 }
 
 func TestSegmentTruncatesOversizedBodyOnAWordBoundary(t *testing.T) {
@@ -292,5 +310,252 @@ func TestAModelsMarkdownNeverReachesTheVoice(t *testing.T) {
 	}
 	if !strings.Contains(got, "Heading") || !strings.Contains(got, "second point") {
 		t.Errorf("the words were stripped along with the markers: %q", got)
+	}
+}
+
+// --- Segment: OpenOnly / CloseOnly reaching the provider -------------------------
+
+// A close needs no body at all (see TestOutroNeedsNeitherBodyNorOpening for
+// the pure input-assembly half of this contract); here it must still reach
+// the provider and produce spoken text.
+func TestSegmentCloseOnlyCallsTheProviderWithNoBody(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: "That is all for this broadcast."}
+	p := NewPodcast(fake, nil, t.TempDir())
+	got, err := p.Segment(context.Background(), Segment{ItemID: "z", CloseOnly: true})
+	if err != nil {
+		t.Fatalf("Segment: %v", err)
+	}
+	if got == "" {
+		t.Error("a sign-off produced no text")
+	}
+	if !strings.Contains(fake.callN(0).Instructions, "THE SIGN-OFF ONLY") {
+		t.Error("CloseOnly did not route to the sign-off instructions")
+	}
+}
+
+// OpenOnly with no lineup at all has nothing to introduce and must refuse
+// before spending a request.
+func TestSegmentOpenOnlyWithNoLineupIsNothingToSummarise(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: "should not be reached"}
+	p := NewPodcast(fake, nil, t.TempDir())
+	_, err := p.Segment(context.Background(), Segment{ItemID: "a", OpenOnly: true})
+	if !errors.Is(err, ErrNothingToSummarise) {
+		t.Fatalf("err = %v, want ErrNothingToSummarise", err)
+	}
+	if fake.callCount() != 0 {
+		t.Errorf("provider called %d times, want 0", fake.callCount())
+	}
+}
+
+// OpenOnly with a real lineup calls the provider with the intro instructions
+// and no article body — it has a Body set (a listener could, e.g., pass
+// through leftover state) but the opening path must not send it.
+func TestSegmentOpenOnlyWithALineupCallsTheProvider(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: "Good morning."}
+	p := NewPodcast(fake, nil, t.TempDir())
+	seg := Segment{
+		ItemID: "a", OpenOnly: true, Body: "must not be sent",
+		Open: &Opening{PartOfDay: "morning", Date: "Monday", Stories: 2,
+			Lineup: []Headline{{Source: "LWN", Title: "One"}, {Source: "HN", Title: "Two"}}},
+	}
+	got, err := p.Segment(context.Background(), seg)
+	if err != nil {
+		t.Fatalf("Segment: %v", err)
+	}
+	if got == "" {
+		t.Error("an opening produced no text")
+	}
+	if !strings.Contains(fake.callN(0).Instructions, podcastIntroInstructions(seg.Vibe)) {
+		t.Error("OpenOnly did not route to the intro instructions")
+	}
+}
+
+// The word-boundary cut falls back to a hard cut when the run up to
+// maxInputChars has no space at all — this is the "else" the earlier
+// word-boundary test never exercises.
+func TestSegmentHardCutsWhenNoWordBoundaryExists(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: "fine segment"}
+	p := NewPodcast(fake, nil, t.TempDir())
+	body := strings.Repeat("x", maxInputChars+1000) // one giant "word", no spaces
+	if _, err := p.Segment(context.Background(), Segment{ItemID: "x", Body: body}); err != nil {
+		t.Fatalf("Segment: %v", err)
+	}
+	in := fake.callN(0).Input
+	full := podcastInput(Segment{ItemID: "x", Body: body}, body)
+	if len(in) >= len(full) {
+		t.Errorf("the oversized, spaceless body was not truncated: sent %d, untruncated %d",
+			len(in), len(full))
+	}
+}
+
+// --- WriteSegment: past the happy path ------------------------------------------
+
+func threeStoryGroup() SegmentGroup {
+	return SegmentGroup{
+		Vibe: VibeCalm,
+		Stories: []SegmentStory{
+			{ItemID: "a", Source: "LWN", Title: "One", Body: "body one"},
+			{ItemID: "b", Source: "HN", Title: "Two", Body: "body two"},
+			{ItemID: "c", Source: "Ars", Title: "Three", Body: "body three"},
+		},
+	}
+}
+
+func goodGroupReply() string {
+	return `{"blocks":[{"story":1,"text":"First block of real text."},` +
+		`{"story":2,"text":"Second block of real text."},` +
+		`{"story":3,"text":"Third block of real text."}]}`
+}
+
+func TestWriteSegmentEmptyStoryBodyIsNothingToSummarise(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodGroupReply()}
+	p := NewPodcast(fake, nil, t.TempDir())
+	g := threeStoryGroup()
+	g.Stories[1].Body = "   "
+	_, err := p.WriteSegment(context.Background(), g)
+	if !errors.Is(err, ErrNothingToSummarise) {
+		t.Fatalf("err = %v, want ErrNothingToSummarise", err)
+	}
+	if fake.callCount() != 0 {
+		t.Errorf("provider called %d times on an empty story body, want 0", fake.callCount())
+	}
+}
+
+func TestWriteSegmentTruncatesAnOversizedStoryBody(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodGroupReply()}
+	p := NewPodcast(fake, nil, t.TempDir())
+	g := threeStoryGroup()
+	g.Stories[0].Body = "XX" + strings.Repeat("word ", (maxInputChars/5)+500)
+	if _, err := p.WriteSegment(context.Background(), g); err != nil {
+		t.Fatalf("WriteSegment: %v", err)
+	}
+	if len(fake.callN(0).Input) >= len(g.Stories[0].Body)+2000 {
+		t.Error("an oversized story body was not truncated before assembly")
+	}
+}
+
+func TestWriteSegmentHardCutsAStoryBodyWithNoWordBoundary(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodGroupReply()}
+	p := NewPodcast(fake, nil, t.TempDir())
+	g := threeStoryGroup()
+	g.Stories[0].Body = strings.Repeat("x", maxInputChars+1000) // one giant word
+	if _, err := p.WriteSegment(context.Background(), g); err != nil {
+		t.Fatalf("WriteSegment: %v", err)
+	}
+	if len(fake.callN(0).Input) >= len(g.Stories[0].Body)+2000 {
+		t.Error("a spaceless oversized story body was not hard-cut")
+	}
+}
+
+// A story with no ItemID has no cache path at all (groupCachePath's own
+// guard), which must fall through to "not fully cached" rather than panic
+// or silently skip that story's cache.
+func TestWriteSegmentStoryWithNoItemIDIsNeverTreatedAsCached(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: `{"blocks":[` +
+		`{"story":1,"text":"First block of real text."},` +
+		`{"story":2,"text":"Second block of real text."},` +
+		`{"story":3,"text":"Third block of real text."}]}`}
+	g := threeStoryGroup()
+	g.Stories[1].ItemID = ""
+	p := NewPodcast(fake, nil, t.TempDir())
+	blocks, err := p.WriteSegment(context.Background(), g)
+	if err != nil {
+		t.Fatalf("WriteSegment: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3", len(blocks))
+	}
+	if fake.callCount() != 1 {
+		t.Fatalf("provider called %d times, want 1 (a missing ItemID must not be read as a cache hit)",
+			fake.callCount())
+	}
+}
+
+// A warm cache for EVERY story in the group must make no call at all — the
+// same guarantee TestASecondListenCostsNothing makes for a lone Segment.
+func TestWriteSegmentWarmCacheOfEveryBlockCostsNothing(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodGroupReply()}
+	dir := t.TempDir()
+	g := threeStoryGroup()
+	p := NewPodcast(fake, nil, dir)
+	first, err := p.WriteSegment(context.Background(), g)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if fake.callCount() != 1 {
+		t.Fatalf("the first write made %d calls, want 1", fake.callCount())
+	}
+
+	again := &fakeLLM{configured: true, err: errors.New("must not be reached")}
+	second, err := NewPodcast(again, nil, dir).WriteSegment(context.Background(), g)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if again.callCount() != 0 {
+		t.Errorf("a re-write made %d calls, want none", again.callCount())
+	}
+	for i := range first {
+		if first[i].Text != second[i].Text {
+			t.Errorf("block %d differs between the cached read and the original", i)
+		}
+	}
+}
+
+func TestWriteSegmentNotConfiguredIsErrNotConfigured(t *testing.T) {
+	p := NewPodcast(&fakeLLM{configured: false}, nil, t.TempDir())
+	_, err := p.WriteSegment(context.Background(), threeStoryGroup())
+	if !errors.Is(err, llm.ErrNotConfigured) {
+		t.Fatalf("err = %v, want ErrNotConfigured", err)
+	}
+}
+
+func TestWriteSegmentProviderErrorSurfaces(t *testing.T) {
+	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 500: upstream on fire")}
+	p := NewPodcast(fake, nil, t.TempDir())
+	_, err := p.WriteSegment(context.Background(), threeStoryGroup())
+	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
+		t.Fatalf("err = %v, want the provider's error surfaced", err)
+	}
+}
+
+func TestWriteSegmentMalformedReplyIsAReadableError(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: `{"blocks":[{"story":1`} // truncated
+	p := NewPodcast(fake, nil, t.TempDir())
+	_, err := p.WriteSegment(context.Background(), threeStoryGroup())
+	if err == nil || !strings.Contains(err.Error(), "not the schema") {
+		t.Fatalf("err = %v, want a schema-mismatch error", err)
+	}
+}
+
+// A block naming a story index outside 1..len(Stories) is dropped rather
+// than trusted — same re-check argument as interest.go's rerank and
+// classify.go's dropUnknownSlugs.
+func TestWriteSegmentOutOfRangeStoryIndexIsIgnored(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: `{"blocks":[` +
+		`{"story":0,"text":"should be ignored, story 0 does not exist"},` +
+		`{"story":1,"text":"First block of real text."},` +
+		`{"story":2,"text":"Second block of real text."},` +
+		`{"story":3,"text":"Third block of real text."},` +
+		`{"story":4,"text":"should be ignored, only 3 stories exist"}]}`}
+	p := NewPodcast(fake, nil, t.TempDir())
+	blocks, err := p.WriteSegment(context.Background(), threeStoryGroup())
+	if err != nil {
+		t.Fatalf("WriteSegment: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3", len(blocks))
+	}
+}
+
+// Fewer usable blocks than stories is a reply-shaped failure, not a partial
+// success — there is no story left uncovered in a broadcast.
+func TestWriteSegmentPartialCoverageIsAnError(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: `{"blocks":[` +
+		`{"story":1,"text":"First block of real text."},` +
+		`{"story":2,"text":"Second block of real text."}]}`} // story 3 missing
+	p := NewPodcast(fake, nil, t.TempDir())
+	_, err := p.WriteSegment(context.Background(), threeStoryGroup())
+	if err == nil || !strings.Contains(err.Error(), "covered 2 of 3 stories") {
+		t.Fatalf("err = %v, want a coverage-count error", err)
 	}
 }

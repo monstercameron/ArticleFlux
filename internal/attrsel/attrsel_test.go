@@ -97,6 +97,33 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+func TestMustParse(t *testing.T) {
+	got := MustParse("h2 a@href")
+	if got.Selector != "h2 a" || got.Attr != "href" {
+		t.Errorf("MustParse = %+v", got)
+	}
+}
+
+// MustParse is for fixtures and defaults — a bad literal baked into the source
+// must fail loudly at the call site, not silently become a zero Expr.
+func TestMustParsePanicsOnAGarbageFixture(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("MustParse(\"\") did not panic")
+		}
+	}()
+	MustParse("")
+}
+
+// validAttrName is exercised through Parse for every failure it can reach, but
+// Parse never calls it with an empty string — that guard runs first. Direct
+// coverage of the empty case is the only way to pin it.
+func TestValidAttrNameRejectsEmptyDirectly(t *testing.T) {
+	if validAttrName("") {
+		t.Error("validAttrName(\"\") = true")
+	}
+}
+
 func TestStringRoundTrips(t *testing.T) {
 	for _, s := range []string{"h2 a@href", "article.post", `[data-user="a@b.com"]@src`} {
 		e, err := Parse(s)

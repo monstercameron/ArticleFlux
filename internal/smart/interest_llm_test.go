@@ -181,6 +181,28 @@ func TestRerankCandidatesWrapsTheContextWithInterestTimeout(t *testing.T) {
 	}
 }
 
+// Every other RerankCandidates test in this file passes an empty
+// ProfileHint, which never exercises the Topics loop that builds the
+// profile half of the payload. A profile with real topics must reach the
+// request the same way the candidates do.
+func TestRerankCandidatesSendsTheProfilesTopicsAndSources(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":1,"why":""}]}`}
+	in := configuredInterest(fake)
+	prof := derive.ProfileHint{
+		Topics:  []derive.TopicHint{{Label: "Databases", Terms: []string{"sqlite", "btree"}}},
+		Sources: []string{"LWN"},
+	}
+	if _, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, prof, 1); err != nil {
+		t.Fatalf("RerankCandidates: %v", err)
+	}
+	req := fake.callN(0).Input
+	for _, want := range []string{"Databases", "sqlite", "btree", "LWN"} {
+		if !strings.Contains(req, want) {
+			t.Errorf("the profile is missing %q from the request:\n%s", want, req)
+		}
+	}
+}
+
 // --- ExtractEntities ------------------------------------------------------------
 
 // Case-insensitive dedup was previously provable only by reading the source: a

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -287,12 +289,73 @@ func TestHeadCarriesNoBody(t *testing.T) {
 	}
 }
 
+func TestServeAssetRejectsAnUnparseableURLParam(t *testing.T) {
+	a := assetApp(t)
+	rec := get(t, a, "/asset?u=not!valid!base64&e=1&s=x")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", rec.Code)
+	}
+}
+
+func TestServeAssetRejectsAnUnparseableExpiryParam(t *testing.T) {
+	a := assetApp(t)
+	u := base64.RawURLEncoding.EncodeToString([]byte("http://example.com/x.png"))
+	rec := get(t, a, "/asset?u="+u+"&e=not-a-number&s=x")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", rec.Code)
+	}
+}
+
+// An origin serving more than the configured cap must be refused rather than
+// read into memory, or a publisher's oversized image becomes an easy way to
+// make this server do a lot of unpaid work.
+func TestServeAssetRefusesAnOversizedImage(t *testing.T) {
+	key, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{
+		cfg: Config{}, log: testLogger(), assetKey: key,
+		assets: assetproxy.New(assetproxy.Options{
+			Dir: t.TempDir(), AllowPrivate: true, MaxBytes: int64(len(pngBytes) - 1),
+		}),
+	}
+	srv := origin(t)
+	rec := get(t, a, a.AssetURL(srv.URL+"/pic.png"))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPostIsRefused(t *testing.T) {
 	a := assetApp(t)
 	rec := httptest.NewRecorder()
 	a.serveAsset(rec, httptest.NewRequest(http.MethodPost, "/asset?u=x&e=1&s=y", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status %d, want 405", rec.Code)
+	}
+}
+
+// A ReadFile failure that is NOT "does not exist" — a directory sitting where
+// the key file should be — must be reported rather than papered over with a
+// freshly generated key that nothing else agrees on.
+func TestLoadOrCreateKeyFileReportsAnUnreadablePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "proxy.key"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateKeyFile(dir, "proxy.key"); err == nil {
+		t.Fatal("a proxy.key that is actually a directory produced no error")
+	}
+}
+
+// A directory that does not exist fails on the write, not silently: the file
+// is genuinely absent (ReadFile reports ErrNotExist) but there is nowhere to
+// write the freshly generated key either.
+func TestLoadOrCreateKeyFileFailsWhenTheDirectoryIsGone(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := loadOrCreateKeyFile(missing, "proxy.key"); err == nil {
+		t.Fatal("creating a key file under a missing directory produced no error")
 	}
 }
 

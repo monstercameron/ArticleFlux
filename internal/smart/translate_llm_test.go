@@ -220,6 +220,36 @@ func TestCatalogDropsAnEmptyTranslationForAnAskedKey(t *testing.T) {
 	}
 }
 
+// Every batch answering with nothing usable (every value empty) must fail
+// the whole Catalog call rather than silently cache and return an empty
+// catalog — a translated UI that is entirely blank is worse than the error.
+func TestCatalogAllBatchesEmptyIsAnError(t *testing.T) {
+	settings := newSettings(t)
+	fake := &fakeLLM{configured: true}
+	tr := NewTranslator(fake, settings)
+
+	fake.reply = func(_ int, r llm.Request) (string, error) {
+		batch := batchFromInput(t, r.Input)
+		var b strings.Builder
+		b.WriteString(`{"entries":[`)
+		first := true
+		for k := range batch {
+			if !first {
+				b.WriteString(",")
+			}
+			first = false
+			fmt.Fprintf(&b, `{"key":%s,"text":""}`, jsonStr(k))
+		}
+		b.WriteString(`]}`)
+		return b.String(), nil
+	}
+
+	_, err := tr.Catalog(context.Background(), "fr", false)
+	if err == nil || !strings.Contains(err.Error(), "came back empty") {
+		t.Fatalf("err = %v, want the came-back-empty error", err)
+	}
+}
+
 // --- translateBatch: malformed output, provider errors, cancellation --------
 
 func TestTranslateBatchMalformedJSONIsAReadableError(t *testing.T) {

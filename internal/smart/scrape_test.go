@@ -1,10 +1,14 @@
 package smart
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // What is tested here is the half that does not call OpenAI: the distiller that
@@ -102,6 +106,106 @@ func TestSelectorThatMatchesNothingIsRejected(t *testing.T) {
 	}, index)
 	if !strings.Contains(problem, "matched nothing") {
 		t.Errorf("problem = %q, want it to say the selector matched nothing", problem)
+	}
+}
+
+// A container that matches but yields no usable item (no link, no title)
+// is the "0 usable of N matched" branch — distinct from "matched nothing at
+// all" and worth its own message since the fix is different (the item
+// selector is fine, the sub-selectors are not).
+func TestContainersMatchButNoneUsableIsRejected(t *testing.T) {
+	_, problem := tryRule(scrapesel.Rule{
+		IndexURL:      "https://notes.example/",
+		ItemSelector:  "article.post",
+		TitleSelector: ".nonexistent",
+		LinkSelector:  ".nonexistent@href",
+	}, index)
+	if !strings.Contains(problem, "none produced a usable item") {
+		t.Errorf("problem = %q, want the 0-usable-items message", problem)
+	}
+}
+
+// allSame is only reached by tryRule once minItems has already passed, so
+// its own <2 guard is unreachable through that path — tested directly here.
+func TestAllSameWithFewerThanTwoItemsIsFalse(t *testing.T) {
+	if allSame(nil) {
+		t.Error("allSame(nil) = true")
+	}
+	if allSame([]scrapesel.Item{{Title: "A"}}) {
+		t.Error("allSame of one item = true")
+	}
+}
+
+// --- Proposal.Samples / Proposal.Age ------------------------------------------
+
+func TestProposalSamplesReturnsEverythingUnderTheCap(t *testing.T) {
+	p := &Proposal{Items: []scrapesel.Item{{Title: "A"}, {Title: "B"}}}
+	if got := p.Samples(); len(got) != 2 {
+		t.Fatalf("got %d samples, want 2 (under the cap)", len(got))
+	}
+}
+
+func TestProposalSamplesTruncatesAtTheCap(t *testing.T) {
+	items := make([]scrapesel.Item, maxSamples+4)
+	for i := range items {
+		items[i] = scrapesel.Item{Title: string(rune('a' + i))}
+	}
+	p := &Proposal{Items: items}
+	got := p.Samples()
+	if len(got) != maxSamples {
+		t.Fatalf("got %d samples, want exactly maxSamples (%d)", len(got), maxSamples)
+	}
+	if got[0].Title != items[0].Title {
+		t.Error("Samples must keep the FIRST items, not an arbitrary subset")
+	}
+}
+
+func TestProposalAgeWithNoDatedItemsIsZero(t *testing.T) {
+	p := &Proposal{Items: []scrapesel.Item{{Title: "A"}}}
+	if got := p.Age(); got != 0 {
+		t.Errorf("Age = %s, want 0 when nothing carries a date", got)
+	}
+}
+
+// Age reports how old the NEWEST item is, not the oldest — a feed with one
+// stale entry and one fresh one is a live page, and using the oldest date
+// would misreport it as an abandoned archive.
+func TestProposalAgeUsesTheNewestItem(t *testing.T) {
+	now := time.Now()
+	p := &Proposal{Items: []scrapesel.Item{
+		{Title: "old", PublishedAt: now.Add(-30 * 24 * time.Hour)},
+		{Title: "new", PublishedAt: now.Add(-1 * time.Hour)},
+	}}
+	got := p.Age()
+	if got <= 0 || got >= 2*time.Hour {
+		t.Errorf("Age = %s, want roughly 1h (measured from the newest item)", got)
+	}
+}
+
+// --- SiteAnalyzer.model -----------------------------------------------------------
+
+func TestSiteAnalyzerModelNilSettingsReturnsTheDefault(t *testing.T) {
+	a := NewSiteAnalyzer(&fakeLLM{}, nil)
+	if got := a.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestSiteAnalyzerModelUnsetSettingReturnsTheDefault(t *testing.T) {
+	a := NewSiteAnalyzer(&fakeLLM{}, newSettings(t))
+	if got := a.model(context.Background()); got != llm.DefaultModel {
+		t.Errorf("model = %q, want the built-in default", got)
+	}
+}
+
+func TestSiteAnalyzerModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	a := NewSiteAnalyzer(&fakeLLM{}, settings)
+	if got := a.model(context.Background()); got != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5", got)
 	}
 }
 

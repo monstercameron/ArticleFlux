@@ -337,6 +337,71 @@ func TestNudgeIsRateLimited(t *testing.T) {
 	}
 }
 
+// ForceDerive is the Smart+ opt-in's own hook, and it exists precisely to
+// ignore NudgeInterval: a toggle is a deliberate act someone performs once and
+// then watches for a result, and throttling it the way an automatic signal is
+// throttled would drop the exact request somebody is waiting on.
+func TestForceDeriveIgnoresTheRateLimitThatBlocksNudgeDerive(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "force.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	sc := seedReader(t, a)
+
+	// A nudge that "just happened", the state that blocks every NudgeDerive
+	// call for the next NudgeInterval.
+	a.deriveMu.Lock()
+	a.lastNudge = time.Now().UTC()
+	a.deriveMu.Unlock()
+
+	a.NudgeDerive(sc)
+	// Give the (would-be) goroutine a moment to have run if it were going to.
+	time.Sleep(100 * time.Millisecond)
+	if n := pendingDerives(t, a); n != 0 {
+		t.Fatalf("NudgeDerive enqueued %d derivations immediately after a nudge, want 0 — "+
+			"the rate limit did not hold", n)
+	}
+
+	a.ForceDerive(sc)
+	waitUntil(t, 5*time.Second, func() bool { return pendingDerives(t, a) > 0 })
+}
+
+// ForceDerive and NudgeDerive on an app with no pool (Open without
+// StartWorkers, or a bare zero-value App) must be silent no-ops rather than
+// panicking — the guard exists exactly so a caller does not have to know
+// whether the pool has started.
+func TestDeriveHooksAreNoOpsWithNoPool(t *testing.T) {
+	a := &App{}
+	a.NudgeDerive(store.Scope{TenantID: "t", UserID: "u", Role: "member"})
+	a.ForceDerive(store.Scope{TenantID: "t", UserID: "u", Role: "member"})
+}
+
+// DeriveNow runs synchronously, in the calling goroutine — the CLI's own path
+// (`seed-reading`), which needs the ranking to exist the moment the command
+// returns rather than being told it was enqueued somewhere.
+func TestDeriveNowRunsSynchronously(t *testing.T) {
+	ctx := t.Context()
+	a, err := Open(ctx, Config{DBPath: filepath.Join(t.TempDir(), "derivenow.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	sc := seedReader(t, a)
+
+	if n := countRanked(t, a, sc); n != 0 {
+		t.Fatalf("home_ranking had %d rows before any derivation", n)
+	}
+
+	a.DeriveNow(ctx, sc)
+
+	if n := countRanked(t, a, sc); n == 0 {
+		t.Fatal("DeriveNow returned before the ranking was written — it is meant to " +
+			"run in the calling goroutine, not enqueue and return")
+	}
+}
+
 // pendingDerives counts queued derive jobs, which is how many were asked for when no
 // worker is draining them.
 func pendingDerives(t *testing.T, a *App) int {

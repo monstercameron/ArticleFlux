@@ -127,8 +127,8 @@ func TestMyFeedDialAddressesRowsByTheirKeys(t *testing.T) {
 func TestMyFeedSaysWhenItIsStillLearning(t *testing.T) {
 	out := renderMyFeed(t, myFeedProps{profile: &pb.GetInterestProfileResponse{ColdStart: true}})
 	for _, want := range []string{
-		"No pick has matched a topic yet",
-		"No topics yet.",
+		"No pick has matched an interest yet",
+		"No interests yet.",
 		"Nothing named yet.",
 	} {
 		if !strings.Contains(out, want) {

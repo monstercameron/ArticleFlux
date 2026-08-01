@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -483,6 +484,118 @@ func TestSpeechTextEmptyItem(t *testing.T) {
 	}
 }
 
+// --- the writers, configured and not -----------------------------------------
+
+// digestFor with no digest writer wired (an instance with no Smart+ key) must
+// say so with the same sentinel a configured-but-empty item gets, so the
+// caller's single fallback path handles both.
+func TestDigestForWithNoWriterConfigured(t *testing.T) {
+	a := speechApp(t, "sk-test")
+	if _, err := a.digestFor(context.Background(), store.Item{ID: "x", ContentHTML: "<p>body</p>"}); !errors.Is(err, smart.ErrNothingToSummarise) {
+		t.Errorf("err = %v, want ErrNothingToSummarise", err)
+	}
+}
+
+// With a digest writer actually wired but no Smart+ key configured, the LLM
+// seam itself refuses — deterministically and without a network call — which
+// is what proves the a.digest != nil path is reached at all.
+func TestDigestForWithAWriterButNoKeyIsAnLLMError(t *testing.T) {
+	a := speechApp(t, "") // unconfigured: llm.Configured() is false
+	a.digest = smart.NewDigest(a.llm, a.settings, t.TempDir())
+	_, err := a.digestFor(context.Background(), store.Item{ID: "x", ContentHTML: "<p>Enough body text to summarise.</p>"})
+	if err == nil {
+		t.Fatal("digestFor succeeded with no Smart+ key configured")
+	}
+}
+
+func TestPodcastIntroAndOutroWithNoWriterConfigured(t *testing.T) {
+	a := speechApp(t, "sk-test")
+	it := store.Item{ID: "x", Title: "T", SourceTitle: "S"}
+	if _, err := a.podcastIntro(context.Background(), it, "calm", nil); !errors.Is(err, smart.ErrNothingToSummarise) {
+		t.Errorf("podcastIntro err = %v, want ErrNothingToSummarise", err)
+	}
+	if _, err := a.podcastOutro(context.Background(), it, "calm", nil); !errors.Is(err, smart.ErrNothingToSummarise) {
+		t.Errorf("podcastOutro err = %v, want ErrNothingToSummarise", err)
+	}
+}
+
+// With a podcast writer wired but no key, both still fail deterministically
+// with no network call — proving the a.podcast != nil path is reached.
+func TestPodcastIntroAndOutroWithAWriterButNoKey(t *testing.T) {
+	a := speechApp(t, "")
+	a.podcast = smart.NewPodcast(a.llm, a.settings, t.TempDir())
+	it := store.Item{ID: "x", Title: "T", SourceTitle: "S"}
+
+	// An intro with a real lineup gets past its own precondition and then
+	// meets the missing key.
+	open := &smart.Opening{PartOfDay: "morning", Date: "Monday", Stories: 3,
+		Lineup: []smart.Headline{{Source: "S", Title: "Headline"}}}
+	if _, err := a.podcastIntro(context.Background(), it, "calm", open); err == nil {
+		t.Error("podcastIntro succeeded with no Smart+ key configured")
+	}
+	if _, err := a.podcastOutro(context.Background(), it, "calm", nil); err == nil {
+		t.Error("podcastOutro succeeded with no Smart+ key configured")
+	}
+}
+
+// speechScript falls back to the plain article not just when nothing CAN
+// rewrite it (the writers are nil), but also when a writer IS wired and
+// fails for a reason other than "nothing to summarise" — an expired key, a
+// provider outage. Both must land the reader on the article, and the two
+// failure shapes go through different branches in speechScript.
+func TestSpeechScriptFallsBackWhenAWiredWriterFails(t *testing.T) {
+	a := speechApp(t, "") // no Smart+ key: every writer call fails deterministically
+	a.digest = smart.NewDigest(a.llm, a.settings, t.TempDir())
+	a.podcast = smart.NewPodcast(a.llm, a.settings, t.TempDir())
+	it := store.Item{ID: "item-2", Title: "Fsyncgate", SourceTitle: "LWN", ContentHTML: "<p>The body.</p>"}
+	prev := store.Item{ID: "item-1", Title: "Postgres", SourceTitle: "Hacker News"}
+
+	text, key := a.speechScript(context.Background(), map[string]string{digestPrefKey: "true"},
+		it, prev, nil, false, false, false)
+	if !strings.Contains(text, "The body.") {
+		t.Errorf("digest configured-but-failing: article was not read aloud: %q", text)
+	}
+	if key != it.ID {
+		t.Errorf("digest configured-but-failing: cache key = %q, want the plain item id", key)
+	}
+
+	text2, key2 := a.speechScript(context.Background(), map[string]string{podcastPrefKey: "true"},
+		it, prev, nil, false, false, false)
+	if !strings.Contains(text2, "The body.") {
+		t.Errorf("podcast configured-but-failing: article was not read aloud: %q", text2)
+	}
+	if key2 != it.ID {
+		t.Errorf("podcast configured-but-failing: cache key = %q, want the plain item id", key2)
+	}
+}
+
+// speechScope reads the Authorization header rather than a query parameter —
+// this URL ends up in an <audio src>, which means browser history, referrers
+// and every access log between here and the listener.
+func TestSpeechScopeReadsTheAuthorizationHeader(t *testing.T) {
+	a, _ := speechAppWithUser(t)
+
+	// No header at all falls back to the dev account.
+	noHeader := httptest.NewRequest(http.MethodGet, "/speech?item=x", nil)
+	if _, err := a.speechScope(noHeader); err != nil {
+		t.Errorf("no header: err = %v, want the dev account", err)
+	}
+
+	// A bearer-prefixed token that names no real session must not resolve.
+	withBearer := httptest.NewRequest(http.MethodGet, "/speech?item=x", nil)
+	withBearer.Header.Set("Authorization", "Bearer not-a-real-session-token")
+	if _, err := a.speechScope(withBearer); err == nil {
+		t.Error("a forged bearer token resolved to a scope")
+	}
+
+	// And a token with no "Bearer " prefix is read as the token itself.
+	bare := httptest.NewRequest(http.MethodGet, "/speech?item=x", nil)
+	bare.Header.Set("Authorization", "not-a-real-session-token")
+	if _, err := a.speechScope(bare); err == nil {
+		t.Error("a forged bare token resolved to a scope")
+	}
+}
+
 // --- broadcast mode (§19) ---------------------------------------------------
 
 // The recording is named by the PAIR, not the article. Serving the segment
@@ -565,17 +678,27 @@ func TestSpeechScriptFallsBackToTheArticleWhenNothingCanRewriteIt(t *testing.T) 
 // "Good night" is a farewell in English, so a broadcast opened at one in the
 // morning says "good evening" — which is what someone on air actually says at
 // that hour, and what a listener at that hour expects.
-func TestPartOfDayNeverSaysGoodNight(t *testing.T) {
+// partOfDay now has a fourth bucket for genuinely late hours. "night" is not
+// itself a farewell here — the model's instructions (podcastIntroInstructions,
+// podcastInstructionsFor) are what forbid literally saying "good night";
+// this test only checks the bucketing, which is what decides what the model
+// is TOLD the hour is.
+func TestPartOfDayHasFourBuckets(t *testing.T) {
 	for hour := 0; hour < 24; hour++ {
 		got := partOfDay(hour)
+		want := ""
 		switch {
-		case hour < 12 && got != "morning",
-			hour >= 12 && hour < 18 && got != "afternoon",
-			hour >= 18 && got != "evening":
-			t.Errorf("%02d:00 greets with %q", hour, got)
+		case hour >= 22 || hour < 5:
+			want = "night"
+		case hour < 12:
+			want = "morning"
+		case hour < 18:
+			want = "afternoon"
+		default:
+			want = "evening"
 		}
-		if got == "night" {
-			t.Errorf("%02d:00 greets with a farewell", hour)
+		if got != want {
+			t.Errorf("%02d:00 greeted with %q, want %q", hour, got, want)
 		}
 	}
 }

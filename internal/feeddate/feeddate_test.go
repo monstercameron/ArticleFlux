@@ -99,6 +99,28 @@ func TestParseRejectsGarbage(t *testing.T) {
 	}
 }
 
+// MustParse is the fixture helper — it must return the same instant Parse
+// does on the success path.
+func TestMustParseReturnsOnSuccess(t *testing.T) {
+	got := MustParse("2026-07-26T12:30:00Z")
+	want, _ := time.Parse(time.RFC3339, "2026-07-26T12:30:00Z")
+	if !got.Equal(want) {
+		t.Errorf("MustParse = %s, want %s", got, want)
+	}
+}
+
+// MustParse exists for fixtures, where an unparseable literal is a typo in the
+// test, not routine feed garbage — it must panic loudly rather than return a
+// zero time that silently passes downstream assertions.
+func TestMustParsePanicsOnGarbage(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("MustParse did not panic on unparseable input")
+		}
+	}()
+	MustParse("not a date")
+}
+
 // A loose layout must never steal a match from a precise one — that is what the
 // ordering in `layouts` is for.
 func TestPreciseLayoutsWinOverLooseOnes(t *testing.T) {

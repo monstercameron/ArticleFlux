@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +123,110 @@ func TestStreamPostIsRefused(t *testing.T) {
 	a.serveStream(rec, httptest.NewRequest(http.MethodPost, "/stream?u=x&e=1&s=y", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status %d, want 405", rec.Code)
+	}
+}
+
+// clampDelta bounds a wheel delta so a forged 10^9 cannot ask the browser to
+// scroll to an absurd offset, and neutralises NaN rather than handing it to the
+// protocol as a JSON literal it cannot encode.
+func TestClampDeltaBoundsExtremesAndNaN(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want float64
+	}{
+		{50, 50},
+		{maxScrollDelta, maxScrollDelta},
+		{maxScrollDelta + 1, maxScrollDelta},
+		{1e9, maxScrollDelta},
+		{-maxScrollDelta - 1, -maxScrollDelta},
+		{-1e9, -maxScrollDelta},
+	}
+	for _, c := range cases {
+		if got := clampDelta(c.in); got != c.want {
+			t.Errorf("clampDelta(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+	nan := math.NaN()
+	if got := clampDelta(nan); got != 0 {
+		t.Errorf("clampDelta(NaN) = %v, want 0", got)
+	}
+}
+
+// ScrollLive with no renderer configured must fail rather than silently do
+// nothing — a caller checking the error is how a dead live view is noticed.
+func TestScrollLiveWithNoRendererConfiguredFails(t *testing.T) {
+	a := &App{cfg: Config{}, log: testLogger()}
+	if err := a.ScrollLive("some-key", 10, 10); err != render.ErrNoSession {
+		t.Errorf("err = %v, want render.ErrNoSession", err)
+	}
+}
+
+func TestServeStreamRejectsAnUnparseableURLParam(t *testing.T) {
+	a := streamApp(t)
+	rec := httptest.NewRecorder()
+	a.serveStream(rec, httptest.NewRequest(http.MethodGet, "/stream?u=not!valid!base64&e=1&s=x", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", rec.Code)
+	}
+}
+
+func TestServeStreamRejectsAnUnparseableExpiryParam(t *testing.T) {
+	a := streamApp(t)
+	rec := httptest.NewRecorder()
+	a.serveStream(rec, httptest.NewRequest(http.MethodGet, "/stream?u=aHR0cA&e=not-a-number&s=x", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", rec.Code)
+	}
+}
+
+func TestServeStreamRefusesAnExpiredCapability(t *testing.T) {
+	a := streamApp(t)
+	past := time.Now().Add(-time.Minute).Unix()
+	raw := "https://pub.example/one"
+	sig := secret.Sign(a.assetKey, streamMessage(raw, past))
+	target := "/stream?u=aHR0cHM6Ly9wdWIuZXhhbXBsZS9vbmU&e=" + strconv.FormatInt(past, 10) + "&s=" + sig
+	rec := httptest.NewRecorder()
+	a.serveStream(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusGone {
+		t.Errorf("status %d, want 410", rec.Code)
+	}
+}
+
+// unflushableWriter satisfies http.ResponseWriter and deliberately nothing
+// else, so serveStream's http.Flusher assertion fails the way it would
+// against a transport that cannot stream at all.
+type unflushableWriter struct{ http.ResponseWriter }
+
+func TestServeStreamRequiresAFlusher(t *testing.T) {
+	a := streamApp(t)
+	raw := "https://pub.example/one"
+	exp := time.Now().Add(time.Hour).Unix()
+	sig := secret.Sign(a.assetKey, streamMessage(raw, exp))
+	target := "/stream?u=aHR0cHM6Ly9wdWIuZXhhbXBsZS9vbmU&e=" + strconv.FormatInt(exp, 10) + "&s=" + sig
+
+	rec := httptest.NewRecorder()
+	a.serveStream(unflushableWriter{rec}, httptest.NewRequest(http.MethodGet, target, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status %d, want 500 — without a Flusher every frame buffers and the "+
+			"reader gets one image at the end of the stream", rec.Code)
+	}
+}
+
+// Minting a stream URL for something that is already a stream URL would nest
+// the capability inside itself.
+func TestStreamURLIsNotReMintedForAnAlreadyProxiedURL(t *testing.T) {
+	a := streamApp(t)
+	if got := a.StreamURL(a.streamPrefix() + "?u=abc&e=1&s=x"); got != "" {
+		t.Errorf("re-minted an existing stream URL: %q", got)
+	}
+}
+
+func TestAtoiOrParsesAValidPositiveInteger(t *testing.T) {
+	if got := atoiOr("50", 0); got != 50 {
+		t.Errorf("atoiOr(\"50\", 0) = %d, want 50", got)
+	}
+	if got := atoiOr("  12  ", 0); got != 12 {
+		t.Errorf("atoiOr with surrounding whitespace = %d, want 12", got)
 	}
 }
 

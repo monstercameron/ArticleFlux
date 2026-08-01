@@ -3,11 +3,13 @@ package smart
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
 // The guards for the theming generator (§20.16.3), over the llmClient seam so none
@@ -259,5 +261,70 @@ func TestTheRequestIsBoundedAndDeliberate(t *testing.T) {
 	if r.Schema == nil || r.SchemaName == "" {
 		t.Error("the reply is not schema-constrained; “return a palette” is answered " +
 			"with an object, an object in prose, or a CSS block")
+	}
+}
+
+// --- provider errors and cancellation ----------------------------------------
+//
+// Unlike Interest/Classifier/SiteAnalyzer, nothing in this file exercised
+// ask() past a successful Do() with a real transport failure before this.
+
+func TestComposeProviderErrorSurfaces(t *testing.T) {
+	f := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
+	_, _, err := palettesWith(f).Compose(context.Background(), "slate and rain", design.ToneDark)
+	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
+		t.Fatalf("err = %v, want the provider's error surfaced", err)
+	}
+}
+
+func TestComposeContextCancellationPropagates(t *testing.T) {
+	f := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
+		return "", context.Canceled
+	}}
+	_, _, err := palettesWith(f).Compose(context.Background(), "slate and rain", design.ToneDark)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
+	}
+}
+
+// --- model -------------------------------------------------------------------
+//
+// palettesWith always builds with nil settings, which exercises only
+// model()'s first branch. Same three-way shape as SiteAnalyzer.model.
+
+func TestPalettesModelNilSettingsReturnsEmptyDefault(t *testing.T) {
+	p := NewPalettes(&fakeLLM{}, nil)
+	got, err := p.model(context.Background())
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	if got != "" {
+		t.Errorf("model = %q with nil settings, want empty", got)
+	}
+}
+
+func TestPalettesModelUnsetSettingFallsBackSilently(t *testing.T) {
+	p := NewPalettes(&fakeLLM{}, newSettings(t))
+	got, err := p.model(context.Background())
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	if got != "" {
+		t.Errorf("model = %q, want empty", got)
+	}
+}
+
+func TestPalettesModelReadsTheConfiguredSetting(t *testing.T) {
+	settings := newSettings(t)
+	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5", ""); err != nil {
+		t.Fatalf("seeding the model setting: %v", err)
+	}
+	p := NewPalettes(&fakeLLM{}, settings)
+	got, err := p.model(context.Background())
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	if got != "gpt-5" {
+		t.Errorf("model = %q, want gpt-5", got)
 	}
 }

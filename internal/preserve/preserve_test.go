@@ -1,9 +1,11 @@
 package preserve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -336,6 +338,181 @@ func TestDistressSweepsAreDedupedPerSource(t *testing.T) {
 	}
 	if depth[store.JobPreserve].Queued != 1 {
 		t.Errorf("%d sweeps queued for one failing source, want 1", depth[store.JobPreserve].Queued)
+	}
+}
+
+// Enqueue is the caller-facing entry point for the interaction and eager
+// tiers; Handle's own tests only ever exercise sweeps, which build the
+// payload a different way.
+func TestEnqueueQueuesAJobForTheGivenItems(t *testing.T) {
+	f := setup(t)
+	if err := f.svc.Enqueue(f.ctx, f.items[:2], ReasonInteraction); err != nil {
+		t.Fatal(err)
+	}
+	depth, err := f.repo.QueueDepth(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depth[store.JobPreserve].Queued != 1 {
+		t.Errorf("%d preserve jobs queued, want 1", depth[store.JobPreserve].Queued)
+	}
+}
+
+// An empty item list is a no-op rather than an empty-payload job, or every
+// caller that forgot to check len() first would queue useless work.
+func TestEnqueueWithNoItemsQueuesNothing(t *testing.T) {
+	f := setup(t)
+	if err := f.svc.Enqueue(f.ctx, nil, ReasonInteraction); err != nil {
+		t.Fatal(err)
+	}
+	depth, err := f.repo.QueueDepth(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depth[store.JobPreserve].Queued != 0 {
+		t.Errorf("%d preserve jobs queued for an empty item list, want 0", depth[store.JobPreserve].Queued)
+	}
+}
+
+// The priority order is what makes reader mode responsive: interaction beats
+// the speculative tiers, and distress sits above them but below a reader
+// actually waiting on the page.
+func TestPriorityForOrdersTheTiers(t *testing.T) {
+	cases := []struct {
+		reason Reason
+		want   int
+	}{
+		{ReasonInteraction, 8},
+		{ReasonDistress, 5},
+		{ReasonIngest, 2},
+		{ReasonManual, 2},
+	}
+	for _, c := range cases {
+		if got := priorityFor(c.reason); got != c.want {
+			t.Errorf("priorityFor(%q) = %d, want %d", c.reason, got, c.want)
+		}
+	}
+}
+
+// A payload that cannot even be parsed must fail loudly and immediately,
+// rather than being handed downstream as a sweep of nothing.
+func TestHandleRejectsAnUnreadablePayload(t *testing.T) {
+	f := setup(t)
+	err := f.svc.Handle(f.ctx, store.Job{Kind: store.JobPreserve, Payload: "{not json"})
+	if err == nil {
+		t.Fatal("Handle accepted a payload that is not valid JSON")
+	}
+	if !strings.Contains(err.Error(), "unreadable payload") {
+		t.Errorf("err = %q, want it to say the payload was unreadable", err)
+	}
+}
+
+// A job with no item ids and no source (the zero Payload) is a no-op: there
+// is nothing to fetch, so it must not touch ItemsByID at all.
+func TestHandleWithNoWorkIsANoop(t *testing.T) {
+	f := setup(t)
+	payload, err := json.Marshal(Payload{Reason: ReasonManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Handle(f.ctx, store.Job{Kind: store.JobPreserve, Payload: string(payload)}); err != nil {
+		t.Errorf("an empty job returned an error: %v", err)
+	}
+}
+
+// Handle's own sweep filters to unarchived items at the SQL level, so the
+// "already archived" branch inside archiveOne can only be reached by a
+// direct (non-sweep) job naming an item that already has an archive — e.g.
+// two callers racing to enqueue interaction-archival for the same item.
+func TestArchiveOneSkipsAnItemAlreadyArchived(t *testing.T) {
+	f := setup(t)
+	if err := f.sweep(t); err != nil {
+		t.Fatal(err)
+	}
+	before := f.site.calls
+
+	payload, err := json.Marshal(Payload{ItemIDs: []string{f.items[0]}, Reason: ReasonManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Handle(f.ctx, store.Job{Kind: store.JobPreserve, Payload: string(payload)}); err != nil {
+		t.Errorf("re-archiving an already-archived item returned an error: %v", err)
+	}
+	if f.site.calls != before {
+		t.Errorf("an already-archived item was re-fetched (%d calls, want %d)", f.site.calls, before)
+	}
+}
+
+// When a logger is configured, a failed item must be logged rather than
+// silently swallowed — that log line is the only trace a struggling sweep
+// leaves for an operator.
+func TestHandleLogsPerItemFailuresWhenALoggerIsConfigured(t *testing.T) {
+	f := setup(t)
+	var buf bytes.Buffer
+	f.svc = New(f.repo, f.site, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	f.site.kill()
+
+	if err := f.sweep(t); err == nil {
+		t.Fatal("sweep of a dead site with a logger configured reported success")
+	}
+	if !strings.Contains(buf.String(), "could not archive an item") {
+		t.Errorf("logger saw no per-item failure line; got %q", buf.String())
+	}
+}
+
+// A repo failure (DB gone, connection dropped) must surface to the caller
+// rather than being swallowed as if nothing needed archiving — the queue
+// worker's retry logic depends on that error being real.
+func TestArchiveOneSurfacesARepoErrorRatherThanSwallowingIt(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "preserve-closed.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewReaderRepo(db)
+	now := time.Now().UTC()
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t1", Name: "T", UserID: "u1", Username: "u",
+		Hash: "x", Role: "member", Now: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sc := store.Scope{TenantID: "t1", UserID: "u1", Role: "member"}
+	feed, _, err := repo.Subscribe(ctx, sc, store.NewSubscription{
+		NaturalKey: "feed:closed", FeedURL: "https://closed.example/rss",
+		SiteURL: "https://closed.example/", Title: "Closed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.IngestItems(ctx, feed.SourceID, []store.IngestItem{{
+		GUID: "g0", URL: "https://closed.example/0", Title: "A",
+		Summary: "x", PublishedAt: now, WordCount: 6,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := repo.ListItems(ctx, sc, store.ListQuery{Limit: 1})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items = %v, err = %v", items, err)
+	}
+
+	svc := New(repo, &fakeSite{}, nil)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := json.Marshal(Payload{ItemIDs: []string{items[0].ID}, Reason: ReasonManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Handle(ctx, store.Job{Kind: store.JobPreserve, Payload: string(payload)}); err == nil {
+		t.Error("Handle succeeded against a closed database")
+	}
+	if err := svc.Enqueue(ctx, []string{items[0].ID}, ReasonManual); err == nil {
+		t.Error("Enqueue succeeded against a closed database")
 	}
 }
 

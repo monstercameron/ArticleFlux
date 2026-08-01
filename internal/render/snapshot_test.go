@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // `usable` is the escalate-on-empty rule, and it is the half that can be tested
@@ -522,6 +525,147 @@ func TestSnapshotAndStreamShareTheSameSlot(t *testing.T) {
 	if !errors.Is(err, ErrBusy) {
 		t.Errorf("Stream while the slot is held by something else: err = %v, want ErrBusy — "+
 			"Stream and Snapshot are documented as the same resource", err)
+	}
+}
+
+// Same split as Stream's: AllowPrivate relaxes the private-range check, not
+// the scheme check.
+func TestSnapshotAllowPrivateStillRejectsABadScheme(t *testing.T) {
+	r := New(Options{AllowPrivate: true})
+	defer r.Close()
+	_, err := r.Snapshot(context.Background(), "ftp://example.com/", Viewport{})
+	if err == nil {
+		t.Fatal("a non-http(s) scheme must be refused even with AllowPrivate set")
+	}
+}
+
+// The guard and the semaphore both pass, and only then does Snapshot learn
+// there is no browser — that has to come back as ErrNoBrowser, not a panic on
+// a nil allocator.
+func TestSnapshotReportsAMissingBrowser(t *testing.T) {
+	r := New(Options{AllowPrivate: true, ExecPath: filepath.Join(t.TempDir(), "does-not-exist.exe")})
+	defer r.Close()
+	_, err := r.Snapshot(context.Background(), "http://example.invalid/", Viewport{})
+	if !errors.Is(err, ErrNoBrowser) {
+		t.Errorf("Snapshot with no browser on the box = %v, want ErrNoBrowser", err)
+	}
+}
+
+// A context that is already expired when Snapshot is called must fail fast
+// with the caller's own DeadlineExceeded, the same property
+// TestKillingTheBrowserFailsTheRenderRatherThanHanging proves for one that
+// expires mid-render.
+func TestSnapshotWithAlreadyExpiredContextFailsFast(t *testing.T) {
+	r := browserOrSkip(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><body>x</body></html>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Snapshot(ctx, srv.URL, Viewport{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an already-expired context still produced a snapshot")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("= %v, want the caller's DeadlineExceeded", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Snapshot did not return promptly for an already-expired context")
+	}
+}
+
+// The hand-rolled navigate (see the comment above it in snapshot.go) gets a
+// real failure via CDP's errorText rather than a Go error — a connection
+// refused by the target has to surface as an error rather than an empty page
+// silently marked usable-or-not.
+func TestSnapshotNavigationFailureIsAnError(t *testing.T) {
+	r := browserOrSkip(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := r.Snapshot(ctx, "http://127.0.0.1:1/", Viewport{})
+	if err == nil {
+		t.Fatal("a connection refused by the target reported a successful snapshot")
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Errorf("= %v, want a real navigation failure, not a context timeout", err)
+	}
+}
+
+// capture()'s error branch — a screenshot attempt that cannot run at all —
+// exercised directly against a tab context that is already cancelled, rather
+// than by racing a real browser crash.
+func TestCaptureReturnsBestOnACancelledContext(t *testing.T) {
+	r := browserOrSkip(t)
+	alloc, err := r.browser()
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	tabCtx, cancelTab := chromedp.NewContext(alloc)
+	cancelTab()
+	if shot := r.capture(tabCtx, DefaultMaxBytes); shot != nil {
+		t.Errorf("capture on a cancelled context returned %d bytes, want nil — nothing "+
+			"could have been captured", len(shot))
+	}
+}
+
+// settle()'s error path, exercised the same way: a scroll that cannot run
+// must return the error rather than being swallowed, which is what lets
+// Snapshot's caller distinguish a real render from one that died mid-scroll.
+func TestSettleFailsRatherThanHangingOnACancelledContext(t *testing.T) {
+	r := browserOrSkip(t)
+	alloc, err := r.browser()
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	tabCtx, cancelTab := chromedp.NewContext(alloc)
+	cancelTab()
+	if err := settle(tabCtx, Viewport{Width: 500, Height: 400}); err == nil {
+		t.Error("settle on a cancelled context returned no error")
+	}
+}
+
+// idleWatch.wait's other exit: the caller's context ending must release it
+// immediately, not after the 8s idle cap. Tested directly against the type —
+// wait() only touches the context and its own timers, so this needs no
+// browser at all.
+func TestIdleWatchWaitReturnsWhenContextEnds(t *testing.T) {
+	w := &idleWatch{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if err := w.wait(ctx); err == nil {
+		t.Error("wait returned no error for an already-cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("wait took %v to notice a cancelled context — it must return "+
+			"immediately rather than waiting out the idle cap", elapsed)
+	}
+}
+
+// The truncation lands inside the closing tag itself, not just inside the
+// element: "</script" with no trailing '>' at all. dropRawText has to stop
+// there rather than scanning past the end of the string looking for one.
+func TestDropRawTextTruncatedInsideTheClosingTag(t *testing.T) {
+	html := `<html><body><p>keep</p><script>` + strings.Repeat("x", 20) + `</script`
+	got := dropRawText(html)
+	if !strings.Contains(got, "keep") {
+		t.Errorf("dropRawText dropped content that came before the element: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "script") {
+		t.Errorf("dropRawText left the script element behind on a closing tag "+
+			"truncated mid-tag: %q", got)
 	}
 }
 

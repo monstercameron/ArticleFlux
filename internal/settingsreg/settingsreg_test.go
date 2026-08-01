@@ -2,6 +2,7 @@ package settingsreg
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -66,6 +67,10 @@ func testRegistry(t *testing.T) *Registry {
 			Min: 7, Max: 3650, Doc: "How long items are kept."},
 		Def{Key: "smart.model", Kind: KindString, Default: "", Scope: ScopeSystem,
 			Doc: "The Smart+ model id."},
+		Def{Key: "reading.zoom", Kind: KindFloat, Default: 1.0, Scope: ScopeUser,
+			Doc: "Reading pane zoom factor."},
+		Def{Key: "retention.multiplier", Kind: KindFloat, Default: 1.0, Scope: ScopeTenant,
+			Doc: "Retention scaling factor."},
 	)
 	return r
 }
@@ -301,6 +306,222 @@ func TestStoredIntegersValidateAsIntegers(t *testing.T) {
 	}
 	if vals["reading.font_size"].Int() != 18 {
 		t.Errorf("= %d", vals["reading.font_size"].Int())
+	}
+}
+
+// MustRegister exists for a package-level table, where an invalid definition is a
+// programming error that should stop the process rather than be silently ignored.
+func TestMustRegisterPanicsOnAnInvalidDefinition(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("MustRegister did not panic on an invalid definition")
+		}
+	}()
+	New().MustRegister(Def{Key: "a", Kind: KindBool, Default: "not a bool", Doc: "x"})
+}
+
+func TestDefLookup(t *testing.T) {
+	r := testRegistry(t)
+
+	d, ok := r.Def("reading.font_size")
+	if !ok {
+		t.Fatal("a registered key was not found")
+	}
+	if d.Kind != KindInt || d.Default != 16 {
+		t.Errorf("Def = %+v; wrong definition returned", d)
+	}
+
+	if _, ok := r.Def("no.such.key"); ok {
+		t.Error("an unregistered key was reported as found")
+	}
+}
+
+// Bool/Int/Float/String all share the same contract: parse the stored JSON at the
+// registered type, or fall back to the definition's own default on a mismatch — a
+// corrupt value must not take a screen down.
+func TestValueAccessorsFallBackToDefaultOnAMismatch(t *testing.T) {
+	t.Run("Bool", func(t *testing.T) {
+		def := Def{Kind: KindBool, Default: true}
+		if v := (Value{Raw: "true", def: def}); !v.Bool() {
+			t.Error("valid JSON true did not parse")
+		}
+		if v := (Value{Raw: "false", def: def}); v.Bool() {
+			t.Error("valid JSON false did not parse")
+		}
+		if v := (Value{Raw: `"not a bool"`, def: def}); !v.Bool() {
+			t.Error("a type-mismatched raw value should fall back to the default (true)")
+		}
+	})
+	t.Run("Int", func(t *testing.T) {
+		def := Def{Kind: KindInt, Default: 42}
+		if v := (Value{Raw: "7", def: def}); v.Int() != 7 {
+			t.Errorf("= %d, want 7", v.Int())
+		}
+		if v := (Value{Raw: `"seven"`, def: def}); v.Int() != 42 {
+			t.Errorf("= %d, want the default 42", v.Int())
+		}
+	})
+	t.Run("Float", func(t *testing.T) {
+		def := Def{Kind: KindFloat, Default: 1.5}
+		if v := (Value{Raw: "3.25", def: def}); v.Float() != 3.25 {
+			t.Errorf("= %v, want 3.25", v.Float())
+		}
+		if v := (Value{Raw: "not-json", def: def}); v.Float() != 1.5 {
+			t.Errorf("= %v, want the default 1.5", v.Float())
+		}
+	})
+	t.Run("String", func(t *testing.T) {
+		def := Def{Kind: KindString, Default: "fallback"}
+		if v := (Value{Raw: `"hello"`, def: def}); v.String() != "hello" {
+			t.Errorf("= %q, want %q", v.String(), "hello")
+		}
+		if v := (Value{Raw: "not-json", def: def}); v.String() != "fallback" {
+			t.Errorf("= %q, want the default %q", v.String(), "fallback")
+		}
+	})
+}
+
+// A registered default that cannot itself be marshalled to JSON (Inf, in practice —
+// Register's own type/range checks let it through since range bounds of 0/0 mean
+// "unbounded") must be reported as a problem rather than resolved to garbage, and the
+// key is left out of the result entirely rather than handed back half-formed.
+func TestResolveReportsAnUnserialisableDefault(t *testing.T) {
+	r := New()
+	r.MustRegister(
+		Def{Key: "broken.default", Kind: KindFloat, Default: math.Inf(1), Doc: "x"},
+		Def{Key: "fine.one", Kind: KindInt, Default: 5, Doc: "x"},
+	)
+	f := newFake()
+	vals, problems, err := r.Resolve(context.Background(), f, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("an unserialisable default was not reported")
+	}
+	if _, ok := vals["broken.default"]; ok {
+		t.Error("a key whose default failed to serialise should not appear in the result")
+	}
+	if vals["fine.one"].Int() != 5 {
+		t.Errorf("an unrelated key was affected: %+v", vals["fine.one"])
+	}
+}
+
+// SetTenant validates its value and can fail to marshal it, exactly like SetUser —
+// both were only exercised for the scope-limit checks before this.
+func TestSetTenantValidatesAndCanFailToMarshal(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	ctx := context.Background()
+
+	if err := r.SetTenant(ctx, f, sc, "retention.days", "not a number"); err == nil {
+		t.Error("an invalid value was accepted at the tenant layer")
+	}
+	if err := r.SetTenant(ctx, f, sc, "retention.multiplier", math.Inf(1)); err == nil {
+		t.Error("an unserialisable value (+Inf) was accepted")
+	} else if !strings.Contains(err.Error(), "Inf") && !strings.Contains(strings.ToLower(err.Error()), "json") {
+		t.Logf("marshal error (informational): %v", err)
+	}
+}
+
+// ResetUser is a registered-key lookup like every other entry point; an unregistered
+// key must be refused there too, not just on the write side.
+func TestResetUserRefusesAnUnregisteredKey(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	if err := r.ResetUser(context.Background(), f, sc, "no.such.key"); err == nil {
+		t.Fatal("ResetUser accepted an unregistered key")
+	}
+}
+
+// A setting scoped above the user layer must be refused at SetUser regardless of
+// which layer it is scoped to — both the tenant and the system case go through the
+// same message, naming the actual owning layer.
+func TestSetUserRefusesSystemScopedSettingsToo(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	err := r.SetUser(context.Background(), f, sc, "smart.model", "gpt-x")
+	if err == nil {
+		t.Fatal("a system-scoped setting was written at the user layer")
+	}
+	if !strings.Contains(err.Error(), "system") {
+		t.Errorf("error %q does not name the system layer", err)
+	}
+}
+
+// toFloat accepts every Go numeric type that could plausibly arrive from a caller
+// (int and float64 are exercised elsewhere; int64 and float32 are the other two a Go
+// caller can legitimately hand in).
+func TestValidateAcceptsEveryNumericGoType(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	ctx := context.Background()
+
+	if err := r.SetUser(ctx, f, sc, "reading.zoom", int64(2)); err != nil {
+		t.Errorf("int64 was rejected for a float setting: %v", err)
+	}
+	if err := r.SetUser(ctx, f, sc, "reading.zoom", float32(1.25)); err != nil {
+		t.Errorf("float32 was rejected for a float setting: %v", err)
+	}
+	if err := r.SetUser(ctx, f, sc, "reading.zoom", true); err == nil {
+		t.Error("a bool was accepted for a float setting")
+	}
+}
+
+// SetUser has the same marshal-failure branch as SetTenant, reached only once
+// validate has already let the value through — Inf clears an unbounded (0/0) range
+// check but still cannot be marshalled to JSON.
+func TestSetUserFailsOnAnUnmarshallableValue(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	if err := r.SetUser(context.Background(), f, sc, "reading.zoom", math.Inf(1)); err == nil {
+		t.Fatal("+Inf was accepted despite being unmarshallable to JSON")
+	}
+	if len(f.rows[store.LayerUser]) != 0 {
+		t.Error("a value that failed to marshal was written anyway")
+	}
+}
+
+// validate's unknown-kind branch and the string type-mismatch branch, neither of
+// which any existing case exercised: Register itself validates its own default, so
+// an unknown Kind is caught at registration before it ever reaches storage.
+func TestValidateRejectsUnknownKindsAndWrongStringTypes(t *testing.T) {
+	if err := New().Register(Def{Key: "x", Kind: Kind("mystery"), Default: "y", Doc: "d"}); err == nil {
+		t.Fatal("an unknown Kind was accepted at registration")
+	} else if !strings.Contains(err.Error(), "unknown kind") {
+		t.Errorf("error %q does not mention the unknown kind", err)
+	}
+
+	r := New()
+	r.MustRegister(Def{Key: "s", Kind: KindString, Default: "x", Doc: "d"})
+	if err := r.SetUser(context.Background(), newFake(), sc, "s", 42); err == nil {
+		t.Error("a non-string value was accepted for a KindString setting")
+	}
+}
+
+// validateRaw's own two failure modes, distinct from validate's: JSON that will not
+// parse at all, and a stored int whose JSON type is not a number (json.Unmarshal into
+// `any` gives float64 for numbers, so anything else — a string, here — means the
+// stored value was never a valid int to begin with).
+func TestValidateRawRejectsMalformedAndWrongTypedStorage(t *testing.T) {
+	r := testRegistry(t)
+	f := newFake()
+	f.rows[store.LayerUser]["reading.font_size"] = "{not json"
+	f.rows[store.LayerTenant]["retention.days"] = `"365"` // a JSON string, not a number
+
+	vals, problems, err := r.Resolve(context.Background(), f, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) < 2 {
+		t.Fatalf("got %d problems, want at least 2: %v", len(problems), problems)
+	}
+	// Both corrupt layers were skipped, so both settings fall back to their defaults.
+	if vals["reading.font_size"].Int() != 16 {
+		t.Errorf("font_size = %d, want the default 16", vals["reading.font_size"].Int())
+	}
+	if vals["retention.days"].Int() != 365 {
+		t.Errorf("retention.days = %d, want the default 365", vals["retention.days"].Int())
 	}
 }
 

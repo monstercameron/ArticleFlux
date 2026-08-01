@@ -350,6 +350,181 @@ func TestCSSIsFetchedAndImagesStillAre(t *testing.T) {
 	}
 }
 
+// A leading space is trimmed by netguard's own pre-check (it TrimSpaces before
+// parsing) but NOT by the raw string handed to http.NewRequestWithContext
+// afterwards — so a URL that passes the guard can still fail to build into a
+// request. That has to surface as a legible error, not a panic or a silent
+// empty asset.
+func TestALeadingSpacePassesTheGuardButFailsToBuildARequest(t *testing.T) {
+	f := newFetcher(t)
+	_, err := f.Get(context.Background(), " http://example.com/pic.png")
+	if err == nil {
+		t.Fatal("expected an error building the request")
+	}
+}
+
+// A context cancelled before the round trip must surface as an error from the
+// client, not hang or panic.
+func TestACancelledContextFailsTheRoundTrip(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(onePixelPNG)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := newFetcher(t)
+	if _, err := f.Get(ctx, srv.URL+"/pic.png"); err == nil {
+		t.Fatal("expected the cancelled context to fail the fetch")
+	}
+}
+
+// A response that lies about its own length — Content-Length promises more
+// than the connection ever delivers — must be caught as a read error rather
+// than silently truncated: a truncated image renders as a half-drawn picture,
+// which looks like the publisher's fault.
+func TestATruncatedBodyIsAReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support hijacking")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 100\r\n\r\nshort")
+		_ = buf.Flush()
+	}))
+	defer srv.Close()
+
+	f := newFetcher(t)
+	if _, err := f.Get(context.Background(), srv.URL+"/truncated.png"); err == nil {
+		t.Fatal("expected a read error for a body shorter than its declared Content-Length")
+	}
+}
+
+// A cache file with no newline, or a header line with no space, is not a shape
+// writeCache ever produces — but readCache must not trust that, and must treat
+// either as a miss rather than panicking on the slice index or the Cut.
+func TestCorruptCacheFilesAreTreatedAsAMiss(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(onePixelPNG)
+	}))
+	defer srv.Close()
+
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{"no newline at all", []byte("image/png no-newline-here")},
+		{"header has no space", []byte("onlyonetoken\nrestofbody")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := New(Options{Dir: dir, AllowPrivate: true})
+			key := cacheKey(srv.URL + "/" + c.name)
+			if err := os.MkdirAll(filepath.Dir(f.path(key)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.path(key), c.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := f.readCache(key); ok {
+				t.Error("a corrupt cache file was read as a hit")
+			}
+			// And Get() must still work by falling through to a real fetch, not
+			// error out because the cache entry was unreadable.
+			if _, err := f.Get(context.Background(), srv.URL+"/"+c.name); err != nil {
+				t.Errorf("Get after a corrupt cache entry: %v", err)
+			}
+		})
+	}
+}
+
+// writeCache is best-effort: the doc comment says a cache that fails to write
+// must degrade to a slower proxy, never fail the request. This blocks the
+// fanned-out subdirectory with a plain file, so MkdirAll fails, and asserts
+// the fetch still succeeds.
+func TestWriteCacheDegradesWhenTheFanoutDirIsBlocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(onePixelPNG)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	key := cacheKey(srv.URL + "/blocked.png")
+	// A regular file sitting where the fanned-out subdirectory needs to go.
+	if err := os.WriteFile(filepath.Join(dir, key[:2]), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := New(Options{Dir: dir, AllowPrivate: true})
+	a, err := f.Get(context.Background(), srv.URL+"/blocked.png")
+	if err != nil {
+		t.Fatalf("a blocked cache directory must not fail the fetch: %v", err)
+	}
+	if len(a.Bytes) != len(onePixelPNG) {
+		t.Error("the fetched asset itself was wrong even though caching was blocked")
+	}
+}
+
+// The final rename is also best-effort: if something already occupies the
+// destination as a directory, the rename fails and writeCache must swallow it
+// rather than losing the fetch that already succeeded.
+func TestWriteCacheDegradesWhenTheDestinationIsBlocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(onePixelPNG)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	key := cacheKey(srv.URL + "/blocked2.png")
+	f := New(Options{Dir: dir, AllowPrivate: true})
+	// Pre-create the final cache path AS A DIRECTORY, so the atomic rename into
+	// it fails.
+	if err := os.MkdirAll(f.path(key), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := f.Get(context.Background(), srv.URL+"/blocked2.png")
+	if err != nil {
+		t.Fatalf("a blocked rename target must not fail the fetch: %v", err)
+	}
+	if len(a.Bytes) != len(onePixelPNG) {
+		t.Error("the fetched asset itself was wrong even though the rename was blocked")
+	}
+}
+
+// markFailed with no cache dir configured is a no-op — the same rule readCache
+// and writeCache follow, and the one exercised path a cache-less Fetcher never
+// otherwise hits.
+func TestMarkFailedIsANoOpWithNoCacheDir(t *testing.T) {
+	f := New(Options{})
+	f.markFailed("whatever") // must not panic
+	if f.negativeHit("whatever") {
+		t.Error("a cache-less fetcher reported a negative hit")
+	}
+}
+
+// markFailed is also best-effort against a blocked fanned-out directory, same
+// as writeCache.
+func TestMarkFailedDegradesWhenTheFanoutDirIsBlocked(t *testing.T) {
+	dir := t.TempDir()
+	key := cacheKey("http://example.com/blocked-fail")
+	if err := os.WriteFile(filepath.Join(dir, key[:2]), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := New(Options{Dir: dir})
+	f.markFailed(key) // must not panic; the marker simply does not get written
+}
+
 func TestIsCSSNamesTheKind(t *testing.T) {
 	if !(Asset{ContentType: "text/css"}).IsCSS() {
 		t.Error("a text/css asset does not report as CSS")

@@ -215,6 +215,53 @@ func TestProposeContextCancellationPropagates(t *testing.T) {
 	}
 }
 
+// --- guards reachable without a request ----------------------------------------
+
+func TestProposeWithNilLLMIsErrNotConfigured(t *testing.T) {
+	a := NewSiteAnalyzer(nil, nil)
+	_, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if !errors.Is(err, llm.ErrNotConfigured) {
+		t.Fatalf("err = %v, want ErrNotConfigured", err)
+	}
+}
+
+func TestProposeWithAnUnconfiguredClientIsErrNotConfigured(t *testing.T) {
+	a := NewSiteAnalyzer(&fakeLLM{configured: false}, newSettings(t))
+	_, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if !errors.Is(err, llm.ErrNotConfigured) {
+		t.Fatalf("err = %v, want ErrNotConfigured", err)
+	}
+}
+
+// An outline that distills to nothing (an essentially empty page) is refused
+// before ever spending a request — there is nothing for the model to look
+// at.
+func TestProposeEmptyOutlineIsErrNoRuleWithoutCallingTheProvider(t *testing.T) {
+	fake := &fakeLLM{configured: true, text: goodScrapeAnswer()}
+	a := NewSiteAnalyzer(fake, newSettings(t))
+	_, err := a.Propose(context.Background(), "https://notes.example/", "")
+	if !errors.Is(err, ErrNoRule) {
+		t.Fatalf("err = %v, want ErrNoRule", err)
+	}
+	if n := fake.callCount(); n != 0 {
+		t.Fatalf("provider called %d times on an empty page, want 0", n)
+	}
+}
+
+// ErrNoList with no notes at all — the model declined to explain itself —
+// must still be plain ErrNoList, not a formatted %w wrapping an empty
+// string.
+func TestProposeEmptyItemSelectorWithNoNotesIsPlainErrNoList(t *testing.T) {
+	fake := &fakeLLM{configured: true,
+		text: `{"item_selector":"","title_selector":"","link_selector":"","date_selector":"",` +
+			`"date_layout":"","summary_selector":"","image_selector":"","author_selector":"","notes":""}`}
+	a := NewSiteAnalyzer(fake, newSettings(t))
+	_, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if !errors.Is(err, ErrNoList) {
+		t.Fatalf("err = %v, want ErrNoList", err)
+	}
+}
+
 // --- Configured() nil-safety --------------------------------------------------
 
 // The seam turned this field from a concrete *llm.Client (whose methods are

@@ -127,6 +127,36 @@ func TestAlphabetIsUnambiguous(t *testing.T) {
 	}
 }
 
+// IdempotencyKey and DeviceID are both 128-bit random(16) like Slug — they
+// share the collision-freedom argument, so the check is the same shape.
+func TestIdempotencyKeyAndDeviceIDAreUnguessable(t *testing.T) {
+	for name, fn := range map[string]func() string{
+		"IdempotencyKey": IdempotencyKey,
+		"DeviceID":       DeviceID,
+	} {
+		seen := map[string]bool{}
+		for i := 0; i < 1000; i++ {
+			s := fn()
+			if len(s) != 26 {
+				t.Fatalf("%s length %d, want 26 (128 bits)", name, len(s))
+			}
+			if seen[s] {
+				t.Fatalf("%s collision — arithmetically unreachable", name)
+			}
+			seen[s] = true
+		}
+	}
+}
+
+// A Token is 256 bits (32 raw bytes), which decodes to a different length than
+// the 128-bit sortable id TimeOf expects — it must be rejected as a sortable
+// id rather than misread through the padding.
+func TestTimeOfRejectsTokens(t *testing.T) {
+	if _, err := TimeOf(Token()); err == nil {
+		t.Error("a 256-bit token decoded as a 128-bit sortable id")
+	}
+}
+
 func commonPrefix(a, b string) int {
 	n := 0
 	for n < len(a) && n < len(b) && a[n] == b[n] {

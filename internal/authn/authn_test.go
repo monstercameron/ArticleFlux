@@ -241,6 +241,41 @@ func TestSudoFreshness(t *testing.T) {
 	}
 }
 
+// The loop's own cap fires on every real curve, since Base doubles up to Max.
+// A misconfigured Lockout whose Base already exceeds Max — Free+1 failures, so
+// the loop body never runs at all — has to be caught by the guard after the
+// loop, or a bad config would return an uncapped delay.
+func TestDelayCapsEvenWhenTheLoopNeverRuns(t *testing.T) {
+	l := Lockout{Free: 3, Base: time.Hour, Max: time.Minute}
+	if got := l.Delay(l.Free + 1); got != l.Max {
+		t.Errorf("Delay(Free+1) = %v, want the cap %v", got, l.Max)
+	}
+}
+
+// n<=0 means "use the standard count" — the same default RecoveryCodeCount
+// itself uses, so a caller that passes zero or a negative count by mistake
+// gets a normal sheet instead of an empty one.
+func TestGenerateRecoveryCodesDefaultsANonPositiveCount(t *testing.T) {
+	for _, n := range []int{0, -1, -10} {
+		codes, err := GenerateRecoveryCodes(n)
+		if err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		if len(codes) != RecoveryCodeCount {
+			t.Errorf("n=%d: got %d codes, want the default %d", n, len(codes), RecoveryCodeCount)
+		}
+	}
+}
+
+// The message names the action, because a caller catching this has to explain
+// which operation demanded fresh authentication.
+func TestErrSudoRequiredNamesTheAction(t *testing.T) {
+	err := ErrSudoRequired{Action: SudoDeleteUser}
+	if !strings.Contains(err.Error(), string(SudoDeleteUser)) {
+		t.Errorf("Error() = %q, does not name %q", err.Error(), SudoDeleteUser)
+	}
+}
+
 func TestEqualToken(t *testing.T) {
 	if !EqualToken("abc", "abc") {
 		t.Error("equal tokens compared unequal")

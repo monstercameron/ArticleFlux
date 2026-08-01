@@ -79,6 +79,50 @@ func TestACorruptWindowKeepsEverything(t *testing.T) {
 	}
 }
 
+// An App with no settings repo at all (built by hand, before Open finishes
+// wiring it) must still answer with the keep-forever default rather than
+// dereferencing a nil.
+func TestRetentionDaysWithNoSettingsRepoIsTheDefault(t *testing.T) {
+	a := &App{}
+	if got := a.retentionDays(context.Background()); got != retention.DefaultItemDays {
+		t.Errorf("window = %d with no settings repo, want the default", got)
+	}
+}
+
+// The sweep with a real window configured actually removes what falls outside
+// it — the no-op test above only proves the OFF switch; this is the switch
+// turned on.
+func TestTheSweepRemovesWhatFallsOutsideTheWindow(t *testing.T) {
+	a, sc := retentionApp(t)
+	ctx := context.Background()
+	if err := a.settings.SetSystemValue(ctx, store.KeyRetentionItemDays, "30", sc.UserID); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	feed, _, err := a.Repo().Subscribe(ctx, sc, store.NewSubscription{
+		NaturalKey: "feed:old", FeedURL: "https://old.example/f", Title: "Old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Repo().IngestItems(ctx, feed.SourceID, []store.IngestItem{{
+		GUID: "g1", URL: "https://old.example/1", DupeKey: "d1", Title: "Ancient",
+		PublishedAt: time.Now().UTC().Add(-5 * 365 * 24 * time.Hour),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.sweepRetention(ctx)
+
+	items, _, err := a.Repo().ListItems(ctx, sc, store.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Errorf("a five-year-old article survived a 30-day retention window (%d items left)", len(items))
+	}
+}
+
 // And the sweep itself does nothing when nothing is configured — asserted
 // through the app rather than the service, because this is the path the poll
 // cycle actually takes.

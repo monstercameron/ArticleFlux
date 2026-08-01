@@ -1,9 +1,11 @@
 package signals
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -265,5 +267,165 @@ func TestSameSession(t *testing.T) {
 	}
 	if SameSession(0, t0) {
 		t.Error("an unknown previous time cannot be the same session")
+	}
+	// The gap is unsigned: an out-of-order pair (next observed before prev, as
+	// the outbox can deliver) must be judged the same way as a forward one.
+	if !SameSession(t0+10*60*1000, t0) {
+		t.Error("a ten-minute gap read backwards should still be the same sitting")
+	}
+}
+
+// Impression and Dwell are eligible (Affinity=true) but cannot move anything
+// on their own — Impression is the denominator, Dwell must be classified
+// first. Everything else eligible with a non-zero prior can.
+func TestMovesAffinity(t *testing.T) {
+	if MovesAffinity(Impression) {
+		t.Error("Impression has prior 0 and is the DENOMINATOR; it must not move affinity")
+	}
+	// Dwell is the deliberate exception the doc comment calls out: prior 0.0
+	// like Impression, but special-cased true because it is real signal once
+	// classified — "the test is non-zero prior, OR Dwell".
+	if !MovesAffinity(Dwell) {
+		t.Error("Dwell must move affinity despite its zero prior; that is the special case this function exists for")
+	}
+	if !MovesAffinity(Liked) {
+		t.Error("Liked has a non-zero prior and is eligible; it must move affinity")
+	}
+	if !MovesAffinity(Bounced) {
+		t.Error("Bounced has a non-zero prior and is eligible; it must move affinity")
+	}
+	// Unsubscribed is source-level (NeedsItem=false) but still Affinity=true —
+	// NeedsItem and Affinity are different axes, and a source-level negative
+	// still moves affinity, it just isn't attributed to one item.
+	if !MovesAffinity(Unsubscribed) {
+		t.Error("Unsubscribed has a non-zero prior and Affinity=true; it must move affinity")
+	}
+	// Only BulkRead and SyncRead (Affinity=false) are excluded regardless of prior.
+	if MovesAffinity(BulkRead) {
+		t.Error("BulkRead is Affinity=false by design; it must not move affinity")
+	}
+	if MovesAffinity(Kind("invented")) {
+		t.Error("an unknown kind must not move affinity")
+	}
+}
+
+// The regression this guards: derive.affinityWeight once silently dropped
+// reread, chose and clicked_out because they read as "contributes nothing"
+// under a naive Prior==0 check that did not exist for them but could for a
+// future kind — AffinityKinds is the list callers should use instead of
+// writing it out by hand.
+func TestAffinityKindsIsSortedAndMatchesMovesAffinity(t *testing.T) {
+	got := AffinityKinds()
+	if !slices.IsSorted(got) {
+		t.Error("AffinityKinds must be sorted, so SQL built from it is stable across map iterations")
+	}
+	want := map[Kind]bool{}
+	for _, k := range Kinds() {
+		if MovesAffinity(k) {
+			want[k] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AffinityKinds returned %d kinds, MovesAffinity agrees on %d", len(got), len(want))
+	}
+	for _, k := range got {
+		if !want[k] {
+			t.Errorf("%s is in AffinityKinds but MovesAffinity(%s) is false", k, k)
+		}
+	}
+	for _, k := range []Kind{Reread, Chose, ClickedOut} {
+		if !want[k] {
+			t.Errorf("%s dropped out of the affinity set; this is the exact regression AffinityKinds exists to prevent", k)
+		}
+	}
+}
+
+func TestDepthString(t *testing.T) {
+	cases := []struct {
+		d    Depth
+		want string
+	}{
+		{Glance, "glance"},
+		{Bounce, "bounce"},
+		{Skim, "skim"},
+		{Read, "read"},
+		{Depth(99), "glance"},
+	}
+	for _, c := range cases {
+		if got := c.d.String(); got != c.want {
+			t.Errorf("Depth(%d).String() = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+// A non-positive dwell is not "a very short read"; it is no observation at
+// all, and must score as nothing rather than as a division producing 0/x.
+func TestRatioOfNoDwellIsZero(t *testing.T) {
+	if r := Ratio(0, 500); r != 0 {
+		t.Errorf("Ratio(0, 500) = %v, want 0", r)
+	}
+	if r := Ratio(-100, 500); r != 0 {
+		t.Errorf("Ratio(-100, 500) = %v, want 0 — a negative dwell is not a signal", r)
+	}
+}
+
+// Weigh is the cold-start fallback (unused today, kept deliberately per its
+// doc comment) — a linear-ish sum of priors, sublinear in repeat count so
+// three impressions is not three times the information of one.
+func TestWeigh(t *testing.T) {
+	if got := Weigh(nil); got != 0 {
+		t.Errorf("Weigh(nil) = %v, want 0", got)
+	}
+	if got := Weigh(map[Kind]int{}); got != 0 {
+		t.Errorf("Weigh({}) = %v, want 0", got)
+	}
+
+	// Kinds excluded from affinity contribute nothing, which is the whole
+	// point of BulkRead being in the taxonomy at all.
+	if got := Weigh(map[Kind]int{BulkRead: 143}); got != 0 {
+		t.Errorf("Weigh(bulk_read: 143) = %v, want 0 — one mark-all-read is not 143 rejections", got)
+	}
+	// An unknown kind is ignored rather than panicking on a missing spec.
+	if got := Weigh(map[Kind]int{Kind("invented"): 5}); got != 0 {
+		t.Errorf("Weigh(unknown kind) = %v, want 0", got)
+	}
+	// A non-positive count contributes nothing.
+	if got := Weigh(map[Kind]int{Liked: 0}); got != 0 {
+		t.Errorf("Weigh(liked: 0) = %v, want 0", got)
+	}
+
+	liked, _ := Lookup(Liked)
+	one := Weigh(map[Kind]int{Liked: 1})
+	if math.Abs(one-liked.Prior) > 1e-9 {
+		t.Errorf("Weigh(liked: 1) = %v, want the bare prior %v", one, liked.Prior)
+	}
+	// Repeat observations count but sublinearly: five likes must add less than
+	// five times a single like's contribution.
+	five := Weigh(map[Kind]int{Liked: 5})
+	if five <= one || five >= one*5 {
+		t.Errorf("Weigh(liked: 5) = %v, want more than one (%v) but less than five times it (%v)",
+			five, one, one*5)
+	}
+
+	// Negative and positive priors combine algebraically rather than being
+	// clamped at zero, since a linear sum is exactly what this function claims to be.
+	mixed := Weigh(map[Kind]int{Liked: 1, Disliked: 1})
+	disliked, _ := Lookup(Disliked)
+	if math.Abs(mixed-(liked.Prior+disliked.Prior)) > 1e-9 {
+		t.Errorf("Weigh(liked:1, disliked:1) = %v, want %v", mixed, liked.Prior+disliked.Prior)
+	}
+}
+
+func TestLogish(t *testing.T) {
+	cases := []struct {
+		n    int
+		want float64
+	}{
+		{0, 0}, {-1, 0}, {1, 0.5}, {3, 0.75}, {9, 0.9},
+	}
+	for _, c := range cases {
+		if got := logish(c.n); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("logish(%d) = %v, want %v", c.n, got, c.want)
+		}
 	}
 }

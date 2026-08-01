@@ -361,6 +361,188 @@ func TestExtractionIsBounded(t *testing.T) {
 	}
 }
 
+// Every optional field goes through the same attrsel+cascadia compile path as
+// title/link; a bad selector on any of them must be refused too, or a rule
+// editor lets you save a summary/date/image/author selector that silently
+// never matches.
+func TestCompileRefusesBadOptionalSelectors(t *testing.T) {
+	cases := []struct {
+		name string
+		rule Rule
+		want string
+	}{
+		{"bad date css", Rule{ItemSelector: "div", TitleSelector: "a", LinkSelector: "a@href",
+			DateSelector: "span["}, "date selector"},
+		{"bad date attr name", Rule{ItemSelector: "div", TitleSelector: "a", LinkSelector: "a@href",
+			DateSelector: "time@ bad name"}, "date selector"},
+		{"bad summary css", Rule{ItemSelector: "div", TitleSelector: "a", LinkSelector: "a@href",
+			SummarySelector: "p["}, "summary selector"},
+		{"bad image css", Rule{ItemSelector: "div", TitleSelector: "a", LinkSelector: "a@href",
+			ImageSelector: "img["}, "image selector"},
+		{"bad author css", Rule{ItemSelector: "div", TitleSelector: "a", LinkSelector: "a@href",
+			AuthorSelector: "span["}, "author selector"},
+		{"unresolvable index url", Rule{IndexURL: "http://x/%zz", ItemSelector: "div",
+			TitleSelector: "a", LinkSelector: "a@href"}, "index URL"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Compile(c.rule)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q does not mention %q", err, c.want)
+			}
+		})
+	}
+}
+
+// A link that resolves to "" is a distinct failure from "no link at all" —
+// this is what happens with a relative href and no IndexURL to resolve
+// against, or an href cascadia/url.Parse itself rejects.
+func TestUnresolvableLinksAreSkippedWithAReason(t *testing.T) {
+	t.Run("relative link with no index URL", func(t *testing.T) {
+		page := `<div class="p"><a href="/x">T</a></div>`
+		r := Rule{ItemSelector: "div.p", TitleSelector: "a", LinkSelector: "a@href"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if len(res.Items) != 0 {
+			t.Fatalf("got %d items, want 0: %+v", len(res.Items), res.Items)
+		}
+		if len(res.Problems) == 0 || !strings.Contains(res.Problems[0], "could not be resolved") {
+			t.Errorf("problems = %v; expected an unresolvable-link explanation", res.Problems)
+		}
+	})
+	t.Run("malformed percent escape", func(t *testing.T) {
+		page := `<div class="p"><a href="/%zz">T</a></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if len(res.Items) != 0 {
+			t.Fatalf("got %d items, want 0: %+v", len(res.Items), res.Items)
+		}
+	})
+	t.Run("data URI is rejected like javascript:", func(t *testing.T) {
+		page := `<div class="p"><a href="data:text/html,x">T</a></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if len(res.Items) != 0 {
+			t.Fatalf("got %d items, want 0: %+v", len(res.Items), res.Items)
+		}
+	})
+}
+
+// read()'s attribute loop must fall through to "" when the selector matches
+// but the target simply lacks the requested attribute — distinct from the
+// selector not matching at all.
+func TestReadMissingAttributeOnMatchedNode(t *testing.T) {
+	page := `<div class="p"><a href="/x">T</a><img class="hero"></div>`
+	r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+		TitleSelector: "a", LinkSelector: "a@href", ImageSelector: "img.hero@src"}
+	res, _ := Extract(mustCompile(t, r), []byte(page), now)
+	if len(res.Items) != 1 {
+		t.Fatalf("got %d items", len(res.Items))
+	}
+	if res.Items[0].ImageURL != "" {
+		t.Errorf("image = %q; the img has no src attribute at all", res.Items[0].ImageURL)
+	}
+}
+
+// readInner has its own attribute branch (a summary selector that names an
+// attribute must still win, per its doc comment) and its own no-match branch.
+func TestReadInnerVariants(t *testing.T) {
+	t.Run("attribute selector on the summary field reads the attribute, not inner HTML", func(t *testing.T) {
+		page := `<div class="p"><a href="/x">T</a><div class="body" data-summary="Plain text summary"><p>ignored markup</p></div></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href", SummarySelector: "div.body@data-summary"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if res.Items[0].ContentHTML != "" && strings.Contains(res.Items[0].ContentHTML, "<p>") {
+			t.Errorf("content = %q; expected the attribute value, not inner markup", res.Items[0].ContentHTML)
+		}
+		if !strings.Contains(res.Items[0].Summary, "Plain text summary") {
+			t.Errorf("summary = %q", res.Items[0].Summary)
+		}
+	})
+	t.Run("summary selector matching the item container itself", func(t *testing.T) {
+		page := `<div class="p" id="x">before<b>bold</b>after<a href="/x">T</a></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href", SummarySelector: "div.p"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if len(res.Items) != 1 {
+			t.Fatalf("got %d items", len(res.Items))
+		}
+		if !strings.Contains(res.Items[0].ContentHTML, "<b>bold</b>") {
+			t.Errorf("content = %q; expected the container's own inner HTML", res.Items[0].ContentHTML)
+		}
+	})
+	t.Run("summary selector matching nothing yields an empty summary, not a crash", func(t *testing.T) {
+		page := `<div class="p"><a href="/x">T</a></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href", SummarySelector: "div.body"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		if len(res.Items) != 1 {
+			t.Fatalf("got %d items", len(res.Items))
+		}
+		if res.Items[0].Summary != "" || res.Items[0].ContentHTML != "" {
+			t.Errorf("summary=%q content=%q; expected both empty", res.Items[0].Summary, res.Items[0].ContentHTML)
+		}
+	})
+}
+
+// textOf must not leak script/style text into a title — it is read as text,
+// not sanitised HTML, so this is the only thing keeping analytics snippets
+// and inline CSS out of a scraped title.
+func TestTextOfExcludesScriptAndStyle(t *testing.T) {
+	page := `<div class="p"><a href="/x">Real<script>var x = "junk";</script> Title<style>.a{color:red}</style></a></div>`
+	r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p", TitleSelector: "a", LinkSelector: "a@href"}
+	res, _ := Extract(mustCompile(t, r), []byte(page), now)
+	if len(res.Items) != 1 {
+		t.Fatalf("got %d items", len(res.Items))
+	}
+	if title := res.Items[0].Title; strings.Contains(title, "junk") || strings.Contains(title, "color:red") {
+		t.Errorf("title = %q; script/style text leaked in", title)
+	}
+	if title := res.Items[0].Title; title != "Real Title" {
+		t.Errorf("title = %q, want %q", title, "Real Title")
+	}
+}
+
+// truncate is only exercised end-to-end by a summary over 280 characters —
+// every existing fixture is short, which is why the cut logic sat at 33%.
+func TestLongSummariesAreTruncated(t *testing.T) {
+	t.Run("cuts at a word boundary when one exists past the midpoint", func(t *testing.T) {
+		page := `<div class="p"><a href="/x">T</a><p class="s">` +
+			strings.Repeat("word, ", 60) + `</p></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href", SummarySelector: "p.s"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		s := res.Items[0].Summary
+		if !strings.HasSuffix(s, "…") {
+			t.Fatalf("summary = %q; expected a truncation ellipsis", s)
+		}
+		if strings.HasSuffix(strings.TrimSuffix(s, "…"), ",") {
+			t.Errorf("summary = %q; trailing comma from the cut word was not trimmed", s)
+		}
+		if len([]rune(s)) >= 300 {
+			t.Errorf("summary is %d runes; not actually truncated", len([]rune(s)))
+		}
+	})
+	t.Run("keeps the raw cut when there is no space past the midpoint", func(t *testing.T) {
+		page := `<div class="p"><a href="/x">T</a><p class="s">` +
+			strings.Repeat("a", 400) + `</p></div>`
+		r := Rule{IndexURL: "https://x.tld/", ItemSelector: "div.p",
+			TitleSelector: "a", LinkSelector: "a@href", SummarySelector: "p.s"}
+		res, _ := Extract(mustCompile(t, r), []byte(page), now)
+		s := res.Items[0].Summary
+		if !strings.HasSuffix(s, "…") {
+			t.Fatalf("summary = %q; expected a truncation ellipsis", s)
+		}
+		if got := len([]rune(strings.TrimSuffix(s, "…"))); got != 280 {
+			t.Errorf("cut at %d runes, want exactly 280 with no space to break on", got)
+		}
+	})
+}
+
 func TestExtractIsPure(t *testing.T) {
 	c := mustCompile(t, goodRule())
 	a, _ := Extract(c, []byte(indexPage), now)

@@ -423,6 +423,12 @@ func TestSecondaryRespectsTheCap(t *testing.T) {
 			t.Fatalf("the primary %q also appeared as a secondary", s)
 		}
 	}
+	if len(r.Secondary) > 0 && !r.Has(r.Secondary[0]) {
+		t.Fatalf("Has(%q) was false for a label actually carried as secondary", r.Secondary[0])
+	}
+	if r.Has("not-assigned-at-all") {
+		t.Fatalf("Has claimed a slug that was neither primary nor secondary")
+	}
 }
 
 func TestRegexTermMatches(t *testing.T) {
@@ -506,5 +512,434 @@ func TestTruncWords(t *testing.T) {
 	}
 	if truncWords("short text", 100) != "short text" {
 		t.Fatalf("truncWords cut text that was already under the limit")
+	}
+}
+
+// TestTruncWordsNonPositiveLimit: a limit of zero or less means "no limit", not
+// "no words" — addField relies on this to mean "use the caller's own fallback".
+func TestTruncWordsNonPositiveLimit(t *testing.T) {
+	s := "some words here"
+	if got := truncWords(s, 0); got != s {
+		t.Fatalf("truncWords(_, 0) = %q, wanted the input unchanged", got)
+	}
+	if got := truncWords(s, -5); got != s {
+		t.Fatalf("truncWords(_, -5) = %q, wanted the input unchanged", got)
+	}
+}
+
+func TestFieldString(t *testing.T) {
+	cases := []struct {
+		f    Field
+		want string
+	}{
+		{FieldTitle, "title"},
+		{FieldURL, "url"},
+		{FieldSummary, "summary"},
+		{FieldSource, "source"},
+		{FieldBody, "body"},
+		{Field(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.f.String(); got != c.want {
+			t.Fatalf("Field(%d).String() = %q, want %q", c.f, got, c.want)
+		}
+	}
+}
+
+func TestLexiconKnows(t *testing.T) {
+	lx := testLexicon(t)
+
+	var nilLx *Lexicon
+	if nilLx.Knows("kubernetes") {
+		t.Fatalf("a nil lexicon claimed to know a term")
+	}
+	if !lx.Knows("kubernetes") {
+		t.Fatalf("Knows missed a term that is directly indexed")
+	}
+	if !lx.Knows("Kubernetes") {
+		t.Fatalf("Knows did not normalise case the same way the scorer does")
+	}
+	// "cargo" only appears as a guard on "rust", never as a term of its own — the
+	// vocabulary miner needs guards to count as known too.
+	if !lx.Knows("cargo") {
+		t.Fatalf("Knows missed a guard-only n-gram")
+	}
+	if lx.Knows("this phrase appears nowhere") {
+		t.Fatalf("Knows claimed a phrase absent from the lexicon")
+	}
+}
+
+func TestLexiconLen(t *testing.T) {
+	var nilLx *Lexicon
+	if got := nilLx.Len(); got != 0 {
+		t.Fatalf("nil lexicon Len() = %d, want 0", got)
+	}
+	lx := testLexicon(t)
+	if got := lx.Len(); got != 4 {
+		t.Fatalf("Len() = %d, want 4", got)
+	}
+}
+
+func TestSlugs(t *testing.T) {
+	var nilLx *Lexicon
+	if got := nilLx.Slugs(); got != nil {
+		t.Fatalf("nil lexicon Slugs() = %v, want nil", got)
+	}
+	lx := testLexicon(t)
+	want := []string{"software", "security", "hardware", "travel"}
+	got := lx.Slugs()
+	if len(got) != len(want) {
+		t.Fatalf("Slugs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Slugs()[%d] = %q, want %q (compile order must be preserved)", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPrompt(t *testing.T) {
+	var nilLx *Lexicon
+	if got := nilLx.Prompt("software"); got != "" {
+		t.Fatalf("nil lexicon Prompt() = %q, want \"\"", got)
+	}
+
+	lx, err := Compile([]Label{
+		{Slug: "a", Terms: []Term{{Text: "x"}}, Prompt: "  keep money, not fitness  "},
+		{Slug: "b", Terms: []Term{{Text: "y"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lx.Prompt("a"); got != "keep money, not fitness" {
+		t.Fatalf("Prompt(%q) = %q, want the trimmed text", "a", got)
+	}
+	if got := lx.Prompt("b"); got != "" {
+		t.Fatalf("Prompt(%q) = %q, want \"\" for a label with no prompt", "b", got)
+	}
+	if got := lx.Prompt("nope"); got != "" {
+		t.Fatalf("Prompt for an unknown slug = %q, want \"\"", got)
+	}
+}
+
+// TestMustCompilePanics: the shipped taxonomy is a build-time artefact, so a bad
+// label set must panic loudly rather than hand back a nil lexicon that scores
+// everything as empty.
+func TestMustCompilePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("MustCompile did not panic on an invalid label set")
+		}
+	}()
+	MustCompile([]Label{{Slug: "a", Terms: []Term{{Text: "a b c d"}}}})
+}
+
+func TestMustCompileSucceeds(t *testing.T) {
+	lx := MustCompile([]Label{{Slug: "a", Terms: []Term{{Text: "x"}}}})
+	if lx.Len() != 1 {
+		t.Fatalf("MustCompile produced %d labels, want 1", lx.Len())
+	}
+}
+
+// TestZeroWeightTermDefaultsToOne: a term authored without a Weight must score
+// the same as one explicitly weighted 1.0, not zero — termWeight's fallback is
+// what makes "just write the word" a valid way to author a lexicon.
+func TestZeroWeightTermDefaultsToOne(t *testing.T) {
+	implicit, err := Compile([]Label{{Slug: "a", Terms: []Term{{Text: "widget"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := Compile([]Label{{Slug: "a", Terms: []Term{{Text: "widget", Weight: 1.0}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := loose()
+	item := Item{Title: "A widget shipped today"}
+	got, want := scoreOf(implicit.Score(item, st), "a"), scoreOf(explicit.Score(item, st), "a")
+	if got != want {
+		t.Fatalf("an unweighted term scored %v, an explicit weight of 1.0 scored %v", got, want)
+	}
+}
+
+// TestRegexExcludeSubtracts: applyRegex must honour Exclude the same way term
+// matching does — the escape hatch is symmetric with the normal path.
+func TestRegexExcludeSubtracts(t *testing.T) {
+	lx, err := Compile([]Label{
+		{
+			Slug: "a",
+			Terms: []Term{
+				{Text: "widget", Weight: 3.0},
+			},
+			Exclude: []Term{
+				{Text: `discontinued`, Weight: 5.0, Regex: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := loose()
+
+	plain := lx.Score(Item{Title: "A new widget ships"}, st)
+	if scoreOf(plain, "a") == 0 {
+		t.Fatalf("the positive term did not score: %+v", plain.Scores)
+	}
+
+	excluded := lx.Score(Item{Title: "The widget line has been discontinued"}, st)
+	if scoreOf(excluded, "a") != 0 {
+		t.Fatalf("a regex exclude did not zero out the label: %+v", excluded.Scores)
+	}
+}
+
+// TestPerLabelMinScoreOverridesStrategy: Label.MinScore must win over the
+// strategy's floor in both directions — raising it and (implicitly) inheriting
+// it when zero.
+func TestPerLabelMinScoreOverridesStrategy(t *testing.T) {
+	lx, err := Compile([]Label{
+		{Slug: "strict", Terms: []Term{{Text: "widget", Weight: 2.0}}, MinScore: 50.0},
+		{Slug: "lenient", Terms: []Term{{Text: "widget", Weight: 2.0}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := DefaultStrategy()
+	st.MinScore = 1.0
+
+	r := lx.Score(Item{Title: "A widget"}, st)
+	if scoreOf(r, "strict") == 0 {
+		t.Fatalf("strict scored nothing at all: %+v", r.Scores)
+	}
+	if r.Has("strict") {
+		t.Fatalf("a label with MinScore 50 was assigned by a score nowhere near it: %+v", r.Scores)
+	}
+	if !r.Has("lenient") {
+		t.Fatalf("a label that inherits the 1.0 strategy floor was not assigned: %+v", r.Scores)
+	}
+}
+
+// TestSecondaryStopsAtItsOwnFloor: the secondary loop must break on the first
+// label that fails ITS OWN floor, not just once MaxSecondary is reached — a
+// weak third label must not sneak in behind a strong second one.
+func TestSecondaryStopsAtItsOwnFloor(t *testing.T) {
+	lx, err := Compile([]Label{
+		{Slug: "primary", Terms: []Term{{Text: "alpha", Weight: 10.0}}},
+		{Slug: "second", Terms: []Term{{Text: "beta", Weight: 8.0}}},
+		{Slug: "weak", Terms: []Term{{Text: "gamma", Weight: 0.5}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := DefaultStrategy()
+	st.MinScore = 3.0
+	st.Margin = 0.01
+	st.MaxSecondary = 5
+
+	r := lx.Score(Item{Title: "alpha beta gamma"}, st)
+	if r.Primary != "primary" {
+		t.Fatalf("primary = %q, want %q: %+v", r.Primary, "primary", r.Scores)
+	}
+	for _, s := range r.Secondary {
+		if s == "weak" {
+			t.Fatalf("a label below the floor (%v vs %v) was carried as secondary: %v",
+				scoreOf(r, "weak"), st.MinScore, r.Secondary)
+		}
+	}
+	if len(r.Secondary) != 1 || r.Secondary[0] != "second" {
+		t.Fatalf("secondary = %v, want exactly [\"second\"]", r.Secondary)
+	}
+}
+
+// TestExcludedToZeroIsAbsentNotZero: a label driven to zero or below by its
+// excludes must not appear in Result.Scores at all — a ranking that kept it at
+// Value 0 would invent a "degree of absence" that assemble's comment says is
+// deliberately not a thing.
+func TestExcludedToZeroIsAbsentNotZero(t *testing.T) {
+	lx, err := Compile([]Label{
+		{
+			Slug:    "a",
+			Terms:   []Term{{Text: "widget", Weight: 1.0}},
+			Exclude: []Term{{Text: "discontinued", Weight: 5.0}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := lx.Score(Item{Title: "The discontinued widget"}, loose())
+	for _, s := range r.Scores {
+		if s.Slug == "a" {
+			t.Fatalf("a label driven to <= 0 still appeared in Scores: %+v", s)
+		}
+	}
+}
+
+// TestSourceWithoutFolder: SourceTitle alone, with no FolderName, must still
+// contribute — the concatenation in presence() is conditional on FolderName and
+// both sides need coverage.
+func TestSourceWithoutFolder(t *testing.T) {
+	lx := testLexicon(t)
+	st := loose()
+	r := lx.Score(Item{SourceTitle: "Kubernetes Weekly"}, st)
+	if scoreOf(r, "software") == 0 {
+		t.Fatalf("a bare SourceTitle with no folder contributed nothing: %+v", r.Scores)
+	}
+}
+
+// TestBodyWordsDefaultsWhenZero: Strategy.BodyWords <= 0 with UseBody on must
+// fall back to DefaultStrategy's limit rather than truncating to nothing.
+func TestBodyWordsDefaultsWhenZero(t *testing.T) {
+	lx := testLexicon(t)
+	st := loose()
+	st.UseBody = true
+	st.BodyWords = 0
+	r := lx.Score(Item{Body: "kubernetes clusters everywhere"}, st)
+	if scoreOf(r, "software") == 0 {
+		t.Fatalf("BodyWords=0 scored nothing; the fallback to DefaultStrategy().BodyWords did not apply")
+	}
+}
+
+// TestBodyWordsTruncatesBeforeTheLimit: a term past the word limit must not
+// score, proving addField's truncWords call actually runs on the field text.
+func TestBodyWordsTruncatesBeforeTheLimit(t *testing.T) {
+	lx := testLexicon(t)
+	st := loose()
+	st.UseBody = true
+	st.BodyWords = 5
+	padding := strings.Repeat("filler ", 20)
+	r := lx.Score(Item{Body: padding + "kubernetes"}, st)
+	if scoreOf(r, "software") != 0 {
+		t.Fatalf("a term past BodyWords=5 still scored: %+v", r.Scores)
+	}
+}
+
+// TestFieldScansToNothingIsHarmless: a field that is entirely punctuation scans
+// to zero tokens and must contribute nothing without panicking.
+func TestFieldScansToNothingIsHarmless(t *testing.T) {
+	lx := testLexicon(t)
+	r := lx.Score(Item{Title: "--- ... !!!"}, loose())
+	if len(r.Scores) != 0 {
+		t.Fatalf("a field that scans to nothing produced scores: %+v", r.Scores)
+	}
+}
+
+// TestMergeFieldsPrefersMoreSpecificField exercises the branch of mergeFields
+// (and rankOf) that only fires when the SAME term accumulator is merged twice —
+// unreachable through Score today because one n-gram key maps to one posting per
+// label, but kept correct and tested directly since it is the safety net if that
+// ever changes.
+func TestMergeFieldsPrefersMoreSpecificField(t *testing.T) {
+	ta := &termAcc{}
+	mergeFields(ta, fieldBit(FieldBody))
+	if !ta.seen || ta.bestField != FieldBody {
+		t.Fatalf("first merge: got seen=%v bestField=%v, want FieldBody", ta.seen, ta.bestField)
+	}
+	// A second merge with a MORE specific field (title outranks body) must win.
+	mergeFields(ta, fieldBit(FieldTitle))
+	if ta.bestField != FieldTitle {
+		t.Fatalf("a more specific second merge did not win: got %v, want FieldTitle", ta.bestField)
+	}
+	// A third merge with a LESS specific field (source) must not regress it.
+	mergeFields(ta, fieldBit(FieldSource))
+	if ta.bestField != FieldTitle {
+		t.Fatalf("a less specific merge overwrote the best field: got %v, want FieldTitle", ta.bestField)
+	}
+}
+
+func TestRankOf(t *testing.T) {
+	if got := rankOf(FieldTitle); got != 0 {
+		t.Fatalf("rankOf(FieldTitle) = %d, want 0 (most specific)", got)
+	}
+	// A field not present in fieldRank falls off the end; there is no such Field
+	// today, but the fallback is what stops mergeFields from ever using an
+	// unranked field as "more specific" than a ranked one.
+	if got := rankOf(Field(99)); got != len(fieldRank) {
+		t.Fatalf("rankOf of an unranked field = %d, want %d", got, len(fieldRank))
+	}
+}
+
+// TestCompileExcludeSideErrors: addTerms is called once for Terms and once for
+// Exclude, and a failure on the Exclude side must bubble the same as on Terms.
+func TestCompileExcludeSideErrors(t *testing.T) {
+	_, err := Compile([]Label{
+		{
+			Slug:    "a",
+			Terms:   []Term{{Text: "fine"}},
+			Exclude: []Term{{Text: "one two three four"}},
+		},
+	})
+	if err == nil {
+		t.Fatalf("an over-long Exclude term compiled without complaint")
+	}
+	if !strings.Contains(err.Error(), "could never match") {
+		t.Fatalf("error was %q, wanted it to mention the term was too long", err)
+	}
+}
+
+func TestLabels(t *testing.T) {
+	lx := testLexicon(t)
+	labels := lx.Labels()
+	if len(labels) != 4 {
+		t.Fatalf("Labels() returned %d, want 4", len(labels))
+	}
+	if labels[0].Slug != "software" {
+		t.Fatalf("Labels()[0].Slug = %q, want %q (compile order)", labels[0].Slug, "software")
+	}
+}
+
+// TestExplainWithNoMatchingScore: the fallback `return nil` at the end of
+// Explain is a defensive branch — Score() always leaves Primary pointing at an
+// entry in Scores — but Result is an exported struct a caller can build by
+// hand, and Explain must not panic or misbehave if Primary doesn't line up.
+func TestExplainWithNoMatchingScore(t *testing.T) {
+	r := Result{Primary: "ghost", Scores: []Score{{Slug: "software", Value: 5}}}
+	if got := r.Explain(); got != nil {
+		t.Fatalf("Explain() = %v, want nil when Primary has no matching Score", got)
+	}
+}
+
+// TestPostingOrderTiesOnNegativeFlag: the same normalised term text can appear
+// in both a label's Terms and its Exclude list (dedup is per-list, not across
+// them), so the deterministic posting sort's negative-flag tiebreak is a real
+// path, not just defensive code.
+func TestPostingOrderTiesOnNegativeFlag(t *testing.T) {
+	lx, err := Compile([]Label{
+		{
+			Slug:    "a",
+			Terms:   []Term{{Text: "widget", Weight: 3.0}},
+			Exclude: []Term{{Text: "widget", Weight: 1.0}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a term shared between Terms and Exclude failed to compile: %v", err)
+	}
+	r := lx.Score(Item{Title: "A widget"}, loose())
+	if got := scoreOf(r, "a"); got <= 0 {
+		t.Fatalf("positive (3.0) minus negative (1.0) should net positive, got %v", got)
+	}
+}
+
+// TestCompileGuardEdgeCases covers the two branches addTerms' guard-building
+// loop has that TestCompileRejectsWhatCouldNeverWork does not: a guard list
+// that is entirely unusable, and one that is partly unusable but still leaves
+// at least one working entry.
+func TestCompileGuardEdgeCases(t *testing.T) {
+	_, err := Compile([]Label{
+		{Slug: "a", Terms: []Term{{Text: "apple", Requires: []string{"   ", "---"}}}},
+	})
+	if err == nil {
+		t.Fatalf("a guard list that scans to nothing entirely compiled without complaint")
+	}
+	if !strings.Contains(err.Error(), "guard that scans to nothing") {
+		t.Fatalf("error was %q, wanted it to mention the empty guard", err)
+	}
+
+	lx, err := Compile([]Label{
+		{Slug: "a", Terms: []Term{{Text: "apple", Requires: []string{"   ", "iphone"}}}},
+	})
+	if err != nil {
+		t.Fatalf("a guard list with one usable entry among unusable ones failed to compile: %v", err)
+	}
+	r := lx.Score(Item{Title: "Apple ships a new iPhone"}, loose())
+	if scoreOf(r, "a") == 0 {
+		t.Fatalf("the surviving guard entry did not satisfy the guard: %+v", r.Scores)
 	}
 }

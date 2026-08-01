@@ -1,6 +1,10 @@
 package app
 
 import (
+	"bufio"
+	"errors"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -135,5 +139,70 @@ func TestTheForwardedAddressIsIgnoredWithoutBehindProxy(t *testing.T) {
 	if loopbackFails != 1 {
 		t.Errorf("the ledger counted %d failures against the transport address %s, want 1",
 			loopbackFails, proxyPretend)
+	}
+}
+
+// A trusted proxy that sends no forwarded-address header at all leaves the
+// transport address alone — substituting a placeholder would be inventing a
+// client that was never there.
+func TestTrueClientAddrPassesThroughWithNoForwardedHeader(t *testing.T) {
+	a := &App{cfg: Config{BehindProxy: true}}
+	var seenRemote string
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seenRemote = r.RemoteAddr })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:1234"
+	a.trueClientAddr(next).ServeHTTP(httptest.NewRecorder(), req)
+
+	if seenRemote != "10.0.0.5:1234" {
+		t.Errorf("RemoteAddr = %q, want the untouched transport address", seenRemote)
+	}
+}
+
+// fakeFlusher and fakeHijacker let the wrapper's forwarding be observed
+// without a real socket, on both sides — present and absent.
+type fakeHijackerWriter struct{ http.ResponseWriter }
+
+func (fakeHijackerWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, errors.New("boom")
+}
+
+// Unwrap, Flush and Hijack are declared explicitly on hijackAddrWriter rather
+// than inherited, because embedding an interface promotes only that
+// interface's methods.
+func TestHijackAddrWriterForwardsUnwrapFlushAndHijack(t *testing.T) {
+	base := httptest.NewRecorder()
+	h := &hijackAddrWriter{ResponseWriter: base, remote: &net.TCPAddr{}}
+
+	if h.Unwrap() != base {
+		t.Error("Unwrap did not return the underlying ResponseWriter")
+	}
+
+	// httptest.ResponseRecorder implements http.Flusher.
+	h.Flush()
+	if !base.Flushed {
+		t.Error("Flush() did not reach the underlying ResponseRecorder")
+	}
+
+	// The underlying writer does not implement http.Hijacker at all.
+	if _, _, err := h.Hijack(); err == nil {
+		t.Fatal("Hijack succeeded against a writer with no Hijacker support")
+	}
+
+	// The underlying writer implements Hijacker, but hijacking itself fails —
+	// that error must propagate rather than being swallowed.
+	erroring := &hijackAddrWriter{ResponseWriter: fakeHijackerWriter{base}, remote: &net.TCPAddr{}}
+	if _, _, err := erroring.Hijack(); err == nil || err.Error() != "boom" {
+		t.Errorf("err = %v, want the underlying Hijack() error to propagate unchanged", err)
+	}
+}
+
+// addrConn reports the substituted address; every other operation is the real
+// connection unchanged — this is a relabelling, not a proxy.
+func TestAddrConnReportsTheSubstitutedRemoteAddr(t *testing.T) {
+	want := &net.TCPAddr{IP: net.ParseIP("203.0.113.7")}
+	c := addrConn{Conn: nil, remote: want}
+	if c.RemoteAddr() != want {
+		t.Errorf("RemoteAddr() = %v, want %v", c.RemoteAddr(), want)
 	}
 }

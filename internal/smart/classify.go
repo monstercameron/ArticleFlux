@@ -32,7 +32,7 @@ import (
 // all — and a key must exist. `Available` is the one place both are read, so a
 // caller cannot forget one.
 type Classifier struct {
-	llm      *llm.Client
+	llm      llmClient
 	settings *store.SettingsRepo
 	registry *pipeline.Registry
 	lexicon  *classify.Lexicon
@@ -66,7 +66,7 @@ const KeyClassifyEnabled store.SystemKey = "smart.classify"
 const classifyTimeout = 30 * time.Second
 
 // NewClassifier wires the Smart+ classifier.
-func NewClassifier(c *llm.Client, s *store.SettingsRepo, lx *classify.Lexicon) *Classifier {
+func NewClassifier(c llmClient, s *store.SettingsRepo, lx *classify.Lexicon) *Classifier {
 	return &Classifier{
 		llm:      c,
 		settings: s,

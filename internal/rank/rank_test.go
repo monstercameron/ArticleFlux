@@ -397,6 +397,144 @@ func TestScoringIsPure(t *testing.T) {
 	}
 }
 
+// The skip term: sublinear so a stale item settles at a mild demotion rather
+// than sinking without limit as the count climbs.
+func TestSkipsDemoteSublinearly(t *testing.T) {
+	item := Item{PublishedAt: hoursAgo(2), TopicScore: 0.5, ManualWeight: 1}
+	sig := Signals{FeedAffinity: 0.5, VolumePerDay: 3, Mode: ModeFull}
+
+	skipDelta := func(n int) float64 {
+		it := item
+		it.Skips = n
+		res := Score(it, sig, DefaultWeights(), now)
+		for _, r := range res.Reasons {
+			if r.Term == "skipped" {
+				return r.Delta
+			}
+		}
+		if n > 0 {
+			t.Fatalf("Skips=%d produced no skipped reason", n)
+		}
+		return 0
+	}
+
+	zero := skipDelta(0)
+	if zero != 0 {
+		t.Errorf("Skips=0 contributed %v, want 0 — never skipped means no penalty", zero)
+	}
+	one := skipDelta(1)
+	if one >= 0 {
+		t.Errorf("one skip contributed %v, want a demotion", one)
+	}
+	// Past the clamp (p>1 in the source): the penalty must not keep growing
+	// once log1p(n)/log(5) exceeds 1, or an old item sinks without limit.
+	five := skipDelta(5)
+	fifty := skipDelta(50)
+	if five != fifty {
+		t.Errorf("skip penalty at 5 (%v) differs from 50 (%v); the clamp is not holding", five, fifty)
+	}
+	if math.Abs(five) > DefaultWeights().Skip {
+		t.Errorf("clamped skip penalty %v exceeds the weight %v", five, DefaultWeights().Skip)
+	}
+}
+
+// A term whose weight has been tuned to zero must not appear in Reasons at
+// all — `add` drops zero deltas so a UI iterating Reasons never has to filter
+// out a line that explains nothing.
+func TestZeroWeightedTermIsNotAReason(t *testing.T) {
+	w := DefaultWeights()
+	w.Topic = 0
+	res := Score(Item{PublishedAt: hoursAgo(2), TopicScore: 0.9, ManualWeight: 1},
+		Signals{Mode: ModeFull}, w, now)
+	for _, r := range res.Reasons {
+		if r.Term == "topic" {
+			t.Errorf("a zero-weighted topic term still produced a reason: %+v", r)
+		}
+	}
+}
+
+// ApplyHighlights must not resurrect an item that was already ineligible for
+// a reason upstream of the cutoff, such as a muted subscription.
+func TestApplyHighlightsLeavesAnAlreadyIneligibleResultAlone(t *testing.T) {
+	res := Result{Eligible: false, Ineligible: "this feed is muted on the homepage"}
+	got := ApplyHighlights(res, 0.9, true)
+	if got.Eligible {
+		t.Error("ApplyHighlights made an already-ineligible result eligible")
+	}
+	if got.Ineligible != res.Ineligible {
+		t.Errorf("ApplyHighlights overwrote the ineligibility reason: got %q, want %q",
+			got.Ineligible, res.Ineligible)
+	}
+}
+
+// An extreme skew — a firehose sample asked to keep a vanishingly small
+// fraction — exercises the index clamp so a floating-point edge cannot index
+// past the sample.
+func TestHighlightsCutoffClampsAtExtremeSkew(t *testing.T) {
+	scores := make([]float64, 20)
+	for i := range scores {
+		scores[i] = float64(i) / 20
+	}
+	cutoff, ok := HighlightsCutoff(scores, 1e17, 0.001)
+	if !ok {
+		t.Fatal("an extreme-skew fit was refused")
+	}
+	if math.IsInf(cutoff, 0) || math.IsNaN(cutoff) {
+		t.Errorf("cutoff = %v at extreme skew, want a finite sample value", cutoff)
+	}
+}
+
+func TestTopicTextNamesTheLabel(t *testing.T) {
+	if got := topicText(""); got != "close to a topic you read" {
+		t.Errorf("unlabelled topic = %q", got)
+	}
+	if got := topicText("NPU inference"); !strings.Contains(got, "NPU inference") {
+		t.Errorf("labelled topic = %q, want it to name the topic", got)
+	}
+}
+
+func TestEntityTextByCount(t *testing.T) {
+	cases := []struct {
+		names []string
+		want  string
+	}{
+		{nil, "about something you follow"},
+		{[]string{"Android Auto"}, "about Android Auto, which you follow"},
+		{[]string{"Android Auto", "Pixel"}, "about Android Auto and Pixel, which you follow"},
+		{[]string{"Android Auto", "Pixel", "Nest"}, "about Android Auto, Pixel and more that you follow"},
+	}
+	for _, c := range cases {
+		if got := entityText(c.names); got != c.want {
+			t.Errorf("entityText(%v) = %q, want %q", c.names, got, c.want)
+		}
+	}
+}
+
+// §18.9: the reason states the observation, not the inference — a reader
+// saving something for the weekend must not be told they are uninterested.
+func TestSkipTextByCount(t *testing.T) {
+	if got := skipText(1); got != "you have scrolled past this before" {
+		t.Errorf("skipText(1) = %q", got)
+	}
+	if got := skipText(5); got != "on screen several times and still unread" {
+		t.Errorf("skipText(5) = %q", got)
+	}
+}
+
+func TestDisplayDomain(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"www.Example.com", "example.com"},
+		{"example.com", "example.com"},
+		{"  ", "a site"},
+		{"", "a site"},
+	}
+	for _, c := range cases {
+		if got := displayDomain(c.in); got != c.want {
+			t.Errorf("displayDomain(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // The reader's dial scales the entity term and nothing else (0027).
 //
 // The narrow claim matters: a steer is an instruction about ONE judgement, and a

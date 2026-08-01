@@ -35,16 +35,18 @@ func TestEgressKeysWereNotWidened(t *testing.T) {
 		}
 	}
 
-	// And the original §18.8 list is still exactly what it was.
+	// And the original §18.8 list is still exactly what it was, plus the
+	// 2026-07-31 amendment (taste-calibration examples, plan.md §18.8).
 	for _, k := range []string{"candidates", "id", "title", "summary", "profile",
-		"topics", "label", "terms", "sources", "want"} {
+		"topics", "label", "terms", "sources", "want",
+		"positive_examples", "negative_examples"} {
 		if !EgressKeys[k] {
 			t.Errorf("EgressKeys lost %q", k)
 		}
 	}
-	if len(EgressKeys) != 10 {
-		t.Errorf("EgressKeys has %d entries, §18.8 specifies 10 — a key was added or "+
-			"removed without this test being considered", len(EgressKeys))
+	if len(EgressKeys) != 12 {
+		t.Errorf("EgressKeys has %d entries, §18.8 (as amended 2026-07-31) specifies 12 — "+
+			"a key was added or removed without this test being considered", len(EgressKeys))
 	}
 }
 

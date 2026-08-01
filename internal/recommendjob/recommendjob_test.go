@@ -1,8 +1,11 @@
 package recommendjob
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,6 +50,7 @@ func (f *fakeValidator) fetchedDomains() []string {
 
 type fixture struct {
 	repo *store.ReaderRepo
+	db   *store.DB
 	svc  *Service
 	val  *fakeValidator
 	ctx  context.Context
@@ -84,7 +88,7 @@ func setup(t *testing.T) *fixture {
 		"popular.example": healthy,
 	}}
 
-	f := &fixture{repo: repo, svc: New(repo, val, nil), val: val, ctx: ctx, sc: sc}
+	f := &fixture{repo: repo, db: db, svc: New(repo, val, nil, nil, nil), val: val, ctx: ctx, sc: sc}
 
 	for i, name := range []string{"alpha", "beta", "gamma"} {
 		feed, _, err := repo.Subscribe(ctx, sc, store.NewSubscription{
@@ -128,6 +132,30 @@ func setup(t *testing.T) *fixture {
 		}
 	}
 	return f
+}
+
+// fakeChecker stands in for Smart+'s relevance review, and records what it
+// was actually asked to judge — the point being asserted is that samples
+// reach it at all, not just that Run compiles with one configured.
+type fakeChecker struct {
+	mu       sync.Mutex
+	checked  []string // domains, via the samples' titles
+	rejected map[string]bool
+	topics   []string
+}
+
+func (c *fakeChecker) Check(_ context.Context, topic string, samples []recommend.Sample) (bool, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.topics = append(c.topics, topic)
+	if len(samples) == 0 {
+		return false, "no samples to review", nil
+	}
+	c.checked = append(c.checked, samples[0].Title)
+	if c.rejected[samples[0].Title] {
+		return false, "off topic", nil
+	}
+	return true, "on topic", nil
 }
 
 func (f *fixture) run(t *testing.T) Result {
@@ -175,6 +203,143 @@ func TestOutlinksBecomeRecommendations(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the three-writer domain was not recommended: %+v", recs)
+	}
+}
+
+// The "2 posts reviewed" gate (Cam, 2026-07-31): a candidate with strong
+// outlink evidence is still rejected once Smart+ reviews its sample posts
+// and finds them off-topic, and the checker actually receives the samples
+// and the topic terms — not just a domain name.
+func TestConfiguredCheckerRejectsAnOffTopicCandidate(t *testing.T) {
+	f := setup(t)
+	healthyWithSamples := recommend.Health{
+		Reachable: true, HasFeed: true,
+		LastPostAt: now.Add(-2 * 24 * time.Hour), PostsPerWeek: 3,
+		Samples: []recommend.Sample{
+			{Title: "good.example post 1", Summary: "s1"},
+			{Title: "good.example post 2", Summary: "s2"},
+		},
+	}
+	f.val.health["good.example"] = healthyWithSamples
+
+	checker := &fakeChecker{rejected: map[string]bool{"good.example post 1": true}}
+	f.svc = New(f.repo, f.val, checker, func(context.Context, store.Scope) (string, error) {
+		return "distributed systems", nil
+	}, nil)
+	if err := f.repo.SetPrefs(f.ctx, f.sc, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := f.run(t)
+	if res.Reviewed == 0 {
+		t.Fatal("Result.Reviewed = 0, want the gate to have run at least once")
+	}
+	if res.FailedReview == 0 {
+		t.Fatal("Result.FailedReview = 0, want good.example's review to have failed")
+	}
+
+	recs, err := f.repo.Recommendations(f.ctx, f.sc, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Domain == "good.example" {
+			t.Errorf("good.example was recommended despite failing relevance review: %+v", r)
+		}
+	}
+
+	checker.mu.Lock()
+	defer checker.mu.Unlock()
+	if len(checker.checked) == 0 {
+		t.Error("checker never received any samples — the gate did not actually run")
+	}
+	for _, topic := range checker.topics {
+		if topic != "distributed systems" {
+			t.Errorf("checker.topics = %v, want the terms from topicOf forwarded verbatim", checker.topics)
+		}
+	}
+}
+
+// A candidate confirmed by the checker is still recommended, and the review
+// is what the topicOf function actually returned — proving the topic terms
+// travel end to end, not just that a Checker was called with something.
+func TestConfiguredCheckerAdmitsAnOnTopicCandidate(t *testing.T) {
+	f := setup(t)
+	f.val.health["good.example"] = recommend.Health{
+		Reachable: true, HasFeed: true,
+		LastPostAt: now.Add(-2 * 24 * time.Hour), PostsPerWeek: 3,
+		Samples: []recommend.Sample{
+			{Title: "good.example post 1", Summary: "s1"},
+			{Title: "good.example post 2", Summary: "s2"},
+		},
+	}
+
+	checker := &fakeChecker{}
+	f.svc = New(f.repo, f.val, checker, func(context.Context, store.Scope) (string, error) {
+		return "npu inference", nil
+	}, nil)
+	if err := f.repo.SetPrefs(f.ctx, f.sc, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.run(t)
+
+	recs, err := f.repo.Recommendations(f.ctx, f.sc, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range recs {
+		if r.Domain == "good.example" {
+			found = true
+			if !strings.Contains(r.Evidence, "2 posts reviewed") {
+				t.Errorf("evidence = %q, want the review named in it", r.Evidence)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("good.example was not recommended despite passing relevance review: %+v", recs)
+	}
+}
+
+// No RelevanceChecker configured (the default — Smart+ off) must not change
+// rungs 1-3's existing behaviour at all.
+func TestNoCheckerConfiguredSkipsTheGateEntirely(t *testing.T) {
+	f := setup(t)
+	res := f.run(t)
+	if res.Reviewed != 0 || res.FailedReview != 0 {
+		t.Errorf("Result = %+v, want no review activity with no checker configured", res)
+	}
+}
+
+// Being wired is not consent (mirrors derive.SmartPlusPrefKey's own
+// argument): a Service built WITH a RelevanceChecker must still skip the gate
+// entirely for a reader who never opted in via SmartPlusPrefKey. Wiring a
+// checker at boot must not itself start billing every user on the instance.
+func TestCheckerConfiguredButPrefOffSkipsTheGate(t *testing.T) {
+	f := setup(t)
+	f.val.health["good.example"] = recommend.Health{
+		Reachable: true, HasFeed: true,
+		LastPostAt: now.Add(-2 * 24 * time.Hour), PostsPerWeek: 3,
+		Samples: []recommend.Sample{
+			{Title: "good.example post 1", Summary: "s1"},
+			{Title: "good.example post 2", Summary: "s2"},
+		},
+	}
+	checker := &fakeChecker{}
+	f.svc = New(f.repo, f.val, checker, func(context.Context, store.Scope) (string, error) {
+		return "npu inference", nil
+	}, nil)
+	// Deliberately no SetPrefs call — the reader has not opted in.
+
+	res := f.run(t)
+	if res.Reviewed != 0 || res.FailedReview != 0 {
+		t.Errorf("Result = %+v, want no review activity without the per-user opt-in", res)
+	}
+	checker.mu.Lock()
+	defer checker.mu.Unlock()
+	if len(checker.checked) != 0 {
+		t.Error("checker received samples despite the reader never opting in")
 	}
 }
 
@@ -322,6 +487,88 @@ func TestHandleRejectsABadPayload(t *testing.T) {
 	}
 }
 
+// An invalid scope makes the harvest itself impossible, and Run must say so
+// with the harvest step named — "recommendjob: harvest: ..." rather than a
+// bare store error a caller cannot place.
+func TestRunWrapsAHarvestError(t *testing.T) {
+	f := setup(t)
+	_, err := f.svc.Run(f.ctx, store.Scope{}, now)
+	if err == nil {
+		t.Fatal("Run with an invalid scope returned nil")
+	}
+	if !strings.Contains(err.Error(), "harvest") {
+		t.Errorf("err = %q, want it to name the harvest step", err.Error())
+	}
+}
+
+// DismissedDomains failing must stop the run rather than score candidates
+// against an unknown dismissal set — recommending something the reader
+// already refused is the exact failure §18.7's dismissal guarantee exists
+// to prevent.
+func TestRunPropagatesADismissedDomainsError(t *testing.T) {
+	f := setup(t)
+	if _, err := f.db.Write.ExecContext(f.ctx, `DROP TABLE recommendations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Run(f.ctx, f.sc, now); err == nil {
+		t.Error("Run succeeded with the recommendations table gone")
+	}
+}
+
+// Same category, the other lookup: a broken affinity read must not silently
+// score every candidate as rung-1-only, which is what happens if the error
+// is swallowed instead of propagated.
+func TestRunPropagatesADomainAffinitiesError(t *testing.T) {
+	f := setup(t)
+	if _, err := f.db.Write.ExecContext(f.ctx, `DROP TABLE domain_affinity`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Run(f.ctx, f.sc, now); err == nil {
+		t.Error("Run succeeded with the domain_affinity table gone")
+	}
+}
+
+// Handle's own job: unmarshal, validate, then actually run the scorer and
+// return ITS result. The other Handle test only exercises the two guard
+// clauses; this is the success path they guard.
+func TestHandleRunsTheJobOnAValidPayload(t *testing.T) {
+	f := setup(t)
+	payload, err := json.Marshal(Payload{TenantID: f.sc.TenantID, UserID: f.sc.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Handle(f.ctx, store.Job{Payload: string(payload)}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	recs, err := f.repo.Recommendations(f.ctx, f.sc, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) == 0 {
+		t.Error("Handle ran but produced no recommendations from a fixture known to have some")
+	}
+}
+
+// A completed run is logged with the counts an operator (or a future
+// "why did I get this suggestion" debugging session) needs.
+func TestRunLogsWhenGivenALogger(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	f := setup(t)
+	f.svc = New(f.repo, f.val, nil, nil, log)
+
+	if _, err := f.svc.Run(f.ctx, f.sc, now); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "scored recommendations") {
+		t.Errorf("log output = %q, want the run summary line", out)
+	}
+	if !strings.Contains(out, "user=u1") {
+		t.Errorf("log output = %q, missing which user this run was for", out)
+	}
+}
+
 func TestEnqueueDedupesPerUser(t *testing.T) {
 	f := setup(t)
 	for i := 0; i < 8; i++ {
@@ -335,5 +582,18 @@ func TestEnqueueDedupesPerUser(t *testing.T) {
 	}
 	if depth[store.JobRecommend].Queued != 1 {
 		t.Errorf("%d recommend jobs queued, want 1", depth[store.JobRecommend].Queued)
+	}
+}
+
+// A store failure on enqueue must reach the caller — the alternative is a
+// scheduler that believes a recommend run was scheduled when nothing was
+// ever written.
+func TestEnqueuePropagatesAStoreError(t *testing.T) {
+	f := setup(t)
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Enqueue(f.ctx, f.sc); err == nil {
+		t.Error("Enqueue succeeded against a closed database")
 	}
 }

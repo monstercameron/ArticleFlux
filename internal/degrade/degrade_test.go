@@ -203,3 +203,66 @@ func TestBannerAppearsBeforeAnythingBreaks(t *testing.T) {
 		t.Errorf("the critical banner does not say what still works: %q", Banner(ReadOnlyIngest))
 	}
 }
+
+// The String methods are what shows up in log lines and Explain/Banner
+// messages, so every named rung and capability needs its own word rather
+// than falling through to "unknown".
+func TestTierString(t *testing.T) {
+	cases := []struct {
+		tier Tier
+		want string
+	}{
+		{Normal, "normal"},
+		{Warn, "warn"},
+		{Shed, "shed"},
+		{ReadOnlyIngest, "read-only-ingest"},
+		{Frozen, "frozen"},
+		{Tier(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.tier.String(); got != c.want {
+			t.Errorf("Tier(%d).String() = %q, want %q", c.tier, got, c.want)
+		}
+	}
+}
+
+func TestCapabilityString(t *testing.T) {
+	cases := []struct {
+		cap  Capability
+		want string
+	}{
+		{CapAudio, "audio synthesis"},
+		{CapSnapshot, "page snapshots"},
+		{CapRender, "renders"},
+		{CapPackBuild, "pack building"},
+		{CapImageCache, "image caching"},
+		{CapArchive, "archiving"},
+		{CapPoll, "polling"},
+		{CapEmbed, "embeddings"},
+		{CapReadState, "read state"},
+		{CapNotes, "notes"},
+		{CapOutboxDrain, "outbox drain"},
+		{Capability(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.cap.String(); got != c.want {
+			t.Errorf("Capability(%d).String() = %q, want %q", c.cap, got, c.want)
+		}
+	}
+}
+
+// Allowed and Explain both fall through a switch over every known Tier;
+// an out-of-range value (which TierFor can never itself produce, but the
+// exported API accepts any int) has to fail closed rather than panic or
+// default to permitted.
+func TestAllowedAndExplainFailClosedOnUnknownTier(t *testing.T) {
+	if Allowed(Tier(99), CapReadState) {
+		t.Error("an unknown tier permitted a capability; it must fail closed")
+	}
+	if Allowed(Tier(99), CapOutboxDrain) != true {
+		t.Error("the outbox drain must still be allowed regardless of tier")
+	}
+	if got := Explain(Tier(99), CapReadState); got != "read state is unavailable" {
+		t.Errorf("Explain(unknown tier) = %q", got)
+	}
+}

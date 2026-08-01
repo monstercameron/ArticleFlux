@@ -151,3 +151,35 @@ func TestMetricsWrapperForwardsFlush(t *testing.T) {
 			"frame would sit in a buffer instead of reaching the reader's <img>")
 	}
 }
+
+// Unwrap is what lets http.ResponseController reach past the recorder to the
+// real writer.
+func TestStatusRecorderUnwrap(t *testing.T) {
+	base := httptest.NewRecorder()
+	r := &statusRecorder{ResponseWriter: base}
+	if r.Unwrap() != base {
+		t.Error("Unwrap did not return the underlying ResponseWriter")
+	}
+}
+
+// The scrape endpoint does not measure itself — otherwise a scraper polling
+// every interval reads as steady traffic on an idle instance. The request must
+// still reach the inner handler unchanged.
+func TestHttpMetricsSkipsTheScrapeEndpointItself(t *testing.T) {
+	a := newTestAppForObs(t)
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+
+	rec := httptest.NewRecorder()
+	a.httpMetrics(inner).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if !called {
+		t.Fatal("the /metrics request never reached the inner handler")
+	}
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("status %d, want the inner handler's own status to pass through unchanged", rec.Code)
+	}
+}

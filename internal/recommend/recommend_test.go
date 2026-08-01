@@ -308,3 +308,49 @@ func TestEmptyInput(t *testing.T) {
 		t.Errorf("empty input produced %+v", res)
 	}
 }
+
+// The "2 posts reviewed" gate (Cam, 2026-07-31): a candidate with strong
+// evidence is still refused if Smart+ reviewed its sample posts and found
+// them off-topic, and the reason is named rather than swallowed.
+func TestRelevanceGateRefusesAMismatchedCandidate(t *testing.T) {
+	off := good("offtopic.example")
+	off.Relevance = Relevance{Checked: true, OK: false, Reason: "writes about cooking, not distributed systems"}
+
+	res := Score([]Candidate{good("live.example"), off}, nil, Thresholds{}, now)
+
+	if got := domains(res.Recommendations); len(got) != 1 || got[0] != "live.example" {
+		t.Errorf("recommendations = %v, want only live.example", got)
+	}
+	reason := rejectionFor(res, "offtopic.example")
+	if !strings.Contains(reason, "didn't match what you read") || !strings.Contains(reason, "cooking") {
+		t.Errorf("rejection reason = %q, want it to name the mismatch", reason)
+	}
+}
+
+// A candidate Smart+ reviewed and confirmed is not just admitted — the
+// review itself is shown, so the reader is not asked to trust an unexplained
+// pass any more than an unexplained recommendation (§18.7's whole argument).
+func TestRelevanceGateAdmitsAConfirmedCandidateAndNamesTheReview(t *testing.T) {
+	confirmed := good("confirmed.example")
+	confirmed.Relevance = Relevance{Checked: true, OK: true, Reason: "covers the same NPU inference topics you read"}
+
+	res := Score([]Candidate{confirmed}, nil, Thresholds{}, now)
+
+	if len(res.Recommendations) != 1 {
+		t.Fatalf("recommendations = %+v, want the confirmed candidate kept", res.Recommendations)
+	}
+	ev := res.Recommendations[0].Evidence
+	if !strings.Contains(ev, "2 posts reviewed") || !strings.Contains(ev, "NPU inference") {
+		t.Errorf("evidence = %q, want the review named in it", ev)
+	}
+}
+
+// A candidate Smart+ never reviewed (Checked: false — the default, and what
+// every rung-1/2/3 candidate looks like on an instance with Smart+ off) is
+// judged on the old rules only. The gate must not fire on a zero value.
+func TestUnreviewedCandidateIsUnaffectedByTheGate(t *testing.T) {
+	res := Score([]Candidate{good("plain.example")}, nil, Thresholds{}, now)
+	if len(res.Recommendations) != 1 {
+		t.Errorf("recommendations = %+v, want the candidate kept with no review", res.Recommendations)
+	}
+}

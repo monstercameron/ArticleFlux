@@ -1,9 +1,12 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +17,16 @@ import (
 
 func newRepo(t *testing.T) *store.ReaderRepo {
 	t.Helper()
+	repo, _ := newRepoAndDB(t)
+	return repo
+}
+
+// newRepoAndDB is newRepo plus the *store.DB itself, for the handful of tests
+// that need to break a specific table (store.ReaderRepo does not expose the
+// *DB it wraps) to force an error out of a query that otherwise always
+// succeeds against a healthy schema.
+func newRepoAndDB(t *testing.T) (*store.ReaderRepo, *store.DB) {
+	t.Helper()
 	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "jobs.db")})
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +35,27 @@ func newRepo(t *testing.T) *store.ReaderRepo {
 	if _, err := db.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return store.NewReaderRepo(db)
+	return store.NewReaderRepo(db), db
+}
+
+// syncBuf is a thread-safe io.Writer for a slog.Logger, since Pool logs from
+// worker goroutines and a test asserting on the captured text has to read it
+// back without racing the write.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }
 
 // waitFor polls a condition rather than sleeping a fixed duration. A test that
@@ -441,5 +474,195 @@ func TestRunningReportsConcurrency(t *testing.T) {
 
 	waitFor(t, "both pack jobs to be in flight", func() bool {
 		return p.Running()[store.JobPack] == 2
+	})
+}
+
+// New's zero-value defaults are what every other test in this file relies on
+// implicitly by passing explicit Options; this checks the defaulting itself,
+// with no workers ever started.
+func TestNewAppliesZeroValueDefaults(t *testing.T) {
+	repo := newRepo(t)
+	p := New(repo, Options{})
+
+	if p.opt.Workers != 4 {
+		t.Errorf("Workers = %d, want the documented default of 4", p.opt.Workers)
+	}
+	if p.opt.Idle != 2*time.Second {
+		t.Errorf("Idle = %s, want the documented default of 2s", p.opt.Idle)
+	}
+	if p.opt.StaleAfter != 15*time.Minute {
+		t.Errorf("StaleAfter = %s, want the documented default of 15m", p.opt.StaleAfter)
+	}
+	if len(p.caps) != len(DefaultCaps()) {
+		t.Errorf("a nil Caps did not fall back to DefaultCaps: got %d entries, want %d",
+			len(p.caps), len(DefaultCaps()))
+	}
+}
+
+// Cancelling the context, rather than calling Stop, is the shutdown path a
+// caller whose own context was cancelled takes — the worker loop and the
+// reclaim sweep both select on ctx.Done() first and independently of p.stop.
+func TestContextCancellationStopsWorkersAndReclaimer(t *testing.T) {
+	repo := newRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	p := New(repo, Options{Workers: 2, Idle: 5 * time.Millisecond, StaleAfter: 10 * time.Millisecond})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+	p.Start(ctx)
+	cancel()
+
+	done := make(chan struct{})
+	go func() { p.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("workers/reclaimer did not exit after their context was cancelled")
+	}
+
+	// Stop must still be safe to call afterwards: p.stop was never closed by
+	// the cancellation, and Stop's own Wait has to be a no-op on already-exited
+	// goroutines rather than hang.
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop hung after a context-cancelled shutdown")
+	}
+}
+
+// claim's own error path (a database error, distinct from ErrNoJob) must back
+// off rather than spin — and, since this is the only test in the package that
+// gives the pool a real Log, it is also what exercises logf actually writing
+// through to a configured logger instead of discarding.
+func TestWorkerBacksOffAndLogsOnAClaimError(t *testing.T) {
+	repo, db := newRepoAndDB(t)
+	ctx := context.Background()
+
+	if _, err := db.Write.ExecContext(ctx, "DROP TABLE jobs"); err != nil {
+		t.Fatalf("drop jobs: %v", err)
+	}
+
+	var out syncBuf
+	p := New(repo, Options{
+		Workers: 1, Idle: 5 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(&out, nil)),
+	})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+	p.Start(ctx)
+	defer p.Stop()
+
+	waitFor(t, "a claim error to be logged", func() bool {
+		return strings.Contains(out.String(), "claiming a job failed")
+	})
+}
+
+// The "no handler registered" branch in run() is provably unreachable through
+// the pool's own Start/claim path: claim only ever asks the database for
+// kinds in p.runnableKinds(), so a claimed job's kind is always in p.handlers
+// (see TestUnhandledKindsAreLeftForAnotherPool, which checks exactly that the
+// database side of this never happens). Called directly here — this file is
+// `package jobs` — to still exercise the defensive branch itself, against a
+// job that is real in the database so Fail has a row to update.
+func TestRunFailsAJobWithNoRegisteredHandler(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	id, err := repo.Enqueue(ctx, store.NewJob{Kind: store.JobAudio})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.GetJob(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := New(repo, Options{Workers: 1})
+	// No p.Handle call at all: JobAudio has no handler in this pool.
+	p.run(ctx, job)
+
+	got, err := repo.GetJob(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.LastErr, "no handler") {
+		t.Errorf("last_error = %q, want it to name the missing handler", got.LastErr)
+	}
+}
+
+// Fail() itself can fail — its own first statement is a SELECT against the
+// job's row, which errors on a job id that does not exist. run() logs that
+// rather than losing it silently. A job.ID with no matching row is the
+// simplest way to provoke it without touching the schema.
+func TestRunLogsWhenRecordingAFailureFails(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	var out syncBuf
+	p := New(repo, Options{
+		Workers: 1,
+		Log:     slog.New(slog.NewTextHandler(&out, nil)),
+	})
+	p.Handle(store.JobRank, func(context.Context, store.Job) error {
+		return fmt.Errorf("handler failed")
+	})
+
+	p.run(ctx, store.Job{ID: "no-such-job-id", Kind: store.JobRank})
+
+	if !strings.Contains(out.String(), "recording a job failure failed") {
+		t.Errorf("log output = %q, want it to report that Fail itself failed", out.String())
+	}
+}
+
+// Complete() can fail too (a database error, not "job not found" — a blind
+// UPDATE against a missing id is not an error in SQL, only a no-op, which is
+// why TestRunLogsWhenRecordingAFailureFails could not reuse this trick).
+// Dropping the table a successful job's bookkeeping writes to is what forces
+// a real one.
+func TestRunLogsWhenCompletingAJobFails(t *testing.T) {
+	repo, db := newRepoAndDB(t)
+	ctx := context.Background()
+
+	if _, err := db.Write.ExecContext(ctx, "DROP TABLE jobs"); err != nil {
+		t.Fatalf("drop jobs: %v", err)
+	}
+
+	var out syncBuf
+	p := New(repo, Options{
+		Workers: 1,
+		Log:     slog.New(slog.NewTextHandler(&out, nil)),
+	})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+
+	p.run(ctx, store.Job{ID: "irrelevant-id", Kind: store.JobFanout})
+
+	if !strings.Contains(out.String(), "completing a job failed") {
+		t.Errorf("log output = %q, want it to report that Complete itself failed", out.String())
+	}
+}
+
+// ReclaimStale's own error path, exercised the same way as the claim-error
+// test above: the table it writes to is gone, so every sweep fails rather
+// than reclaiming anything, and the sweep must log and keep going rather than
+// exit the goroutine.
+func TestReclaimerLogsOnAReclaimError(t *testing.T) {
+	repo, db := newRepoAndDB(t)
+	ctx := context.Background()
+
+	if _, err := db.Write.ExecContext(ctx, "DROP TABLE jobs"); err != nil {
+		t.Fatalf("drop jobs: %v", err)
+	}
+
+	var out syncBuf
+	p := New(repo, Options{
+		Workers: 1, Idle: 5 * time.Millisecond,
+		StaleAfter: 10 * time.Millisecond, // floors the sweep interval at 1s
+		Log:        slog.New(slog.NewTextHandler(&out, nil)),
+	})
+	p.Start(ctx)
+	defer p.Stop()
+
+	waitFor(t, "a reclaim error to be logged", func() bool {
+		return strings.Contains(out.String(), "reclaiming stale jobs failed")
 	})
 }

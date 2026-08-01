@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -179,6 +180,49 @@ func TestClosingAStreamFreesItsSlot(t *testing.T) {
 // Version skew applies to streams too. A client too old to understand the
 // answer should not be handed a stream — it costs more than a refused call,
 // because it holds a subscription for as long as the tab stays open.
+// DevMode has no way to tell one caller from another, so the stream limiter is
+// bypassed exactly as the unary one is (see proxylimit_test.go) — otherwise
+// every tab and every parallel test worker collapses into one bucket keyed on
+// 127.0.0.1.
+func TestRateLimitStreamIsBypassedInDevMode(t *testing.T) {
+	a := &App{cfg: Config{DevMode: true}}
+	mw := a.rateLimitStream()
+
+	called := false
+	err := mw(nil, fakeServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{},
+		func(srv any, ss grpc.ServerStream) error { called = true; return nil })
+	if err != nil {
+		t.Fatalf("DevMode stream limiter refused: %v", err)
+	}
+	if !called {
+		t.Fatal("the handler never ran; DevMode must pass every stream through")
+	}
+}
+
+// fakeServerStream is the minimal grpc.ServerStream a bare interceptor needs.
+type fakeServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s fakeServerStream) Context() context.Context { return s.ctx }
+
+// streamTelemetry records a failed stream's status on the span and still
+// returns the handler's own error unchanged — the wrapper must not swallow or
+// replace it.
+func TestStreamTelemetryRecordsAFailedStream(t *testing.T) {
+	a, _, _ := streamHarness(t)
+	mw := a.streamTelemetry()
+
+	want := status.Error(codes.Internal, "boom")
+	err := mw(nil, fakeServerStream{ctx: context.Background()},
+		&grpc.StreamServerInfo{FullMethod: "/articleflux.v1.EventService/WatchEvents"},
+		func(srv any, ss grpc.ServerStream) error { return want })
+	if err != want {
+		t.Fatalf("err = %v, want the handler's own error unchanged", err)
+	}
+}
+
 func TestAStaleClientCannotOpenAStream(t *testing.T) {
 	_, client, authed := streamHarness(t)
 

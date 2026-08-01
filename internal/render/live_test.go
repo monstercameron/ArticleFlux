@@ -2,9 +2,12 @@ package render
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -256,6 +259,161 @@ func TestScrollMovesTheLivePage(t *testing.T) {
 		t.Logf("post-scroll frame: %d bytes (was %d)", len(f.JPEG), len(before))
 	case <-time.After(20 * time.Second):
 		t.Fatal("no frame after scrolling — the wheel event did not reach the page")
+	}
+}
+
+// An override that exists must win outright, and one that does not must be
+// refused rather than silently falling through to the search list — a typo'd
+// ExecPath should be an honest ErrNoBrowser, not a surprise Edge.
+func TestFindBrowserOverride(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "not-really-a-browser.exe")
+	if err := os.WriteFile(exe, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindBrowser(exe); got != exe {
+		t.Errorf("FindBrowser(%q) = %q, want the override itself", exe, got)
+	}
+	missing := filepath.Join(dir, "does-not-exist.exe")
+	if got := FindBrowser(missing); got != "" {
+		t.Errorf("FindBrowser(%q) = %q, want empty — an override that does not exist "+
+			"must not be trusted", missing, got)
+	}
+}
+
+// The search list itself, exercised by planting a fake binary under a
+// redirected env var rather than depending on whatever is actually installed
+// on the box running the test.
+func TestFindBrowserSearchesKnownLocations(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("FindBrowser's search list is windows-specific")
+	}
+	dir := t.TempDir()
+	edgeDir := filepath.Join(dir, "Microsoft", "Edge", "Application")
+	if err := os.MkdirAll(edgeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(edgeDir, "msedge.exe")
+	if err := os.WriteFile(exe, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ProgramFiles(x86)", dir)
+	t.Setenv("ProgramFiles", "")
+	t.Setenv("LocalAppData", "")
+	if got := FindBrowser(""); got != exe {
+		t.Errorf("FindBrowser(\"\") = %q, want the planted %q", got, exe)
+	}
+}
+
+// Every candidate base blank at once — the case a headless service account
+// with no ProgramFiles/LocalAppData at all would hit — must come back empty
+// rather than panicking on an empty base joined into a path.
+func TestFindBrowserNoCandidateBasesFindsNothing(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("FindBrowser's search list is windows-specific")
+	}
+	t.Setenv("ProgramFiles(x86)", "")
+	t.Setenv("ProgramFiles", "")
+	t.Setenv("LocalAppData", "")
+	if got := FindBrowser(""); got != "" {
+		t.Errorf("FindBrowser(\"\") = %q with every base blank, want empty", got)
+	}
+}
+
+// browser() caches its result behind a sync.Once — a missing browser must
+// stay missing on the second call rather than re-running the search (which
+// would be wasted work) or, worse, returning a different answer the second
+// time.
+func TestBrowserCachesTheNoBrowserError(t *testing.T) {
+	r := New(Options{ExecPath: filepath.Join(t.TempDir(), "does-not-exist.exe")})
+	defer r.Close()
+	ctx1, err1 := r.browser()
+	if !errors.Is(err1, ErrNoBrowser) || ctx1 != nil {
+		t.Fatalf("browser() = (%v, %v), want (nil, ErrNoBrowser)", ctx1, err1)
+	}
+	ctx2, err2 := r.browser()
+	if !errors.Is(err2, ErrNoBrowser) || ctx2 != nil {
+		t.Fatalf("second browser() = (%v, %v), want the cached ErrNoBrowser", ctx2, err2)
+	}
+}
+
+// AllowPrivate relaxes the private-IP-range check, not the scheme check —
+// CheckURLPermissive still refuses anything that is not http(s).
+func TestStreamAllowPrivateStillRejectsABadScheme(t *testing.T) {
+	r := New(Options{AllowPrivate: true})
+	defer r.Close()
+	err := r.Stream(context.Background(), "k", "ftp://example.com/", Viewport{}, make(chan Frame, 1))
+	if err == nil {
+		t.Fatal("a non-http(s) scheme must be refused even with AllowPrivate set")
+	}
+}
+
+// The guard passes and the semaphore is free, but there is still no browser
+// on the box — Stream has to surface that as ErrNoBrowser rather than a bare
+// context or nil-pointer failure deeper in the call.
+func TestStreamReportsAMissingBrowser(t *testing.T) {
+	r := New(Options{AllowPrivate: true, ExecPath: filepath.Join(t.TempDir(), "does-not-exist.exe")})
+	defer r.Close()
+	err := r.Stream(context.Background(), "k", "http://example.invalid/", Viewport{}, make(chan Frame, 1))
+	if !errors.Is(err, ErrNoBrowser) {
+		t.Errorf("Stream with no browser on the box = %v, want ErrNoBrowser", err)
+	}
+}
+
+// chromedp.Navigate reports a connection refusal as a Go error (unlike
+// Snapshot's hand-rolled navigate, which gets it via errorText — see the
+// comment on Stream about why the two differ). Either way it must come back
+// as a real failure, not a silently empty stream.
+func TestStreamNavigationFailureIsAnError(t *testing.T) {
+	if FindBrowser("") == "" {
+		t.Skip("no chromium-family browser installed")
+	}
+	skipOnUnprovenHostedCI(t)
+	r := New(Options{AllowPrivate: true, IdleTimeout: 10 * time.Second})
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := r.Stream(ctx, "refused-session", "http://127.0.0.1:1/", Viewport{}, make(chan Frame, 1))
+	if err == nil {
+		t.Fatal("a connection refused by the target reported a successful stream")
+	}
+}
+
+// A page that settles and then produces nothing new must eventually release
+// its slot on its own — a reader who wanders off without closing the tab must
+// not hold the browser's single session forever.
+func TestStreamEndsAfterIdleTimeout(t *testing.T) {
+	if FindBrowser("") == "" {
+		t.Skip("no chromium-family browser installed")
+	}
+	skipOnUnprovenHostedCI(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><body>static, nothing ever changes here</body></html>`))
+	}))
+	defer srv.Close()
+
+	// Comfortably under the loop's 10s tick, so the first tick after the page
+	// settles already sees it idle rather than needing a second one.
+	r := New(Options{AllowPrivate: true, IdleTimeout: 500 * time.Millisecond})
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Stream(ctx, "idle-session", srv.URL+"/", Viewport{}, make(chan Frame, 8))
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stream ended with %v, want nil — an idle timeout is a clean end, not a failure", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Stream did not end after its idle timeout, despite the page producing no new frames")
 	}
 }
 

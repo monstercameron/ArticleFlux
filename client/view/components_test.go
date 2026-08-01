@@ -562,15 +562,15 @@ func TestTabBarFeedsIsCurrentOnTheRail(t *testing.T) {
 	}
 }
 
-func TestTabBarNotesIsCurrentWhenScopeIsNotes(t *testing.T) {
-	out := renderView(t, func(tr i18n.Runtime) ui.Node { return tabBar(tr, viewList, scope{Notes: true}) })
-	notes := elementTag(t, out, `data-action="tab-notes"`)
-	if !strings.Contains(notes, `aria-current="true"`) {
-		t.Errorf("tab-notes should be current when the scope is Notes: %s", notes)
+func TestTabBarMyFeedIsCurrentWhenScopeIsMyFeed(t *testing.T) {
+	out := renderView(t, func(tr i18n.Runtime) ui.Node { return tabBar(tr, viewList, scope{MyFeed: true}) })
+	myFeed := elementTag(t, out, `data-action="tab-myfeed"`)
+	if !strings.Contains(myFeed, `aria-current="true"`) {
+		t.Errorf("tab-myfeed should be current when the scope is MyFeed: %s", myFeed)
 	}
 	home := elementTag(t, out, `data-action="tab-home"`)
 	if !strings.Contains(home, `aria-current="false"`) {
-		t.Errorf("tab-home should not ALSO be current when the scope is Notes: %s", home)
+		t.Errorf("tab-home should not ALSO be current when the scope is MyFeed: %s", home)
 	}
 }
 

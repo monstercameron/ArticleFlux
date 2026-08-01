@@ -125,3 +125,37 @@ func TestOfNeverReturnsEmptyForAnUnparseableRemoteAddr(t *testing.T) {
 		t.Errorf("Of = %q, want the raw value rather than a blank", got)
 	}
 }
+
+// A nil request has no headers and no RemoteAddr to fall back to; both
+// entry points must report "nothing usable" rather than dereference nil.
+func TestNilRequestIsHandledNotDereferenced(t *testing.T) {
+	if a, ok := Forwarded(nil); ok {
+		t.Errorf("Forwarded(nil) = %v, want no answer", a)
+	}
+	if got := Of(nil, true); got != "" {
+		t.Errorf("Of(nil, true) = %q, want empty", got)
+	}
+}
+
+func TestParseRejectsEmptyAndGarbage(t *testing.T) {
+	for _, s := range []string{"", "   ", "not-an-address", "999.999.999.999"} {
+		if a, ok := Parse(s); ok {
+			t.Errorf("Parse(%q) = %v, want no answer", s, a)
+		}
+	}
+}
+
+// Key has to produce a bucket for callers that never validated the address —
+// an empty limiter key is worse than a labelled placeholder, and a garbage
+// address should still bucket by its literal text rather than vanish.
+func TestKeyFallsBackWhenNothingParses(t *testing.T) {
+	if got := Key(""); got != "unknown" {
+		t.Errorf(`Key("") = %q, want "unknown"`, got)
+	}
+	if got := Key("   "); got != "unknown" {
+		t.Errorf(`Key("   ") = %q, want "unknown"`, got)
+	}
+	if got := Key("not-an-address"); got != "not-an-address" {
+		t.Errorf("Key(garbage) = %q, want the literal text back", got)
+	}
+}

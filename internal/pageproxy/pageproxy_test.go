@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -306,6 +307,178 @@ func TestBlockedAddressIsRefused(t *testing.T) {
 	if !errors.Is(err, netguard.ErrBlockedIP) {
 		t.Fatalf("err = %v, want netguard.ErrBlockedIP — the metadata endpoint "+
 			"must be refused BY THE GUARD, not merely fail to connect", err)
+	}
+}
+
+// A cache entry is read from disk before anything is validated. If the final
+// URL recorded there has since become unparseable — corruption, or a future
+// bug in writeCache — Get must error rather than pass a nil-ish url.URL into
+// rewrite.HTML.
+func TestGetFailsWhenCachedFinalURLIsUnparsable(t *testing.T) {
+	f := fetcher(t)
+	key := "http://example.com/cached-bad-url"
+	p := f.path(key)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// "%zz" is not a valid percent-escape, which is what makes url.Parse itself
+	// fail rather than merely parsing into something surprising.
+	if err := os.WriteFile(p, []byte("http://x/%zz\n<html></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Get(context.Background(), key, prox, page); err == nil {
+		t.Error("an unparsable cached final URL should error, not panic")
+	}
+}
+
+// Same guard as netguard's own tests, exercised through the AllowPrivate
+// branch specifically (fetch's `if f.allowPrivate` arm) rather than the
+// default-strict one every other test here uses.
+func TestFetchRefusesNeverAllowedEvenWithPrivateAllowed(t *testing.T) {
+	f := New(Options{Dir: t.TempDir(), AllowPrivate: true})
+	_, err := f.Get(context.Background(), "http://169.254.169.254/latest/meta-data/", prox, page)
+	if !errors.Is(err, netguard.ErrBlockedIP) {
+		t.Fatalf("err = %v, want netguard.ErrBlockedIP even with AllowPrivate set", err)
+	}
+}
+
+// Nothing listening on the port is a transport error distinct from a bad
+// status code, and fetch has to surface it rather than dereference a nil
+// response.
+func TestFetchSurfacesTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead := srv.URL
+	srv.Close() // nothing is listening on this loopback port now
+
+	if _, err := fetcher(t).Get(context.Background(), dead, prox, page); err == nil {
+		t.Error("a connection to a closed port should fail, not succeed")
+	}
+}
+
+// A body shorter than its declared Content-Length must surface as a read
+// error rather than a silently truncated page.
+func TestFetchSurfacesTruncatedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("httptest server must support hijacking")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 10000\r\n\r\nshort")
+		_ = buf.Flush()
+	}))
+	defer srv.Close()
+
+	if _, err := fetcher(t).Get(context.Background(), srv.URL, prox, page); err == nil {
+		t.Error("a truncated body should be a read error")
+	}
+}
+
+// title() is scanned rather than parsed, which means every boundary is a
+// hand-written index check rather than something a real HTML parser would
+// just handle. Each case here is one of those checks failing to find its
+// landmark.
+func TestTitleHandlesMalformedMarkup(t *testing.T) {
+	cases := []struct {
+		name, raw, want string
+	}{
+		{"no closing angle bracket on the opening tag", "<html><title", ""},
+		{"opening tag but no </title> anywhere", "<title>Unclosed", ""},
+		{"title longer than the 200-char cap", "<title>" + strings.Repeat("x", 250) + "</title>", strings.Repeat("x", 200)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := title([]byte(c.raw)); got != c.want {
+				t.Errorf("title(%.30q) = %q, want %q", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+// A zero-value Fetcher (Dir never configured) must treat the cache as always
+// empty rather than trying to stat/write into "" and touching the process's
+// working directory.
+func TestCacheIsANoopWhenDirIsUnset(t *testing.T) {
+	f := &Fetcher{}
+	if _, _, ok := f.readCache("http://x.example/"); ok {
+		t.Error("readCache with no dir configured must always miss")
+	}
+	f.writeCache("http://x.example/", []byte("body"), "http://x.example/") // must not panic
+}
+
+// A cache entry that exists but cannot be read (here: the path is a
+// directory, not a file — the shape a half-finished MkdirAll from a crashed
+// process would leave behind) must be treated as a miss, not a crash.
+func TestReadCacheMissesWhenEntryIsUnreadable(t *testing.T) {
+	f := fetcher(t)
+	key := "http://unreadable.example/"
+	p := f.path(key)
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := f.readCache(key); ok {
+		t.Error("a cache entry that fails to read should miss, not succeed")
+	}
+}
+
+// The on-disk format is "finalURL\nbody". A file missing the delimiter — any
+// corruption that lost the first newline — must miss rather than hand back a
+// zero-value final URL as if it were real.
+func TestReadCacheMissesOnEntryMissingDelimiter(t *testing.T) {
+	f := fetcher(t)
+	key := "http://corrupt.example/"
+	p := f.path(key)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("no newline delimiter anywhere in this file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := f.readCache(key); ok {
+		t.Error("a cache entry without the finalURL delimiter should miss")
+	}
+}
+
+// MkdirAll fails when a plain file already occupies the shard directory's
+// path. writeCache must give up quietly rather than panic — a cache write is
+// always a best-effort side channel, never something the caller waits on.
+func TestWriteCacheGivesUpWhenShardDirIsBlocked(t *testing.T) {
+	f := fetcher(t)
+	key := "http://blocked.example/"
+	p := f.path(key)
+	if err := os.WriteFile(filepath.Dir(p), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCache(key, []byte("body"), "http://blocked.example/") // must not panic
+	if _, err := os.Stat(p); err == nil {
+		t.Error("no cache file should have been written when its directory was blocked")
+	}
+}
+
+// The final os.Rename(tmp, p) can fail — here because p is already occupied
+// by a directory, which a plain file can never be renamed onto. writeCache
+// must clean up the temp file rather than leaking it.
+func TestWriteCacheCleansUpTempFileWhenRenameFails(t *testing.T) {
+	f := fetcher(t)
+	key := "http://rename-fails.example/"
+	p := f.path(key)
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCache(key, []byte("body"), "http://rename-fails.example/") // must not panic
+
+	entries, err := os.ReadDir(filepath.Dir(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "tmp-") {
+			t.Errorf("temp file %q was left behind after a failed rename", e.Name())
+		}
 	}
 }
 

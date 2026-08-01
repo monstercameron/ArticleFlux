@@ -302,6 +302,88 @@ func TestFetchRefusesInternalAddressesByDefault(t *testing.T) {
 	}
 }
 
+// AllowPrivateAddresses relaxes the strict guard, but neverAllowed still
+// applies (netguard §"Two layers"): the metadata endpoint stays refused even
+// for an operator who opted into their own LAN.
+func TestFetchRefusesNeverAllowedEvenWithPrivateAllowed(t *testing.T) {
+	e := New(Config{AllowPrivateAddresses: true})
+	if _, err := e.Fetch(context.Background(), "http://169.254.169.254/latest/meta-data/"); err == nil {
+		t.Error("the metadata endpoint must be refused under every policy")
+	}
+}
+
+// A refused connection (nothing listening) is a transport error distinct from
+// a bad status code, and Fetch has to surface it rather than panic on a nil
+// response.
+func TestFetchSurfacesTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close() // nothing is listening on this loopback port now
+
+	e := New(Config{AllowPrivateAddresses: true})
+	if _, err := e.Fetch(context.Background(), deadURL); err == nil {
+		t.Error("a connection to a closed port should fail, not succeed")
+	}
+}
+
+// A response whose body is shorter than its declared Content-Length must
+// surface as a read error rather than a silently truncated article.
+func TestFetchSurfacesTruncatedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("httptest server must support hijacking")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 10000\r\n\r\nshort")
+		_ = buf.Flush()
+	}))
+	defer srv.Close()
+
+	e := New(Config{AllowPrivateAddresses: true})
+	e.client = srv.Client()
+	if _, err := e.Fetch(context.Background(), srv.URL); err == nil {
+		t.Error("a truncated body should be a read error")
+	}
+}
+
+// FromBytes's own errors (ErrNoContent here) must propagate through Fetch
+// rather than being swallowed once the HTTP part succeeded.
+func TestFetchPropagatesExtractionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><html><body><nav><a href="/a">a</a></nav></body></html>`))
+	}))
+	defer srv.Close()
+
+	e := New(Config{AllowPrivateAddresses: true})
+	e.client = srv.Client()
+	if _, err := e.Fetch(context.Background(), srv.URL); err == nil {
+		t.Error("a page with no article should fail extraction through Fetch too")
+	}
+}
+
+// When neither meta description nor a top-level <p> gives readability an
+// excerpt, FromBytes must still produce one rather than leaving the list row
+// blank — this is the excerptFrom(out.Text) fallback path.
+func TestExcerptFallsBackWhenMetadataHasNone(t *testing.T) {
+	page := `<!doctype html><html><head><title>No meta</title></head><body>
+	<article><h1>No meta</h1><div>` +
+		strings.Repeat("Text with no paragraph tag around it at all, just a div. ", 20) +
+		`</div></article></body></html>`
+	art, err := FromBytes([]byte(page), "text/html", "https://example.com/nometa", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if art.Excerpt == "" {
+		t.Fatal("expected excerptFrom to fill in a missing excerpt")
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

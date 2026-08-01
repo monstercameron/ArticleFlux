@@ -1,8 +1,11 @@
 package retention
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +134,101 @@ func TestAFailedLedgerWriteDoesNotHideASuccessfulDeletion(t *testing.T) {
 	}
 	if res.Removed != 10 {
 		t.Errorf("removed = %d, want the 10 that were actually deleted", res.Removed)
+	}
+}
+
+// Preview shares Sweep's "keep forever asks nothing" property — a days<=0
+// preview must answer with the boring empty result rather than a query.
+func TestPreviewOfKeepForeverNeverReachesTheStore(t *testing.T) {
+	repo := &fakeRepo{}
+	s := New(repo, nil)
+	res, err := s.Preview(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.sweeps != 0 {
+		t.Errorf("a days<=0 preview issued %d store calls, want 0", repo.sweeps)
+	}
+	if res != (store.SweepResult{}) {
+		t.Errorf("res = %+v, want the zero value", res)
+	}
+}
+
+// A store failure during preview must reach the caller — a preview that
+// silently reports "nothing" on a broken query is indistinguishable from an
+// honest "this policy deletes nothing", which is the one thing preview must
+// never misreport.
+func TestPreviewPropagatesAStoreError(t *testing.T) {
+	repo := &fakeRepo{err: errors.New("db unavailable")}
+	s := New(repo, nil)
+	if _, err := s.Preview(context.Background(), 30); err == nil {
+		t.Error("Preview swallowed the store's error")
+	}
+}
+
+// Same failure, on the applying path: Sweep must not report success (or a
+// misleading empty result) for a delete that never ran.
+func TestSweepPropagatesAStoreError(t *testing.T) {
+	repo := &fakeRepo{err: errors.New("db unavailable")}
+	s := New(repo, nil)
+	if _, err := s.Sweep(context.Background(), 30); err == nil {
+		t.Error("Sweep swallowed the store's error")
+	}
+	if len(repo.records) != 0 {
+		t.Error("a failed sweep still wrote a ledger row")
+	}
+}
+
+// Removed==0 alone does not mean "the idle no-op skip" — a sweep that kept
+// items only because they were pinned (starred/tagged/etc.) still did
+// something worth recording, distinct from DefaultItemDays's true no-op.
+func TestSweepRecordsWhenNothingRemovedButSomethingWasSpared(t *testing.T) {
+	repo := &fakeRepo{result: store.SweepResult{Examined: 5, KeptPinned: 5}}
+	s := New(repo, nil)
+	if _, err := s.Sweep(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.records) != 1 {
+		t.Errorf("got %d ledger rows, want 1 — sparing pinned items is not the same as doing nothing", len(repo.records))
+	}
+}
+
+// A successful removal is logged with the counts an operator needs to trust
+// the policy — this is the whole reason §22.6 asks for a stated policy
+// rather than a silent one.
+func TestSweepLogsASuccessfulRemoval(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	repo := &fakeRepo{result: store.SweepResult{Examined: 50, Removed: 20, KeptPinned: 5}}
+	s := New(repo, log)
+
+	if _, err := s.Sweep(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "retention sweep") {
+		t.Errorf("log output = %q, want the sweep summary line", out)
+	}
+	if !strings.Contains(out, "removed=20") {
+		t.Errorf("log output = %q, missing the removed count", out)
+	}
+}
+
+// The mirror case: a deletion that happened but could not be recorded must
+// be LOUD, per the comment on Sweep — the ledger is the only place an
+// operator would otherwise find out this deletion is unaccounted for.
+func TestSweepLogsWhenTheLedgerWriteFails(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	repo := &fakeRepo{result: store.SweepResult{Removed: 5}, recErr: errors.New("disk full")}
+	s := New(repo, log)
+
+	if _, err := s.Sweep(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "could not be recorded") {
+		t.Errorf("log output = %q, want the unaccounted-deletion warning", out)
 	}
 }
 

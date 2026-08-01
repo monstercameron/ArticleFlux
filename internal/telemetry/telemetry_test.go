@@ -1,14 +1,21 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
@@ -199,5 +206,163 @@ func TestResourceMergeWithPinnedSchemaCanConflict(t *testing.T) {
 	}
 	if !errors.Is(err, resource.ErrSchemaURLConflict) {
 		t.Errorf("err = %v, want errors.Is(_, resource.ErrSchemaURLConflict)", err)
+	}
+}
+
+// An OTLPEndpoint must actually swap in real exporters, not just accept the
+// option and keep using noop instruments — the loopback address here is
+// deliberately unreachable (port 1: nothing ever listens there), because this
+// test is about wiring, not about a collector being up.
+func TestNewWithOTLPEndpointWiresRealExporters(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tel, err := New(ctx, Config{ServiceName: "otlp-test", OTLPEndpoint: "http://127.0.0.1:1", Insecure: true})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tel.Shutdown(sctx) // the endpoint is unreachable by design; a flush error here is expected
+	})
+
+	// The noop tracer's concrete type never contains "trace.tracer"; the SDK's
+	// real one does (go.opentelemetry.io/otel/sdk/trace.tracer). A noop tracer
+	// here would mean the OTLPEndpoint branch was silently skipped.
+	if got := fmt.Sprintf("%T", tel.Tracer); !strings.Contains(got, "trace.tracer") {
+		t.Errorf("Tracer type = %q, want the SDK tracer, not the noop one", got)
+	}
+	if len(tel.shutdown) < 2 {
+		t.Errorf("registered %d shutdown funcs, want at least 2 (meter provider + tracer provider)", len(tel.shutdown))
+	}
+}
+
+// Shutdown must join every registered shutdown function's error rather than
+// stopping at the first, and must run all of them even if an earlier one
+// fails — otherwise one exporter's flush failure would silently skip flushing
+// the other pipeline.
+func TestShutdownJoinsAllErrors(t *testing.T) {
+	var secondRan bool
+	boom := errors.New("boom")
+	tel := &Telemetry{shutdown: []func(context.Context) error{
+		func(context.Context) error { return boom },
+		func(context.Context) error { secondRan = true; return nil },
+	}}
+	err := tel.Shutdown(context.Background())
+	if !errors.Is(err, boom) {
+		t.Errorf("Shutdown() = %v, want it to wrap the first error", err)
+	}
+	if !secondRan {
+		t.Error("the second shutdown function never ran after the first failed")
+	}
+}
+
+// Shutdown must be safe to call on a nil *Telemetry, so a caller that never
+// built telemetry (an embedder, a test, a code path that skipped New) needs
+// no nil check before deferring it.
+func TestShutdownOnNilReceiver(t *testing.T) {
+	var tel *Telemetry
+	if err := tel.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown on a nil receiver = %v, want nil", err)
+	}
+}
+
+// Shutdown with nothing registered (or nothing failing) must return nil, not
+// an empty-but-non-nil joined error — errors.Join(nil...) already guarantees
+// this, but it is the property callers actually depend on.
+func TestShutdownWithNoFailuresReturnsNil(t *testing.T) {
+	tel := &Telemetry{shutdown: []func(context.Context) error{
+		func(context.Context) error { return nil },
+	}}
+	if err := tel.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown() = %v, want nil", err)
+	}
+}
+
+// erroringGaugeMeter and erroringCallbackMeter let registerUptime's two
+// failure branches be reached directly and deterministically — the real SDK
+// meter essentially never fails to create an instrument or register a
+// callback in ordinary use, so the only way to see these branches is a fake.
+type erroringGaugeMeter struct{ metric.Meter }
+
+func (erroringGaugeMeter) Float64ObservableGauge(string, ...metric.Float64ObservableGaugeOption) (metric.Float64ObservableGauge, error) {
+	return nil, errors.New("gauge boom")
+}
+
+type erroringCallbackMeter struct{ metric.Meter }
+
+func (m erroringCallbackMeter) RegisterCallback(cb metric.Callback, obs ...metric.Observable) (metric.Registration, error) {
+	return nil, errors.New("callback boom")
+}
+
+// registerUptime must log and return, not panic, when the meter refuses the
+// gauge or the callback registration — a process must not fail to start
+// serving because a background instrument could not be wired up.
+func TestRegisterUptimeToleratesInstrumentErrors(t *testing.T) {
+	realMeter := sdkmetric.NewMeterProvider().Meter(ScopeName)
+	discard := slog.New(slog.DiscardHandler)
+
+	t.Run("gauge creation fails", func(t *testing.T) {
+		tel := &Telemetry{log: discard, start: time.Now(), Meter: erroringGaugeMeter{realMeter}}
+		tel.registerUptime() // must not panic
+	})
+	t.Run("callback registration fails", func(t *testing.T) {
+		tel := &Telemetry{log: discard, start: time.Now(), Meter: erroringCallbackMeter{realMeter}}
+		tel.registerUptime() // must not panic
+	})
+}
+
+// erroringInstrumentMeter fails every counter and histogram creation, so
+// newInstruments' error-aggregation path (every instrument is attempted, and
+// every failure is joined rather than the first one aborting the rest) can be
+// exercised without depending on the real SDK ever refusing a well-formed,
+// fixed instrument name.
+type erroringInstrumentMeter struct{ metric.Meter }
+
+func (erroringInstrumentMeter) Int64Counter(string, ...metric.Int64CounterOption) (metric.Int64Counter, error) {
+	return nil, errors.New("counter boom")
+}
+
+func (erroringInstrumentMeter) Float64Histogram(string, ...metric.Float64HistogramOption) (metric.Float64Histogram, error) {
+	return nil, errors.New("histogram boom")
+}
+
+func TestNewInstrumentsJoinsErrors(t *testing.T) {
+	inst, err := newInstruments(erroringInstrumentMeter{})
+	if err == nil {
+		t.Fatal("expected newInstruments to report the underlying instrument errors")
+	}
+	// A partially-broken meter still returns a populated struct: every field
+	// assignment runs regardless of whether that one instrument's constructor
+	// errored, since the errors are collected rather than aborting early.
+	if inst == nil {
+		t.Fatal("newInstruments returned a nil struct alongside its error")
+	}
+}
+
+// RecordError's two remaining branches: a non-nil logger actually gets
+// written to, and a recording span (as opposed to Nop's noop tracer, whose
+// spans never record) receives the error.
+func TestRecordErrorLogsAndAnnotatesARecordingSpan(t *testing.T) {
+	tel := Nop()
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ctx, span := tp.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
+	if !span.IsRecording() {
+		t.Fatal("fixture bug: the SDK span is not recording, so this test cannot reach RecordError's span branch")
+	}
+
+	tel.RecordError(ctx, log, "sys", "class", errString("boom"), "k", "v")
+
+	out := buf.String()
+	if !strings.Contains(out, "sys: class") {
+		t.Errorf("log output = %q; expected the \"subsystem: class\" message", out)
+	}
+	if !strings.Contains(out, "boom") {
+		t.Errorf("log output = %q; expected the error text", out)
 	}
 }

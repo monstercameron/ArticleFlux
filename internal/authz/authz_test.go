@@ -222,3 +222,53 @@ func TestRoleMatchingIsCaseInsensitive(t *testing.T) {
 		t.Error("an uppercase role lost its capabilities")
 	}
 }
+
+// IsPublic is what the interceptor asks BEFORE resolving a credential, so it
+// must answer for both declared-public and ordinary methods without needing one.
+func TestIsPublicReflectsThePublicList(t *testing.T) {
+	m := NewMap().Require("/v1/ListItems", CapReadItems).Public("/v1/Login")
+	if !m.IsPublic("/v1/Login") {
+		t.Error("a declared-public method reported as not public")
+	}
+	if m.IsPublic("/v1/ListItems") {
+		t.Error("a capability-gated method reported as public")
+	}
+	if m.IsPublic("/v1/NeverDeclared") {
+		t.Error("an unmapped method reported as public")
+	}
+}
+
+// The error strings are what ends up in a log line, so the two must stay
+// distinguishable from each other by more than type.
+func TestErrorMessagesNameWhatWentWrong(t *testing.T) {
+	notMapped := ErrNotMapped{Method: "/v1/NewThing"}
+	if got := notMapped.Error(); got != "authz: /v1/NewThing has no capability mapping, so it is denied" {
+		t.Errorf("ErrNotMapped.Error() = %q", got)
+	}
+
+	denied := ErrDenied{Method: "/v1/MintInvite", Cap: CapInviteUsers}
+	if got := denied.Error(); got != "authz: /v1/MintInvite requires tenant.invite" {
+		t.Errorf("ErrDenied.Error() = %q", got)
+	}
+}
+
+// Methods is a diagnostic snapshot, so it must reflect what was Required and
+// must not let the caller mutate the map's own state through the copy.
+func TestMethodsListsWhatWasMapped(t *testing.T) {
+	m := NewMap().
+		Require("/v1/ListItems", CapReadItems).
+		Require("/v1/MintInvite", CapInviteUsers)
+
+	got := m.Methods()
+	if len(got) != 2 {
+		t.Fatalf("Methods() = %v, want 2 entries", got)
+	}
+	if got["/v1/ListItems"] != CapReadItems || got["/v1/MintInvite"] != CapInviteUsers {
+		t.Errorf("Methods() = %v", got)
+	}
+
+	got["/v1/ListItems"] = CapSystemSettings
+	if m.Check("/v1/ListItems", Caller{Role: RoleSuperadmin}) != nil {
+		t.Error("mutating the returned map changed the map's own requirement")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -345,6 +346,156 @@ func TestConcurrentDuplicatesBothGetAnAnswerAndNeitherConflicts(t *testing.T) {
 	if after != before {
 		t.Errorf("a retry after the concurrent burst ran the handler again "+
 			"(%d -> %d); the key was never recorded", before, after)
+	}
+}
+
+// An unauthenticated call is a case Unary deliberately does not adjudicate:
+// the handler decides what an unauthenticated caller gets told, so scopeOf
+// erroring must still reach the handler rather than being swallowed here.
+func TestScopeResolutionFailurePassesThrough(t *testing.T) {
+	f := setup(t)
+	inter := Unary(f.repo, func(context.Context) (store.Scope, error) {
+		return store.Scope{}, errors.New("unauthenticated")
+	})
+	called := false
+	_, err := inter(f.ctx, &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-noauth"}, f.info,
+		func(ctx context.Context, r any) (any, error) {
+			called = true
+			return &pb.SetItemStateResponse{}, nil
+		})
+	if err != nil {
+		t.Fatalf("Unary surfaced the scope error itself: %v", err)
+	}
+	if !called {
+		t.Error("a scopeOf failure did not reach the handler")
+	}
+}
+
+// keyed is satisfied by the generated getter alone — a hand-written type
+// can implement it without being a real protobuf message. Unary must not
+// assume every keyed request is also marshalable.
+type notAProtoMessage struct{}
+
+func (notAProtoMessage) GetIdempotencyKey() string { return "k" }
+
+func TestNonProtoRequestPassesThrough(t *testing.T) {
+	f := setup(t)
+	called := false
+	_, err := f.inter(f.ctx, notAProtoMessage{}, f.info, func(ctx context.Context, r any) (any, error) {
+		called = true
+		return &pb.SetItemStateResponse{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("a keyed-but-non-proto request was not passed straight through")
+	}
+}
+
+// A handler's result is not always a proto.Message in principle — CompleteIdempotent
+// only knows how to store one — and skipping the store must not be mistaken for
+// an error: the call still succeeds and returns the real result.
+func TestNonProtoResponseIsReturnedButNotReplayable(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-nonproto"}
+
+	res, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		return "not a protobuf message", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != "not a protobuf message" {
+		t.Errorf("res = %v, want the handler's literal return", res)
+	}
+
+	// Nothing storable was recorded, so a second call under the same key must
+	// run the handler again rather than replaying an answer that was never saved.
+	called := false
+	if _, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		called = true
+		return "second", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("a second call under the same key replayed, but nothing proto-shaped was ever stored")
+	}
+}
+
+// The fallback path: a stored response that no longer decodes (a message
+// shape that changed across a deploy) must re-run the handler rather than
+// fail the retry outright — a client stuck retrying a key it cannot change
+// needs SOME answer.
+func TestUndecodableStoredResponseFallsBackToRunningTheHandler(t *testing.T) {
+	f := setup(t)
+	req := &pb.SetItemStateRequest{ItemId: "i1", IdempotencyKey: "k-corrupt"}
+	reqBytes, err := marshal.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A byte with field number 0 is not a legal protobuf tag under any wire
+	// type, so Unmarshal is guaranteed to reject it rather than silently
+	// accepting it as an empty message.
+	if err := f.repo.CompleteIdempotent(f.ctx, f.sc, "k-corrupt", setItemState,
+		reqBytes, []byte{0x00}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	if _, err := f.inter(f.ctx, req, f.info, func(ctx context.Context, r any) (any, error) {
+		called = true
+		return &pb.SetItemStateResponse{Rev: 9}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("an undecodable stored response did not fall back to re-running the handler")
+	}
+}
+
+// decode is exercised directly for the branches Unary's happy paths never
+// reach: a replay only ever asks it about a method that just ran
+// successfully, so a malformed or unknown method name never occurs through
+// the interceptor itself.
+func TestDecodeRejectsAMalformedFullMethod(t *testing.T) {
+	if _, err := decode("no-slash-at-all", nil); err == nil {
+		t.Error("a full method with no /service/method separator was accepted")
+	}
+}
+
+func TestDecodeRejectsAnUnregisteredService(t *testing.T) {
+	if _, err := decode("/no.such.Service/Method", nil); err == nil {
+		t.Error("an unregistered service name was accepted")
+	}
+}
+
+// The registry has no notion of "service vs. message" until asked — a full
+// method whose service segment names a MESSAGE, not a service, must be
+// rejected rather than type-asserted into a panic.
+func TestDecodeRejectsANonServiceDescriptor(t *testing.T) {
+	if _, err := decode("/articleflux.v1.SetItemStateRequest/Foo", nil); err == nil {
+		t.Error("a message's full name was accepted as a service descriptor")
+	}
+}
+
+func TestDecodeRejectsAnUnknownMethodName(t *testing.T) {
+	if _, err := decode(setItemState+"Bogus", nil); err == nil {
+		t.Error("an unregistered method name on a real service was accepted")
+	}
+}
+
+func TestDecodeRejectsUnparseableBytes(t *testing.T) {
+	if _, err := decode(setItemState, []byte{0x00}); err == nil {
+		t.Error("garbage response bytes were accepted as a valid message")
+	}
+}
+
+func TestErrBadMethodNamesTheMethodInItsMessage(t *testing.T) {
+	err := errBadMethod{"/weird.Service/Method"}
+	if !strings.Contains(err.Error(), "/weird.Service/Method") {
+		t.Errorf("Error() = %q, does not name the offending method", err.Error())
 	}
 }
 
