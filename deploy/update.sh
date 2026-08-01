@@ -252,7 +252,13 @@ cp "$exec_js" "$REPO/bin/web.new/wasm_exec.js"
 # was the third implementation of one rule (the Makefile and scripts/make.ps1
 # had the other two), which is how a decision comes to be made three times and
 # kept in step nowhere.
-run "$GO" run ./cmd/precompress "$REPO/bin/web.new"
+#
+# In a subshell that cds into the repo, like the two go builds above it. `go run
+# ./cmd/precompress` resolves that path against the CURRENT directory and needs
+# a go.mod above it, and this script does not run from the repo — systemd-run
+# starts it from /. The gzip calls it replaced took absolute paths and did not
+# care, so the requirement arrived with the tool.
+( cd "$REPO" && run "$GO" run ./cmd/precompress "$REPO/bin/web.new" )
 note "client: $(du -h "$REPO/bin/web.new/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web.new/app.wasm.gz" | cut -f1) gzipped, $(du -h "$REPO/bin/web.new/app.wasm.br" | cut -f1) brotli"
 note "boot shim: wasm_exec.js from $goroot"
 
