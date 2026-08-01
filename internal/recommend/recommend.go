@@ -67,6 +67,19 @@ type Health struct {
 	// Reachable is false when the validating fetch failed. A recommendation
 	// that 404s teaches the reader not to trust the feature.
 	Reachable bool
+	// Samples are up to two posts pulled from the candidate's own feed during
+	// the same validating fetch that set the fields above — no second request.
+	// This is the only place actual post content enters the pipeline, and it
+	// exists so a candidate can be checked against what the reader is actually
+	// interested in, not just whether it has a pulse.
+	Samples []Sample
+}
+
+// Sample is one post read from a candidate's feed, kept only long enough to
+// ask "does this match what the reader reads" — never persisted as-is.
+type Sample struct {
+	Title   string
+	Summary string
 }
 
 // Evidence is what was observed about a candidate, and what the reason string is
@@ -105,6 +118,36 @@ type Candidate struct {
 	Rung     Rung
 	Health   Health
 	Evidence Evidence
+
+	// Relevance is Smart+'s read of Health.Samples against the reader's
+	// topics — the "2 posts reviewed" gate. Zero value means unchecked, which
+	// is the correct default when Smart+ is off: recommending on rungs 1-3's
+	// deterministic evidence alone does not require it.
+	Relevance Relevance
+}
+
+// Relevance is the outcome of reviewing a candidate's own sample posts before
+// it is ever surfaced.
+//
+// This exists separately from Evidence because it answers a different
+// question. Evidence is "why did this candidate surface" — link mining,
+// aggregator saves, topic similarity — all of it about the READER's past
+// behaviour. Relevance is "does this candidate's actual writing match what
+// the reader is interested in", checked against content the candidate itself
+// published. A site can score well on evidence (three writers linked to it)
+// and still turn out, on reading two of its posts, to be off-topic — a
+// personal-finance blog linked once for an unrelated tax-software recommendation,
+// say. The gate exists so that case is caught before a subscribe button.
+type Relevance struct {
+	// Checked is true when Smart+ reviewed Health.Samples. False means no
+	// review happened — Smart+ is off, or the candidate had fewer than two
+	// samples to review — and the gate does not apply.
+	Checked bool
+	// OK is only meaningful when Checked is true.
+	OK bool
+	// Reason is the model's one-line explanation, shown in the evidence
+	// string when OK and folded into the rejection reason when not.
+	Reason string
 }
 
 // State is what the reader has already decided about a domain.
@@ -251,6 +294,16 @@ func gate(c Candidate, st State, th Thresholds, now time.Time) string {
 		return "no feed could be found"
 	case c.Health.IsAggregator:
 		return "an aggregator; it would mostly re-serve feeds you already have"
+	case c.Relevance.Checked && !c.Relevance.OK:
+		// The "2 posts reviewed" gate (Cam, 2026-07-31): a candidate that
+		// cleared the health check can still be the wrong content. This is
+		// checked before the silence/cadence rules below because a mismatched
+		// site's posting rate is not the reason it was refused, and the
+		// rejection reason should name the thing that actually decided it.
+		if c.Relevance.Reason != "" {
+			return "its posts didn't match what you read: " + c.Relevance.Reason
+		}
+		return "its posts didn't match what you read"
 	}
 
 	if !c.Health.LastPostAt.IsZero() && now.Sub(c.Health.LastPostAt) > th.SilentFor {
@@ -355,6 +408,14 @@ func describe(c Candidate, now time.Time) string {
 
 	if c.Health.PostsPerWeek > 0 {
 		parts = append(parts, cadence(c.Health.PostsPerWeek))
+	}
+
+	if c.Relevance.Checked && c.Relevance.OK {
+		if c.Relevance.Reason != "" {
+			parts = append(parts, "2 posts reviewed: "+c.Relevance.Reason)
+		} else {
+			parts = append(parts, "2 posts reviewed against what you read")
+		}
 	}
 
 	if e.Adjacent {

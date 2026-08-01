@@ -427,6 +427,13 @@ type StateChange struct {
 	// so marking an item read from another device does not erase the fact that
 	// you disliked it here.
 	Rating *int
+	// Heard marks a FluxCast segment played for this item (TODO 11.10,
+	// migration 0030). Nil leaves it alone, exactly like the others. Setting
+	// it true never implies Read true — hearing a spoken summary is not the
+	// same as having read the article, and a caller that wants "mark heard
+	// as read" (flux.markRead) sets BOTH fields in the same StateChange
+	// rather than this method inferring one from the other.
+	Heard *bool
 }
 
 // SetItemState applies a change and returns the new rev.
@@ -498,14 +505,25 @@ func (r *ReaderRepo) SetItemState(ctx context.Context, s Scope, itemID string, c
 			set = append(set, "rating = ?")
 			args = append(args, v)
 		}
+		if c.Heard != nil {
+			if *c.Heard {
+				set = append(set, "heard_at = ?")
+				args = append(args, now)
+			} else {
+				set = append(set, "heard_at = NULL")
+			}
+		}
 
-		var readAt, starredAt any
+		var readAt, starredAt, heardAt any
 		rating := 0
 		if c.Read != nil && *c.Read {
 			readAt = now
 		}
 		if c.Starred != nil && *c.Starred {
 			starredAt = now
+		}
+		if c.Heard != nil && *c.Heard {
+			heardAt = now
 		}
 		if c.Rating != nil {
 			switch {
@@ -517,15 +535,53 @@ func (r *ReaderRepo) SetItemState(ctx context.Context, s Scope, itemID string, c
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO user_item_state (tenant_id,user_id,item_id,source_id,published_at,
-			                             read_at,starred_at,rating,rev,updated_at)
-			SELECT ?,?,i.id,i.source_id,i.published_at,?,?,?,?,? FROM items i WHERE i.id = ?
+			                             read_at,starred_at,rating,rev,updated_at,heard_at)
+			SELECT ?,?,i.id,i.source_id,i.published_at,?,?,?,?,?,? FROM items i WHERE i.id = ?
 			ON CONFLICT(user_id,item_id) DO UPDATE SET `+strings.Join(set, ", "),
-			append([]any{s.TenantID, s.UserID, readAt, starredAt, rating, rev, now, itemID}, args...)...); err != nil {
+			append([]any{s.TenantID, s.UserID, readAt, starredAt, rating, rev, now, heardAt, itemID}, args...)...); err != nil {
 			return err
 		}
 		return nil
 	})
 	return rev, err
+}
+
+// HeardItemIDs returns which of ids this user has already heard a FluxCast
+// segment for (TODO 11.10). It exists for internal/fluxcast's candidate
+// filter — "eligibility for a later rundown is read_at IS NULL AND heard_at
+// IS NULL" — and is scoped rather than folded into ItemsByID's unscoped read,
+// since heard_at is per-user state and ItemsByID is deliberately global (see
+// its own comment).
+func (r *ReaderRepo) HeardItemIDs(ctx context.Context, s Scope, ids []string) (map[string]bool, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, s.UserID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT item_id FROM user_item_state
+		 WHERE user_id = ? AND heard_at IS NOT NULL AND item_id IN (`+placeholders(len(ids))+`)`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // MarkAllRead marks everything at or before `before`.

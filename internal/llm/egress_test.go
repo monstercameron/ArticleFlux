@@ -26,7 +26,9 @@ func TestNothingLeavesThatSection188DoesNotPermit(t *testing.T) {
 				{Label: "Systems", Terms: []string{"sqlite", "btree", "wal"}},
 				{Label: "Racing", Terms: []string{"downforce"}},
 			},
-			Sources: []string{"Dan Luu", "Simon Willison"},
+			Sources:          []string{"Dan Luu", "Simon Willison"},
+			PositiveExamples: []string{"SQLite's WAL mode explained"},
+			NegativeExamples: []string{"10 Racing Facts You Won't Believe"},
 		},
 		Want: 20,
 	}
@@ -219,10 +221,17 @@ func TestProfileCapsAreEnforced(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		sources = append(sources, fmt.Sprintf("Source %d", i))
 	}
+	var positives, negatives []string
+	for i := 0; i < 40; i++ {
+		positives = append(positives, fmt.Sprintf("Liked headline %d", i))
+		negatives = append(negatives, fmt.Sprintf("Disliked headline %d", i))
+	}
 
 	got := RankPayload{Profile: Profile{
-		Topics:  []Topic{{Label: "Big", Terms: terms}},
-		Sources: sources,
+		Topics:           []Topic{{Label: "Big", Terms: terms}},
+		Sources:          sources,
+		PositiveExamples: positives,
+		NegativeExamples: negatives,
 	}}.Trim()
 
 	if len(got.Profile.Topics[0].Terms) != MaxProfileTerms {
@@ -231,9 +240,15 @@ func TestProfileCapsAreEnforced(t *testing.T) {
 	if len(got.Profile.Sources) != MaxProfileSources {
 		t.Errorf("%d sources sent, cap is %d", len(got.Profile.Sources), MaxProfileSources)
 	}
+	if len(got.Profile.PositiveExamples) != MaxProfileExamples {
+		t.Errorf("%d positive examples sent, cap is %d", len(got.Profile.PositiveExamples), MaxProfileExamples)
+	}
+	if len(got.Profile.NegativeExamples) != MaxProfileExamples {
+		t.Errorf("%d negative examples sent, cap is %d", len(got.Profile.NegativeExamples), MaxProfileExamples)
+	}
 	// Trim must not mutate its input — a caller reusing the profile for a second
 	// request would otherwise get a silently shorter one.
-	if len(terms) != 100 {
+	if len(terms) != 100 || len(positives) != 40 || len(negatives) != 40 {
 		t.Error("Trim mutated the caller's slice")
 	}
 }

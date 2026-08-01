@@ -20,9 +20,9 @@ func TestResumeScope(t *testing.T) {
 		p    map[string]string
 		want scope
 	}{
-		{"nil prefs map falls back to All", nil, scope{Title: "All feeds"}},
-		{"empty prefs map falls back to All", map[string]string{}, scope{Title: "All feeds"}},
-		{"unrecognised kind falls back to All", map[string]string{"read.kind": "not-a-real-kind"}, scope{Title: "All feeds"}},
+		{"nil prefs map falls back to All", nil, scope{Title: "All articles"}},
+		{"empty prefs map falls back to All", map[string]string{}, scope{Title: "All articles"}},
+		{"unrecognised kind falls back to All", map[string]string{"read.kind": "not-a-real-kind"}, scope{Title: "All articles"}},
 		{"unread", map[string]string{"read.kind": "unread"}, scope{Title: "Unread", Unread: true}},
 		{"liked", map[string]string{"read.kind": "liked"}, scope{Title: "Liked", Rating: 1}},
 		{"later", map[string]string{"read.kind": "later"}, scope{Title: "Read later", Later: true}},
@@ -50,22 +50,22 @@ func TestResumeScope(t *testing.T) {
 		{
 			"feed kind with an EMPTY value is treated as unset, not as a feed with an empty id",
 			map[string]string{"read.kind": "feed", "read.value": "", "read.title": "should be ignored"},
-			scope{Title: "All feeds"},
+			scope{Title: "All articles"},
 		},
 		{
 			"tag kind with an empty value is likewise unset",
 			map[string]string{"read.kind": "tag", "read.value": ""},
-			scope{Title: "All feeds"},
+			scope{Title: "All articles"},
 		},
 		{
 			"folder kind with an empty value is likewise unset",
 			map[string]string{"read.kind": "folder", "read.value": ""},
-			scope{Title: "All feeds"},
+			scope{Title: "All articles"},
 		},
 		{
 			"search kind with an empty value is likewise unset",
 			map[string]string{"read.kind": "search", "read.value": ""},
-			scope{Title: "All feeds"},
+			scope{Title: "All articles"},
 		},
 	}
 	for _, c := range cases {
@@ -81,7 +81,7 @@ func TestResumeScope(t *testing.T) {
 // deliberate quirk rather than a bug: resumeScope's own comment says "a feed
 // whose title was never saved takes All's title too — an empty header is
 // worse than a slightly wrong one." So the SourceID is honoured (the list
-// really does filter to that feed) while the visible title says "All feeds"
+// really does filter to that feed) while the visible title says "All articles"
 // — an inconsistency the code accepts on purpose. If this ever changes, it
 // should change on purpose, which is what this test is for.
 func TestResumeScopeFeedWithNoSavedTitleTakesAllsTitle(t *testing.T) {
@@ -90,8 +90,8 @@ func TestResumeScopeFeedWithNoSavedTitleTakesAllsTitle(t *testing.T) {
 	if got.SourceID != "src-1" {
 		t.Errorf("resumeScope kept SourceID = %q, want \"src-1\"", got.SourceID)
 	}
-	if got.Title != "All feeds" {
-		t.Errorf("resumeScope.Title = %q, want the documented fallback %q", got.Title, "All feeds")
+	if got.Title != "All articles" {
+		t.Errorf("resumeScope.Title = %q, want the documented fallback %q", got.Title, "All articles")
 	}
 }
 
@@ -128,7 +128,7 @@ func TestResumeScopeNeverRestoresADislikedScope(t *testing.T) {
 // can be pinned without mounting the whole Reader closure.
 func TestToggleUnreadResult(t *testing.T) {
 	tr := mustRuntime(t)
-	allScope := scope{Title: "All feeds"}
+	allScope := scope{Title: "All articles"}
 
 	cases := []struct {
 		name           string

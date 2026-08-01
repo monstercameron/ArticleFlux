@@ -73,25 +73,19 @@ test.describe('empty states', () => {
     await expect(empty).toContainText('Press u to show everything again.');
   });
 
-  test('the rail\'s Unread STREAM shows the wrong empty copy once caught up — a known bug', async ({ page }) => {
-    // client/view/panes.go's `emptyList` switches on `p.unreadOnly` — the
-    // toggle set by the 'u' key / `[data-action="toggle-unread"]` — to decide
-    // whether to show "All caught up". But the rail's own "Unread" row
-    // (client/view/reader.go, `case streamUnread: a.pick(scope{..., Unread:
-    // true})`) sets a DIFFERENT field, `sel.Unread`, which the query layer DOES
-    // honour (`UnreadOnly: unreadOnly.Get() || s.Unread` when fetching) but
-    // `emptyList` never checks. So a reader who reaches "nothing left" by
-    // clicking "Unread" in the sidebar — rather than by pressing u on a
-    // populated list — sees "No articles yet: Add a feed", which is wrong
-    // advice for someone who already has feeds and just finished them.
-    //
-    // test.fail(): the paired test above proves the COPY is correct and
-    // reachable through the toggle; this documents that the STREAM takes a
-    // different, currently-unswitched path to the same visual state. Fixing
-    // `emptyList` to also check `p.sel.Unread` (or having `pick(streamUnread)`
-    // set `unreadOnly` too) should flip this test to an unexpected pass, which
-    // is the signal to remove the annotation.
-    test.fail();
+  test('the rail\'s Unread STREAM shows the correct empty copy once caught up', async ({ page }) => {
+    // Was a test.fail() (TODO testing-campaign Q3): client/view/panes.go's
+    // `emptyList` used to switch on `p.unreadOnly` alone — the toggle set by
+    // the 'u' key / `[data-action="toggle-unread"]` — and never checked the
+    // rail's own "Unread" row, `p.sel.Unread` (client/view/reader.go, `case
+    // streamUnread: a.pick(scope{..., Unread: true})`), even though the query
+    // layer already ORs the two together when fetching. `emptyList` now reads
+    // `case p.unreadOnly, p.sel.Unread:` — both fields reach "All caught up" —
+    // with a comment on that case explaining the two fields have to agree
+    // with the query's own OR. Confirmed by reading `client/view/panes.go`
+    // 2026-07-31, not by a live Playwright run (ports 9400-9500 off limits
+    // this session; worth a live confirmation pass before trusting this
+    // fully).
     await boot(page);
     await page.locator('[data-action="mark-all"]').click();
     await expect(page.locator('.banner')).toContainText(/Marked \d+ read/);

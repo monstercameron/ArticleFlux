@@ -838,6 +838,106 @@ func (x *SetSmartConfigResponse) GetConfig() *GetSmartConfigResponse {
 	return nil
 }
 
+type ListModelsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListModelsRequest) Reset() {
+	*x = ListModelsRequest{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListModelsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListModelsRequest) ProtoMessage() {}
+
+func (x *ListModelsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListModelsRequest.ProtoReflect.Descriptor instead.
+func (*ListModelsRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{10}
+}
+
+type ListModelsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Sorted, filtered to text/reasoning models — see internal/llm.Client.Models.
+	Models []string `protobuf:"bytes,1,rep,name=models,proto3" json:"models,omitempty"`
+	// The model currently configured, so the client can show it selected even
+	// if it fell out of the live list (a model the account has lost access to,
+	// or one entered by hand before this picker existed).
+	Current       string `protobuf:"bytes,2,opt,name=current,proto3" json:"current,omitempty"`
+	DefaultModel  string `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListModelsResponse) Reset() {
+	*x = ListModelsResponse{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListModelsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListModelsResponse) ProtoMessage() {}
+
+func (x *ListModelsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListModelsResponse.ProtoReflect.Descriptor instead.
+func (*ListModelsResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListModelsResponse) GetModels() []string {
+	if x != nil {
+		return x.Models
+	}
+	return nil
+}
+
+func (x *ListModelsResponse) GetCurrent() string {
+	if x != nil {
+		return x.Current
+	}
+	return ""
+}
+
+func (x *ListModelsResponse) GetDefaultModel() string {
+	if x != nil {
+		return x.DefaultModel
+	}
+	return ""
+}
+
 type ListLanguagesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -846,7 +946,7 @@ type ListLanguagesRequest struct {
 
 func (x *ListLanguagesRequest) Reset() {
 	*x = ListLanguagesRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -858,7 +958,7 @@ func (x *ListLanguagesRequest) String() string {
 func (*ListLanguagesRequest) ProtoMessage() {}
 
 func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[10]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -871,7 +971,7 @@ func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesRequest.ProtoReflect.Descriptor instead.
 func (*ListLanguagesRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{10}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{12}
 }
 
 type ListLanguagesResponse struct {
@@ -886,7 +986,7 @@ type ListLanguagesResponse struct {
 
 func (x *ListLanguagesResponse) Reset() {
 	*x = ListLanguagesResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -898,7 +998,7 @@ func (x *ListLanguagesResponse) String() string {
 func (*ListLanguagesResponse) ProtoMessage() {}
 
 func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[11]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -911,7 +1011,7 @@ func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesResponse.ProtoReflect.Descriptor instead.
 func (*ListLanguagesResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{11}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListLanguagesResponse) GetLanguages() []*SmartLanguage {
@@ -943,7 +1043,7 @@ type SmartLanguage struct {
 
 func (x *SmartLanguage) Reset() {
 	*x = SmartLanguage{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -955,7 +1055,7 @@ func (x *SmartLanguage) String() string {
 func (*SmartLanguage) ProtoMessage() {}
 
 func (x *SmartLanguage) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[12]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -968,7 +1068,7 @@ func (x *SmartLanguage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SmartLanguage.ProtoReflect.Descriptor instead.
 func (*SmartLanguage) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{12}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SmartLanguage) GetCode() string {
@@ -1010,7 +1110,7 @@ type TranslateUIRequest struct {
 
 func (x *TranslateUIRequest) Reset() {
 	*x = TranslateUIRequest{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1022,7 +1122,7 @@ func (x *TranslateUIRequest) String() string {
 func (*TranslateUIRequest) ProtoMessage() {}
 
 func (x *TranslateUIRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[13]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1035,7 +1135,7 @@ func (x *TranslateUIRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranslateUIRequest.ProtoReflect.Descriptor instead.
 func (*TranslateUIRequest) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{13}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TranslateUIRequest) GetLocale() string {
@@ -1064,7 +1164,7 @@ type TranslateUIResponse struct {
 
 func (x *TranslateUIResponse) Reset() {
 	*x = TranslateUIResponse{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1076,7 +1176,7 @@ func (x *TranslateUIResponse) String() string {
 func (*TranslateUIResponse) ProtoMessage() {}
 
 func (x *TranslateUIResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[14]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1089,7 +1189,7 @@ func (x *TranslateUIResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranslateUIResponse.ProtoReflect.Descriptor instead.
 func (*TranslateUIResponse) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{14}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TranslateUIResponse) GetLocale() string {
@@ -1129,7 +1229,7 @@ type UIMessage struct {
 
 func (x *UIMessage) Reset() {
 	*x = UIMessage{}
-	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1141,7 +1241,7 @@ func (x *UIMessage) String() string {
 func (*UIMessage) ProtoMessage() {}
 
 func (x *UIMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_articleflux_v1_smart_proto_msgTypes[15]
+	mi := &file_articleflux_v1_smart_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1154,7 +1254,7 @@ func (x *UIMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIMessage.ProtoReflect.Descriptor instead.
 func (*UIMessage) Descriptor() ([]byte, []int) {
-	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{15}
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *UIMessage) GetKey() string {
@@ -1245,7 +1345,12 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\rclear_api_key\x18\x02 \x01(\bR\vclearApiKey\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\"X\n" +
 	"\x16SetSmartConfigResponse\x12>\n" +
-	"\x06config\x18\x01 \x01(\v2&.articleflux.v1.GetSmartConfigResponseR\x06config\"\x16\n" +
+	"\x06config\x18\x01 \x01(\v2&.articleflux.v1.GetSmartConfigResponseR\x06config\"\x13\n" +
+	"\x11ListModelsRequest\"k\n" +
+	"\x12ListModelsResponse\x12\x16\n" +
+	"\x06models\x18\x01 \x03(\tR\x06models\x12\x18\n" +
+	"\acurrent\x18\x02 \x01(\tR\acurrent\x12#\n" +
+	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\"\x16\n" +
 	"\x14ListLanguagesRequest\"y\n" +
 	"\x15ListLanguagesResponse\x12;\n" +
 	"\tlanguages\x18\x01 \x03(\v2\x1d.articleflux.v1.SmartLanguageR\tlanguages\x12#\n" +
@@ -1270,11 +1375,13 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\n" +
 	"FormsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xbc\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\x91\x05\n" +
 	"\fSmartService\x12_\n" +
 	"\x0eGetSmartConfig\x12%.articleflux.v1.GetSmartConfigRequest\x1a&.articleflux.v1.GetSmartConfigResponse\x12_\n" +
 	"\x0eSetSmartConfig\x12%.articleflux.v1.SetSmartConfigRequest\x1a&.articleflux.v1.SetSmartConfigResponse\x12\\\n" +
-	"\rListLanguages\x12$.articleflux.v1.ListLanguagesRequest\x1a%.articleflux.v1.ListLanguagesResponse\x12V\n" +
+	"\rListLanguages\x12$.articleflux.v1.ListLanguagesRequest\x1a%.articleflux.v1.ListLanguagesResponse\x12S\n" +
+	"\n" +
+	"ListModels\x12!.articleflux.v1.ListModelsRequest\x1a\".articleflux.v1.ListModelsResponse\x12V\n" +
 	"\vTranslateUI\x12\".articleflux.v1.TranslateUIRequest\x1a#.articleflux.v1.TranslateUIResponse\x12Y\n" +
 	"\fComposeTheme\x12#.articleflux.v1.ComposeThemeRequest\x1a$.articleflux.v1.ComposeThemeResponse\x12Y\n" +
 	"\fSuggestTheme\x12#.articleflux.v1.SuggestThemeRequest\x1a$.articleflux.v1.SuggestThemeResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
@@ -1291,7 +1398,7 @@ func file_articleflux_v1_smart_proto_rawDescGZIP() []byte {
 	return file_articleflux_v1_smart_proto_rawDescData
 }
 
-var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_articleflux_v1_smart_proto_goTypes = []any{
 	(*ThemeTokens)(nil),            // 0: articleflux.v1.ThemeTokens
 	(*ThemeRepair)(nil),            // 1: articleflux.v1.ThemeRepair
@@ -1303,13 +1410,15 @@ var file_articleflux_v1_smart_proto_goTypes = []any{
 	(*GetSmartConfigResponse)(nil), // 7: articleflux.v1.GetSmartConfigResponse
 	(*SetSmartConfigRequest)(nil),  // 8: articleflux.v1.SetSmartConfigRequest
 	(*SetSmartConfigResponse)(nil), // 9: articleflux.v1.SetSmartConfigResponse
-	(*ListLanguagesRequest)(nil),   // 10: articleflux.v1.ListLanguagesRequest
-	(*ListLanguagesResponse)(nil),  // 11: articleflux.v1.ListLanguagesResponse
-	(*SmartLanguage)(nil),          // 12: articleflux.v1.SmartLanguage
-	(*TranslateUIRequest)(nil),     // 13: articleflux.v1.TranslateUIRequest
-	(*TranslateUIResponse)(nil),    // 14: articleflux.v1.TranslateUIResponse
-	(*UIMessage)(nil),              // 15: articleflux.v1.UIMessage
-	nil,                            // 16: articleflux.v1.UIMessage.FormsEntry
+	(*ListModelsRequest)(nil),      // 10: articleflux.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),     // 11: articleflux.v1.ListModelsResponse
+	(*ListLanguagesRequest)(nil),   // 12: articleflux.v1.ListLanguagesRequest
+	(*ListLanguagesResponse)(nil),  // 13: articleflux.v1.ListLanguagesResponse
+	(*SmartLanguage)(nil),          // 14: articleflux.v1.SmartLanguage
+	(*TranslateUIRequest)(nil),     // 15: articleflux.v1.TranslateUIRequest
+	(*TranslateUIResponse)(nil),    // 16: articleflux.v1.TranslateUIResponse
+	(*UIMessage)(nil),              // 17: articleflux.v1.UIMessage
+	nil,                            // 18: articleflux.v1.UIMessage.FormsEntry
 }
 var file_articleflux_v1_smart_proto_depIdxs = []int32{
 	0,  // 0: articleflux.v1.ComposeThemeResponse.theme:type_name -> articleflux.v1.ThemeTokens
@@ -1318,23 +1427,25 @@ var file_articleflux_v1_smart_proto_depIdxs = []int32{
 	0,  // 3: articleflux.v1.SuggestThemeResponse.target:type_name -> articleflux.v1.ThemeTokens
 	1,  // 4: articleflux.v1.SuggestThemeResponse.repairs:type_name -> articleflux.v1.ThemeRepair
 	7,  // 5: articleflux.v1.SetSmartConfigResponse.config:type_name -> articleflux.v1.GetSmartConfigResponse
-	12, // 6: articleflux.v1.ListLanguagesResponse.languages:type_name -> articleflux.v1.SmartLanguage
-	15, // 7: articleflux.v1.TranslateUIResponse.messages:type_name -> articleflux.v1.UIMessage
-	16, // 8: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
+	14, // 6: articleflux.v1.ListLanguagesResponse.languages:type_name -> articleflux.v1.SmartLanguage
+	17, // 7: articleflux.v1.TranslateUIResponse.messages:type_name -> articleflux.v1.UIMessage
+	18, // 8: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
 	6,  // 9: articleflux.v1.SmartService.GetSmartConfig:input_type -> articleflux.v1.GetSmartConfigRequest
 	8,  // 10: articleflux.v1.SmartService.SetSmartConfig:input_type -> articleflux.v1.SetSmartConfigRequest
-	10, // 11: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
-	13, // 12: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
-	2,  // 13: articleflux.v1.SmartService.ComposeTheme:input_type -> articleflux.v1.ComposeThemeRequest
-	4,  // 14: articleflux.v1.SmartService.SuggestTheme:input_type -> articleflux.v1.SuggestThemeRequest
-	7,  // 15: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
-	9,  // 16: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
-	11, // 17: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
-	14, // 18: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
-	3,  // 19: articleflux.v1.SmartService.ComposeTheme:output_type -> articleflux.v1.ComposeThemeResponse
-	5,  // 20: articleflux.v1.SmartService.SuggestTheme:output_type -> articleflux.v1.SuggestThemeResponse
-	15, // [15:21] is the sub-list for method output_type
-	9,  // [9:15] is the sub-list for method input_type
+	12, // 11: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
+	10, // 12: articleflux.v1.SmartService.ListModels:input_type -> articleflux.v1.ListModelsRequest
+	15, // 13: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
+	2,  // 14: articleflux.v1.SmartService.ComposeTheme:input_type -> articleflux.v1.ComposeThemeRequest
+	4,  // 15: articleflux.v1.SmartService.SuggestTheme:input_type -> articleflux.v1.SuggestThemeRequest
+	7,  // 16: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
+	9,  // 17: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
+	13, // 18: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
+	11, // 19: articleflux.v1.SmartService.ListModels:output_type -> articleflux.v1.ListModelsResponse
+	16, // 20: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
+	3,  // 21: articleflux.v1.SmartService.ComposeTheme:output_type -> articleflux.v1.ComposeThemeResponse
+	5,  // 22: articleflux.v1.SmartService.SuggestTheme:output_type -> articleflux.v1.SuggestThemeResponse
+	16, // [16:23] is the sub-list for method output_type
+	9,  // [9:16] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -1351,7 +1462,7 @@ func file_articleflux_v1_smart_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_smart_proto_rawDesc), len(file_articleflux_v1_smart_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

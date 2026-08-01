@@ -78,7 +78,14 @@ const rerankInstructions = `You are helping a person triage their own reading li
 
 You will be given numbered candidates (title and short summary) that a deterministic
 scorer already selected and ordered, plus a profile describing what this reader tends to
-read. Return the candidate ids you would put at the top, best first.
+read. The profile may include two example lists: headlines this reader has responded to
+strongly before (liked, clicked through, read to the end) and headlines they explicitly
+disliked. These are taste calibration, not more candidates and not a template to match
+literally — use them to judge whether a candidate reads like the kind of thing in the
+first list or the second, the way you would infer someone's taste from a few examples of
+what they liked and hated. A candidate does not have to resemble an example's TOPIC to
+count; a shared angle, depth, or style is just as telling as a shared subject. Return the
+candidate ids you would put at the top, best first.
 
 For each id, give a SHORT reason — at most eight words, no full stop — saying what you saw
 in that specific article that earned the promotion. Write it as a fragment that completes
@@ -166,6 +173,8 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 			llm.Topic{Label: t.Label, Terms: t.Terms})
 	}
 	payload.Profile.Sources = prof.Sources
+	payload.Profile.PositiveExamples = prof.PositiveExamples
+	payload.Profile.NegativeExamples = prof.NegativeExamples
 	// Trim applies §18.8's caps at the boundary rather than at the call site, so a caller
 	// that assembled forty terms is corrected once.
 	payload = payload.Trim()

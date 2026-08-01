@@ -165,7 +165,25 @@ test.describe('every dialog', () => {
     return slot;
   }
 
-  test('Tag settings opens, and is not present before it ever has', async ({ page }) => {
+  // Was two tests: one for mount timing (`mountedBeforeOpen: false`,
+  // `strictExit: false`) and a `test.fail()` documenting that Tag settings
+  // closed with a hard cut instead of the shared exit animation (TODO
+  // testing-campaign Q3). Both premises are stale — collapsed into one test
+  // 2026-07-31, by reading rather than a live Playwright run (ports 9400-9500
+  // off limits this session; worth a live confirmation pass before trusting
+  // this fully). `client/view/tagsettings.go`'s `tagSettings()` no longer has
+  // an early return on `p.t == nil`: the doc comment there now reads "No
+  // early return on p.t == nil: like its five siblings … this panel is
+  // rendered unconditionally and leans on scrim's data-open attribute to
+  // carry open/closed." `client/view/reader.go` calls `tagSettings(tr,
+  // tagSettingsProps{...})` unconditionally too (no `ui.If` gate), so the
+  // scrim + dialog markup — including its `aria-label` — is now in the DOM
+  // from boot, exactly like the other five. That removes both the "not
+  // present before it ever has" premise (mountedBeforeOpen was never really
+  // false any more) and the "hard cut" premise (nothing tears the subtree out
+  // mid-transition any more) in the same change, so the standard `cycle()`
+  // call — the one all four other siblings above use — is the correct test.
+  test('Tag settings opens, closes, and is untabbable when closed', async ({ page }) => {
     await boot(page);
     // A tag has to exist before it can be configured; tags are created by use,
     // through the article panel — the same route reader.spec.mjs and
@@ -176,41 +194,7 @@ test.describe('every dialog', () => {
       // force:true: the gear is opacity:0 until hover on desktop, which is the
       // design, not something this cycle is testing.
       async () => { await slot.locator('[data-action="tag-settings"]').click({ force: true }); },
-      async () => { await closeButton(page, 'Tag settings').click(); },
-      // strictExit:false — this test is only about mount timing (not present,
-      // then present once opened) and closing at all; the exit-ANIMATION
-      // contract the other five dialogs share is its own regression test
-      // below, because Tag settings does not currently meet it.
-      { mountedBeforeOpen: false, strictExit: false });
-  });
-
-  test('Tag settings closes with a HARD CUT, not the shared exit animation — a known bug', async ({ page }) => {
-    // client/view/tagsettings.go's own comment states the intent: "`p.open` is
-    // deliberately NOT part of the guard ... which is what lets it animate out
-    // like the other five." The code does not do that. `closeTagSettings`
-    // (client/view/reader.go) clears `tsOpen` synchronously, and
-    // `tagSettings()` guards on `p.t == nil` — which `tagByID(tags, "")`
-    // becomes the instant `tsOpen` clears — so the dialog's content, and the
-    // `[role="dialog"]` element itself, are torn out of the tree in the SAME
-    // render that flips `data-open` to false, before any transition can run.
-    // Confirmed by sampling the DOM every 100ms across the close: the other
-    // five dialogs hold `data-open="false"` with their content still present
-    // (this file's `cycle` helper depends on exactly that); Tag settings goes
-    // from `data-open="true"` with content to NO MATCHING ELEMENT AT ALL
-    // within one 100ms sample.
-    //
-    // test.fail() rather than a passing assertion of the CURRENT behaviour:
-    // the intended contract is stated in the code's own comment, so asserting
-    // the hard cut as correct would be recording a bug as a feature. If this
-    // is ever fixed, this test starts failing ITS failure expectation, which
-    // is Playwright's own signal to delete the annotation.
-    test.fail();
-    await boot(page);
-    const slot = await tagUp(page, 'kbdmap2');
-    await cycle(page, 'Tag settings',
-      async () => { await slot.locator('[data-action="tag-settings"]').click({ force: true }); },
-      async () => { await closeButton(page, 'Tag settings').click(); },
-      { mountedBeforeOpen: false });
+      async () => { await closeButton(page, 'Tag settings').click(); });
   });
 
   test('Category opens, closes, and is untabbable when closed', async ({ page }, testInfo) => {

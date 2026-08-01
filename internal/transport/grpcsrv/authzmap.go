@@ -155,6 +155,21 @@ func DefaultPolicy() *authz.Map {
 		m.Require(reader+method, authz.CapManageViews)
 	}
 
+	// STOPGAP, not a reviewed design decision: these four RPCs exist in the
+	// generated stub (internal/recommend's site-recommendation feature, still
+	// mid-flight — no ReaderServer method implements any of them yet, so
+	// UnimplementedReaderServiceServer answers every call regardless of this
+	// entry) but had no policy row at all, which the server refuses to boot
+	// with. Mapped to CapSubscribe as the closest existing capability —
+	// "accept/reject a recommended site" is the same shape of action as
+	// Subscribe/Unsubscribe above — so the instance can start while whoever
+	// finishes that feature reconsiders the choice with the real handlers in
+	// front of them.
+	for _, method := range []string{"ListRecommendations", "AcceptRecommendation",
+		"RejectRecommendation", "RefreshRecommendations"} {
+		m.Require(reader+method, authz.CapSubscribe)
+	}
+
 	// --- Smart+ ---------------------------------------------------------------
 	//
 	// The config holds the instance's OpenAI key, so it is tenant settings, not a
@@ -163,6 +178,11 @@ func DefaultPolicy() *authz.Map {
 	// superadmin are exactly the roles holding CapTenantSettings.
 	m.Require(smart+"GetSmartConfig", authz.CapTenantSettings)
 	m.Require(smart+"SetSmartConfig", authz.CapTenantSettings)
+	// The model picker is a live call against the instance's own key, gated
+	// the same as the config it configures — ListModels checks requireOwner
+	// inline too, and the two agree by construction for the same reason
+	// GetSmartConfig/SetSmartConfig's comment above gives.
+	m.Require(smart+"ListModels", authz.CapTenantSettings)
 	// Choosing an interface language is not an administrative act.
 	m.Require(smart+"ListLanguages", authz.CapReadItems)
 	m.Require(smart+"TranslateUI", authz.CapReadItems)

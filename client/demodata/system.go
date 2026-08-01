@@ -47,7 +47,7 @@ func (s *authService) WhoAmI(context.Context, *pb.WhoAmIRequest) (*pb.WhoAmIResp
 	}, nil
 }
 
-func (s *authService) Login(_ context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
+func (s *authService) Login(_ context.Context, _ *pb.LoginRequest) (*pb.LoginResponse, error) {
 	// Reachable only if someone navigates to the login screen deliberately,
 	// since Root never shows it when WhoAmI answers. Accepting anything is the
 	// right behaviour for a demo with no accounts: refusing would strand a
@@ -58,7 +58,6 @@ func (s *authService) Login(_ context.Context, req *pb.LoginRequest) (*pb.LoginR
 		ExpiresAt: stamp(s.inst.clock().Add(24 * time.Hour)),
 		Username:  "demo",
 		Role:      "owner",
-		DeviceId:  req.GetDeviceId(),
 	}, nil
 }
 

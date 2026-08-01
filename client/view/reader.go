@@ -317,10 +317,11 @@ func Reader(p readerProps) ui.Node {
 	// Declared here and assigned with the rest of the show, far below, because
 	// the narrator's own callbacks are written before it and have to reach them.
 	var (
-		showQ     func() []string
-		showLoop  func() bool
-		showItem  func(id string) *pb.Item
-		showTitle func(id string) string
+		showQ        func() []string
+		showLoop     func() bool
+		showItem     func(id string) *pb.Item
+		showTitle    func(id string) string
+		showInterest func(id string) int
 	)
 	introWaiting := ui.UseRef(false)
 	introSince := ui.UseRef(time.Time{})
@@ -424,6 +425,15 @@ func Reader(p readerProps) ui.Node {
 	// no key should not be polling a screen nobody has.
 	smartCfg := ui.UseState[*pb.GetSmartConfigResponse](nil)
 	smartLangs := ui.UseState[[]*pb.SmartLanguage](nil)
+	// smartModels is the live provider list for the model picker. Nil is a
+	// legitimate, common state — no key yet, or the listing call failed — and
+	// the picker's own fallback (a free-text field) is what renders then, not
+	// an error screen.
+	smartModels := ui.UseState[[]string](nil)
+	// smartModelCustom is whether the reader asked for the free-text field
+	// over the live list. Reset on every settings load (below), so opening
+	// the tab always offers the list first.
+	smartModelCustom := ui.UseState(false)
 	smartKeyDraft := ui.UseState("")
 	smartModelDraft := ui.UseState("")
 	// smartBusy holds the locale being translated, not a bool: the chip that
@@ -461,6 +471,15 @@ func Reader(p readerProps) ui.Node {
 	// a reader who reloads loses the offer, which is the right trade for keeping
 	// no per-user scratch state on disk.
 	undoToken := ui.UseState("")
+	// The Smart+ category suggestion Subscribe attaches to a successful add
+	// (smart.categorize, off by default — see subscribeURL below). Cleared the
+	// same way undoToken is: an empty source id means no suggestion is on
+	// screen, whether because none was offered, it was already answered, or a
+	// newer subscribe replaced it.
+	catSuggestSourceID := ui.UseState("")
+	catSuggestName := ui.UseState("")
+	catSuggestIsNew := ui.UseState(false)
+	catSuggestBusy := ui.UseState(false)
 	// markOnPast is the one reading behaviour that is genuinely contentious:
 	// scrolling past an article marks it read, which is right for a firehose and
 	// wrong for someone who scrolls to look rather than to read.
@@ -647,6 +666,15 @@ func Reader(p readerProps) ui.Node {
 	// Seeded from the scope that actually won rather than from the preference, so
 	// arriving at /search?q=rust puts "rust" in the box the reader is looking at.
 	searchText := ui.UseState(boot.sel.Search)
+	// searchTimer is the ONE debounced-search timer for the field's whole
+	// lifetime (see onSearchInput below): each keystroke resets its deadline
+	// rather than cancelling it and creating a fresh one. Creating a new Go
+	// timer per keystroke was tried first and measurably dropped characters
+	// under fast typing — seemingly from the overhead of spinning up and
+	// tearing down a timer's goroutine on every character, which was enough
+	// to occasionally delay a render past the next keystroke arriving.
+	// Reset costs nothing extra per keystroke, which is the whole fix.
+	searchTimer := ui.UseRef((*time.Timer)(nil))
 
 	// The add-a-feed dialog. Its three drafts live here, with every other piece
 	// of state, so they survive the re-render that typing in any one of them
@@ -673,6 +701,12 @@ func Reader(p readerProps) ui.Node {
 	// restored from prefs on connect like every other setting. Default off: it
 	// is an egress decision (§18.8) and a default that egresses is not consent.
 	smartFollow := ui.UseState(false)
+	// smartCategorize is the standing consent for the model to suggest a
+	// category for a newly-added feed (subscribe.go's smartCategorizePref).
+	// Same idiom as smartFollow, including the default-off reasoning: sending
+	// the reader's own taxonomy to a model is a decision the reader makes, not
+	// one the app makes for them.
+	smartCategorize := ui.UseState(false)
 	// The category editor: which category, the draft name, and whether the
 	// delete button is armed. Arming is per-open, deliberately — a confirm that
 	// survives closing the dialog is a confirm the reader has forgotten giving.
@@ -708,7 +742,10 @@ func Reader(p readerProps) ui.Node {
 		// doing, and a live "Delete it" button under that is a trap.
 		catConfirm.Set(false)
 	})
-	onSearchInput := ui.UseEvent(func(v string) { searchText.Set(v) })
+	// onSearchInput itself is defined below, after runSearch — it debounces a
+	// call into it (searchDebounce), so it needs runSearch to already be in
+	// scope rather than reaching for it through a level of indirection.
+
 	// The rail's name filter is state the reader set deliberately, so it survives
 	// a refresh like every other filter. Saved on each keystroke rather than
 	// debounced: SetPrefs is one small upsert, and a debounce that loses the last
@@ -1848,7 +1885,7 @@ func Reader(p readerProps) ui.Node {
 				if err != nil {
 					ui.PostAsync(func() {
 						addBusy.Set(false)
-						addErr.Set(tr.T("reader", "errNewCategory", i18n.Args{"err": err.Error()}))
+						addErr.Set(tr.T("reader", "errNewCategory", i18n.Args{"err": serverText(tr, err)}))
 					})
 					return
 				}
@@ -1907,7 +1944,13 @@ func Reader(p readerProps) ui.Node {
 					folders.Set(folderList)
 				}
 				if err != nil {
-					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": err.Error()}))
+					// serverText, not err.Error(): the latter is gRPC's own
+					// wire format ("rpc error: code = ... desc = ..."), which
+					// reads like a crash rather than an instruction (Q4,
+					// 2026-07-31 QA pass). serverText resolves the server's
+					// catalog key when there is one and falls back to the
+					// status message otherwise — see its own doc comment.
+					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": serverText(tr, err)}))
 					// The address is not a feed. That is not the end of the
 					// answer — most addresses people paste are pages, and the
 					// free rungs of the ladder find the feed for four sites in
@@ -1927,6 +1970,17 @@ func Reader(p readerProps) ui.Node {
 					notice.Set(tr.T("reader", "addedFeedExisted", i18n.Args{"feed": res.GetFeed().GetTitle()}))
 				} else {
 					notice.Set(tr.T("reader", "addedFeed", i18n.Args{"feed": res.GetFeed().GetTitle()}))
+				}
+				// The categorizer's answer, when smart.categorize is on and it had
+				// one — see subscribe.go's suggestCategory on the server. Replaces
+				// whatever suggestion was already on screen rather than stacking:
+				// one add, one open question at a time.
+				if res.GetSuggestedCategory() != "" {
+					catSuggestSourceID.Set(res.GetFeed().GetSourceId())
+					catSuggestName.Set(res.GetSuggestedCategory())
+					catSuggestIsNew.Set(res.GetSuggestedCategoryIsNew())
+				} else {
+					catSuggestSourceID.Set("")
 				}
 				if okFeeds {
 					feedsGen.Set(feedsGen.Get() + 1)
@@ -2030,6 +2084,14 @@ func Reader(p readerProps) ui.Node {
 	}
 
 	runSearch := func(q string) {
+		// Whatever brought us here — Enter, or the debounce below — wins the
+		// race with any still-pending debounced run: the search is happening
+		// NOW, and a timer that fired a moment later with the same or an
+		// older query would be a second, redundant fetch (and a second
+		// Searched signal for one query).
+		if t := searchTimer.Get(); t != nil {
+			t.Stop()
+		}
 		// A query is a term the reader VOLUNTEERED — no inference, no
 		// interpretation — which makes it the cheapest high-quality signal in
 		// the app. It is not about any one item, so it carries no item id.
@@ -2056,6 +2118,54 @@ func Reader(p readerProps) ui.Node {
 		pane.Set(viewList)
 		loadItems(s, unreadOnly.Get())
 	}
+
+	// onSearchInput updates the box on every keystroke — the reader's typing
+	// must never lag — but runs the search itself on a pause (searchDebounce)
+	// rather than on Enter alone, so results start arriving while the reader
+	// is still typing.
+	//
+	// The SAME debounce governs the box going back to empty. There is no
+	// special case for "cleared" here, deliberately: clearing is just another
+	// value the field settled on, and un-searching the instant a backspace
+	// empties it would flash the unfiltered list back onto the screen for
+	// however long it takes to type the next character of a replacement
+	// query. Waiting out the same pause the box would wait for any other
+	// value treats "back to nothing" as one more thing the reader typed,
+	// not as a special emergency to act on immediately.
+	//
+	// Enter still flushes instantly (reader_keyboard.go's "search" role) and
+	// wins any race with a pending timer — see runSearch's own guard above —
+	// which is what a reader who already knows their query is asking for.
+	//
+	// ONE timer for the field's whole lifetime, Reset rather than a fresh
+	// AfterFunc per keystroke — objectively the more correct use of the
+	// stdlib regardless of the paragraph below, and what lets the callback
+	// read searchText fresh at fire time instead of closing over a
+	// per-keystroke snapshot: the same closure fires no matter which
+	// keystroke's Reset last touched the deadline, so there is nothing to
+	// capture and nothing that can go stale.
+	//
+	// KNOWN ISSUE, shipped anyway (TODO.md, "Search goes live, with a known
+	// flake it shipped despite", 2026-08-01): fast synthetic typing
+	// (Playwright pressSequentially at 80ms/key) occasionally drops a
+	// character from the box once this debounce is live — confirmed caused
+	// by this feature (disabling it is 10/10 clean on the identical
+	// keystroke sequence, against real fixtures), confirmed NOT explained by
+	// Timer.Stop's race, by per-keystroke timer-creation overhead (this
+	// Reset version was tried specifically to rule that out — it did not
+	// help), or by headless-only rendering throttling (reproduces --headed
+	// too). Mechanism unconfirmed; see TODO.md before assuming this comment
+	// block's history explains it.
+	onSearchInput := ui.UseEvent(func(v string) {
+		searchText.Set(v)
+		if t := searchTimer.Get(); t != nil {
+			t.Reset(searchDebounce)
+			return
+		}
+		searchTimer.Set(time.AfterFunc(searchDebounce, func() {
+			ui.PostAsync(func() { runSearch(strings.TrimSpace(searchText.Get())) })
+		}))
+	})
 
 	// selectScopeWithUnread is selectScope's body, parameterized on the
 	// unread-only flag to load with. selectScope below is the common case: it
@@ -3064,7 +3174,7 @@ func Reader(p readerProps) ui.Node {
 		addSearched: addSearched, addErr: addErr, addFolder: addFolder, addCands: addCands,
 		addProposal: addProposal, addSmartBusy: addSmartBusy, addSmartStatus: addSmartStatus,
 		addBusy: addBusy, addNewCat: addNewCat, addTitle: addTitle, addURL: addURL,
-		smartFollow: smartFollow, client: client, feeds: feeds, feedsGen: feedsGen,
+		smartFollow: smartFollow, smartCategorize: smartCategorize, client: client, feeds: feeds, feedsGen: feedsGen,
 		folders: folders, foldersGen: foldersGen, hostsRef: hostsRef, notice: notice,
 		sel: sel, totalUnread: totalUnread, unreadOnly: unreadOnly, tr: tr,
 		loadFeeds: loadFeeds, loadFolders: loadFolders, loadItems: loadItems,
@@ -3686,8 +3796,9 @@ func Reader(p readerProps) ui.Node {
 					now:     localStamp(platform.LocalNow()),
 					stories: len(itemsRef.Get()),
 					// The headlines the broadcast opens with, starting at this
-					// story: a bulletin lists its own top story first.
-					lineup: queueLineup(showQ(), it.GetId(), slideMaxLineup, showTitle),
+					// story: a bulletin lists its own top story first, then the
+					// most interesting few of what follows.
+					lineup: queueLineup(showQ(), it.GetId(), slideMaxLineup, showTitle, showInterest),
 					intro:  introAskFor(it.GetId()),
 				}), lead, onState)
 				// Warm the NEXT article's audio while this one plays.
@@ -3943,6 +4054,31 @@ func Reader(p readerProps) ui.Node {
 			return it.GetTitle()
 		}
 		return ""
+	}
+
+	// showInterest is queueLineup's ranking signal: how much a story is
+	// worth naming in the run-through, read off the SAME reason chips the
+	// list itself shows rather than invented fresh here.
+	//
+	// Zero for a story with no rank data at all — every plain-feed story
+	// ties there, which is exactly right: outside a ranked scope this app
+	// has no opinion about which headline is more interesting, and the
+	// random tie-break in queueLineup is what keeps the run-through varying
+	// broadcast to broadcast instead of silently falling back to queue
+	// order for every reader who is not playing My Feed.
+	showInterest = func(id string) int {
+		it := showItem(id)
+		if it == nil {
+			return 0
+		}
+		score := len(it.GetRankReasonTerms())
+		switch it.GetRankSlot() {
+		case "top":
+			score += 3
+		case "cluster_head":
+			score++
+		}
+		return score
 	}
 
 	// slideVars writes the two numbers the stylesheet animates from.
@@ -4666,8 +4802,18 @@ func Reader(p readerProps) ui.Node {
 	// Starting from the Podcast tab: open the show, then start the narrator.
 	// slideNeedsStart assumes it is already inside the slideshow — it was written
 	// for a dialog that could only be reached from there.
+	//
+	// The gate here has to be settingsPrereqs, not slidePrereqsNow: this button
+	// is pressed BEFORE any slide is open, so showID is still "" (or the id of
+	// whatever show last closed) and bodies[showID] can never carry a fetched
+	// SpeechUrl yet — slidePrereqsNow's serverKey condition would therefore be
+	// false unconditionally, and slideStart below would never run no matter
+	// what the reader's settings actually are. That was the bug: the button
+	// looked live but silently no-opped on every press. settingsPrereqs asks
+	// the same four questions from the answer that IS available out here — the
+	// server's Smart+ config — which is exactly what this call site has.
 	act.Get().podcastStart = func() {
-		if !slidePrereqsMet(slidePrereqsNow()) {
+		if !slidePrereqsMet(settingsPrereqs()) {
 			return
 		}
 		act.Get().slideStart()
@@ -5270,9 +5416,10 @@ func Reader(p readerProps) ui.Node {
 	}
 	// --- Smart+ ---------------------------------------------------------------
 
-	// loadSmart fetches the config and the language list together, because the
-	// second is meaningless without the first: whether a language chip is
-	// pressable depends on whether there is a key at all.
+	// loadSmart fetches the config, the language list and the model list
+	// together, because none of the three is meaningful without the first:
+	// whether a language chip is pressable, or the model picker has anything
+	// to pick from, depends on whether there is a key at all.
 	act.Get().loadSmart = func() {
 		c := client.Get()
 		if c == nil {
@@ -5280,9 +5427,13 @@ func Reader(p readerProps) ui.Node {
 		}
 		smartLoading.Set(true)
 		smartErr.Set("")
+		// Every fresh load offers the list first, whatever was chosen on a
+		// previous visit — the toggle is a per-viewing choice, not a saved one.
+		smartModelCustom.Set(false)
 		go func() {
 			cfg, cerr := c.SmartConfig(context.Background())
 			langs, lerr := c.SmartLanguages(context.Background())
+			models, merr := c.SmartModels(context.Background())
 			ui.PostAsync(func() {
 				smartLoading.Set(false)
 				if cerr != nil {
@@ -5296,6 +5447,13 @@ func Reader(p readerProps) ui.Node {
 				smartModelDraft.Set(cfg.GetModel())
 				if lerr == nil {
 					smartLangs.Set(langs.GetLanguages())
+				}
+				// A failed listing call is not a failed load: the picker's own
+				// fallback is the free-text field this replaces, and a member
+				// with no reason to expect a live list must not see an error
+				// banner over a screen that otherwise rendered fine.
+				if merr == nil {
+					smartModels.Set(models.GetModels())
 				}
 			})
 		}()
@@ -5364,6 +5522,13 @@ func Reader(p readerProps) ui.Node {
 				smartCfg.Set(cfg)
 			})
 		}()
+	}
+
+	// toggleSmartModelCustom switches the model picker between the live list
+	// and the free-text field. Purely local — nothing is saved by pressing
+	// it, only Save model persists anything.
+	act.Get().toggleSmartModelCustom = func() {
+		smartModelCustom.Set(!smartModelCustom.Get())
 	}
 
 	// toggleFeedPlus is the opt-in for Smart+ ranking of My Feed.
@@ -5747,6 +5912,98 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	act.Get().dismissCategorySuggestion = func() {
+		catSuggestSourceID.Set("")
+	}
+
+	// acceptCategorySuggestion files the feed Subscribe just added under the
+	// suggested category. A new category is created first and the feed filed
+	// with its id, the same two-round-trip shape subscribeURL uses when the
+	// reader names one by hand; an existing one is resolved to an id from the
+	// folder list this client already has loaded rather than asked of the
+	// server again, because that is the same list the dialog's chips use.
+	act.Get().acceptCategorySuggestion = func() {
+		c := client.Get()
+		sourceID := catSuggestSourceID.Get()
+		name := catSuggestName.Get()
+		if c == nil || sourceID == "" || name == "" || catSuggestBusy.Get() {
+			return
+		}
+		isNew := catSuggestIsNew.Get()
+		folderID := ""
+		if !isNew {
+			for _, f := range folders.Get() {
+				if strings.EqualFold(f.GetName(), name) {
+					folderID = f.GetId()
+					break
+				}
+			}
+			if folderID == "" {
+				// The suggestion named a category this client's own list does not
+				// have — stale between the suggestion landing and the press, or a
+				// reply that did not match what it was given (categorize.go
+				// guards against that server-side, but a client is never the
+				// last line of defence against its own network). Dropped rather
+				// than guessed at.
+				catSuggestSourceID.Set("")
+				return
+			}
+		}
+		catSuggestBusy.Set(true)
+		go func() {
+			if isNew {
+				f, err := c.CreateFolder(context.Background(), name)
+				if err != nil {
+					ui.PostAsync(func() {
+						catSuggestBusy.Set(false)
+						catSuggestSourceID.Set("")
+						notice.Set(tr.T("reader", "errFileCategory", i18n.Args{"err": err.Error()}))
+					})
+					return
+				}
+				folderID = f.GetId()
+			}
+			err := c.SetFeedFolder(context.Background(), sourceID, folderID)
+
+			// Same discipline as subscribeURL's own success path: fetched HERE,
+			// before the one PostAsync below, not via loadFolders()/loadFeeds().
+			var folderList []*pb.Folder
+			var feedList []*pb.Feed
+			var total int32
+			okFolders, okFeeds := false, false
+			if isNew {
+				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
+					folderList, okFolders = fl, true
+				}
+			}
+			if err == nil {
+				if fres, _, ferr := c.ListFeedsCached(context.Background()); ferr == nil {
+					feedList, total, okFeeds = fres.GetFeeds(), fres.GetTotalUnread(), true
+				}
+			}
+
+			ui.PostAsync(func() {
+				catSuggestBusy.Set(false)
+				catSuggestSourceID.Set("")
+				if okFolders {
+					foldersGen.Set(foldersGen.Get() + 1)
+					folders.Set(folderList)
+				}
+				if err != nil {
+					notice.Set(tr.T("reader", "errFileCategory", i18n.Args{"err": err.Error()}))
+					return
+				}
+				if okFeeds {
+					feedsGen.Set(feedsGen.Get() + 1)
+					feeds.Set(feedList)
+					hostsRef.Set(iconHostsOf(feedList))
+					totalUnread.Set(int(total))
+				}
+				loadItems(sel.Get(), unreadOnly.Get())
+			})
+		}()
+	}
+
 	act.Get().toggleHelp = func() { helpOpen.Set(!helpOpen.Get()) }
 	act.Get().closeHelp = func() { helpOpen.Set(false) }
 
@@ -5764,7 +6021,7 @@ func Reader(p readerProps) ui.Node {
 		paletteQuery.Set("")
 	}
 	act.Get().movePalette = func(delta int) {
-		n := len(filterPalette(buildPalette(tr, feeds.Get(), tags.Get()), paletteQuery.Get()))
+		n := len(filterPalette(buildPalette(tr, feeds.Get(), tags.Get(), look.Get().motionOn()), paletteQuery.Get()))
 		if n == 0 {
 			return
 		}
@@ -5838,6 +6095,12 @@ func Reader(p readerProps) ui.Node {
 			case "appearance":
 				a.showSettings()
 				a.settingsTabTo(string(setAppearance))
+			case "settings":
+				a.showSettings()
+			case "add-feed":
+				a.openAddFeed()
+			case "shortcuts":
+				a.toggleHelp()
 			// Themes are reachable by NAME from the palette, one entry each,
 			// rather than through a single "cycle theme" verb. A palette is a
 			// name lookup: a reader who wants Daylight types "day", and a verb
@@ -5973,7 +6236,7 @@ func Reader(p readerProps) ui.Node {
 	delegatedClicks{
 		tr: tr, act: act, client: client, busy: busy, pane: pane,
 		current: current, stream: stream, feeds: feeds, folders: folders,
-		tags: tags, fsData: fsData,
+		tags: tags, fsData: fsData, expectFocus: expectFocus,
 	}.wire()
 
 	// restoring marks the next address change as a RESTORATION rather than a
@@ -6104,6 +6367,9 @@ func Reader(p readerProps) ui.Node {
 				}
 				if v, ok := p[smartFollowPref]; ok {
 					smartFollow.Set(v == "true")
+				}
+				if v, ok := p[smartCategorizePref]; ok {
+					smartCategorize.Set(v == "true")
 				}
 				if v, ok := p["tts.smartPlus"]; ok {
 					speakSmart.Set(v == "true")
@@ -6647,7 +6913,7 @@ func Reader(p readerProps) ui.Node {
 		items: items, stream: stream, feeds: feeds, tags: tags,
 		focusMode: focusMode, showOpen: showOpen,
 		fsOpen: fsOpen, tsOpen: tsOpen,
-		paletteActive: paletteActive,
+		paletteActive: paletteActive, look: look,
 		openItem:      openItem, refresh: refresh,
 	}.wire()
 
@@ -6983,27 +7249,30 @@ func Reader(p readerProps) ui.Node {
 				// the badge is how many are unread — and two nearly-identical
 				// numbers side by side read as an off-by-one bug rather than as two
 				// different measurements.
-				ranked:        rankedCount.Get(),
-				iconHosts:     hosts,
-				hiddenCats:    catHidden.Get(),
-				fresh:         freshItems.Get(),
-				scrollTop:     scrollTop.Get(),
-				viewport:      viewport.Get(),
-				conn:          conn.Get(),
-				connFix:       fixAction,
-				connFixLabel:  fixLabel,
-				staleNote:     staleNote,
-				unread:        totalUnread.Get(),
-				busy:          busy.Get(),
-				notice:        notice.Get(),
-				searchValue:   searchText.Get(),
-				onSearchInput: onSearchInput,
-				onSearchKey:   noopHandler,
+				ranked:         rankedCount.Get(),
+				iconHosts:      hosts,
+				hiddenCats:     catHidden.Get(),
+				fresh:          freshItems.Get(),
+				scrollTop:      scrollTop.Get(),
+				viewport:       viewport.Get(),
+				conn:           conn.Get(),
+				connFix:        fixAction,
+				connFixLabel:   fixLabel,
+				staleNote:      staleNote,
+				unread:         totalUnread.Get(),
+				busy:           busy.Get(),
+				notice:         notice.Get(),
+				catSuggestName: catSuggestName.Get(),
+				catSuggestBusy: catSuggestBusy.Get(),
+				searchValue:    searchText.Get(),
+				onSearchInput:  onSearchInput,
+				onSearchKey:    noopHandler,
 			}),
 			grip(tr, "list"),
 			ui.If(pane.Get() == viewSettings, func() ui.Node {
 				return settingsPane(tr, settingsProps{
 					tab:          settingsTab(setTab.Get()),
+					client:       client.Get(),
 					conn:         conn.Get(),
 					reconnects:   reconnects,
 					connHealth:   connHealth,
@@ -7051,6 +7320,8 @@ func Reader(p readerProps) ui.Node {
 						err:         smartErr.Get(),
 						loading:     smartLoading.Get(),
 						feedPlus:    feedPlus.Get(),
+						models:      smartModels.Get(),
+						modelCustom: smartModelCustom.Get(),
 					},
 					// What read-to-me needs, for the Podcast tab. Read here rather
 					// than in the tab, because two of the four conditions are
@@ -7159,25 +7430,26 @@ func Reader(p readerProps) ui.Node {
 			folderID: folderOf(feeds.Get(), fsOpen.Get()),
 		}),
 		addFeedDialog(tr, addFeedProps{
-			open:         addOpen.Get(),
-			url:          addURL.Get(),
-			title:        addTitle.Get(),
-			newCategory:  addNewCat.Get(),
-			folderID:     addFolder.Get(),
-			newOpen:      addNewOpen.Get(),
-			folders:      folders.Get(),
-			busy:         addBusy.Get(),
-			err:          addErr.Get(),
-			onURLInput:   onAddInput,
-			onTitleInput: onAddTitleInput,
-			onNewInput:   onAddNewInput,
-			looking:      addLooking.Get(),
-			searched:     addSearched.Get(),
-			candidates:   addCands.Get(),
-			proposal:     addProposal.Get(),
-			smartOn:      smartFollow.Get(),
-			smartBusy:    addSmartBusy.Get(),
-			smartStatus:  addSmartStatus.Get(),
+			open:              addOpen.Get(),
+			url:               addURL.Get(),
+			title:             addTitle.Get(),
+			newCategory:       addNewCat.Get(),
+			folderID:          addFolder.Get(),
+			newOpen:           addNewOpen.Get(),
+			folders:           folders.Get(),
+			busy:              addBusy.Get(),
+			err:               addErr.Get(),
+			onURLInput:        onAddInput,
+			onTitleInput:      onAddTitleInput,
+			onNewInput:        onAddNewInput,
+			looking:           addLooking.Get(),
+			searched:          addSearched.Get(),
+			candidates:        addCands.Get(),
+			proposal:          addProposal.Get(),
+			smartOn:           smartFollow.Get(),
+			smartBusy:         addSmartBusy.Get(),
+			smartStatus:       addSmartStatus.Get(),
+			smartCategorizeOn: smartCategorize.Get(),
 		}),
 		categoryDialog(tr, categoryProps{
 			open:    catID.Get() != "",
@@ -7242,7 +7514,7 @@ func Reader(p readerProps) ui.Node {
 			// tags, streams and commands and then SORTS them — which was
 			// happening on every scroll frame for a dialog nobody had opened.
 			entries: paletteEntriesIf(tr, paletteOpen.Get(), feeds.Get(), tags.Get(),
-				paletteQuery.Get()),
+				paletteQuery.Get(), look.Get().motionOn()),
 			onInput: onPaletteInput,
 		}),
 	)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
@@ -256,4 +257,47 @@ func (r *ReaderRepo) DismissedDomains(ctx context.Context, s Scope) (map[string]
 		out[d] = true
 	}
 	return out, rows.Err()
+}
+
+// RecommendationByDomain reads one open suggestion, for /discover's Accept
+// action — it needs the feed URL recommendjob already validated rather than
+// re-discovering it from a bare domain the reader clicked.
+func (r *ReaderRepo) RecommendationByDomain(ctx context.Context, s Scope, domain string) (StoredRecommendation, bool, error) {
+	if !s.Valid() {
+		return StoredRecommendation{}, false, ErrNoScope
+	}
+	var rec StoredRecommendation
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT domain, ifnull(feed_url,''), ifnull(title,''), score, rung,
+		       evidence_json, status
+		  FROM recommendations
+		 WHERE user_id = ? AND domain = ? AND status = 'new'`, s.UserID, domain).
+		Scan(&rec.Domain, &rec.FeedURL, &rec.Title, &rec.Score, &rec.Rung,
+			&rec.Evidence, &rec.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoredRecommendation{}, false, nil
+	}
+	if err != nil {
+		return StoredRecommendation{}, false, err
+	}
+	return rec, true, nil
+}
+
+// AcceptRecommendation records that the reader subscribed from this
+// suggestion, so it stops appearing in the open list without being confused
+// with a dismissal (§18.7: dismissed means "never show this again"; subscribed
+// means the opposite — it succeeded). `subscribed` rather than a new
+// `accepted` value because the schema's own CHECK constraint already
+// enumerates the status vocabulary ('new', 'dismissed', 'trialing',
+// 'subscribed') — see plan.md §18.7's trial-subscription mechanic, which this
+// reuses the terminal state of rather than adding a fifth status a migration
+// would be needed to permit.
+func (r *ReaderRepo) AcceptRecommendation(ctx context.Context, s Scope, domain string) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	_, err := r.db.Write.ExecContext(ctx,
+		`UPDATE recommendations SET status = 'subscribed' WHERE user_id = ? AND domain = ?`,
+		s.UserID, domain)
+	return err
 }

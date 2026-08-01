@@ -42,7 +42,14 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/charsetdec"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
+	"github.com/monstercameron/ArticleFlux/internal/recommend"
 )
+
+// MaxSamples is how many posts are kept off a candidate's own feed. Two: the
+// smallest number that lets a relevance check tell "this post happened to
+// mention it once" from "this is what the site is about" apart from a single
+// post, without turning the validating fetch into a scrape of the whole feed.
+const MaxSamples = 2
 
 // UserAgent identifies us, with a contact URL, per §14.2's guardrails. An
 // anonymous scraper is the one that gets a server's IP banned for every tenant
@@ -94,6 +101,11 @@ type Candidate struct {
 	// How is "declared" or "probed" — see the proto comment. A guess and a
 	// declaration are different claims and the reader is told which is which.
 	How string
+	// Samples are up to MaxSamples posts pulled from this same fetch, for
+	// recommendjob's relevance check. Never re-fetched separately — the parser
+	// already read them disposing of the feed body, so keeping a couple costs
+	// nothing extra.
+	Samples []recommend.Sample
 }
 
 // Fetcher fetches pages. Reuse one: it holds a connection pool and the robots
@@ -169,6 +181,7 @@ func (f *Fetcher) Feeds(ctx context.Context, rawURL string) (*Page, []Candidate,
 	if p, err := f.feeds.Fetch(ctx, rawURL, feed.Conditional{}); err == nil && p != nil {
 		return nil, []Candidate{{
 			URL: rawURL, Title: p.Title, Items: len(p.Items), How: "declared",
+			Samples: sampleItems(p.Items),
 		}}, nil
 	}
 
@@ -224,7 +237,29 @@ func (f *Fetcher) check(ctx context.Context, u, how string) (Candidate, bool) {
 	if title == "" {
 		title = u
 	}
-	return Candidate{URL: u, Title: title, Items: len(p.Items), How: how}, true
+	return Candidate{
+		URL: u, Title: title, Items: len(p.Items), How: how,
+		Samples: sampleItems(p.Items),
+	}, true
+}
+
+// sampleItems keeps the first MaxSamples items' title and summary, and
+// nothing else off a feed's items — no URL, no GUID, no author, no dates.
+// What recommendjob passes to Smart+ is scoped again at that boundary
+// (internal/llm/relevance.go), but the fewer fields that travel this far, the
+// fewer that can be forgotten and passed on later.
+func sampleItems(items []feed.Item) []recommend.Sample {
+	if len(items) > MaxSamples {
+		items = items[:MaxSamples]
+	}
+	out := make([]recommend.Sample, 0, len(items))
+	for _, it := range items {
+		out = append(out, recommend.Sample{
+			Title:   strings.TrimSpace(it.Title),
+			Summary: strings.TrimSpace(it.Summary),
+		})
+	}
+	return out
 }
 
 // declaredFeeds reads <link rel="alternate"> — rung 1.

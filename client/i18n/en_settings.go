@@ -6,6 +6,16 @@ func init() {
 		"title": "Settings",
 		"sub":   "Everything this reader does, and everything it is doing.",
 
+		// TODO N7 — the strip is three headed groups, not thirteen flat peers.
+		// "Your reader" is the everyday screens; "Your library" is the
+		// subscription list at three scales (act on it, teach it, carry it in or
+		// out); "This server" is administration and diagnostics, including the
+		// two instrument readouts (Activity, Speed) that used to sit as peers of
+		// Appearance with no explanation for why they were there at all.
+		"group.reader":  "Your reader",
+		"group.library": "Your library",
+		"group.server":  "This server",
+
 		"tab.reading": "Reading",
 		// The tab is named for the thing it edits, which is the ranked stream —
 		// not for the mechanism ("Interests", "Personalisation"). A reader who
@@ -21,8 +31,17 @@ func init() {
 		// will not speak still arrives here, from the slide itself.
 		"tab.podcast":  "FluxCast",
 		"tab.smart":    "Smart+",
-		"tab.classify": "Classification",
-		"tab.feeds":    "Feeds",
+		// Was "Classification" — D23 (plan.md §27.0a) gave the word "category" to
+		// the article axis this tab edits, once the rail's folders stopped using
+		// it (§10/§27.0a). The mechanism word loses to the noun on a strip of
+		// otherwise reader-facing tab names.
+		"tab.classify": "Categories",
+		"tab.discover": "Discover",
+		// Was "Feeds" — TODO N7's "Your library" group: the tab already opens on
+		// "Your subscriptions" (subsGroup below), so the tab label was the one
+		// place in this trio still using the mechanism word instead of the noun
+		// the rest of the screen already agreed on.
+		"tab.feeds": "Subscriptions",
 		// Named for what it holds rather than for what you do to it. "Import"
 		// would be half the tab, and somebody looking for the way OUT — which is
 		// the half that matters when you are leaving — would not look under it.
@@ -118,7 +137,8 @@ func init() {
 		"rateTimesDefault": "{n}× default",
 		"bed":              "Opening sting and music",
 		"bedHint": "Three notes when the broadcast starts — they fill the pause while the first segment is being written — and a track underneath it afterwards, " +
-			"quiet enough to sit under speech. The music is only downloaded when you first play it, and only the piece you chose.",
+			"quiet enough to sit under speech. The music is only downloaded when you first play it, and only the piece you chose. " +
+				"The opening notes are picked at random each broadcast, not from this list — a different one most evenings is expected, not a bug.",
 		// The value, inside a chip the row above has already named — so
 		// lowercase, and "off" rather than "no music", because it sits in a row
 		// of titles and has to read as the absence of one.

@@ -39,7 +39,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,7 +76,16 @@ import (
 // figure of speech, where v4 read as a style guide for a wire service. (c) The
 // sign-off exists at all (podcastOutroInstructions), which is new text under this
 // version like the group writer was under v4.
-const podcastPromptVersion = "v5"
+// v6: four changes, all from product direction rather than a listening complaint.
+// (a) A fourth PartOfDay, "night" — see partOfDay in internal/app/speech.go and
+// the new guidance here about not saying "good night" as a greeting. (b) The
+// editorialising bullet asks for visibly more energy when a story warrants it,
+// not just permission to note significance flatly. (c) handoverShapes is a wider
+// pool and handoverShapeFor is now GENUINELY RANDOM rather than a hash of the
+// pair — see that function's own comment for the cache trade-off this accepts.
+// (d) The run-through's headline count went from "three or four" to "two or
+// three", matching MaxLineup's cut from five to three.
+const podcastPromptVersion = "v6"
 
 // handoverShapes are the STRUCTURES a segment can use to get from the last story
 // to this one — not phrases.
@@ -94,10 +103,10 @@ const podcastPromptVersion = "v5"
 // time, confidently and identically. Handing each call a DIFFERENT constraint is
 // the only version of this that survives contact with a stateless writer.
 //
-// Chosen by hash of the pair rather than at random, so a segment rewritten after
-// a cache miss is the same segment. Randomness here would mean the same story
-// after the same story sounded different on Tuesday, which is indistinguishable
-// from the cache being broken.
+// Ten now rather than six — per product direction that transitions were still
+// noticeable across a long session, and doubling the pool halves how often any
+// one shape's flavour repeats without changing what any single transition
+// sounds like.
 var handoverShapes = []string{
 	"Name the RELATION between the two stories in plain words — same industry, same country, cause and effect, one contradicting the other, one explaining the other. Say what the connection is rather than gesturing at one.",
 	"Make a CLEAN BREAK. No bridge at all: finish the last thought and open the new story on its own first fact. A hard cut is a legitimate transition and it is the one that sounds least like software.",
@@ -105,19 +114,29 @@ var handoverShapes = []string{
 	"Use CONTRAST. Set the new story against the last one: bigger, smaller, the opposite conclusion, the same promise from a different direction. Say the contrast, do not merely imply it.",
 	"CHANGE PACE instead of changing subject with a phrase. A short sentence that lands the last story, then straight into the new fact. The rhythm does the work the connective would have done.",
 	"Step back for HALF A SENTENCE — what the two have in common about the week, the field, or the way these things tend to go — then into the new story. At most one clause of it; this is a breath, not an essay.",
+	"Ask a QUESTION the last story leaves you with, then answer it by moving to the new one — 'so what happens to the people who bet the other way' is a real bridge if the new story is the answer.",
+	"Use SCALE. Put a number or a size from the last story next to one from this one — bigger, smaller, faster, further along — and let the comparison itself be the transition.",
+	"NAME THE MOOD SHIFT. If the two stories are tonally opposite — grim to light, urgent to slow — say that shift plainly in a few words rather than pretending the programme's mood did not just change.",
+	"Borrow a WORD OR PHRASE from the end of the last story and open the new one on it, redefined by the new context — the same trick a good essay uses between paragraphs.",
 }
 
-// handoverShapeFor picks the shape for one ordered pair, deterministically.
+// handoverShapeFor picks the shape for one segment, genuinely at random.
 //
-// FNV over the two ids: cheap, stable across processes and builds, and with no
-// meaning of its own — which is what is wanted, because any pattern a listener
-// could notice in WHICH shape comes when would be a new kind of sameness.
+// v5 chose by hashing the pair, deterministically, so a segment rewritten after
+// a cache miss would stay the same segment — the reasoning was that randomness
+// here would make the same story after the same story sound different on
+// Tuesday, "indistinguishable from the cache being broken". Per product
+// direction that traded too much variety for a property few listeners would
+// ever notice: what is CACHED is the finished TEXT, keyed on the pair
+// (cachePath), not the shape choice itself — a listener who has already heard
+// a pair always hears the same recording on replay, because that recording is
+// what the cache serves. The only case where this trade-off is visible at all
+// is a regeneration after the cache is invalidated (a prompt-version bump),
+// where the SAME pair could now pick a different, equally valid shape than it
+// did before — which is an acceptable cost for transitions that no longer
+// settle into a predictable pattern across a long broadcast.
 func handoverShapeFor(prevID, itemID string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(prevID))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(itemID))
-	return handoverShapes[int(h.Sum32()%uint32(len(handoverShapes)))]
+	return handoverShapes[rand.IntN(len(handoverShapes))]
 }
 
 // The vibes: how the narrator sounds.
@@ -190,7 +209,7 @@ func VibeFor(pref string) string {
 // away would otherwise be wished good morning at ten at night, which is the
 // single most obviously wrong thing this feature could say.
 type Opening struct {
-	// PartOfDay is "morning", "afternoon" or "evening".
+	// PartOfDay is "morning", "afternoon", "evening" or "night".
 	PartOfDay string
 	// Date is already formatted for a person: "Monday, 27 July 2026". The model
 	// phrases it; this decides which day it is.
@@ -237,12 +256,16 @@ type Headline struct {
 
 // MaxLineup is how many headlines the opening may run through.
 //
-// Five, and the ceiling is about MEMORY rather than tokens: a listener can hold
-// about that many one-clause items before the earlier ones start falling out,
-// and a bulletin that recites eleven headlines before covering any of them has
-// told you nothing you can keep. It is also the point past which the greeting
-// stops being an opening and becomes the programme.
-const MaxLineup = 5
+// Three, cut from five per product direction: a run-through is a trailer, not
+// the programme, and the ceiling is about MEMORY as well as pace — a listener
+// can hold about that many one-clause items before the earlier ones start
+// falling out, and a bulletin that recites eleven headlines before covering
+// any of them has told you nothing you can keep. It is also the point past
+// which the greeting stops being an opening and becomes the programme. The
+// caller (client/view/slideshow.go's queueLineup) also picks the three most
+// interesting candidates rather than simply the next three in the queue, so
+// the cut in count is paired with a cut in how they are chosen.
+const MaxLineup = 3
 
 // podcastWords is the length the instructions ask for.
 //
@@ -395,6 +418,19 @@ const podcastIntroWords = 90
 // of reflection and a goodbye.
 const podcastOutroWords = 45
 
+// noMarkupRule is the anti-markup instruction, word for word, in every prompt
+// this file writes. Shared rather than retyped four times: the four writers
+// are edited independently, the rule is safety-critical (every character
+// reaches a speech synthesiser), and four copies are four chances for one
+// edit to leave the others behind.
+const noMarkupRule = `Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.`
+
+// noIdentityRule is the identity rule three of the four writers state
+// identically. The outro states its own longer variant — it alone also
+// forbids naming the show just finished — so it is left out of this constant
+// rather than forced to share it awkwardly.
+const noIdentityRule = `Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.`
+
 // podcastOutroInstructions writes the end of the broadcast and stops.
 //
 // Its own prompt rather than a flag on the segment prompt, for the reason the
@@ -431,7 +467,7 @@ NEVER:
 - Never promise a specific next edition, a time, or a schedule. You do not know when the listener will come back and saying so is a false statement.
 - Never tell the listener to subscribe, rate, share, follow or do anything else. This is their own reader reading their own feeds to them; there is nothing to sell and nobody to sell it.
 
-Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+` + noMarkupRule + `
 
 Output the spoken text and nothing else.`
 }
@@ -453,9 +489,11 @@ Write about ` + strconv.Itoa(podcastIntroWords) + ` words of continuous spoken p
 
 1. GREET the listener for the part of the day and say the date — for example "Good morning. It's Monday the twenty-seventh of July" or "Good evening — eleven stories tonight." Vary the wording; do not use the same construction every time. Two sentences at most.
 
+   If you are told the part of the day is NIGHT, do not say "good night" — that is a farewell, not a greeting, and it tells the listener the programme is ending before it has begun. Acknowledge the hour without signing off instead: "Still up? Here's what's happened while you were." or "It's late, and here's what you missed." works; a plain "Here's what's happening" with no time-of-day phrase at all is also completely fine.
+
 2. RUN THROUGH what is coming. This is the part most worth getting right, because a listener hears a plain list of titles as a string of nouns going past and retains none of it.
 
-   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size. And the thing everyone said was vapourware has actually shipped." Three or four like that, building, ending on the one the broadcast starts with.
+   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size." Two or three like that, building, ending on the one the broadcast starts with.
 
    You may lean on them lightly — a raised eyebrow at a claim, a note that something is overdue or surprising. That judgement is what makes a run-through worth hearing rather than worth skipping. Do not number them, do not name the publication for each one, and do not explain any of them: you are saying why they matter, not what happened.
 
@@ -466,11 +504,11 @@ Write about ` + strconv.Itoa(podcastIntroWords) + ` words of continuous spoken p
 NEVER:
 
 - Never cover a story. Not one sentence of one. You are the trailer, not the programme.
-- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.
+- ` + noIdentityRule + `
 - Never invent a fact, a number or an attribution. Everything you say about a headline must be supportable from the headline itself.
 - Never sign off or thank the listener.
 
-Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+` + noMarkupRule + `
 
 Output the spoken text and nothing else.`
 }
@@ -486,9 +524,11 @@ Write about ` + strconv.Itoa(podcastWords) + ` words of continuous spoken prose 
 
 1. THE OPENING, only if one was given. Greet the listener for the part of the day and say the date — for example "Good morning. It's Monday the twenty-seventh of July" or "Good evening — eleven stories tonight." Vary the wording; do not use the same construction every time.
 
+   If you are told the part of the day is NIGHT, do not say "good night" — that is a farewell, not a greeting. Acknowledge the hour without signing off instead: "Still up? Here's what's happened while you were." works; a plain "Here's what's happening" with no time-of-day phrase at all is also completely fine.
+
    Then, if HEADLINES were given, run through what is coming — and this is the part most worth getting right, because a listener hears a plain list of titles as a string of nouns going past and retains none of it.
 
-   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size. And the thing everyone said was vapourware has actually shipped." Three or four like that, building, ending on the one you are about to cover.
+   So do not read a list. Give each one a beat of COLOUR: the thing about it that makes it worth staying for, in your own words, with a verb in it. "The government has finally backed down on X — after a year of saying it wouldn't. There's a study out that looks damning until you read the sample size." Two or three like that, building, ending on the one you are about to cover.
 
    You may lean on them lightly — a raised eyebrow at a claim, a note that something is overdue or surprising. That judgement is what makes a run-through worth hearing rather than worth skipping. Do not number them, do not name the publication for each one, and do not explain any of them yet: you are saying why they matter, not what happened.
 
@@ -505,7 +545,7 @@ WHAT "TOLD FOR A LISTENER" MEANS. This is the whole job, so it is spelled out:
 - **Open on the fact.** Not on context, not on the field it belongs to, not on why the topic is interesting. The first sentence is the thing that happened.
 - **Cut the fat the publisher put there.** Articles are padded for a page: the scene-setting opener, the paragraph of history nobody asked for, the restatement of the headline, the "why this matters" section that mostly matters to advertisers, the closing summary of what was just said. None of it survives being spoken. If a sentence would still be true of a different story, it is padding — leave it out.
 - **Say what it MEANS, not only what it says.** A listener can already read; what they cannot do is skim, re-read a line, or check a chart. Give them the finding, then why it matters, then how much weight to put on it.
-- **You may editorialise about SIGNIFICANCE.** You may say a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before, or that this mostly matters if you use the thing in question. That judgement is why anyone would listen to a person instead of a feed reader.
+- **You may editorialise about SIGNIFICANCE, and lean into it.** You may say a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before, or that this mostly matters if you use the thing in question — and when a story actually warrants it, say so with real energy rather than a flat aside. "This is a big deal" reads as filler; "this is the part that should actually worry you" or "and here's the bit that's genuinely wild" sounds like someone who means it. Match the size of the reaction to the size of the story — not every item earns one, and reaching for excitement on a routine update is how a narrator stops being believed on the story that deserves it. That judgement, applied with real conviction where it is earned, is why anyone would listen to a person instead of a feed reader.
 - **You may NOT invent.** No facts, numbers, quotes, dates, names or attributions that are not in the text you were given. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
 - **Write for the mouth, not the page.** Contractions. Short sentences. One idea in each — a sentence a listener has to hold in their head to the end is a sentence they have lost. Vary the length so it has a rhythm; three of the same length in a row is a metronome.
 - **Be specific rather than clever — but do not be beige.** A concrete detail is worth three adjectives, and wordplay that needs a second to land is wordplay a listener has already missed. Within that: you are allowed to be good company. One image, one aside, one dry observation per segment is not a lapse in discipline, it is the difference between a person and a text-to-speech engine reading a summary. A listener who could not tell your segment from an automated one has been given no reason to keep listening.
@@ -516,13 +556,13 @@ WHAT "TOLD FOR A LISTENER" MEANS. This is the whole job, so it is spelled out:
 
 ALWAYS:
 
-- Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+- ` + noMarkupRule + `
 - Name the publication once, naturally, where you introduce the story. It is how a listener decides how much weight to give it.
 - Spell out anything that reads badly aloud. Write "about 40 percent", not "~40%".
 
 NEVER:
 
-- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.
+- ` + noIdentityRule + `
 - Never say what is coming next by name. You have not been told, and guessing is a false statement. Saying how MANY stories are left is fine when you were told the number.
 - Never sign off, thank the listener, or summarise what you just said. The broadcast continues after you; end on the last thing worth knowing.
 - If the text is an error page, a paywall notice, a cookie banner or otherwise not an article, hand over from the previous story, say in one sentence that this one could not be read, and stop.
@@ -828,6 +868,34 @@ func (p *Podcast) model(ctx context.Context) string {
 	return strings.TrimSpace(m)
 }
 
+// openCacheKey turns an Opening into the fragment cachePath and groupCachePath
+// both fold into their hash — shared because the two are the same rule
+// (the opening is part of the TEXT, so it must be part of the key) applied at
+// two call sites, and a fragment this load-bearing must not be free to drift
+// between them.
+func openCacheKey(o *Opening) string {
+	if o == nil {
+		return ""
+	}
+	var key strings.Builder
+	key.WriteString(o.PartOfDay)
+	key.WriteByte('|')
+	key.WriteString(o.Date)
+	key.WriteByte('|')
+	key.WriteString(strconv.Itoa(o.Stories))
+	// The run-through is part of the opening's text, so it is part of its
+	// identity. Two broadcasts of the same first story with different stories
+	// behind it open differently, and serving one for the other would read out
+	// headlines that are not coming.
+	for _, h := range o.Lineup {
+		key.WriteByte('|')
+		key.WriteString(h.Source)
+		key.WriteByte('\x01')
+		key.WriteString(h.Title)
+	}
+	return key.String()
+}
+
 // cachePath hashes the PAIR, the model and the prompt version together.
 //
 // The pair, and that is the one thing to get right here: caching on the item
@@ -848,17 +916,7 @@ func (p *Podcast) cachePath(seg Segment, model string) string {
 	// expects without any extra machinery: the same broadcast restarted an hour
 	// later opens identically and costs nothing, and tomorrow's opens fresh
 	// because it is a different day.
-	open := ""
-	if o := seg.Open; o != nil {
-		open = o.PartOfDay + "|" + o.Date + "|" + strconv.Itoa(o.Stories)
-		// The run-through is part of the opening's text, so it is part of its
-		// identity. Two broadcasts of the same first story with different stories
-		// behind it open differently, and serving one for the other would read
-		// out headlines that are not coming.
-		for _, h := range o.Lineup {
-			open += "|" + h.Source + "\x01" + h.Title
-		}
-	}
+	open := openCacheKey(seg.Open)
 	// The opening alone and the opening plus a story are two different scripts
 	// written from the same inputs, so the mode has to be in the key. Without it
 	// the intro would be served as the first segment or the other way round — a
@@ -1035,7 +1093,7 @@ You will be given 2 to 4 stories, labelled STORY 1 through STORY N in the order 
 
 THE SHAPE OF THIS SEGMENT
 
-1. THE OPENING, only if one was given — exactly as a single segment would carry it: greet the listener for the part of day, say the date, and if headlines were given, run through them with a beat of colour each rather than reading a list. This belongs ENTIRELY to block 1. Blocks 2 and onward must not repeat any of it — no greeting, no date, no story count, ever, from the second block on.
+1. THE OPENING, only if one was given — exactly as a single segment would carry it: greet the listener for the part of day, say the date, and if headlines were given, run through them with a beat of colour each rather than reading a list. If the part of day is NIGHT, do not say "good night" — that is a farewell; acknowledge the hour without signing off instead. This belongs ENTIRELY to block 1. Blocks 2 and onward must not repeat any of it — no greeting, no date, no story count, ever, from the second block on.
 
 2. THE TRANSITION INTO THE SEGMENT, at the very top of BLOCK 1 and nowhere else. If a previous segment's theme was given, hand over from it in one or two sentences — say what changes ("from the transit budget to something with no politics in it at all") if the two are actually related, or make a plain unhurried change of subject if they are not. Never a stock phrase like "in other news" or "turning now to" standing in for an actual thought. If there is no previous theme and no opening, block 1 simply starts on its story.
 
@@ -1047,7 +1105,7 @@ WHAT "TOLD FOR A LISTENER" MEANS, for every block:
 
 - Open on the fact, not on context, the field it belongs to, or why the topic is interesting.
 - Cut the fat the publisher put there: the scene-setting opener, the restated headline, the closing summary of what was just said. None of it survives being spoken.
-- Say what it MEANS, not only what it says. You may editorialise about SIGNIFICANCE — that a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before.
+- Say what it MEANS, not only what it says. You may editorialise about SIGNIFICANCE, and lean into it when a story warrants it — that a result is surprising, a claim is thin, a number is smaller than the headline suggests, a company has said this before. Say it with real conviction where it is earned rather than a flat aside; match the size of the reaction to the size of the story.
 - You may NOT invent. No facts, numbers, quotes, dates, names or attributions that are not in the text you were given for that specific story. If you could not point at the sentence that supports it, do not say it. Never attribute your own judgement to the publication.
 - Write for the mouth, not the page: contractions, short sentences, one idea in each, a rhythm that varies rather than three sentences of the same length in a row.
 - Round numbers and give them scale: "about a third", not a precise percentage. Skip anything that does not survive being heard once — exact decimals, URLs, code, a long proper noun repeated.
@@ -1055,12 +1113,12 @@ WHAT "TOLD FOR A LISTENER" MEANS, for every block:
 
 ALWAYS:
 
-- Plain flowing sentences only. NO bullet points, NO numbered lists, NO headings, NO markdown, NO stage directions, NO sound cues, NO speaker labels. Every character you emit is read aloud by a speech synthesiser, so an asterisk or a bracket becomes a noise.
+- ` + noMarkupRule + `
 - Return exactly one block per STORY given, in the same order, and only that: no block for a story you were not given, no single block merging two stories, no extra commentary block at the end.
 
 NEVER:
 
-- Never invent a programme name, a station, a host, or a name for yourself. You have a manner, not an identity. Do not say "I'm" anyone.
+- ` + noIdentityRule + `
 - Never say what is coming after this segment. You have not been told, and guessing is a false statement.
 - Never sign off, thank the listener, or summarise the segment. The broadcast continues after you.
 - If a story's own text is an error page, a paywall notice, a cookie banner or otherwise not an article, hand over from whatever precedes it in the group, say in one sentence that this one could not be read, and stop that block there — it does not cost the other blocks in the segment.
@@ -1270,13 +1328,7 @@ func (p *Podcast) groupCachePath(g SegmentGroup, idx int, model string) string {
 		ids.WriteString(s.ItemID)
 		ids.WriteByte('\x01')
 	}
-	open := ""
-	if o := g.Open; o != nil {
-		open = o.PartOfDay + "|" + o.Date + "|" + strconv.Itoa(o.Stories)
-		for _, h := range o.Lineup {
-			open += "|" + h.Source + "\x01" + h.Title
-		}
-	}
+	open := openCacheKey(g.Open)
 	sum := sha256.Sum256([]byte(g.Stories[idx].ItemID + "\x00" + ids.String() + "\x00" +
 		strconv.Itoa(idx) + "\x00" + strings.TrimSpace(g.PrevTheme) + "\x00" +
 		model + "\x00" + podcastPromptVersion + "\x00" + VibeFor(g.Vibe) + "\x00" +

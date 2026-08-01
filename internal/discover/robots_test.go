@@ -70,6 +70,78 @@ func TestMissingRobotsAllows(t *testing.T) {
 	}
 }
 
+// A URL that carries no host at all cannot be checked against anything, and
+// must default to allowed for the same reason an unreachable robots.txt does.
+func TestAllowedOnAHostlessURLDefaultsToTrue(t *testing.T) {
+	f := local()
+	if !f.Allowed(context.Background(), "not a url at all") {
+		t.Error("a hostless address was read as disallowed")
+	}
+	if !f.Allowed(context.Background(), "/just/a/path") {
+		t.Error("a path with no host was read as disallowed")
+	}
+}
+
+// A robots.txt far past any real one is truncated rather than read in full —
+// the same defensive cap MaxBodyBytes applies to pages, sized down for a
+// document that is never legitimately this large.
+func TestOversizedRobotsIsTruncatedNotRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/robots.txt" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		// A real disallow rule near the front, then padding well past the cap —
+		// truncation must not corrupt the rule that was already parsed.
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /blog\n"))
+		padding := make([]byte, 600<<10)
+		for i := range padding {
+			padding[i] = '#'
+		}
+		_, _ = w.Write(padding)
+	}))
+	defer srv.Close()
+
+	f := local()
+	if f.Allowed(context.Background(), srv.URL+"/blog") {
+		t.Error("a Disallow rule ahead of the truncation point was lost")
+	}
+}
+
+// A rule line before any User-agent line belongs to no group and must be
+// ignored, not applied globally.
+func TestRobotsRuleBeforeAnyUserAgentIsIgnored(t *testing.T) {
+	rules := parseRobots("Disallow: /blog\nUser-agent: *\nAllow: /\n")
+	if !pathAllowed(rules, "/blog") {
+		t.Error("a Disallow line with no preceding User-agent was still applied")
+	}
+}
+
+// pathAllowed on an empty path (a bare origin with nothing after the host)
+// must be judged as "/", the same as an explicit root request.
+func TestPathAllowedTreatsEmptyPathAsRoot(t *testing.T) {
+	rules := parseRobots("User-agent: *\nDisallow: /\n")
+	if pathAllowed(rules, "") {
+		t.Error("an empty path was not judged against the root rule")
+	}
+}
+
+// A wildcard in a rule is not interpreted; only the literal prefix before it
+// is compared, which is the conservative reading §14.2 calls for.
+func TestPathAllowedComparesOnlyTheLiteralPrefixBeforeAWildcard(t *testing.T) {
+	rules := parseRobots("User-agent: *\nDisallow: /foo*bar\n")
+	if pathAllowed(rules, "/foo/anything") == pathAllowed(rules, "/other") {
+		t.Fatal("the wildcard rule matched nothing at all; the prefix comparison is broken")
+	}
+	if pathAllowed(rules, "/foo/anything") {
+		t.Error("/foo/anything should match the literal prefix /foo before the wildcard")
+	}
+	if !pathAllowed(rules, "/other") {
+		t.Error("/other must not match a rule scoped to /foo*")
+	}
+}
+
 func TestRobotsRefusalIsHonoured(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/robots.txt" {

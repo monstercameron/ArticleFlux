@@ -56,20 +56,67 @@ type Payload struct {
 // implementation is a feed-discovery fetch; the point of the seam is that the
 // POLICY — what counts as healthy, what evidence is persuasive — is the part
 // worth testing, and it should not need a network to exercise.
+//
+// The returned Health carries up to two sample posts from the same fetch
+// (internal/discover.MaxSamples) — see RelevanceChecker for what they are for.
 type Validator interface {
 	Validate(ctx context.Context, domain string) (recommend.Health, string, string)
 }
 
-// Service runs the job.
-type Service struct {
-	repo *store.ReaderRepo
-	val  Validator
-	log  *slog.Logger
+// RelevanceChecker is the "2 posts reviewed" gate (Cam, 2026-07-31).
+//
+// Smart+ only, and optional: a Service built without one skips the check
+// entirely and scores candidates on rungs 1-3's deterministic evidence alone,
+// exactly as before. When configured, every candidate that reaches scoring
+// with two sample posts is reviewed first, and a candidate that fails review
+// is rejected regardless of how strong its evidence otherwise is — see
+// recommend.gate, which checks this before the health rules.
+//
+// topic is terms only, never the reader's subscription list or reading
+// history (§18.8) — the caller is responsible for deriving it that way; this
+// interface only forwards what it is given.
+type RelevanceChecker interface {
+	Check(ctx context.Context, topic string, samples []recommend.Sample) (relevant bool, reason string, err error)
 }
 
-// New builds the service.
-func New(repo *store.ReaderRepo, val Validator, log *slog.Logger) *Service {
-	return &Service{repo: repo, val: val, log: log}
+// Service runs the job.
+type Service struct {
+	repo  *store.ReaderRepo
+	val   Validator
+	rel   RelevanceChecker
+	topic func(ctx context.Context, sc store.Scope) (string, error)
+	log   *slog.Logger
+}
+
+// New builds the service. rel and topicOf may both be nil — the relevance
+// gate is skipped entirely when either is absent, which keeps rungs 1-3
+// working on an instance with Smart+ off.
+func New(repo *store.ReaderRepo, val Validator, rel RelevanceChecker, topicOf func(ctx context.Context, sc store.Scope) (string, error), log *slog.Logger) *Service {
+	return &Service{repo: repo, val: val, rel: rel, topic: topicOf, log: log}
+}
+
+// SmartPlusPrefKey is the per-user opt-in for the relevance gate — its own
+// key, not derive.SmartPlusPrefKey, for the reason derive.go documents at
+// length for its own third key: this egresses a DIFFERENT thing (a
+// candidate's own posts and the reader's topic terms) and bills the reader
+// independently of feed ranking, so consent to one must not be read as
+// consent to the other.
+const SmartPlusPrefKey = "discover.smartPlus"
+
+// relFor returns the checker this run may use: the wired one when the reader
+// has opted in, nil otherwise. Mirrors derive.Service.plusFor exactly,
+// including why it is resolved once per run rather than cached on Service
+// (shared across every user) or checked per candidate (which could let the
+// reader's toggle disagree with itself mid-run).
+func (s *Service) relFor(ctx context.Context, sc store.Scope) RelevanceChecker {
+	if s.rel == nil {
+		return nil
+	}
+	prefs, err := s.repo.GetPrefs(ctx, sc)
+	if err != nil || prefs[SmartPlusPrefKey] != "true" {
+		return nil
+	}
+	return s.rel
 }
 
 // Enqueue schedules a run for one user.
@@ -108,10 +155,15 @@ func (s *Service) Handle(ctx context.Context, job store.Job) error {
 
 // Result reports what a run produced.
 type Result struct {
-	Candidates  int
-	Validated   int
-	Recommended int
-	Rejected    int
+	Candidates   int
+	Validated    int
+	Recommended  int
+	Rejected     int
+	// Reviewed counts candidates that went through the "2 posts reviewed"
+	// gate — zero on an instance with Smart+ off, or when a candidate simply
+	// did not have two sample posts to review.
+	Reviewed     int
+	FailedReview int
 }
 
 // Run harvests, validates, scores and stores.
@@ -130,6 +182,19 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 	domains, err := s.repo.DomainAffinities(ctx, sc)
 	if err != nil {
 		return res, err
+	}
+
+	// Resolved once per run: being wired is not consent (see relFor), and the
+	// topic describes the reader, not any one site, so it is resolved once
+	// too, not re-derived per candidate.
+	rel := s.relFor(ctx, sc)
+	var topic string
+	if rel != nil && s.topic != nil {
+		var terr error
+		topic, terr = s.topic(ctx, sc)
+		if terr != nil {
+			return res, fmt.Errorf("recommendjob: topic terms: %w", terr)
+		}
 	}
 
 	var candidates []recommend.Candidate
@@ -174,6 +239,32 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 			c.Rung = recommend.RungAggregator
 			c.Evidence.StarredViaAggregator = aff.Stars
 		}
+
+		// The "2 posts reviewed" gate. Applied here, before the candidate is
+		// even handed to Score, so a candidate that fails review is rejected
+		// by the ordinary gate() path — one place decides what gets shown,
+		// not two.
+		if rel != nil && health.HasFeed && len(health.Samples) >= 2 {
+			ok, reason, err := rel.Check(ctx, topic, health.Samples)
+			if err != nil {
+				// A review that could not run is not evidence either way.
+				// Scoring without Checked=true falls back to rungs 1-3's
+				// deterministic evidence, which is the existing, already-safe
+				// behaviour — it does not fail the whole run over one
+				// candidate's LLM call.
+				if s.log != nil {
+					s.log.Warn("recommendjob: relevance check failed",
+						"domain", e.Domain, "error", err)
+				}
+			} else {
+				res.Reviewed++
+				c.Relevance = recommend.Relevance{Checked: true, OK: ok, Reason: reason}
+				if !ok {
+					res.FailedReview++
+				}
+			}
+		}
+
 		candidates = append(candidates, c)
 	}
 	res.Candidates = len(candidates)
@@ -209,7 +300,8 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 		s.log.Info("scored recommendations",
 			"user", sc.UserID, "candidates", res.Candidates,
 			"validated", res.Validated, "recommended", res.Recommended,
-			"rejected", res.Rejected)
+			"rejected", res.Rejected, "reviewed", res.Reviewed,
+			"failed_review", res.FailedReview)
 	}
 	return res, nil
 }

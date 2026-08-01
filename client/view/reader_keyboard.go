@@ -44,6 +44,9 @@ type keyboardMap struct {
 	fsOpen        ui.State[string]
 	tsOpen        ui.State[string]
 	paletteActive ui.State[int]
+	// look is read for its motion setting only — the palette's toggle-motion
+	// entry names both directions (N12), the way cmd.theme names every theme.
+	look ui.State[appearance]
 	// openItem and refresh are Reader's own closures, not state handles.
 	//
 	// A key map's whole job is to CALL things, and these two are the only things it calls
@@ -97,7 +100,7 @@ func (r keyboardMap) wire() {
 					q := platform.FieldValue("palette")
 					ui.PostAsync(func() {
 						a := r.act.Get()
-						list := filterPalette(buildPalette(r.tr, r.feeds.Get(), r.tags.Get()), q)
+						list := filterPalette(buildPalette(r.tr, r.feeds.Get(), r.tags.Get(), r.look.Get().motionOn()), q)
 						if len(list) == 0 {
 							return
 						}

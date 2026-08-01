@@ -8,6 +8,7 @@ package grpcsrv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strconv"
@@ -19,8 +20,10 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/recommendjob"
 	"github.com/monstercameron/ArticleFlux/internal/rewrite"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
+	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
 
@@ -51,6 +54,20 @@ type ReaderServer struct {
 	// is per-reader rather than per-target: the article is private, so the
 	// ticket has to say who may hear it. See app.SpeechURL.
 	mintSpeech func(ctx context.Context, sc store.Scope, itemID string) string
+	// categorizer suggests a category for a feed Subscribe just added. Nil on
+	// an instance that never wired one (every test that does not want a Smart+
+	// dependency) — Subscribe treats that exactly like the pref being off: no
+	// suggestion, no error.
+	categorizer *smart.Categorizer
+	// repo backs the /discover RPCs (§18.7, M16) directly rather than through
+	// reader.Service, which has no recommendations methods of its own —
+	// recommend storage is its own concern (internal/store/outlinks.go), not
+	// part of the read/subscribe surface reader.Service wraps.
+	repo *store.ReaderRepo
+	// recommender enqueues a fresh scoring pass. Nil on an instance that never
+	// wired one, exactly like categorizer — RefreshRecommendations then reports
+	// Unavailable rather than panicking.
+	recommender *recommendjob.Service
 }
 
 // NewReaderServer wires a service to gRPC.
@@ -83,6 +100,21 @@ func (s *ReaderServer) WithSpeech(
 	mint func(ctx context.Context, sc store.Scope, itemID string) string,
 ) *ReaderServer {
 	s.mintSpeech = mint
+	return s
+}
+
+// WithCategorizer offers the Smart+ category suggestion Subscribe attaches to
+// a successful add (subscribe.go's smartCategorizePref gate).
+func (s *ReaderServer) WithCategorizer(c *smart.Categorizer) *ReaderServer {
+	s.categorizer = c
+	return s
+}
+
+// WithRecommendations wires /discover's RPCs to storage and the job that
+// scores it.
+func (s *ReaderServer) WithRecommendations(repo *store.ReaderRepo, rec *recommendjob.Service) *ReaderServer {
+	s.repo = repo
+	s.recommender = rec
 	return s
 }
 
@@ -437,7 +469,7 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	f, existed, err := s.svc.Subscribe(ctx, sc, req.GetUrl(), req.GetTitle(), req.GetFolderId())
+	f, existed, description, err := s.svc.Subscribe(ctx, sc, req.GetUrl(), req.GetTitle(), req.GetFolderId())
 	if err != nil {
 		// A category that is not this user's is NotFound like every other
 		// unowned row, and must not be reported as a bad URL — the form would
@@ -449,14 +481,64 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 		// InvalidArgument rather than a generic failure.
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &pb.SubscribeResponse{
+	out := &pb.SubscribeResponse{
 		Feed: &pb.Feed{
 			Id: f.ID, SourceId: f.SourceID, Title: f.Title,
 			FeedUrl: f.FeedURL, SiteUrl: f.SiteURL, FolderId: f.FolderID,
 			UnreadCount: int32(f.UnreadCount),
 		},
 		SourceExisted: existed,
-	}, nil
+	}
+	s.suggestCategory(ctx, sc, req.GetFolderId(), f.Title, description, out)
+	return out, nil
+}
+
+// smartCategorizePref is the per-user opt-in for the model filing a feed into
+// a category on add.
+//
+// The same idiom as smartFollowPref right above it: default off, checked HERE
+// at the caller before any Smart+ request is spent, and every failure below —
+// pref off, no categorizer wired, no key, a bad reply — resolves to simply
+// leaving the response's suggestion fields unset, never an error surfaced to
+// the reader. The category names themselves stay off the wire in the request
+// unless this is on, which is the point of a per-user key rather than a
+// global one: a reader who never turns this on has never had their taxonomy
+// read by a model at all.
+const smartCategorizePref = "smart.categorize"
+
+// suggestCategory attaches a Smart+ category suggestion to a subscribe
+// response, or attaches nothing.
+//
+// Only when the reader left folder_id empty — a reader who already chose a
+// category has already answered the question this exists to ask, and
+// suggesting a different one would be the app arguing with a choice just
+// made, not helping with one that was skipped.
+func (s *ReaderServer) suggestCategory(ctx context.Context, sc store.Scope,
+	chosenFolderID, feedTitle, feedDescription string, out *pb.SubscribeResponse) {
+
+	if chosenFolderID != "" || s.categorizer == nil {
+		return
+	}
+	prefs, err := s.svc.GetPrefs(ctx, sc)
+	if err != nil || prefs[smartCategorizePref] != "true" {
+		return
+	}
+	folders, err := s.svc.ListFolders(ctx, sc)
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(folders))
+	for _, f := range folders {
+		names = append(names, f.Name)
+	}
+	category, isNew, err := s.categorizer.Suggest(ctx, feedTitle, feedDescription, names)
+	if err != nil {
+		// Never fails the subscribe that already succeeded — see
+		// smartCategorizePref's own comment.
+		return
+	}
+	out.SuggestedCategory = category
+	out.SuggestedCategoryIsNew = isNew
 }
 
 // ListFolders is the first of the category RPCs.
@@ -963,4 +1045,118 @@ func (s *ReaderServer) UndoMarkAllRead(ctx context.Context, req *pb.UndoMarkAllR
 		return nil, toStatus(err)
 	}
 	return &pb.UndoMarkAllReadResponse{Restored: int32(n)}, nil
+}
+
+// evidenceText unwraps recommendjob's stored evidence — a JSON array holding
+// the one rendered sentence recommend.describe built (see recommendjob.go's
+// comment on why it is stored as JSON but is prose, not structure) — into
+// what the client actually displays.
+func evidenceText(raw string) string {
+	var parts []string
+	if err := json.Unmarshal([]byte(raw), &parts); err != nil || len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+// ListRecommendations returns the reader's open suggestions (§18.7, M16).
+func (s *ReaderServer) ListRecommendations(ctx context.Context, _ *pb.ListRecommendationsRequest) (*pb.ListRecommendationsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if s.repo == nil {
+		return &pb.ListRecommendationsResponse{}, nil
+	}
+	recs, err := s.repo.Recommendations(ctx, sc, 0)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := &pb.ListRecommendationsResponse{
+		Recommendations: make([]*pb.Recommendation, 0, len(recs)),
+	}
+	for _, r := range recs {
+		out.Recommendations = append(out.Recommendations, &pb.Recommendation{
+			Domain: r.Domain, FeedUrl: r.FeedURL, Title: r.Title,
+			Score: r.Score, Rung: int32(r.Rung), Evidence: evidenceText(r.Evidence),
+		})
+	}
+	return out, nil
+}
+
+// RefreshRecommendations enqueues a fresh scoring pass. Async, matching
+// Refresh's own shape for a feed poll: the client re-lists rather than
+// blocking one request on a batch of validating fetches to other people's
+// servers.
+func (s *ReaderServer) RefreshRecommendations(ctx context.Context, _ *pb.RefreshRecommendationsRequest) (*pb.RefreshRecommendationsResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if s.recommender == nil {
+		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+	}
+	if err := s.recommender.Enqueue(ctx, sc); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.RefreshRecommendationsResponse{}, nil
+}
+
+// AcceptRecommendation subscribes to the suggestion's already-validated feed
+// URL and marks it accepted so it leaves the open list without being read as
+// a dismissal.
+func (s *ReaderServer) AcceptRecommendation(ctx context.Context, req *pb.AcceptRecommendationRequest) (*pb.AcceptRecommendationResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if s.repo == nil {
+		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+	}
+	domain := req.GetDomain()
+	if domain == "" {
+		return nil, status.Error(codes.InvalidArgument, "domain is required")
+	}
+	rec, ok, err := s.repo.RecommendationByDomain(ctx, sc, domain)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if !ok || rec.FeedURL == "" {
+		return nil, status.Error(codes.NotFound, "no open recommendation for that domain")
+	}
+
+	f, _, _, err := s.svc.Subscribe(ctx, sc, rec.FeedURL, rec.Title, "")
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.repo.AcceptRecommendation(ctx, sc, domain); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.AcceptRecommendationResponse{
+		Feed: &pb.Feed{
+			Id: f.ID, SourceId: f.SourceID, Title: f.Title,
+			FeedUrl: f.FeedURL, SiteUrl: f.SiteURL, FolderId: f.FolderID,
+			UnreadCount: int32(f.UnreadCount),
+		},
+	}, nil
+}
+
+// RejectRecommendation is permanent (§18.7): the domain is never suggested
+// again for this reader.
+func (s *ReaderServer) RejectRecommendation(ctx context.Context, req *pb.RejectRecommendationRequest) (*pb.RejectRecommendationResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if s.repo == nil {
+		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+	}
+	domain := req.GetDomain()
+	if domain == "" {
+		return nil, status.Error(codes.InvalidArgument, "domain is required")
+	}
+	if err := s.repo.DismissRecommendation(ctx, sc, domain); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.RejectRecommendationResponse{}, nil
 }

@@ -58,6 +58,15 @@ func (c *Client) SmartLanguages(parent context.Context) (*pb.ListLanguagesRespon
 	return res, c.track(err)
 }
 
+// SmartModels lists the model ids this instance's key can use, for the
+// picker on the Smart tab.
+func (c *Client) SmartModels(parent context.Context) (*pb.ListModelsResponse, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.smart.ListModels(ctx, &pb.ListModelsRequest{})
+	return res, c.track(err)
+}
+
 // TranslateUI fetches the whole UI catalog in one language and REGISTERS it.
 //
 // Registering here rather than at the call site is deliberate. The catalog is

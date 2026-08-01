@@ -41,6 +41,17 @@ service SmartService {
   // are already cached for the running build's English.
   rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
 
+  // ListModels asks the provider which model ids this instance's key can use,
+  // for the picker on the Smart tab (replacing a free-text field an operator
+  // could mistype into silence). Owner-only, like SetSmartConfig: it spends a
+  // call against the instance's own key and reports instance configuration,
+  // not a per-reader preference.
+  //
+  // Unlike every other RPC on this service, nothing here egresses reader
+  // content — see internal/llm.Client.Models for why that is allowed to
+  // reach a second provider endpoint.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
   // TranslateUI returns the whole UI catalog in one language.
   //
   // Cached per locale against a hash of the English catalog, so a build that
@@ -220,6 +231,18 @@ message SetSmartConfigRequest {
 }
 
 message SetSmartConfigResponse { GetSmartConfigResponse config = 1; }
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  // Sorted, filtered to text/reasoning models — see internal/llm.Client.Models.
+  repeated string models = 1;
+  // The model currently configured, so the client can show it selected even
+  // if it fell out of the live list (a model the account has lost access to,
+  // or one entered by hand before this picker existed).
+  string current = 2;
+  string default_model = 3;
+}
 
 message ListLanguagesRequest {}
 

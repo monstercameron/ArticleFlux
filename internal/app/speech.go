@@ -223,16 +223,29 @@ func (a *App) lineupFrom(ctx context.Context, sc store.Scope, raw string) []smar
 
 // partOfDay is the word a greeting uses.
 //
-// Three, not four: "good night" is a farewell in English rather than a greeting,
-// so a broadcast starting at one in the morning says "good evening" — which is
-// what a person on air actually says at that hour, and what someone listening at
-// that hour expects to hear.
+// Four, not three. The earlier version deliberately stopped at three — "good
+// night" is a farewell in English, so a broadcast at one in the morning said
+// "good evening", reasoning that this is what a person on air actually says
+// at that hour. Per product direction that is being revisited: a listener at
+// 2am is not having their evening, and the instructions given to the model
+// for "night" (podcastIntroInstructions, podcastInstructionsFor) do not use
+// the word "night" as a greeting either — they are told plainly not to say
+// "good night", and to acknowledge the hour without signing off instead. The
+// new bucket buys the model the INFORMATION that it is late; it does not by
+// itself change what gets said.
 //
-// The boundaries are the conventional ones and deliberately not clever: noon and
-// six. A listener at 5:59pm hearing "good afternoon" is not wrong, and a
-// sunset-aware greeting would be a geolocation lookup for a single word.
+// The boundaries are the conventional ones and deliberately not clever: noon,
+// six, and ten. A listener at 5:59pm hearing "good afternoon" is not wrong,
+// and a sunset-aware greeting would be a geolocation lookup for a single
+// word. Night wraps past midnight back to five, which is deliberately later
+// than "morning starts at five" would suggest on its own — five is still
+// night for someone who has not slept yet, and the instructions ask the
+// model to read the hour rather than announce it, so the boundary being a
+// little generous costs nothing.
 func partOfDay(hour int) string {
 	switch {
+	case hour >= 22 || hour < 5:
+		return "night"
 	case hour < 12:
 		return "morning"
 	case hour < 18:

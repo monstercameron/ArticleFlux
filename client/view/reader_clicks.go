@@ -33,6 +33,17 @@ import (
 // named field at the call site instead of a positional argument in the right slot among
 // a dozen, which is the version of this that silently swaps two handles of the same type.
 
+// verdictActionsUnsafeDuringTravel are the data-actions that record a
+// judgement about a SPECIFIC article — as opposed to view-state toggles like
+// "expand" or "toggle-page", which cost nothing to get wrong once and correct
+// with a second click. These write to data the reader cannot see was
+// misattributed (Q1, 2026-07-31 QA pass), so they are the ones worth refusing
+// outright while expectFocus says the pane is still travelling.
+var verdictActionsUnsafeDuringTravel = map[string]bool{
+	"like": true, "dislike": true, "toggle-note": true,
+	"read-later": true, "mark-unread": true,
+}
+
 type delegatedClicks struct {
 	tr      i18n.Runtime
 	act     ui.Ref[*actions]
@@ -45,6 +56,10 @@ type delegatedClicks struct {
 	folders ui.State[[]*pb.Folder]
 	tags    ui.State[[]*pb.Tag]
 	fsData  ui.State[*pb.FeedSettings]
+	// expectFocus is the same guard reader.go's topmost-article handler uses:
+	// non-empty while a deliberate open is still travelling (smooth-scrolling)
+	// toward its target. See wire()'s use of it below for why a click cares.
+	expectFocus ui.Ref[string]
 }
 
 // wire registers the listeners. Called once, unconditionally, from Reader.
@@ -149,6 +164,17 @@ func (d delegatedClicks) wire() {
 			id, value := forItem.Get(), forValue.Get()
 			forItem.Set("")
 			forValue.Set("")
+			// Captured on the same stack as id/value, for the same reason: a
+			// smooth scroll-to-open (openAt) is still visually relocating the
+			// pane while this window is armed (reader.go's expectFocus/
+			// releaseFocus), and a click that lands DURING it can hit-test
+			// against content that is sliding out from under the cursor rather
+			// than the article the reader believes they are looking at (Q1,
+			// 2026-07-31 QA pass: a Like landed on the previously-open article
+			// instead of the one just opened). Read now, not inside PostAsync
+			// below, so it reflects this click's own moment rather than
+			// whatever the travel had done by the time the deferred body runs.
+			travelling := d.expectFocus.Get() != ""
 
 			// PostAsync, always. These handlers run outside GWC's own event
 			// dispatch, so calling State.Set directly schedules the update on a
@@ -156,6 +182,16 @@ func (d delegatedClicks) wire() {
 			// selection flipping back and forth and a row greying out a beat
 			// after the click instead of with it.
 			ui.PostAsync(func() {
+				if travelling && verdictActionsUnsafeDuringTravel[action] {
+					// Q1 (2026-07-31 QA pass): drop it rather than risk
+					// recording it against whichever article the pane
+					// happened to be sliding past. The reader can just
+					// click again once the travel settles — a dropped
+					// click is recoverable, a wrong Like on the wrong
+					// article is a data-integrity bug that silently
+					// corrupts the Liked stream.
+					return
+				}
 				a := d.act.Get()
 				switch action {
 				case "back-rail":
@@ -210,6 +246,8 @@ func (d delegatedClicks) wire() {
 					a.addCandidate(value)
 				case actAddSmart:
 					a.toggleSmartFollow()
+				case actAddCategorizeSmart:
+					a.toggleSmartCategorize()
 				case actAddAnalyze:
 					a.analyzeSite(true)
 				case actAddFollow:
@@ -270,8 +308,19 @@ func (d delegatedClicks) wire() {
 					a.toggleHelp()
 				case "undo-mark-all":
 					a.undoMarkAll()
+				case "accept-category-suggestion":
+					a.acceptCategorySuggestion()
+				case "dismiss-category-suggestion":
+					a.dismissCategorySuggestion()
 				case "open-settings":
 					a.showSettings()
+				case "open-discover":
+					// Same shape as slideNeeds's "open settings, land on a
+					// specific tab" (reader.go) — Discover is a settings-style
+					// tab (Cam's 2026-08-01 decision: a flip surface over the
+					// current view, not a new top-level route).
+					a.showSettings()
+					a.settingsTabTo(string(setDiscover))
 				case "settings-tab":
 					a.settingsTabTo(value)
 				case "settings-refresh":
@@ -306,6 +355,8 @@ func (d delegatedClicks) wire() {
 					a.clearSmartKey()
 				case actSmartModel:
 					a.saveSmartModel()
+				case actSmartModelCustom:
+					a.toggleSmartModelCustom()
 				case actSmartFeedPlus:
 					a.toggleFeedPlus()
 				case actSmartLang:
@@ -463,8 +514,8 @@ func (d delegatedClicks) wire() {
 					a.pick(scope{Title: d.tr.T("stream", "all")})
 				case "tab-feeds":
 					a.showTab(viewRail)
-				case "tab-notes":
-					a.pick(scope{Title: d.tr.T("stream", "notes"), Notes: true})
+				case "tab-myfeed":
+					a.pick(scope{Title: d.tr.T("stream", "myFeed"), MyFeed: true})
 				case "tab-settings":
 					a.showTab(viewSettings)
 				}

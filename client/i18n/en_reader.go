@@ -49,8 +49,12 @@ func init() {
 		"errRemoveTag":   "Couldn't remove that tag.",
 		"errSaveTag":     "Couldn't save that tag: {err}",
 		"errAddFeed":     "Couldn't add that feed: {err}",
-		"errAddCategory": "Couldn't add a category: {err}",
-		"errNewCategory": "Couldn't make that category: {err}",
+		"errAddCategory": "Couldn't add a folder: {err}",
+		"errNewCategory": "Couldn't make that folder: {err}",
+		// The Smart+ file suggestion's own Accept, when it fails partway —
+		// creating the folder, or filing the feed under one that already
+		// exists.
+		"errFileCategory": "Couldn't file that feed: {err}",
 		// The ladder (§11). Two failures with different remedies: one is about
 		// the address, the other about the page behind it.
 		"errMoveFeed":     "Couldn't move that feed: {err}",
@@ -63,7 +67,7 @@ func init() {
 		// --- the add-a-feed form's own refusals, which show in the dialog
 		// rather than the banner.
 		"errNeedURL":      "Paste a feed address first.",
-		"errNeedCategory": "Name the new category, or choose one that exists.",
+		"errNeedCategory": "Name the new folder, or choose one that exists.",
 
 		// --- progress and confirmations
 		"busyFetchOne": "Fetching {feed}…",
@@ -79,7 +83,7 @@ func init() {
 		"untagged":         "Removed {tag} from {source}",
 		"unsubscribed":     "Unsubscribed from {feed}. Its articles are still on the server.",
 
-		"newCategoryName": "New category",
+		"newCategoryName": "New folder",
 
 		// --- listening
 		"noSpeech":     "This browser has no speech synthesiser. Turn on Smart+ voice to use the server's.",

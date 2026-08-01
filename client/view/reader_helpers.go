@@ -300,11 +300,11 @@ func iconHostsOf(feeds []*pb.Feed) map[string]string {
 // Assembling and sorting ~170 entries is cheap once and absurd sixty times a
 // second, which is what it was costing while the reader scrolled the item list
 // with the dialog closed.
-func paletteEntriesIf(tr i18n.Runtime, open bool, feeds []*pb.Feed, tags []*pb.Tag, q string) []paletteEntry {
+func paletteEntriesIf(tr i18n.Runtime, open bool, feeds []*pb.Feed, tags []*pb.Tag, q string, motionOn bool) []paletteEntry {
 	if !open {
 		return nil
 	}
-	return filterPalette(buildPalette(tr, feeds, tags), q)
+	return filterPalette(buildPalette(tr, feeds, tags, motionOn), q)
 }
 
 // fsName resolves a source id to its title for the scope the action switches to.

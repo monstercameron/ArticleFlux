@@ -38,6 +38,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/events"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
+	"github.com/monstercameron/ArticleFlux/internal/fanout"
 	"github.com/monstercameron/ArticleFlux/internal/favicon"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/idem"
@@ -51,9 +52,11 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/pipeline"
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
+	"github.com/monstercameron/ArticleFlux/internal/recommendjob"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
+	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/skew"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -275,6 +278,11 @@ type App struct {
 	// the drift has a deterministic answer that needs no key, so an instance with
 	// no credential still serves the whole surface.
 	palettes *smart.Palettes
+	// categorizer suggests a category for a newly-added feed. Non-nil on every
+	// instance, like palettes and the translator — Suggest itself is the gate
+	// on whether a key exists, and Subscribe's own smart.categorize pref check
+	// is the gate on whether it is ever called at all.
+	categorizer *smart.Categorizer
 	// pool drains the durable job queue (§22.7). Always non-nil; Start is what
 	// decides whether it actually runs, so a test can enqueue and drain by hand.
 	pool *jobs.Pool
@@ -294,6 +302,15 @@ type App struct {
 	// every article in the database was unclassified no matter how good the
 	// classifier was.
 	analyzer *analyze.Service
+	// fanout applies each subscriber's rules to items `analyzer` just finished
+	// analysing (§27.2a, TODO 10.19). It runs downstream of analysis rather than
+	// downstream of ingest, so a rule matching `category` sees the category on
+	// the first fan-out rather than racing the job that assigns it.
+	fanout *fanout.Service
+	// recommender scores sites the reader does not follow yet (§18.7, M16),
+	// gated by internal/recommendjob.SmartPlusPrefKey the same way deriver's
+	// paid tier is: wired unconditionally, consulted per-user at run time.
+	recommender *recommendjob.Service
 	// tel is the metric and trace surface (§22.11). Always non-nil — every call
 	// site records unconditionally, so a nil here would be a panic on the first
 	// request rather than a quiet absence of data.
@@ -466,6 +483,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	a.llm = llm.New(smartKey)
 	a.translator = smart.NewTranslator(a.llm, a.settings)
 	a.palettes = smart.NewPalettes(a.llm, a.settings)
+	a.categorizer = smart.NewCategorizer(a.llm, a.settings)
 
 	// The interest layer (§18) and the pool that runs it (§22.7).
 	//
@@ -482,8 +500,8 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// enqueueing a kind must register it in the same change, or the queue grows a
 	// column of dead rows that look like a broken feature.
 	//
-	// Recommend is the near-term one, and it needs a discovery Validator — that is
-	// /discover's build, not this one.
+	// recommend (§18.7, M16) is now one of them too — see its own wiring below,
+	// once repo, a.llm and a.pool all exist.
 	// The deriver, with the Smart+ tier attached.
 	//
 	// Attached unconditionally, and gated INSIDE: smart.Interest checks llm.Configured on
@@ -540,6 +558,33 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 			pipeline.DefaultPolicy,
 		)
 	a.pool.Handle(store.JobAnalyze, a.analyzer.Handle)
+
+	// Fan-out (§27.2a, TODO 10.19): registered and wired downstream of analysis,
+	// which is the one behavioural change to the pre-M29 path (6.7) — a rule
+	// matching `category` must not race the job that decides it. Before this,
+	// `internal/fanout` was built, tested and never called: no job kind handled
+	// store.JobFanout and nothing invoked fanout.Service.Enqueue, so no rule a
+	// reader wrote had ever run.
+	a.fanout = fanout.New(repo, cfg.Log)
+	a.analyzer.WithFanout(a.fanout.Enqueue)
+	a.pool.Handle(store.JobFanout, a.fanout.Handle)
+
+	// /discover (§18.7, M16): the Validator (rungs 1-3, deterministic) is
+	// wired unconditionally, exactly like the deriver's free tier — it makes
+	// no network call beyond the same feed-discovery fetch subscribing
+	// already does. The RelevanceChecker is the Smart+ half and is wired
+	// unconditionally too, for the same reason WithSiteAnalysis's analyser is:
+	// it is harmless without a key (Check returns "no API key" immediately),
+	// and the actual gating is recommendjob.SmartPlusPrefKey, read fresh per
+	// run — see recommendjob.Service.relFor.
+	a.recommender = recommendjob.New(repo,
+		discover.New(discover.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
+		smart.NewRelevanceChecker(a.llm),
+		func(ctx context.Context, sc store.Scope) (string, error) {
+			return smart.TopicTerms(ctx, repo, sc)
+		},
+		cfg.Log)
+	a.pool.Handle(store.JobRecommend, a.recommender.Handle)
 	// Close the interest loop inside the session that produced the signal, rather than
 	// on the next poll. See reader.WithSignalHook for why the callback is a func, and
 	// NudgeDerive for the rate limit that makes it safe to call on every batch.
@@ -1051,7 +1096,9 @@ func (a *App) buildHandler() {
 			WithAssetProxy(a.AssetURL).
 			WithPageProxy(a.PageURL).
 			WithLiveView(a.StreamURL, a.ScrollLive).
-			WithSpeech(a.SpeechURL))
+			WithSpeech(a.SpeechURL).
+			WithCategorizer(a.categorizer).
+			WithRecommendations(a.repo, a.recommender))
 	pb.RegisterSystemServiceServer(a.grpc,
 		grpcsrv.NewSystemServer(a.cfg.Version, a.cfg.Commit, a.db).
 			WithObservability(a.repo, a.ring, a.lat, a.cfg.PollInterval, a.scopeFromContext).
@@ -1268,6 +1315,124 @@ func (a *App) buildHandler() {
 			a.onIngested(source, ing.NewIDs)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "ingested", ing.New)
+		})
+
+		// A small set of thematically related items, for an e2e test that needs a
+		// real topic cluster to like or dislike within rather than one generic
+		// article — concept feedback (internal/derive.conceptFeedback) only
+		// propagates a verdict to OTHER items once the topic model has enough
+		// members to cluster on, and one arbitrary headline cannot exercise that.
+		//
+		// Titles are fixed and returned nowhere: the test matches rows by this
+		// exact text rather than by an id it would otherwise have to parse out of
+		// a JSON body, which keeps this endpoint as plain as its sibling above.
+		mux.HandleFunc("/debug/ingest-cluster", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			sc, err := a.devScope(r.Context())
+			if err != nil {
+				http.Error(w, "no local account", http.StatusPreconditionFailed)
+				return
+			}
+			feeds, err := a.repo.ListFeeds(r.Context(), sc)
+			if err != nil || len(feeds) == 0 {
+				http.Error(w, "no subscriptions to ingest into", http.StatusPreconditionFailed)
+				return
+			}
+			source := feeds[0].SourceID
+			// Related but NOT identical — sharing enough vocabulary to cluster into
+			// one topic (topics.DefaultThreshold, 0.18 cosine) while staying far
+			// enough apart that corroborate's same-story dedup (SameStoryThreshold,
+			// 0.45) does not collapse them into one representative, which would
+			// leave too few surviving candidates for the test to check a sibling
+			// row against.
+			cluster := []struct{ title, body string }{
+				{"E2E cluster: NPU inference latency benchmark one",
+					"npu inference latency benchmark quantization throughput"},
+				{"E2E cluster: NPU quantization accuracy tradeoffs two",
+					"quantization npu accuracy tradeoffs inference throughput"},
+				{"E2E cluster: NPU throughput scaling results three",
+					"npu throughput scaling inference latency quantization"},
+				{"E2E cluster: NPU benchmark methodology notes four",
+					"benchmark npu methodology inference accuracy latency"},
+			}
+			now := time.Now().UTC()
+			n := 0
+			var ids []string
+			for i, c := range cluster {
+				guid := "debug-cluster-" + idgen.New()
+				ing, err := a.repo.IngestItems(r.Context(), source, []store.IngestItem{{
+					GUID: guid, URL: "https://example.invalid/" + guid,
+					Title:       c.title,
+					Summary:     c.body,
+					ContentHTML: "<p>" + c.body + "</p>",
+					// Spread over distinct hours so freshness decay does not tie every
+					// candidate's score, which would leave the ranked order to an
+					// arbitrary id comparison and make the test's row-matching brittle.
+					PublishedAt: now.Add(-time.Duration(i+1) * time.Hour),
+					WordCount:   400,
+				}})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				n += ing.New
+				ids = append(ids, ing.NewIDs...)
+				a.onIngested(source, ing.NewIDs)
+			}
+
+			// Opened and Completed on every item BUT the test's own click target,
+			// seeded directly rather than through the UI. This is the reading
+			// history that gives the topic model something to cluster the four
+			// items INTO — concept feedback has nothing to propagate a verdict
+			// across without a topic already containing more than one member — and
+			// it is deliberately not what this endpoint's caller is testing, so it
+			// is seeded rather than clicked through four times.
+			//
+			// The FIRST item is left unengaged here on purpose: it is the one the
+			// e2e test opens and likes through the real UI, and a like is itself
+			// enough engagement (signals.Liked has the highest prior in the
+			// taxonomy) to enter the topic model without also being marked read.
+			evAt := now.Add(-2 * time.Hour).UnixMilli()
+			var evs []signals.Event
+			for _, id := range ids[1:] {
+				for _, kind := range []signals.Kind{signals.Impression, signals.Opened, signals.Completed} {
+					evs = append(evs, signals.Event{
+						ID: idgen.New(), ItemID: id, Kind: kind,
+						Surface: signals.SurfaceList, At: evAt,
+					})
+				}
+			}
+			if len(evs) > 0 {
+				if _, err := a.repo.RecordEngagements(r.Context(), sc, evs); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "ingested", n)
+		})
+
+		// Runs a derivation for the dev account synchronously and returns when it is
+		// done, so an e2e test can assert on My Feed's content immediately after
+		// liking or disliking something rather than polling a background job on a
+		// timer. DeriveNow already exists for the CLI (`seed-reading`); this is the
+		// same call, reachable over HTTP for the same reason reset-state is.
+		mux.HandleFunc("/debug/derive-now", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			sc, err := a.devScope(r.Context())
+			if err != nil {
+				http.Error(w, "no local account", http.StatusPreconditionFailed)
+				return
+			}
+			a.DeriveNow(r.Context(), sc)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "derived")
 		})
 	}
 

@@ -33,6 +33,12 @@ import "fmt"
 const (
 	MaxProfileTerms   = 30
 	MaxProfileSources = 10
+	// MaxProfileExamples bounds the taste-calibration lists (see Profile). Fifteen,
+	// matching internal/derive.MaxTasteExamples — this is the boundary's OWN cap,
+	// enforced independently of what the caller assembled, for the same reason
+	// every other cap here is enforced at the boundary rather than trusted from
+	// upstream.
+	MaxProfileExamples = 15
 )
 
 // Candidate is one item offered for ranking.
@@ -64,6 +70,13 @@ type Topic struct {
 type Profile struct {
 	Topics  []Topic  `json:"topics,omitempty"`
 	Sources []string `json:"sources,omitempty"`
+	// PositiveExamples and NegativeExamples are recent headline TITLES the
+	// reader engaged with strongly or explicitly disliked — few-shot taste
+	// calibration for the rerank, added alongside Topics/Sources rather than
+	// replacing them. Titles only, same rule as Candidate: never a URL, never a
+	// timestamp, never which feed carried it.
+	PositiveExamples []string `json:"positive_examples,omitempty"`
+	NegativeExamples []string `json:"negative_examples,omitempty"`
 }
 
 // RankPayload is §18.8b's top-N re-rank body.
@@ -100,7 +113,16 @@ func (p RankPayload) Trim() RankPayload {
 	if len(out.Profile.Sources) > MaxProfileSources {
 		out.Profile.Sources = out.Profile.Sources[:MaxProfileSources]
 	}
+	out.Profile.PositiveExamples = trimExamples(p.Profile.PositiveExamples)
+	out.Profile.NegativeExamples = trimExamples(p.Profile.NegativeExamples)
 	return out
+}
+
+func trimExamples(s []string) []string {
+	if len(s) > MaxProfileExamples {
+		return s[:MaxProfileExamples]
+	}
+	return s
 }
 
 // EgressKeys is the set of JSON keys permitted to leave the instance.
@@ -108,16 +130,18 @@ func (p RankPayload) Trim() RankPayload {
 // A list rather than a comment, because §18.8 says so and because a comment
 // expressing intent has never once stopped a field being added.
 var EgressKeys = map[string]bool{
-	"candidates": true,
-	"id":         true,
-	"title":      true,
-	"summary":    true,
-	"profile":    true,
-	"topics":     true,
-	"label":      true,
-	"terms":      true,
-	"sources":    true,
-	"want":       true,
+	"candidates":        true,
+	"id":                true,
+	"title":             true,
+	"summary":           true,
+	"profile":           true,
+	"topics":            true,
+	"label":             true,
+	"terms":             true,
+	"sources":           true,
+	"want":              true,
+	"positive_examples": true,
+	"negative_examples": true,
 }
 
 // AuditEgress reports any JSON key in an outbound body that §18.8 does not

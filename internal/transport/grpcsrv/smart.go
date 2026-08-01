@@ -144,6 +144,37 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 	return &pb.SetSmartConfigResponse{Config: s.config(ctx)}, nil
 }
 
+// ListModels asks the provider which model ids this key can use.
+//
+// Fails soft on the provider call: a picker that cannot populate itself
+// falls back to `current`/`default_model` alone, which the client renders as
+// the free-text field this replaces — an operator can still type a model id
+// by hand when the live list cannot be fetched, and a listing failure must
+// never make the model unconfigurable.
+func (s *SmartServer) ListModels(ctx context.Context, _ *pb.ListModelsRequest) (
+	*pb.ListModelsResponse, error) {
+	if _, err := s.requireOwner(ctx); err != nil {
+		return nil, err
+	}
+	out := &pb.ListModelsResponse{DefaultModel: llm.DefaultModel}
+	if m, err := s.settings.SystemValue(ctx, store.KeySmartModel); err == nil {
+		out.Current = m
+	}
+	if s.llm == nil || !s.llm.Configured(ctx) {
+		return out, nil
+	}
+	models, err := s.llm.Models(ctx)
+	if err != nil {
+		// Logged, not returned: the screen still has current/default to show,
+		// and a provider hiccup on a listing call must not make the model
+		// field disappear from a settings screen that otherwise loaded fine.
+		s.log.Warn("listing smart+ models", "err", err)
+		return out, nil
+	}
+	out.Models = models
+	return out, nil
+}
+
 func (s *SmartServer) ListLanguages(ctx context.Context, _ *pb.ListLanguagesRequest) (
 	*pb.ListLanguagesResponse, error) {
 	if _, err := s.requireOwner(ctx); err != nil {

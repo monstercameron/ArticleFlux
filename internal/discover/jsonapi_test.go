@@ -2,6 +2,7 @@ package discover
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +62,25 @@ func TestAPICandidatesPreservesQueryAndDeduplicates(t *testing.T) {
 	}
 }
 
+// A bare origin with no path at all must still probe the root-level
+// rewrites, not skip them for lack of a path segment.
+func TestAPICandidatesOnABareOriginUsesRootPath(t *testing.T) {
+	got := apiCandidates("https://example.com")
+	want := []string{
+		"https://example.com/api/",
+		"https://example.com/.json",
+		"https://example.com/api/v1/",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("candidate[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
 func TestAPICandidatesOnAnUnparseableURLReturnsNothing(t *testing.T) {
 	if got := apiCandidates("://not a url"); got != nil {
 		t.Errorf("apiCandidates(garbage) = %v, want nil", got)
@@ -115,6 +135,22 @@ func TestLargestObjectArrayPicksTheLongerOfTwoCandidates(t *testing.T) {
 	path, n := largestObjectArray(doc, nil)
 	if n != 5 || strings.Join(path, ".") != "posts" {
 		t.Errorf("path=%v n=%d, want posts/5", path, n)
+	}
+}
+
+// The array of arrays fallback: the top-level array itself has no direct
+// object elements, but one of its own elements is an array of objects — the
+// data most app shells actually wrap their entry list one level deep.
+func TestLargestObjectArrayLooksInsideNestedArrays(t *testing.T) {
+	doc := []any{
+		"not an object",
+		[]any{
+			map[string]any{"id": 1}, map[string]any{"id": 2}, map[string]any{"id": 3},
+		},
+	}
+	_, n := largestObjectArray(doc, nil)
+	if n != 3 {
+		t.Errorf("found %d, want 3 — the nested array of objects was not found", n)
 	}
 }
 
@@ -209,6 +245,23 @@ func TestJSONEndpointSkipsNonJSONResponses(t *testing.T) {
 	}
 }
 
+// A candidate that claims a JSON content type but sends bytes that do not
+// parse (a truncated response, a misconfigured endpoint) must be skipped
+// like any other bad candidate, not treated as a parse failure worth reporting.
+func TestJSONEndpointSkipsUnparseableJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"comic":{"chapters":[`)) // truncated
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if got := local().JSONEndpoint(context.Background(), srv.URL+"/thing"); got != nil {
+		t.Errorf("malformed JSON was accepted: %+v", got)
+	}
+}
+
 // Nothing answering usefully at any candidate is a normal outcome, not an
 // error — most client-rendered sites are simply unfollowable this way.
 func TestJSONEndpointReturnsNilWhenNothingMatches(t *testing.T) {
@@ -264,5 +317,35 @@ func TestJSONRefusesNonJSONResponses(t *testing.T) {
 
 	if _, err := local().JSON(context.Background(), srv.URL+"/x"); err == nil {
 		t.Fatal("an HTML response was accepted as a data endpoint")
+	}
+}
+
+// A fetch that fails outright (connection refused) must return that error,
+// not silently succeed with an empty body.
+func TestJSONPropagatesAFetchError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := srv.Listener.Addr().String()
+	srv.Close()
+
+	if _, err := local().JSON(context.Background(), "http://"+addr+"/x"); err == nil {
+		t.Error("JSON on a closed listener returned no error")
+	}
+}
+
+// A paginated dump larger than maxJSONBytes must be refused — the poll is
+// meant to re-fetch one known address on a schedule, not buffer an
+// unbounded response every hour.
+func TestJSONRefusesAnOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		chunk := make([]byte, 1<<20)
+		for i := 0; i < 5; i++ {
+			_, _ = w.Write(chunk)
+		}
+	}))
+	defer srv.Close()
+
+	if _, err := local().JSON(context.Background(), srv.URL+"/x"); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("JSON on a 5MB body: err = %v, want ErrTooLarge", err)
 	}
 }

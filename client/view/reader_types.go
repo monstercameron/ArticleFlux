@@ -43,6 +43,17 @@ const (
 // worst case rather than the usual one.
 const noteDebounce = 800 * time.Millisecond
 
+// searchDebounce is how long the search field sits still before it runs.
+//
+// Far shorter than noteDebounce: this is a typing gap, not a thinking pause —
+// the reader is spelling one word, not composing a sentence, and the reward
+// for waiting is seeing results change under a query still being typed. Short
+// enough to feel live, long enough that "rust" does not run a search on "r",
+// "ru" and "rus" before it runs one on "rust". The same timer governs the
+// field going back to empty: a query cleared mid-retype must not flash the
+// unfiltered list before the next character arrives.
+const searchDebounce = 300 * time.Millisecond
+
 // signalsKey is where the engagement buffer waits out a closed tab.
 //
 // Namespaced and versioned like every other stored key: a schema change here
@@ -141,17 +152,21 @@ type actions struct {
 	// what happens when there is not one to find.
 	analyzeSite       func(smart bool)
 	toggleSmartFollow func()
-	addCandidate      func(url string)
-	followPage        func()
-	newCategory       func()
-	openCategory      func(id string)
-	closeCategory     func()
-	saveCategory      func()
-	deleteCategory    func()
-	setFeedFolder     func(sourceID, folderID string)
-	itemByID          func(string) *pb.Item
-	feedByID          func(string) *pb.Feed
-	search            func(string)
+	// toggleSmartCategorize is the categorize lamp's own toggle, beside
+	// toggleSmartFollow's — the same shape, a different preference
+	// (smartCategorizePref).
+	toggleSmartCategorize func()
+	addCandidate          func(url string)
+	followPage            func()
+	newCategory           func()
+	openCategory          func(id string)
+	closeCategory         func()
+	saveCategory          func()
+	deleteCategory        func()
+	setFeedFolder         func(sourceID, folderID string)
+	itemByID              func(string) *pb.Item
+	feedByID              func(string) *pb.Feed
+	search                func(string)
 
 	// Article-scoped actions carry the id of the article they act on. The
 	// reading pane is a stream, so "the article" is ambiguous in the markup and
@@ -307,6 +322,9 @@ type actions struct {
 	saveSmartKey   func()
 	clearSmartKey  func()
 	saveSmartModel func()
+	// toggleSmartModelCustom switches the model picker between the live list
+	// and the free-text field. Local UI state only — see smartsettings.go.
+	toggleSmartModelCustom func()
 	// toggleFeedPlus is the per-user opt-in for Smart+ ranking of My Feed. Its own
 	// action rather than a generic pref setter, because it is a spending decision and
 	// deserves to be findable by name.
@@ -342,6 +360,14 @@ type actions struct {
 	resetAttune func()
 
 	undoMarkAll func()
+
+	// acceptCategorySuggestion and dismissCategorySuggestion answer the
+	// smart.categorize banner Subscribe attached to the last successful add
+	// (subscribeURL in reader.go). Two verbs rather than one that toggles,
+	// because the choice is a one-shot answer to a one-shot question — there
+	// is nothing to toggle back to once the reader has said yes or no.
+	acceptCategorySuggestion  func()
+	dismissCategorySuggestion func()
 
 	toggleHelp func()
 	closeHelp  func()
