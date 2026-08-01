@@ -119,6 +119,90 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added
 
+- **Discover gets its fifth rung, a memory of what you turned down, and the names** (§18.7, §18.8).
+  "LLM + web search" had been a `recommend.Rung` enum value and nothing else. Rungs 1–2 find
+  candidates from what the reader has already engaged with — outlinks, aggregator saves — so on a
+  sparse or fresh account they find nothing and Discover has nothing to show. `internal/llm/
+  discover_search.go` is the fallback: given the reader's topic terms, search for real,
+  currently-active sites covering them, explicitly not aggregators or content mills that republish
+  other people. What comes back is **untrusted** — a model can hallucinate a domain or surface a dead
+  one — so every result still goes through the same `discover.Validator` health check and the same
+  "2 posts reviewed" relevance gate as a rung-1 candidate; the payload's only job is to produce
+  candidate domains. §18.8 holds: topic terms only, never the subscription list, never the reading
+  history, never the domains already tried or dismissed, because a search seeded with "never suggest
+  X, Y, Z" would leak exactly what §18.8 exists to keep off the wire. The one addition is few-shot
+  taste calibration — headline titles the reader liked and disliked, randomly sampled per call so an
+  otherwise-identical topic string still varies; titles only, never a URL, never a timestamp, never
+  which feed carried it. **Steer by rejection** is the local half: a dismissal already blocked its own
+  domain forever and could teach the scorer nothing about the *kind* of site to stop proposing,
+  because the topic a candidate matched was never persisted past the evidence sentence it was folded
+  into. Migration 0031 stores it structurally (`recommendations.topic_label`, sparse, partial index
+  over dismissed rows), `DismissedTopics` counts how many sites in a topic the reader has said no to,
+  and `topicPenalty` turns that count into a score penalty — none of which reaches `internal/llm`.
+  And the evidence sentence **names the sources** when it can rather than counting them, because
+  "linked by The Marginal Engineer and Quiet Systems" is a claim the reader can check and a number is
+  not. Alongside: `cmd/backfilloutlinks`, because rung 1 depends entirely on the `outlinks` table and
+  nothing in the ingest pipeline wrote to it before `mineOutlinks` landed — every item ingested before
+  that had real `content_html` in the database with no outlinks ever extracted from it, which is why
+  a months-old account could still open an empty Discover. Safe to re-run.
+- **The Discover page asks permission before it does anything.** The Smart+ review toggle gates the
+  **whole page** rather than only the calls that spend — two passes to get there, the first of which
+  put the switch beside the list and let the local rungs run underneath it. Defensible, and wrong for
+  this screen: a reader who has not opted in should not have a recommender working on their behalf at
+  all. With the toggle off there is no list, only the gate and what turning it on would mean. The
+  switch lives on the page it gates rather than in the general Smart+ settings, because the consent
+  and the thing consented to belong in the same place.
+- **The rail's per-category unread counts** (`CountUnreadByCategory`). Its own RPC rather than a field
+  on `ListFeeds`: it costs a few hundred milliseconds against a real database and the sidebar's feeds
+  must not wait behind it. One query rather than twenty-six `CountQuery` calls — and the failure worth
+  pinning hardest is not a wrong number, it is the **same** number twenty-six times, because
+  `countUnreadFast` answers from a per-source rollup that knows nothing about a `WHERE` clause and
+  silently ignores a filter it does not recognise. A rail where every category reads 6,370 looks like
+  a working feature. Slugs come from the caller in the client's own taxonomy order so an empty label
+  comes back as `0` rather than absent; uncategorised is its own field, being the map's complement
+  rather than another entry in it. The counts also move as articles are read, arithmetic done locally
+  rather than a round trip per keypress.
+- **A fixed landing view, or keep being put back where you were.** A30's "resume wherever I left off"
+  is the right default and the wrong only option. Settings → Reading now offers a fixed landing view
+  that wins over resume on **every** boot rather than only the first one after it was set. Four flat
+  keys (`landing.mode/kind/value/title`) shaped exactly like `read.kind/value/title` and scoped
+  separately, so a fixed choice and the ordinary place-you-left-off tracking never collide — the
+  reader can pick "always open My Feed" and the app still remembers they were in Alpha Journal a
+  moment ago, which is what makes turning the setting back off a restoration rather than a reset. It
+  resolves through `scopeOf`, the same codec resume and the address bar share, so a choice this build
+  cannot resolve degrades the way an unresolvable resume already does.
+- **Delete a row from My Feed, and reset a category to default.** The interest profile could be argued
+  with a dial and never edited. Every row — topic, entity, feed — now offers a delete, and every
+  category a reset, in the same arm–confirm–cancel shape. Cancel exists here and not on the category
+  editor's delete, deliberately: a My Feed row sits in a scrolling list of many identical-looking
+  controls, where the category editor's delete is one button in a small focused dialog. The feeds
+  section takes a feed **out of the ranked pool** rather than duplicating the dial's More/Normal/Less,
+  which lives in the feed's own settings — one setting with two homes is one setting that can
+  disagree with itself.
+- **Captions: the show says the words it is saying** (`client/view/script.go`). A segment's script is
+  split into units a person can hold on screen while it is read to them — sentence boundaries first,
+  then `platform.ChunkForSpeech` on anything still too long — and the window is deliberately smaller
+  than the synthesiser's, because that one is sized to what an utterance may be and this to what a
+  reader can follow. `client/view/pipeline.go` lifts the warming arithmetic out of a 500-line closure
+  in `reader.go` into four testable decisions; the bug it exists to fix was invisible for exactly that
+  reason — the slide rendered the *article* while the narrator read a rewritten segment, and both are
+  plausible prose on a screen.
+- **Bands in the rail**, and a home for Uncategorised, which is not a category and had nowhere to
+  live. Every disclosure in the rail now sits in one column: the category caret was at 1px against
+  the band chevrons' 5px, which is not a separate design, it is four pixels of nobody having looked.
+- **Every homepage screenshot in a different theme**, rotating through all five, regenerated against
+  the development instance (153 feeds, 7,303 articles, 5,913 unread, 126 MiB). Not decoration: the
+  palette is a table of Go values resolved at render time, so a shot in *Daylight* is the same code
+  path as one in *Ink* — same components, same stylesheet, one token table swapped. A page of
+  screenshots all in one colour would hide the single thing the design system is for and let a theme
+  rot unnoticed, because nothing catches "Ledger broke six days ago" if nobody photographs it. The
+  rotation immediately found a real bug, now written up in `TODO.md`: **a theme switched after a
+  client-side navigation updates `:root` but not `<body>`**, so Contrast's white type is drawn on
+  Daylight's paper ground and every secondary label goes invisible while the descriptions underneath
+  them, on a different token, stay readable. Switching twice within one uninterrupted settings session
+  does not reproduce it, which is why nothing caught it — the appearance specs set a theme and assert
+  on the page they set it from. `e2e/home-shots.mjs` reloads after every theme change and says that
+  the workaround is not the fix.
 - **`articleflux speech` — the answer to "why is read to me silent", where the answer is.** A reader
   looking at four green prerequisites and a silent screen had nowhere to go, and neither did anyone
   else. The client's message — "the voice didn't start" — is the truthful limit of what it can know:
@@ -409,6 +493,62 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **Mark all read marked the account.** `MarkAllRead` took one `source_id` and nothing else, so it
+  could express "this feed" or "everything" — and every other list the reader can be standing on (My
+  Feed, a tag, a category, Liked, Disliked, Read later) arrived at the server as an empty source id,
+  which it read as "everything subscribed". Pressing it on a four-feed category marked the whole
+  account read, and the one scope that already worked was the one with a test. The request gains
+  `source_ids`, `category_slug` and `uncategorised`; `ListItems` gains the same two selectors so the
+  two agree about what a list *is*; and `MarkQuery` resolves through the same `listFilter` `ListItems`
+  uses rather than a second description of the same rule. The new tests assert "the **other** feed is
+  untouched" rather than a marked count, because a count of 1 is what the broken version returned too
+  on a fixture with one item per feed — the damage was only ever visible in what it reached beyond the
+  list. The toolbar now asks first, and names the scope rather than counting the articles, since the
+  scope is the thing that was wrong. The first version of that confirmation put both states on the one
+  chip, which changed its width and colour and made the toolbar jump under the cursor about to press
+  it; the label never changes and it never turns red, and a small confirm/cancel pair rides beside it.
+- **Sign-in failed with credentials the reader could see.** A password manager — and Chrome's own
+  autofill — writes the value straight into the element, and several of those paths dispatch no
+  `input` event the login component can hear. State stayed empty while the screen visibly showed a
+  filled username and password, so submitting sent two empty strings and the reader was told the
+  credentials in front of them were wrong. Measured before the fix: writing both values with no input
+  event produced "invalid username or password" on **Enter and on the button** — not a keyboard bug,
+  and fixing it in the key handler would have left the same trap under the mouse. Submit reads the
+  field and falls back to state, and writes back what it read, because the fields are controlled and
+  submitting the field value while leaving state behind would make the next render blank a field the
+  reader is looking at.
+- **A chip inside an article row opened the article.** The category chip, the feed title and a tag's
+  label all route elsewhere, and all of them live inside a row whose own job is to open the piece.
+  `platform.OnDelegatedRowClick` resolves it: `closest()` alone cannot express "the nested thing
+  wins", because called with the row's attribute it walks straight past a chip that has none and
+  finds the row every time.
+- **The show restarted from the top when the list moved underneath it.** A background poll replaces
+  the item list; the story currently playing has already been marked read by the show that opened it,
+  so it drops out of a ranked or unread-only page — and `queueNext` answered `""`, which is exactly
+  what it answers at the genuine end of a queue. A programme that silently starts again is worse than
+  one that stops, so the caller remembers **where** the playing story was and `queueAfter` advances
+  from the position rather than from the item. It still never wraps.
+- **Pressing Podcast produced a silent show blaming the voice**, on an instance where everything was
+  enabled and the server was writing segments and synthesising audio — and pressing next, or
+  play/pause, then started it. The four prerequisites were being discovered *after* entering the mode.
+  Asked at the door they are answerable before anything is pressed, and the slide's explanation goes
+  back to being the fallback for a failure mid-programme. An unknown key does not block: being wrong
+  that way costs one request, and being wrong the other way costs the feature. Blocked is a data
+  attribute rather than `disabled`, because a disabled control cannot be focused, cannot be read by a
+  screen reader walking the tab order, and cannot tell anybody why.
+- **Discover re-fetched its list on a loop.** The load was trusted to a `UseEffect` dependency list,
+  and GWC re-runs effects on renders the deps did not change — so a fetch that should happen once per
+  client ran continuously, and the pane oscillated between its card list and its loading placeholder
+  while it did. Guarded by a ref. Accept and Reject also exit on an animation rather than removing a
+  card instantly, which had read as the row under the cursor jumping up to meet the click just made.
+- **A 114 MB copy of somebody's reading history was one `git add -A` away.** The database rules in
+  `.gitignore` anchor on the end of a name, so `articleflux.db` is ignored and
+  `articleflux.db.backup-20260801-011439` is not — and a dated backup is the same file with the same
+  reading history in it. Matched on the `.db` in the middle now. Root-level `.tmp/` and
+  `test-results/` joined them: the e2e rules cover both under `e2e/`, which is not where they land
+  when the suite is run from the repository root. Separately, `internal/cast` — the broadcast engine's
+  pre-rename copy — was deleted; a dead copy of an engine is worse than none, because it compiles, its
+  tests pass, and the next person to grep for a tunable finds two answers.
 - **Three features had silently stopped being covered by the public demo.** Discover (§18.7), OPML
   import and export, and the edit-history disclosure all shipped to GitHub Pages answering
   `Unimplemented` — the newest screen in the application sat on *"Couldn't load recommendations"* for
