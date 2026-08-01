@@ -90,7 +90,36 @@ done_ok "ready"
 
 # --- 2. fetch ----------------------------------------------------------------
 step "Fetching the latest code"
-old_sha=$(cd "$REPO" && git rev-parse HEAD)
+# Where this deployment is coming FROM.
+#
+# AF_OLD_SHA is set only by the re-exec below, and inheriting it is what stops a
+# self-update from deploying nothing. The re-exec happens AFTER the pull, so a
+# second run that asked the working tree where it started would be told "the
+# commit you are deploying" — old_sha and new_sha would match, the no-op check
+# would fire, and the script would report success having built nothing.
+#
+# That is not hypothetical and it is not cheap: it happened on 2026-08-01, the
+# release carrying brotli and a sidebar fix went out as "✓ Up to date in 0s",
+# every check upstream was green, and the box served the previous build until
+# somebody thought to compare the bytes it was actually returning.
+old_sha="${AF_OLD_SHA:-$(cd "$REPO" && git rev-parse HEAD)}"
+
+# The bootstrap case, and it is the reason this fix would otherwise not apply to
+# the deploy that delivers it.
+#
+# A re-exec is performed by the version of this script that was on the box
+# BEFORE the pull. That version does not know to pass AF_OLD_SHA, so the first
+# run of the fixed script is handed AF_REEXEC=1 and nothing else — and would
+# fall back to asking the tree where it started, be told the commit it is
+# supposed to be deploying, and no-op exactly as before. The fix would take
+# effect one deploy late, silently, which is the same shape as the bug.
+#
+# So: re-execed, with no starting point given, means the parent was too old to
+# give one. That is a continuation of a deploy that had something to do.
+if [ "${AF_REEXEC:-}" = "1" ] && [ -z "${AF_OLD_SHA:-}" ]; then
+	FORCE=1
+	note "re-execed by a version that did not pass a starting revision — building anyway"
+fi
 
 # The sibling library first: go.mod points at it with a replace directive, so a
 # server built against a stale checkout of it is a server built from code that
@@ -136,7 +165,12 @@ if [ "${AF_REEXEC:-}" != "1" ] && [ -n "$SELF_HASH" ]; then
 	if [ "$(sha256sum "$0" | cut -d' ' -f1)" != "$SELF_HASH" ]; then
 		note "update.sh itself changed in this pull — re-running the new version"
 		trap - EXIT INT TERM ERR
-		AF_REEXEC=1 exec bash "$0" "${ORIG_ARGS[@]}"
+		# AF_OLD_SHA carries where this deployment STARTED across the exec. The
+		# pull has already happened, so without it the new process asks the tree
+		# where it began, is told the commit it is meant to be deploying, and
+		# exits down the no-op path having built nothing — see old_sha above for
+		# the day that shipped.
+		AF_REEXEC=1 AF_OLD_SHA="$old_sha" exec bash "$0" "${ORIG_ARGS[@]}"
 	fi
 fi
 
@@ -236,7 +270,12 @@ done
 done_ok "client complete"
 
 step "Building the server"
-( cd "$REPO" && run "$GO" build -o "$REPO/bin/articleflux.new" ./cmd/articleflux )
+# Stamped with the revision it was built from, so /readyz can say what is
+# running and a promotion can wait for the box to agree with it rather than
+# assume. See internal/buildver.Commit.
+( cd "$REPO" && run "$GO" build \
+	-ldflags "-X github.com/monstercameron/ArticleFlux/internal/buildver.Commit=$new_sha" \
+	-o "$REPO/bin/articleflux.new" ./cmd/articleflux )
 note "server: $(du -h "$REPO/bin/articleflux.new" | cut -f1)"
 done_ok "server built"
 

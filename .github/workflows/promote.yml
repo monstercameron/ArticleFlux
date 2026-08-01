@@ -133,6 +133,48 @@ jobs:
           git push origin "$dev_sha:refs/heads/main"
           echo "main is now $dev_sha"
 
+      # Did the box actually take it?
+      #
+      # Everything above this point can be green while production serves the
+      # previous build, and on 2026-08-01 all of it was: the push landed, the
+      # webhook accepted the job, and update.sh reported success in one second
+      # having built nothing (it had self-updated, re-execed after the pull, and
+      # concluded there was nothing to do). The only way anyone established the
+      # truth was to download the wasm module and grep the decompressed bytes.
+      #
+      # So this workflow no longer ENDS at "main moved" — it ends when the
+      # server says it is running what was promoted. /readyz carries the
+      # revision as a header, stamped into the binary by the deploy itself, so
+      # this is the box reporting rather than a timestamp being interpreted.
+      #
+      # Non-fatal on purpose. A red promotion after main has already moved
+      # cannot un-move it, and the deploy may simply be slow — a cold wasm build
+      # on the droplet is about four minutes. What this must never do is stay
+      # silent, so a timeout is a loud warning in the summary rather than a
+      # failure that would have people re-running a promotion that worked.
+      - name: Wait for production to be serving it
+        id: live
+        continue-on-error: true
+        env:
+          SHA: ${{ github.sha }}
+          URL: https://feed.earlcameron.com/readyz
+        run: |
+          set -uo pipefail
+          echo "waiting for $URL to report ${SHA:0:12}"
+          for i in $(seq 1 40); do
+            got=$(curl -fsS -m 20 -D - -o /dev/null "$URL" 2>/dev/null \
+              | tr -d '\r' | awk 'tolower($1)=="x-articleflux-commit:"{print $2}')
+            if [ "$got" = "$SHA" ]; then
+              echo "live=true" >> "$GITHUB_OUTPUT"
+              echo "production is serving ${SHA:0:12} after $((i*15))s"
+              exit 0
+            fi
+            [ -n "$got" ] && echo "  ${i}: box reports ${got:0:12}, want ${SHA:0:12}"
+            sleep 15
+          done
+          echo "live=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::production did not report ${SHA:0:12} within 10 minutes — it may still be building, or the deploy did nothing. Check /var/log/deployhook on the box."
+
       - name: Summary
         run: |
           {
@@ -149,4 +191,20 @@ jobs:
             echo "no \`CI on main\` run is ever created, and a hook waiting for one"
             echo "waits forever. Every promotion between this workflow's first use"
             echo "and that date completed green and deployed nothing."
+            echo ""
+            if [ "${{ steps.live.outputs.live }}" = "true" ]; then
+              echo "✅ **Production is serving \`${GITHUB_SHA:0:12}\`** — confirmed from"
+              echo "the \`X-ArticleFlux-Commit\` header on /readyz, which the deploy"
+              echo "stamps into the binary it builds."
+            else
+              echo "⚠️ **Production had NOT reported \`${GITHUB_SHA:0:12}\` after ten minutes.**"
+              echo ""
+              echo "It may still be building — a cold wasm build on the droplet is"
+              echo "about four minutes — or the deploy may have done nothing. That"
+              echo "second case is real: on 2026-08-01 this workflow, the webhook and"
+              echo "\`update.sh\` were all green while the box served the previous"
+              echo "build. Check \`/var/log/deployhook\` and \`/var/log/articleflux\`,"
+              echo "and \`curl -sI https://feed.earlcameron.com/readyz\` for what is"
+              echo "actually running."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

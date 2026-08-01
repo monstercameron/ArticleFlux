@@ -1272,6 +1272,21 @@ func (a *App) buildHandler() {
 	// unauthenticated by definition, so anything it says is said to everyone.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// Which build is answering, as a HEADER rather than in the body.
+		//
+		// The body is one word by §22.4 and something already reads it; a header
+		// is additive, so nothing that parses this endpoint today can be broken
+		// by adding it. Empty on a build that was not deployed, which is the
+		// honest answer — see buildver.Commit for the deploy that reported
+		// success while serving the previous build, and for why guessing from a
+		// Last-Modified date is not the same as being told.
+		//
+		// The repository is public, so the revision is not a secret. It is also
+		// the only thing here that is not: §22.4 keeps this endpoint free of
+		// anything that describes the instance rather than the artefact.
+		if buildver.Commit != "" {
+			w.Header().Set("X-ArticleFlux-Commit", buildver.Commit)
+		}
 		if err := a.ready(r.Context()); err != nil {
 			a.log.Warn("readiness check failed", "err", err)
 			w.WriteHeader(http.StatusServiceUnavailable)

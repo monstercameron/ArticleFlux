@@ -27,6 +27,33 @@ package buildver
 // eventually disagree. Bumping it is an edit to one line in one file.
 const Version = "0.1.0-dev"
 
+// Commit is the git revision this SERVER binary was built from, injected with
+// `-ldflags -X` by deploy/update.sh. Empty in every other build, which is the
+// honest answer for one that was not deployed.
+//
+// # Why this is an -X variable when Version deliberately is not
+//
+// They answer different questions. Version is a contract between two builds —
+// the server and the bundle a browser has cached — so it must be identical in
+// both, which is exactly why it is a constant that nobody can set differently
+// in two build invocations. Commit identifies ONE artefact: which tree the
+// process now running was built from. Nothing compares it against the client,
+// and a wasm bundle stamped with it would be a second place to get it wrong.
+//
+// # Why it exists at all
+//
+// Because "did the deploy actually land?" had no answer. On 2026-08-01 a
+// promotion completed green, the webhook accepted the job, update.sh reported
+// success in one second, and the box went on serving the previous build — and
+// the only way anybody established that was to download the wasm module and
+// grep the decompressed bytes for a CSS class that only exists in the new one.
+// A deployment that cannot say what it is running is one where every check is a
+// proxy for the thing you actually want to know.
+//
+// It is served as a header on /readyz, so the promotion that caused a deploy
+// can watch for it and refuse to call itself finished until the box agrees.
+var Commit string
+
 // MinClient is the oldest client this server will serve.
 //
 // Raised only when an incompatibility is real, because raising it logs
