@@ -1,0 +1,15 @@
+import { chromium } from '@playwright/test';
+const OUT = 'C:/Users/mreca/AppData/Local/Temp/claude/C--Users-mreca-Desktop/696a819b-d99e-4e0e-ad3a-f7ab280ce635/scratchpad';
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1280, height: 950 } });
+await p.goto('http://127.0.0.1:9000', { waitUntil: 'domcontentloaded' });
+await p.waitForSelector('.item-row', { timeout: 30000 });
+await p.waitForTimeout(2000);
+await p.locator('button[title="Discover"], [aria-label="Discover"]').first().click();
+await p.waitForSelector('#discover-page', { timeout: 20000 });
+await p.waitForTimeout(4000);
+const cards = await p.locator('.discover-card').count();
+console.log('cards:', cards);
+console.log((await p.locator('#discover-page').innerText()).split('\n').filter(Boolean).slice(0, 14).join('\n'));
+await p.screenshot({ path: `${OUT}/discover-cards.png` });
+await b.close();

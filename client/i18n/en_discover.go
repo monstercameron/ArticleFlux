@@ -18,5 +18,16 @@ func init() {
 		"accepting": "Following…",
 		"reject":    "Not for me",
 		"rejecting": "Dismissing…",
+
+		// The "2 posts reviewed" gate's own opt-in (Cam, 2026-08-01) — off by
+		// default, same as every other Smart+ egress in this app.
+		"smartPlusToggle":      "Smart+ review",
+		"smartPlusToggleLabel": "Review each suggestion's own posts with Smart+ before showing it",
+
+		// The whole-page gate (Cam, 2026-08-01, second pass): with the toggle
+		// off, this replaces the list entirely rather than falling back to a
+		// deterministic-only view.
+		"gateTitle": "Turn on Smart+ review to use Discover.",
+		"gateHint":  "This looks at what you read and, when needed, searches the web for sites like it — always with your permission, and every suggestion says why.",
 	})
 }

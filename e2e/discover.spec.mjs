@@ -10,17 +10,24 @@ import { test, expect, boot } from './fixtures.mjs';
  * whichever one was last open, the same "showSettings + settingsTabTo" chain
  * slideNeeds uses for the Podcast tab.
  *
+ * # The whole page is gated behind Smart+ review (Cam, 2026-08-01, 2nd pass)
+ *
+ * With the toggle off (the fixture user's default — nobody has opted in),
+ * Discover shows the gate message and never calls ListRecommendations at
+ * all. Every test that needs the actual list has to flip the toggle first.
+ *
  * # What this suite can and cannot prove
  *
  * The fixture user has no outlink/engagement history — building that
  * fixture is a subscribe-and-read pipeline this suite does not set up
  * elsewhere — so no candidate ever clears internal/recommend's health gate
- * here, and the reachable, honest state is the EMPTY one. What this proves is
- * real: the tab opens, is marked current, the empty state renders (not a
- * blank panel and not a stuck loading spinner), and Refresh round-trips to
- * the server without breaking the panel. Accept/Reject against a real card
- * are covered at the Go layer instead (internal/transport/grpcsrv/
- * reader_recommend_test.go's TestAcceptRecommendationSubscribesAndClearsIt /
+ * here, and the reachable, honest state (once opted in) is the EMPTY one.
+ * What this proves is real: the tab opens, is marked current, the gate
+ * renders correctly when off, opting in loads the list for real, the empty
+ * state renders (not a blank panel and not a stuck loading spinner), and
+ * Refresh round-trips to the server without breaking the panel. Accept/Reject
+ * against a real card are covered at the Go layer instead (internal/transport/
+ * grpcsrv/reader_recommend_test.go's TestAcceptRecommendationSubscribesAndClearsIt /
  * TestRejectRecommendationIsPermanent), which drive the same RPCs this page
  * calls, end to end, against a real subscribe.
  */
@@ -33,26 +40,58 @@ async function openDiscover(page) {
     .toHaveAttribute('aria-current', 'true');
 }
 
+// Opens Discover and turns Smart+ review on, waiting for the real
+// ListRecommendations round trip the toggle triggers to settle.
+async function openDiscoverOptedIn(page) {
+  await openDiscover(page);
+  await expect(page.locator('.discover-gate')).toBeVisible();
+  await page.locator('.discover-smartplus').click();
+  await expect(page.locator('.discover-status')).toHaveCount(0, { timeout: 15_000 });
+}
+
 test.describe('discover', () => {
   test.afterEach(async ({ page }) => {
     await page.keyboard.press('Escape').catch(() => {});
   });
 
-  test('opens directly on the Discover tab and settles on the empty state', async ({ page }) => {
+  test('opens with Smart+ review off and shows the gate, not the list', async ({ page }) => {
     await openDiscover(page);
 
-    // Not stuck on "Loading…" — the RPC round-trips and the panel settles.
-    await expect(page.locator('.discover-status')).toHaveCount(0, { timeout: 15_000 });
-    await expect(page.locator('.discover-empty')).toBeVisible();
+    await expect(page.locator('.discover-gate')).toBeVisible();
+    await expect(page.locator('.discover-smartplus')).toHaveAttribute('aria-pressed', 'false');
     await expect(page.locator('.discover-card')).toHaveCount(0);
+    // Refresh is disabled while gated — pressing it would be a no-op against
+    // a list that was never loaded.
+    await expect(page.locator('.discover-refresh')).toBeDisabled();
 
     // The panel is not blank: real copy is on screen, not just an empty shell.
     await expect(page.locator('.discover-title')).toHaveText(/discover/i);
-    await expect(page.locator('.discover-empty')).not.toBeEmpty();
+    await expect(page.locator('.discover-gate')).not.toBeEmpty();
+  });
+
+  test('turning Smart+ review on loads the real list', async ({ page }) => {
+    await openDiscoverOptedIn(page);
+
+    await expect(page.locator('.discover-smartplus')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.discover-gate')).toHaveCount(0);
+    await expect(page.locator('.discover-empty')).toBeVisible();
+    await expect(page.locator('.discover-card')).toHaveCount(0);
+    await expect(page.locator('.discover-refresh')).toBeEnabled();
+  });
+
+  test('turning it back off clears the list and restores the gate', async ({ page }) => {
+    await openDiscoverOptedIn(page);
+    await expect(page.locator('.discover-empty')).toBeVisible();
+
+    await page.locator('.discover-smartplus').click();
+
+    await expect(page.locator('.discover-gate')).toBeVisible();
+    await expect(page.locator('.discover-smartplus')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('.discover-refresh')).toBeDisabled();
   });
 
   test('Refresh round-trips without breaking the panel', async ({ page }) => {
-    await openDiscover(page);
+    await openDiscoverOptedIn(page);
     await expect(page.locator('.discover-empty')).toBeVisible();
 
     const refresh = page.locator('.discover-refresh');
@@ -70,12 +109,7 @@ test.describe('discover', () => {
   });
 
   test('screenshot: legibility check', async ({ page }) => {
-    await openDiscover(page);
-    // The first ListRecommendations round trip over a freshly-opened tunnel
-    // can take several seconds on a loaded machine — the same generous
-    // timeout the settle test above uses, not a fixed short sleep, which is
-    // what made this shot flaky (a 1s wait was not always enough).
-    await expect(page.locator('.discover-status')).toHaveCount(0, { timeout: 15_000 });
+    await openDiscoverOptedIn(page);
     await expect(page.locator('.discover-empty')).toBeVisible();
     await page.screenshot({ path: 'discover-shot.png' });
   });
