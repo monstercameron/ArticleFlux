@@ -200,9 +200,25 @@ try {
     // Last, because it replaces the reading pane the checks above are about.
     await page.locator('[data-action="open-discover"]').first().click();
     await page.locator('#discover-page').waitFor({ timeout: SETTLE_MS });
-    await page.locator('.discover-card, .discover-status-error').first()
+    await page.locator('.discover-card, .discover-gate, .discover-status-error').first()
       .waitFor({ timeout: SETTLE_MS })
       .catch(() => { fail('Discover never resolved — it is still saying "Loading…"'); });
+
+    // The consent gate comes first, and a visitor gets past it by pressing the
+    // toggle — so the check does too, rather than treating the gate as the
+    // answer. Both halves matter: the gate must be what a fresh demo shows,
+    // because a recommender working on somebody's behalf before they asked is
+    // the thing it exists to prevent, and the list behind it must actually
+    // arrive, because that is what proves the in-memory instance serves §18.7
+    // at all. Checking only the first would pass on a demo whose Discover is
+    // permanently empty.
+    if (await page.locator('.discover-gate').count()) {
+      console.log('discover: consent gate up, turning Smart+ review on');
+      await page.locator('.discover-smartplus').first().click();
+      await page.locator('.discover-card, .discover-status-error').first()
+        .waitFor({ timeout: SETTLE_MS })
+        .catch(() => { fail('Discover stayed on the gate after the toggle was pressed'); });
+    }
 
     if (await page.locator('.discover-status-error').count()) {
       fail('Discover could not load its recommendations from the in-memory instance');
