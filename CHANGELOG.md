@@ -9,6 +9,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-01
+
+The first tagged release, and the first build of this application a stranger can look at without a
+Go toolchain: tagging is what publishes the demo to GitHub Pages, so the version below is also the
+Service Worker's cache key and the number on the settings screen.
+
+What it carries, in one line each: the session-minting and refresh-family security fixes (SEC1–5);
+Discover's fifth rung and its consent gate; FluxCast, the broadcast engine, with captions and a
+pipeline that no longer stalls at a seam; per-category unread counts and a Mark all read that
+reaches only the list it was pressed on; a fixed landing view; and the demo itself, which had
+silently stopped covering three features it claimed to demonstrate.
+
 ### Security
 
 - **A client-supplied device id let a second login hijack the first account's session row** (TODO
