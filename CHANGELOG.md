@@ -493,7 +493,31 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
-- **Pressing play on one article opened with a greeting and the date.** The `tts.podcast` preference
+- **Turning "summarise" on and pressing play answered from before the switch.** The summary and the
+  article are two renderings and the server has always filed them apart on disk — but an `<audio src>`
+  is answered from a browser cache that knows nothing about preferences, and the same URL meant both.
+  Not a stale asset: a setting that appears not to work. The listen URL now says *which* rendering it
+  is, absent when the summary is off so the address a reader has been playing all along is unchanged
+  and nothing already stored is orphaned, and it is read from the same struct the rest of the pipeline
+  reads — a warm that named the article while the play named the summary is a recording paid for twice
+  and a seam that stalls anyway. The Service Worker is now out of `/speech` entirely: its handler is
+  cache-first, which is right for an asset and wrong for a recording whose contents depend on
+  preferences read at request time, and the same Range argument the music beds already make applies —
+  a worker answering a Range request from a cached `200` hands the browser a whole file where it asked
+  for a slice. `internal/buildver` holds the exclusion in place the way it already pins the version
+  constant.
+- **A changed rendering went on being served under the old recording** (`speechRev`). Part of the
+  plain voice's audio cache key, for the same reason `promptVersion` is part of the digest's text key:
+  when the words change, the recording of the old words must not survive. Without it, dropping the
+  *"From Hacker News."* announcement would have been audible only on articles nobody had listened to
+  yet — and a library where half the recordings say one thing and half say another is invisible,
+  permanent, and reads as the feature being broken at random. Bumped whenever what the plain voice
+  says changes; deliberately **not** shared with the broadcast's keys, which carry their own, or every
+  adjustment to the plain voice would re-bill a programme that had not changed.
+- **Pressing play on one article opened with a greeting and the date.** *(Server half, landed
+  alongside: the occasion is now a property of the request.* `castRequest` *looks for the parameters
+  only a programme sends — a handover, a position in a run — because no amount of client-side
+  restraint could prevent this while the server never looked at the request.)* The `tts.podcast` preference
   answers *"does this reader want a programme"*; it does not answer *"is this playback one"*, and read
   alone it made every listen a broadcast — play on a single article in the feed opened with a
   greeting, the date and a run-through of stories nobody had asked to hear, and then retold the
