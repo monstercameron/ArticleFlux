@@ -779,18 +779,24 @@ func (c *Client) SetItemState(parent context.Context, itemID string, read, starr
 // its own work. Refusing in the same frame as the click is also strictly better
 // than what queueing would buy — there is no optimistic state to preserve here,
 // only a count the reader is waiting to see.
-func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, string, error) {
+// MarkAllRead marks read everything the given selection matches.
+//
+// The selection is the caller's — the list the reader is actually looking at,
+// resolved by the same function that resolves it for ListItems — rather than
+// derived here from a source id. Deriving it here is what this used to do, and
+// it could only ever say "one feed" or "everything": every other list the
+// reader can be on arrived as an empty source id and was marked as
+// EVERYTHING. See client/view/reader.go's selectorFor.
+func (c *Client) MarkAllRead(parent context.Context, scope pb.ListScope, sourceID string, sourceIDs []string, categorySlug string, uncategorised bool) (int32, string, error) {
 	if c.State() != Live {
 		return 0, "", ErrOffline
 	}
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
-	scope := pb.ListScope_LIST_SCOPE_ALL
-	if sourceID != "" {
-		scope = pb.ListScope_LIST_SCOPE_FEED
-	}
 	res, err := c.reader.MarkAllRead(ctx, &pb.MarkAllReadRequest{
-		Scope: scope, SourceId: sourceID,
+		Scope: scope, SourceId: sourceID, SourceIds: sourceIDs,
+		CategorySlug:  categorySlug,
+		Uncategorised: uncategorised,
 		// The server defaults `before` to now. Sending it explicitly from the
 		// client would use the client's clock, which may be wrong.
 	})
@@ -798,6 +804,21 @@ func (c *Client) MarkAllRead(parent context.Context, sourceID string) (int32, st
 		return 0, "", err
 	}
 	return res.GetMarked(), res.GetUndoToken(), nil
+}
+
+// UnreadByCategory returns the rail's per-label unread counts.
+//
+// Its own call rather than riding on ListFeeds: it costs a few hundred
+// milliseconds against a real database and the sidebar must not wait behind
+// it. Errors are the caller's to shrug at — a rail with no numbers is a rail.
+func (c *Client) UnreadByCategory(parent context.Context, slugs []string) (map[string]int32, int32, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.reader.CountUnreadByCategory(ctx, &pb.CountUnreadByCategoryRequest{Slugs: slugs})
+	if err != nil {
+		return nil, 0, c.track(err)
+	}
+	return res.GetCounts(), res.GetUncategorised(), nil
 }
 
 // Subscribe adds a feed, optionally named and filed on the way in.

@@ -151,6 +151,8 @@ func DefaultPolicy() *authz.Map {
 	for _, method := range []string{"Refresh", "UpdateFeedSettings", "SetFeedFolder"} {
 		m.Require(reader+method, authz.CapManageFeeds)
 	}
+	// Counting your own unread is reading, exactly like ListItems.
+	m.Require(reader+"CountUnreadByCategory", authz.CapReadItems)
 	for _, method := range []string{"CreateFolder", "RenameFolder", "DeleteFolder"} {
 		m.Require(reader+method, authz.CapManageViews)
 	}

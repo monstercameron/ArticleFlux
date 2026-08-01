@@ -170,6 +170,36 @@ type ListQuery struct {
 	// *int — 0 is genuinely "no opinion" here, not "unset".
 	RatedOnly  int
 	UnreadOnly bool
+	// Uncategorised selects articles that cleared NO category's floor —
+	// what the chip row leaves blank and §76 calls "None is the important
+	// one". It is the complement of CategorySlug across the whole taxonomy,
+	// not a label of its own, which is why it is a bool rather than a
+	// reserved slug: a sentinel string would be a value every caller has to
+	// know is magic.
+	//
+	// Deliberately NOT the same thing as the rail's "Unfiled" row, which is
+	// about feeds with no FOLDER. A feed nobody filed still publishes
+	// articles the classifier labels; those are unfiled and categorised at
+	// once, and conflating the two is what made Unfiled look broken.
+	Uncategorised bool
+	// CategorySlug limits to one classification label — "hardware", "ai" — as
+	// browsed from the rail. Empty means no restriction.
+	//
+	// # What "in this category" means here
+	//
+	// An item is IN a category when that category's score clears its floor.
+	// That is deliberately the membership test and not "resolveCategory picked
+	// it": resolveCategory also ranks (highest wins) and caps the secondary
+	// list at MaxSecondary, so a label an article genuinely matches can be
+	// dropped for placing fourth. For a chip row — one primary, a couple of
+	// secondaries — that cap is right. For BROWSING it is not: a reader
+	// opening Hardware wants the hardware articles, not the ones where
+	// hardware also happened to outrank three other labels.
+	//
+	// The floor itself is NOT restated in SQL. It comes from categoryFloor(),
+	// the same function resolveCategory reads, so a floor change moves the
+	// chips and this list together.
+	CategorySlug string
 	// Cursor is the opaque keyset cursor from a previous page.
 	Cursor string
 	Limit  int
@@ -258,6 +288,55 @@ func listFilter(q ListQuery, withCursor bool) ([]string, []any, error) {
 		where = append(where, "uis.rating > 0")
 	} else if q.RatedOnly < 0 {
 		where = append(where, "uis.rating < 0")
+	}
+	if q.Uncategorised {
+		// NOT EXISTS covers both ways an article can have no category: never
+		// analysed (no row at all), and analysed with nothing clearing its
+		// floor. The inner test is the same membership rule the per-slug
+		// branch below applies, negated across every label at once.
+		floors, floorArgs := categoryFloorRows()
+		where = append(where, `NOT EXISTS (
+			SELECT 1 FROM item_analysis ia
+			 WHERE ia.item_id = i.id
+			   AND (
+			     COALESCE(ia.model_primary,'') <> ''
+			     OR EXISTS (
+			          SELECT 1 FROM json_each(COALESCE(ia.category_scores,'{}')) je
+			            JOIN (`+floors+`) f ON f.slug = je.key
+			           WHERE je.value >= f.floor)
+			   ))`)
+		args = append(args, floorArgs...)
+	}
+	if slug := q.CategorySlug; slug != "" {
+		// An EXISTS semi-join rather than a JOIN in listSelectTail, and that
+		// is a performance decision rather than a style one: driveIndex pins
+		// `items_published` for the unfiltered list (478ms -> under a
+		// millisecond, see its comment), and a fourth table in the FROM clause
+		// is exactly the kind of change that makes the planner reconsider a
+		// hint the rest of this file depends on. A semi-join leaves the
+		// driving query's shape alone.
+		//
+		// json_each rather than json_extract with a built path: the slug
+		// arrives from the client, and `'$.' || ?` is a path expression
+		// assembled from caller input. json_each compares it as a VALUE, so
+		// there is no path to build and nothing to quote.
+		where = append(where, `EXISTS (
+			SELECT 1 FROM item_analysis ia
+			 WHERE ia.item_id = i.id
+			   AND (
+			     -- A Smart+ verdict wins outright where it exists, exactly as
+			     -- resolveCategory has it: the model's answer cost a request
+			     -- and does not compete with the arithmetic.
+			     (COALESCE(ia.model_primary,'') <> '' AND (
+			        ia.model_primary = ?
+			        OR EXISTS (SELECT 1 FROM json_each(COALESCE(ia.model_secondary,'[]'))
+			                    WHERE value = ?)))
+			     OR
+			     (COALESCE(ia.model_primary,'') = '' AND
+			        EXISTS (SELECT 1 FROM json_each(COALESCE(ia.category_scores,'{}'))
+			                 WHERE key = ? AND value >= ?))
+			   ))`)
+		args = append(args, slug, slug, slug, categoryFloor(slug))
 	}
 	if withCursor && q.Cursor != "" {
 		published, id, err := decodeCursor(q.Cursor, specOf(q))
@@ -584,14 +663,72 @@ func (r *ReaderRepo) HeardItemIDs(ctx context.Context, s Scope, ids []string) (m
 	return out, rows.Err()
 }
 
-// MarkAllRead marks everything at or before `before`.
+// MarkQuery selects WHICH items a bulk mark is about.
+//
+// The fields are `ListQuery`'s selection fields and are consumed by the same
+// `listFilter`, which is the whole point: a mark that filtered differently from
+// the list it was pressed on would mark things the reader could not see. See
+// MarkAllRead for what that cost before this type existed.
+//
+// Deliberately NOT ListQuery itself: a mark has no cursor, no limit and no
+// unread flag (the upsert below only ever flips rows that are unread), and a
+// struct carrying three fields that are silently ignored invites a caller to
+// set one and believe it.
+type MarkQuery struct {
+	// SourceID limits to one feed; SourceIDs to several — a tag or a category.
+	SourceID  string
+	SourceIDs []string
+	// StarredOnly is Read later; RatedOnly is +1 Liked / -1 Disliked.
+	StarredOnly bool
+	RatedOnly   int
+	// Ranked limits to My Feed — the materialised ranking rather than a filter
+	// over the item list, exactly as LIST_SCOPE_MEGAFEED is for reading.
+	Ranked bool
+	// CategorySlug limits to one classification label, exactly as
+	// ListQuery.CategorySlug does — and via the same listFilter clause, so a
+	// mark reaches precisely the articles the category listed.
+	CategorySlug string
+	// Uncategorised mirrors ListQuery.Uncategorised, for the same reason
+	// every other selection field here mirrors one.
+	Uncategorised bool
+}
+
+// listQuery is the shape listFilter consumes. Cursor and Limit are deliberately
+// absent — see MarkQuery.
+func (q MarkQuery) listQuery() ListQuery {
+	return ListQuery{
+		SourceID:      q.SourceID,
+		SourceIDs:     q.SourceIDs,
+		StarredOnly:   q.StarredOnly,
+		RatedOnly:     q.RatedOnly,
+		CategorySlug:  q.CategorySlug,
+		Uncategorised: q.Uncategorised,
+	}
+}
+
+// MarkAllRead marks everything the query selects, at or before `before`.
 //
 // `before` matters: without it, an item that arrives while the request is in
 // flight is silently marked read, and the user never sees an article that was
 // never on screen.
 // MarkAllRead returns how many rows it touched AND the batch stamp that
 // identifies them, so the operation can be undone. See UndoMarkAllRead.
-func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before string) (int, string, error) {
+//
+// # Why this takes a query rather than a source id
+//
+// It used to take one `sourceID`, so it could express "this feed" or
+// "everything" and nothing else. The reader can be looking at seven other
+// kinds of list — My Feed, a tag, a category, Liked, Disliked, Read later, a
+// search — and every one of them arrived here as an empty source id, which
+// this read as "everything subscribed". Pressing Mark all read on a category
+// of four feeds marked all hundred and fifty read, with an undo the reader had
+// to notice within one banner to escape it. The control named one list and
+// acted on all of them.
+//
+// The filter is built by `listFilter`, the same function ListItems and
+// CountQuery use, so the set marked is the set listed by construction rather
+// than by two implementations agreeing.
+func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, q MarkQuery, before string) (int, string, error) {
 	if !s.Valid() {
 		return 0, "", ErrNoScope
 	}
@@ -600,11 +737,19 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before 
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
+	// Built once, outside the transaction: a bad cursor is the only error
+	// listFilter reports and a MarkQuery has no cursor, but checking rather
+	// than discarding keeps the one shared builder honest at both call sites.
+	where, filterArgs, err := listFilter(q.listQuery(), false)
+	if err != nil {
+		return 0, "", err
+	}
+
 	var (
 		affected int
 		batch    string
 	)
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var rev int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COALESCE(max(rev),0)+1 FROM user_item_state WHERE user_id = ?`,
@@ -612,18 +757,33 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before 
 			return err
 		}
 
-		q := `
+		// The LEFT JOIN to user_item_state is what lets listFilter's `uis.`
+		// clauses — starred, rating — apply here at all. LEFT rather than
+		// INNER because an item nobody has touched has no state row, and an
+		// unfiltered mark must still reach it.
+		q0 := `
 			INSERT INTO user_item_state (tenant_id,user_id,item_id,source_id,published_at,
 			                             read_at,rev,updated_at)
 			SELECT ?, ?, i.id, i.source_id, i.published_at, ?, ?, ?
 			  FROM items i
 			  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
-			 WHERE sub.tenant_id = ? AND i.published_at <= ? AND i.deactivated_at IS NULL`
-		args := []any{s.TenantID, s.UserID, now, rev, now, s.UserID, s.TenantID, before}
-		if sourceID != "" {
-			q += ` AND i.source_id = ?`
-			args = append(args, sourceID)
+			  LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?`
+		args := []any{s.TenantID, s.UserID, now, rev, now, s.UserID, s.UserID}
+		if q.Ranked {
+			// My Feed is a different table rather than a filter, which is the
+			// same reason ListItems returns early for LIST_SCOPE_MEGAFEED
+			// instead of adding a clause.
+			q0 += `
+			  JOIN home_ranking hr ON hr.item_id = i.id AND hr.user_id = ?`
+			args = append(args, s.UserID)
 		}
+		q0 += `
+			 WHERE sub.tenant_id = ? AND i.published_at <= ? AND i.deactivated_at IS NULL`
+		args = append(args, s.TenantID, before)
+		for _, w := range where {
+			q0 += ` AND ` + w
+		}
+		args = append(args, filterArgs...)
 		// The WHERE on DO UPDATE is what makes this undoable.
 		//
 		// COALESCE kept an already-read row's timestamp but still stamped it with
@@ -631,12 +791,12 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, sourceID, before 
 		// read before it. Skipping those rows entirely means every row carrying
 		// this rev was flipped by THIS call — which is exactly the set the undo
 		// has to restore, and exactly the count to report.
-		q += ` ON CONFLICT(user_id,item_id) DO UPDATE SET
+		q0 += ` ON CONFLICT(user_id,item_id) DO UPDATE SET
 		        read_at = excluded.read_at,
 		        rev = excluded.rev, updated_at = excluded.updated_at
 		      WHERE user_item_state.read_at IS NULL`
 
-		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, q0, args...); err != nil {
 			return err
 		}
 		// Counted from the rev, not from RowsAffected: with the WHERE above, the
@@ -1205,6 +1365,13 @@ func specOf(q ListQuery) specHash {
 		b.WriteString("s")
 	}
 	b.WriteString(strconv.Itoa(q.RatedOnly))
+	if q.Uncategorised {
+		b.WriteString("n")
+	}
+	// The category is part of the view's identity like every other filter: a
+	// cursor issued while browsing Hardware must not resume a page of AI.
+	b.WriteByte(0)
+	b.WriteString(q.CategorySlug)
 
 	// Nine bytes, twelve base64 characters. A cursor travels in a URL and in a
 	// proto field, and a full 32-byte hash would triple its length to guard
@@ -1301,8 +1468,15 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 // only shape this index answers; everything else falls through to the general
 // query, which is correct and merely slower.
 func (r *ReaderRepo) countUnreadFast(ctx context.Context, s Scope, q ListQuery) (int, bool, error) {
+	// Every filter has to be listed here, and a missing one is silent: this
+	// path answers from a per-source rollup that knows nothing about the WHERE
+	// clause listFilter would have built, so a query it wrongly calls "bare"
+	// gets the whole account's unread count with a straight face. CategorySlug
+	// was exactly that case — 26 categories would each have reported the same
+	// number, which reads as a working feature.
 	bare := q.UnreadOnly && !q.StarredOnly && q.RatedOnly == 0 &&
-		q.SourceID == "" && len(q.SourceIDs) == 0
+		q.SourceID == "" && len(q.SourceIDs) == 0 && q.CategorySlug == "" &&
+		!q.Uncategorised
 	if !bare {
 		return 0, false, nil
 	}

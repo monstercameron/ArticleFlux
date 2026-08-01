@@ -65,7 +65,7 @@ func TestMarkAllReadCompletesPromptly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	n, _, err := repo.MarkAllRead(ctx, sc, "", "")
+	n, _, err := repo.MarkAllRead(ctx, sc, MarkQuery{}, "")
 	if err != nil {
 		t.Fatalf("MarkAllRead: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestUndoMarkAllReadRestoresOnlyThatBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, token, err := repo.MarkAllRead(ctx, sc, "", "")
+	n, token, err := repo.MarkAllRead(ctx, sc, MarkQuery{}, "")
 	if err != nil {
 		t.Fatalf("MarkAllRead: %v", err)
 	}

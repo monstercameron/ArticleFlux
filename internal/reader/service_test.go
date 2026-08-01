@@ -169,7 +169,7 @@ func TestMarkAllReadAndUndoMarkAllRead(t *testing.T) {
 	svc, _, sc, sourceID, _ := seedThreeItems(t)
 	ctx := context.Background()
 
-	n, batch, err := svc.MarkAllRead(ctx, sc, sourceID, "")
+	n, batch, err := svc.MarkAllRead(ctx, sc, store.MarkQuery{SourceID: sourceID}, "")
 	if err != nil {
 		t.Fatalf("MarkAllRead: %v", err)
 	}

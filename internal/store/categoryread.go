@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
@@ -202,4 +204,156 @@ func excluding(primary string, secondary []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// UnreadByCategory counts the reader's unread articles per classification
+// label, for the rail's counts.
+//
+// # Why this is one query and not twenty-six CountQuery calls
+//
+// Twenty-six CountQuery calls was the first implementation, and it was the
+// RIGHT shape: CountQuery already shares listFilter with ListItems, so the
+// membership rule — floors, and a Smart+ verdict winning outright — existed
+// once and a count could not disagree with the list it opened. It was also
+// measured, on the development database (6,370 unread, 7,131 analysed rows,
+// 153 feeds), at **1.31 seconds**. That is not a number that can sit in the
+// path the sidebar loads on.
+//
+// So the rule is written a second time here, in a shape that resolves every
+// item's labels in one pass. That duplication is a real cost and is the reason
+// this comment is long: if the floors or the model-wins-outright rule change in
+// listFilter, they have to change here too, and the tests in
+// categorycount_test.go exist to make that failure loud rather than silent.
+// The floor VALUES are still built from categoryFloor(), so at least the
+// numbers themselves have one source.
+//
+// Slugs come from the CALLER — the client's own taxonomy order — rather than
+// being discovered from the data: a label with nothing in it must return 0
+// rather than be absent, because the rail renders all of them and a missing
+// key is indistinguishable from a zero once it reaches a map.
+func (r *ReaderRepo) UnreadByCategory(ctx context.Context, s Scope, slugs []string) (map[string]int, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	out := make(map[string]int, len(slugs))
+	uniq := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if slug == "" {
+			continue
+		}
+		if _, seen := out[slug]; seen {
+			continue
+		}
+		out[slug] = 0
+		uniq = append(uniq, slug)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+
+	// The floors travel as a VALUES table so the comparison is per-label
+	// without a CASE ladder, and so the numbers keep coming from
+	// categoryFloor() rather than being restated as SQL literals.
+	var floors strings.Builder
+	args := make([]any, 0, len(uniq)*2+3)
+	for i, slug := range uniq {
+		if i > 0 {
+			floors.WriteString(",")
+		}
+		floors.WriteString("(?,?)")
+		args = append(args, slug, categoryFloor(slug))
+	}
+	args = append(args, s.UserID, s.UserID, s.TenantID)
+
+	// LEFT JOIN on user_item_state, matching listFilter exactly: an item with
+	// no state row has never been touched, which is unread. An INNER join here
+	// would quietly count only articles the reader has already interacted with.
+	q := `
+		WITH floors(slug, floor) AS (VALUES ` + floors.String() + `),
+		     unread AS (
+		       SELECT i.id AS item_id
+		         FROM items i
+		         JOIN sources src ON src.id = i.source_id
+		         JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
+		         LEFT JOIN user_item_state uis ON uis.item_id = i.id AND uis.user_id = ?
+		        WHERE sub.tenant_id = ?
+		          AND i.deactivated_at IS NULL
+		          AND src.deactivated_at IS NULL
+		          AND uis.read_at IS NULL
+		     ),
+		     member AS (
+		       -- The arithmetic, for items the model never judged.
+		       SELECT u.item_id, je.key AS slug
+		         FROM unread u
+		         JOIN item_analysis ia ON ia.item_id = u.item_id
+		         JOIN json_each(COALESCE(ia.category_scores,'{}')) je
+		         JOIN floors f ON f.slug = je.key
+		        WHERE COALESCE(ia.model_primary,'') = '' AND je.value >= f.floor
+		       UNION
+		       -- A Smart+ verdict wins outright, exactly as resolveCategory and
+		       -- listFilter have it: primary...
+		       SELECT u.item_id, ia.model_primary
+		         FROM unread u
+		         JOIN item_analysis ia ON ia.item_id = u.item_id
+		        WHERE COALESCE(ia.model_primary,'') <> ''
+		       UNION
+		       -- ...and its secondaries.
+		       SELECT u.item_id, ms.value
+		         FROM unread u
+		         JOIN item_analysis ia ON ia.item_id = u.item_id
+		         JOIN json_each(COALESCE(ia.model_secondary,'[]')) ms
+		        WHERE COALESCE(ia.model_primary,'') <> ''
+		     )
+		SELECT slug, count(*) FROM member GROUP BY slug`
+
+	rows, err := r.db.Read.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: UnreadByCategory: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var slug string
+		var n int
+		if err := rows.Scan(&slug, &n); err != nil {
+			return nil, fmt.Errorf("store: UnreadByCategory: %w", err)
+		}
+		// Only labels the caller asked about. json_each walks whatever the
+		// analyser stored, which may include a slug this build no longer has.
+		if _, want := out[slug]; want {
+			out[slug] = n
+		}
+	}
+	return out, rows.Err()
+}
+
+// categoryFloorRows emits a derived table of (slug, floor) for every built-in
+// label, plus its arguments.
+//
+// A subquery rather than a CTE because listFilter can only append WHERE
+// fragments — it has no say in the statement's preamble — and the uncategorised
+// test needs every label's floor at once to ask "did NOTHING clear one".
+//
+// The numbers come from categoryFloor(), so the SQL never restates a threshold
+// the classifier owns.
+func categoryFloorRows() (string, []any) {
+	cats := lexicon.Categories()
+	var b strings.Builder
+	args := make([]any, 0, len(cats)*2)
+	for i, l := range cats {
+		if i > 0 {
+			b.WriteString(" UNION ALL ")
+		}
+		b.WriteString("SELECT ? AS slug, ? AS floor")
+		args = append(args, l.Slug, categoryFloor(l.Slug))
+	}
+	return b.String(), args
+}
+
+// UnreadUncategorised counts unread articles that cleared no category's floor.
+//
+// Its own method rather than a key in UnreadByCategory's map: it is the
+// complement of that map rather than another entry in it, and a caller reading
+// a slug-keyed map would have to know which key was not a slug.
+func (r *ReaderRepo) UnreadUncategorised(ctx context.Context, s Scope) (int, error) {
+	return r.CountQuery(ctx, s, ListQuery{Uncategorised: true, UnreadOnly: true})
 }

@@ -49,6 +49,15 @@ service ReaderService {
   // MarkAllRead marks a whole feed or the whole megafeed read.
   rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
 
+  // CountUnreadByCategory is the rail's per-label unread counts.
+  //
+  // Its own RPC rather than a field on ListFeeds, which the rail also calls:
+  // this costs a few hundred milliseconds against a real database and the
+  // sidebar's feeds must not wait behind it. The client asks separately and
+  // fills the numbers in when they land.
+  rpc CountUnreadByCategory(CountUnreadByCategoryRequest)
+      returns (CountUnreadByCategoryResponse);
+
   // Subscribe adds a feed by URL. The source is global (A14), so this usually
   // attaches an existing row rather than creating one.
   rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
@@ -469,6 +478,16 @@ message ListItemsRequest {
   // subscriptions. Kept separate from source_id rather than replacing it, so the
   // common single-feed case stays one string on the wire.
   repeated string source_ids = 6;
+  // category_slug browses one classification label — "hardware", "ai" — from
+  // the rail. Independent of scope and source: a category crosses feeds, which
+  // is the whole reason it is worth browsing by.
+  string category_slug = 7;
+  // uncategorised selects articles that cleared NO category's floor — the
+  // complement of category_slug across the taxonomy, and the list the rail's
+  // "Unfiled" row was mistaken for. Unfiled is about a FEED with no folder;
+  // this is about an ARTICLE with no label, and a feed nobody filed still
+  // publishes articles the classifier labels.
+  bool uncategorised = 8;
   bool unread_only = 3;
   // Opaque keyset cursor (§20.7). Never an offset: OFFSET degrades exactly when
   // a list gets long enough for paging to matter.
@@ -543,13 +562,51 @@ message SetItemStateResponse {
   int64 rev = 2;
 }
 
+// MarkAllReadRequest selects what to mark with the SAME fields ListItemsRequest
+// selects what to show, and that correspondence is the point rather than a
+// convenience.
+//
+// It used to carry only `scope` + `source_id`, which could express one feed or
+// everything and nothing else. Every other list the reader can be looking at —
+// My Feed, a tag, a category, Liked, Disliked, Read later — therefore fell
+// through to "everything subscribed", so pressing Mark all read while looking
+// at a 40-item category marked the reader's whole account read. The control
+// named one list and acted on all of them.
 message MarkAllReadRequest {
   ListScope scope = 1;
   string source_id = 2;
+  // source_ids selects several feeds at once — a tag or a category — exactly as
+  // ListItemsRequest.source_ids does, and is resolved on the client for the same
+  // reason: the sidebar already holds what it needs to work that out.
+  repeated string source_ids = 5;
+  // category_slug mirrors ListItemsRequest's, for the same reason every other
+  // selection field here mirrors one: a reader browsing Hardware who presses
+  // Mark all read must mark Hardware, not their whole account.
+  string category_slug = 6;
+  // uncategorised mirrors ListItemsRequest's, so marking that list read marks
+  // that list rather than the account.
+  bool uncategorised = 7;
   // Only items at or before this instant are affected, so an article that
   // arrives mid-request is not silently marked read.
   string before = 3;
   string idempotency_key = 4;
+}
+
+message CountUnreadByCategoryRequest {
+  // The labels to count, in the caller's own taxonomy order. Sent rather than
+  // discovered so a label with nothing in it comes back as 0 instead of being
+  // absent — the rail renders all of them, and a missing key and a zero are
+  // the same thing by the time they reach a map.
+  repeated string slugs = 1;
+}
+
+message CountUnreadByCategoryResponse {
+  map<string, int32> counts = 1;
+  // Articles with no label at all. Its own field rather than a key in the map
+  // above: it is the map's complement rather than another entry in it, and a
+  // client reading a slug-keyed map should not have to know which key is not
+  // a slug.
+  int32 uncategorised = 2;
 }
 
 message UndoMarkAllReadRequest { string undo_token = 1; }

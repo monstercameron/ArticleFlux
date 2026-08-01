@@ -225,10 +225,12 @@ func (s *ReaderServer) ListItems(ctx context.Context, req *pb.ListItemsRequest) 
 	}
 
 	q := store.ListQuery{
-		Cursor:     req.GetCursor(),
-		Limit:      int(req.GetLimit()),
-		UnreadOnly: req.GetUnreadOnly(),
-		SourceIDs:  req.GetSourceIds(),
+		Cursor:        req.GetCursor(),
+		Limit:         int(req.GetLimit()),
+		UnreadOnly:    req.GetUnreadOnly(),
+		SourceIDs:     req.GetSourceIds(),
+		CategorySlug:  req.GetCategorySlug(),
+		Uncategorised: req.GetUncategorised(),
 	}
 	switch req.GetScope() {
 	case pb.ListScope_LIST_SCOPE_FEED:
@@ -453,15 +455,58 @@ func (s *ReaderServer) MarkAllRead(ctx context.Context, req *pb.MarkAllReadReque
 	if before == "" {
 		before = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	sourceID := ""
-	if req.GetScope() == pb.ListScope_LIST_SCOPE_FEED {
-		sourceID = req.GetSourceId()
+	// The same switch ListItems runs a few hundred lines above, over the same
+	// enum, producing the same selection — because a mark that resolved a scope
+	// differently from the list would mark rows the reader was not shown. The
+	// two are kept side by side deliberately; if one grows a case the other has
+	// to, and a divergence here is a data-loss bug rather than a display one.
+	q := store.MarkQuery{
+		SourceIDs:     req.GetSourceIds(),
+		CategorySlug:  req.GetCategorySlug(),
+		Uncategorised: req.GetUncategorised(),
 	}
-	n, batch, err := s.svc.MarkAllRead(ctx, sc, sourceID, before)
+	switch req.GetScope() {
+	case pb.ListScope_LIST_SCOPE_FEED:
+		q.SourceID = req.GetSourceId()
+	case pb.ListScope_LIST_SCOPE_MEGAFEED:
+		q.Ranked = true
+	case pb.ListScope_LIST_SCOPE_STARRED:
+		q.StarredOnly = true
+	case pb.ListScope_LIST_SCOPE_LIKED:
+		q.RatedOnly = 1
+	case pb.ListScope_LIST_SCOPE_DISLIKED:
+		q.RatedOnly = -1
+	}
+	n, batch, err := s.svc.MarkAllRead(ctx, sc, q, before)
 	if err != nil {
 		return nil, toStatus(err)
 	}
 	return &pb.MarkAllReadResponse{Marked: int32(n), UndoToken: batch}, nil
+}
+
+// CountUnreadByCategory is the rail's per-label unread counts.
+func (s *ReaderServer) CountUnreadByCategory(ctx context.Context, req *pb.CountUnreadByCategoryRequest) (
+	*pb.CountUnreadByCategoryResponse, error) {
+	sc, err := s.scopeOf(ctx)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	counts, err := s.svc.UnreadByCategory(ctx, sc, req.GetSlugs())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	out := make(map[string]int32, len(counts))
+	for slug, n := range counts {
+		out[slug] = int32(n)
+	}
+	// Fetched alongside the labels because the rail renders it as one more row
+	// in the same group; a second RPC for one integer would be a second round
+	// trip for a number that arrives with the others or not at all.
+	none, err := s.svc.UnreadUncategorised(ctx, sc)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.CountUnreadByCategoryResponse{Counts: out, Uncategorised: int32(none)}, nil
 }
 
 func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) (*pb.SubscribeResponse, error) {

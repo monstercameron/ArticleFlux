@@ -203,6 +203,10 @@ func catChipNode(tr i18n.Runtime, slug, class, title string) ui.Node {
 	if props == nil {
 		props = map[string]any{}
 	}
+	// data-category-slug rides the same attribute reader_clicks.go's rail rows
+	// already answer to (pickCategory), so the chip needs no click plumbing of
+	// its own — just the attribute the existing delegated listener looks for.
+	props["data-category-slug"] = slug
 	p := html.Props{Class: class, Key: "cat-" + slug, Raw: props}
 	if title != "" {
 		p.Title = title

@@ -139,7 +139,12 @@ func init() {
 		r("border", "1px solid var(--cat, var(--line))"),
 		r("background", "color-mix(in oklab, var(--cat, transparent) 16%, transparent)"),
 		r("color", "var(--cat-ink, var(--cat, var(--soft)))"),
+		// Every chip carries data-category-slug now (see view.catChipNode), so
+		// every chip is a click target — the pointer cursor is not decoration.
+		r("cursor", "pointer"),
 	)
+	css.Global(".cat-chip:hover",
+		r("background", "color-mix(in oklab, var(--cat, transparent) 26%, transparent)"))
 	// The light-theme flip, identical in shape to Sheet()'s --ink rule: at 62%
 	// lightness the raw hue is a clear mark on a dark ground and a smear as text
 	// on a cream one, so on light themes it is mixed toward --cream first. Same
@@ -186,5 +191,32 @@ func init() {
 	css.Global(".cat-list-name",
 		r("flex", "1 1 auto"), r("min-width", "0"), r("font-size", "13.5px"),
 		r("color", "var(--cream)"),
+	)
+}
+
+// railTopicsCSS styles the classification labels in the rail's Categories band
+// (client/view/panes.go's topicRows).
+//
+// Called from the same place the rest of this file's rules are registered.
+func railTopicsCSS(r func(string, string) css.Rule) {
+	// There was a "BY TOPIC" rule here, between the reader's own folders and
+	// the classifier's labels. Both its rules are gone with it — see topicRows
+	// for why the heading went, and there is no reason to keep styling for an
+	// element nothing renders.
+	//
+	// The first topic row now sits directly under the CATEGORIES band, which
+	// is the same relationship every other band has to its first row, so the
+	// spacing it needs is spacing that already exists.
+	// The label's own hue, as a small solid dot in the marker column — the same
+	// `--cat` the article chip paints with, so a colour learnt on a chip is the
+	// colour that finds it here. `--mute` is the fallback for a slug with no
+	// hue, which is what an unknown label would be.
+	css.Global(".topic-dot", r("background", "var(--cat, var(--mute))"))
+	// Hollow, because this row is the ABSENCE of a label. A filled dot in any
+	// colour would read as one more category, which is the reading this row
+	// exists to correct.
+	css.Global(".topic-dot-none",
+		r("background", "transparent"),
+		r("box-shadow", "inset 0 0 0 1.5px var(--mute)"),
 	)
 }

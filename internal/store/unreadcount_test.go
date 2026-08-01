@@ -177,13 +177,13 @@ func TestUnreadCountNeverDrifts(t *testing.T) {
 		case 0:
 			// Mark a whole feed read.
 			src := f.sources[rng.Intn(len(f.sources))]
-			if _, _, err := f.repo.MarkAllRead(f.ctx, f.sc, src, ""); err != nil {
+			if _, _, err := f.repo.MarkAllRead(f.ctx, f.sc, MarkQuery{SourceID: src}, ""); err != nil {
 				t.Fatal(err)
 			}
 			what = "mark-all-read on " + src
 		case 1:
 			// Mark everything read.
-			if _, _, err := f.repo.MarkAllRead(f.ctx, f.sc, "", ""); err != nil {
+			if _, _, err := f.repo.MarkAllRead(f.ctx, f.sc, MarkQuery{}, ""); err != nil {
 				t.Fatal(err)
 			}
 			what = "mark-all-read"

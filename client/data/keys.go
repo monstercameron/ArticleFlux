@@ -92,5 +92,20 @@ func KeyItems(req *pb.ListItemsRequest) string {
 		b.WriteString(":s=")
 		b.WriteString(id)
 	}
+	// The classification filters. Both narrow the SAME scope value that an
+	// unfiltered list uses, so without them here every topic and the
+	// uncategorised pile share one cache entry with "all articles" — and the
+	// first one opened answers for the rest. That is the failure this whole
+	// key exists to prevent, and it is invisible: the heading is right and the
+	// articles under it are somebody else's.
+	if slug := req.GetCategorySlug(); slug != "" {
+		b.WriteString(":cat=")
+		b.WriteString(slug)
+	}
+	// A distinct marker rather than ":cat=" with an empty value, so it cannot
+	// collide with a label whose slug is somehow empty.
+	if req.GetUncategorised() {
+		b.WriteString(":nocat")
+	}
 	return b.String()
 }

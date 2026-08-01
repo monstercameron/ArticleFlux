@@ -5,6 +5,8 @@ package data
 import (
 	"context"
 	"testing"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // TestMarkAllReadRefusesRatherThanQueues — MarkAllRead is the one mutation in
@@ -20,7 +22,7 @@ import (
 func TestMarkAllReadRefusesRatherThanQueues(t *testing.T) {
 	c := &Client{}
 
-	n, token, err := c.MarkAllRead(context.Background(), "")
+	n, token, err := c.MarkAllRead(context.Background(), pb.ListScope_LIST_SCOPE_ALL, "", nil, "", false)
 
 	if err != ErrOffline {
 		t.Fatalf("err = %v, want ErrOffline — MarkAllRead must refuse outright "+

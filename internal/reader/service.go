@@ -22,6 +22,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
+	"github.com/monstercameron/ArticleFlux/internal/outlinks"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
@@ -213,12 +214,27 @@ func (s *Service) SetItemState(ctx context.Context, sc store.Scope, itemID strin
 	return it, rev, err
 }
 
-// MarkAllRead marks a feed or everything read, and returns the batch stamp that
-// undoes it. The stamp travels to the client so the undo needs no server-side
-// session state — a reader who reloads before pressing it simply loses the offer,
-// which is the right trade for not keeping per-user scratch state on disk.
-func (s *Service) MarkAllRead(ctx context.Context, sc store.Scope, sourceID, before string) (int, string, error) {
-	return s.repo.MarkAllRead(ctx, sc, sourceID, before)
+// MarkAllRead marks everything the query selects read, and returns the batch
+// stamp that undoes it. The stamp travels to the client so the undo needs no
+// server-side session state — a reader who reloads before pressing it simply
+// loses the offer, which is the right trade for not keeping per-user scratch
+// state on disk.
+//
+// The query is the LIST the reader was looking at, not just a feed — see
+// store.MarkQuery for what taking only a source id used to cost.
+func (s *Service) MarkAllRead(ctx context.Context, sc store.Scope, q store.MarkQuery, before string) (int, string, error) {
+	return s.repo.MarkAllRead(ctx, sc, q, before)
+}
+
+// UnreadByCategory counts unread articles per classification label, for the
+// rail's counts.
+func (s *Service) UnreadByCategory(ctx context.Context, sc store.Scope, slugs []string) (map[string]int, error) {
+	return s.repo.UnreadByCategory(ctx, sc, slugs)
+}
+
+// UnreadUncategorised counts unread articles carrying no classification label.
+func (s *Service) UnreadUncategorised(ctx context.Context, sc store.Scope) (int, error) {
+	return s.repo.UnreadUncategorised(ctx, sc)
 }
 
 // UndoMarkAllRead reverses one bulk mark.
@@ -458,6 +474,18 @@ func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (i
 		return 0, "", err
 	}
 
+	// Outlink mining (§18.7 rung 1) runs on every freshly-ingested item, off the
+	// feed's OWN content — not a second fetch of the article page. §18.7's rung
+	// 1 needs SOMETHING to mine from the moment an article exists, and the
+	// opportunistic archive tier (internal/preserve) never covers every item —
+	// it is policy-gated and asynchronous. The feed's content_html is what
+	// every item already has, right now, for free.
+	//
+	// Best-effort and non-fatal: one poll's worth of outlink mining failing
+	// must not turn into a feed that stops updating, the same discipline
+	// RecordFetch's error handling around it already follows.
+	s.mineOutlinks(ctx, src.ID, ing.NewIDs)
+
 	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
 		SourceID: src.ID, ETag: parsed.ETag, LastModified: parsed.LastModified,
 		Title: parsed.Title, SiteURL: parsed.SiteURL, IconURL: parsed.IconURL,
@@ -471,6 +499,41 @@ func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (i
 		s.onIngest(src.ID, ing.NewIDs)
 	}
 	return ing.New, parsed.Description, nil
+}
+
+// mineOutlinks records the editorial outbound links of newly-ingested items,
+// which is what gives internal/recommend's rung 1 (outlink mining, §18.7)
+// anything to work with. Called once per poll rather than per item mid-loop,
+// because it needs each item's stored URL and content_html, which
+// IngestItems does not hand back — ItemsByID is the same lookup
+// internal/preserve's Handle already does for the same reason.
+func (s *Service) mineOutlinks(ctx context.Context, sourceID string, newIDs []string) {
+	if len(newIDs) == 0 {
+		return
+	}
+	fresh, err := s.repo.ItemsByID(ctx, newIDs)
+	if err != nil {
+		s.logger().Debug("outlink mining: could not load fresh items", "source", sourceID, "err", err)
+		return
+	}
+	for _, it := range fresh {
+		if it.URL == "" || it.ContentHTML == "" {
+			// A feed that ships no content (title/summary only) has nothing to
+			// mine from — not an error, just nothing this item can contribute.
+			continue
+		}
+		links := outlinks.Extract(it.ContentHTML, it.URL, outlinks.Options{})
+		if len(links) == 0 {
+			continue
+		}
+		if err := s.repo.RecordOutlinks(ctx, it.ID, sourceID, links); err != nil {
+			// One item's links failing to record must not lose the rest of the
+			// poll's — the same "one dead thing does not fail the batch"
+			// discipline pollOneRecovered's caller applies across sources.
+			s.logger().Debug("outlink mining: could not record links",
+				"item", it.ID, "url", it.URL, "err", err)
+		}
+	}
 }
 
 // pollOneRecovered runs work (in production, always pollOne — see the
