@@ -493,6 +493,20 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **Pressing play on one article opened with a greeting and the date.** The `tts.podcast` preference
+  answers *"does this reader want a programme"*; it does not answer *"is this playback one"*, and read
+  alone it made every listen a broadcast — play on a single article in the feed opened with a
+  greeting, the date and a run-through of stories nobody had asked to hear, and then retold the
+  article instead of reading it. The preference now gates the **sound** and `castRun` gates the
+  **occasion**, with `castOn` the one place the two are combined: the segment, the warm ahead of it,
+  the captions under it and the sign-off after it all ask there rather than reading the preference for
+  themselves, because two of those build URLs that have to match exactly and a warm URL that disagrees
+  with the one played is a segment paid for twice. The sign-off is the same bug from the other end — a
+  plain chain reading articles one after another has no show to close, so *"that's the eleven"* was
+  arriving in the last forty words of something that was never a programme. `castRun` is a `Ref` and
+  not state, which is load-bearing rather than an economy: it is set inside the click that opens the
+  show and read further down the same synchronous call, where a scheduled state write may not have
+  landed yet, and a first story that read it one commit late would lose exactly the thing it is for.
 - **Mark all read marked the account.** `MarkAllRead` took one `source_id` and nothing else, so it
   could express "this feed" or "everything" — and every other list the reader can be standing on (My
   Feed, a tag, a category, Liked, Disliked, Read later) arrived at the server as an empty source id,
