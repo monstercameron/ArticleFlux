@@ -11,6 +11,23 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **Every streaming RPC reached production without a credential, and was refused.** `Dial` installed
+  `grpc.WithUnaryInterceptor(authInterceptor)` and nothing else, and a unary interceptor does not see
+  streaming calls at all — the same asymmetry `grpcsrv.AuthzStream` exists to answer at the other end
+  of the wire, missed at this one. So the two streams in the API opened with no `authorization`
+  header: `scopeFromContext` found no metadata, fell through to `devScope`, and `devScope` returns
+  nothing at all unless `-dev` is set. Every machine anybody develops on sets it, so both streams
+  worked everywhere they were tested and nowhere they were deployed. `WatchEvents` — the live event
+  pump — was refused 623 times in the twelve hours it took to find this, and `GetAudioTrack` meant
+  the broadcast's music never arrived: six refusals, which is two tracks against the client's
+  three-try budget, after which §19's deliberate design renders a bed that will not load as silence
+  rather than as an error. The reported symptom was a podcast that played the voice and no music, on
+  production only, and the first four days of looking at it went into the mp3 files — which were
+  present, served, and never the path the player uses. Refusals on that branch also log nothing (only
+  a counter), so nothing in the journal named it either. Both interceptors now stamp through one
+  shared function, so the next call added cannot get half of it, and `client/data` joins the wasm
+  test gate — its `*_wasm_test.go` files existed and had never been run by CI, which is the reason
+  this survived a code path with tests on both sides of it.
 - **A deploy that changed `update.sh` deployed nothing, and reported success.** The script re-execs
   itself when a pull changes it — a real fix for a real problem — but the re-exec happens *after* the
   pull, so the second process asked the working tree where the deploy started and was told the commit

@@ -181,7 +181,15 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 		// The credential rides on every call from here, and a rejected one is
 		// noticed in one place. See client/data/auth.go.
+		//
+		// BOTH, and the pair is load-bearing: a unary interceptor does not see
+		// streaming calls at all, so for as long as only the first line was here
+		// `WatchEvents` and `GetAudioTrack` opened with no credential and a server
+		// with real authentication refused them. Adding a stream RPC and only the
+		// unary option is the shape of that bug; there is no third kind of call,
+		// so these two lines cover the surface.
 		grpc.WithUnaryInterceptor(authInterceptor),
+		grpc.WithStreamInterceptor(streamAuthInterceptor),
 		// The only thing that can notice a socket the browser still believes in.
 		// Pairs with the server's KeepaliveEnforcementPolicy — see the constants.
 		grpctunnel.WithTunnelKeepalive(connpolicy.ClientInterval, connpolicy.ClientTimeout),

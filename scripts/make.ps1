@@ -149,11 +149,16 @@ function Invoke-Test {
 # wasm_exec_node.js under whatever GOROOT this machine's Go toolchain manager
 # happens to use.
 #
-# Scoped to client/i18n and client/view rather than ./client/..., for the
-# same reason the Makefile's mirror of this verb is: those are the two
-# packages the harness exists for, and the rest of client/... is either
-# native-portable (client/design) or untested, so running it through -exec
-# would only add noise.
+# Scoped to named packages rather than ./client/..., for the same reason the
+# Makefile's mirror of this verb is: these are the packages the harness exists
+# for, and the rest of client/... is either native-portable (client/design) or
+# untested, so running it through -exec would only add noise.
+#
+# client/data is on that list as of the stream-credential fix. Its wasm tests
+# had never been run by anything, which is how the missing
+# grpc.WithStreamInterceptor survived: the two streams in the API carried no
+# credential, a `-dev` server did not care, and only the deployed one refused
+# them.
 #
 # -skip drops two client/i18n tests that walk a directory
 # (TestEveryReferencedKeyExists, TestNoOrphanedKeys, plus srvkeys_test.go's
@@ -163,7 +168,7 @@ function Invoke-Test {
 # skip, on Linux, where the syscall is supported, so nothing here goes
 # permanently unchecked — it is checked on the platform that can check it.
 function Invoke-WasmTest {
-    Step 'go test (wasm, via node) -> client/i18n + client/view'
+    Step 'go test (wasm, via node) -> client/data + client/i18n + client/view'
     $goroot = (go env GOROOT)
     if (-not $goroot) { Fail 'go env GOROOT returned nothing' }
     $execJs = Join-Path $goroot 'lib\wasm\wasm_exec_node.js'
@@ -178,7 +183,7 @@ function Invoke-WasmTest {
         try {
             go test -exec="node $execJs" `
                 -skip 'TestEveryReferencedKeyExists|TestNoOrphanedKeys|TestEveryServerErrorKeyExists|TestServerErrorKeysMatchTheirEnglishFallback' `
-                ./client/i18n/... ./client/view/...
+                ./client/data/... ./client/i18n/... ./client/view/...
         } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
     }
 }
@@ -587,7 +592,7 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
   ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
-  ./scripts/make.ps1 wasmtest   go test client/i18n + client/view under GOOS=js GOARCH=wasm (via node)
+  ./scripts/make.ps1 wasmtest   go test client/data + client/i18n + client/view under GOOS=js GOARCH=wasm (via node)
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
   ./scripts/make.ps1 demo       build the GitHub Pages demo into bin/demo (-Version v1.0.0)
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards

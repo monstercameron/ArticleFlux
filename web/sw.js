@@ -27,17 +27,17 @@
 // forgetting to bump it means the old module is served forever, which is
 // exactly the failure this file has to avoid and the one nobody notices,
 // because everything keeps working with old code.
-const VERSION = '0.1.0-dev';
+const VERSION = '0.1.1-dev';
 const CACHE = `articleflux-shell-${VERSION}`;
 
 // DEV is the hole in everything the comment above claims.
 //
 // The retirement story — "a new build changes VERSION, the browser installs the
 // new worker, activate deletes the old cache" — is true of a RELEASE and false
-// of every build anybody actually makes. A development version is `0.1.0-dev`
-// and stays `0.1.0-dev` through a hundred rebuilds, so the cache keyed on it is
-// never retired and `app.wasm` is served cache-first from whenever the browser
-// first saw it.
+// of every build anybody actually makes. A development version carries a `-dev`
+// suffix and keeps the same number through a hundred rebuilds, so the cache
+// keyed on it is never retired and `app.wasm` is served cache-first from
+// whenever the browser first saw it.
 //
 // The result is the worst class of bug this file can produce, because it does
 // not look like caching. It looks like the feature you just built not working:

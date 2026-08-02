@@ -313,7 +313,7 @@ jobs:
   # (scripts/make.ps1's wasmtest verb skips those same two tests by name for
   # exactly this reason, so a developer's local run stays meaningful too.)
   wasmtest:
-    name: wasm test (client/i18n + client/platform + client/view)
+    name: wasm test (client/data + client/i18n + client/platform + client/view)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -358,7 +358,16 @@ jobs:
           # browser, and the listener was greeted by the SERVER's clock. Nothing
           # native can compile that path, so an ungated wasm package is a
           # package with no tests at all.
-          GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" -exec="node $exec_js" ./client/i18n/... ./client/platform/... ./client/view/...
+          # client/data joined the gate with the stream-credential fix, and for
+          # the same reason client/platform did: its *_wasm_test.go files
+          # existed and had never been run here, which is how a
+          # production-only bug lived in it. `grpc.WithUnaryInterceptor` does
+          # not see streaming calls, so the two streams in the API opened with
+          # no `authorization` header — invisible against a `-dev` server,
+          # which resolves a scope without one, and fatal against the deployed
+          # one, which refuses them. An ungated wasm package is a package with
+          # no tests at all.
+          GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" -exec="node $exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
 
       # Non-gating by design: `continue-on-error` lets this step actually run
       # and still show failed/red in the Actions UI without blocking the
