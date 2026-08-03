@@ -51,7 +51,7 @@ help:
 	@echo 'ArticleFlux task runner (mirrors scripts/make.ps1)'
 	@echo
 	@echo '  make deps      check the toolchain and the D0 sibling checkout'
-	@echo '  make wasmtest  go test client/i18n + client/view under GOOS=js GOARCH=wasm'
+	@echo '  make wasmtest  go test client/data + client/i18n + client/platform + client/view (wasm)'
 	@echo '  make tools     build gwc.exe from ../GoWebComponents (D0)'
 	@echo '  make gen       buf lint + buf generate -> internal/pb'
 	@echo '  make build     go build -> bin/articleflux'
@@ -133,17 +133,27 @@ test:
 # (module-cached toolchains put it somewhere under GOPATH, not under a fixed
 # system path).
 #
-# Scoped to client/i18n and client/view rather than ./client/..., because
-# those are the two packages this harness actually exists for — i18n is the
-# harness's own proof of life, view is the reason it was built. The rest of
-# client/... is either native-portable (client/design) or has no tests of
-# its own, and dragging them through -exec would only surface OS-specific
-# noise that has nothing to do with what this target is checking.
+# Scoped to named packages rather than ./client/..., because these are the
+# ones the harness exists for: i18n is its own proof of life, view is the
+# reason it was built, and data and platform are wasm-only packages whose
+# tests nothing else can compile. The rest of client/... is native-portable
+# (client/design, client/demodata) and is covered by `make test`; dragging it
+# through -exec would only surface OS-specific noise.
+#
+# THE PACKAGE LIST MUST MATCH make.ps1's Invoke-WasmTest AND ci.yml's wasmtest
+# job. It did not, and the drift ran the way drift always does — quietly, in
+# the direction of less checking. This target named i18n and view only, make.ps1
+# named those plus data, and ci.yml named all four; so client/platform's tests
+# ran in exactly one of the three places a developer might run them. That is
+# the package where LocalNow read the browser's clock through a guard sized for
+# media durations, returned zero every time, and greeted every listener with the
+# SERVER's clock — a bug that lived precisely because an ungated wasm package is
+# a package with no tests at all.
 wasmtest:
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec_node.js"; \
 	 [ -f "$$exec_js" ] || { echo "wasm_exec_node.js not found under $$(go env GOROOT)/lib/wasm — is this Go's Node exec shim missing?"; exit 1; }; \
 	 command -v node >/dev/null || { echo "node is not on PATH — the wasm test harness runs the compiled test binary under it"; exit 1; }; \
-	 GOOS=js GOARCH=wasm go test -exec="node $$exec_js" ./client/i18n/... ./client/view/...
+	 GOOS=js GOARCH=wasm go test -exec="node $$exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
 
 lint:
 	go vet ./...

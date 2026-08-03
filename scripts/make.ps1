@@ -160,6 +160,14 @@ function Invoke-Test {
 # credential, a `-dev` server did not care, and only the deployed one refused
 # them.
 #
+# client/platform joined for the same reason and was missing here for longer
+# than anywhere else. THE PACKAGE LIST MUST MATCH the Makefile's wasmtest target
+# AND ci.yml's wasmtest job; it did not, and the three disagreed in the
+# direction that costs the most — the Makefile ran two packages, this ran three,
+# and only CI ran all four. So client/platform, the package whose LocalNow
+# returned the server's clock to every browser because nothing compiled its
+# tests, was checked in exactly one of the three places somebody might look.
+#
 # -skip drops two client/i18n tests that walk a directory
 # (TestEveryReferencedKeyExists, TestNoOrphanedKeys, plus srvkeys_test.go's
 # two) because Go's js/wasm syscall layer refuses O_DIRECTORY ON WINDOWS —
@@ -168,7 +176,7 @@ function Invoke-Test {
 # skip, on Linux, where the syscall is supported, so nothing here goes
 # permanently unchecked — it is checked on the platform that can check it.
 function Invoke-WasmTest {
-    Step 'go test (wasm, via node) -> client/data + client/i18n + client/view'
+    Step 'go test (wasm, via node) -> client/data + client/i18n + client/platform + client/view'
     $goroot = (go env GOROOT)
     if (-not $goroot) { Fail 'go env GOROOT returned nothing' }
     $execJs = Join-Path $goroot 'lib\wasm\wasm_exec_node.js'
@@ -183,7 +191,7 @@ function Invoke-WasmTest {
         try {
             go test -exec="node $execJs" `
                 -skip 'TestEveryReferencedKeyExists|TestNoOrphanedKeys|TestEveryServerErrorKeyExists|TestServerErrorKeysMatchTheirEnglishFallback' `
-                ./client/data/... ./client/i18n/... ./client/view/...
+                ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
         } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
     }
 }
@@ -592,7 +600,7 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
   ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
-  ./scripts/make.ps1 wasmtest   go test client/data + client/i18n + client/view under GOOS=js GOARCH=wasm (via node)
+  ./scripts/make.ps1 wasmtest   go test client/data + client/i18n + client/platform + client/view (wasm, via node)
   ./scripts/make.ps1 wasm       build the client into bin/web, prints the G5 size
   ./scripts/make.ps1 demo       build the GitHub Pages demo into bin/demo (-Version v1.0.0)
   ./scripts/make.ps1 lint       go vet + buf lint + the A26/tenancy structural guards

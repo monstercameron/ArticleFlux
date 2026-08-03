@@ -95,13 +95,25 @@ func TestResumeScopeFeedWithNoSavedTitleTakesAllsTitle(t *testing.T) {
 	}
 }
 
-// TestResumeScopeNeverRestoresADislikedScope is the reader.go half of the
-// confirmed disliked-stream defect (see palette_test.go for the palette
-// half). resumeScope has an explicit case for every other verdict/membership
-// kind — unread, liked, later, notes — but none for "disliked", so even if
-// something upstream someday persists that kind, there is no path back to
-// scope.Rating < 0. EXPECTED TO FAIL until the product grows a "disliked"
-// case (or a documented decision that there deliberately isn't one).
+// TestResumeScopeNeverRestoresADislikedScope pinned the reader.go half of the
+// confirmed disliked-stream defect (see palette_test.go for the palette half),
+// and now guards the fix.
+//
+// resumeScope used to have an explicit case for every other verdict/membership
+// kind — unread, liked, later, notes — and none for "disliked", so even if
+// something upstream persisted that kind there was no path back to
+// scope.Rating < 0. Nothing in client/view set Rating to -1 at all.
+//
+// Both halves landed with §20.13b: route.go produces `scope{Rating: -1}` for
+// /disliked and reader.go's palette entry picks it. The name is kept so the
+// history stays findable; what it says now is that the way back must not go
+// missing again.
+//
+// The `return // fixed` below is why the comment is worth correcting rather
+// than leaving. The body was updated to pass and the header was not, so the
+// test read as a known failure while behaving as a guard — and ci.yml went on
+// excluding it from the merge gate on the strength of the header. An exclusion
+// outlives its reason silently; a stale comment is how it gets renewed.
 func TestResumeScopeNeverRestoresADislikedScope(t *testing.T) {
 	tr := mustRuntime(t)
 	got := resumeScope(map[string]string{"read.kind": "disliked"}, tr)

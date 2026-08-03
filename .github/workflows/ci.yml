@@ -225,57 +225,49 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      # NATIVE_PIN_PATTERN: one deliberate known-red test pinning a confirmed
-      # product defect awaiting a decision, not a fix (2026-07-27):
-      #   - client/demodata/fixture_shape_test.go
-      #     TestFixtureSevenSourcesEachGetADistinctNamedHue
-      # `go test ./...` was RED for it, permanently — a gate that is red for a
-      # known, accepted reason is not a gate, it is noise everyone learns to
-      # click past, including the day it is red for a real reason too. (Two
-      # more known-red pins exist in client/view, but that package is
-      # `//go:build js && wasm` with zero untagged files — plain `go test`
-      # never compiles it, so those two only run, and only need excluding, in
-      # the wasmtest job below.)
+      # THE KNOWN-RED PINS ARE GONE, because they went green (2026-08-02).
       #
-      # The fix is deliberately NOT t.Skip() in the test source: a pin exists
-      # precisely to stay visible, and silencing it at the source is
-      # indistinguishable from deciding the defect does not matter — which is
-      # not this workflow's call to make. `-skip` excludes it from THIS
-      # invocation only, from outside the test file; the step right after this
-      # one runs exactly that test and reports its real, still-red result so
-      # the pin stays visible without blocking the merge gate.
+      # Three tests used to be excluded from this gate and re-run non-blocking
+      # beside it, so a confirmed product defect stayed visible without turning
+      # the merge gate red:
       #
-      # -timeout=15m, not the 10m default: the 2026-07-27 flake hunt raised
-      # the browser-driven tests' own per-test timeouts (60s/20s → 90s/60s —
-      # see internal/app/stream_test.go and internal/render/live_test.go for
-      # the measured reasoning) because the old ceilings were provably too
-      # tight under concurrent CPU load. internal/render alone now carries
-      # roughly a dozen such tests that can each legitimately need close to
-      # 90s under real contention; stacked in one binary that can approach the
-      # old 10-minute default, and getting killed by it fails the whole
-      # package, not just the slow test. 15m gives real margin without being
-      # unbounded — a genuine hang elsewhere is still caught, just up to 5
-      # minutes later.
+      #   client/demodata  TestFixtureSevenSourcesEachGetADistinctNamedHue
+      #   client/view      TestResumeScopeNeverRestoresADislikedScope
+      #   client/view      TestPaletteNeverOffersTheDislikedStream
+      #
+      # The last two pinned one defect — scope.Rating was never set to -1
+      # anywhere in client/view, so the disliked stream had copy, a constant and
+      # (later) an address, and nothing that could reach it. §20.13b built the
+      # palette entry the catalog note had always promised; reader.go and
+      # route.go now produce `Rating: -1`, and palette_test.go's own comment was
+      # updated to say it "now guards the fix".
+      #
+      # What was NOT updated was this file, and that is the whole reason the
+      # pins are worth a paragraph on the way out. An exclusion outlives the
+      # reason for it silently: all three tests passed while `-skip` kept them
+      # out of the gate, so for however long that lasted they protected nothing
+      # — a regression in any of them would have been reported by the
+      # non-blocking step as the failure it was always expected to be, and
+      # merged. A pin has to be removed the moment it goes green, or it stops
+      # being a pin and becomes a hole with a comment over it.
+      #
+      # So: no -skip, no companion step. If one of these fails, it fails here.
+      #
+      # -timeout=15m, not the 10m default: the 2026-07-27 flake hunt raised the
+      # browser-driven tests' own per-test timeouts (60s/20s → 90s/60s — see
+      # internal/app/stream_test.go and internal/render/live_test.go for the
+      # measured reasoning) because the old ceilings were provably too tight
+      # under concurrent CPU load. internal/render alone carries roughly a dozen
+      # such tests that can each legitimately need close to 90s under real
+      # contention; stacked in one binary that can approach the old 10-minute
+      # default, and getting killed by it fails the whole package rather than
+      # just the slow test. 15m gives real margin without being unbounded.
       #
       # Includes the G1 FTS5 gate, which is a permanent test rather than a
       # throwaway spike: a dependency bump that drops FTS5 fails here instead of
       # silently removing search.
-      - name: go test ./... (excluding the native known-red pin)
-        env:
-          NATIVE_PIN_PATTERN: '^TestFixtureSevenSourcesEachGetADistinctNamedHue$'
-        run: go test -skip "$env:NATIVE_PIN_PATTERN" -timeout=15m ./...
-
-      # Non-gating by design: `continue-on-error` lets this step actually run
-      # and still show failed/red in the Actions UI without blocking the merge
-      # — real visibility for a known defect, not a suppression. If this ever
-      # goes green, that is a signal the underlying product decision landed
-      # and the pin should be removed from NATIVE_PIN_PATTERN above and
-      # un-skipped here, folding it back into the gate above.
-      - name: known-red pin (expected to fail; visible, non-blocking)
-        continue-on-error: true
-        env:
-          NATIVE_PIN_PATTERN: '^TestFixtureSevenSourcesEachGetADistinctNamedHue$'
-        run: go test -run "$env:NATIVE_PIN_PATTERN" -v ./client/demodata/...
+      - name: go test ./...
+        run: go test -timeout=15m ./...
 
       # The browser-driven tests (internal/app/stream_test.go,
       # internal/render/live_test.go, internal/render/snapshot_test.go) are
@@ -328,22 +320,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # WASM_PIN_PATTERN: two deliberate known-red tests, pinning a confirmed
-      # product defect awaiting a decision, not a fix (2026-07-27):
-      #   - client/view/reader_test.go   TestResumeScopeNeverRestoresADislikedScope
-      #   - client/view/palette_test.go  TestPaletteNeverOffersTheDislikedStream
-      # Both pin the same defect: scope.Rating is never set to -1 anywhere in
-      # client/view, so the disliked stream is unreachable from the UI. This
-      # is the only build that can even run them (see the package comment
-      # above), and it was RED for exactly these two, permanently — not a
-      # gate anyone can use. As with the native pin in the `test` job,
-      # `-skip` excludes them from THIS invocation only; the source is
-      # untouched, and the step right after runs exactly those two and prints
-      # their real, still-red result, which is what keeps a pin a pin instead
-      # of a silent skip.
-      - name: go test (wasm, via node) — excluding the wasm known-red pins
-        env:
-          WASM_PIN_PATTERN: '^(TestResumeScopeNeverRestoresADislikedScope|TestPaletteNeverOffersTheDislikedStream)$'
+      # The two client/view pins that used to be excluded here went green and
+      # have been folded back into this gate — see the note in the `test` job
+      # above for what they pinned and why an exclusion that outlives its reason
+      # is worse than no exclusion at all.
+      - name: go test (wasm, via node)
         run: |
           set -euo pipefail
           exec_js="$(go env GOROOT)/lib/wasm/wasm_exec_node.js"
@@ -367,22 +348,7 @@ jobs:
           # which resolves a scope without one, and fatal against the deployed
           # one, which refuses them. An ungated wasm package is a package with
           # no tests at all.
-          GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" -exec="node $exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
-
-      # Non-gating by design: `continue-on-error` lets this step actually run
-      # and still show failed/red in the Actions UI without blocking the
-      # merge. If this ever goes green, the underlying product decision may
-      # have landed — check whether reader_test.go / palette_test.go should
-      # be un-pinned and folded back into the gate above (drop them from
-      # WASM_PIN_PATTERN in both steps).
-      - name: known-red pins, wasm (expected to fail; visible, non-blocking)
-        continue-on-error: true
-        env:
-          WASM_PIN_PATTERN: '^(TestResumeScopeNeverRestoresADislikedScope|TestPaletteNeverOffersTheDislikedStream)$'
-        run: |
-          set -euo pipefail
-          exec_js="$(go env GOROOT)/lib/wasm/wasm_exec_node.js"
-          GOOS=js GOARCH=wasm go test -run "$WASM_PIN_PATTERN" -v -exec="node $exec_js" ./client/view/...
+          GOOS=js GOARCH=wasm go test -exec="node $exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
 
   # G5 / R4. The wasm size decides whether A5 (offline packs in the browser) stays
   # affordable, so it is a ratchet, not a report: §22.14 fails the build if the

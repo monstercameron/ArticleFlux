@@ -338,12 +338,41 @@ func TestStreamServesMultipartFrames(t *testing.T) {
 	if got := part.Header.Get("Content-Type"); got != "image/jpeg" {
 		t.Errorf("frame content type %q", got)
 	}
-	img, err := io.ReadAll(part)
+
+	// The frame's LENGTH comes from the header, and its CONTENT from a bounded
+	// prefix read. Not io.ReadAll, which is what this test used to do and is
+	// why it hung for 90 seconds on the box it was written to protect.
+	//
+	// serveStream writes a Content-Length on every part, and a browser reading
+	// multipart/x-mixed-replace honours it — that is what lets it paint a frame
+	// the moment the last byte arrives. Go's multipart.Reader does not: a Part
+	// is terminated by the NEXT BOUNDARY and nothing else, so io.ReadAll(part)
+	// cannot return until a SECOND frame has been written. Chrome's screencast
+	// emits on repaint, and the fixture origin below is a static page, so
+	// whether a second frame ever arrives is a question about Chrome's
+	// compositor rather than about this server's framing. Usually it did; under
+	// load it did not, and the test then blamed the 90s ceiling for a wait that
+	// had no end.
+	//
+	// So: assert the declared length, then read a prefix well under it. That
+	// touches only bytes the handler has already flushed, proves the boundary
+	// and headers parsed and that the body really is a JPEG, and never waits on
+	// a frame the product does not owe anyone.
+	declared, err := strconv.Atoi(part.Header.Get("Content-Length"))
 	if err != nil {
-		t.Fatalf("read frame: %v", err)
+		t.Fatalf("frame has no usable Content-Length (%q): a browser needs it to know the frame ended: %v",
+			part.Header.Get("Content-Length"), err)
 	}
-	if len(img) < 500 || img[0] != 0xFF || img[1] != 0xD8 {
-		t.Fatalf("frame is %d bytes and does not start with a JPEG header", len(img))
+	if declared < 500 {
+		t.Fatalf("frame declares %d bytes, too small to be a rendered page", declared)
 	}
-	t.Logf("first wire frame: %d bytes", len(img))
+	const prefix = 512
+	head := make([]byte, prefix)
+	if _, err := io.ReadFull(part, head); err != nil {
+		t.Fatalf("read first %d bytes of frame: %v", prefix, err)
+	}
+	if head[0] != 0xFF || head[1] != 0xD8 {
+		t.Fatalf("frame does not start with a JPEG SOI marker: % x", head[:4])
+	}
+	t.Logf("first wire frame: %d bytes declared", declared)
 }
