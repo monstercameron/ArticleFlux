@@ -37,62 +37,132 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/andybalholm/brotli"
+	"github.com/monstercameron/ArticleFlux/internal/webasset"
 )
 
-// compressible is what gets a sibling.
-//
-// An allowlist, not a denylist of already-compressed formats: a new binary asset
-// type added to the web root should default to being left alone, because
-// re-compressing a .woff2 or a .png spends CPU to make the file bigger and the
-// mistake is invisible until somebody measures it.
-var compressible = map[string]bool{
-	".wasm": true, ".js": true, ".css": true, ".html": true,
-	".json": true, ".webmanifest": true, ".svg": true, ".txt": true,
-}
-
-// minSize is the floor. Below about a kilobyte the compressed copy is often
-// larger than the original and always inside the same TCP segment, so the only
-// thing a sibling buys is a second file to keep in step.
-const minSize = 1024
+// Which files qualify, and how small is too small, both come from
+// internal/webasset — the same values internal/app's `precompressed` decides
+// with. They were a map here and a type switch there, and the header above
+// describes what that cost. A shared set is the only version of "these two must
+// agree" that a build can enforce.
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: precompress <web-root>")
 		os.Exit(2)
 	}
-	root := os.Args[1]
-
-	var files, raw, gz, br int64
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		if !compressible[strings.ToLower(filepath.Ext(path))] {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.Size() < minSize {
-			return err
-		}
-		gzN, brN, err := writeSiblings(path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		files++
-		raw += info.Size()
-		gz += gzN
-		br += brN
-		return nil
-	})
+	s, err := run(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "precompress:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("    precompressed %d files: %s raw / %s gzip / %s brotli\n",
-		files, mb(raw), mb(gz), mb(br))
+	fmt.Print(s.String())
+}
+
+// stats is what one run did, kept as a value so a test can assert on it rather
+// than on stdout.
+type stats struct {
+	files       int64
+	raw, gz, br int64
+	removed     int64
+}
+
+func (s stats) String() string {
+	out := fmt.Sprintf("    precompressed %d files: %s raw / %s gzip / %s brotli\n",
+		s.files, mb(s.raw), mb(s.gz), mb(s.br))
+	if s.removed > 0 {
+		out += fmt.Sprintf("    removed %d stale sibling(s)\n", s.removed)
+	}
+	return out
+}
+
+// run makes the tree CONSISTENT: after it returns, a `.gz` or `.br` sibling
+// exists if and only if it is this run's compression of a file that qualifies.
+//
+// The "only if" half is the part that was missing, and it is not tidiness.
+// internal/app's `precompressed` chooses a sibling with a bare os.Stat and no
+// comparison against the source — whichever sibling exists WINS, forever. So a
+// sibling that outlives the reason it was written is not dead weight, it is the
+// server serving the previous build's bytes under this build's URL, which is
+// precisely the "looks exactly like my change did nothing" failure this file's
+// header describes. Adding files can never fix that; only removing them can.
+//
+// Two ways a sibling outlives its source, both reachable from the build as it
+// stands — `make wasm` copies into bin/web without emptying it, so bin/web
+// accumulates across builds until somebody runs `make clean`:
+//
+//   - the source is deleted from web/, and its sibling stays behind
+//   - the source drops below minSize (or loses a compressible extension), so
+//     this tool skips it, and last build's sibling stays behind
+//
+// Hence three passes rather than one walk that writes as it goes. Beyond
+// correctness, that also stops the walk from racing its own output: WalkDir
+// snapshots each directory's entries when it enters, so files written mid-walk
+// are visited or not depending on the order the filesystem happened to return.
+func run(root string) (stats, error) {
+	var s stats
+
+	// Pass 1 — look, do not touch. Everything that follows decides from this
+	// snapshot, so no pass can see another pass's writes.
+	var sources []string
+	sizes := map[string]int64{}
+	existing := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if webasset.IsSibling(path) {
+			existing[path] = true
+			return nil
+		}
+		if !webasset.Compressible(path) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() < webasset.MinSize {
+			return nil
+		}
+		sources = append(sources, path)
+		sizes[path] = info.Size()
+		return nil
+	})
+	if err != nil {
+		return s, err
+	}
+
+	// Pass 2 — write, and record what has a right to be here.
+	wanted := map[string]bool{}
+	for _, path := range sources {
+		gzN, brN, err := writeSiblings(path)
+		if err != nil {
+			return s, fmt.Errorf("%s: %w", path, err)
+		}
+		wanted[path+".gz"] = true
+		wanted[path+".br"] = true
+		s.files++
+		s.raw += sizes[path]
+		s.gz += gzN
+		s.br += brN
+	}
+
+	// Pass 3 — remove what does not. A failure here is reported rather than
+	// swallowed: a sibling that could not be removed is one the server will go
+	// on serving, which is the whole defect, so it must not pass for success.
+	for path := range existing {
+		if wanted[path] {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return s, fmt.Errorf("stale sibling %s: %w", path, err)
+		}
+		s.removed++
+	}
+	return s, nil
 }
 
 // writeSiblings compresses one file both ways.

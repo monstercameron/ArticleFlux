@@ -65,6 +65,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/telemetry"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
 	"github.com/monstercameron/ArticleFlux/internal/tts"
+	"github.com/monstercameron/ArticleFlux/internal/webasset"
 )
 
 // Config configures the app.
@@ -2061,26 +2062,26 @@ func (a *App) StartPoller(ctx context.Context) {
 // not hypothetical: a proxy that rewrites Accept-Encoding down to gzip is common
 // enough that dropping the .gz would trade a small win for a 33 MB fallback.
 //
-// The extensions are the ones cmd/precompress writes siblings for. This used to
-// name only .wasm and .js, which is why prod served index.html uncompressed at
-// 24 KB on the first request of every cold load — the two lists have to agree,
-// and they are the only two places that decide this.
+// The extensions come from internal/webasset, which cmd/precompress reads too.
+// They used to be a list here and a map there, agreeing by attention alone —
+// and they did not: both named only .wasm and .js, which is why prod served
+// index.html uncompressed at 24 KB on the first request of every cold load, and
+// when the tool's list grew the server's did not have to. One set, imported
+// twice, is what stops that being a thing anybody has to remember.
 func precompressed(root, p string, r *http.Request) (path, enc string, ok bool) {
-	switch strings.ToLower(filepath.Ext(p)) {
-	case ".wasm", ".js", ".css", ".html", ".json", ".webmanifest", ".svg", ".txt":
-	default:
+	if !webasset.Compressible(p) {
 		return "", "", false
 	}
 	rel := strings.TrimPrefix(filepath.ToSlash(p), "/")
 	accepted := acceptedEncodings(r.Header.Get("Accept-Encoding"))
-	for _, c := range []struct{ enc, ext string }{{"br", ".br"}, {"gzip", ".gz"}} {
-		if !accepted[c.enc] {
+	for _, c := range webasset.Encodings {
+		if !accepted[c.Name] {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)+c.ext)); err != nil {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)+c.Ext)); err != nil {
 			continue
 		}
-		return "/" + rel + c.ext, c.enc, true
+		return "/" + rel + c.Ext, c.Name, true
 	}
 	return "", "", false
 }
