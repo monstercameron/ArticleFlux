@@ -193,6 +193,19 @@ func inspectComposite(lit *ast.CompositeLit, report func(token.Pos, string, stri
 // Also unwraps `"a" + x + "b"` — a concatenation is the shape inline copy takes
 // once it has an interpolated value in it, and it is the exact shape the
 // catalog's {placeholder} syntax exists to replace.
+//
+// The concatenation is judged as ONE STRING, not fragment by fragment, and that
+// is the whole point of handling it. `"Showing " + n + " articles"` is a
+// sentence with a number in the middle of it, but neither half is a sentence:
+// each is a single word with no terminal punctuation, so looksLikeCopy rejects
+// both and a per-fragment test finds nothing. Which meant the one shape this
+// case exists to catch was the one shape it could not catch, for as long as it
+// has been here.
+//
+// Joining is also what keeps the false-positive rate where it was. An
+// identifier assembled from pieces — `"btn-" + kind + "-primary"` — joins to
+// `btn--primary`, which has no space and is full of the punctuation identifiers
+// use, so looksLikeCopy rejects it exactly as it rejected each fragment.
 func prose(e ast.Expr) (string, bool) {
 	switch v := e.(type) {
 	case *ast.BasicLit:
@@ -211,12 +224,44 @@ func prose(e ast.Expr) (string, bool) {
 		if v.Op != token.ADD {
 			return "", false
 		}
+		joined := joinLiterals(v)
+		if looksLikeCopy(joined) {
+			return joined, true
+		}
+		// A fragment can still be copy on its own when the whole is not — a
+		// sentence added to a variable that holds an identifier, say. Falling
+		// through to the halves keeps that case working.
 		if s, ok := prose(v.X); ok {
 			return s, true
 		}
 		return prose(v.Y)
 	}
 	return "", false
+}
+
+// joinLiterals concatenates the string literals in a `+` chain and drops
+// everything else, which is the text a reader actually sees with the
+// interpolated values left out.
+func joinLiterals(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return ""
+		}
+		s, err := strconv.Unquote(v.Value)
+		if err != nil {
+			return ""
+		}
+		return s
+	case *ast.BinaryExpr:
+		if v.Op != token.ADD {
+			return ""
+		}
+		return joinLiterals(v.X) + joinLiterals(v.Y)
+	case *ast.ParenExpr:
+		return joinLiterals(v.X)
+	}
+	return ""
 }
 
 // looksLikeCopy is the prose test.
