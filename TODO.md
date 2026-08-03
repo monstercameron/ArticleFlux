@@ -8014,3 +8014,56 @@ generated statements in `internal/pb`, which nobody hand-tests; including them t
 - [ ] **None of the tests written in this pass has ever caught a regression.** They encode a
       hypothesis about what matters. Worth remembering before treating 86.8% as evidence of anything
       beyond the fact that the code was executed.
+
+## Optimisation pass — planned, baseline started, stopped early (2026-08-02)
+
+*Opened straight after the coverage campaign, on the reasoning that tests are what make
+optimisation safe. Stopped before any code changed, deliberately: the baseline is a long run on a
+fanless ARM64 box and it was not worth the time this session. Nothing here is done. What follows is
+the plan and the partial measurements, so the next attempt starts from data rather than from
+scratch.*
+
+*Method, which is `Invoke-Perf`'s and not a new one: `-run '^$' -bench . -benchmem -count 6` per
+package with CPU and heap profiles, then `benchspread` to decide whether the timings can be believed
+before reading them. 22 benchmarks across 8 packages
+(`classify`, `feed`, `rewrite`, `rules`, `sanitize`, `store`, `textvec`, plus `store`'s bookmark
+search). The run got through everything except `internal/store`, which rebuilds its 50,000-row
+G3 fixture once per `-count` — six times, at 23–28s each, before any measurement happens.*
+
+- [ ] **Finish the baseline and get `benchspread`'s verdict before changing anything.** The
+      partial run already shows why that order matters. `count_unread` moved 2.10ms → 3.64ms across
+      six samples of identical work — a 1.7x spread — while `B/op` stayed at 936 and `allocs/op` at
+      exactly 19 for all six. That is the tell `benchspread` exists to name: allocation does not care
+      how hot the box is, timings do. So on this machine `ns/op` is weak evidence and `B/op` /
+      `allocs/op` are strong evidence, and any optimisation claimed on wall time alone will not
+      survive a second look.
+
+      *Done when: `bin/perf/baseline.txt` is complete and `benchspread` has said in writing whether
+      the timings in it are usable.*
+
+- [ ] **`classify.Compile` allocates 620 KB and 11,983 objects per call.** Measured, stable across
+      all six samples, ~0.82–1.03 ms. It builds the lexicon index from `lexicon.Categories()`. Worth
+      knowing how often it is called on a live instance before touching it — if it is once at boot
+      it is not a problem, and if it is per-request it is the largest single allocation site
+      measured so far.
+
+      *Done when: the call sites are counted, and either the number is justified in a comment or the
+      index is built once and shared.*
+
+- [ ] **`BenchmarkIngest` is ~7.2–9.1 ms/op at 1,150 allocs/op.** The write path every poll cycle
+      runs, for every feed. The allocation count is the stable half of that measurement and the part
+      worth attacking.
+
+- [ ] **The eight `HotQueries` shapes are the reader's actual latency.** `get_item` is 86µs / 67
+      allocs and looks fine; `count_unread` is milliseconds and is the sidebar badge, which is on
+      screen at all times and therefore issued constantly. G3 gates these against a 150ms budget,
+      which they pass — but a gate has no resolution below its budget, which is exactly why the
+      benchmarks exist beside it.
+
+- [ ] **`sanitize` and `feed` parsing run per item on every poll.** 26 feed fixtures and the
+      HTML/text sanitiser are already benchmarked; neither has been read yet.
+
+- [ ] **Do not optimise from the profile alone — check the call sites first.** The one thing the
+      partial data already suggests is that the biggest allocation number found
+      (`classify.Compile`) may be a boot-time cost, in which case it is worth nothing. Measuring
+      what is hot is not the same as measuring what runs.
