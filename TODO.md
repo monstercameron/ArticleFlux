@@ -7865,3 +7865,152 @@ treated as one twice (longer settles, then longer settles again) before being me
 
       Worked around in `e2e/home-shots.mjs`, which reloads after every theme change and says why.
       The workaround is not the fix and the comment there says so.
+
+## The coverage campaign — 86.8%, six bugs, and a layer that gates nothing (2026-08-02)
+
+*A sweep for test coverage across the whole tree. The number moved 81.0% → 86.8% on hand-written
+code, but the number is the least interesting part of it: writing the tests turned up six real
+defects, one of them a total breakage that had been shipped and never noticed, and two CI
+arrangements that had quietly stopped doing anything. The pattern in the three worst findings is the
+same — **a thing with one caller and no test is a thing nobody notices has stopped working.***
+
+*Measurement note, because the figure is easy to misread. `go test ./...` credits a package's
+coverage only from its OWN test binary, so it undercounts anything exercised across a package
+boundary. Both numbers were taken: 85.7% per-package, **86.8% cross-package** (`-coverpkg=./...`,
+blocks de-duplicated by location — a naive sum over that profile double-counts every block once per
+test binary and produces nonsense). The two agree within 1.1 points, so the cheap number is
+trustworthy; only `internal/llm` was materially understated (84.2% → 90.5%). Both exclude the 4,330
+generated statements in `internal/pb`, which nobody hand-tests; including them the figure is 72.0%.*
+
+### Fixed in the same pass
+
+- [x] **`store.Open{ReadOnly: true}` could never succeed.** `verify()` proves FTS5 is registered by
+      creating a probe table in `temp.`; a read-only connection carries `query_only(1)`, which
+      refuses that write. Every read-only open returned an error. Its only three call sites are
+      `run`, `runSweep` and `runMine` — all of `cmd/classifyprobe` — so **the tool could not start
+      at all**, and nothing said so because nothing exercised the option. Now probes
+      `pragma_module_list`, which asks the connection which modules are registered on it and reads
+      rather than writes. Regression tests in `internal/store/sessionsecurity_test.go`.
+- [x] **`cmd/precompress` never removed a stale sibling.** A `.gz`/`.br` whose source was deleted,
+      or which dropped below `minSize`, survived — and `app.precompressed` picks a sibling with a
+      bare `os.Stat` and no comparison against its source, so a stale one wins forever: the server
+      serving last build's bytes under this build's URL. `bin/web` is not emptied between builds, so
+      both routes in were ordinary. Now three passes, and the tree ends consistent.
+- [x] **The compressible-extension list existed twice** — `cmd/precompress` and `app.precompressed`
+      — agreeing by attention alone, which is how prod served `index.html` uncompressed for years.
+      Now one `internal/webasset`, imported by both.
+- [x] **`guards`' `prose()` missed the shape its own comment described.** It claimed to unwrap
+      `"a" + x + "b"` but judged each fragment separately, so `"Showing " + n + " articles"` — the
+      exact case the `{placeholder}` syntax exists for — passed. Now joins the literals and judges
+      the whole. Re-run against the tree: still clean, no new findings.
+- [x] **`classifyprobe`'s `printSummary` divided by `len(items)`** and printed a report of `NaN%`
+      on an empty corpus — a fresh instance, or a `-sample` that matched nothing. NaN looks like a
+      result.
+- [x] **`internal/app`'s MJPEG test hung to its 90s ceiling.** `io.ReadAll` on a `multipart.Part`
+      cannot return until the NEXT boundary arrives, so it needed Chrome to emit a second frame on
+      a static page. The wire format was correct — a browser honours the per-part `Content-Length`;
+      Go's reader does not. 90.04s → 0.87s.
+- [x] **`store.Options.ReadOnly` promised "no WAL is created or recovered".** Disproved by test: a
+      WAL-mode database needs its `-shm` to be read at all, and only `immutable=1` avoids that —
+      which is a promise nobody can keep about a file another process is writing. Comment corrected
+      to the guarantee that holds (content, not directory listing).
+- [x] **`ci.yml` was excluding three PASSING tests from the merge gate.** All three known-red pins
+      had gone green — §20.13b gave the disliked stream an address and a palette entry, and
+      `palette_test.go`'s own comment already said it "now guards the fix" — but nothing removed
+      them from `NATIVE_PIN_PATTERN`/`WASM_PIN_PATTERN`. A regression in any of the three would have
+      surfaced in a step labelled *expected to fail* and been merged. Folded back into the gate.
+- [x] **The `wasmtest` verb existed three times and all three disagreed** — `Makefile` (2 packages),
+      `scripts/make.ps1` (3), `ci.yml` (4). `client/platform` therefore ran in exactly one of the
+      three places a developer might run it, and that is the package where `LocalNow` returned the
+      SERVER's clock to every browser because nothing compiled its tests. All three now match, and
+      the Makefile's own header already said they must.
+
+### Left open
+
+- [ ] **The e2e suite and the browser-driven Go tests gate nothing.** `e2e/` is ~30 Playwright specs
+      against a real server, real SQLite and real FTS5, and no workflow runs it. The three
+      browser-driven Go tests (`internal/app/stream_test.go`, `internal/render/live_test.go`,
+      `internal/render/snapshot_test.go`) self-skip whenever `CI=true` and `ARTICLEFLUX_BROWSER_TESTS`
+      is unset, because a prior run proved windows-latest finds Edge, launches it, and paints
+      nothing. **So rendering, scroll, focus, event delivery and the whole wasm ↔ tunnel ↔ SQLite
+      seam are verified only on Cam's machine.** This is the largest remaining risk in the project
+      and it is not a coverage problem: `CONTRIBUTING.md` already says the expensive bugs in this
+      codebase were invisible to every test that did not open a browser.
+
+      Not attempted unilaterally — wiring e2e into CI on a runner that cannot paint would produce a
+      permanently red gate, which is the exact failure the pin arrangement above existed to stop
+      reintroducing. The options are a self-hosted runner, a hosted image confirmed to render, or an
+      accepted "local-only, run before promoting" rule written down somewhere it will be read.
+
+      *Done when: either CI runs the suite on a runner that can paint, or `CONTRIBUTING.md` states
+      plainly that a promotion requires a local `make e2e` and the browser tests, and `promote.yml`
+      asks for that confirmation.*
+
+- [ ] **Five packages are genuinely dead — 351 statements untouched when every test in the repo
+      runs.** Measured with `-coverpkg=./...`, so this is not the per-package artefact: nothing
+      anywhere reaches them.
+
+      | statements | package | what it is |
+      |---|---|---|
+      | 108 | `internal/tools/probe` | one derivation, reported; needs a live DB |
+      | 105 | `cmd/e2eproof` | one-shot proof harness |
+      | 86 | `internal/tools/pagescan` | subscribe-ladder bench; network-driven |
+      | 42 | `cmd/backfilloutlinks` | one-shot data fix |
+      | 10 | `cmd/dbpeek` | see below — this one wants deleting |
+
+      Reachable the way `precompress`, `deployhook`, `benchspread` and `appicon` were during this
+      pass: extract `run(args) error` from `main`, leaving `main` as flag parsing plus `os.Exit`.
+      Real work, modest payoff — these are scripts, not product — which is why they were left rather
+      than half-done.
+
+      *Done when: each has a `run` seam and a test that drives it against a fixture, or the package
+      is deleted.*
+
+- [ ] **`cmd/dbpeek` should be deleted, not tested.** Twenty-seven lines hardcoded to
+      `migrations/0025_item_revisions.sql` and `articleflux.db`, which panic anywhere else. It is
+      committed scratch from a checksum investigation. *Done when: it is gone, or it has a reason to
+      exist written at the top of it.*
+
+- [ ] **`cmd/articleflux` is at 56.2% — 249 uncovered, nearly all of `serve` past its validation.**
+      The security-critical half is now covered: `-dev` and `-pprof` are each refused off loopback
+      and refused alongside `-behind-proxy`, from both the flag and the environment, and the shipped
+      deployment shape is asserted to still start. What is untested is everything downstream of
+      `app.Open` — the mux, the middleware chain, the tunnel wiring, the shutdown path.
+
+      *Done when: `serve`'s assembly is separated from its `ListenAndServe`, so a test can build the
+      handler and exercise it without binding a socket.*
+
+- [ ] **`internal/transport/grpcsrv` is at 86.5% — 181 uncovered on the RPC surface.** Not alarming
+      as a number, but this is the authorization boundary and it is the largest untested product
+      surface left. The session's base rate — six defects found in the places that were looked at —
+      argues for looking here next.
+
+- [ ] **The wasm side has no coverage figure at all.** `go test -coverprofile` under `GOOS=js` fails
+      on Windows with the same `O_DIRECTORY` limitation that forces the four `client/i18n` skips;
+      the tests pass, only report generation dies. So `client/view` (34 source files), `client/data`,
+      `client/platform` and `client/i18n` are tested and unmeasured. Linux CI can produce the number.
+      *Done when: the `wasmtest` job emits a coverage figure, or it is written down that it cannot.*
+
+- [ ] **The lexicon miner can never propose a term shorter than `textvec.MinTermLen`.**
+      `worthProposing` applies the interest layer's own filter, which is right for matching and means
+      "AI", "EV" and "4K" — three of the most common things a 2026 feed talks about — will never
+      appear in a proposal list, however many unsorted items carry them. An item whose only
+      distinguishing term is "AI" stays unsorted and the miner reports nothing that would fix it.
+      Pinned by `TestWorthProposingCannotSurfaceTwoLetterTerms` so the limitation is on the record.
+
+      Not changed: lowering `MinTermLen` affects matching everywhere and is a product decision about
+      the classifier, not a fix to a probe. The options are a short-term allowlist or a separate
+      floor for proposals. *Done when: the decision is made and written into `plan.md` §27.*
+
+- [ ] **The SQL guard matches English between `SELECT` and `FROM`.** The pattern spans anything at
+      all between the two words, so "select a feed to update from the list" is a finding. The other
+      four statement openers are safe — DELETE, INSERT, UPDATE and CREATE each need a following
+      token English does not supply. Left as-is on purpose: every narrowing risks the direction that
+      actually matters, a real query that stops being caught, and a guard that occasionally objects
+      to a sentence costs one rephrasing. Pinned by
+      `TestSQLGuardAlsoMatchesEnglishBetweenSelectAndFrom` so the trade is a decision rather than a
+      surprise.
+
+- [ ] **None of the tests written in this pass has ever caught a regression.** They encode a
+      hypothesis about what matters. Worth remembering before treating 86.8% as evidence of anything
+      beyond the fact that the code was executed.
