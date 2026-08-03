@@ -34,7 +34,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -62,17 +64,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: benchspread <bench-output-file>...")
 		os.Exit(2)
 	}
+	if err := run(os.Args[1:], os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "benchspread:", err)
+		os.Exit(1)
+	}
+}
 
+// run reads every file and writes the verdict to out.
+//
+// Split out of main so it can be tested, and it is worth testing for a reason
+// this tool is unusually exposed to: its whole job is to say whether the numbers
+// beside it can be believed. A verdict that is itself wrong — a spread computed
+// over one sample, a noisy benchmark counted as clean — is worse than no verdict,
+// because the only thing anybody does with this output is decide whether to
+// trust a measurement.
+func run(paths []string, out io.Writer) error {
 	byName := map[string][]sample{}
 	// Insertion order, so the report reads in the order the benchmarks ran
 	// rather than alphabetically — which keeps a package's shapes together.
 	var order []string
 
-	for _, path := range os.Args[1:] {
+	for _, path := range paths {
 		f, err := os.Open(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "benchspread: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		sc := bufio.NewScanner(f)
 		// Benchmark lines are short, but a package path plus a subtest name can
@@ -89,14 +104,12 @@ func main() {
 		}
 		_ = f.Close()
 		if err := sc.Err(); err != nil {
-			fmt.Fprintf(os.Stderr, "benchspread: reading %s: %v\n", path, err)
-			os.Exit(1)
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
 	}
 
 	if len(order) == 0 {
-		fmt.Fprintln(os.Stderr, "benchspread: no benchmark lines found — is this `go test -bench` output?")
-		os.Exit(1)
+		return errors.New("no benchmark lines found — is this `go test -bench` output?")
 	}
 
 	var noisy, single int
@@ -118,27 +131,28 @@ func main() {
 			continue
 		}
 		if noisy == 0 {
-			fmt.Println("timings that cannot be believed (ns/op spread over " +
-				strconv.FormatFloat(noisyRatio, 'g', -1, 64) + "x):")
+			fmt.Fprintln(out, "timings that cannot be believed (ns/op spread over "+
+				strconv.FormatFloat(noisyRatio, 'g', -1, 64)+"x):")
 		}
 		noisy++
-		fmt.Printf("  %-52s %5.1fx   %s .. %s%s\n",
+		fmt.Fprintf(out, "  %-52s %5.1fx   %s .. %s%s\n",
 			name, hi/lo, dur(lo), dur(hi), allocNote(ss))
 	}
 
-	fmt.Printf("\n%d benchmark%s, %d with unusable timings", len(order), plural(len(order)), noisy)
+	fmt.Fprintf(out, "\n%d benchmark%s, %d with unusable timings", len(order), plural(len(order)), noisy)
 	if single > 0 {
-		fmt.Printf(", %d measured only once", single)
+		fmt.Fprintf(out, ", %d measured only once", single)
 	}
-	fmt.Println(".")
+	fmt.Fprintln(out, ".")
 
 	if noisy == 0 {
-		return
+		return nil
 	}
-	fmt.Println("\nAllocation figures in this run are still exact — B/op and allocs/op do not")
-	fmt.Println("depend on machine load. The timings do. Re-measure on an idle box before")
-	fmt.Println("comparing them, or put the before and after in ONE run as interleaved")
-	fmt.Println("sub-benchmarks, which is what internal/feed's BenchmarkTextHelpers does.")
+	fmt.Fprintln(out, "\nAllocation figures in this run are still exact — B/op and allocs/op do not")
+	fmt.Fprintln(out, "depend on machine load. The timings do. Re-measure on an idle box before")
+	fmt.Fprintln(out, "comparing them, or put the before and after in ONE run as interleaved")
+	fmt.Fprintln(out, "sub-benchmarks, which is what internal/feed's BenchmarkTextHelpers does.")
+	return nil
 }
 
 // allocNote reports whether allocation ALSO moved while the timings did, which

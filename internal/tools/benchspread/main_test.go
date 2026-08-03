@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // parseLine has to survive the format `go test` actually emits, which is not one
 // format: -benchmem adds two columns and b.SetBytes adds another, and this suite
@@ -118,5 +124,200 @@ func TestAllocNoteDistinguishesTheBoxFromTheBenchmark(t *testing.T) {
 					got, tc.quiet, allocNote(tc.samples))
 			}
 		})
+	}
+}
+
+// dur is what every number in the report is read through, and the thresholds
+// are the whole point of it: a benchmark that says "1200000ns" and one that says
+// "1.2ms" carry the same information and only one of them can be scanned down a
+// column. An off-by-one order of magnitude here misreports every timing in the
+// verdict this tool exists to give.
+func TestDurPicksTheUnitAHumanWouldRead(t *testing.T) {
+	for _, c := range []struct {
+		ns   float64
+		want string
+	}{
+		{0, "0ns"},
+		{999, "999ns"},
+		{1000, "1.0µs"},
+		{1500, "1.5µs"},
+		{999_999, "1000.0µs"},
+		{1e6, "1.0ms"},
+		{1_500_000, "1.5ms"},
+		{1e9, "1.00s"},
+		{2_500_000_000, "2.50s"},
+	} {
+		if got := dur(c.ns); got != c.want {
+			t.Errorf("dur(%v) = %q, want %q", c.ns, got, c.want)
+		}
+	}
+}
+
+// Each threshold is a boundary, and a `>` where `>=` belongs would push the
+// exact value into the unit below and print "1000.0µs" where "1.0ms" belongs.
+func TestDurBoundariesAreInclusive(t *testing.T) {
+	for _, c := range []struct {
+		ns   float64
+		unit string
+	}{
+		{1e3, "µs"},
+		{1e6, "ms"},
+		{1e9, "s"},
+	} {
+		got := dur(c.ns)
+		if !strings.HasSuffix(got, c.unit) {
+			t.Errorf("dur(%v) = %q, want it to reach %s", c.ns, got, c.unit)
+		}
+	}
+}
+
+func TestPluralAgreesWithItsCount(t *testing.T) {
+	if got := plural(1); got != "" {
+		t.Errorf("plural(1) = %q, want empty", got)
+	}
+	// Zero takes the plural in English — "0 samples", not "0 sample".
+	for _, n := range []int{0, 2, 17} {
+		if got := plural(n); got != "s" {
+			t.Errorf("plural(%d) = %q, want \"s\"", n, got)
+		}
+	}
+}
+
+// --- the verdict --------------------------------------------------------------
+//
+// run's whole job is to say whether the numbers beside it can be believed, so a
+// wrong verdict is worse than no verdict: the only thing anybody does with this
+// output is decide whether to trust a measurement.
+
+func benchFile(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bench.txt")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write bench file: %v", err)
+	}
+	return path
+}
+
+func runReport(t *testing.T, paths ...string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := run(paths, &buf); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return buf.String()
+}
+
+// Six samples that agree are the case this tool should stay quiet about.
+func TestRunReportsStableTimingsAsClean(t *testing.T) {
+	var lines []string
+	for range 6 {
+		lines = append(lines, "BenchmarkListItems-8   1000   120000 ns/op   65225 B/op   400 allocs/op")
+	}
+	got := runReport(t, benchFile(t, lines...))
+
+	if strings.Contains(got, "cannot be believed") {
+		t.Errorf("stable timings were called unusable:\n%s", got)
+	}
+	if !strings.Contains(got, "1 benchmark,") {
+		t.Errorf("the count is wrong or not singular:\n%s", got)
+	}
+	if !strings.Contains(got, "0 with unusable timings") {
+		t.Errorf("a clean run was not reported as clean:\n%s", got)
+	}
+}
+
+// A tenfold spread on one unchanged query is the exact observation this tool was
+// written for, and it must be named rather than averaged away.
+func TestRunFlagsAWideSpread(t *testing.T) {
+	got := runReport(t, benchFile(t,
+		"BenchmarkListItems-8   1000    120000 ns/op   65225 B/op   400 allocs/op",
+		"BenchmarkListItems-8   1000   1200000 ns/op   65225 B/op   400 allocs/op",
+	))
+	if !strings.Contains(got, "cannot be believed") {
+		t.Errorf("a tenfold spread was not flagged:\n%s", got)
+	}
+	if !strings.Contains(got, "BenchmarkListItems") {
+		t.Errorf("the flagged benchmark is not named:\n%s", got)
+	}
+	if !strings.Contains(got, "1 with unusable timings") {
+		t.Errorf("the count of unusable timings is wrong:\n%s", got)
+	}
+	// And the advice, which is the actionable half.
+	if !strings.Contains(got, "idle box") {
+		t.Errorf("no advice on what to do about it:\n%s", got)
+	}
+}
+
+// "We did not measure it twice" and "it was stable" are different claims, and
+// collapsing them is how a single-sample run reads as a clean one.
+func TestRunReportsSingleSampleBenchmarksSeparately(t *testing.T) {
+	got := runReport(t, benchFile(t,
+		"BenchmarkOnce-8   1000   120000 ns/op   1000 B/op   10 allocs/op",
+	))
+	if !strings.Contains(got, "measured only once") {
+		t.Errorf("a single-sample benchmark was not called out:\n%s", got)
+	}
+	if strings.Contains(got, "cannot be believed") {
+		t.Errorf("one sample was reported as a spread:\n%s", got)
+	}
+}
+
+// Allocation moving alongside the timings means the BENCHMARK is unstable, not
+// the box — a cache filling or a fixture accumulating rows. Saying so is what
+// keeps this from blaming the room for something the benchmark does to itself.
+func TestRunDistinguishesAnUnstableBenchmarkFromAnUnstableBox(t *testing.T) {
+	got := runReport(t, benchFile(t,
+		"BenchmarkGrowing-8   1000    120000 ns/op   1000 B/op   10 allocs/op",
+		"BenchmarkGrowing-8   1000   1200000 ns/op   9000 B/op   90 allocs/op",
+	))
+	if !strings.Contains(got, "the benchmark, not the box") {
+		t.Errorf("moving allocation was not attributed to the benchmark:\n%s", got)
+	}
+}
+
+// Insertion order, so the report reads in the order the benchmarks ran — which
+// keeps a package's shapes together instead of scattering them alphabetically.
+func TestRunKeepsBenchmarksInTheOrderTheyRan(t *testing.T) {
+	got := runReport(t, benchFile(t,
+		"BenchmarkZeta-8    1000    100000 ns/op",
+		"BenchmarkZeta-8    1000   1000000 ns/op",
+		"BenchmarkAlpha-8   1000    100000 ns/op",
+		"BenchmarkAlpha-8   1000   1000000 ns/op",
+	))
+	z, a := strings.Index(got, "BenchmarkZeta"), strings.Index(got, "BenchmarkAlpha")
+	if z < 0 || a < 0 {
+		t.Fatalf("both benchmarks should be flagged:\n%s", got)
+	}
+	if z > a {
+		t.Errorf("the report was sorted rather than kept in run order:\n%s", got)
+	}
+}
+
+// Several files are one measurement set — that is how `make perf` accumulates a
+// label across packages.
+func TestRunCombinesSamplesAcrossFiles(t *testing.T) {
+	a := benchFile(t, "BenchmarkX-8   1000    100000 ns/op")
+	b := benchFile(t, "BenchmarkX-8   1000   1000000 ns/op")
+	got := runReport(t, a, b)
+	if !strings.Contains(got, "cannot be believed") {
+		t.Errorf("samples from two files were not combined:\n%s", got)
+	}
+}
+
+// A file that is not benchmark output must say so rather than reporting a clean
+// run over nothing — which would read as "all your timings are fine".
+func TestRunRefusesOutputThatHasNoBenchmarkLines(t *testing.T) {
+	err := run([]string{benchFile(t, "ok  \tgithub.com/x/y\t0.5s", "PASS")}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("a file with no benchmark lines reported a clean run")
+	}
+	if !strings.Contains(err.Error(), "no benchmark lines") {
+		t.Errorf("the error does not say what was wrong: %v", err)
+	}
+}
+
+func TestRunReportsAMissingFile(t *testing.T) {
+	if err := run([]string{filepath.Join(t.TempDir(), "nope.txt")}, &bytes.Buffer{}); err == nil {
+		t.Error("a missing file reported success")
 	}
 }

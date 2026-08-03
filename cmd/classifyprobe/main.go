@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sort"
@@ -147,8 +148,8 @@ func run(dbPath string, limit, sample int, showAll bool) error {
 		return err
 	}
 
-	printItems(items, out, limit, showAll)
-	printSummary(items, out, lx)
+	printItems(os.Stdout, items, out, limit, showAll)
+	printSummary(os.Stdout, items, out, lx)
 	return nil
 }
 
@@ -190,12 +191,12 @@ func loadItems(ctx context.Context, repo *store.ReaderRepo, limit int) ([]pipeli
 	return out, nil
 }
 
-func printItems(items []pipeline.Item, out []pipeline.Analysis, limit int, showAll bool) {
+func printItems(w io.Writer, items []pipeline.Item, out []pipeline.Analysis, limit int, showAll bool) {
 	n := limit
 	if showAll || n > len(items) {
 		n = len(items)
 	}
-	fmt.Printf("\n=== %d most recent items ===\n\n", n)
+	fmt.Fprintf(w, "\n=== %d most recent items ===\n\n", n)
 	for i := range n {
 		a := out[i]
 		label := a.Primary
@@ -213,9 +214,9 @@ func printItems(items []pipeline.Item, out []pipeline.Analysis, limit int, showA
 		if len([]rune(title)) > 74 {
 			title = string([]rune(title)[:71]) + "..."
 		}
-		fmt.Printf("%s %-30s %-9s %s\n", flag, label, a.Genre, title)
+		fmt.Fprintf(w, "%s %-30s %-9s %s\n", flag, label, a.Genre, title)
 		if a.Primary != "" {
-			fmt.Printf("  %-30s           %s\n", "", whyLine(a))
+			fmt.Fprintf(w, "  %-30s           %s\n", "", whyLine(a))
 		}
 	}
 }
@@ -231,7 +232,7 @@ func whyLine(a pipeline.Analysis) string {
 	return "· " + strings.Join(k, ", ")
 }
 
-func printSummary(items []pipeline.Item, out []pipeline.Analysis, lx *classify.Lexicon) {
+func printSummary(w io.Writer, items []pipeline.Item, out []pipeline.Analysis, lx *classify.Lexicon) {
 	byCat := map[string]int{}
 	byGenre := map[string]int{}
 	unsorted, ambiguous, nonEnglish := 0, 0, 0
@@ -251,7 +252,16 @@ func printSummary(items []pipeline.Item, out []pipeline.Analysis, lx *classify.L
 		byGenre[a.Genre]++
 	}
 
-	fmt.Printf("\n=== over %d items ===\n\n", len(items))
+	fmt.Fprintf(w, "\n=== over %d items ===\n\n", len(items))
+
+	// Every figure below is a share of len(items), and an empty corpus is not a
+	// hypothetical: it is what a fresh instance, or a -sample that matched
+	// nothing, hands this function. Dividing there produces NaN, and a report
+	// reading "unsorted NaN%" is worse than no report — it looks like a result.
+	if len(items) == 0 {
+		fmt.Fprintln(w, "  no items matched; nothing to summarise")
+		return
+	}
 
 	type kv struct {
 		k string
@@ -268,10 +278,10 @@ func printSummary(items []pipeline.Item, out []pipeline.Analysis, lx *classify.L
 		return cats[i].k < cats[j].k
 	})
 	for _, c := range cats {
-		fmt.Printf("  %-14s %5d  %5.1f%%  %s\n", c.k, c.n,
+		fmt.Fprintf(w, "  %-14s %5d  %5.1f%%  %s\n", c.k, c.n,
 			100*float64(c.n)/float64(len(items)), bar(c.n, len(items)))
 	}
-	fmt.Printf("  %-14s %5d  %5.1f%%  %s\n", "(unsorted)", unsorted,
+	fmt.Fprintf(w, "  %-14s %5d  %5.1f%%  %s\n", "(unsorted)", unsorted,
 		100*float64(unsorted)/float64(len(items)), bar(unsorted, len(items)))
 
 	var genres []kv
@@ -279,21 +289,21 @@ func printSummary(items []pipeline.Item, out []pipeline.Analysis, lx *classify.L
 		genres = append(genres, kv{k, n})
 	}
 	sort.Slice(genres, func(i, j int) bool { return genres[i].n > genres[j].n })
-	fmt.Printf("\n  genre: ")
+	fmt.Fprintf(w, "\n  genre: ")
 	for i, g := range genres {
 		if i == 6 {
 			break
 		}
-		fmt.Printf("%s %d · ", g.k, g.n)
+		fmt.Fprintf(w, "%s %d · ", g.k, g.n)
 	}
 
-	fmt.Printf("\n\n  categorised   %5.1f%%\n", 100*float64(len(items)-unsorted)/float64(len(items)))
-	fmt.Printf("  unsorted      %5.1f%%\n", 100*float64(unsorted)/float64(len(items)))
-	fmt.Printf("  ambiguous     %5.1f%%   (would escalate to Smart+ as a tie-break)\n",
+	fmt.Fprintf(w, "\n\n  categorised   %5.1f%%\n", 100*float64(len(items)-unsorted)/float64(len(items)))
+	fmt.Fprintf(w, "  unsorted      %5.1f%%\n", 100*float64(unsorted)/float64(len(items)))
+	fmt.Fprintf(w, "  ambiguous     %5.1f%%   (would escalate to Smart+ as a tie-break)\n",
 		100*float64(ambiguous)/float64(len(items)))
-	fmt.Printf("  non-English   %5.1f%%   (free tier declines; Smart+ handles these)\n",
+	fmt.Fprintf(w, "  non-English   %5.1f%%   (free tier declines; Smart+ handles these)\n",
 		100*float64(nonEnglish)/float64(len(items)))
-	fmt.Printf("  distinct categories used: %d of %d\n", len(byCat), lx.Len())
+	fmt.Fprintf(w, "  distinct categories used: %d of %d\n", len(byCat), lx.Len())
 }
 
 func bar(n, total int) string {

@@ -91,8 +91,13 @@ func main() {
 	}
 }
 
+// usageOut is where usage() writes. os.Stderr everywhere but the test that
+// checks every subcommand is actually listed — a subcommand that exists and is
+// not named here is one nobody finds.
+var usageOut io.Writer = os.Stderr
+
 func usage() {
-	fmt.Fprint(os.Stderr, `articleflux — a self-hosted feed reader
+	fmt.Fprint(usageOut, `articleflux — a self-hosted feed reader
 
   articleflux serve   [-addr host:port] [-db path] [-web dir] [-origin url] [-dev]
   articleflux init    -user name [-db path]

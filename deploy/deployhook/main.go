@@ -57,7 +57,9 @@ const maxBody = 1 << 20
 // deployTimeout bounds a single deploy. The update scripts build a 26 MB wasm
 // module on a 2-vCPU droplet, so this is generous — but unbounded would let one
 // wedged build hold the lock forever and silently stop all future deploys.
-const deployTimeout = 30 * time.Minute
+// A var, not a const, so the timeout branch below can be exercised in a test
+// without waiting half an hour. Nothing outside the tests assigns it.
+var deployTimeout = 30 * time.Minute
 
 // Trigger is one (workflow, branch) pair whose success authorises a deploy.
 type Trigger struct {
@@ -154,6 +156,11 @@ type runner struct {
 	// token reports outcomes back to GitHub. Empty disables reporting; see
 	// Config.StatusToken for why that is a worse place to be than it sounds.
 	token string
+	// apiBase is where commit statuses are posted. Empty means GitHub, which is
+	// every case but the tests — this exists so the reporting path can be
+	// exercised against a local server rather than only in production, which is
+	// the one place nobody wants to discover that a 422 ate every outcome.
+	apiBase string
 }
 
 func main() {
@@ -184,19 +191,7 @@ func main() {
 			"the webhook's 202 says the job was accepted, never that it succeeded")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/hook", func(w http.ResponseWriter, req *http.Request) { handle(w, req, cfg, r, log) })
-	// Liveness for the health watchdog, and a human-readable "is this thing on".
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
-	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"running": r.running, "last": r.last})
-	})
+	mux := routes(cfg, r, log)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -218,6 +213,29 @@ func main() {
 		log.Error("listen", "err", err)
 		os.Exit(1)
 	}
+}
+
+// routes builds the service's HTTP surface.
+//
+// Split out of main so it can be exercised: main itself ends in
+// ListenAndServe and cannot be called from a test, which meant the three
+// endpoints below — including /status, the only window into what this service
+// has actually done — were reachable by nothing but a live box.
+func routes(cfg *Config, r *runner, log *slog.Logger) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hook", func(w http.ResponseWriter, req *http.Request) { handle(w, req, cfg, r, log) })
+	// Liveness for the health watchdog, and a human-readable "is this thing on".
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"running": r.running, "last": r.last})
+	})
+	return mux
 }
 
 // loadConfig reads and validates the config, refusing anything that would make
@@ -480,7 +498,7 @@ func (r *runner) run(t *Target, sha, runURL string) {
 	// unprivileged user precisely so that a flaw in the HTTP handling above does
 	// not become a root shell — it can ask for a deploy and nothing else.
 	args := append([]string{"-n", t.Command}, t.Args...)
-	cmd := exec.Command("sudo", args...)
+	cmd := execCommand("sudo", args...)
 	cmd.Stdout = f
 	cmd.Stderr = f
 	cmd.Env = append(os.Environ(), "TERM=dumb", "AF_DEPLOY_SHA="+sha)
@@ -522,6 +540,17 @@ func (r *runner) run(t *Target, sha, runURL string) {
 	}
 }
 
+// execCommand builds the deploy process, and is a var for one reason: `run` is
+// the function that actually changes production, and until this existed it was
+// the only function here that no test could reach. A test that cannot start a
+// process cannot check that a failure is recorded as a failure, that a timeout
+// kills the child rather than leaking it, or that the transcript — which is the
+// only account of what happened, since nobody is watching a terminal when this
+// fires — says what it should.
+//
+// Production is unaffected: nothing but a test ever assigns this.
+var execCommand = exec.Command
+
 // finish records the outcome for /status.
 func (r *runner) finish(repo, result, logPath string) {
 	r.mu.Lock()
@@ -556,7 +585,11 @@ func (r *runner) report(repo, sha, state, description string) {
 	if err != nil {
 		return
 	}
-	url := "https://api.github.com/repos/" + repo + "/statuses/" + sha
+	base := r.apiBase
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	url := base + "/repos/" + repo + "/statuses/" + sha
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return
@@ -569,7 +602,12 @@ func (r *runner) report(repo, sha, state, description string) {
 	// Its own client with a short timeout rather than http.DefaultClient, which
 	// has none: a hung API call would hold this goroutine for as long as the
 	// connection stayed open, and this runs after every single deploy.
-	cl := &http.Client{Timeout: 15 * time.Second}
+	//
+	// A var rather than a literal so the test that proves the timeout exists can
+	// prove it in milliseconds. A test that had to wait out the real one would
+	// add fifteen seconds to every run of the suite, which is how a test that
+	// guards something real gets deleted for being slow.
+	cl := &http.Client{Timeout: statusTimeout}
 	resp, err := cl.Do(req)
 	if err != nil {
 		r.log.Warn("commit status not posted", "repo", repo, "sha", short(sha), "err", err)
@@ -583,6 +621,9 @@ func (r *runner) report(repo, sha, state, description string) {
 	}
 	r.log.Info("commit status posted", "repo", repo, "sha", short(sha), "state", state)
 }
+
+// statusTimeout bounds the commit-status POST. See report.
+var statusTimeout = 15 * time.Second
 
 // short trims a commit SHA for log lines.
 func short(sha string) string {

@@ -477,3 +477,169 @@ func TestCorruptStorageIsIgnored(t *testing.T) {
 		t.Error("the collector did not recover from unreadable storage")
 	}
 }
+
+// --- Depth ---------------------------------------------------------------------
+//
+// Depth is a HIGH-WATER MARK, not the current position. That distinction is the
+// whole value of the signal: a reader who scrolls to the end and then back to the
+// top read the article, and a collector that stored the last value would report
+// them as having read the first screen.
+
+func TestDepthKeepsTheHighWaterMark(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+
+	c.Depth(0.2)
+	c.Depth(0.9)
+	c.Depth(0.3) // scrolled back up; must not lower the mark
+
+	// Backdate the stretch so Leave has dwell to bank — it returns early on a
+	// zero, and nothing measurable elapses inside a test. Same idiom as
+	// TestDwellIsBankedOnLeave above.
+	c.curSince -= 120_000
+	c.Leave(signals.SurfaceReader)
+	c.Flush()
+
+	var depth float64
+	for _, e := range cap.all() {
+		if e.Kind == signals.ScrollDepth {
+			depth = e.Value
+		}
+	}
+	if depth != 0.9 {
+		t.Errorf("scroll depth = %v, want the 0.9 high-water mark", depth)
+	}
+}
+
+// A percentage outside 0..1 is a bug in the caller — a mis-measured element, a
+// division by a zero height. It must be ignored rather than banked, because a
+// depth of 40 would make Pace nonsense and classify a bounce as a deep read.
+func TestDepthIgnoresValuesOutsideTheUnitRange(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+
+	c.Depth(0.5)
+	for _, bad := range []float64{-0.1, 1.1, 40, -1} {
+		c.Depth(bad)
+	}
+
+	c.Leave(signals.SurfaceReader)
+	c.Flush()
+	for _, e := range cap.all() {
+		if e.Kind == signals.ScrollDepth && e.Value != 0.5 {
+			t.Errorf("an out-of-range depth was banked: %v", e.Value)
+		}
+	}
+}
+
+// Depth belongs to the CURRENT article. Moving to another one starts over, or
+// the second article inherits the first one's progress.
+func TestDepthResetsOnEnteringAnotherArticle(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+	c.Depth(0.9)
+	c.curSince -= 60_000
+	c.Enter("i2", "s1", 500, signals.SurfaceReader)
+	c.Depth(0.1)
+	c.curSince -= 60_000
+	c.Leave(signals.SurfaceReader)
+	c.Flush()
+
+	for _, e := range cap.all() {
+		if e.Kind == signals.ScrollDepth && e.ItemID == "i2" && e.Value > 0.1 {
+			t.Errorf("the second article inherited the first's depth: %v", e.Value)
+		}
+	}
+}
+
+// --- Completed -----------------------------------------------------------------
+
+func TestCompletedEmitsForTheCurrentArticle(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+
+	c.Completed("i1", signals.SurfaceReader)
+	c.Flush()
+	if cap.countOf(signals.Completed) != 1 {
+		t.Errorf("Completed emitted %d events, want 1", cap.countOf(signals.Completed))
+	}
+}
+
+// A completion for an article the reader has already left is stale — the view
+// fired late, or an effect cleaned up out of order. Emitting it would attribute
+// a finish to whatever they are reading NOW.
+func TestCompletedIgnoresAnArticleThatIsNotCurrent(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+
+	c.Completed("i2", signals.SurfaceReader)
+	c.Flush()
+	if cap.countOf(signals.Completed) != 0 {
+		t.Error("a completion was recorded for an article the reader was not on")
+	}
+}
+
+func TestCompletedWithNoArticleOpenIsANoOp(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Completed("i1", signals.SurfaceReader)
+	c.Flush()
+	if cap.countOf(signals.Completed) != 0 {
+		t.Error("a completion was recorded with nothing open")
+	}
+}
+
+// Completion is what makes pace computable: depth × words is how much text went
+// past, and without a finish the denominator is a guess. So a completed read
+// must not be classified as a bounce the way a brief one would.
+func TestCompletionFeedsThePaceCalculation(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Enter("i1", "s1", 500, signals.SurfaceReader)
+	c.Depth(1.0)
+	c.Completed("i1", signals.SurfaceReader)
+	c.curSince -= 120_000
+	c.Leave(signals.SurfaceReader)
+	c.Flush()
+	// The dwell and the depth both have to survive the completion.
+	if cap.countOf(signals.Dwell) == 0 {
+		t.Error("no dwell was banked for a completed read")
+	}
+}
+
+// --- Tick ----------------------------------------------------------------------
+
+// Tick is the periodic flush and it must not open a connection for nothing. An
+// empty tick that sent a batch would be a request every interval, forever, on a
+// reader who is not reading.
+func TestTickSendsNothingWhenThereIsNothingBuffered(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Tick()
+	if len(cap.batches) != 0 {
+		t.Errorf("an empty tick sent %d batch(es)", len(cap.batches))
+	}
+}
+
+func TestTickFlushesWhatIsBuffered(t *testing.T) {
+	cap := &capture{}
+	c := New(cap.send)
+	c.Emit(signals.Opened, "i1", "s1", 0, signals.SurfaceReader, "")
+
+	if c.Buffered() == 0 {
+		t.Fatal("setup: nothing was buffered")
+	}
+	c.Tick()
+	if len(cap.batches) == 0 {
+		t.Error("a tick with events buffered sent nothing")
+	}
+	if c.Buffered() != 0 {
+		t.Errorf("%d events are still buffered after a tick", c.Buffered())
+	}
+}
