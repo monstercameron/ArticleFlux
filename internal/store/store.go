@@ -34,6 +34,9 @@ type DB struct {
 	// Write has exactly one connection. All mutations go through it.
 	Write *sql.DB
 	path  string
+	// readOnly records how this database was opened, because verify has to
+	// prove the same things in a way a read-only connection can answer.
+	readOnly bool
 }
 
 // Options configure Open.
@@ -45,12 +48,24 @@ type Options struct {
 	// BusyTimeout is how long a statement waits on a lock. Zero means 5s.
 	BusyTimeout time.Duration
 	// ReadOnly opens the database for reading and refuses every write, which is
-	// what a tool that measures a LIVE instance wants: query_only means a probe
-	// cannot alter what it is measuring, and no WAL is created or recovered
-	// beside a database another process is writing.
+	// what a tool that measures a LIVE instance wants: mode=ro and query_only(1)
+	// mean a probe cannot alter what it is measuring.
+	//
+	// What it does NOT mean is that nothing appears beside the file. A WAL-mode
+	// database needs its `-shm` to be read at all, so opening one read-only can
+	// still create `-shm` and `-wal` where they were absent. Making that true too
+	// would need `immutable=1`, which is a promise the caller cannot keep about a
+	// database another process is writing — it tells SQLite the file will not
+	// change, and reading a live file under that assumption returns garbage. So
+	// the guarantee here is about the CONTENT, not the directory listing.
 	//
 	// The write pool is opened all the same, so *DB stays one type with one
 	// shape; SQLite refuses the writes rather than this package having to.
+	//
+	// Note for anyone adding a check to verify: a read-only connection cannot
+	// write into `temp.` either, so a probe that creates a table there fails on
+	// every ReadOnly open. That is not hypothetical — it is what made this option
+	// unusable, and every caller of it (cmd/classifyprobe) unable to start.
 	ReadOnly bool
 }
 
@@ -106,7 +121,7 @@ func Open(opt Options) (*DB, error) {
 	write.SetMaxOpenConns(1)
 	write.SetMaxIdleConns(1)
 
-	db := &DB{Read: read, Write: write, path: opt.Path}
+	db := &DB{Read: read, Write: write, path: opt.Path, readOnly: opt.ReadOnly}
 	if err := db.verify(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -136,6 +151,29 @@ func (db *DB) verify() error {
 		}
 		// G1: prove the extension is registered on a connection drawn from this
 		// pool, not merely that Register was called.
+		//
+		// Two probes, because a read-only database cannot answer the first one.
+		// query_only(1) refuses every write INCLUDING one into `temp.`, so
+		// creating a probe table there fails on a connection opened with
+		// ReadOnly — which meant `store.Open{ReadOnly: true}` could never
+		// succeed, and its only callers are the three entry points of
+		// cmd/classifyprobe. That tool could not start at all.
+		//
+		// pragma_module_list asks the connection which virtual-table modules are
+		// registered ON IT, which is exactly the claim being made here, and it
+		// reads rather than writes. The write probe is kept for a writable
+		// database because it proves the module is not merely listed but usable.
+		if db.readOnly {
+			var n int
+			if err := pool.QueryRow(
+				`SELECT count(*) FROM pragma_module_list WHERE name = 'fts5'`).Scan(&n); err != nil {
+				return fmt.Errorf("store: %s pool module list: %w", name, err)
+			}
+			if n == 0 {
+				return fmt.Errorf("store: %s pool has no fts5 (the init hook is missing)", name)
+			}
+			continue
+		}
 		if _, err := pool.Exec(`CREATE VIRTUAL TABLE temp.fts_probe USING fts5(x)`); err != nil {
 			return fmt.Errorf("store: %s pool has no fts5 (the init hook is missing): %w", name, err)
 		}
