@@ -448,6 +448,15 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 // it would count one bad call three times and open on a single hiccup, which is
 // the note the guard field carries.
 //
+// **On the typed path that ordering is only half available, and it is worth
+// knowing which half.** SchemaFlux retries the provider it was given, and the
+// provider it was given is the one that calls this — so a typed operation that
+// fails three times records three failures here, where the same failure through
+// Do records one. The practical effect is that the circuit opens after roughly
+// two failing operations rather than five. That is a breaker that is twice as
+// eager on that path, which is the safe direction to be wrong in, and it is not
+// fixable from this side: the retry is above us in the call stack, not below.
+//
 // The span wraps everything for the same reason it always did. This is the
 // slowest thing the application does by an order of magnitude — seconds where a
 // feed poll is milliseconds — and netguard's egress span covers one HTTP hop.

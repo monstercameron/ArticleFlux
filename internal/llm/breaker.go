@@ -170,6 +170,31 @@ func (g *Guard) admit() error {
 	return nil
 }
 
+// notProviderFault names the errors a breaker must not count.
+//
+// This matters because the breaker sits OUTSIDE the middleware chain, so
+// everything the chain refuses on its own comes back through here looking
+// exactly like a provider failure. Two of them are routine:
+//
+//   - ErrOverBudget. The instance spent its allowance. Counting five of those
+//     would open the circuit and then refuse the calls for two minutes with the
+//     WRONG error — "the provider is failing" instead of "the budget is spent" —
+//     which sends somebody looking for an outage that is not there.
+//   - ErrNotConfigured. No API key. An instance without one would open its
+//     circuit on the first five attempts, and then the reader who pastes a key
+//     into Settings gets two minutes of nothing before anything works. The
+//     smartKey closure exists precisely so a pasted key takes effect
+//     immediately, and this is what stops the breaker undoing that.
+//
+// A cancelled context joins them: the CALLER went away, which says nothing at
+// all about the provider. A deadline that expired deliberately does NOT — a
+// provider that stopped answering is exactly what the breaker is for.
+func notProviderFault(err error) bool {
+	return errors.Is(err, ErrOverBudget) ||
+		errors.Is(err, ErrNotConfigured) ||
+		errors.Is(err, context.Canceled)
+}
+
 // record updates the breaker from an outcome.
 func (g *Guard) record(err error) {
 	g.mu.Lock()
@@ -177,6 +202,13 @@ func (g *Guard) record(err error) {
 
 	g.calls++
 	g.probing = false
+
+	// Neither a success nor a failure. It must not clear the failure count
+	// either: an instance whose budget ran out mid-outage would otherwise
+	// "recover" the breaker without a single call having reached the provider.
+	if err != nil && notProviderFault(err) {
+		return
+	}
 
 	if err == nil {
 		g.failures = 0
