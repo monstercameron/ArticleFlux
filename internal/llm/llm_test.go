@@ -303,8 +303,21 @@ func TestNoSchemaMeansNoTextFormat(t *testing.T) {
 	if cap.wire.Text != nil {
 		t.Errorf("text.format present with no schema requested: %+v", cap.wire.Text)
 	}
-	if cap.wire.Reasoning != nil {
-		t.Errorf("reasoning present with no effort requested: %+v", cap.wire.Reasoning)
+	// Reasoning is now ALWAYS present, and that is the deliberate change.
+	//
+	// This asserted its absence, on the reasoning that a request naming no
+	// effort should send no reasoning block. The consequence was that the
+	// choice fell to the API's own default — the one party with no view on what
+	// this call is for — and it fell that way for every SchemaFlux-backed
+	// feature, because the typed path never sets Effort at all.
+	//
+	// DefaultEffort answers it instead. The schema half of this test is
+	// untouched: no schema still means no text.format, which is a separate
+	// claim and the one this case is named for.
+	if cap.wire.Reasoning == nil {
+		t.Error("no reasoning block was sent; DefaultEffort should have supplied one")
+	} else if cap.wire.Reasoning.Effort != DefaultEffort {
+		t.Errorf("effort = %q, want the default %q", cap.wire.Reasoning.Effort, DefaultEffort)
 	}
 }
 

@@ -79,11 +79,36 @@ const Endpoint = "https://api.openai.com/v1/responses"
 const allowedHost = "api.openai.com"
 
 const (
-	// DefaultModel is the small, cheap one. Smart+ work here is
-	// translation and summarisation of text the server already holds — tasks a
-	// mini model does well — and defaulting to a large model would make the
-	// first thing a reader tries the most expensive thing they can do.
-	DefaultModel = "gpt-5-mini"
+	// DefaultModel is what an instance runs when nobody has chosen otherwise.
+	//
+	// Smart+ work here is translation, summarisation and short structured
+	// judgements over text the server already holds, and the point of the
+	// default is that the first thing a reader tries should not be the most
+	// expensive thing they can do.
+	//
+	// gpt-5.6-luna, at low effort (DefaultEffort). It was gpt-5-mini, chosen
+	// when that was the small-and-cheap option; luna is the current one and
+	// the choice is Cam's. Verified present on the account by Client.Models
+	// before being made the default, because a default naming a model the key
+	// cannot use fails every Smart+ feature at once.
+	DefaultModel = "gpt-5.6-luna"
+
+	// DefaultEffort is the reasoning budget when a request does not state one.
+	//
+	// Low, deliberately. Most of what this application asks for is a judgement
+	// over text that is already in front of the model — which category, which
+	// four of these twelve headlines, say this in seventy words — and more
+	// deliberation on those buys tokens rather than accuracy. The two call
+	// sites that already set "low" by hand keep saying so; anything wanting
+	// more has to ask.
+	//
+	// It also closes a gap worth naming: the typed operations never set Effort
+	// at all, so every SchemaFlux-backed feature sent no reasoning block and
+	// took whatever the API's own default was. `.Smart()` and `.Fast()` steer
+	// SchemaFlux's model resolution and token ceilings, not OpenAI's reasoning
+	// budget, and with the model now pinned per call the tier reached the wire
+	// as nothing.
+	DefaultEffort = "low"
 
 	// requestTimeout is generous because a structured response over a few
 	// hundred catalog entries genuinely takes tens of seconds, and bounded
@@ -597,9 +622,14 @@ func (c *Client) send(ctx context.Context, key, model string, r Request) (string
 		// should not inherit silently.
 		Store: false,
 	}
-	if e := strings.TrimSpace(r.Effort); e != "" {
-		wire.Reasoning = &responsesThinking{Effort: e}
+	// A request that names no effort gets the default rather than none. See
+	// DefaultEffort: sending no reasoning block left the choice to the API,
+	// which is the one party with no view on what this call is for.
+	effort := strings.TrimSpace(r.Effort)
+	if effort == "" {
+		effort = DefaultEffort
 	}
+	wire.Reasoning = &responsesThinking{Effort: effort}
 	for _, t := range r.Tools {
 		t = strings.TrimSpace(t)
 		if t == "" {
@@ -728,19 +758,33 @@ type modelsReply struct {
 	} `json:"error"`
 }
 
-// excludedModelPrefixes are real OpenAI models this picker has no business
-// offering. Every call this package makes is a Responses-API text/reasoning
-// call (Do), so a picker that also listed embedding, audio, moderation and
-// image models would be a dropdown where most entries fail the moment they
-// are chosen — a worse experience than the free-text field it replaces.
-var excludedModelPrefixes = []string{
+// excludedModelMarkers name the families this picker has no business offering.
+// Every call this package makes is a Responses-API text/reasoning call (Do), so
+// a picker that also listed embedding, audio, moderation and image models would
+// be a dropdown where most entries fail the moment they are chosen — a worse
+// experience than the free-text field it replaces.
+//
+// Matched anywhere in the id, not as a prefix, and that is the fix rather than
+// a stylistic choice. These were prefixes, which was right when a family name
+// began the id (`tts-1`, `dall-e-3`). OpenAI's naming moved the marker into the
+// middle — `gpt-4o-mini-tts-2025-03-20`, `chatgpt-image-latest` — and a prefix
+// match sails straight past both, so the picker offered a reader models that
+// break every Smart+ call the moment one is selected. Exactly the outcome the
+// paragraph above says must not happen, and the list had quietly stopped
+// preventing it.
+//
+// Found by the first live run of Models: three ids came back that the comment
+// forbids. Substring is safe here because no completion model contains any of
+// these strings — "davinci" and "babbage" appear only in the legacy completion
+// models they name.
+var excludedModelMarkers = []string{
 	"text-embedding", "whisper", "tts-", "dall-e", "gpt-image",
 	"omni-moderation", "text-moderation", "davinci", "babbage",
 }
 
 func excludedModel(id string) bool {
-	for _, p := range excludedModelPrefixes {
-		if strings.HasPrefix(id, p) {
+	for _, marker := range excludedModelMarkers {
+		if strings.Contains(id, marker) {
 			return true
 		}
 	}

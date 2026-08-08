@@ -45,9 +45,18 @@ func priced(t *testing.T, model string, in, out int64) *Client {
 	return c
 }
 
+// aPricedModel is named rather than borrowed from DefaultModel.
+//
+// These cases test the pricing arithmetic, and they used DefaultModel — which
+// worked only because the default happened to have a price entry. When the
+// default changed to gpt-5.6-luna, which has none, three of them failed and the
+// failure read as "cost accounting is broken" rather than "the new default is
+// unpriced". A test for arithmetic should name its own inputs.
+const aPricedModel = "gpt-5-mini"
+
 func TestAPricedCallCostsSomething(t *testing.T) {
-	c := priced(t, DefaultModel, 1000, 1000)
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	c := priced(t, aPricedModel, 1000, 1000)
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	got := c.Cost()
@@ -63,12 +72,12 @@ func TestAPricedCallCostsSomething(t *testing.T) {
 }
 
 func TestSpendAccumulatesAcrossCalls(t *testing.T) {
-	c := priced(t, DefaultModel, 1000, 1000)
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	c := priced(t, aPricedModel, 1000, 1000)
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	one := c.Cost().USD
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	two := c.Cost().USD
@@ -81,7 +90,7 @@ func TestAnUnpricedModelIsCountedRatherThanValuedAtZero(t *testing.T) {
 	// The distinction the whole type exists for. A model the rate tables do not
 	// know contributed an unknown amount, and reporting $0.00 would tell a
 	// reader it was free — which is a different claim, and a false one.
-	c := priced(t, "", 1000, 1000)
+	c := priced(t, aPricedModel, 1000, 1000)
 	if _, err := c.Do(context.Background(), Request{
 		Model: "some-model-nobody-has-priced", Input: "x",
 	}); err != nil {
@@ -105,7 +114,7 @@ func TestAFailedCallCostsNothing(t *testing.T) {
 	c, _ := fakeClient("sk-test", func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("provider is down")
 	})
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err == nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err == nil {
 		t.Fatal("expected a failure")
 	}
 	if got := c.Cost(); got.USD != 0 || got.Priced != 0 || got.Unpriced != 0 {
@@ -125,12 +134,12 @@ func TestCostOnANilClientIsSafe(t *testing.T) {
 func TestABiggerCallCostsMore(t *testing.T) {
 	// Arithmetic rather than a constant: pinning a dollar figure would make this
 	// test fail the day OpenAI changes a price, which is not a defect.
-	small := priced(t, DefaultModel, 100, 100)
-	if _, err := small.Do(context.Background(), Request{Input: "x"}); err != nil {
+	small := priced(t, aPricedModel, 100, 100)
+	if _, err := small.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	big := priced(t, DefaultModel, 10000, 10000)
-	if _, err := big.Do(context.Background(), Request{Input: "x"}); err != nil {
+	big := priced(t, aPricedModel, 10000, 10000)
+	if _, err := big.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if big.Cost().USD <= small.Cost().USD {
@@ -143,19 +152,19 @@ func TestABiggerCallCostsMore(t *testing.T) {
 func TestNoCapMeansUnlimited(t *testing.T) {
 	// The default, and it has to be: a cap nobody set must not stop an instance
 	// that has been working for months.
-	c := priced(t, DefaultModel, 1000, 1000)
+	c := priced(t, aPricedModel, 1000, 1000)
 	c.Use(c.Budget(func(context.Context) float64 { return 0 }))
 	for i := 0; i < 3; i++ {
-		if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+		if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}
 }
 
 func TestANegativeCapAlsoMeansUnlimited(t *testing.T) {
-	c := priced(t, DefaultModel, 1000, 1000)
+	c := priced(t, aPricedModel, 1000, 1000)
 	c.Use(c.Budget(func(context.Context) float64 { return -1 }))
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -165,13 +174,13 @@ func TestSpendingReachesTheCapAndStops(t *testing.T) {
 	// second is refused. The first is deliberately allowed to finish — see
 	// Budget's doc on why the ceiling is on what has been spent rather than on
 	// an estimate of what is about to be.
-	c := priced(t, DefaultModel, 100000, 100000)
+	c := priced(t, aPricedModel, 100000, 100000)
 	c.Use(c.Budget(func(context.Context) float64 { return 0.0001 }))
 
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatalf("the first call should have been allowed: %v", err)
 	}
-	_, err := c.Do(context.Background(), Request{Input: "x"})
+	_, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"})
 	if !errors.Is(err, ErrOverBudget) {
 		t.Fatalf("err = %v, want ErrOverBudget", err)
 	}
@@ -190,11 +199,11 @@ func TestARefusedCallNeverReachesTheProvider(t *testing.T) {
 	})
 	c.Use(c.Budget(func(context.Context) float64 { return 0.0001 }))
 
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	before := calls
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); !errors.Is(err, ErrOverBudget) {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); !errors.Is(err, ErrOverBudget) {
 		t.Fatalf("err = %v, want ErrOverBudget", err)
 	}
 	if calls != before {
@@ -206,19 +215,19 @@ func TestTheCapIsReadPerCallNotAtConstruction(t *testing.T) {
 	// The whole reason it is a function. Somebody watching a backfill hit its
 	// limit raises the setting; a cap captured at startup would need a restart,
 	// which is exactly when nobody wants one.
-	c := priced(t, DefaultModel, 100000, 100000)
+	c := priced(t, aPricedModel, 100000, 100000)
 	limit := 0.0001
 	c.Use(c.Budget(func(context.Context) float64 { return limit }))
 
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); !errors.Is(err, ErrOverBudget) {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); !errors.Is(err, ErrOverBudget) {
 		t.Fatalf("expected the cap to bite, got %v", err)
 	}
 
 	limit = 1000 // raised while the process runs
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Errorf("raising the cap did not take effect: %v", err)
 	}
 }
@@ -227,7 +236,7 @@ func TestUnpricedCallsDoNotConsumeTheBudget(t *testing.T) {
 	// They cannot: an unknown amount is not zero, and it is not the cap either.
 	// Counting them as either would make the cap enforce a fiction — the exact
 	// thing SchemaFlux refuses to do by not inventing a price in the first place.
-	c := priced(t, "", 100000, 100000)
+	c := priced(t, aPricedModel, 100000, 100000)
 	c.Use(c.Budget(func(context.Context) float64 { return 0.0001 }))
 
 	for i := 0; i < 3; i++ {
@@ -247,13 +256,13 @@ func TestTheBudgetIsMiddlewareAndComposes(t *testing.T) {
 	// with whatever else the chain carries. If it stopped composing, the only
 	// symptom would be that installing a second middleware silently disabled
 	// one of them.
-	c := priced(t, DefaultModel, 1000, 1000)
+	c := priced(t, aPricedModel, 1000, 1000)
 	var seen int
 	c.Use(
 		c.Budget(func(context.Context) float64 { return 1000 }),
 		func(next mw.Handler) mw.Handler { return counting{next: next, n: &seen} },
 	)
-	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
+	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if seen != 1 {
