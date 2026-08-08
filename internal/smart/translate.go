@@ -20,6 +20,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+
+	"time"
 )
 
 // Why this imports client/i18n
@@ -150,6 +152,16 @@ type translationEntry struct {
 	Key  string  `json:"key"`
 	Text *string `json:"text"`
 }
+
+// batchTimeout bounds one batch of sixty UI strings.
+//
+// Stated rather than inherited. This is an `Extracting`, which SchemaFlux never
+// wrapped in its default timeout, so before this the call was UNBOUNDED — a
+// stalled provider would hold a translation job open indefinitely, and Catalog
+// runs about fourteen of these in sequence. Three minutes because sixty strings
+// through a reasoning model is genuinely slow, and because the whole batch is
+// redone on failure.
+const batchTimeout = 3 * time.Minute
 
 func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]i18n.Entry, error) {
 	// Checked before the Languages lookup, and deliberately not folded into it:
@@ -313,13 +325,16 @@ func (t *Translator) translateBatch(ctx context.Context, lang Language, model st
 	// field the schema does not name is wrong for a contract that tolerates one,
 	// and a batch is sixty strings — the most expensive thing to redo over a
 	// `model_confidence` nobody asked for. Every entry is checked below.
+	call, cancel := context.WithTimeout(t.llm.OpsContext(ctx), batchTimeout)
+	defer cancel()
+
 	parsed, err := schemaflux.Extracting[translationBatch](input).
 		Steer(instructions).
 		// The largest ceiling in the package, and the one whose loss was most
 		// expensive: sixty UI strings answered in one call against a default of
 		// 2000 is ErrTruncated, and the whole batch is redone (ceilings.go).
 		Configure(capExtract(translateMaxTokens)).
-		Run(t.llm.OpsContext(ctx))
+		Run(call)
 	if err != nil {
 		return nil, err
 	}

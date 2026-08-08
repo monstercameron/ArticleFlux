@@ -10,6 +10,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+
+	"time"
 )
 
 // Rung 5b: the model picks field paths out of an API response (§11.2b).
@@ -60,6 +62,11 @@ type jsonAnswer struct {
 	Notes        string `json:"notes"`
 }
 
+// proposeJSONTimeout bounds one field-path proposal. The same reasoning as
+// scrape.go's proposeTimeout: an `Extracting` was never bounded by the library,
+// so this call could hang indefinitely on a stalled provider.
+const proposeJSONTimeout = 60 * time.Second
+
 func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint string,
 	body []byte) (*JSONProposal, error) {
 
@@ -71,6 +78,9 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 		return nil, ErrNoRule
 	}
 	// The model comes from the bridge now — see llm.Client.OpsContext.
+
+	call, cancel := context.WithTimeout(a.llm.OpsContext(ctx), proposeJSONTimeout)
+	defer cancel()
 
 	input := "Page URL: " + indexURL + "\nAPI URL: " + dataURL +
 		"\nLongest array of objects: " + hint + "\n\nResponse shape:\n" + shape
@@ -93,7 +103,7 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 			Configure(capExtract(analyzeMaxTokensSF)).
 			Model(a.llm.OpsModel(ctx)).
 			Fast().
-			Run(a.llm.OpsContext(ctx))
+			Run(call)
 		if err != nil {
 			return nil, err
 		}

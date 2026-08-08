@@ -39,6 +39,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+
+	"time"
 )
 
 // promptVersion is part of the cache key.
@@ -78,6 +80,23 @@ const maxInputChars = 60 << 10
 // where it was when the target came down — the headroom was never about the
 // answer's length, and a tighter ceiling would buy nothing but truncation.
 const digestMaxTokens = 4000
+
+// digestTimeout bounds one summarise.
+//
+// Stated here rather than inherited, which is the whole point of the constant.
+// It used to be neither: this call passed the caller's context straight through
+// and SchemaFlux layered its own thirty-second default underneath, so the real
+// budget was a library default nothing in this file mentioned — and one that
+// applied to `Summarizing` but not to `Extracting`, so two Smart+ features with
+// the same shape had different budgets for no reason anybody chose. SchemaFlux
+// DX-008 made a caller's deadline authoritative, which makes this constant the
+// answer instead of a suggestion.
+//
+// Ninety seconds, matching the interest pass. A reader is waiting on this one,
+// but they are waiting on speech synthesis after it either way, and the failure
+// this guards against is a stalled provider holding the request open — not a
+// slow one.
+const digestTimeout = 90 * time.Second
 
 // ErrNothingToSummarise means the item had no usable text. Distinct so the
 // caller can fall back to reading the article itself rather than reporting a
@@ -199,10 +218,17 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 	// llm.Client.OpsContext — so the `model` resolved above is no longer named
 	// here. Fast for the same reason the request said Effort low: condensing an
 	// argument already on the page is not a reasoning problem.
-	// `Context(ctx)` rather than `Run(ctx)`: the text operations take their
-	// context on the builder because `Run` has no parameter. Either way it has
-	// to be the ops context — a bare one resolves the provider from a package
-	// global, which on a fresh process is a mock.
+	// The context has to be the OPS context — a bare one resolves the provider
+	// from a package global, which on a fresh process is a mock whose answers
+	// parse into zero values and look like a working deployment.
+	//
+	// It carries an explicit deadline now. Before SchemaFlux DX-002 the text
+	// operations could not take a context on `Run` at all, so this read
+	// `.Context(ctx).Run()` while every other feature read `.Run(ctx)`; the two
+	// spellings meant the same thing and neither said so.
+	call, cancel := context.WithTimeout(d.llm.OpsContext(ctx), digestTimeout)
+	defer cancel()
+
 	out, err := schemaflux.Summarizing(in.String()).
 		Steer(digestInstructions).
 		// The ceiling, restated rather than inherited from `Fast` — see
@@ -216,8 +242,7 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 		Configure(capSummarize(digestMaxTokens)).
 		Model(d.llm.OpsModel(ctx)).
 		Fast().
-		Context(d.llm.OpsContext(ctx)).
-		Run()
+		Run(call)
 	if err != nil {
 		// An answer with no content is not a provider fault, it is nothing to
 		// summarise — which is a state three callers key on to fall back to

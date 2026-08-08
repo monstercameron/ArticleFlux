@@ -257,7 +257,17 @@ func (p *Palettes) ask(ctx context.Context, instructions string, payload llm.The
 		Configure(capGenerate(paletteMaxTokens)).
 		Model(p.llm.OpsModel(ctx)).
 		Smart().
-		Strict().
+		// `CompleteFields()` rather than `Strict()` (SchemaFlux DX-007).
+		//
+		// Strict means two things at once, and only one of them was wanted
+		// here. The half that matters is completeness: a palette missing one of
+		// its thirteen colours is not a palette, and the repair pass below
+		// cannot invent the one that never arrived. The half that was arriving
+		// with it — rejecting a property the schema does not name — could fail
+		// a whole theme because a model volunteered a "notes" field alongside
+		// thirteen perfectly good colours, and this is a reader pressing a
+		// button and waiting for an answer.
+		CompleteFields().
 		Run(call)
 	if err != nil {
 		return design.Theme{}, nil, err

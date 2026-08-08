@@ -49,6 +49,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+
+	"time"
 )
 
 // PromptVersion is part of the cache key, for the reason promptVersion is:
@@ -278,6 +280,25 @@ type Headline struct {
 // caller (client/view/slideshow.go's queueLineup) also picks the three most
 // interesting candidates rather than simply the next three in the queue, so
 // the cut in count is paired with a cut in how they are chosen.
+// segmentTimeout bounds one spoken segment, and segmentGroupTimeout one grouped
+// write.
+//
+// Both are stated rather than inherited. These calls used to pass the caller's
+// context through untouched: the per-segment one then picked up SchemaFlux's
+// thirty-second default (it is a `Summarizing`), while the grouped one — an
+// `Extracting` — picked up nothing at all and could hang for as long as a
+// stalled provider held the socket. Two calls in one file, one implicitly
+// bounded and one unbounded, and neither said so. SchemaFlux DX-008 made a
+// caller's deadline authoritative; these are that deadline.
+//
+// The grouped write gets longer because it is doing more: a whole broadcast's
+// worth of stories in one request, and it is the most expensive call in the
+// feature to have to redo.
+const (
+	segmentTimeout      = 90 * time.Second
+	segmentGroupTimeout = 3 * time.Minute
+)
+
 const MaxLineup = 3
 
 // podcastWords is the length the instructions ask for.
@@ -697,6 +718,9 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	// Segments are cached forever, keyed by prompt version; any change to the
 	// prose would re-bill every reader's back catalogue. So the instructions are
 	// passed through byte for byte rather than reworded to suit the operation.
+	call, cancel := context.WithTimeout(p.llm.OpsContext(ctx), segmentTimeout)
+	defer cancel()
+
 	out, err := schemaflux.Summarizing(podcastInput(seg, body)).
 		Steer(podcastInstructionsOf(seg)).
 		// The token ceiling, not a sentence count. `MaxLength` sets
@@ -708,8 +732,7 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 		Configure(capSummarize(podcastMaxTokens)).
 		Model(p.llm.OpsModel(ctx)).
 		Fast().
-		Context(p.llm.OpsContext(ctx)).
-		Run()
+		Run(call)
 	if err != nil {
 		return "", err
 	}
@@ -1337,6 +1360,9 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 	// whole broadcast's worth of stories written in one request. Failing it
 	// because the model volunteered an extra key would re-bill all of them.
 	// Every block is re-validated below regardless.
+	call, cancel := context.WithTimeout(p.llm.OpsContext(ctx), segmentGroupTimeout)
+	defer cancel()
+
 	reply, err := schemaflux.Extracting[podcastGroupReply](segmentGroupInput(g, bodies)).
 		Steer(podcastGroupInstructionsFor(g.Vibe)).
 		// A whole segment's stories in one request, so the ceiling is a multiple
@@ -1345,7 +1371,7 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 		Configure(capExtract(podcastGroupMaxTokens)).
 		Model(p.llm.OpsModel(ctx)).
 		Fast().
-		Run(p.llm.OpsContext(ctx))
+		Run(call)
 	if err != nil {
 		return nil, err
 	}

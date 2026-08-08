@@ -137,6 +137,15 @@ type Proposal struct {
 // luckier" sense — it is given the specific failure (nothing matched, no links,
 // one item) as input, which is the difference between asking again and asking
 // better. A third would be spending a reader's money on diminishing returns.
+// proposeTimeout bounds one rule proposal, both attempts together.
+//
+// Stated rather than inherited. This is an `Extracting`, which SchemaFlux never
+// wrapped in a default timeout, so before this the call was UNBOUNDED: a
+// stalled provider would hold a follow-a-site request open for as long as it
+// liked. Sixty seconds covers a distilled outline through a reasoning model
+// twice, which is the most the retry loop below can ask for.
+const proposeTimeout = 60 * time.Second
+
 func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (*Proposal, error) {
 	if a == nil || a.llm == nil {
 		return nil, llm.ErrNotConfigured
@@ -144,6 +153,9 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 	if !a.llm.Configured(ctx) {
 		return nil, llm.ErrNotConfigured
 	}
+	call, cancel := context.WithTimeout(a.llm.OpsContext(ctx), proposeTimeout)
+	defer cancel()
+
 	outline := distill(pageHTML)
 	if strings.TrimSpace(outline) == "" {
 		return nil, ErrNoRule
@@ -180,7 +192,7 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 			Configure(capExtract(analyzeMaxTokensSF)).
 			Model(a.llm.OpsModel(ctx)).
 			Fast().
-			Run(a.llm.OpsContext(ctx))
+			Run(call)
 		if err != nil {
 			return nil, err
 		}
