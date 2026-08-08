@@ -9,6 +9,8 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-08
+
 ### Added
 
 - **Account recovery works, and is the first thing here that ever did.** §7.2 printed a sheet of

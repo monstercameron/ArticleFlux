@@ -25,7 +25,7 @@ package buildver
 // identical in the server binary and in the wasm bundle, and two build
 // invocations that must agree on a flag are two build invocations that will
 // eventually disagree. Bumping it is an edit to one line in one file.
-const Version = "0.1.1-dev"
+const Version = "1.2.0"
 
 // Commit is the git revision this SERVER binary was built from, injected with
 // `-ldflags -X` by deploy/update.sh. Empty in every other build, which is the

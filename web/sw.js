@@ -27,7 +27,7 @@
 // forgetting to bump it means the old module is served forever, which is
 // exactly the failure this file has to avoid and the one nobody notices,
 // because everything keeps working with old code.
-const VERSION = '0.1.1-dev';
+const VERSION = '1.2.0';
 const CACHE = `articleflux-shell-${VERSION}`;
 
 // DEV is the hole in everything the comment above claims.

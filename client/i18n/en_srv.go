@@ -42,7 +42,7 @@ func init() {
 		"recoveredNoSession": "your password was reset, but signing you in failed; sign in with the new password",
 
 		// --- generic
-		"internal":   "internal error",
+		"internal": "internal error",
 		// The request id, appended to whatever the refusal said (§22.11).
 		//
 		// This is the one string here the SERVER never sends, because it is not
@@ -59,6 +59,10 @@ func init() {
 		// The paging cursor no longer matches the list. Never an empty page:
 		// a client reading that as "the end" silently truncates (§20.7).
 		"staleCursor": "this page cursor is out of date; reloading the list",
+		// A timestamp field the server could not read. Names the format rather
+		// than saying "invalid", because the caller here is a client author or
+		// the sync API, and the thing they can DO about it is send RFC3339.
+		"badTimestamp": "That is not a time this server can store. Send an RFC3339 timestamp.",
 
 		// --- §20.7's taxonomy (internal/apierr, TODO 7.3a)
 		//
