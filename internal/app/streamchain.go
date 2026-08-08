@@ -9,11 +9,14 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/skew"
+	"github.com/monstercameron/ArticleFlux/internal/telemetry"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
 )
 
@@ -59,6 +62,10 @@ func (a *App) streamChain() grpc.ServerOption {
 			handler grpc.StreamHandler) error {
 			return handler(srv, &ctxStream{ServerStream: ss, ctx: reqid.With(ss.Context(), "")})
 		},
+		// The panic boundary, in the same position and for the same reason as
+		// the unary chain's. A stream runs for as long as a tab is open, so it
+		// is the likelier of the two to meet an untested path.
+		a.recoverStream(),
 		// Version skew before anything does work, exactly as in the unary chain.
 		skew.Stream(a.skewPolicy()),
 		// Then the limits, BEFORE authorization — a flood from an unauthorized
@@ -111,7 +118,15 @@ func (a *App) streamTelemetry() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler) error {
 
-		name := info.FullMethod
+		// The LAST SEGMENT, matching the unary chain exactly.
+		//
+		// This used to be the full `/articleflux.v1.ReaderService/WatchEvents`
+		// while the unary chain recorded `ListItems`, and both write to the same
+		// `articleflux.rpc.requests` counter. The result was one metric with two
+		// vocabularies for the same label: `sum by (rpc_method)` returned a list
+		// in which streams and calls could not be compared, and no query could
+		// name both without knowing which shape it was reaching for.
+		name := shortMethod(info.FullMethod)
 		ctx, span := a.tel.Tracer.Start(ss.Context(), "stream."+name,
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(attribute.String("rpc.method", name)))
@@ -122,15 +137,33 @@ func (a *App) streamTelemetry() grpc.StreamServerInterceptor {
 		elapsed := time.Since(started)
 
 		code := status.Code(err)
+		// `outcome` is here for the same reason: the unary chain sets it, this
+		// one did not, and a counter whose label set depends on which chain
+		// wrote the sample puts every stream into an empty-label bucket for
+		// `sum by (outcome)` — visible in the exposition, invisible in a query
+		// that groups on it.
 		attrs := metric.WithAttributes(
 			attribute.String("rpc.method", name),
 			attribute.String("rpc.code", code.String()),
+			telemetry.Outcome(err),
 		)
 		a.tel.Instruments.RPCRequests.Add(ctx, 1, attrs)
 		a.tel.Instruments.StreamDuration.Record(ctx, elapsed.Seconds(), attrs)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(otelcodes.Error, code.String())
+			a.logRPCError(ctx, name, err)
+		}
+
+		// The id on the trailer, as in the unary chain. A stream's trailer
+		// arrives when it ends, which is late but is the only trailer a stream
+		// has — and a stream that ended badly is precisely the one worth
+		// correlating.
+		if id := reqid.From(ctx); id != "" {
+			ss.SetTrailer(metadata.Pairs(reqid.MetadataKey, id))
+			if err != nil {
+				err = apierr.WithRequestID(err, id)
+			}
 		}
 		return err
 	}

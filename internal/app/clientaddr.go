@@ -49,12 +49,20 @@ import (
 // are attacker-controlled. The middleware returns `next` unchanged in that
 // case, so a direct bind carries no wrapper, no allocation and no new way to be
 // wrong — and the dangerous configuration is the one that has to be asked for.
+//
+// # And why the hop count travels with it
+//
+// `-behind-proxy` answers "is anything forwarding"; `TrustedProxyHops` answers
+// "how many". X-Forwarded-For is a list whose left-hand end the CALLER writes —
+// nginx appends rather than replaces — so the second question decides which
+// entry is believed, and getting it wrong reinstates exactly the hole this
+// middleware exists to close. `clientaddr` holds the rule and the argument.
 func (a *App) trueClientAddr(next http.Handler) http.Handler {
 	if !a.cfg.BehindProxy {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, ok := clientaddr.Forwarded(r)
+		ip, ok := clientaddr.Forwarded(r, a.cfg.TrustedProxyHops)
 		if !ok {
 			// A trusted proxy that said nothing leaves the transport address
 			// alone. Substituting a placeholder would be inventing a client.

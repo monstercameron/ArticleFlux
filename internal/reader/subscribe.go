@@ -403,13 +403,13 @@ func jsonItems(in []jsonsel.Item) scrapesel.Result {
 // pollJSON is the scraped source's poll when its rule is a json one.
 func (s *Service) pollJSON(ctx context.Context, src store.SourceRow, rule store.ScrapeRule) (int, error) {
 	if rule.RespectRobots && !s.pages.Allowed(ctx, rule.DataURL) {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+		s.recordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, Err: "robots.txt now disallows this address"})
 		return 0, fmt.Errorf("reader: robots.txt disallows %s", rule.DataURL)
 	}
 	body, err := s.pages.JSON(ctx, rule.DataURL)
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 	compiled, err := jsonsel.Compile(jsonsel.Rule{
@@ -426,12 +426,12 @@ func (s *Service) pollJSON(ctx context.Context, src store.SourceRow, rule store.
 		AuthorPath:   rule.AuthorSelector,
 	})
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 	res, err := jsonsel.Extract(compiled, body, timeutil.Now())
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 
@@ -441,16 +441,16 @@ func (s *Service) pollJSON(ctx context.Context, src store.SourceRow, rule store.
 		if res.Found > 0 {
 			msg = fmt.Sprintf("%d entries found but none produced an item", res.Found)
 		}
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: msg})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: msg})
 		return 0, errors.New("reader: " + msg)
 	}
 
 	n, err := s.ingestScraped(ctx, src.ID, jsonItems(res.Items))
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
-	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, SiteURL: rule.IndexURL})
+	s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, SiteURL: rule.IndexURL})
 	return n, nil
 }
 
@@ -464,7 +464,7 @@ func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, err
 		// A scraped source with no rule cannot be polled and never will be
 		// pollable, so it is recorded as a failure rather than retried into a
 		// backoff nobody reads.
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+		s.recordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, Err: "no scrape rule for this source"})
 		return 0, err
 	}
@@ -477,14 +477,14 @@ func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, err
 		// A site that changed its mind is obeyed, and the reason is recorded
 		// where the feed's health is shown. Silently continuing would be the
 		// version of this feature that gets an instance banned.
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+		s.recordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, Err: "robots.txt now disallows this page"})
 		return 0, fmt.Errorf("reader: robots.txt disallows %s", rule.IndexURL)
 	}
 
 	page, err := s.pages.Page(ctx, rule.IndexURL)
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 	compiled, err := scrapesel.Compile(scrapesel.Rule{
@@ -499,12 +499,12 @@ func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, err
 		AuthorSelector:  rule.AuthorSelector,
 	})
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 	res, err := scrapesel.Extract(compiled, []byte(page.HTML), timeutil.Now())
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
 
@@ -517,16 +517,16 @@ func (s *Service) pollScrape(ctx context.Context, src store.SourceRow) (int, err
 		if res.Matched > 0 {
 			msg = fmt.Sprintf("%d containers matched but none produced an item", res.Matched)
 		}
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: msg})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: msg})
 		return 0, errors.New("reader: " + msg)
 	}
 
 	n, err := s.ingestScraped(ctx, src.ID, res)
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, err
 	}
-	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+	s.recordFetch(ctx, store.FetchOutcome{
 		SourceID: src.ID, Title: page.Title, SiteURL: rule.IndexURL,
 	})
 	return n, nil

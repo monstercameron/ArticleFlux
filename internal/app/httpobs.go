@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/telemetry"
 )
 
@@ -72,6 +74,33 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
+// ReadFrom is the third method that has to be declared for the same reason
+// Hijack and Flush are, and the one that was missed.
+//
+// net/http serves a file by asking whether the ResponseWriter implements
+// io.ReaderFrom, and taking a fast path — sendfile on Linux, TransmitFile on
+// Windows — when it does. Wrapping the writer hid that interface, so every
+// static asset this server sends, including the multi-megabyte wasm binary,
+// was copied through a userspace buffer instead. Correct, and slower for the
+// single largest response the application makes.
+//
+// The byte count is still recorded, because it is the return value of the copy
+// either way.
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	rf, ok := r.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		n, err := io.Copy(r.ResponseWriter, src)
+		r.written += n
+		return n, err
+	}
+	n, err := rf.ReadFrom(src)
+	r.written += n
+	return n, err
+}
+
 // httpMetrics records a count and a duration for every response.
 //
 // # Why the tunnel is measured differently
@@ -89,6 +118,28 @@ func (a *App) httpMetrics(next http.Handler) http.Handler {
 		if r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		// An id for the HTTP surface, which had none (§22.11).
+		//
+		// The RPC chains, the poller and the job runner all mint one; these
+		// handlers did not, so `/p`, `/asset`, `/speech` and `/stream` logged
+		// their failures with nothing to group on. That is the worst place for
+		// the gap to be: the 5xx line below deliberately omits the path,
+		// because `/p?u=…` is an article address and logging it writes a
+		// reading history — so without an id those lines correlate with
+		// nothing at all.
+		//
+		// Minted, never read from the request. An id a caller chooses is one
+		// they can collide, reuse across users, or use to ask the log about
+		// somebody else — the same rule the RPC chain states.
+		id := reqid.New()
+		r = r.WithContext(reqid.With(r.Context(), id))
+		// Echoed to the caller before the handler runs, because a handler that
+		// hijacks (the tunnel) or streams (speech, live view) may never return
+		// through a path that could set it afterwards.
+		if id != "" {
+			w.Header().Set(reqid.MetadataKey, id)
 		}
 
 		route := telemetry.RouteClass(r.URL.Path)
@@ -114,7 +165,11 @@ func (a *App) httpMetrics(next http.Handler) http.Handler {
 		// The path is deliberately absent: /p and /asset carry article URLs, and
 		// this line would otherwise write a reading history into the log.
 		if rec.status >= 500 {
-			a.log.Error("http request failed",
+			// ErrorContext, not Error. The request id lives on the context and
+			// is stamped by the handler in internal/reqid; slog's non-context
+			// methods pass Background, so this line would carry no id — on the
+			// one line in this file where the id is the entire point.
+			a.log.ErrorContext(r.Context(), "http request failed",
 				"route", route.Value.AsString(),
 				"method", r.Method,
 				"status", rec.status,

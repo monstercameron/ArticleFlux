@@ -370,6 +370,7 @@ var unscopedByDesign = map[string]string{
 	"FailureCounts":       "reads that ledger to decide a lockout, keyed by the username and address being attempted",
 	"LastFailureAt":       "same ledger, same key",
 	"PurgeLoginAttempts":  "housekeeping over the ledger by age alone, like PurgeExpiredSessions",
+	"PurgeAuditLog":       "housekeeping over the audit log by age alone. Unscoped for the same reason AuditTrailInstance is: instance-level rows carry no tenant, and a scoped purge would leave exactly those behind forever.",
 	"ConsumeRecoveryCode": "a recovery code is presented by somebody who CANNOT log in; requiring a Scope would defeat its only purpose. The code is the credential and it is bound to the user id passed alongside it.",
 	"CreateResetToken":    "minted for an account by an admin or the CLI; the authorisation is checked at the service, and the token names the user it resets",
 	"ConsumeResetToken":   "the presented token is the authorisation, exactly like RotateRefresh",

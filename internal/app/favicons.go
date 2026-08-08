@@ -107,7 +107,7 @@ func (a *App) fetchFavicon(ctx context.Context, host string, prev store.FaviconR
 		next.Bytes, next.ContentType, next.ETag = icon.Bytes, icon.ContentType, icon.ETag
 	}
 	if perr := a.repo.PutFavicon(ctx, next); perr != nil {
-		a.log.Warn("favicon cache write", "host", host, "err", perr)
+		a.log.WarnContext(ctx, "favicon cache write", "host", host, "err", perr)
 	}
 	return next
 }
@@ -121,7 +121,7 @@ func (a *App) fetchFavicon(ctx context.Context, host string, prev store.FaviconR
 func (a *App) WarmFavicons(ctx context.Context, limit int) {
 	hosts, err := a.repo.SourceHosts(ctx, limit)
 	if err != nil {
-		a.log.Warn("favicon warm", "err", err)
+		a.log.WarnContext(ctx, "favicon warm", "err", err)
 		return
 	}
 	seen := map[string]bool{}

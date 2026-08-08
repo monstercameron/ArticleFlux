@@ -274,6 +274,15 @@ func (a *App) lineupFrom(ctx context.Context, sc store.Scope, raw string) []smar
 		}
 		it, err := a.repo.GetItem(ctx, sc, id)
 		if err != nil {
+			// Debug, not Warn. The ids come from the caller, so a miss is the
+			// ordinary answer for one that was deleted or belongs to another
+			// scope, and warning on each would make a normal lineup look like a
+			// fault. Debug rather than nothing because the other reason this
+			// returns an error is that the database is unhappy, and a lineup
+			// that quietly comes back short is otherwise indistinguishable from
+			// one the reader trimmed themselves.
+			a.log.DebugContext(ctx, "skipping an item in the speech lineup",
+				"item", id, "err", err)
 			continue
 		}
 		if strings.TrimSpace(it.Title) == "" {

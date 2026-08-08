@@ -188,6 +188,35 @@ type Config struct {
 	// headers.
 	BehindProxy bool
 
+	// TrustedProxyHops is how many proxies are in front, for reading
+	// X-Forwarded-For. Zero means clientaddr.DefaultHops (one).
+	//
+	// It exists because X-Forwarded-For is a list whose left-hand end the CLIENT
+	// writes. nginx forwards with `$proxy_add_x_forwarded_for`, which appends
+	// the peer it saw rather than replacing the header, so the only entries this
+	// process can believe are the last `hops` of them — see clientaddr's package
+	// comment for the attack the leftmost read allowed.
+	//
+	// One is the topology `deploy/nginx.conf` describes. Raise it only for a
+	// real additional hop the operator controls: every increment moves the
+	// trusted position one place left, and one place too far is an address the
+	// caller chose.
+	TrustedProxyHops int
+
+	// CacheBudgetMB is the total the five on-disk caches may occupy, in
+	// megabytes. Zero means DefaultCacheBudgetMB; negative disables eviction.
+	//
+	// One number rather than five because an operator has one question — how
+	// much of this volume may caches have — and the split between them encodes
+	// something they cannot know, which is what each cache costs to refill. See
+	// cacheShares.
+	//
+	// Negative is a real option and not a footgun to be closed off: somebody
+	// running this on a large volume with their own housekeeping should be able
+	// to say so. It is stated in the boot posture so it cannot be a setting
+	// nobody remembers making.
+	CacheBudgetMB int
+
 	// AllowedOrigins is the exact set of page origins permitted to open the
 	// tunnel, e.g. "https://articleflux.example.com" (TODO 7.4).
 	//
@@ -230,6 +259,12 @@ type App struct {
 	// refused is what the server has OBSERVED about the credential, as opposed
 	// to what it can cheaply assert about it. See refusal.go.
 	refused refusal
+	// disk is the cached verdict on whether this instance can still WRITE.
+	//
+	// A value rather than a pointer, so the zero App has a usable one: the
+	// first `diskReady` sees a zero timestamp, treats the cache as expired,
+	// and probes. See diskhealth.go for why readiness has to ask this at all.
+	disk diskHealth
 	// smartKey resolves the Smart+ credential the way every caller must: the
 	// stored setting first, the environment second. Held so DoctorSpeech can
 	// answer with the app's own resolution rather than a second copy of it.
@@ -1078,16 +1113,44 @@ func (a *App) Close() error {
 // Handler is the HTTP surface.
 func (a *App) Handler() http.Handler { return a.handler }
 
-// ready reports whether this instance can actually serve reads.
+// ready reports whether this instance can actually serve READS.
 //
-// One implementation behind both `/readyz` and the tunnel gate below, because
-// two readiness checks drift and the drift is silent: the probe says ready, the
-// upgrade says no, and the operator is looking at a green dashboard.
+// One implementation behind the tunnel gate below and behind half of
+// `/readyz`, because two readiness checks drift and the drift is silent: the
+// probe says ready, the upgrade says no, and the operator is looking at a green
+// dashboard.
 func (a *App) ready(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	_, err := a.db.SchemaVersion(ctx)
 	return err
+}
+
+// fullyReady is `ready` plus "and it can still WRITE".
+//
+// # Why this is a second function and not more of the first
+//
+// The two consumers want different answers, and having one function try to
+// serve both is exactly the mistake `ready`'s own comment warns about — so the
+// split is written out here rather than left to be discovered.
+//
+// A full disk breaks writes and leaves reads working. For the MONITOR that is
+// an outage and must be reported: it is the state where the reader loads,
+// articles appear, and nothing anybody does is remembered, which nobody files
+// for hours because everything looks fine. For a READER MID-ARTICLE it is not a
+// reason to be thrown off — refusing tunnel upgrades on a full disk would take
+// a degraded instance and make it unusable, over a condition a restart cannot
+// fix and an operator has to.
+//
+// So `/readyz` asks this and the tunnel gate asks `ready`. The watchdog probes
+// `/healthz`, deliberately, so a full disk does not become a restart loop; the
+// thing that notices `/readyz` is the alerting path, which can wake somebody up
+// instead of pulling a lever that does not help.
+func (a *App) fullyReady(parent context.Context) error {
+	if err := a.ready(parent); err != nil {
+		return err
+	}
+	return a.diskReady(parent)
 }
 
 // whenReady refuses a WebSocket upgrade the server cannot honour (§20.19.9).
@@ -1337,6 +1400,22 @@ func (a *App) buildHandler() {
 	// one code path instead of two.
 	pb.RegisterAuthServiceServer(a.grpc,
 		grpcsrv.NewAuthServer(a.repo, a.scopeFromContext, a.log, a.cfg.DevMode).
+			// Refresh tokens ON (§7.3a SEC4).
+			//
+			// They were gated off for a stated and correct reason: the server had
+			// minted refresh families since 6.1 and the wasm client discarded
+			// them, so issuance would have been a second credential in local
+			// storage that nothing consumed — "a stolen token waiting to be
+			// found", as WithRefreshTokens put it.
+			//
+			// The client implements the versioned bundle, atomic rotation and
+			// cross-tab coordination now (client/data/session.go), which is the
+			// condition that comment named. Turning this on is what makes the
+			// twelve-hour access lifetime, the rotation, the reuse detection and
+			// the sixty-day idle window reachable — all four were built, tested
+			// and unreachable, and a thirty-day bearer token in localStorage was
+			// the only thing actually protecting a reader.
+			WithRefreshTokens(true).
 			WithLoginMetrics(func(ctx context.Context, outcome store.LoginOutcome) {
 				a.tel.Instruments.LoginAttempts.Add(ctx, 1,
 					metric.WithAttributes(attribute.String("outcome", string(outcome))))
@@ -1496,7 +1575,17 @@ func (a *App) buildHandler() {
 		if buildver.Commit != "" {
 			w.Header().Set("X-ArticleFlux-Commit", buildver.Commit)
 		}
-		if err := a.ready(r.Context()); err != nil {
+		// fullyReady, not ready: this endpoint's job is to tell a monitor the
+		// truth, and "can read, cannot write" is the failure this instance is
+		// actually engineered towards — five caches used to grow without a
+		// ceiling into the volume the database is on. The tunnel gate
+		// deliberately asks the weaker question; see fullyReady for why.
+		//
+		// The error is logged and NOT written to the body. §22.4 keeps this
+		// endpoint to one word because it is unauthenticated, and "the data
+		// directory has 41 MB free" is a sentence about the instance rather
+		// than the artefact.
+		if err := a.fullyReady(r.Context()); err != nil {
 			a.log.WarnContext(r.Context(), "readiness check failed", "err", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("unready\n"))
@@ -2188,6 +2277,18 @@ func (a *App) StartPoller(ctx context.Context) {
 				// keep-forever, and `retention.Sweep` returns before touching the
 				// database when the policy is zero.
 				a.sweepRetention(ctx)
+				// And the two security tables, which have the opposite default:
+				// `login_attempts` and `audit_log` take a row on every login
+				// and every logout and are read by nobody until something has
+				// gone wrong, so an instance nobody configured gets a window
+				// rather than forever (retention.SecurityDefs). This is the
+				// production caller `internal/audit` claimed existed.
+				a.sweepSecurity(ctx)
+				// And the five on-disk caches, which had per-item ceilings and
+				// no total. They share the volume the database is on, so an
+				// unbounded cache is a slow leak pointed at SQLite's ability to
+				// write — see diskhealth.go for the whole path.
+				a.sweepCaches(ctx)
 				// A span per cycle. The poll is the app's heartbeat — if it
 				// stops, the reader goes quiet and looks like a slow news day,
 				// which is the failure mode §22.11 exists to make visible.

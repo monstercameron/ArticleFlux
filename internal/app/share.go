@@ -75,7 +75,7 @@ func (a *App) servePublicShare(w http.ResponseWriter, r *http.Request) {
 
 	sources, err := a.repo.ShareSources(r.Context(), ps)
 	if err != nil {
-		a.log.Error("reading a share's sources", "share", ps.ID, "err", err)
+		a.log.ErrorContext(r.Context(), "reading a share's sources", "share", ps.ID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -89,7 +89,7 @@ func (a *App) servePublicShare(w http.ResponseWriter, r *http.Request) {
 			SourceIDs: sources, Limit: shareItems,
 		})
 		if err != nil {
-			a.log.Error("reading a share's items", "share", ps.ID, "err", err)
+			a.log.ErrorContext(r.Context(), "reading a share's items", "share", ps.ID, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -98,7 +98,7 @@ func (a *App) servePublicShare(w http.ResponseWriter, r *http.Request) {
 	feed := buildShareFeed(ps, items, a.publicURL(r))
 	body, err := xml.MarshalIndent(feed, "", "  ")
 	if err != nil {
-		a.log.Error("rendering a share", "share", ps.ID, "err", err)
+		a.log.ErrorContext(r.Context(), "rendering a share", "share", ps.ID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

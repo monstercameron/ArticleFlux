@@ -123,7 +123,7 @@ func (s *Service) Handle(ctx context.Context, job store.Job) error {
 				firstErr = err
 			}
 			if s.log != nil {
-				s.log.Warn("fan-out failed for one subscriber",
+				s.log.WarnContext(ctx, "fan-out failed for one subscriber",
 					"user", sub.UserID, "source", p.SourceID, "err", err)
 			}
 		}

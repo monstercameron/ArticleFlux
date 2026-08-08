@@ -258,7 +258,7 @@ func (s *Service) applyRelevanceGate(
 		// behaviour — it does not fail the whole run over one candidate's
 		// LLM call.
 		if s.log != nil {
-			s.log.Warn("recommendjob: relevance check failed", "domain", domain, "error", err)
+			s.log.WarnContext(ctx, "recommendjob: relevance check failed", "domain", domain, "error", err)
 		}
 		return
 	}
@@ -326,7 +326,7 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 				// to work from at all), a failed example lookup still leaves
 				// a perfectly usable topic-only request. Logged, not fatal.
 				if s.log != nil {
-					s.log.Warn("recommendjob: taste examples failed", "error", eerr)
+					s.log.WarnContext(ctx, "recommendjob: taste examples failed", "error", eerr)
 				}
 			}
 		}
@@ -419,7 +419,7 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 			// absent source — the run still completes on whatever rungs 1-2
 			// found, empty or not.
 			if s.log != nil {
-				s.log.Warn("recommendjob: web search failed", "error", err)
+				s.log.WarnContext(ctx, "recommendjob: web search failed", "error", err)
 			}
 		}
 		// Bounded by how many are NEEDED, not by how full the slice already is.

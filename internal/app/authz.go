@@ -33,6 +33,26 @@ func (a *App) recordDenial(ctx context.Context, method string, mapped bool) {
 		attribute.String("class", reason),
 		attribute.String("rpc.method", shortMethod(method)),
 	))
+
+	// Logged as well as counted, and at two levels, because the comment above
+	// draws the distinction and then the code treated both the same.
+	//
+	// "unmapped" is a deployment bug: an RPC shipped without a policy entry,
+	// failing closed, and every call to it is broken until somebody adds a
+	// line. A counter alone means finding out from a user. It gets an Error and
+	// says what to do about it.
+	//
+	// "denied" is the policy working, so Debug — a refusal is interesting as a
+	// rate, which the counter already gives, and logging each one at Error
+	// would push genuine faults out of a five-hundred-record ring.
+	if !mapped {
+		a.log.ErrorContext(ctx, "an RPC has no authorization policy entry and is "+
+			"refusing every call; add it to the policy map",
+			"rpc.method", shortMethod(method))
+		return
+	}
+	a.log.DebugContext(ctx, "authorization refused a call",
+		"rpc.method", shortMethod(method))
 }
 
 // shortMethod turns `/articleflux.v1.ReaderService/ListItems` into `ListItems`.

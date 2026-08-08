@@ -45,7 +45,7 @@ func (a *App) limitProxy() func(http.Handler) http.Handler {
 	limiter := ratelimit.New(ratelimit.Options{})
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := clientaddr.Of(r, a.cfg.BehindProxy)
+			key := clientaddr.Of(r, a.cfg.BehindProxy, a.cfg.TrustedProxyHops)
 			if key == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -81,7 +81,7 @@ func (a *App) limitProxy() func(http.Handler) http.Handler {
 func (a *App) shareLimit(next http.Handler) http.Handler {
 	limiter := ratelimit.New(ratelimit.Options{})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := clientaddr.Of(r, a.cfg.BehindProxy)
+		key := clientaddr.Of(r, a.cfg.BehindProxy, a.cfg.TrustedProxyHops)
 		if key == "" {
 			next.ServeHTTP(w, r)
 			return

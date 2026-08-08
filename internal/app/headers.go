@@ -117,6 +117,41 @@ var srcAttr = regexp.MustCompile(`(?is)^<script[^>]*\ssrc\s*=`)
 // 'unsafe-eval', which would hand back eval() and the Function constructor. It
 // is the entire reason a Go/wasm app can run under a policy this tight.
 //
+// # `script-src` is holding up the session model, and nothing says so elsewhere
+//
+// The credential is a bearer token in `localStorage` (client/data/session.go),
+// and `localStorage` is readable by any script that runs on the origin. So the
+// compensating control for a token sitting in it is that no attacker-supplied
+// script can run here: 'self' plus per-element hashes, no 'unsafe-inline', no
+// host allowlist, nowhere to send it under `connect-src 'self'`.
+//
+// This directive used to be the ONLY control, and that is the part that has
+// changed. The token was good for thirty days, with no rotation and no idle
+// timeout, because refresh-token issuance was gated off and nothing consumed
+// one — so every other layer §7.3a specifies was built and unreachable, and CSP
+// was carrying the whole session model by itself. It now carries a twelve-hour
+// access token whose renewal ROTATES a single-use refresh token, with reuse
+// detection that kills the family and a sixty-day idle window on it
+// (grpcsrv.AccessTTL, RefreshIdleTTL).
+//
+// That is defence in depth rather than a reason to relax anything here. A
+// twelve-hour window is still a window, and rotation only helps if the thief
+// and the owner both keep using the credential — a smash-and-grab inside one
+// lifetime is untouched by it. This directive is what stops the grab.
+//
+// That coupling matters because this application RENDERS THIRD-PARTY HTML. Feed
+// content is sanitised (internal/sanitize) and article pages are proxied, so an
+// injection reaching the DOM is a live concern rather than a theoretical one —
+// and today it is contained: markup with no executable script is defacement.
+// Add `'unsafe-inline'` or a CDN host to the list below and the same injection
+// becomes a thirty-day account takeover, silently, in a commit that looks like a
+// build-tooling change.
+//
+// So it is pinned. `TestScriptSrcStaysTightEnoughForALocalStorageToken` fails on
+// any relaxation, and its failure message says what it is protecting rather than
+// just what changed. If the grant is genuinely needed, the conversation is about
+// where the token lives — not about the test.
+//
 // A shell that cannot be read yields a policy WITHOUT any script hash rather
 // than no policy at all. The app will fail to boot in that case and say so
 // loudly, which is the correct outcome: a missing shell is already broken, and

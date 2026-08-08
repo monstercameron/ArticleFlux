@@ -126,10 +126,11 @@ func (s *Service) WithIngestHook(f func(sourceID string, itemIDs []string)) *Ser
 // WithSignalHook is: every caller that does not wire one gets a working
 // default rather than a nil logger every call site has to guard against.
 //
-// The natural wiring is the same *slog.Logger the app already hands
-// internal/jobs.Options.Log — reqid-wrapped, so a recovered panic here lands
-// in the same request-id-tagged log as everything else instead of narrating on
-// its own. As of this fix nothing calls WithLogger yet; see the ticket report.
+// The wiring is the same *slog.Logger the app hands internal/jobs.Options.Log
+// — reqid-wrapped and ring-backed, so a recovered panic here lands in the same
+// request-id-tagged log as everything else, and is readable from the settings
+// screen, instead of narrating on its own. App.Open does this at the point it
+// builds the service.
 func (s *Service) WithLogger(l *slog.Logger) *Service {
 	s.log = l
 	return s
@@ -142,6 +143,36 @@ func (s *Service) logger() *slog.Logger {
 		return s.log
 	}
 	return slog.Default()
+}
+
+// recordFetch writes a fetch outcome and logs if that write fails.
+//
+// # Why a helper for one line
+//
+// There are about twenty of these, and every one discarded the error into `_`.
+// Discarding it is right — a poll that fetched an article successfully
+// must not be reported as a failure because the bookkeeping row would not
+// write, and there is nothing useful to do about it in the middle of a poll.
+//
+// Discarding it SILENTLY is not. RecordFetch is what puts "last checked" and
+// "last error" in front of the reader, so if it starts failing — a locked
+// database, a full disk — every feed in the UI freezes at its old timestamp
+// while polling carries on working perfectly. The reader sees a reader that
+// stopped updating; the log says nothing at all; and the one place that would
+// explain it is the write that is failing.
+//
+// Warn rather than Error: the fetch itself succeeded and the reader's articles
+// are stored. This is the instrument breaking, not the machine.
+//
+// The panic path in pollOneRecovered already logged exactly this, which is how
+// the gap was found — one path treated the failure as worth reporting and the
+// other nineteen dropped it.
+func (s *Service) recordFetch(ctx context.Context, out store.FetchOutcome) {
+	if err := s.repo.RecordFetch(ctx, out); err != nil {
+		s.logger().WarnContext(ctx, "could not record a fetch outcome; the feed's "+
+			"last-checked time and error will be stale in the UI",
+			"source_id", out.SourceID, "err", err)
+	}
 }
 
 // ListFeeds returns the sidebar.
@@ -450,11 +481,11 @@ func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (i
 		// Recording the failure is what drives the backoff and the dormant-feed
 		// nudge. A poll that fails silently makes a dead feed look like a quiet
 		// one, and those need to look different.
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, "", err
 	}
 	if parsed.NotModified {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+		s.recordFetch(ctx, store.FetchOutcome{
 			SourceID: src.ID, ETag: parsed.ETag, LastModified: parsed.LastModified,
 		})
 		return 0, "", nil
@@ -470,7 +501,7 @@ func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (i
 	}
 	ing, err := s.repo.IngestItems(ctx, src.ID, items)
 	if err != nil {
-		_ = s.repo.RecordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
+		s.recordFetch(ctx, store.FetchOutcome{SourceID: src.ID, Err: err.Error()})
 		return 0, "", err
 	}
 
@@ -486,7 +517,7 @@ func (s *Service) pollOneWithParsed(ctx context.Context, src store.SourceRow) (i
 	// RecordFetch's error handling around it already follows.
 	s.mineOutlinks(ctx, src.ID, ing.NewIDs)
 
-	_ = s.repo.RecordFetch(ctx, store.FetchOutcome{
+	s.recordFetch(ctx, store.FetchOutcome{
 		SourceID: src.ID, ETag: parsed.ETag, LastModified: parsed.LastModified,
 		Title: parsed.Title, SiteURL: parsed.SiteURL, IconURL: parsed.IconURL,
 	})

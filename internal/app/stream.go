@@ -135,7 +135,7 @@ func (a *App) serveStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case err := <-errc:
 			if err != nil && !errors.Is(err, context.Canceled) {
-				a.log.Warn("live view ended", "err", err)
+				a.log.WarnContext(ctx, "live view ended", "err", err)
 			}
 			return
 		case f := <-frames:
