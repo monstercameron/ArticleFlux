@@ -9,6 +9,123 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Added
+
+- **Account recovery works, and is the first thing here that ever did.** §7.2 printed a sheet of
+  recovery codes at setup and nothing could redeem one — `RedeemRecoveryCode` and
+  `RedeemResetToken` did not exist, so the sheet was decoration. Both RPCs now exist, share one
+  `completeRecovery` (same password policy, same total session revocation, same session minted at the
+  end), and each handler's only job is proving the claim. Attempts are counted under their own ledger
+  keys — `recover:<username>` and `reset:<address>` — so somebody grinding at recovery cannot lock
+  the owner out of ordinary login, which would be locking the door the owner would use to fix things.
+  The screen is a mode on the login card rather than a route: it shares the dialled client, the busy
+  flag and the seed discipline, three things whose duplicates would drift.
+- **`articleflux reset -user <name>` mints a single-use reset token, and its link now lands
+  somewhere.** `passwd` sets a password on the box, which means the operator chooses it and reads it
+  down a phone line; a reset token inverts that — the reader chooses one nobody else has seen, and
+  what travels is a value that stops working the moment it is used. One hour, and minting a second
+  kills the first. With `-origin` it prints `<origin>/reset?token=…`, which the client recognises
+  (`resetTokenFrom`), opens in recovery mode with the token filled in and the caret in the new-password
+  field, and then strips out of the address bar — a single-use credential in a URL survives in
+  history and in screenshots, and survives there *after* it has been spent.
+- **The audit trail is written.** `audit_log` has existed since migration 0009, `store.Audit` wrote
+  it and `store.AuditTrail` read it, and until now **nothing called either one**: roles could change,
+  passwords could be reset and sessions revoked, and the table stayed empty. `internal/audit` is the
+  wiring between a security-relevant action and the two places it has to appear — the durable trail
+  and an operator's attention — and `articleflux audit` reads it back.
+- **Retention for the security tables, and for the log on disk.** `login_attempts` and `audit_log`
+  get windows of their own (90 and 365 days), and unlike the item window an absent row does **not**
+  mean forever — an article is somebody's reading, a login attempt is a row nobody will ever open,
+  written on every login of every account for the life of the instance. `<db>.log.jsonl`, the ring's
+  on-disk spill, joins them under the audit window: it carries usernames, client addresses and
+  authentication-failure text, and it was bounded only by a two-megabyte rotation, which is a disk
+  budget rather than a policy — on a quiet instance it kept years. `deploy/README.md` now states that
+  the spill is deliberately not in the backup, and why.
+- **A total size ceiling on the five disk caches.** `speech-cache`, `asset-cache`, `page-cache`,
+  `digest-cache` and `podcast-cache` each had a per-ITEM limit and no total: `assetproxy` refuses an
+  eight-megabyte image and nothing refused the eight thousandth one. `internal/diskcache` bounds the
+  directory, `internal/diskspace` reads what is actually left on the volume, and the readiness probe
+  degrades rather than filling the disk out from under SQLite.
+- **One answer to "who made this request".** `internal/clientaddr` replaces three separate spellings
+  of it — the tunnel's abuse caps, the login limiter, the durable lockout ledger and every log line
+  that names a client — two of which were wrong in the same deployment. `/asset` and `/p` are now
+  capped per client on the back of it.
+- **Request ids reach the client**, stamped onto errors on the way out (`apierr.WithRequestID`), so a
+  reader who reports "it said something went wrong" carries the string that finds the line.
+
+### Fixed
+
+- **The Smart+ spend ceiling covered 2 of 12 features.** The budget lives on the middleware chain,
+  and only `Client.Do` went through it — the typed SchemaFlux operations called the audited request
+  directly. So a cap set on the Smart+ tab bounded categorisation and translation and nothing else:
+  digests, interest derivation, podcast scripts, relevance ranking, scraping, themes and the rest
+  spent past it, and those are the scheduled ones, which is to say the ones that spend while nobody
+  is watching. Both paths now funnel through `Client.run` — span, breaker, chain, audited call — so a
+  third path added later cannot quietly get a different set of guarantees. The instance's model is
+  resolved *before* the chain rather than inside the call, because the budget prices its estimate off
+  `req.Model` and a ceiling estimated in one model's prices and spent in another's is not a ceiling.
+- **The circuit breaker had never been installed.** `internal/llm/breaker.go` was complete and tested
+  and `NewGuard` had no caller outside its own tests, so `c.guard` was nil in every deployment: no
+  failure breaker and no in-flight cap on the one thing here that both costs money and blocks for two
+  minutes. It is installed at construction and applies to every call. Two refusals are deliberately
+  **not** counted as provider failures — being over budget, and having no API key — because the
+  breaker sits outside the chain and would otherwise open on the chain's own routine refusals, report
+  a provider outage that does not exist, and make a key pasted into Settings do nothing for two
+  minutes. On the typed path SchemaFlux retries *above* our provider, so the circuit opens after
+  roughly two failing operations rather than five; that is not fixable from this side and is the safe
+  direction to be wrong in.
+- **A spend cap of $5 was $5 per restart.** The running total was process state, so restarting zeroed
+  it — and a crash loop, a redeploy, or an operator restarting the server *because* a job hit the cap
+  all handed the instance a fresh allowance. The situation where somebody most wants the limit held
+  was the one where restarting is the obvious thing to try. It now persists in the `smart.spend.total`
+  system setting, hydrated once at boot so the Smart+ tab is right before the first call. The write
+  is detached from the calling request's cancellation, because a handler returning immediately
+  afterwards would otherwise abandon exactly the spend that was just incurred.
+- **Enter on the recovery screen ran the login submit.** The recovery card reuses the
+  `login-username` field on purpose — a password manager needs it to pair the account with the new
+  password — and the key handler dispatched on the field's role without looking at which screen was
+  up. So Enter from that field attempted a sign-in with the very password the reader was on that
+  screen because they did not have; Enter in the code and new-password boxes did nothing at all. The
+  decision is now a pure function of (mode, field), which is what makes the whole table assertable
+  without a browser — the reason the original survived is that nothing could see it.
+- **"That was your last recovery code" was shown for zero frames.** The notice was set in the same
+  callback that handed the reader to the app, so the card carrying the sentence unmounted in the
+  frame it was written into. The reader down to their final code — one lost password from having no
+  way into the account at all — was the one person it was for. The handover now waits for a press on
+  a confirmation card that also says the other devices were signed out, which was previously only
+  stated before the fact.
+- **The egress span ended before the download did.** A `RoundTripper` returns when the response
+  *headers* arrive, and for a feed document, an article page or a proxied image the headers are the
+  cheap part — so "where did this fetch go slow" answered with everything except the transfer. The
+  span now ends when the body does, records the bytes moved, and marks a transfer that died
+  mid-stream, which previously left no trace anywhere because the span had already closed green. The
+  duration *metric* still stops at the headers, deliberately: a histogram mixing "the publisher is
+  slow to answer" with "the publisher's article is large" answers neither question.
+
+### Upgrade notes
+
+- **Every recovery-code sheet issued before this release is dead. Print a new one.** Recovery codes
+  were minted as `HashToken(code)` over the presented form — dashes, spaces and capitals as typed —
+  and redeemed as `HashToken(NormalizeRecoveryCode(code))`. Those two strings never agree, so no code
+  this application ever issued was redeemable, and a correctly copied code and a garbage one produced
+  the identical refusal. The fix is one function used on both sides
+  (`grpcsrv.recoveryCodeHash`), and it does not and cannot rescue the sheets already out there: the
+  stored hashes were computed the old way, so normalising the input now simply fails to match them.
+  **Nothing in the application will tell an operator this.** A dead sheet looks exactly like a
+  correct one until somebody is locked out and needs it, which is months later and is the worst
+  possible moment to find out. After deploying, regenerate the sheet for every account that has one —
+  starting with the superadmin, whose sheet is the break-glass path for the box itself — and destroy
+  the printed copies. `articleflux reset -user <name> -origin https://<host>` is the way back in for
+  anybody caught in between; that link now opens the recovery screen with the token filled in, which
+  it did not before (the route did not exist).
+- **Smart+ spending is now capped across restarts, and the meter starts from the persisted number.**
+  The running total moved into the `smart.spend.total` system setting, so an instance that has spent
+  $4.80 against a $5 ceiling stays at $4.80 through a restart instead of returning to zero. Two
+  consequences worth expecting: an instance that has been running uncapped for a while will show a
+  total that only starts accumulating from this release, and a cap that was previously being reset by
+  every deploy will now actually stop work. Raise it on the Smart+ tab, or delete the setting row to
+  reset the meter.
+
 ### Fixed
 
 - **Every streaming RPC reached production without a credential, and was refused.** `Dial` installed

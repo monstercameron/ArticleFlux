@@ -39,8 +39,18 @@ Passing a gate on vibes is how a plan quietly becomes fiction.
 
 These precede ordinary feature work. Plan §7.3a is the spec.
 
+✅ 2026-08-08 — **SEC1–SEC5 closed. SEC4 now via its FIRST branch — the client does the rotation.**
+The 2026-07-31 pass took the offered fallback (gate issuance off) because that session could not
+build or verify the wasm client. That is done: `client/data/session.go` holds the versioned bundle
+and the cross-tab lease, `client/data/refresh.go` spends it proactively and on a rejected call,
+`internal/app` opts in, and the access lifetime came down from thirty days to twelve hours with a
+sixty-day idle window on the family. Both halves are tested — `client/data` under Node in the
+`wasmtest` gate, the lifetimes and rotation in `grpcsrv`, the idle window in `store`, and the
+wiring itself in `internal/app`, because dropping `.WithRefreshTokens(true)` is an omission no
+other test can see.
+
 ◧ 2026-07-31 — **SEC1–SEC3 and SEC5 closed and tested; SEC4 closed via its explicitly-offered
-fallback (server-side gate) rather than a client rewrite this session could not build or verify —
+fallback (server-side gate) rather than a client rewrite that session could not build or verify —
 see SEC4's own note for why.** The focused `authn`, `pwpolicy`, `secret`, `authz`, `store`,
 `grpcsrv` and `cmd/articleflux` tests now include regression tests that exercise the cross-account
 collision (SEC1) and full refresh-family revocation (SEC2/SEC3) directly, not just happy-path
@@ -115,9 +125,28 @@ coverage.
       remains genuinely owed: versioned bundle, atomic rotation, cross-tab coordination, 15–60 min TTL,
       and the e2e test advancing time through two rotations are all **not done** and need a live
       wasm-client build/test cycle this session could not perform.
-      *Done when:* NOT fully met — only the "stop issuing" half. `TestRefreshTokensAreGatedOffByDefault`
-      (auth_test.go) pins that a server built the way production wires it issues no refresh
-      token/record id while the access token still works.
+      *Done when:* **fully met, 2026-08-08** — the first branch, not the fallback. Everything the
+      paragraph above lists as "genuinely owed" is built and tested:
+      · **versioned bundle** — `client/data/session.go`, one JSON value under
+        `articleflux.v2.session`, so a rotation cannot be observed half-applied. The v1 bare-token
+        key is migrated once per browser rather than logging existing readers out.
+      · **atomic rotation** — one `localStorage` write per rotation; the refresh half is re-read
+        from storage under the lock before anything is spent, so a sibling tab that rotated first
+        is adopted instead of raced.
+      · **cross-tab coordination** — a lease in `localStorage` (`withRefreshLock`), because two
+        tabs waking together and both spending a single-use token is not an edge case, it is
+        Monday morning, and the server cannot tell a racing sibling from a thief.
+      · **short TTL** — `grpcsrv.AccessTTL` is 12h, and `accessTTL()` keeps the 30-day lifetime for
+        an instance with issuance off, whose clients cannot renew. `RefreshIdleTTL` (60 days,
+        enforced in `RotateRefresh` against `devices.last_seen_at`) is the idle timeout the gap
+        list called out as missing.
+      · **production opts in** — `internal/app/app.go` passes `WithRefreshTokens(true)`, guarded by
+        `TestTheAssembledServerIssuesRefreshTokens`, which reads the call site as well as the
+        behaviour: dropping the call changes nothing any other test observes.
+      `TestRefreshTokensOffMeansTheLongSession` / `...OnMeansTheShortSession` replace the old
+      gating pin, and hold the pairing that matters — issuance and lifetime move together, because
+      a twelve-hour token on a client that cannot renew is a login prompt rather than a control.
+      Still open, and smaller than it was: an e2e test that advances time through two rotations.
 - [x] **SEC5 · Remove plaintext passwords from command arguments and examples.** The `-password` flag
       on `init`/`adduser`/`passwd` (`cmd/articleflux/admin.go`) already fell back to
       `ARTICLEFLUX_PASSWORD` then a hidden, confirmed terminal prompt (`resolvePassword`), but the flag
@@ -6950,14 +6979,19 @@ longer wall clock everywhere, because the opening theme covers the wait by desig
       pre-existed from a prior session; checkbox never ticked. `TestPlanEgressCarriesNoBody` and
       `TestPlanCandidateIDIsAnOrdinalNotADatabaseID` pass.
 
-- [ ] **11.15 · Wire the circuit breaker that has been built and unused since it was written.**
-      `internal/llm/breaker.go` is complete — `FailuresToOpen=5`, `OpenFor=2m`, one half-open probe,
-      `MaxInFlight=4` acquired non-blocking — and `NewGuard` has **no caller outside its own tests**,
-      while `llm.go:11` still claims it is not built. A producer that fans out one planner call plus a
-      segment write per segment is precisely the load it was written for.
-      *Done when: `Guard` wraps the planner and the segment writer; a provider outage produces one
-      deterministic rundown and a note rather than a stalled show; and the stale comment is corrected.*
-      §22.8
+- [ ] **11.15 · The circuit breaker is wired; the producer's degraded path is not.**
+      *Half done.* `internal/app` now calls `WithGuard` at construction, and the breaker applies to
+      **every** call rather than to the planner and the segment writer specifically: `Do` and the typed
+      SchemaFlux operations both funnel through `Client.run`, which is where the guard sits. That also
+      closed a second hole found on the way — the typed path skipped the middleware chain, so the spend
+      ceiling bound 2 of the 12 Smart+ features and the other 10, including every scheduled one, spent
+      with no limit at all. The stale "no caller outside its own tests" comment in `llm.go` is
+      corrected.
+      What remains is the BEHAVIOUR half: a producer whose calls are refused must still produce one
+      deterministic rundown and say so, rather than failing the show. The breaker returning
+      `ErrCircuitOpen` is not by itself that story.
+      *Done when: a provider outage during a show produces one deterministic rundown and a note rather
+      than a stalled show, with a test that opens the circuit and asserts it.* §22.8
 
 - [ ] **11.16 · The producer runs one segment ahead, on the durable queue.** Time to first audio is a
       hard constraint: today it is one script call plus one synthesis, and a rundown inserts a planner
@@ -8079,7 +8113,7 @@ G3 fixture once per `-count` — six times, at 23–28s each, before any measure
 
 ## The OpenTelemetry story, audited — a good layer nothing reads (2026-08-04)
 
-*Opened while researching whether SchemaFlow's telemetry would fit (`docs/AI_SCHEMAFLOW_MIGRATION.md`).
+*Opened while researching whether SchemaFlux's telemetry would fit (`docs/AI_SCHEMAFLOW_MIGRATION.md`).
 The answer turned out to be less interesting than what the audit found on the way. `internal/telemetry`
 is a careful, well-argued package: two exporters with a stated reason for each, histogram buckets
 chosen for this service rather than left at the SDK default, and an explicit rule that no article
@@ -8114,7 +8148,7 @@ are in good shape; traces are three spans; logs and traces share no identifier.*
       `api.openai.com` is public — so the fix is the observer half, not the guard half.
 
       *Done when: `internal/llm` and `internal/tts` each call an observer hook shaped like
-      `netguard.Observer`, and there are counters for requests, tokens in/out and — once SchemaFlow's
+      `netguard.Observer`, and there are counters for requests, tokens in/out and — once SchemaFlux's
       `pricing` is available or an equivalent table is written — USD.*
 
 - [ ] **OTEL-3 — Logs and traces share no identifier, so they cannot be joined.** `internal/reqid`
@@ -8188,10 +8222,20 @@ are in good shape; traces are three spans; logs and traces share no identifier.*
       *Done when: either logs ship over OTLP, or `internal/obs`'s doc says plainly that the ring is
       the whole story and that a crash loses the evidence.*
 
+      ◧ 2026-08-08 — **partially answered, from the other end.** This entry is about the LOG STREAM
+      and remains open as written. What is no longer true is the sentence it opens with in its
+      broader sense: an ALERT can now leave the box. `deploy/articleflux-alert.sh` is wired as
+      `OnFailure=` on the server, backup, health and restore-drill units and is called directly for
+      the two conditions that are not unit failures — a watchdog restart that did not help, and a
+      server answering `/healthz` while `/readyz` reports unready. It posts to a webhook named in
+      `/etc/articleflux/alert.env` and always exits 0, so a notifier cannot become the thing that
+      needs notifying about. That closes "MTTD = when Cam opens the reader" without closing "there
+      is no way to read last week's logs", which is what this ticket is actually for.
+
 - [ ] **OTEL-11 — No sampler is configured.** `telemetry.go:194` builds the tracer provider with a
       batcher and a resource only, so the sampler is the SDK default: parent-based, always on. The
       moment an endpoint is set, every RPC on a busy instance becomes an exported span, and there is
-      no flag to turn it down. For contrast, SchemaFlow's own tracing sets
+      no flag to turn it down. For contrast, SchemaFlux's own tracing sets
       `TraceIDRatioBased(traceSampleRate)` — the thing to copy.
 
       *Done when: a sample ratio is configurable next to `-otlp-endpoint`, with a default that is
@@ -8213,15 +8257,15 @@ are in good shape; traces are three spans; logs and traces share no identifier.*
       collector that stopped accepting spans looks exactly like a healthy idle service. It needs a
       counter and a line on the Server tab.
 
-- [ ] **OTEL-15 — If SchemaFlow lands, never call its `telemetry.InitTracing`.**
-      `SchemaFlow/telemetry/tracing.go:138` calls `otel.SetTracerProvider` and
+- [ ] **OTEL-15 — If SchemaFlux lands, never call its `telemetry.InitTracing`.**
+      `schemaflux/telemetry/tracing.go:140` calls `otel.SetTracerProvider` and
       `otel.SetTextMapPropagator` — global setters that would replace the providers
       `internal/telemetry` built, silently, including its resource attributes and its exporters. It
       is opt-in today, which is the only reason this is a hazard rather than a bug. The correct shape
-      is the one the migration doc argues for everywhere else: SchemaFlow inherits ArticleFlux's
+      is the one the migration doc argues for everywhere else: SchemaFlux inherits ArticleFlux's
       globals and never installs its own.
 
-      *Done when: a test fails if `schemaflow/telemetry.InitTracing` is reachable from ArticleFlux,
+      *Done when: a test fails if `schemaflux/telemetry.InitTracing` is reachable from ArticleFlux,
       the same way P1.6 guards `ops.SetDefaultProvider`.*
 
 - [ ] **The client is deliberately not instrumented, and that should stay written down.** There is no

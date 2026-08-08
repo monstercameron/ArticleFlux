@@ -1214,18 +1214,36 @@ session, and a device that gets a new id on every logout defeats the account scr
 
 ### 7.2 Recovery — three rungs, none of it billed
 
-| Rung | Mechanism | Cost |
-|---|---|---|
-| **1** | **Recovery codes** — 10 single-use, shown once, Argon2id-hashed | $0 |
-| **2** | **Admin-minted reset** — single-use, 15-min token from the console | $0 |
-| **3** | **Emailed reset link** — *optional*, only if SMTP is configured | ~$0, external dep |
+| Rung | Mechanism | Cost | State |
+|---|---|---|---|
+| **1** | **Recovery codes** — 10 single-use, shown once, SHA-256-hashed | $0 | shipped §7.3b |
+| **2** | **Admin-minted reset** — single-use, 1-hour token from the CLI | $0 | shipped §7.3b |
+| **3** | **Emailed reset link** — *optional*, only if SMTP is configured | ~$0, external dep | not built (D14) |
 
-**Break-glass:** `articleflux admin reset-password --user X` from the host filesystem — filesystem access
-*is* proof of ownership, it's what Gitea and Grafana do, and it's audited like any other reset.
+**Break-glass:** `articleflux passwd -user X` from the host filesystem — filesystem access *is* proof
+of ownership, it's what Gitea and Grafana do, and it's audited like any other reset.
 *(Distinct from first-run bootstrap, which is §22.3 — that's the case where no user exists at all.)*
 
-All rungs: hashed at rest, single-use, 15-minute TTL, invalidate every session on success, and the
-initiate endpoint always answers *"if that account exists, a reset was started."*
+All rungs: hashed at rest, single-use, invalidate **every** session and refresh family on success
+(no exception for the caller — recovery is recovery *from* a lost credential), and every failure
+answers one uniform refusal, because telling an unknown username apart from a wrong code reports
+which accounts exist *and* which have recovery configured.
+
+Three corrections against rev 8, all of them the implementation being right and this table being
+stale — recorded rather than quietly aligned, because each was a decision somebody made with a
+reason:
+
+- **SHA-256, not Argon2id, for codes and tokens.** Both are ≥80 bits of CSPRNG output, so there is
+  no dictionary to run and no keyspace to search; the slow hash defends against an attack that
+  cannot happen, and `internal/secret`'s package comment names running Argon2id on a random token as
+  one of the two ways to get the password/token split wrong.
+- **1 hour, not 15 minutes, for a reset token.** D14 rules out SMTP, so the token travels by whatever
+  channel the admin already has — chat, SMS, a phone call — and 15 minutes turns "hand this to
+  someone" into a scheduling problem. An hour is short enough that a token pasted into a chat log is
+  dead before the log is archived. (`authn.ResetTokenLifetime`.)
+- **No "if that account exists, a reset was started."** That sentence belongs to an *emailed* reset,
+  where the server initiates. Both shipped rungs are redeemed rather than initiated — the caller
+  already holds the credential — so there is nothing to disclose and nothing to soften.
 
 ### 7.3 No 2FA: the consequence, and what buys it back
 
@@ -1363,6 +1381,130 @@ and [desktop loopback redirect guidance](https://developers.google.com/identity/
   reset-link redemption, device revocation, and sign-out.
 - OIDC tests use a local fake issuer and cover state/nonce/audience/issuer/signature failures,
   invitation-only provisioning, explicit linking, and refusal to link by email alone.
+
+### 7.3b Authentication review — 2026-08-08
+
+A read of the whole authn surface: `internal/authn`, `internal/authz`, `internal/secret`,
+`internal/pwpolicy`, the `grpcsrv` auth/sudo/setup handlers, the identity repositories, the client's
+credential handling and the shipped CSP. Seven findings, all fixed in the change that records them.
+The primitives held up throughout — every finding below is about a control that was *reachable
+around*, unenforced, or never wired to a caller.
+
+**1. Recovery was a facade, and one bug under it.** §7.2 rungs 1 and 2 had storage, hashing,
+single-use enforcement and expiry, and no caller: `ConsumeRecoveryCode` and `ConsumeResetToken` were
+referenced by nothing. Setup printed ten codes, said keep these safe, and no code path would ever
+look at one — worse than shipping no recovery, because a reader who believes they have it does not
+arrange another way back in. Now `RedeemRecoveryCode` and `RedeemResetToken` (public, rate-limited,
+ledgered, locked out), plus `articleflux reset -user X` to mint rung 2.
+
+Wiring it exposed a defect nothing could have caught earlier: codes were **stored** hashed over the
+formatted string and would have been **checked** after normalisation, so no correctly typed code
+could ever have matched. Both sides now go through one `recoveryCodeHash`. Two correct halves and no
+path between them is the shape to watch for — the mint side had tests, the normalise side had tests,
+and the gap was invisible to both.
+
+**2. `Reauthenticate` was the soft way in.** Login has four controls; the sudo prompt had one
+in-memory fixed-window counter, cleared by every restart, writing nothing to the ledger and emitting
+no metric. The caller there **already holds a session** — the exact threat sudo mode exists for — and
+a hit grants a fifteen-minute window in which `ChangePassword` revokes every *other* session.
+Unlimited guessing at 10/min against the credential that owns the instance, with the owner's first
+notice being that they were signed out. Now on the durable ledger and the same curve, under a
+namespaced key: filing it under the username would let a thief lock the owner out of logging in,
+which is the door the owner needs.
+
+**3. The token-scope narrowing was unreachable.** Both interceptors built an `authz.Caller` by hand
+and neither set `TokenScope`, so `Caps`'s intersection — the whole "a token can only narrow"
+guarantee (§15.2) — never ran. Harmless only because API tokens resolve nowhere yet; it would have
+surfaced as a `reader_ro` token doing writes on the day somebody wired minting. `TokenScope` now
+rides on `store.Scope` and both interceptors go through one `callerFor`. `ScopeForAPIToken` also
+gained the `deactivated_at` check `ScopeForSession` always had.
+
+**4. The address bucket fed on its own refusals.** `FailureCounts` counted `locked` rows for the
+per-IP window, and the lockout path writes those — so an owner retrying their own locked account
+drove their address to `AddressLimit`, and behind nginx or carrier NAT that address is a household.
+The per-account curve is capped at fifteen minutes precisely to stop a stranger denying service to an
+owner; this handed it back with a wider blast radius. It counts guesses now, not consequences.
+
+**5. `script-src` is load-bearing for the session model, and nothing said so.** A thirty-day bearer
+token in `localStorage` is safe *because* no attacker-supplied script can run on the origin — on an
+application that renders third-party feed HTML. `'unsafe-inline'` or a CDN host would turn a
+contained injection into a month-long account takeover, in a commit that looks like build tooling.
+Now pinned by a test whose failure message names the consequence.
+
+**6. Expiry compared mixed precisions.** `RFC3339Nano` trims trailing zeros, so the column is not
+lexicographically sortable against itself and no fixed-precision `now` orders correctly against every
+row. Sessions with a fractional expiry died up to a second early — benign, and worth fixing because
+the identical comparison on a lower bound fails *open*. One `sessionUnexpired` predicate, truncated
+to the second.
+
+**7. Accepted: the decoy-hash timing distinguisher.** The login decoy is minted at current
+parameters, so a miss matches a *current* hash — but accounts created before a `TuneToBox` bump
+verify at the old cost until their next login rehashes them, making a miss measurably slower than a
+hit for those. Self-healing on first login, and closing it properly means re-hashing every stored
+password at boot. Recorded rather than fixed.
+
+*Still open, deliberately:* no idle timeout on a 30-day session (revocation is the compensating
+control); `authz.Caller.Extra` unpopulated (`GrantRole` has no caller, and reading it means a query
+per RPC); refresh tokens still gated off per §7.3a SEC4.
+
+### 7.3c The audit trail acquires callers — 2026-08-08
+
+§7.9 has described an audit log since rev 1. `audit_log` was created in migration
+0009, `store.Audit` wrote it, `store.AuditTrail` read it, both were correct, and
+**neither had a single caller anywhere in the application.** Roles could change,
+passwords could be reset from a shell, an account could be recovered by whoever
+was holding a code, and the instance recorded none of it.
+
+That is the third mechanism found in this state in one review — recovery codes
+(§7.3b) and refresh families (§7.3a SEC4) being the others — and the shape does
+not vary: a correct component, a passing test for that component, and nothing
+connecting it to the product. The lesson is about evidence, not about any of the
+three: **"§X says it is built" and "there is a test for it" are both compatible
+with the feature being entirely absent.** The only question that distinguishes
+them is whether performing the action produces the effect, asked from outside.
+
+**`internal/audit` is the caller, not another component.** One `Record` call
+writes the row *and* emits the log line, because two calls means one of them is
+eventually forgotten at a new call site. There is no way to have one without the
+other. Actions are a closed, greppable vocabulary; an unclassified action
+defaults to `Alert`, the same fail-loud default as the authz map and the sudo
+list.
+
+Wired: sign-in, sign-out, password change, re-authentication, recovery-code
+redemption, reset redemption, sheet regeneration, reset issuance, lockout,
+refresh reuse, account creation, instance claim — across the RPC surface and the
+CLI. Individual failed passwords are deliberately **not** recorded: they are
+`login_attempts`' job and are purged on a schedule, so the durable trail keeps
+the *threshold* event instead. One row beats four hundred, and four hundred
+would bury everything else in the file.
+
+**Alerting is the same call.** Every event logs under a stable `security_event`
+key — `Alert` at Warn, `Notice` at Info — which is the only channel a
+self-hosted box reliably has. An operator points journald, a shipper or a grep
+at that key. It is stable on purpose: renaming it breaks somebody's paging.
+
+**Reading it is `articleflux audit`, and deliberately not an RPC.** An RPC no
+screen calls would recreate precisely the condition being fixed here.
+`CapReadAudit` exists and an admin screen should eventually use it — the screen
+is what would make the RPC real. Until then the audience is the operator, who
+has a shell, and who while investigating "did somebody get into my account"
+wants a date range and a pipe rather than a browser they may be locked out of.
+
+Two readers, and the split is load-bearing: `AuditTrail` stays tenant-scoped for
+that future screen, and `AuditTrailInstance` serves the CLI. A lockout is
+recorded *before* the account is resolved — the username may not name one — so
+those rows carry no tenant and the scoped reader cannot see them. Relaxing the
+scoped query to include them would hand one tenant's admin another tenant's
+failed-login usernames.
+
+*Found by the new tests, not by review:* the lockout events were initially
+written with no tenant and were therefore unreadable through the only reader
+that existed. The trail came back empty. That is the bug class this whole
+section is about, caught this time because the test drove the RPC and read the
+trail back instead of reconstructing what the writer would have written.
+
+*Still not wired, and now the only known instance:* refresh families remain
+gated off pending the client work §7.3a SEC4 specifies.
 
 ### 7.4 Capabilities, not role checks
 
