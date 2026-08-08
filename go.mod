@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/andybalholm/brotli v1.2.0
-	github.com/andybalholm/cascadia v1.3.3
+	github.com/andybalholm/cascadia v1.3.4
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
