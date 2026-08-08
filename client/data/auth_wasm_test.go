@@ -80,17 +80,21 @@ func TestStampOmitsAnAbsentCredential(t *testing.T) {
 
 // setTokenForTest writes the in-memory credential and restores it afterwards.
 //
-// It touches the package variable directly rather than calling setToken,
+// It touches the package variable directly rather than calling storeSession,
 // because that one also writes local storage — real browser state, shared with
 // whatever else is running in this Node instance, and not this test's to change.
+//
+// Only the access half moves. The credential is a bundle now (session.go), and
+// these tests are about what the interceptor puts on the wire, which is that
+// one field.
 func setTokenForTest(t *testing.T, want, restore string) {
 	t.Helper()
-	tokenMu.Lock()
-	token = want
-	tokenMu.Unlock()
+	sessionMu.Lock()
+	current.Access = want
+	sessionMu.Unlock()
 	t.Cleanup(func() {
-		tokenMu.Lock()
-		token = restore
-		tokenMu.Unlock()
+		sessionMu.Lock()
+		current.Access = restore
+		sessionMu.Unlock()
 	})
 }

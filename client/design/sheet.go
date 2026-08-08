@@ -2812,6 +2812,63 @@ func loginCSS(r func(string, string) css.Rule) {
 		r("opacity", ".62"), r("cursor", "default"), r("filter", "none"),
 	)
 
+	// --- account recovery (§7.2) ---------------------------------------------
+	//
+	// The recovery screen is the login card with different fields, so it inherits
+	// .login-card, .login-field, .login-input and .login-submit unchanged. Only
+	// what it adds is below — a heading, a field hint, a success line, and the
+	// two text buttons that move between the screens.
+
+	// The recovery screen has a heading and the login screen does not, and the
+	// asymmetry is deliberate: "Sign in" is self-evident from a username and a
+	// password, while "Get back in" has to tell somebody who arrived here
+	// confused that they are in the right place.
+	css.Global(".login-title",
+		r("margin", "14px 0 0"), r("font-family", "var(--dsp)"),
+		r("font-weight", "500"), r("font-size", "20px"),
+		r("letter-spacing", "-.01em"), r("color", "var(--cream)"),
+	)
+	// Sits under the field it explains, so it is spaced tight to it rather than
+	// evenly between the two — a hint floating midway reads as belonging to the
+	// field below.
+	css.Global(".login-hint",
+		r("margin", "6px 0 0"), r("font-size", "11.5px"),
+		r("color", "var(--mute)"), r("line-height", "1.45"),
+	)
+	// Good news, so it takes the accent rather than --neg. Same reserved-height
+	// treatment as .login-error: the slot stays in the document for the live
+	// region, and hiding it with visibility keeps the button from jumping.
+	css.Global(".login-notice",
+		r("min-height", "18px"), r("margin", "2px 0 14px"),
+		r("font-size", "12.5px"), r("color", "var(--cc)"),
+		r("line-height", "1.45"),
+	)
+	css.Global(".login-notice.is-empty", r("visibility", "hidden"))
+	// A text button, not a second primary action. It is a <button> because it
+	// changes a mode and navigates nowhere — an <a href="#"> would break
+	// middle-click and the back button — but it must not compete with the submit
+	// above it, so it is styled as the link it behaves like.
+	css.Global(".login-alt",
+		r("display", "block"), r("width", "100%"),
+		r("margin", "12px 0 0"), r("padding", "4px 0"),
+		r("background", "none"), r("border", "0"),
+		r("font", "inherit"), r("font-size", "12.5px"),
+		r("color", "var(--soft)"), r("text-align", "center"),
+		r("cursor", "pointer"), r("text-decoration", "underline"),
+		r("text-underline-offset", "3px"),
+		r("text-decoration-color", "var(--line)"),
+	)
+	css.Global(".login-alt:hover",
+		r("color", "var(--cream)"), r("text-decoration-color", "var(--cc)"),
+	)
+	// Focus has to be visible on a control with no box of its own. Without this
+	// the only keyboard affordance on the recovery link is the colour change,
+	// which is invisible to anybody navigating by Tab.
+	css.Global(".login-alt:focus-visible",
+		r("outline", "2px solid var(--cc)"), r("outline-offset", "3px"),
+		r("border-radius", "6px"),
+	)
+
 	css.Global(".login-foot",
 		r("margin", "18px 0 0"), r("font-size", "12px"),
 		r("color", "var(--mute)"), r("line-height", "1.55"),

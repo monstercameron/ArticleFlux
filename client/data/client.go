@@ -207,6 +207,30 @@ func Dial(ctx context.Context, tunnelURL string, onState func(ConnState)) (*Clie
 	c.auth = pb.NewAuthServiceClient(conn)
 	c.smart = pb.NewSmartServiceClient(conn)
 	c.events = pb.NewEventServiceClient(conn)
+	// The reactive half of session renewal, installed now that there is an
+	// AuthService client to renew THROUGH (§7.3a SEC4).
+	//
+	// Here rather than at the interceptor's definition because the interceptor
+	// is an argument to the dial that creates the thing it needs. `renewer`
+	// stays nil until this line, and nil correctly means "no renewal is
+	// possible" — which is the true state of the world during the dial itself.
+	//
+	// The closure ignores the `*grpc.ClientConn` the interceptor offers and
+	// closes over `c`: the connection is the same one, and `c` is what carries
+	// the typed AuthService client. The parameter is kept on the signature so a
+	// future second connection cannot silently renew through the first.
+	renewer = func(ctx context.Context, _ *grpc.ClientConn) bool {
+		return c.renew(ctx, Token())
+	}
+	// And the proactive half. Started HERE rather than at the four places the
+	// view layer hands a client over, because every one of those paths comes
+	// through this function and a fifth one would not have to remember.
+	//
+	// `context.Background()` because the keeper's lifetime is the page's: there
+	// is no scope shorter than that in which renewing the session is the wrong
+	// thing to do. It is a no-op on a bundle with no refresh half, and
+	// `keeperOnce` makes a second Dial in one page load harmless.
+	c.StartSessionKeeper(context.Background())
 	// Writes that outlived the last tab. Restored BEFORE the connection is
 	// asked for, so a reader who closed the laptop mid-outage and opened it the
 	// next morning has their marks replayed by the first recovery rather than

@@ -91,6 +91,33 @@ func Root() ui.Node {
 	// at English until they touched something.
 	catalogReady := ui.UseState(0)
 
+	// The reset token, read from the address ONCE.
+	//
+	// A Ref rather than a value recomputed in the body, because the body reads
+	// the browser on every render and the address is about to change: the effect
+	// below strips the token out of it the moment it has been captured, so the
+	// second render would find nothing and hand Login an empty string mid-typing.
+	resetToken := ui.UseRef("")
+	resetRead := ui.UseRef(false)
+	if !resetRead.Get() {
+		resetRead.Set(true)
+		resetToken.Set(resetTokenFrom(platform.BasePath(), platform.Path(), platform.Query()))
+	}
+	// And out of the address bar, once it is held.
+	//
+	// A single-use credential in a URL survives in history, in a screenshot of
+	// the window, and in whatever the reader pastes when they ask somebody for
+	// help — and it survives there AFTER it has been spent, which is when it
+	// stops being obviously secret and starts being obviously shareable.
+	// Replace rather than push, so Back does not walk into the stripped address
+	// and then the token again.
+	ui.UseEffect(func() func() {
+		if resetToken.Get() != "" {
+			platform.ReplacePath(platform.BasePath())
+		}
+		return nil
+	}, []any{})
+
 	tunnel := data.TunnelURL(platform.Origin())
 
 	// A rejected credential anywhere in the app comes back here.
@@ -288,7 +315,8 @@ func Root() ui.Node {
 		})
 	case phaseLogin:
 		child = ui.CreateElement(Login, loginProps{
-			tunnel: tunnel,
+			tunnel:     tunnel,
+			resetToken: resetToken.Get(),
 			onSuccess: func(c *data.Client) {
 				authed.Set(c)
 				// The same wait as the boot path, for the same reason — a reader
@@ -348,7 +376,64 @@ func initialPhase() rootPhase {
 	if isHomePath(platform.BasePath(), platform.Path()) {
 		return phaseHome
 	}
+	// A reset link goes straight to the credential screen, skipping WhoAmI.
+	//
+	// Whoever followed one is locked out by definition, so the round trip that
+	// can only answer "nobody" is a wait for a fact already known. It also has
+	// to bypass a session that IS valid: an admin who mints a link for somebody
+	// still signed in on this browser means the reset, not the session.
+	if resetTokenFrom(platform.BasePath(), platform.Path(), platform.Query()) != "" {
+		return phaseLogin
+	}
 	return phaseChecking
+}
+
+// resetPath is the address `articleflux reset -origin` prints.
+//
+// The CLI has printed `<origin>/reset?token=…` since §7.2 and nothing served it:
+// the client had no such route, so the link landed on the plain sign-in card
+// with no recovery mode and no prefill. An admin who sent one had, in effect,
+// sent an instruction to open a screen and paste a string out of the URL bar by
+// hand — which is exactly the step the link exists to remove, delivered to
+// somebody who is locked out and already annoyed.
+//
+// The constant lives here rather than in cmd/articleflux because this is the
+// half that has to recognise it; the CLI's copy is one `fmt.Printf` and is
+// tested against this grammar.
+const resetPath = "reset"
+
+// resetTokenParam is the query key the link carries.
+const resetTokenParam = "token"
+
+// resetTokenFrom pulls the token out of a reset address, or returns "".
+//
+// Base-relative like every other address in this client (see isHomePath): an
+// instance mounted under /reader/ answers at /reader/reset. Pure — no
+// syscall/js — so the grammar is testable without a browser, which is the same
+// split client/view/route.go is built on.
+func resetTokenFrom(base, path, query string) string {
+	if base == "" {
+		base = "/"
+	}
+	if base != "/" {
+		if trimmed := strings.TrimPrefix(path, strings.TrimSuffix(base, "/")); trimmed != path {
+			path = trimmed
+		}
+	}
+	if strings.Trim(path, "/") != resetPath {
+		return ""
+	}
+	// Parsed by hand rather than through net/url: the value is a hex token, so
+	// there is nothing to unescape, and url.ParseQuery on a malformed string
+	// returns an error alongside the values it did manage to read — which is a
+	// branch to get wrong for no gain here.
+	for _, part := range strings.Split(query, "&") {
+		k, v, found := strings.Cut(part, "=")
+		if found && k == resetTokenParam {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // isHomePath reports whether an address asks for the front door.

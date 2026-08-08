@@ -5,7 +5,6 @@ package data
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -29,50 +28,47 @@ const (
 	deviceKey = "articleflux.v1.device"
 )
 
-// The token in memory. Read on every RPC by the interceptor below, and written
-// by Login, SignOut, and the boot-time load.
+// Token returns the access half of the stored credential.
 //
-// Package-level rather than a Client field on purpose: the interceptor is
-// installed when the connection is dialled, which is before anyone has logged
-// in, and a token that arrives later has to reach it. A mutex rather than an
-// atomic because it is read far more often than written and the read is a string
-// copy either way.
-var (
-	tokenMu sync.RWMutex
-	token   string
-)
-
-// Token returns the stored credential, loading it from the browser on first use.
-func Token() string {
-	tokenMu.RLock()
-	t := token
-	tokenMu.RUnlock()
-	return t
-}
+// The credential is a BUNDLE now — access token, expiry, refresh token, record
+// id — held in session.go, because the four change together on every rotation
+// and a half-written pair is what makes the server revoke a family. This
+// accessor exists because everything downstream of it only ever wanted the one
+// string.
+func Token() string { return currentSession().Access }
 
 // LoadToken restores the credential from local storage. Call once at boot.
 //
 // It returns whether one was found, which is what decides between showing the
 // reader and showing the login screen — the actual validity of the token is the
 // server's business, and asking it is what WhoAmI is for.
+//
+// It also performs the v1 migration exactly once per browser: a reader holding
+// yesterday's bare token string keeps their session rather than being logged
+// out by an upgrade. See readStoredSession.
 func LoadToken() bool {
-	t := platform.LocalGet(tokenKey)
-	tokenMu.Lock()
-	token = t
-	tokenMu.Unlock()
-	return t != ""
+	s := readStoredSession()
+	sessionMu.Lock()
+	current = s
+	sessionMu.Unlock()
+	return s.Access != ""
 }
 
-// setToken updates memory and storage together.
+// setToken clears or replaces the whole bundle.
+//
+// The empty case is the one that matters and is why this survives the rewrite
+// as its own function: SignOut and a rejected credential both mean "there is no
+// session", and that has to remove the refresh half too. Dropping only the
+// access token would leave a renewal authority in local storage on a machine
+// somebody has walked away from — which is precisely the shape SEC4 objects to.
 func setToken(t string) {
-	tokenMu.Lock()
-	token = t
-	tokenMu.Unlock()
 	if t == "" {
-		platform.LocalRemove(tokenKey)
+		storeSession(session{})
 		return
 	}
-	platform.LocalSet(tokenKey, t)
+	s := currentSession()
+	s.Access = t
+	storeSession(s)
 }
 
 // clientLabel returns this browser profile's stable presentation label,
@@ -180,6 +176,27 @@ func authInterceptor(ctx context.Context, method string, req, reply any,
 	// RefreshSession or Logout must not have to remember to add itself here, and
 	// the failure mode of forgetting is a reload loop.
 	if status.Code(err) == codes.Unauthenticated && !isAuthMethod(method) {
+		// RENEW BEFORE GIVING UP (§7.3a SEC4).
+		//
+		// This used to drop the token and reload, unconditionally, and that was
+		// the only correct response when a session lasted thirty days: a token
+		// that old being refused meant it had been revoked, and there was
+		// nothing to renew with anyway.
+		//
+		// An access token lives twelve hours now, so the overwhelmingly likely
+		// reason for an Unauthenticated here is a laptop that was closed
+		// overnight — a session that can be renewed silently. Dropping that
+		// reader on the login screen would be a regression dressed as a
+		// security control.
+		//
+		// `renewed` is only true when the bundle now holds a credential the
+		// failed call did not carry, whether this tab minted it or a sibling
+		// did, so the retry below is against something genuinely new. Exactly
+		// one retry: `renew` clears the session and reloads on a real refusal,
+		// and a loop that kept asking would hammer a revoked credential.
+		if renewer != nil && renewer(ctx, cc) {
+			return invoker(stamp(ctx), method, req, reply, cc, opts...)
+		}
 		setToken("")
 		if onUnauthenticated != nil {
 			onUnauthenticated()
@@ -187,6 +204,15 @@ func authInterceptor(ctx context.Context, method string, req, reply any,
 	}
 	return err
 }
+
+// renewer is the reactive half of session renewal, installed by Dial.
+//
+// A package-level function value rather than a method, for the same reason
+// `onUnauthenticated` is one: the interceptor is built at dial time and has no
+// Client to call. Nil until a connection exists, which is the state during the
+// very first WhoAmI — and nil correctly means "no renewal is possible", because
+// at that point there is nothing to renew through.
+var renewer func(context.Context, *grpc.ClientConn) bool
 
 // streamAuthInterceptor is authInterceptor for streaming RPCs.
 //
@@ -244,8 +270,30 @@ func (c *Client) Login(parent context.Context, username, password string) (*pb.L
 	if err != nil {
 		return nil, err
 	}
-	setToken(res.GetToken())
+	// The WHOLE response, not just the token. `res.RefreshToken` used to be read
+	// here and dropped, which is the single line that made every rotation
+	// control on the server unreachable — see session.go.
+	storeSession(sessionFrom(res.GetToken(), res.GetExpiresAt(),
+		res.GetRefreshToken(), res.GetRefreshRecordId()))
 	return res, nil
+}
+
+// sessionFrom builds a bundle from the four fields the auth responses carry.
+//
+// One constructor rather than four assignments at each of the four call sites
+// (Login, Setup, Recover, RedeemResetToken), because the failure mode of the
+// spread-out version is a call site that keeps the token and forgets the
+// refresh half — which is exactly what Login did, and which is invisible until
+// twelve hours later when nothing renews.
+//
+// An unparseable expiry becomes zero, which reads as "unknown" and disables
+// proactive renewal rather than triggering it every check.
+func sessionFrom(token, expiresAt, refresh, record string) session {
+	s := session{V: sessionVersion, Access: token, Refresh: refresh, Record: record}
+	if t, err := time.Parse(time.RFC3339, expiresAt); err == nil {
+		s.ExpiresUnix = t.Unix()
+	}
+	return s
 }
 
 // WhoAmI reports who the stored credential belongs to.
@@ -276,7 +324,58 @@ func (c *Client) Setup(parent context.Context, username, email, password string)
 	if err != nil {
 		return nil, err
 	}
-	setToken(res.GetToken())
+	storeSession(sessionFrom(res.GetToken(), res.GetExpiresAt(),
+		res.GetRefreshToken(), res.GetRefreshRecordId()))
+	return res, nil
+}
+
+// Recover gets an account back with a recovery code (§7.2).
+//
+// It stores the session exactly as Login does, so a caller lands in the reader
+// rather than back at a password prompt typing the password they just chose.
+//
+// The same thirty seconds Setup allows, and for the same reason: the server
+// hashes the new password at the instance's tuned Argon2id cost and revokes
+// every session on the account in one transaction. Login's fifteen would be a
+// timeout on a busy box in the middle of a write that is still going to commit.
+func (c *Client) Recover(parent context.Context, username, code, newPassword string) (
+	*pb.RedeemRecoveryCodeResponse, error) {
+
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	res, err := c.auth.RedeemRecoveryCode(ctx, &pb.RedeemRecoveryCodeRequest{
+		Username:    username,
+		Code:        code,
+		NewPassword: newPassword,
+	})
+	if err != nil {
+		return nil, err
+	}
+	storeSession(sessionFrom(res.GetToken(), res.GetExpiresAt(),
+		res.GetRefreshToken(), res.GetRefreshRecordId()))
+	return res, nil
+}
+
+// RecoverWithResetToken is Recover for an admin-minted link.
+//
+// No username: the token names the account by itself, and asking for one
+// alongside would add a field the reader can get wrong while proving nothing.
+func (c *Client) RecoverWithResetToken(parent context.Context, token, newPassword string) (
+	*pb.RedeemResetTokenResponse, error) {
+
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	res, err := c.auth.RedeemResetToken(ctx, &pb.RedeemResetTokenRequest{
+		Token:       token,
+		NewPassword: newPassword,
+	})
+	if err != nil {
+		return nil, err
+	}
+	storeSession(sessionFrom(res.GetToken(), res.GetExpiresAt(),
+		res.GetRefreshToken(), res.GetRefreshRecordId()))
 	return res, nil
 }
 

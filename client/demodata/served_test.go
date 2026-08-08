@@ -58,6 +58,8 @@ var notServed = map[string]string{
 	"Reauthenticate":          "no accounts exist",
 	"RefreshSession":          "there is no session to refresh; nothing issues tokens here",
 	"RegenerateRecoveryCodes": "no accounts exist",
+	"RedeemRecoveryCode":      "no accounts exist; there is no password to recover",
+	"RedeemResetToken":        "no accounts exist, and no admin to mint a reset token",
 
 	// The live view scrolls a page the SERVER fetched on the reader's behalf
 	// (§10.1d). The demo reports no proxy_url at all, so the reader never gets
