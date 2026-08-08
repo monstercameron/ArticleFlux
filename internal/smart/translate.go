@@ -334,6 +334,7 @@ func (t *Translator) translateBatch(ctx context.Context, lang Language, model st
 		// expensive: sixty UI strings answered in one call against a default of
 		// 2000 is ErrTruncated, and the whole batch is redone (ceilings.go).
 		Configure(capExtract(translateMaxTokens)).
+		Model(t.llm.OpsModel(ctx)).
 		Run(call)
 	if err != nil {
 		return nil, err

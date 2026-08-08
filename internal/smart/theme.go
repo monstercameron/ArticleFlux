@@ -73,7 +73,7 @@ var ErrNoPrompt = errors.New("smart: no prompt")
 // minute arrives after they have given up and pressed it again. The work is small
 // — one object of thirteen values — so a call that has not answered in thirty
 // seconds is not a call that is nearly done.
-const themeTimeout = 30 * time.Second
+const themeTimeout = 90 * time.Second
 
 // composeInstructions is the system prompt for a palette from a phrase.
 //

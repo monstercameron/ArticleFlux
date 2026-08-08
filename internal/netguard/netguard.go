@@ -311,6 +311,27 @@ type Options struct {
 	Timeout time.Duration
 	// DialTimeout bounds one connect. Zero means 10s.
 	DialTimeout time.Duration
+
+	// ResponseHeaderTimeout bounds the wait for the first response header.
+	// Zero means 20s.
+	//
+	// Twenty is right for the six fetching purposes this package was built for:
+	// a publisher that has not begun answering in twenty seconds is down, and
+	// waiting longer holds a worker for nothing.
+	//
+	// It is wrong for a model. A reasoning model legitimately spends thirty to
+	// sixty seconds deciding before it emits a single byte, and the whole time
+	// counts here — so the ceiling that actually bound every Smart+ call was
+	// this one, not the caller's Timeout and not any context deadline. The
+	// symptom is a call that dies at twenty seconds on the dot with "timeout
+	// awaiting response headers" while every budget in the code says minutes.
+	//
+	// Found by the first live run of the grouped podcast write, which asks for
+	// a whole broadcast in one request and cannot answer in twenty seconds. It
+	// had been unreachable in production for as long as that feature has
+	// existed; nothing caught it because the fake providers in every test
+	// answer instantly.
+	ResponseHeaderTimeout time.Duration
 	// UserAgent identifies us to publishers. A reader that fetches anonymously is
 	// one a publisher can only respond to by blocking.
 	UserAgent string
@@ -364,10 +385,13 @@ func Client(opt Options) *http.Client {
 	if opt.AllowPrivate {
 		d = PermissiveDialer(opt.DialTimeout)
 	}
+	if opt.ResponseHeaderTimeout == 0 {
+		opt.ResponseHeaderTimeout = 20 * time.Second
+	}
 	tr := &http.Transport{
 		DialContext:           d.DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 20 * time.Second,
+		ResponseHeaderTimeout: opt.ResponseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		MaxIdleConns:          64,
 		IdleConnTimeout:       90 * time.Second,

@@ -10,12 +10,25 @@ import (
 	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
+// liveProviderName is what the fake calls itself, and it matches production.
+//
+// It was "local", schemafluxtest's default — and "local" is in SchemaFlux's
+// per-provider model table while ArticleFlux's real provider name is not. That
+// one difference hid a shipped bug: translate.go named no model, so every call
+// resolved one from the table in tests and NONE in production, where the whole
+// feature failed with "no default model for provider \"articleflux\"". The unit
+// suite was green the entire time.
+//
+// Naming the fake after the real thing makes a forgotten `.Model(...)` fail
+// here, for free, instead of on a reader's machine.
+const liveProviderName = "articleflux"
+
 // replying installs a provider answering with the given bodies, in order. The
 // last one repeats once the list runs out, so a test that makes an unknown
 // number of calls does not have to predict it.
 func replying(t *testing.T, bodies ...string) *schemafluxtest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().Shaped().Reply(bodies...)
+	prov := schemafluxtest.New().As(liveProviderName).Shaped().Reply(bodies...)
 	schemafluxtest.Install(t, prov)
 	return prov
 }
@@ -23,7 +36,7 @@ func replying(t *testing.T, bodies ...string) *schemafluxtest.Provider {
 // failing installs a provider that fails every call with err.
 func failing(t *testing.T, err error) *schemafluxtest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().Fail(err)
+	prov := schemafluxtest.New().As(liveProviderName).Fail(err)
 	schemafluxtest.Install(t, prov)
 	return prov
 }
@@ -64,7 +77,7 @@ func spyOn(t *testing.T, bodies ...string) *schemafluxtest.Provider {
 // was sent, for the batching paths where a fixed list cannot know what to say.
 func answering(t *testing.T, fn func(call int, req schemaflux.CompletionRequest) (string, error)) *schemafluxtest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().ReplyFunc(fn)
+	prov := schemafluxtest.New().As(liveProviderName).ReplyFunc(fn)
 	schemafluxtest.Install(t, prov)
 	return prov
 }

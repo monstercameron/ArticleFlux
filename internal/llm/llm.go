@@ -67,6 +67,7 @@ import (
 	"github.com/monstercameron/schemaflux/mw"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm/sfprovider"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 )
 
 // Endpoint is the only address this package will ever call.
@@ -135,7 +136,12 @@ type Client struct {
 	// the server does is not a ceiling. spendOnce guards the one read of it.
 	cost       Cost
 	spendStore SpendStore
-	spendOnce  sync.Once
+	// externalSpend is what the OTHER paid egress path has spent, in USD.
+	//
+	// Smart+ is two of them — this client and internal/tts — and the ceiling is
+	// one number an operator typed. See WithExternalSpend in cost.go.
+	externalSpend func(context.Context) float64
+	spendOnce     sync.Once
 
 	// chain is the SchemaFlux middleware every call travels through, built once
 	// and reused — which is the whole reason it lives on the Client rather than
@@ -197,12 +203,70 @@ type Usage struct {
 	Requests     int64 `json:"requests"`
 }
 
+// paidEgressClient builds the HTTP client for a model call.
+//
+// # Why netguard, for a host that is a constant
+//
+// netguard exists to make a USER-SUPPLIED URL safe, and this endpoint is a
+// compile-time constant checked against an allowlist one line before the
+// request goes out — so the SSRF half of it has nothing to do here. What it
+// also is, and what this was missing, is the ONE PLACE every outbound request
+// in this application shares a policy and is measured:
+//
+//   - `egress.requests` and `egress.duration`, labelled purpose="smart".
+//     Without them the two paths that cost money were the two paths with no
+//     egress metrics — invisible in the dashboard that answers "is the internet
+//     broken, or is it us", which is exactly backwards.
+//   - A span per request, so a slow call shows where the time went instead of
+//     being one opaque gap in the trace.
+//   - Dial and TLS handshake timeouts, a response-header timeout, a redirect
+//     ceiling and a bounded idle pool. A bare `&http.Client{Timeout:…}` has one
+//     deadline for the whole request and nothing between dialling and it.
+//
+// `internal/app`'s comment claimed "every outbound fetch, from all seven
+// callers" already went through here. It did not: six did, and the two that
+// spend money did not.
+//
+// # What changes, and the one thing an operator might notice
+//
+// netguard's transport sets `Proxy: nil` — deliberately, because an
+// env-configured proxy routes around the dialer's Control hook and defeats the
+// guard entirely. A deployment reaching the provider through HTTP_PROXY was
+// relying on behaviour this client never promised, and stops. That is the right
+// side of the trade for a boundary this file exists to be, and it is stated
+// here rather than discovered.
+//
+// AllowPrivate is false: this talks to one public host, and permitting private
+// addresses would only ever help a redirect nobody wants to follow.
+func paidEgressClient() *http.Client {
+	return netguard.Client(netguard.Options{
+		Timeout: requestTimeout,
+		// The whole request timeout, restated as the header timeout.
+		//
+		// netguard defaults this to twenty seconds, which is correct for the
+		// purposes it was written for — a publisher that has not started
+		// answering in twenty seconds is down. It is wrong here: a reasoning
+		// model spends that long deciding before it writes a byte, and until
+		// this line the twenty-second default was the REAL ceiling on every
+		// Smart+ call, silently overriding requestTimeout above and every
+		// per-feature budget in internal/smart.
+		//
+		// Safe to relax for this client and not for the others because this one
+		// talks to exactly one host, pinned by `Endpoint` and re-checked against
+		// `allowedHost` on every request. The slow-loris risk the default
+		// guards against is a property of fetching arbitrary publisher URLs.
+		ResponseHeaderTimeout: requestTimeout,
+		UserAgent:             "ArticleFlux (+Smart+)",
+		Purpose:               "smart",
+	})
+}
+
 // New returns a client that reads its key through keyOf on every call.
 func New(keyOf KeyFunc) *Client {
 	if keyOf == nil {
 		keyOf = func(context.Context) string { return "" }
 	}
-	return &Client{keyOf: keyOf, http: &http.Client{Timeout: requestTimeout}}
+	return &Client{keyOf: keyOf, http: paidEgressClient()}
 }
 
 // Configured reports whether this instance can egress at all.
