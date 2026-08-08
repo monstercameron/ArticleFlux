@@ -69,32 +69,98 @@ func TestKeyDoesNotTruncateABareIPv6Address(t *testing.T) {
 	}
 }
 
-func TestForwardedTakesTheLeftmostEntry(t *testing.T) {
+// THE regression, and the reason the rule is counted from the right.
+//
+// nginx forwards with `$proxy_add_x_forwarded_for`, which appends the peer it
+// saw to whatever the caller sent. So a client who writes their own
+// X-Forwarded-For gets it PREPENDED to the truth, and a leftmost read returns
+// the value they chose — a fresh limiter bucket per attempt, a spoofed `client`
+// in the audit trail, and a per-address lockout that never fires.
+func TestForwardedIgnoresAnEntryTheClientSupplied(t *testing.T) {
+	// What arrives at the app when a caller at 198.51.100.5 sends
+	// "X-Forwarded-For: 1.2.3.4" through one nginx.
 	r := req("127.0.0.1:9000", map[string]string{
-		"X-Forwarded-For": "203.0.113.7, 70.41.3.18, 150.172.238.178",
+		"X-Forwarded-For": "1.2.3.4, 198.51.100.5",
 	})
-	a, ok := Forwarded(r)
-	if !ok || a.String() != "203.0.113.7" {
-		t.Fatalf("Forwarded = %v/%v, want 203.0.113.7 — the last entry is a proxy", a, ok)
+	a, ok := Forwarded(r, 1)
+	if !ok || a.String() != "198.51.100.5" {
+		t.Fatalf("Forwarded = %v/%v, want 198.51.100.5 — 1.2.3.4 is whatever the caller typed", a, ok)
 	}
 }
 
+// One trusted proxy means the LAST entry, which is the address nginx saw.
+func TestForwardedTakesTheEntryTheTrustedHopAppended(t *testing.T) {
+	r := req("127.0.0.1:9000", map[string]string{
+		"X-Forwarded-For": "203.0.113.7, 70.41.3.18, 150.172.238.178",
+	})
+	a, ok := Forwarded(r, 1)
+	if !ok || a.String() != "150.172.238.178" {
+		t.Fatalf("Forwarded = %v/%v, want 150.172.238.178 — everything left of it is unverified", a, ok)
+	}
+}
+
+// Two hops — a CDN in front of nginx — moves the trusted position one place
+// left, because the last entry is then the CDN's edge rather than a reader.
+func TestASecondTrustedHopMovesThePositionLeft(t *testing.T) {
+	r := req("127.0.0.1:9000", map[string]string{
+		"X-Forwarded-For": "203.0.113.7, 70.41.3.18, 150.172.238.178",
+	})
+	a, ok := Forwarded(r, 2)
+	if !ok || a.String() != "70.41.3.18" {
+		t.Fatalf("Forwarded(hops=2) = %v/%v, want 70.41.3.18", a, ok)
+	}
+}
+
+// A chain shorter than the asserted path did not come through it. Nothing in it
+// was written by a trusted hop, so nothing in it is believed.
+func TestAChainShorterThanTheHopCountIsNotBelieved(t *testing.T) {
+	r := req("127.0.0.1:9000", map[string]string{"X-Forwarded-For": "203.0.113.7"})
+	if a, ok := Forwarded(r, 3); ok {
+		t.Fatalf("Forwarded = %v, want no answer for a chain that skipped the declared path", a)
+	}
+}
+
+// Zero and negative read as one. Zero hops means nothing is forwarding, and a
+// caller in that state should not be consulting headers at all — reading it as
+// "index past the end of the list" would be an off-by-one with a CVE attached.
+func TestAHopCountBelowOneIsReadAsOne(t *testing.T) {
+	r := req("127.0.0.1:9000", map[string]string{"X-Forwarded-For": "1.2.3.4, 198.51.100.5"})
+	for _, hops := range []int{0, -1} {
+		a, ok := Forwarded(r, hops)
+		if !ok || a.String() != "198.51.100.5" {
+			t.Errorf("Forwarded(hops=%d) = %v/%v, want 198.51.100.5", hops, a, ok)
+		}
+	}
+}
+
+// X-Real-IP is SET rather than appended, so under one nginx it needs no
+// counting and is authoritative on its own.
 func TestForwardedFallsBackToXRealIP(t *testing.T) {
 	r := req("127.0.0.1:9000", map[string]string{"X-Real-IP": "203.0.113.9"})
-	a, ok := Forwarded(r)
+	a, ok := Forwarded(r, 1)
 	if !ok || a.String() != "203.0.113.9" {
 		t.Fatalf("Forwarded = %v/%v, want 203.0.113.9", a, ok)
 	}
 }
 
-// A garbage leftmost entry does not promote the second. The second is a proxy,
-// and naming a proxy as the client is the whole bug.
-func TestGarbageLeftmostDoesNotPromoteTheNextHop(t *testing.T) {
+// With two hops it answers a different question — what the OUTER proxy saw,
+// which is the CDN edge — so it is not consulted.
+func TestXRealIPIsNotConsultedBeyondOneHop(t *testing.T) {
+	r := req("127.0.0.1:9000", map[string]string{"X-Real-IP": "203.0.113.9"})
+	if a, ok := Forwarded(r, 2); ok {
+		t.Fatalf("Forwarded(hops=2) = %v, want no answer: X-Real-IP is the outer proxy's peer", a)
+	}
+}
+
+// A garbage entry at the trusted position does not slide to its neighbour. The
+// neighbour is either a proxy or attacker-supplied, and "one bad entry unlocks
+// the next" is a rule an attacker can satisfy deliberately.
+func TestGarbageAtTheTrustedPositionDoesNotSlide(t *testing.T) {
 	r := req("127.0.0.1:9000", map[string]string{
-		"X-Forwarded-For": "not-an-address, 70.41.3.18",
+		"X-Forwarded-For": "70.41.3.18, not-an-address",
 	})
-	if a, ok := Forwarded(r); ok {
-		t.Fatalf("Forwarded = %v, want no answer rather than the next hop", a)
+	if a, ok := Forwarded(r, 1); ok {
+		t.Fatalf("Forwarded = %v, want no answer rather than the entry beside it", a)
 	}
 }
 
@@ -102,10 +168,10 @@ func TestGarbageLeftmostDoesNotPromoteTheNextHop(t *testing.T) {
 // anybody could write their own address and walk through the limiter.
 func TestHeadersAreIgnoredUnlessTheOperatorTrustsTheProxy(t *testing.T) {
 	r := req("198.51.100.5:44444", map[string]string{"X-Forwarded-For": "203.0.113.7"})
-	if got := Of(r, false); got != "198.51.100.5" {
+	if got := Of(r, false, 1); got != "198.51.100.5" {
 		t.Errorf("Of(untrusted) = %q, want the transport address 198.51.100.5", got)
 	}
-	if got := Of(r, true); got != "203.0.113.7" {
+	if got := Of(r, true, 1); got != "203.0.113.7" {
 		t.Errorf("Of(trusted) = %q, want the forwarded address 203.0.113.7", got)
 	}
 }
@@ -114,14 +180,14 @@ func TestHeadersAreIgnoredUnlessTheOperatorTrustsTheProxy(t *testing.T) {
 // arrives with no header at all still has a usable transport address.
 func TestTrustedButHeaderlessFallsBackToTheTransportAddress(t *testing.T) {
 	r := req("127.0.0.1:9000", nil)
-	if got := Of(r, true); got != "127.0.0.1" {
+	if got := Of(r, true, 1); got != "127.0.0.1" {
 		t.Errorf("Of = %q, want 127.0.0.1", got)
 	}
 }
 
 func TestOfNeverReturnsEmptyForAnUnparseableRemoteAddr(t *testing.T) {
 	r := req("pipe", nil)
-	if got := Of(r, true); got != "pipe" {
+	if got := Of(r, true, 1); got != "pipe" {
 		t.Errorf("Of = %q, want the raw value rather than a blank", got)
 	}
 }
@@ -129,10 +195,10 @@ func TestOfNeverReturnsEmptyForAnUnparseableRemoteAddr(t *testing.T) {
 // A nil request has no headers and no RemoteAddr to fall back to; both
 // entry points must report "nothing usable" rather than dereference nil.
 func TestNilRequestIsHandledNotDereferenced(t *testing.T) {
-	if a, ok := Forwarded(nil); ok {
+	if a, ok := Forwarded(nil, 1); ok {
 		t.Errorf("Forwarded(nil) = %v, want no answer", a)
 	}
-	if got := Of(nil, true); got != "" {
+	if got := Of(nil, true, 1); got != "" {
 		t.Errorf("Of(nil, true) = %q, want empty", got)
 	}
 }
