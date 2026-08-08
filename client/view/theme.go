@@ -326,6 +326,12 @@ func applyAppearance(a appearance) {
 	// gets a plum title bar around a page of paper — and no stylesheet can reach
 	// it.
 	platform.SetThemeColor(t.Ground)
+	// The other declaration the tokens cannot reach: the boot shim's inline
+	// background-color on <body>, written before this module existed so the
+	// splash wears the right theme. Inline outranks the sheet, so leaving it at
+	// its boot value froze the page ground for the session — see
+	// platform.SetBodyGround.
+	platform.SetBodyGround(t.Ground)
 	mirrorToBoot(t)
 }
 

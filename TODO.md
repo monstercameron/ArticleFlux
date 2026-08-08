@@ -5027,7 +5027,7 @@ which is why none of them were in the original eighteen.*
       `store/fanout.go` already earned once and this table exists to not re-learn.* §27.5, and it is
       10.7's other half.
 
-- [ ] **10.24 · ⚠ The live development database will not start.** Not caused by this tier's work and
+- [x] **10.24 · ⚠ The live development database will not start.** Not caused by this tier's work and
       not fixable from inside it. `articleflux.db` recorded `0024 item_revisions` with checksum
       `d2033097`; the file on disk is now `0025_item_revisions.sql` with checksum `9ba7c11e` — an
       applied migration was renumbered **and** edited after the fact, so the runner tries to reapply
@@ -5037,6 +5037,7 @@ which is why none of them were in the original eighteen.*
       migrate cleanly through `0026`.
       **The rule worth keeping**: a migration that has been applied anywhere is immutable — renaming
       one is the same act as editing it, because the version is part of its identity.
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 
 ---
 
@@ -5765,7 +5766,7 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
 
       Still owed: an e2e proof, which is out of scope for the pass that closed this — see above.
 
-- [ ] **F34a · The dev database's ledger disagrees with the migration filenames.**
+- [x] **F34a · The dev database's ledger disagrees with the migration filenames.**
       `TestPagingAtRealScale` and `TestMarkAllReadAtRealScale` fail against a copy of
       `articleflux.db` with *"migration 0025_item_revisions: duplicate column name: content_hash"*.
       The cause is bookkeeping, not schema: the running instance applied this migration while it was
@@ -5777,6 +5778,7 @@ a real build. Nothing here is scheduled; this is a backlog, not a plan.
       real-scale tests pass again. Worth deciding at the same time whether a renumbered migration
       should be detectable rather than only discoverable by a failing test — every developer with a
       long-lived database hits this the same way.*
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 
 - [ ] **F35 · WebSub subscriber.** M26 has it. The hub belongs to the publisher — the same relationship
       we already have with the feed — so this is not a third-party dependency in the sense this list
@@ -6215,7 +6217,7 @@ byte-identical — and any new test added to this repo should be.
 
 ### Blocking the e2e suite from being a CI gate
 
-- [ ] **Q1 · The "jumping down" race in `e2e/reader.spec.mjs` (~line 144).** Fails roughly **1 run in
+- [x] **Q1 · The "jumping down" race in `e2e/reader.spec.mjs` (~line 144).** Fails roughly **1 run in
       3**. Measured 4/6 passes across two separate isolated 3-run batches, with the **identical**
       symptom both times: **row 1 falsely reads `data-read=true`**. An earlier agent ran it 2/2 clean
       and concluded it did not reproduce — that was a sample-size artifact, and it is the reason this
@@ -6239,6 +6241,7 @@ byte-identical — and any new test added to this repo should be.
       wrong; the single test passes 10 consecutive runs; and if it was a product race, a deterministic
       Go-level regression test in `client/view` covers it — that is worth more than the probabilistic
       e2e one.*
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 
 - [x] **Q2 · e2e port locks are repo-relative, so they do not guarantee machine-wide exclusivity.**
       `e2e/ports.mjs` locks per run against a path inside the repo. Two checkouts, or one checkout
@@ -7629,7 +7632,7 @@ timing, wrong target, state that outlives the session that set it. Two are real;
 cosmetic. Full pass notes (what worked, not just what didn't) live in the session transcript, not
 here — this section is the punch list.*
 
-- [ ] **Q1 · A reaction can land on the wrong article.** ◧ **2026-07-31 — best-effort mitigation
+- [x] **Q1 · A reaction can land on the wrong article.** ◧ **2026-07-31 — best-effort mitigation
       shipped, root cause NOT confirmed, NOT live-verified.** Read every code path that decides
       which article id a Like/Dislike/Note/Read-later click carries: `glyphItemChip`
       (`client/view/panes.go`) sets `data-for-item` from the CLICKED ROW'S OWN `it.GetId()`, not from
@@ -7661,7 +7664,8 @@ here — this section is the punch list.*
       against the mitigation above, and if it still reproduces, browser devtools on the actual click
       event (which element, at what coordinates, at what point in the scroll animation) rather than
       further static reading — this pass exhausted what static reading of the Go source can tell.
-- [ ] **Q2 · Article search bleeds into the sidebar feed filter, and the mixed state persists
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
+- [x] **Q2 · Article search bleeds into the sidebar feed filter, and the mixed state persists
       server-side.** ◧ **2026-07-31 — investigated at length, NOT reproduced or explained in source,
       no fix attempted.** Traced every layer between the two fields and found them correctly
       separated: distinct `ui.UseState`s (`searchText` vs `feedFilter`), distinct `data-role` DOM
@@ -7681,6 +7685,7 @@ here — this section is the punch list.*
       exact keystroke that causes it — capture the actual `SetPrefs` RPC payload for the moment
       `rail.filter` changes, to see whether the client sent it (a Go bug, findable) or whether the
       value was already wrong client-side before that RPC fired (points elsewhere).
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 - [x] **Q3 · Dead feed URLs are accepted with zero passive warning.** Already implemented in source
       (commit `46e8feb`, 2026-07-30 — one day before the QA pass that flagged it), just not yet on
       the live deployment the QA pass drove. `feedRow` (`client/view/panes.go`) computes
@@ -7765,7 +7770,7 @@ timer.*
       adjacent view tests pass (`wasmtest`); e2e `search runs against FTS5` (Enter path, unchanged)
       and the two new specs below pass on a clean run.
 
-- [ ] **Known flake: a fast-typed keystroke can be silently dropped from the search box.**
+- [x] **Known flake: a fast-typed keystroke can be silently dropped from the search box.**
       Typing `"sourdough"` via Playwright's `pressSequentially` (80ms/key — not an unrealistic
       speed) occasionally lands as `"sourough"` — a character missing from the DOM value itself,
       not a search-dispatch bug: the debounced search then correctly searches the *already
@@ -7799,6 +7804,7 @@ timer.*
       exact 80ms cadence does not, and a single manual check (typing "linux" once against the live
       `:9000` server) did not reproduce it. Watch for reports of a search query "not finding
       anything obvious" — that is what this looks like from the outside.
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 
 ## Completion sweep — checking every open box against the tree (2026-08-01)
 
@@ -7835,7 +7841,7 @@ rotate the theme between captures — every picture in a different palette — a
 out with settings rows whose titles were missing. It looked like a capture-timing problem and was
 treated as one twice (longer settles, then longer settles again) before being measured.*
 
-- [ ] **A theme switched AFTER a client-side navigation updates `:root` but not `<body>`.** The
+- [x] **A theme switched AFTER a client-side navigation updates `:root` but not `<body>`.** The
       custom properties on the root element take the new theme's values; the body keeps the previous
       theme's background. Switch to **Contrast** having navigated while in **Daylight** and you get
       Contrast's white type drawn on Daylight's paper ground: every secondary label — rail entries,
@@ -7865,6 +7871,7 @@ treated as one twice (longer settles, then longer settles again) before being me
 
       Worked around in `e2e/home-shots.mjs`, which reloads after every theme change and says why.
       The workaround is not the fix and the comment there says so.
+      ✅ **Closed 2026-08-07** — reproduced, fixed and covered; the account is in "The bug campaign — one root cause behind four of them" at the end of this file.
 
 ## The coverage campaign — 86.8%, six bugs, and a layer that gates nothing (2026-08-02)
 
@@ -8067,3 +8074,361 @@ G3 fixture once per `-count` — six times, at 23–28s each, before any measure
       partial data already suggests is that the biggest allocation number found
       (`classify.Compile`) may be a boot-time cost, in which case it is worth nothing. Measuring
       what is hot is not the same as measuring what runs.
+
+---
+
+## The OpenTelemetry story, audited — a good layer nothing reads (2026-08-04)
+
+*Opened while researching whether SchemaFlow's telemetry would fit (`docs/AI_SCHEMAFLOW_MIGRATION.md`).
+The answer turned out to be less interesting than what the audit found on the way. `internal/telemetry`
+is a careful, well-argued package: two exporters with a stated reason for each, histogram buckets
+chosen for this service rather than left at the SDK default, and an explicit rule that no article
+title, URL, feed address or username may ever become an attribute value. None of that is the problem.*
+
+*The problem is that on the live instance it is all write-only, that the one egress path which costs
+money is not instrumented at all, and that the three signals cannot be joined to each other. Metrics
+are in good shape; traces are three spans; logs and traces share no identifier.*
+
+- [ ] **OTEL-1 — In production, nothing is observed.** `deploy/nginx.conf:72` returns 404 for
+      `/metrics` and `deploy/nginx.conf:73` does the same for `/debug/`, both deliberately and both
+      correctly. `deploy/articleflux.service` sets no OTLP endpoint, and with `OTLPEndpoint == ""`
+      the tracer is the noop tracer (`internal/telemetry/telemetry.go:181`) — no provider is even
+      constructed. So the live deployment emits zero traces and writes its metrics into a registry
+      that nothing on the box or off it scrapes. Every item below is downstream of this one: there
+      is no point improving the instrumentation until something reads it.
+
+      *Done when: either a loopback scrape exists on the droplet, or `OTEL_EXPORTER_OTLP_ENDPOINT`
+      is set in `/etc/articleflux/articleflux.env` and a collector is receiving. Whichever is chosen
+      is written into `deploy/README.md` so the next person does not have to infer it.*
+
+- [ ] **OTEL-2 — The paid egress path has no instrumentation of any kind.** `internal/llm`
+      constructs its own `&http.Client{Timeout: requestTimeout}` (`internal/llm/llm.go:133`) and
+      `internal/tts` does likewise; neither routes through `internal/netguard`, and
+      `netguard.Observer` (`internal/app/app.go:453`) is the only thing feeding `EgressRequests` and
+      `EgressDuration`. The consequence: fifteen paid features — every Smart+ call and every speech
+      synthesis — have no request count, no duration, no failure rate, no breaker-trip signal and no
+      cost series. The only number that exists is `llm.Client.Usage()`, which is in-process and
+      resets on restart, and the Settings screen already says so.
+
+      Routing them through `netguard` is arguably wrong — its job is refusing private addresses, and
+      `api.openai.com` is public — so the fix is the observer half, not the guard half.
+
+      *Done when: `internal/llm` and `internal/tts` each call an observer hook shaped like
+      `netguard.Observer`, and there are counters for requests, tokens in/out and — once SchemaFlow's
+      `pricing` is available or an equivalent table is written — USD.*
+
+- [ ] **OTEL-3 — Logs and traces share no identifier, so they cannot be joined.** `internal/reqid`
+      threads a request id through handlers and into queued jobs, and argues the case well.
+      `obs.Record` carries time, level, message and flattened attrs. Nothing anywhere calls
+      `trace.SpanContextFromContext` — a grep for `TraceID`, `trace_id` or `SpanContext` across
+      `internal/` and `client/` returns nothing. A trace in a collector and the log line that
+      explains it are two artefacts with no key between them, which is the single largest hole in
+      the story: correlation is most of what traces are worth.
+
+      *Done when: an slog handler stamps `trace_id` and `span_id` on every record whose context
+      carries a recording span, `obs.Record` carries both, and the Activity tab shows them.*
+
+- [ ] **OTEL-4 — The propagator is registered and never used.** `telemetry.go:204` sets a composite
+      `TraceContext`/`Baggage` propagator, and its comment says a span started behind a reverse proxy
+      "joins the same trace instead of starting an orphan". Nothing extracts it: there is no
+      `Extract` on the HTTP middleware, none in the gRPC interceptor, and no `Inject` on any outbound
+      request. The comment describes an intent, not a behaviour.
+
+      *Done when: `httpMetrics` and the RPC interceptor extract inbound context, `netguard`'s
+      transport injects on outbound fetches, and a test asserts an inbound `traceparent` ends up on
+      the child span.*
+
+- [ ] **OTEL-5 — Every trace is a single span.** Three `Tracer.Start` sites exist: `rpc.<name>`
+      (`internal/app/app.go:1068`), `stream.<name>` (`internal/app/streamchain.go:115`) and
+      `poll.cycle` (`internal/app/app.go:1986`). There are no child spans for the store, the item
+      pipeline, extraction, the LLM call, or per-source work inside a poll cycle. A trace with one
+      span is a duration, and the duration is already a metric — the tree is the part that answers
+      "which layer was slow".
+
+      *Done when: spans exist at the boundaries that can actually be slow — `store` query, `extract`,
+      `analyze`, `llm.Do`, and one span per source inside `poll.cycle`.*
+
+- [ ] **OTEL-6 — Jobs cannot be linked to the request that queued them, although the pattern for it
+      already exists.** `internal/reqid`'s own doc calls the queue boundary "the part that is usually
+      missed" and solves it for log ids via `Origin`. The trace half is unbuilt: `JobRuns` and
+      `JobDuration` are recorded (`internal/app/app.go:549`) with no span to attach them to, so
+      fan-out, extraction, archival and recommendation work is invisible to a trace.
+
+      *Done when: the serialized traceparent rides alongside `Origin` on a queued job, and the worker
+      starts its span as a child or a link of the enqueuing span.*
+
+- [ ] **OTEL-7 — The two numbers most likely to explain a slow instance are not metrics.** The Server
+      settings tab already reads heap, goroutines and GC, and the store is the likeliest source of
+      reader-visible latency. Neither is exported, so both are visible only to somebody already
+      logged into the instance that is misbehaving. The eight `HotQueries` shapes are already a
+      bounded, low-cardinality label set — they are a query-duration histogram waiting to be written.
+
+      *Done when: a store query histogram keyed by query shape exists, and runtime memory/goroutine/GC
+      gauges are published. Note the runtime half may want `otel contrib`, which is a new dependency
+      and therefore an ask.*
+
+- [ ] **OTEL-8 — No cache is instrumented, and cache hit rate is the bill.** Four on-disk caches ship
+      — `page-cache`, `digest-cache`, `speech-cache`, `podcast-cache` — and the digest and podcast
+      ones exist specifically so a re-listen re-bills nothing. None of them reports hits, misses,
+      bytes or evictions, so the claim that the caching works is untested in production.
+
+- [ ] **OTEL-9 — Egress metrics are recorded against `context.Background()`.**
+      `internal/app/app.go:454` discards whatever context the fetch was made under. Even once spans
+      exist (OTEL-5), an egress metric can never carry an exemplar or be joined to the span that
+      caused it.
+
+      *Done when: `netguard.Observer` takes a `context.Context` and the call site passes the real one.*
+
+- [ ] **OTEL-10 — Logs are the one signal with no way off the box.** Metrics have Prometheus and
+      OTLP; traces have OTLP; logs have stderr and a bounded in-memory ring that dies with the
+      process. There is no `otelslog` bridge. Combined with OTEL-1 that means a crash loop destroys
+      the only record of why. This may well be the right answer for a self-hosted reader — but it
+      should be a decision in writing rather than an omission.
+
+      *Done when: either logs ship over OTLP, or `internal/obs`'s doc says plainly that the ring is
+      the whole story and that a crash loses the evidence.*
+
+- [ ] **OTEL-11 — No sampler is configured.** `telemetry.go:194` builds the tracer provider with a
+      batcher and a resource only, so the sampler is the SDK default: parent-based, always on. The
+      moment an endpoint is set, every RPC on a busy instance becomes an exported span, and there is
+      no flag to turn it down. For contrast, SchemaFlow's own tracing sets
+      `TraceIDRatioBased(traceSampleRate)` — the thing to copy.
+
+      *Done when: a sample ratio is configurable next to `-otlp-endpoint`, with a default that is
+      defensible for a small instance.*
+
+- [ ] **OTEL-12 — Metric names are all `articleflux.*` where semconv equivalents exist.**
+      `http.server.request.duration` and `rpc.server.duration` are standard and would make a stock
+      dashboard work; `semconv/v1.26.0` is already imported for resource attributes. Either adopt the
+      semconv names for the HTTP and RPC instruments or record why not — the domain instruments
+      (`poll`, `items`, `egress`, `job`) have no standard equivalent and should stay as they are.
+
+- [ ] **OTEL-13 — No test exercises a span.** `telemetry.Nop()` hands back the noop tracer, so the
+      two `SetStatus` call sites and `RecordError`'s span path never run under assertion. An
+      in-memory span exporter would make trace shape testable the same way the metric instruments
+      already are.
+
+- [ ] **OTEL-14 — Telemetry's own failures are reported into the surface nobody watches.**
+      `otel.SetErrorHandler` logs export errors at warn into the ring (`telemetry.go:208`). A
+      collector that stopped accepting spans looks exactly like a healthy idle service. It needs a
+      counter and a line on the Server tab.
+
+- [ ] **OTEL-15 — If SchemaFlow lands, never call its `telemetry.InitTracing`.**
+      `SchemaFlow/telemetry/tracing.go:138` calls `otel.SetTracerProvider` and
+      `otel.SetTextMapPropagator` — global setters that would replace the providers
+      `internal/telemetry` built, silently, including its resource attributes and its exporters. It
+      is opt-in today, which is the only reason this is a hazard rather than a bug. The correct shape
+      is the one the migration doc argues for everywhere else: SchemaFlow inherits ArticleFlux's
+      globals and never installs its own.
+
+      *Done when: a test fails if `schemaflow/telemetry.InitTracing` is reachable from ArticleFlux,
+      the same way P1.6 guards `ops.SetDefaultProvider`.*
+
+- [ ] **The client is deliberately not instrumented, and that should stay written down.** There is no
+      RUM, no client-side span, and no `traceparent` injected over the gRPC tunnel; the Speed tab's
+      p50/p95 are server-side `obs.Latency` numbers. A reader that phones home is the exact egress
+      this project takes a position against, so the absence is right — but "we chose not to" and "we
+      forgot" look identical in a codebase, and the next audit will find it again.
+
+## The bug campaign — one root cause behind four of them (2026-08-07)
+
+*Every open bug in this file was taken in turn, reproduced against a rebuilt client rather than read
+about, and fixed in whichever layer was actually wrong. Four of them turned out to be the same defect
+wearing different clothes, and it is not in this repository: **the reconciler always writes `value` on
+an input whose prop changed since the last render, and it compares against that previous PROP rather
+than against what the field contains.** A render that resolves after the next keystroke therefore puts
+its own older string back, and the character typed in between is gone from the DOM. GoWebComponents'
+`internal/runtime/reconciler_commit.go` says so in as many words — `value` is a
+`propKindSpecialProperty`, "Always set these as properties to ensure UI updates correctly".*
+
+*The application-side answer is the same everywhere it applies and it is cheap: **do not bind a text
+box to the state that changes per keystroke.** Give the field its own SEED state, moved only at the
+moments the app has something to say and nobody is typing — boot, a debounce firing, a field the app
+itself clears. An unchanged prop is skipped by the same diff, so the write never happens. The reader's
+text still lives in the per-keystroke state, which every consumer reads; the seed only decides who is
+allowed to write the DOM.*
+
+### The measurement that settled it
+
+*Hooking the `value` setter on `HTMLInputElement.prototype` and typing "sourdough" at 80ms/key:*
+
+    WRITE "so" -> "s"        <- the reconciler, one render behind
+    WRITE "sou" -> "s"       <- and again, on another run
+
+*Four runs in six, ending as "surdough" or "sordough". After the fix: six in six clean, and **not one
+write to the field while typing** — the prop no longer changes, so there is nothing to write. That is
+what closes it, rather than making the window smaller.*
+
+### Fixed
+
+- [x] **A theme switched after a client-side navigation leaves the ground behind** (2026-08-01
+      section). Reproduced, and the diagnosis in that section is wrong in a way worth recording: the
+      navigation is incidental. `web/index.html` writes `document.body.style.background = saved[0]`
+      one frame before the wasm module exists, so the splash wears the theme the reader last chose —
+      and that inline declaration outranks the sheet's `body { background: var(--bg) }` for the rest
+      of the session. It froze the ground on **every load after a reader's first**, navigation or
+      not; the original repro only looked navigation-shaped because the step before it was a fresh
+      context with nothing mirrored yet.
+      Two fixes, and the second was invisible to everyone including the ticket: the shim now writes
+      `backgroundColor` rather than the `background` SHORTHAND, which was resetting `background-image`
+      at inline priority and had been **silently deleting the fractal-noise overlay** — "the
+      difference between designed and a dark theme", per its own comment — on every returning load
+      since the shim was written. `platform.SetBodyGround`, called from `applyAppearance`, keeps the
+      colour in step. Covered by `e2e/appearance.spec.mjs`'s "the page ground follows the theme on a
+      returning load", which asserts against `--bg` rather than a pinned hex and fails if the noise
+      goes missing. Measured before: `bodyBg` stuck at `rgb(0,0,0)` through two theme changes,
+      `noise: NONE`.
+
+- [x] **Known flake: a fast-typed keystroke can be silently dropped from the search box** (2026-08-01
+      section). Not a dropped keystroke, and the shipped comment saying the mechanism was unconfirmed
+      is now answered: a late render overwrote a character the reader had already typed. `searchSeed`
+      (`client/view/reader.go`) is what the box carries; `searchText` is what the search reads. The
+      seed catches up inside the debounce's own callback, untrimmed — trimming it there would eat the
+      space in "sour dough" typed with a pause after "sour", which is the same bug reintroduced by its
+      own fix. The two e2e specs that caught it at 50-80% pass; measured 2/4 failures before, 0/5
+      after, plus the setter trace above.
+
+- [x] **Q2 · Article search bleeds into the sidebar feed filter** (2026-07-31 QA pass). Reproduced on
+      the first attempt once the rail's filter box existed to reproduce it in — the shared fixture
+      seeds two feeds and the box needs more than eight, which is why no spec has ever covered it and
+      why a careful static review of both fields found nothing wrong with either. **The fields were
+      never the problem.** `platform.FocusField` asked for focus from inside a `requestAnimationFrame`
+      loop, so for at least a frame after `/` the caret was still nowhere and every letter reached the
+      keydown handler as a single-key SHORTCUT. `f` is bound to "focus the sidebar filter". Press `/`
+      and type "feed health" — not fast typing, just typing — and the `f` moved focus to the rail, the
+      rest of the query was typed there, and that box persists what it is given, so the reader's
+      half-query outlived the session in `rail.filter`. Measured: `search=""`, `filter="ee health"`,
+      still there after a reload.
+      `FocusField` now focuses synchronously when the field is already on screen, which is every field
+      a shortcut names, so there is no window at all; the deferred path (a field inside an overlay
+      that has not been committed) holds a `focusOwed` claim that makes `OnKeyDown` report keys as
+      typing until the caret lands or the retry cap gives up. Synchronous focus then meant the
+      browser's default action typed the `/` into the box it had just been given, so
+      `platform.Key.Prevent` exists for the two bindings that take focus and for nothing else.
+      The rail filter was ALSO eating characters to the reconciler bug above ("feed" arrived as "ee" —
+      one character to the shortcut, one to a stale write); it has its own seed now, kept separate
+      from `filter` because the FILTER must still apply on every keystroke.
+      Covered by `e2e/keyboard.spec.mjs`'s "a query typed straight after / lands in the search box,
+      all of it", which asserts on the box's CONTENTS — the existing focus assertion passes on the
+      broken build, because focus does arrive, a frame after the keystrokes that were meant for it.
+
+- [x] **Q1 · A reaction can land on the wrong article** (2026-07-31 QA pass). Live-verified against a
+      rebuilt client, which is what the ticket said it was waiting for. The dispatch path is correct:
+      across ~20 deliberate attempts spread over the whole travel animation, every Like that landed
+      landed on the article whose button carried the id, and none landed on another. The mitigation is
+      doing its job — clicks during travel are dropped, which the ticket accepted — and both of its
+      release paths are frame-capped, so the guard cannot stick armed. Clicks aimed at a fixed
+      coordinate during travel mostly hit nothing at all, which is the honest shape of the original
+      report: the pane moves out from under the cursor.
+      Pinned by `e2e/reader.spec.mjs`'s "a like lands on the article whose button was pressed, or on
+      none", which allows exactly two outcomes and proves the press works once the pane settles — so a
+      dropped click stays a delay rather than becoming a dead control.
+
+- [x] **Q1 · The "jumping down" race in `e2e/reader.spec.mjs`** (blocking the e2e suite from being a
+      CI gate). The ticket asked which it was, (a) a product race or (b) a racy test, and warned that
+      the wrong answer hides the bug. **It is both, and that is why it kept coming back.**
+      (b) first, and it is the larger share: `rows.nth(n).click()` clicks an element's geometric
+      centre, a row's centre is its meta line, and the meta line grew a `.cat-chip` when
+      classification landed. That chip is a SCOPE LINK which deliberately wins the click
+      (`OnDelegatedRowClick`'s skip list), so the click changed the query, the list reloaded around a
+      different set of articles, and every later `rows.nth(...)` was pointing at something else —
+      including rows that really had been read. Measured with `document.elementFromPoint`:
+      `span.cat-chip` under row 2's coordinates, 6 runs out of 6. The same stale target was failing "U
+      marks a read article unread again" (verified pre-existing on untouched `dev`), and it is what
+      `e2e/fixtures.mjs`'s new `openRow` exists to stop happening to the next test.
+      (a) is what was left once the clicks landed where they were aimed, and it needed the `DBG` trace
+      to find: `readArticle` honoured `skipPast` and `focusArticle` did not. Article bodies land
+      asynchronously; one growing ABOVE the reader pushes everything below it down; so at an unchanged
+      scroll position the article at the fold becomes an earlier one — and an article a jump had
+      deliberately skipped was marked read seconds later by a body two articles above it finishing,
+      with nobody touching the machine. It failed **only after a reload**, because the optimistic
+      local flag was correct and the `SetItemState` was not, which is exactly what a racy test looks
+      like from the outside.
+      `platform.OnTopmostChild` now reports whether the scroll POSITION moved since the last
+      measurement, and `focusArticle` still does everything a report implies — the title, the dwell
+      clock, the highlighted row — except write a judgement, and leaves the skip armed so scrolling
+      into it later still counts. The rule is `deliveredByLayout` in `client/view/reader.go`, pinned
+      by four deterministic cases in `client/view/skippast_test.go`, which is what the ticket asked
+      for and is worth more than the probabilistic e2e one. The two jump specs then passed **10
+      consecutive runs**.
+      The `println("DBG ...")` calls that made the diagnosis are gone with it. They were shipping to
+      every reader's console.
+
+- [x] **10.24 / F34a · The dev database's ledger disagrees with the migration filenames.** The data
+      half was already repaired: `articleflux.db` reads 30 rows, no drift, no renumbering, nothing
+      pending, and `TestPagingAtRealScale` / `TestMarkAllReadAtRealScale` both pass. What was still
+      open is the question F34a raised and left — whether a renumbered migration should be
+      **detectable** rather than only discoverable by a failing test. It is now. `store.Migrate` keeps
+      the ledger keyed by checksum as well as by version, and a pending migration whose contents are
+      already recorded under another version is refused by name, with the one-row `UPDATE` that fixes
+      it in the message. It is the only form of tampering the existing checksum guard cannot see,
+      because nothing about the migration changed except its identity. Refused rather than repaired: a
+      startup path that silently rewrites its own ledger is a worse thing to own.
+      `TestARenumberedMigrationIsNamedRatherThanReapplied` reproduces it the way it happened.
+
+### Found while fixing the above, and not previously filed
+
+- [x] **The login and setup fields had the same character-eating bug, and it is the worst place for
+      it.** `submit` reads the FIELDS rather than state precisely so that what is on screen is what is
+      sent — so a character the reconciler deleted is a character deleted from the credential, and the
+      reader is told their password is wrong. `e2e/loginkeyboard.spec.mjs` types at 15ms/key, which is
+      a password manager's speed, and three of its tests failed under full-suite load on the unfixed
+      build. All six boxes across `login.go` and `setup.go` carry seeds now. Setup matters twice over:
+      it creates the account every later sign-in has to match, and the confirm field would have agreed
+      with a corrupted password.
+
+- [x] **`boolStr`, `boolStrP`, `itoa`, `ftoa` were marked "DBG TEMP: removed before shipping" and were
+      shipping.** Removed with the `println`s that used them.
+
+### Three specs that were red for reasons of their own
+
+*Found by running `reader.spec.mjs` and `dialogs.spec.mjs` alone rather than in suite order. All three
+fail identically on untouched `dev` — checked by stashing this session's client changes, rebuilding
+the wasm and re-running, which is the only way to tell a regression from an inheritance.*
+
+- [x] **`.banner` matches two elements, so the strict-mode check refuses.** The list pane has a status
+      banner and a category-suggestion banner, and both are always in the DOM so they can animate
+      their own collapse. Scoped to `.banner-slot[data-open="true"] .banner` — the app's own answer to
+      "which of these is showing", which is the question the assertion was asking.
+
+- [x] **The Category dialog is called "Folder" now.** The naming pass gave the word "category" to the
+      article-level taxonomy and left the rail's grouping as a folder
+      (`client/i18n/en_addfeed.go`'s `category.title`), so two specs were asking `getByRole('dialog',
+      {name: 'Category'})` for a name nothing has — which from the test's side looks exactly like a
+      dialog that never opened. The `data-action` keeps its old spelling, correctly: that is an
+      internal id, not copy.
+
+- [x] **A tag chip is two controls, and its own doc comment said it was one.** The comment above
+      `tagChip` read "the whole chip is the remove button rather than a label with a small × beside
+      it" long after the label became a link to the tag's stream — and `reader.spec.mjs` clicked the
+      whole chip on that authority and asserted the tag was gone. What it did was navigate. Verified
+      against the live app both ways: clicking the chip leaves the tag in place and it survives a
+      reload; clicking the `×` removes it and the rail loses the row. Test and comment both corrected;
+      the product was right the whole time.
+
+### Left open, deliberately
+
+- [ ] **`cmd/dbpeek` is now dead.** Twenty-seven lines hardcoded to `migrations/0025_item_revisions.sql`
+      and `articleflux.db`, written to diagnose a finding that is closed and guarded by a test. The
+      coverage campaign already said it "should be deleted, not tested" and nothing here disagrees;
+      left in place because deleting a command is a scope decision rather than a bug fix.
+
+- [ ] **The mobile project runs desktop-shaped specs, and has been failing on that for a while.**
+      Seven tests in `reader.spec.mjs` fail on `--project=mobile` and pass on `--project=desktop`,
+      every one of them by waiting out a full two-minute timeout against an element that is in the
+      DOM and deliberately not visible: a phone shows ONE pane, so `[data-action="toggle-unread"]`,
+      `.pane-rail .feed-row` and `.item-row` are each off screen at the moment the test reaches for
+      them. Nothing about the product is wrong; the specs were written against the two-pane layout
+      and the mobile project runs them anyway. Four were fixed in passing this session (the
+      `appearance.spec.mjs` theme helper, which was costing six minutes of timeouts on its own, plus
+      `openAlpha` and two row clicks); the rest want the same treatment one at a time, and one of
+      them may genuinely be desktop-only and should say so with `test.skip` rather than be bent into
+      shape.
+      *Done when: `--project=mobile` is either green or explicitly skipped with a reason at each
+      remaining site, so a mobile failure means something again.*
+
+- [ ] **The row-centre click trap is fixed at four call sites, not at all thirty.** `openRow`
+      (`e2e/fixtures.mjs`) exists and the tests that were failing use it, but roughly thirty
+      `.item-row').first().click()` calls elsewhere in the suite are one category chip away from the
+      same silent scope change. They pass today because row 0's centre happens not to be a chip.
+      *Done when: every spec that means "open this article" says so, by the title.*

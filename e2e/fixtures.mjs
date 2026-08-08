@@ -151,6 +151,30 @@ function railRow(rail, name) {
 }
 
 /**
+ * openRow opens a list row by clicking its TITLE, not the row's middle.
+ *
+ * Playwright clicks an element's geometric centre, and a row's centre is not
+ * reliably part of the row: the meta line carries a category chip and a source
+ * name, both of which are scope links that deliberately win the click instead of
+ * opening the article (see platform.OnDelegatedRowClick's skip list). A row that
+ * gains a chip therefore silently changes what `row.click()` does — the scope
+ * jumps, the list reloads around a different query, and the article the test
+ * meant to open is auto-opened UNFOCUSED by the new list, which by design does
+ * not mark it read.
+ *
+ * That is not hypothetical: it is what "U marks a read article unread again"
+ * was failing on, and the failure pointed at the mark-read path, which was
+ * working perfectly the whole time.
+ *
+ * The title is the one part of a row that is only ever the row.
+ */
+export async function openRow(page, index = 0) {
+  const row = page.locator('.item-row').nth(index);
+  await row.locator('.item-title').click();
+  return row;
+}
+
+/**
  * currentArticle is the one the reader opened, in a pane that shows several.
  *
  * The reading pane became a STREAM: opening an article renders it and its

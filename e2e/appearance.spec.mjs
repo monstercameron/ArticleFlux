@@ -31,10 +31,37 @@ const THEMES = ['fanciful', 'ink', 'ledger', 'daylight', 'contrast'];
 /** WCAG AA at body size. --ink is used at 12.5px, so the large-text bar does not apply. */
 const AA = 4.5;
 
+/**
+ * pickTheme opens Appearance and presses a theme card.
+ *
+ * # Why it does not just click the settings button
+ *
+ * On a phone the layout shows one pane at a time, so the gear is in the DOM and
+ * permanently not visible — `locator.click()` sat there for the full two-minute
+ * timeout reporting "206 × waiting for element to be visible, enabled and
+ * stable", which reads as a hung app and is a button on a pane that is not on
+ * screen. Every theme test in this file was red on the mobile project for that
+ * reason, and had been.
+ *
+ * `,` is the keyboard route to the same surface (client/view/reader_keyboard.go),
+ * and it does not care which pane is showing. Deliberately NOT a `page.goto` to
+ * `/settings/appearance`: that is a full reload, and the test below this one is
+ * specifically about a theme change that happens WITHOUT one — navigating there
+ * would make it assert nothing and pass on any build.
+ */
 async function pickTheme(page, name) {
-  await page.locator(`[data-action='open-settings']`).first().click();
-  await page.waitForTimeout(300);
-  await page.locator(`[data-action='settings-tab'][data-value='appearance']`).click();
+  const tab = page.locator(`[data-action='settings-tab'][data-value='appearance']`);
+  if (!(await tab.isVisible().catch(() => false))) {
+    const gear = page.locator(`[data-action='open-settings']`).first();
+    if (await gear.isVisible().catch(() => false)) {
+      await gear.click();
+    } else {
+      await page.evaluate(() => document.activeElement?.blur());
+      await page.keyboard.press(',');
+    }
+    await expect(tab).toBeVisible({ timeout: 30_000 });
+  }
+  await tab.click();
   await page.waitForTimeout(300);
   await page.locator(`.thm-card[data-value='${name}']`).click();
   await page.waitForTimeout(600);
@@ -216,6 +243,83 @@ test.describe('appearance', () => {
       // And the ratio itself, which is the number the floor actually acts on.
       expect(Math.abs(got[i].ratio - want.ratio)).toBeLessThanOrEqual(0.1);
     }
+  });
+
+  /**
+   * The page GROUND has to move with the theme, on a load that is not the first.
+   *
+   * The splash is painted from a palette mirrored into localStorage, because the
+   * theme lives on the server and cannot be known before the transport is up —
+   * and web/index.html applies it as an inline style on <body>, which is the one
+   * declaration `client/view/theme.go` cannot outrank by writing custom
+   * properties onto <html>. Written once at boot and never updated, it froze the
+   * ground for the whole session: every token moved on a theme change except the
+   * paper underneath them, so Contrast's white secondary type landed on
+   * Daylight's cream and every rail entry, settings row title and inactive tab
+   * name went invisible.
+   *
+   * The reload is the entire test. A first-ever visit has nothing mirrored yet,
+   * writes no inline style, and passes this on any build — which is why the
+   * existing specs, all of which set a theme on a freshly opened page, could not
+   * see it.
+   *
+   * Asserted against `--bg` rather than against a pinned hex: the invariant is
+   * that the ground and the tokens are one theme, and a test carrying its own
+   * copy of five palettes is a test that goes stale the day one is retuned.
+   */
+  test('the page ground follows the theme on a returning load', async ({ page }) => {
+    await boot(page);
+
+    // Mirror a palette, then come back the way a reader does. The shim now has
+    // something to read, and from here the inline declaration is in play.
+    await pickTheme(page, 'contrast');
+    await page.reload();
+    await boot(page);
+
+    for (const theme of ['daylight', 'ledger', 'contrast']) {
+      await pickTheme(page, theme);
+      const got = await page.evaluate(() => {
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 1;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        const rgb = (css) => {
+          ctx.clearRect(0, 0, 1, 1);
+          ctx.fillStyle = '#000';
+          ctx.fillStyle = css;
+          ctx.fillRect(0, 0, 1, 1);
+          const d = ctx.getImageData(0, 0, 1, 1).data;
+          return `${d[0]},${d[1]},${d[2]}`;
+        };
+        const cs = getComputedStyle(document.body);
+        return {
+          ground: rgb(cs.backgroundColor),
+          token: rgb(getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg').trim()),
+          noise: cs.backgroundImage,
+        };
+      });
+
+      expect(
+        got.ground,
+        `on "${theme}" the tokens say the ground is rgb(${got.token}) and <body> ` +
+          `is painted rgb(${got.ground}). The boot shim's inline background on ` +
+          `<body> outranks the sheet, so it has to be kept in step — see ` +
+          `platform.SetBodyGround.`,
+      ).toBe(got.token);
+
+      // The same inline declaration used to be written as the `background`
+      // SHORTHAND, which resets background-image at a priority no stylesheet can
+      // reach — so the fractal-noise overlay that makes the ground read as a
+      // material was silently gone on every load after the first, and nothing
+      // measured it.
+      expect(
+        got.noise,
+        `the noise overlay is missing on "${theme}". Something is writing the ` +
+          '`background` shorthand where it should write background-color.',
+      ).not.toBe('none');
+    }
+
+    await pickTheme(page, 'fanciful');
   });
 
   test('a hue still identifies its source after being made readable', async ({ page }) => {

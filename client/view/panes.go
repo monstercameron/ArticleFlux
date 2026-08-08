@@ -379,6 +379,21 @@ type railProps struct {
 	// typing three letters of its name — and the unread/all toggle does not help
 	// when the feed you want is quiet.
 	filter string
+	// filterSeed is what the filter BOX is told to hold, which is not the same
+	// thing as what the filter is doing.
+	//
+	// `filter` above narrows the list on every keystroke, because a filter that
+	// waited would be a filter that felt broken. `value` on an input, though, is
+	// a property the reconciler writes on every render whose prop differs from
+	// the last one's — so binding the box to a per-keystroke state means a render
+	// that lands late puts its own older string back, and the character typed in
+	// between is gone from the DOM. Measured on a live instance: typing "feed"
+	// into this box left "ee".
+	//
+	// So the two are separated. The seed moves at boot and on a pause in typing,
+	// and at both of those the string it writes is the one the box already
+	// holds. See reader.go's feedFilterSeed.
+	filterSeed string
 	// onFilterInput is held through a Ref, and the indirection is the whole point.
 	//
 	// It was a bare ui.Handler, under a comment at the call site reading "a
@@ -595,7 +610,7 @@ func railPane(p railProps) ui.Node {
 			body = append(body, html.Div(html.Props{Class: "rail-filter"},
 				html.Input(html.Props{
 					Class: "field", Type: "search", Placeholder: tr.T("rail", "filterPlaceholder"),
-					Value:   p.filter,
+					Value:   p.filterSeed,
 					OnInput: p.onFilterInput.Get(),
 					Data:    map[string]string{"role": "feed-filter"},
 					Aria:    map[string]string{"label": tr.T("rail", "filterAria")},
@@ -3677,10 +3692,18 @@ type tagRef struct {
 
 // tagChip is a tag already on a feed, with the way to take it off.
 //
-// The whole chip is the remove button rather than a label with a small × beside
-// it: the × alone is a 12px target, and the chip is not a link to anywhere — a
-// tag's own stream is reached from the sidebar, which is where a reader goes
-// looking for it. One control, one meaning.
+// A chip is TWO controls, and this comment used to say the opposite.
+//
+// It once read "the whole chip is the remove button rather than a label with a
+// small × beside it", which stopped being true when the label became a link to
+// the tag's own stream — see the arrangement at the bottom of this function,
+// which is deliberate and newer. The stale sentence is worth recording rather
+// than just deleting: a test clicked the whole chip on its authority and
+// asserted the tag was gone, and what it actually did was navigate. A removal
+// that silently does nothing is indistinguishable from one that failed.
+//
+// The × is the smaller target of the two and that is the accepted cost of the
+// label doing something useful. It carries its own accessible name.
 func tagChip(tr i18n.Runtime, t tagRef, itemID string) ui.Node {
 	// Waiting on the server. A SPAN, not a disabled button: a disabled control is
 	// still a control, and this is a statement — "this tag is going on" — for the

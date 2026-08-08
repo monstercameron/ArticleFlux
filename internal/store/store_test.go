@@ -129,6 +129,50 @@ func TestChecksumDriftAbortsStartup(t *testing.T) {
 	}
 }
 
+// A migration RENUMBERED after it ran is the same offence as one edited after it
+// ran, and it is the one the checksum guard above cannot see: the contents are
+// unchanged, so every version the ledger knows about still matches — the work is
+// simply filed under a name no file has any more.
+//
+// It is not hypothetical. `4d176cf` renumbered `0024_item_revisions` to `0025` to
+// settle a collision with `0026_model_verdict`, and every long-lived database
+// that had already applied it then tried to apply it again and failed inside the
+// SQL with `duplicate column name: content_hash` — a message about the schema,
+// which was fine, that gives no reason to go and look at a filename (TODO.md
+// 10.24 / F34a).
+//
+// Simulated the way it actually happened: the row keeps its checksum and loses
+// its version. That is exactly what a rename leaves behind.
+func TestARenumberedMigrationIsNamedRatherThanReapplied(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+
+	all, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The last one, so moving it cannot collide with a version that exists.
+	m := all[len(all)-1]
+	moved := m.version + 1000
+	if _, err := db.Write.ExecContext(ctx,
+		`UPDATE schema_migrations SET version = ? WHERE version = ?`, moved, m.version); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Migrate(ctx)
+	if err == nil {
+		t.Fatal("a renumbered migration was re-applied instead of being refused")
+	}
+	// The two things somebody staring at this needs: that it is a renumbering,
+	// and which row to correct. A message that says only "failed" sends them to
+	// the schema, which is not where the problem is.
+	for _, want := range []string{"renumbered", "schema_migrations"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v\nwant it to mention %q", err, want)
+		}
+	}
+}
+
 // A24's bar: concurrent writers produce zero SQLITE_BUSY, because the single
 // write connection serialises them in Go instead of in the database.
 func TestConcurrentWritersDoNotGetBusy(t *testing.T) {

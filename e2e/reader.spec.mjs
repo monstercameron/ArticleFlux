@@ -1,4 +1,4 @@
-import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed, currentArticle, openStream } from './fixtures.mjs';
+import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed, currentArticle, openStream, openRow } from './fixtures.mjs';
 import { FEED_ORIGIN } from './ports.mjs';
 
 /**
@@ -159,7 +159,13 @@ test.describe('reading', () => {
     await boot(page);
     const before = await page.locator('.item-row').count();
 
-    await page.locator('.item-row').first().click();
+    // By the title. A row's centre is its meta line, which carries a category
+    // chip that routes elsewhere and wins the click — on a wide screen that is
+    // survivable because the article pane is on screen anyway, and on a PHONE it
+    // is the whole failure: the pane never switches, so `toggle-unread` is in
+    // the DOM and never visible and the click waits out the full timeout. See
+    // openRow in fixtures.mjs.
+    await openRow(page, 0);
     await page.locator('[data-action="toggle-unread"]').click();
 
     await expect(page.locator('.item-row')).toHaveCount(before - 1);
@@ -184,23 +190,54 @@ test.describe('reading', () => {
    * but a test cannot wait for it, so this asks for the row class directly.
    */
   async function openAlpha(page) {
-    await page.locator('.pane-rail .feed-row', { hasText: ALPHA }).first().click();
+    // The rail first. Below 1080px it is not on screen — that is the design —
+    // so clicking a row inside it waits out the full timeout on the mobile
+    // project against an element that is deliberately hidden. openRail is the
+    // suite's existing answer and costs nothing on a wide viewport, where the
+    // rail is already visible.
+    const rail = await openRail(page);
+    await rail.locator('.feed-row', { hasText: ALPHA }).first().click();
     await expect(page.locator('.pane-list')).toBeVisible();
   }
 
-  test('jumping down the list does not read what it jumped over', async ({ page }, testInfo) => {
-    const dbgLog = [];
-    page.on('console', (msg) => { if (msg.text().startsWith('DBG')) dbgLog.push(msg.text()); });
-    try {
-      await runJumpingDownBody(page);
-    } catch (e) {
-      const fs = await import('node:fs');
-      const file = `dbg-fail-${Date.now()}.log`;
-      fs.writeFileSync(file, dbgLog.join('\n'));
-      console.log(`DBGLOG written to ${file} (${dbgLog.length} lines)`);
-      throw e;
-    }
+  /**
+   * The console-capture wrapper this test used to carry is gone with the
+   * `println("DBG …")` calls it read, which were shipping to every reader's
+   * console. They did their job: the log they produced is what identified the
+   * cause — a body loading two articles above the reader grew the pane, moved a
+   * skipped article under the fold at an unchanged scroll position, and the
+   * topmost handler counted that as the reader arriving. Fixed in
+   * platform.OnTopmostChild (`moved`) and focusArticle (`byLayout`).
+   */
+  test('jumping down the list does not read what it jumped over', async ({ page }) => {
+    await runJumpingDownBody(page);
   });
+
+  /**
+   * openArticleAt opens the row at `n` by its TITLE.
+   *
+   * `rows.nth(n).click()` is what these tests used to do, and it is the whole of
+   * the "jumping down" flake (TODO.md Q1, "blocking the e2e suite from being a
+   * CI gate"). Playwright clicks an element's geometric centre; a row's centre
+   * is its meta line; and the meta line grew a category chip when
+   * classification landed. That chip is a SCOPE LINK which deliberately wins
+   * the click instead of opening the article (platform.OnDelegatedRowClick's
+   * skip list), so the click changed the query, the list reloaded around a
+   * different set of articles, and every later `rows.nth(…)` in the test was
+   * pointing at something else — including a row that really had been read.
+   *
+   * That settles the question the ticket said to settle before touching
+   * anything: it is (b), a test observing the wrong element, not (a), the
+   * reader marking the wrong row read. Measured rather than argued — the
+   * element under each click's coordinates was read back with
+   * `document.elementFromPoint`, and row 2's was `span.cat-chip` on 6 runs out
+   * of 6.
+   *
+   * The title is the one part of a row that is only ever the row.
+   */
+  async function openArticleAt(rows, n) {
+    await rows.nth(n).locator('.item-title').click();
+  }
 
   async function runJumpingDownBody(page) {
     await boot(page);
@@ -217,11 +254,11 @@ test.describe('reading', () => {
     // enough that the jump cannot push it clear of the fold — a test that clicks
     // before the bodies land is asserting against a stream too short to
     // reproduce anything.
-    await rows.nth(0).click();
+    await openArticleAt(rows, 0);
     await expect(rows.nth(0)).toHaveAttribute('data-read', 'true');
     await expect(page.locator('.article-body').first()).toBeVisible();
 
-    await rows.nth(2).click();
+    await openArticleAt(rows, 2);
     await expect(rows.nth(2)).toHaveAttribute('data-read', 'true');
     // The jump itself, waited on directly: the pane has travelled off the top,
     // which is the exact condition that used to mark the seeded article read.
@@ -271,9 +308,11 @@ test.describe('reading', () => {
     // over is still sitting in the stream above the reader; scrolling up into it
     // is reading it, and it has to count. A fix that made the first test pass by
     // making this one fail would be a regression wearing a fix's hat.
-    await rows.nth(0).click();
+    // By the title, for the reason openArticleAt states: a row's centre is a
+    // category chip, which is a scope link and takes the click instead.
+    await openArticleAt(rows, 0);
     await expect(page.locator('.article-body').first()).toBeVisible();
-    await rows.nth(2).click();
+    await openArticleAt(rows, 2);
     await expect
       .poll(async () => page.locator('.pane-article')
         .evaluate((el) => el.scrollTop), { timeout: 20_000 })
@@ -447,8 +486,15 @@ test.describe('notes and tags', () => {
     const chip = panel.locator('.tag-chip', { hasText: 'mornings' });
     await expect(chip).toBeVisible({ timeout: 45_000 });
 
-    // And the same chip takes it off again.
-    await chip.click();
+    // And the chip's × takes it off again.
+    //
+    // The × specifically, not the chip. A tag chip is two hit targets now: the
+    // label opens that tag's stream, and the × removes it — deliberately
+    // siblings rather than nested, so `closest()` cannot fire both from one
+    // click (client/view/panes.go's tagChip). Clicking the whole chip therefore
+    // navigates and removes nothing, which reads from here as a removal that
+    // silently failed.
+    await chip.locator('.tag-x').click();
     await expect(panel.locator('.tag-chip')).toHaveCount(0, { timeout: 45_000 });
 
     // Gone on the server, not just out of the render: the last association
@@ -485,7 +531,13 @@ test.describe('finding the feed', () => {
     // Taking the offer subscribes to the feed the page declared, not the page.
     await cand.locator('[data-action="add-feed-candidate"]').click();
     await expect(dialog).toBeHidden({ timeout: 45_000 });
-    await expect(page.locator('.banner')).toContainText(/Alpha Journal/, { timeout: 45_000 });
+    // The OPEN banner. There are two in the list pane now — the status one and
+    // the category suggestion — and both are always in the DOM so they can
+    // animate their collapse, so a bare `.banner` matches two elements and
+    // Playwright refuses in strict mode. `data-open` is the app's own answer to
+    // "which of these is showing", which is exactly the question being asked.
+    await expect(page.locator('.banner-slot[data-open="true"] .banner'))
+      .toContainText(/Alpha Journal/, { timeout: 45_000 });
   });
 
   test('a page with no feed offers Smart+, and says what it would send', async ({ page }) => {
@@ -565,7 +617,9 @@ test.describe('categories', () => {
     // presses: the first arms, the second does it.
     await slot.hover();
     await slot.locator('[data-action="category-open"]').click();
-    const editor = page.getByRole('dialog', { name: 'Category' });
+    // "Folder" — the rail's grouping kept the word when the naming pass gave
+    // "category" to the article-level taxonomy. See dialogs.spec.mjs.
+    const editor = page.getByRole('dialog', { name: 'Folder' });
     await expect(editor).toBeVisible();
     await editor.locator('[data-action="category-delete"]').click();
     await editor.locator('[data-action="category-delete-confirm"]').click();
@@ -666,6 +720,93 @@ test.describe('errors and edges', () => {
 
     await expect(dialog.locator('.af-error')).toContainText(/Couldn't add that feed/);
     await expect(page.getByRole('button', { name: /169\.254/ })).toHaveCount(0);
+  });
+
+  /**
+   * A verdict is recorded against the article whose control was pressed — or
+   * against nothing at all. Never against a third one.
+   *
+   * This is TODO.md Q1 ("a reaction can land on the wrong article"), which a
+   * long static review could not explain and could not close: every path that
+   * decides which id a Like carries reads the id off the CLICKED ROW, so no
+   * amount of reading the Go source could produce the reported symptom. The
+   * hypothesis that survived was about the browser rather than the app —
+   * `openAt` smooth-scrolls the reading pane, so a pane travelling under a
+   * stationary cursor can hand a click to whatever happens to be at those
+   * coordinates when the browser hit-tests it, and the dispatcher cannot tell
+   * that from a deliberate press. The mitigation refuses verdict-writing
+   * actions while a travel is in flight (verdictActionsUnsafeDuringTravel).
+   *
+   * It was shipped unverified, because the session that wrote it could not
+   * rebuild the client. This is the verification: a like is pressed repeatedly
+   * DURING a travel, at points spread across the whole animation, and the only
+   * two outcomes allowed are "that article" and "no article".
+   *
+   * Dropping a click is the deliberate trade and is asserted as acceptable, not
+   * as correct — the last block proves the same press works once the pane
+   * settles, which is what makes a dropped one recoverable rather than a
+   * control that does nothing.
+   */
+  test('a like lands on the article whose button was pressed, or on none', async ({ page }, testInfo) => {
+    // Desktop, and the reason is the gesture rather than the claim. What is
+    // being tested — a verdict attaches to the article whose control carries the
+    // id — is layout-independent. Producing the condition is not: it needs the
+    // list and the reading stream on screen at once, so a press can be aimed at
+    // one article while a click on another is still travelling. A phone shows
+    // one pane, so opening the second article takes the list away and there is
+    // nothing left to press into.
+    test.skip(testInfo.project.name !== 'desktop',
+      'needs the list and the article stream on screen together');
+    await boot(page);
+    await page.locator('.item-row').first().locator('.item-title').click();
+    await page.waitForTimeout(1_000);
+
+    const likeState = () => page.evaluate(() => {
+      const out = {};
+      for (const b of document.querySelectorAll('[data-action="like"]')) {
+        out[b.getAttribute('data-for-item')] = b.getAttribute('aria-pressed') === 'true';
+      }
+      return out;
+    });
+    const press = (id) => page.evaluate(
+      (i) => document.querySelector(`[data-action="like"][data-for-item="${i}"]`)?.click(), id);
+
+    const rows = await page.locator('.item-row').count();
+    for (let i = 0; i < 4; i++) {
+      const before = await likeState();
+      const ids = Object.keys(before);
+      if (ids.length < 2) break;
+      const target = ids[1];
+
+      // Open a different row and press without waiting: the travel is still
+      // moving the pane while this click is dispatched, which is the whole
+      // condition under test.
+      await page.locator('.item-row').nth((i + 1) % rows).locator('.item-title').click();
+      await press(target);
+      await page.waitForTimeout(1_500);
+
+      const after = await likeState();
+      const gained = Object.keys(after).filter((k) => after[k] && !before[k]);
+      for (const g of gained) {
+        expect(
+          g,
+          `a like was recorded against ${g} while the button pressed belonged to ` +
+            `${target}. Something between the click and SetItemState is reading an ` +
+            'ambient "current article" instead of the id on the control — see Q1.',
+        ).toBe(target);
+      }
+      for (const g of gained) { await press(g); await page.waitForTimeout(400); }
+    }
+
+    // And the press works when nothing is travelling, which is what makes the
+    // refusal above a delay rather than a dead control.
+    await page.waitForTimeout(1_500);
+    const before = await likeState();
+    const target = Object.keys(before)[1] ?? Object.keys(before)[0];
+    await press(target);
+    await expect
+      .poll(async () => (await likeState())[target], { timeout: 20_000 })
+      .toBe(true);
   });
 
   test('connection state is always visible', async ({ page }) => {

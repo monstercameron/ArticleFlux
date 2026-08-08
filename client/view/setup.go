@@ -64,6 +64,20 @@ func Setup(p setupProps) ui.Node {
 	email := ui.UseState("")
 	password := ui.UseState("")
 	confirm := ui.UseState("")
+	// What the BOXES are told to hold. Four fields, one rule, and it is login.go's
+	// — see the seeds there for the whole account of why a controlled `value` is
+	// a character-eater under fast typing. This screen creates the account that
+	// every later sign-in has to match, so a password silently missing a
+	// character here locks somebody out of an instance they just installed, and
+	// the confirm field would have agreed with it.
+	//
+	// Empty, and they stay empty: nothing on this screen is ever prefilled, and
+	// the only app-driven write is the two password fields being cleared after a
+	// rejected attempt.
+	userSeed := ui.UseState("")
+	emailSeed := ui.UseState("")
+	passSeed := ui.UseState("")
+	confirmSeed := ui.UseState("")
 	busy := ui.UseState(false)
 	errMsg := ui.UseState("")
 	// The sheet, held between the two steps. State rather than a ref because the
@@ -132,6 +146,12 @@ func Setup(p setupProps) ui.Node {
 					errMsg.Set(setupMessage(tr, err))
 					password.Set("")
 					confirm.Set("")
+					// The seeds with them: the app is emptying these fields, so it
+					// is one of the moments a write to the box is safe, and
+					// leaving the seeds behind would let a later render restore
+					// what ClearField just removed.
+					passSeed.Set("")
+					confirmSeed.Set("")
 					platform.ClearField("setup-password")
 					platform.ClearField("setup-confirm")
 					return
@@ -186,7 +206,8 @@ func Setup(p setupProps) ui.Node {
 					html.Text(tr.T("setup", "username"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "text", ID: "setup-username",
-					Value:   username.Get(),
+					// The seed, not the state: see the seeds' declaration.
+					Value:   userSeed.Get(),
 					OnInput: onUser,
 					Data:    map[string]string{"role": "setup-username"},
 					Raw:     map[string]any{"autocomplete": "username"},
@@ -199,7 +220,7 @@ func Setup(p setupProps) ui.Node {
 					html.Text(tr.T("setup", "email"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "email", ID: "setup-email",
-					Value:   email.Get(),
+					Value:   emailSeed.Get(),
 					OnInput: onEmail,
 					Data:    map[string]string{"role": "setup-email"},
 					Raw:     map[string]any{"autocomplete": "email"},
@@ -217,7 +238,7 @@ func Setup(p setupProps) ui.Node {
 					html.Text(tr.T("setup", "password"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "password", ID: "setup-password",
-					Value:   password.Get(),
+					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "setup-password"},
 					Raw:     map[string]any{"autocomplete": "new-password"},
@@ -231,7 +252,7 @@ func Setup(p setupProps) ui.Node {
 					html.Text(tr.T("setup", "confirm"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "password", ID: "setup-confirm",
-					Value:   confirm.Get(),
+					Value:   confirmSeed.Get(),
 					OnInput: onConfirm,
 					Data:    map[string]string{"role": "setup-confirm"},
 					Raw:     map[string]any{"autocomplete": "new-password"},

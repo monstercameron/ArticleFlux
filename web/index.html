@@ -291,7 +291,16 @@
       s.setProperty('--boot-mute', saved[2]);
       s.setProperty('--boot-cc', saved[3]);
       s.setProperty('color-scheme', saved[4]);
-      document.body.style.background = saved[0];
+      // backgroundColor, NOT the `background` shorthand, and the difference is
+      // two bugs rather than a style preference. The shorthand resets every
+      // background longhand it does not name — at INLINE priority, which no
+      // stylesheet can outrank — so `background: <hex>` here silently deleted
+      // the sheet's fractal-noise overlay for the whole session on every load
+      // after a reader's first. The colour is also kept in step from Go
+      // afterwards (platform.SetBodyGround, called by applyAppearance): an
+      // inline declaration written once at boot and never updated is a ground
+      // frozen at whatever theme was in force when the page loaded.
+      document.body.style.backgroundColor = saved[0];
       const meta = document.querySelector('meta[name=theme-color]');
       if (meta) meta.setAttribute('content', saved[0]);
     }

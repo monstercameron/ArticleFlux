@@ -246,6 +246,9 @@ func (db *DB) Migrate(ctx context.Context) (applied int, err error) {
 	}
 
 	done := map[int]string{}
+	// The same ledger keyed the other way round, which is what makes a
+	// RENUMBERED migration detectable. See the check below.
+	byChecksum := map[string]int{}
 	rows, err := db.Read.QueryContext(ctx, `SELECT version, checksum FROM schema_migrations`)
 	if err != nil {
 		return 0, err
@@ -258,6 +261,7 @@ func (db *DB) Migrate(ctx context.Context) (applied int, err error) {
 			return 0, err
 		}
 		done[v] = sum
+		byChecksum[sum] = v
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -276,6 +280,33 @@ func (db *DB) Migrate(ctx context.Context) (applied int, err error) {
 					m.version, m.name, sum[:8], m.checksum[:8])
 			}
 			continue
+		}
+		// The migration is not recorded under this version — but its CONTENTS
+		// are recorded under another one. That is a renumbering, and it is the
+		// one form of tampering the checksum guard above cannot see: the version
+		// is part of a migration's identity, so renaming a file that has already
+		// run is the same act as editing it, and the ledger is now describing
+		// work under a name nothing on disk has.
+		//
+		// Left to itself the runner treats the new number as pending and re-runs
+		// SQL that already happened, which surfaces as whatever the statement
+		// happens to collide with — `duplicate column name: content_hash` in the
+		// case that produced this check. That message points at the schema, and
+		// the schema is fine; nothing about it suggests looking at a filename.
+		// This costs one map and turns an afternoon into a sentence.
+		//
+		// Refused rather than repaired. The remedy is a single UPDATE against
+		// somebody's live database, and a startup path that silently rewrites
+		// its own ledger is a worse thing to own than a startup that stops and
+		// says exactly which row is wrong.
+		if was, ok := byChecksum[m.checksum]; ok {
+			return applied, fmt.Errorf(
+				"store: migration %04d_%s was already applied as version %04d — it has been "+
+					"renumbered since it ran, and a migration that has run anywhere is immutable. "+
+					"This database's ledger records the work under %d; fix it with "+
+					"`UPDATE schema_migrations SET version = %d WHERE version = %d` "+
+					"(checksum %s, unchanged), or start from a fresh database",
+				m.version, m.name, was, was, m.version, was, m.checksum[:8])
 		}
 		if err := db.applyOne(ctx, m); err != nil {
 			return applied, err

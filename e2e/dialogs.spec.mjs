@@ -216,9 +216,15 @@ test.describe('every dialog', () => {
     const slot = rail.locator('.cat-slot', { hasText: name });
     await expect(slot.locator('.cat-row')).toBeVisible({ timeout: 45_000 });
 
-    await cycle(page, 'Category',
+    // "Folder", not "Category". The naming pass gave the word "category" to the
+    // article-level taxonomy and left the rail's grouping as a folder
+    // (client/i18n/en_addfeed.go's `category.title`), so the dialog's accessible
+    // name changed under a test that still asked for the old one — and asking
+    // for a name nothing has looks exactly like a dialog that never opened.
+    // The data-action keeps the old spelling; that is an internal id, not copy.
+    await cycle(page, 'Folder',
       async () => { await slot.hover(); await slot.locator('[data-action="category-open"]').click(); },
-      async () => { await closeButton(page, 'Category').click(); });
+      async () => { await closeButton(page, 'Folder').click(); });
 
     // Left filed rather than deleted: deleting it is reader.spec.mjs's job, and
     // doing it here too would just be two tests proving the same thing.

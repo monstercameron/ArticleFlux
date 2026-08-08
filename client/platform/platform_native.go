@@ -36,10 +36,11 @@ func (Listener) Release() {}
 
 // Key mirrors the wasm type so views compile on both targets.
 type Key struct {
-	Name   string
-	Typing bool
-	Role   string
-	Ctrl   bool
+	Name    string
+	Typing  bool
+	Role    string
+	Ctrl    bool
+	Prevent func()
 }
 
 func OnKeyDown(fn func(Key)) Listener { return Listener{} }
@@ -92,7 +93,7 @@ func OnScrollNearTop(rootSelector, matchSelector string, slack int, fn func()) L
 
 func KeepScrollAnchored(selector string) {}
 
-func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value string)) Listener {
+func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value string, moved bool)) Listener {
 	return Listener{}
 }
 

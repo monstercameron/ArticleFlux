@@ -169,7 +169,13 @@ func Home() ui.Node {
 	// read. A homepage and a continuous article stream turn out to be the same
 	// problem: a long scroller whose current item is a position, not a click.
 	ui.UseEffect(func() func() {
-		l := platform.OnTopmostChild(".hm", ".hm", "data-band", func(id string) {
+		// The `moved` flag is ignored here, and only here. It exists so the
+		// reading pane can tell a reader arriving at an article from a body
+		// loading above one and pushing it under the fold — a distinction that
+		// matters because arriving marks something READ. Nothing on this page
+		// records anything; the rail marker follows whatever is at the top,
+		// however it got there.
+		l := platform.OnTopmostChild(".hm", ".hm", "data-band", func(id string, _ bool) {
 			ui.PostAsync(func() { band.Set(homeBandIndex(id)) })
 		})
 		return l.Release

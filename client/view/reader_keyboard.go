@@ -263,9 +263,17 @@ func (r keyboardMap) wire() {
 				// Focus, do not submit. "/" is the universal jump-to-search and
 				// swallowing it into a search that has not been typed yet would
 				// be worse than not binding it.
+				//
+				// The default action has to go, and only because the focus now
+				// happens on this stack rather than a frame later: the box is
+				// focused by the time the browser gets to insert the character,
+				// so without this the reader lands in the search field with "/"
+				// already typed into it. See platform.Key.Prevent.
+				preventKey(k)
 				platform.FocusField("search")
 				return
 			case "f":
+				preventKey(k)
 				platform.FocusField("feed-filter")
 				return
 			case "Escape":
@@ -372,4 +380,16 @@ func (r keyboardMap) wire() {
 		})
 		return l.Release
 	}, []any{})
+}
+
+// preventKey suppresses the browser's own handling of a keystroke, when there is
+// something to suppress.
+//
+// Nil-checked rather than called directly because Key.Prevent is only populated
+// by the wasm build — the native stand-in carries the field so the views compile
+// on both targets, and calling it there would be a nil dereference.
+func preventKey(k platform.Key) {
+	if k.Prevent != nil {
+		k.Prevent()
+	}
 }

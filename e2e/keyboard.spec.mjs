@@ -1,4 +1,4 @@
-import { test, expect, boot, currentArticle } from './fixtures.mjs';
+import { test, expect, boot, currentArticle, openRow } from './fixtures.mjs';
 
 /**
  * The keyboard map, end to end.
@@ -138,6 +138,52 @@ test.describe('the keyboard map', () => {
     await expect.poll(() => activeElementMatches(page, '[data-role="search"]')).toBe(false);
   });
 
+  /**
+   * Typing a query straight after "/" puts ALL of it in the search box.
+   *
+   * This is the mechanism behind TODO.md Q2 ("article search bleeds into the
+   * sidebar feed filter"), which read as two fields being confused and was
+   * neither: "/" used to ask for focus from inside a requestAnimationFrame
+   * loop, so for at least a frame the caret was still nowhere and every letter
+   * arrived at the keydown handler as a single-key SHORTCUT. On a live instance
+   * that meant pressing "/" and typing "feed health" fired the "f" binding —
+   * focus the sidebar filter — and the rest of the query was typed into the
+   * rail, which persists what it is given. The search never ran, and the
+   * reader's half-query outlived the session in `rail.filter`.
+   *
+   * Asserted on the box's contents rather than on where focus ended up, because
+   * the focus assertion above passes on the broken build too: focus DOES arrive,
+   * a frame after the keystrokes that were supposed to go to it. Only the text
+   * says whether they got there in time.
+   *
+   * The "/" itself is the other half. Focus is synchronous now, so the browser's
+   * default action would type the slash into the field it has just been given
+   * unless the binding suppresses it — a reader who asks to search and gets a
+   * search for "/rust".
+   *
+   * The rail-filter end of the same bug is not asserted here: the filter box
+   * only exists above 8 subscribed feeds, for the reason in the comment above
+   * this block's test.
+   */
+  test('a query typed straight after / lands in the search box, all of it', async ({ page }) => {
+    await boot(page);
+    await page.evaluate(() => document.activeElement?.blur());
+
+    const search = page.locator('[data-role="search"]');
+    await page.keyboard.press('/');
+    // No settle between the two: the gap this closes is measured in frames, so
+    // waiting for focus first would be waiting out the bug.
+    await page.keyboard.type('feed health', { delay: 30 });
+
+    await expect(search).toHaveValue('feed health');
+
+    // And nothing else moved. Every letter of that query that got run as a
+    // command instead would have done something visible — "f" takes focus out
+    // of the box, "1" and "3" move panes, "," opens settings.
+    await expect(search).toBeFocused();
+    await expect(page.locator('.pane-settings')).toHaveCount(0);
+  });
+
   test('Escape gets out of the search box BEFORE the typing guard can swallow it', async ({ page }) => {
     await boot(page);
     const search = page.locator('[data-role="search"]');
@@ -166,8 +212,10 @@ test.describe('the keyboard map', () => {
     // (reader.spec.mjs's "loads feeds" test), so clicking row 0 does not
     // exercise a read transition the way this test needs to — it is already
     // current, and possibly already marked, before the click happens.
-    const row = page.locator('.item-row').nth(1);
-    await row.click();
+    // openRow, not row.click(): this row's centre is its category chip, which
+    // is a scope link and wins the click by design. See openRow's comment — it
+    // is why this test was red while nothing was wrong with mark-read.
+    const row = await openRow(page, 1);
     await expect(row).toHaveAttribute('data-read', 'true');
     // Let the mark-read round trip settle before reversing it: markUnread and
     // the click's own mark-read both call SetItemState, and firing the second

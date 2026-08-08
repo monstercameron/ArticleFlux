@@ -436,7 +436,10 @@ type actions struct {
 	// advance and retreat extend the reading stream downward and upward.
 	advance      func()
 	retreat      func()
-	focusArticle func(id string)
+	// focusArticle records that a different article is now at the top of the
+	// reading pane. `moved` says whether the reader got there — see
+	// platform.OnTopmostChild, and focusArticle's own body for what it changes.
+	focusArticle func(id string, moved bool)
 	readArticle  func(id string)
 
 	// navStep answers "what does j/k, or the list arrows, open next" — the

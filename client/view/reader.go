@@ -26,16 +26,38 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
+// deliveredByLayout reports that an article reached the top of the reading pane
+// without the reader going to it.
+//
+// Two facts decide it, and both are needed:
+//
+//   - `moved` — did the scroll position change since the previous measurement
+//     (platform.OnTopmostChild). If it did, the reader scrolled, and scrolling
+//     into an article is reading it however it came to be there.
+//   - `skipped` — is this one of the articles a jump travelled over. Only these
+//     can be delivered by a reflow into a position that looks like arrival,
+//     because only these are sitting above the reader unread.
+//
+// | moved | skipped | result                                             |
+// |-------|---------|----------------------------------------------------|
+// | true  | true    | the reader scrolled back into it — they read it     |
+// | true  | false   | ordinary scrolling                                  |
+// | false | true    | a body loaded above it and pushed it under the fold |
+// | false | false   | a reflow around an article already being read       |
+//
+// Only the third row is the bug: the pane grew above an article a jump had
+// deliberately skipped, so at an unchanged scroll position that article became
+// the topmost one, and the reader — who may have put the machine down minutes
+// ago — was recorded as having read it. It failed only after a reload, because
+// the optimistic local state was correct and the SetItemState was not.
+//
+// Extracted from focusArticle so the rule can be pinned deterministically
+// rather than only through the e2e jump test, which reproduces it about one run
+// in three (TODO.md Q1).
+func deliveredByLayout(moved, skipped bool) bool { return !moved && skipped }
+
 // view names which pane is on screen on a phone. On a wide screen all three are
 // visible and this only decides focus.
-// DBG TEMP: removed before shipping.
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}
-
 func Reader(p readerProps) ui.Node {
 	// The i18n Runtime, from the Provider Root mounts. A HOOK: once, at the
 	// top, unconditionally — GWC matches hooks positionally. It is threaded
@@ -169,6 +191,16 @@ func Reader(p readerProps) ui.Node {
 	noteTimers := ui.UseRef(map[string]*time.Timer{})
 	tagDrafts := ui.UseState(map[string]string{})
 	feedFilter := ui.UseState(saved["rail.filter"])
+	// The rail filter's box carries its own seed, for the same reason the search
+	// box does and against the same measured failure: `value` is a property the
+	// reconciler always writes, so a render that lands after the next keystroke
+	// puts its older string back. Typing "feed" into the sidebar filter left
+	// "ee" behind on a live instance — one character eaten by a stale write, one
+	// by the shortcut race FocusField now closes.
+	//
+	// It moves only where the app has something to say: boot, and the pause
+	// after typing stops. See searchSeed for the full account.
+	feedFilterSeed := ui.UseState(saved["rail.filter"])
 	// catHidden is the comma-joined set of category slugs this reader has hidden
 	// from the Classification settings tab (client/view/classifysettings.go).
 	// A client-only display preference, stored the same generic way as every
@@ -708,9 +740,7 @@ func Reader(p readerProps) ui.Node {
 	// it. Anything the handler sees after the movement has ended is the reader's
 	// own scrolling, which is precisely what the guard was never meant to hide.
 	releaseFocus := func() {
-		println("DBG releaseFocus scheduled, expectFocus was=" + expectFocus.Get())
 		ui.PostAsync(func() {
-			println("DBG releaseFocus running, clearing expectFocus=" + expectFocus.Get())
 			expectFocus.Set("")
 			// And ask what is topmost NOW. The reporter speaks only on change,
 			// so the article that sat at the top for the whole of the travel was
@@ -766,6 +796,38 @@ func Reader(p readerProps) ui.Node {
 	// Seeded from the scope that actually won rather than from the preference, so
 	// arriving at /search?q=rust puts "rust" in the box the reader is looking at.
 	searchText := ui.UseState(boot.sel.Search)
+	// searchSeed is what the BOX is told to hold, which is deliberately not the
+	// same state as what the reader has typed.
+	//
+	// # Why the search field is not bound to searchText
+	//
+	// `value` is a special property in the reconciler (GoWebComponents,
+	// internal/runtime/reconciler_commit.go — "Always set these as properties to
+	// ensure UI updates correctly"), and its diff compares the new prop against
+	// the PREVIOUS RENDER'S prop, never against what the input actually holds.
+	// So a render that resolves after the next keystroke has already landed
+	// writes its own, older string over live typing — and the character the
+	// reader typed in between is gone from the DOM, not merely from state.
+	//
+	// Measured, not deduced: hooking the value setter on HTMLInputElement while
+	// typing "sourdough" at 80ms/key catches `WRITE "so" -> "s"` on roughly half
+	// of all runs, and the box ends up reading "surdough". That is the whole of
+	// the flake filed as "a fast-typed keystroke can be silently dropped" — no
+	// keystroke is dropped, a stale render overwrites one. It clusters on the
+	// first two characters because the first keystroke is the one that also
+	// creates the debounce timer and turns a scope into a search, so its render
+	// is the one with a chance of landing late.
+	//
+	// Binding the box to a value that does NOT change per keystroke removes the
+	// write entirely: an unchanged prop is skipped by the same diff. The seed
+	// moves only when the app has something to say — boot, a resumed search, and
+	// the moment a debounced search actually runs — and at each of those the
+	// string it writes is the string the box already holds, so the write is a
+	// no-op that also repairs the field if anything ever did get out of step.
+	//
+	// The reader's own text still lives in searchText, which every consumer of
+	// the query reads; this is only about who is allowed to write the DOM.
+	searchSeed := ui.UseState(boot.sel.Search)
 	// searchTimer is the ONE debounced-search timer for the field's whole
 	// lifetime (see onSearchInput below): each keystroke resets its deadline
 	// rather than cancelling it and creating a fresh one. Creating a new Go
@@ -851,9 +913,22 @@ func Reader(p readerProps) ui.Node {
 	// debounced: SetPrefs is one small upsert, and a debounce that loses the last
 	// character on a reload is worse than the write it saved.
 	feedFilterSave := ui.UseRef(func(string) {})
+	// One timer for the field's lifetime, exactly as the search box has, and for
+	// nothing but re-seeding: the FILTER itself still applies on every keystroke
+	// (that is the whole point of a filter box), and this only decides when the
+	// box is allowed to be written back to. A pause is the moment nobody is
+	// typing, which is the only moment a write cannot eat a character.
+	feedFilterSeedTimer := ui.UseRef((*time.Timer)(nil))
 	onFilterInput := ui.UseEvent(func(v string) {
 		feedFilter.Set(v)
 		feedFilterSave.Get()(v)
+		if t := feedFilterSeedTimer.Get(); t != nil {
+			t.Reset(searchDebounce)
+			return
+		}
+		feedFilterSeedTimer.Set(time.AfterFunc(searchDebounce, func() {
+			ui.PostAsync(func() { feedFilterSeed.Set(feedFilter.Get()) })
+		}))
 	})
 	// Handed to railProps through a Ref rather than by value. See the field's
 	// comment in panes.go: a bare ui.Handler wraps a func, reflect.DeepEqual
@@ -1799,13 +1874,6 @@ func Reader(p readerProps) ui.Node {
 			}
 		}
 		skipPast.Set(fresh)
-		{
-			keys := ""
-			for k := range fresh {
-				keys += k + ","
-			}
-			println("DBG openAt(fresh-stream) target=" + it.GetId() + " skipPast=[" + keys + "]")
-		}
 		current.Set(it)
 		if focus {
 			pane.Set(viewArticle)
@@ -1813,7 +1881,6 @@ func Reader(p readerProps) ui.Node {
 		platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 		savePrefs(map[string]string{"read.item": it.GetId()})
 		expectFocus.Set(it.GetId())
-		println("DBG openAt(fresh-stream) expectFocus SET to " + it.GetId())
 		// The clicked article goes to the top of the pane, not the seeded one
 		// above it — otherwise clicking a headline drops you into the middle of
 		// the previous story. Instantly, not smoothly: there is nothing to
@@ -2320,17 +2387,11 @@ func Reader(p readerProps) ui.Node {
 	// keystroke's Reset last touched the deadline, so there is nothing to
 	// capture and nothing that can go stale.
 	//
-	// KNOWN ISSUE, shipped anyway (TODO.md, "Search goes live, with a known
-	// flake it shipped despite", 2026-08-01): fast synthetic typing
-	// (Playwright pressSequentially at 80ms/key) occasionally drops a
-	// character from the box once this debounce is live — confirmed caused
-	// by this feature (disabling it is 10/10 clean on the identical
-	// keystroke sequence, against real fixtures), confirmed NOT explained by
-	// Timer.Stop's race, by per-keystroke timer-creation overhead (this
-	// Reset version was tried specifically to rule that out — it did not
-	// help), or by headless-only rendering throttling (reproduces --headed
-	// too). Mechanism unconfirmed; see TODO.md before assuming this comment
-	// block's history explains it.
+	// The character this used to eat under fast typing was never a dropped
+	// keystroke: it was a late render writing its own older string over the
+	// live field, because `value` is a special property the reconciler always
+	// writes. Fixed by not binding the box to this state at all — see
+	// searchSeed, which is what the field actually carries.
 	onSearchInput := ui.UseEvent(func(v string) {
 		searchText.Set(v)
 		if t := searchTimer.Get(); t != nil {
@@ -2338,7 +2399,18 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		searchTimer.Set(time.AfterFunc(searchDebounce, func() {
-			ui.PostAsync(func() { runSearch(strings.TrimSpace(searchText.Get())) })
+			ui.PostAsync(func() {
+				// Re-seed the box at the one moment it is safe to: the pause has
+				// ended, so this render is not competing with a keystroke.
+				//
+				// The UNTRIMMED text, not the query runSearch is handed. They
+				// differ by the trailing space in "sour dough" typed with a pause
+				// after "sour ", and writing the trimmed form back would delete a
+				// space the reader is in the middle of typing past — the same
+				// class of bug as the one this seeding exists to fix.
+				searchSeed.Set(searchText.Get())
+				runSearch(strings.TrimSpace(searchText.Get()))
+			})
 		}))
 	})
 
@@ -3014,7 +3086,6 @@ func Reader(p readerProps) ui.Node {
 	// read — which is what makes "scroll through everything and it's all read"
 	// work without a single click.
 	act.Get().readArticle = func(id string) {
-		println("DBG readArticle id=" + id + " skipPast=" + boolStr(skipPast.Get()[id]))
 		// An article the app scrolled past on its way somewhere else is not one
 		// the reader finished. This has to come before the tracker as well as
 		// before markRead: crediting `Completed` for an article that was never on
@@ -3041,31 +3112,51 @@ func Reader(p readerProps) ui.Node {
 			}
 		}
 	}
-	act.Get().focusArticle = func(id string) {
-		println("DBG focusArticle id=" + id + " expectFocus=" + expectFocus.Get() + " skipPast=" + boolStr(skipPast.Get()[id]))
+	act.Get().focusArticle = func(id string, moved bool) {
 		// Still travelling to a deliberate target: anything else the scroll passes
 		// over on the way is not something the reader chose to read.
 		if want := expectFocus.Get(); want != "" {
 			if id != want {
-				println("DBG focusArticle SUPPRESSED (want=" + want + ")")
 				return
 			}
 			expectFocus.Set("")
 		}
+		// An article the app jumped over, arriving at the top because the LAYOUT
+		// moved rather than because the reader did.
+		//
+		// Article bodies land after the stream is on screen, and one growing
+		// above the reader pushes everything below it down — so at an unchanged
+		// scroll position the article at the fold becomes an earlier one. This is
+		// the whole of the "jumping down" failure (TODO.md Q1): the middle
+		// article of a jump was correctly suppressed at the moment of the jump,
+		// and then marked read seconds later by a body two articles above it
+		// finishing, with the reader's hands nowhere near the machine. Local
+		// state looked right and the SERVER had it read, which is why it only
+		// ever failed after a reload.
+		//
+		// The pane really is showing this article, so everything below still
+		// runs — the title, the dwell clock, the highlighted row. What does not
+		// run is the part that writes a judgement: it stays skipped, and the
+		// skip stays armed, so the reader scrolling into it later still counts.
+		// That is the distinction the skip exists to make, applied to the one
+		// case that was reaching past it.
+		byLayout := deliveredByLayout(moved, skipPast.Get()[id])
 		st := stream.Get()
 		for _, it := range st {
 			if it.GetId() != id {
 				continue
 			}
 			if c := current.Get(); c == nil || c.GetId() != id {
-				println("DBG focusArticle MARKING id=" + id)
 				current.Set(it)
 				// Arriving here is reading it, whatever a jump did earlier — so
 				// the suppression ends now rather than lasting the stream's life.
 				// Without this, an article jumped over stays permanently unable to
 				// be marked read by scrolling, which is a subtler version of the
-				// bug this fixes.
-				delete(skipPast.Get(), id)
+				// bug this fixes. Not when the layout brought it here: nothing has
+				// been read, so nothing has been un-skipped.
+				if !byLayout {
+					delete(skipPast.Get(), id)
+				}
 				platform.SetTitle(it.GetTitle() + " · ArticleFlux")
 				// The dwell clock follows the STREAM, not the click. Entering
 				// banks whatever the previous article accumulated, so scrolling
@@ -3076,7 +3167,9 @@ func Reader(p readerProps) ui.Node {
 					t.Enter(it.GetId(), it.GetSourceId(),
 						int(it.GetWordCount()), signals.SurfaceReader)
 				}
-				markRead(it)
+				if !byLayout {
+					markRead(it)
+				}
 				// Where they got to, saved as they scroll. Once per ARTICLE rather
 				// than once per scroll event: this fires only when a different
 				// article becomes topmost, which is a handful of times a minute
@@ -7151,6 +7244,9 @@ func Reader(p readerProps) ui.Node {
 				}
 				if v, ok := p["rail.filter"]; ok && v != "" {
 					feedFilter.Set(v)
+					// And the box, which is a separate state: boot is one of the
+					// two moments a write to it is safe. See feedFilterSeed.
+					feedFilterSeed.Set(v)
 				}
 
 				// An ADDRESS outranks this whole block (§20.13b).
@@ -7176,6 +7272,10 @@ func Reader(p readerProps) ui.Node {
 				resume := effectiveResumeScope(p, tr)
 				if v := p["read.value"]; p["read.kind"] == "search" && v != "" && !addressed {
 					searchText.Set(v)
+					// The box too, and this is one of the two writers allowed to
+					// move it: a resumed search has to be visible in the field,
+					// and nobody is typing during boot.
+					searchSeed.Set(v)
 				}
 				// Consumed by the auto-open effect once this scope's list lands.
 				if !addressed {
@@ -7506,9 +7606,10 @@ func Reader(p readerProps) ui.Node {
 	// a click — and it is what the title, the star, the highlighted row and
 	// "this has been read" all follow.
 	ui.UseEffect(func() func() {
-		l := platform.OnTopmostChild("#app", ".pane-article", "data-article-id", func(id string) {
-			ui.PostAsync(func() { act.Get().focusArticle(id) })
-		})
+		l := platform.OnTopmostChild("#app", ".pane-article", "data-article-id",
+			func(id string, moved bool) {
+				ui.PostAsync(func() { act.Get().focusArticle(id, moved) })
+			})
 		return l.Release
 	}, []any{})
 
@@ -7924,6 +8025,10 @@ func Reader(p readerProps) ui.Node {
 				unreadFeedsOnly: unreadFeedsOnly.Get(),
 				loading:         feedsLoading.Get(),
 				filter:          feedFilter.Get(),
+			// The BOX's value is a separate state from what the filter is
+			// doing: it owns its own text while the reader is typing. See
+			// feedFilterSeed's declaration.
+			filterSeed:      feedFilterSeed.Get(),
 				onFilterInput:   onFilterInputRef,
 				streamsClosed:   railStreamsClosed.Get(),
 				feedsClosed:     railFeedsClosed.Get(),
@@ -7980,7 +8085,9 @@ func Reader(p readerProps) ui.Node {
 				podcastBlocked: podcastBlockedNow(),
 				catSuggestName: catSuggestName.Get(),
 				catSuggestBusy: catSuggestBusy.Get(),
-				searchValue:    searchText.Get(),
+				// searchSeed, not searchText: the box owns its own text while the
+			// reader is typing into it. See searchSeed's declaration.
+			searchValue:    searchSeed.Get(),
 				onSearchInput:  onSearchInput,
 				onSearchKey:    noopHandler,
 			}),

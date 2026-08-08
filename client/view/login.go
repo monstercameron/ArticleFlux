@@ -69,6 +69,30 @@ func Login(p loginProps) ui.Node {
 	devUser, devPass := devDefaults()
 	username := ui.UseState(devUser)
 	password := ui.UseState(devPass)
+	// What the BOXES are told to hold, which is not the same state as what has
+	// been typed into them.
+	//
+	// `value` is a property the reconciler writes whenever the prop differs from
+	// the previous render's, and it compares against that previous PROP rather
+	// than against what the input actually contains. A render that resolves
+	// after the next keystroke therefore puts its own older string back, and the
+	// character typed in between is gone from the DOM — not merely from state.
+	// Measured on the search box at 80ms/key (see reader.go's searchSeed); these
+	// fields are typed at 15ms/key by the keyboard suite and by every password
+	// manager, which is the same bug with less room.
+	//
+	// It matters more here than anywhere else in the application. `submit` reads
+	// the FIELDS rather than state precisely so that what is on screen is what
+	// is sent — so a character the reconciler deleted is a character deleted
+	// from the credential, and the reader is told their password is wrong. That
+	// is the exact conclusion this screen's own test file says a reader jumps
+	// to, and it is unfalsifiable from their side.
+	//
+	// The seeds move only where the app has something to say: the loopback
+	// prefill they are created with, and the password being cleared after a
+	// rejected attempt. Nobody is typing at either moment.
+	userSeed := ui.UseState(devUser)
+	passSeed := ui.UseState(devPass)
 	// busy covers both the dial and the RPC. One flag rather than two because
 	// from the reader's side they are the same event: "it is working on it".
 	busy := ui.UseState(false)
@@ -96,10 +120,11 @@ func Login(p loginProps) ui.Node {
 			return
 		}
 		u, pw := fieldOr("login-username", username.Get()), fieldOr("login-password", password.Get())
-		// State is kept in step with what was read, because the fields are
-		// controlled — `Value: username.Get()`. Submitting the field value
-		// while leaving state behind would make the very next render write the
-		// stale value back and blank a field the reader is looking at.
+		// State is kept in step with what was read. The boxes are no longer bound
+		// to it (see the seeds), so this can no longer blank a field the reader
+		// is looking at — but state is what every other reader of these values
+		// sees, and leaving it behind after a submit would mean the component
+		// disagreeing with the screen about what was just sent.
 		username.Set(u)
 		password.Set(pw)
 		if u == "" || pw == "" {
@@ -141,6 +166,12 @@ func Login(p loginProps) ui.Node {
 					// username you got right is the small daily insult that makes
 					// a login screen feel hostile.
 					password.Set("")
+					// The seed too, and this is the second of the two moments it
+					// is allowed to move: the field is being emptied by the app,
+					// not by whoever is at the keyboard. ClearField does the DOM
+					// write; this stops a later render restoring the seed's old
+					// value over it.
+					passSeed.Set("")
 					platform.ClearField("login-password")
 					platform.FocusField("login-password")
 					return
@@ -197,7 +228,9 @@ func Login(p loginProps) ui.Node {
 					html.Text(tr.T("login", "username"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "text", ID: "login-username",
-					Value:   username.Get(),
+					// userSeed, not username: the box owns its own text while
+					// somebody is typing into it. See the seeds' declaration.
+					Value:   userSeed.Get(),
 					OnInput: onUser,
 					Data:    map[string]string{"role": "login-username"},
 					// autocomplete matters more than it looks: without it a
@@ -218,7 +251,7 @@ func Login(p loginProps) ui.Node {
 					html.Text(tr.T("login", "password"))),
 				html.Input(html.Props{
 					Class: "field login-input", Type: "password", ID: "login-password",
-					Value:   password.Get(),
+					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "login-password"},
 					Raw:     map[string]any{"autocomplete": "current-password"},

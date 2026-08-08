@@ -92,11 +92,23 @@ test('every source owns a hue, and it reaches all four surfaces', async ({ page 
   // 1. the sidebar dot
   // Filtered on having a dot rather than sliced by position: the streams have
   // never had one, and the Categories section adds rows that carry a disclosure
-  // instead. A hue belongs to a SOURCE, so "every row with a dot" is exactly the
-  // set this assertion is about.
+  // instead. A hue belongs to a SOURCE, so "every row with a dot" was exactly
+  // the set this assertion is about — and then stopped being.
+  //
+  // `.feed-dot` is the shared marker shape now, worn by topic rows
+  // (`.topic-dot`) and tag rows (`.tag-dot`) as well as by feeds. One of those
+  // is `Uncategorised`, whose marker is a RING: `.topic-dot-none` is
+  // `background: transparent` with an inset box-shadow, deliberately, because
+  // "no topic" is the absence of a hue rather than a hue of its own. So the
+  // assertion below was reading a design decision as a missing colour, and had
+  // been ever since the topics arrived.
+  //
+  // Narrowed to the dots that are only ever a source's. The topic and tag
+  // markers have their own vocabulary and are not what "every source owns a
+  // hue" is a claim about.
   const feedDots = await page.evaluate(() =>
     [...document.querySelectorAll('.pane-rail .feed-row')]
-      .map((el) => el.querySelector('.feed-dot'))
+      .map((el) => el.querySelector('.feed-dot:not(.topic-dot):not(.tag-dot)'))
       .filter(Boolean)
       .map((el) => getComputedStyle(el).backgroundColor));
   expect(feedDots.length).toBeGreaterThan(1);
@@ -118,7 +130,11 @@ test('every source owns a hue, and it reaches all four surfaces', async ({ page 
     [...document.querySelectorAll('.item-source')].map((el) => getComputedStyle(el).color));
   expect(new Set(sources).size).toBeGreaterThan(1);
 
-  await page.locator('.item-row').first().click();
+  // By the title, not the row. A row's centre is its meta line, which carries a
+  // category chip that is a scope link and deliberately wins the click — so
+  // `row.click()` changed the query and reloaded the list, and the assertion
+  // below found no row marked current at all. See openRow in fixtures.mjs.
+  await page.locator('.item-row').first().locator('.item-title').click();
   await expect(currentArticle(page).locator('h1')).toBeVisible();
 
   // 3. the selected row's edge picks up the same hue

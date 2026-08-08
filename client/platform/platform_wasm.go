@@ -15,20 +15,9 @@
 package platform
 
 import (
-	"strconv"
 	"strings"
 	"syscall/js"
 )
-
-// DBG TEMP: removed before shipping.
-func itoa(n int) string     { return strconv.Itoa(n) }
-func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', 1, 64) }
-func boolStrP(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}
 
 // SetRootVar sets a CSS custom property on :root.
 //
@@ -41,6 +30,43 @@ func SetRootVar(name, value string) {
 		return
 	}
 	doc.Get("documentElement").Get("style").Call("setProperty", name, value)
+}
+
+// SetBodyGround keeps the boot shim's inline body colour in step with the theme.
+//
+// Everything else in the theming engine is a custom property on <html>, and the
+// sheet's `body { background: var(--bg) }` would follow it on its own — except
+// that web/index.html writes an inline background-color onto <body> one frame
+// before the wasm module exists, so the splash is painted in the theme the
+// reader last chose instead of in the house plum. An inline declaration outranks
+// every stylesheet, so that one write owns the page ground for the rest of the
+// session: without this, a theme changed at any point after the first load moved
+// every token EXCEPT the ground underneath them, and a light theme's dark
+// secondary text landed on a dark theme's paper. Rail entries, settings row
+// titles and inactive tab names all went invisible, and the only way out was a
+// reload the reader had no reason to think of.
+//
+// Clearing the inline value instead would be wrong in the other direction: the
+// generated sheet is not in the document during boot, so removing it hands the
+// splash back to the static plum in index.html — which is the flash the mirror
+// exists to prevent.
+//
+// background-COLOR, never the `background` shorthand: the shorthand resets the
+// background-image longhand it does not name, and that longhand is the sheet's
+// fractal-noise overlay.
+func SetBodyGround(hex string) {
+	if hex == "" {
+		return
+	}
+	doc := js.Global().Get("document")
+	if !doc.Truthy() {
+		return
+	}
+	body := doc.Get("body")
+	if !body.Truthy() {
+		return
+	}
+	body.Get("style").Call("setProperty", "background-color", hex)
 }
 
 // SetRootAttr sets an attribute on <html>.
@@ -175,6 +201,20 @@ type Key struct {
 	// combination the app claims, for "save this note" — plain Enter has to stay
 	// a newline in a textarea, or a note cannot hold two sentences.
 	Ctrl bool
+	// Prevent suppresses the browser's own handling of this keystroke, and it
+	// is only correct to call from inside the handler, on the event's own stack.
+	//
+	// It exists for exactly one shape: a binding that MOVES FOCUS INTO A TEXT
+	// FIELD. "/" focuses the search box, and once that focus happens
+	// synchronously — which is what stops the intervening keys being run as
+	// commands (see FocusField) — the browser's default action then types the
+	// "/" into the box it has just been given. The reader asked to search, and
+	// got a search for "/…".
+	//
+	// Never called for a binding that does not take focus: swallowing keys the
+	// application does not need is how a page stops being usable by anything
+	// except the application.
+	Prevent func()
 }
 
 // boolOf reads a boolean property without trusting that it exists.
@@ -227,8 +267,16 @@ func OnKeyDown(fn func(Key)) Listener {
 			return nil
 		}
 		k := Key{
-			Name: name.String(),
-			Ctrl: boolOf(e, "ctrlKey") || boolOf(e, "metaKey"),
+			Name:    name.String(),
+			Ctrl:    boolOf(e, "ctrlKey") || boolOf(e, "metaKey"),
+			Prevent: func() { e.Call("preventDefault") },
+		}
+		// A caret that has been asked for and has not arrived yet counts as
+		// typing. Without this the frames between "/" and the search box getting
+		// focus are a window in which every letter runs its own shortcut — see
+		// FocusField, and TODO.md Q2 for what that looked like from outside.
+		if focusOwed > 0 {
+			k.Typing = true
 		}
 		if t := e.Get("target"); t.Truthy() {
 			tag := strings.ToUpper(t.Get("tagName").String())
@@ -290,11 +338,52 @@ func FieldValue(role string) string {
 // Checking activeElement closes that whole class: an element that is present but
 // not yet focusable is now indistinguishable, to this function, from one that is
 // not present.
+// # The frame it waits is a window where letters are commands
+//
+// Deferring unconditionally was its own bug, and a reader-visible one (TODO.md
+// Q2, "article search bleeds into the sidebar feed filter"). "/" asks for the
+// search box; the caret does not arrive until the next frame at the earliest;
+// and every key pressed in between reaches the keydown handler with no text
+// field focused, so it is dispatched as a single-letter SHORTCUT. Pressing "/"
+// and typing "feed health" — which is not fast typing, just typing — fires the
+// "f" binding on the second key, which focuses the SIDEBAR FILTER, and the rest
+// of the query is typed into the rail. That box persists what it is given, so
+// the reader's half-query outlives the session in `rail.filter`, and the search
+// they thought they were running never happened.
+//
+// Two things close it, and both are needed:
+//
+//   - Focus SYNCHRONOUSLY when the field is already on screen and focusable,
+//     which is the case for every field a keyboard shortcut names. There is then
+//     no window at all, because the caret has moved before the handler returns.
+//   - Hold a "focus is owed" flag for the deferred case that remains — a field
+//     inside an overlay that has not been committed yet. OnKey reports keys as
+//     typing while it is set, so the letters going nowhere are not run as
+//     commands either.
 func FocusField(role string) {
 	doc := js.Global().Get("document")
+	// The synchronous attempt. Same test as the loop's: focus is only real if
+	// the document agrees, so a present-but-not-yet-focusable field falls
+	// through to the frames below exactly as it did before.
+	if el := doc.Call("querySelector", `[data-role="`+role+`"]`); el.Truthy() {
+		el.Call("focus")
+		if doc.Get("activeElement").Equal(el) {
+			if sel := el.Get("select"); sel.Truthy() {
+				el.Call("select")
+			}
+			return
+		}
+	}
+	focusOwed++
 	const maxFrames = 20
 	tries := 0
 	var frame js.Func
+	done := func() {
+		frame.Release()
+		if focusOwed > 0 {
+			focusOwed--
+		}
+	}
 	frame = js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		tries++
 		el := doc.Call("querySelector", `[data-role="`+role+`"]`)
@@ -302,7 +391,7 @@ func FocusField(role string) {
 			el.Call("focus")
 			// The focus is only real if the document agrees.
 			if doc.Get("activeElement").Equal(el) {
-				frame.Release()
+				done()
 				if sel := el.Get("select"); sel.Truthy() {
 					el.Call("select")
 				}
@@ -310,7 +399,10 @@ func FocusField(role string) {
 			}
 		}
 		if tries >= maxFrames {
-			frame.Release()
+			// Giving up releases the claim too. A field that never became
+			// focusable must not leave the keyboard permanently unable to run a
+			// shortcut — that would trade a bug for a worse one.
+			done()
 			return nil
 		}
 		js.Global().Call("requestAnimationFrame", frame)
@@ -318,6 +410,16 @@ func FocusField(role string) {
 	})
 	js.Global().Call("requestAnimationFrame", frame)
 }
+
+// focusOwed counts FocusField calls that have asked for a caret and not yet got
+// one. It is only ever touched from JS callbacks, which the wasm runtime runs
+// one at a time, so a plain int is the whole synchronisation this needs.
+//
+// While it is above zero the keyboard handler treats every key as typing: the
+// reader has aimed at a text field and is entitled to have their keystrokes go
+// there, and running them as commands instead is how a query ends up in the
+// sidebar's filter. See FocusField.
+var focusOwed int
 
 // FocusFirst moves focus to the first focusable element inside a container.
 //
@@ -850,7 +952,27 @@ func KeepScrollAnchored(selector string) {
 // "Topmost" means the last child whose top edge is at or above the viewport's
 // top edge: the one the reader has scrolled into, rather than the one peeking in
 // from below.
-func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value string)) Listener {
+//
+// # moved, and why the answer alone is not enough
+//
+// The callback is told whether the scroll POSITION changed since the last
+// measurement, because "a different article is at the top" has two completely
+// different causes and only one of them is the reader.
+//
+// The other is a reflow. Article bodies and their images arrive after the stream
+// is on screen, and an article ABOVE the reader growing pushes everything below
+// it down — so at an unchanged scrollTop, the child whose top edge is above the
+// fold becomes an earlier one. Nobody scrolled. The pane is now showing that
+// article, which is worth reporting, but the reader did not go there and it must
+// not be counted as having been read: the observed failure was an article a jump
+// had deliberately skipped being marked read seconds later, by a body loading
+// two articles above it, with the reader's hands nowhere near the machine.
+//
+// `moved` is measured between successive MEASUREMENTS rather than between
+// successive reports. Comparing against the last reported position instead would
+// call a reflow a scroll whenever the reader had scrolled a little since — not
+// far enough to change the answer, which is exactly the common case.
+func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value string, moved bool)) Listener {
 	// Bound to the DOCUMENT, not to the root element (8b.52).
 	//
 	// It used to `querySelector(rootSelector)` and listen on that node, and the
@@ -878,6 +1000,10 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 	root := doc
 	pending := false
 	last := ""
+	// The scroll position at the previous measurement, and whether there has
+	// been one. See the `moved` paragraph above.
+	prevTop := 0.0
+	measured := false
 	var el js.Value
 
 	var frame js.Func
@@ -924,10 +1050,15 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		if full > view+2 && top+view >= full-2 {
 			found = kids.Index(n-1).Call("getAttribute", attr).String()
 		}
-		println("DBG topmost frame n=" + itoa(n) + " top=" + ftoa(top) + " view=" + ftoa(view) + " full=" + ftoa(full) + " found=" + found + " last=" + last)
+		// Sub-pixel scroll positions are real (a trackpad, a smooth scroll mid-
+		// flight), so this is a tolerance rather than an equality test. Half a
+		// pixel is far below anything that could carry the fold across an
+		// article boundary, and far above float noise.
+		moved := !measured || top-prevTop > 0.5 || prevTop-top > 0.5
+		prevTop, measured = top, true
 		if found != last {
 			last = found
-			fn(found)
+			fn(found, moved)
 		}
 		return nil
 	})
@@ -943,7 +1074,6 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		if m := t.Get("matches"); !m.Truthy() || !t.Call("matches", matchSelector).Bool() {
 			return nil
 		}
-		println("DBG topmost real scroll event, el updated, pending=" + boolStrP(pending))
 		el = t
 		if pending {
 			return nil
@@ -968,10 +1098,8 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 	// becomes a method on the Listener rather than a package-level hook.
 	topmostRefresh = func() {
 		last = ""
-		println("DBG topmostRefresh el.Truthy=" + boolStrP(el.Truthy()) + " pending=" + boolStrP(pending))
 		if !el.Truthy() {
 			el = resolveTopmostFallback(doc, rootSelector, matchSelector)
-			println("DBG topmostRefresh fallback resolved el.Truthy=" + boolStrP(el.Truthy()))
 		}
 		if pending {
 			return
