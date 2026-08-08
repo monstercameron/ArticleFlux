@@ -39,6 +39,32 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    launchOptions: {
+      // Stop Chromium throttling the render loop, which is the single cause
+      // behind most of this suite's "flakiness".
+      //
+      // GWC drives every render from requestAnimationFrame, and headless
+      // Chromium decides an unfocused, occluded, backgrounded page does not
+      // need frames — measured in reader.spec at FIVE frames in twelve
+      // seconds. Every state transition then waits seconds for a frame a real
+      // tab paints immediately, so assertions time out on a page that is
+      // functionally correct and merely not being painted.
+      //
+      // The individual `timeout: 45_000` allowances scattered through the specs
+      // are that mechanism worked around one test at a time. These three flags
+      // address it at the source, and they are the standard set for exactly
+      // this: no timer throttling, no backgrounding when occluded, no renderer
+      // backgrounding.
+      //
+      // It matters far more in CI than on a developer's box: a two-core runner
+      // with no display throttles harder, which is why 95 tests failed there
+      // against the two that fail here.
+      args: [
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+      ],
+    },
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
