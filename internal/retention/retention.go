@@ -135,7 +135,7 @@ func (s *Service) Sweep(ctx context.Context, days int) (store.SweepResult, error
 		// work that succeeded, and retrying it would delete a second time — so
 		// this is logged loudly and the result is returned honestly.
 		if s.log != nil {
-			s.log.Error("a retention sweep could not be recorded; the deletion happened and is now unaccounted",
+			s.log.ErrorContext(ctx, "a retention sweep could not be recorded; the deletion happened and is now unaccounted",
 				"removed", res.Removed, "err", err)
 		}
 	}
