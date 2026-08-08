@@ -391,6 +391,15 @@ type App struct {
 	grpc    *grpc.Server
 	handler http.Handler
 	stopPo  chan struct{}
+	// poWG tracks the poll loop and the favicon warm it spawns, so Close can
+	// wait for them instead of closing the database underneath them.
+	//
+	// `stopPo` only ASKS the loop to stop. Without this the request and the
+	// shutdown raced, and the loop lost: a cycle already past its select ran on
+	// through `a.db.Close()` and logged `poll: cycle_failed err="sql: database
+	// is closed"` for work that was fine. It is the same hazard the pool stop
+	// below is commented for, on the one goroutine that had no guard.
+	poWG sync.WaitGroup
 	// lastDerive is the low-water mark for ScopesToDerive, under deriveMu.
 	//
 	// Held in memory rather than persisted: on restart it starts one window back,
@@ -1083,6 +1092,25 @@ func (a *App) Close() error {
 	a.closing = true
 	a.deriveMu.Unlock()
 	a.nudges.Wait()
+
+	// Then the poll loop, which `close(a.stopPo)` above has only ASKED to stop.
+	//
+	// Bounded for the reason the gRPC drain below is bounded: a cycle talks to a
+	// hundred and fifty strangers on a timer, and a deploy must not hang on the
+	// slowest of them. Past the deadline the old behaviour resumes — the
+	// database closes underneath whatever is left — but it says so, which is the
+	// difference between a known cost and the silent one this replaces.
+	polled := make(chan struct{})
+	go func() {
+		a.poWG.Wait()
+		close(polled)
+	}()
+	select {
+	case <-polled:
+	case <-time.After(gracePeriod):
+		a.log.Warn("the poll loop did not stop in time; closing anyway",
+			"after", gracePeriod)
+	}
 
 	// Before the database closes, and it WAITS — jobs.Pool.Stop blocks until every
 	// worker has finished its current job. Closing the db underneath a running
@@ -2277,7 +2305,9 @@ func (a *App) StartPoller(ctx context.Context) {
 	if a.cfg.PollInterval <= 0 {
 		return
 	}
+	a.poWG.Add(1)
 	go func() {
+		defer a.poWG.Done()
 		t := time.NewTicker(a.cfg.PollInterval)
 		defer t.Stop()
 		for {
@@ -2290,7 +2320,17 @@ func (a *App) StartPoller(ctx context.Context) {
 				// Icons ride along with the poll rather than on their own timer:
 				// the same "we are doing background work now" moment, and it keeps
 				// the two from overlapping their outbound connections.
-				go a.WarmFavicons(ctx, 25)
+				// Tracked, for the same reason the loop is: this writes to the
+				// same database, and it is the half most likely to still be
+				// running at shutdown because it is waiting on somebody else's
+				// web server. Add before Done can be reached — the loop holds a
+				// count of its own until it returns, so Wait cannot slip
+				// between the two.
+				a.poWG.Add(1)
+				go func() {
+					defer a.poWG.Done()
+					a.WarmFavicons(ctx, 25)
+				}()
 				// Dead sessions go with them. A row that can never authenticate
 				// again is not history, and on a box nobody administers an
 				// unbounded table is how a self-hosted instance grows a junk
