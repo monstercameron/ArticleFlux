@@ -110,8 +110,13 @@ func TestUnmappedIsDenied(t *testing.T) {
 func TestPublicMethodsAreExactlyTheIntendedSet(t *testing.T) {
 	p := DefaultPolicy()
 	want := map[string]bool{
+		pAuth + "Setup": true,
 		pAuth + "Login": true, pAuth + "Logout": true, pAuth + "WhoAmI": true,
 		pAuth + "RefreshSession": true, pAuth + "Reauthenticate": true,
+		// Account recovery (§7.2). Public because it is reached by somebody who
+		// cannot authenticate; guarded by the credential each call carries and by
+		// the same limiter, ledger and lockout as Login.
+		pAuth + "RedeemRecoveryCode": true, pAuth + "RedeemResetToken": true,
 		pSystem + "GetVersion": true, pSystem + "CheckHealth": true,
 	}
 	// Nothing that mutates another person's data may be public.
@@ -128,6 +133,20 @@ func TestPublicMethodsAreExactlyTheIntendedSet(t *testing.T) {
 	for m := range want {
 		if !p.IsPublic(m) {
 			t.Errorf("%s should be public — it is called before a credential exists", m)
+		}
+	}
+
+	// And the other direction, which the name of this test has always claimed and
+	// which it did not check until §7.3b. A one-way subset assertion passes
+	// whatever gets ADDED to the public set, so the mistake it was written to
+	// catch — an RPC quietly made reachable without a credential — was the one
+	// mistake it could not see. `Setup` had in fact been missing from `want` the
+	// whole time, which is how you know nothing was reading this list.
+	for m := range p.PublicMethods() {
+		if !want[m] {
+			t.Errorf("%s is public and is not in this test's list.\n"+
+				"Every unauthenticated method is a surface a stranger can reach. If that "+
+				"is intended, add it here with the reason; if it is not, it is a hole.", m)
 		}
 	}
 }

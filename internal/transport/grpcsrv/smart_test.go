@@ -372,3 +372,151 @@ func TestSecretErrGenericFailureIsInternal(t *testing.T) {
 		t.Errorf("key = %q, want srv.saveFailed", key)
 	}
 }
+
+// --- the two switches that used to render disabled -----------------------------
+
+// T2 and T4. `smart.classify` was read on every classification batch and written
+// by nothing, which is why the Classification tab rendered its switch disabled
+// with a line saying so — the honest thing to do with a control that cannot
+// take. These are the writer, and the reason each field is `optional`.
+
+func TestClassifyConsentDefaultsOffAndRoundTrips(t *testing.T) {
+	sc := ownerScope("superadmin")
+	encKey, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := smartConfigServer(t, encKey, sc, fixedScope(sc))
+	ctx := context.Background()
+
+	got, err := s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetClassifyEnabled() {
+		t.Error("classification consent defaulted ON — it egresses article text and spends money")
+	}
+
+	on := true
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{ClassifyEnabled: &on}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	got, err = s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GetClassifyEnabled() {
+		t.Error("consent did not survive the round trip")
+	}
+
+	off := false
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{ClassifyEnabled: &off}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	got, _ = s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if got.GetClassifyEnabled() {
+		t.Error("consent could be turned on but not off")
+	}
+}
+
+func TestAnUnrelatedSaveDoesNotTouchConsent(t *testing.T) {
+	// The whole reason the field is `optional`. A form that could only send true
+	// or false would turn every model change into a decision about egress that
+	// nobody made — and the direction it would drift is the one that spends.
+	sc := ownerScope("superadmin")
+	encKey, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := smartConfigServer(t, encKey, sc, fixedScope(sc))
+	ctx := context.Background()
+
+	on := true
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{ClassifyEnabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{Model: "gpt-5"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if !got.GetClassifyEnabled() {
+		t.Error("saving a model turned consent off")
+	}
+	if got.GetModel() != "gpt-5" {
+		t.Errorf("model = %q", got.GetModel())
+	}
+}
+
+func TestTheSpendLimitRoundTripsAndZeroMeansNone(t *testing.T) {
+	sc := ownerScope("superadmin")
+	encKey, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := smartConfigServer(t, encKey, sc, fixedScope(sc))
+	ctx := context.Background()
+
+	if got, _ := s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{}); got.GetBudgetUsd() != 0 {
+		t.Errorf("a fresh instance reported a limit of %v", got.GetBudgetUsd())
+	}
+
+	limit := 12.5
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{BudgetUsd: &limit}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, _ := s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if got.GetBudgetUsd() != 12.5 {
+		t.Errorf("limit = %v, want 12.5", got.GetBudgetUsd())
+	}
+
+	// Zero is "no ceiling", not "refuse everything". The strictest reading of an
+	// empty field would silently disable every paid feature on the instance.
+	none := 0.0
+	if _, err := s.SetSmartConfig(ctx, &pb.SetSmartConfigRequest{BudgetUsd: &none}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, _ = s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if got.GetBudgetUsd() != 0 {
+		t.Errorf("limit = %v, want none", got.GetBudgetUsd())
+	}
+}
+
+func TestANegativeSpendLimitIsRefusedRatherThanClamped(t *testing.T) {
+	// Somebody typing -5 meant something. Reading it as "no ceiling" is the
+	// opposite of what they were reaching for, and they would not find out.
+	sc := ownerScope("superadmin")
+	encKey, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := smartConfigServer(t, encKey, sc, fixedScope(sc))
+
+	bad := -5.0
+	if _, err := s.SetSmartConfig(context.Background(),
+		&pb.SetSmartConfigRequest{BudgetUsd: &bad}); err == nil {
+		t.Fatal("a negative spend limit was accepted")
+	}
+}
+
+func TestCostIsReportedBesideTheTokens(t *testing.T) {
+	// The counts travel with the dollars deliberately: a model the rate tables
+	// cannot price contributes an unknown amount, and a meter showing $0.00 for
+	// it would say it was free. See llm.Cost.
+	sc := ownerScope("superadmin")
+	encKey, err := secret.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := smartConfigServer(t, encKey, sc, fixedScope(sc))
+
+	got, err := s.GetSmartConfig(context.Background(), &pb.GetSmartConfigRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fresh instance has spent nothing, and must say nothing rather than
+	// omitting the fields — the screen distinguishes "no calls" from "unpriced".
+	if got.GetCostUsd() != 0 || got.GetPricedCalls() != 0 || got.GetUnpricedCalls() != 0 {
+		t.Errorf("a fresh instance reported cost %v / %d priced / %d unpriced",
+			got.GetCostUsd(), got.GetPricedCalls(), got.GetUnpricedCalls())
+	}
+}

@@ -185,6 +185,59 @@ func NormalizeRecoveryCode(s string) string {
 	return strings.NewReplacer("O", "0", "I", "1", "L", "1").Replace(s)
 }
 
+// RecoveryCodeLength is how many characters a normalised code has.
+//
+// Ten random bytes is sixteen base32 characters, and the grouping dashes are
+// presentation that NormalizeRecoveryCode removes. Named rather than written as
+// 16 because one screen has to tell a code from a reset token by shape, and a
+// bare number there would be a magic constant describing a fact about this file.
+const RecoveryCodeLength = 16
+
+// LooksLikeRecoveryCode reports whether input is shaped like a code from the
+// sheet rather than like a reset token.
+//
+// # Why a screen has to guess at all
+//
+// There is one "I cannot get in" screen and two credentials that reach it: a
+// code off the printed sheet, and a link an admin sent. Asking the reader which
+// kind they have is asking somebody already locked out to classify their own
+// credential, using vocabulary the application invented. They will get it wrong,
+// and the refusal will be the same uniform "not valid" either way, so they will
+// have no way to find out that the only thing wrong was the radio button.
+//
+// The shapes are unambiguous, so nothing has to be guessed twice: a code is
+// sixteen characters and a token is fifty-two. This is a ROUTING decision and
+// never an authorisation one — the server verifies whichever credential it is
+// handed and does not care what the client thought it was.
+func LooksLikeRecoveryCode(input string) bool {
+	return len(NormalizeRecoveryCode(input)) == RecoveryCodeLength
+}
+
+// ExtractResetToken pulls the token out of whatever the reader pasted.
+//
+// They were sent a link, so they will paste a link — the whole link, with the
+// origin and the query string, because that is what "copy" gives you. A field
+// that only accepts the bare token means every reader has to hand-edit a URL,
+// and the ones who do it wrong get told their reset is invalid.
+//
+// Deliberately forgiving about the container and NOT about the value: whatever
+// comes out is checked against a stored hash, so accepting a link, a bare token
+// or a token with a stray newline costs nothing. Anything that is not the right
+// 256 bits still fails.
+func ExtractResetToken(input string) string {
+	s := strings.TrimSpace(input)
+	// A pasted URL: take what follows the last `token=`, up to the next
+	// separator. Parsing it as a URL would be stricter for no gain — a reader who
+	// pasted something url.Parse rejects still has a token in there somewhere.
+	if i := strings.LastIndex(s, "token="); i >= 0 {
+		s = s[i+len("token="):]
+		if j := strings.IndexAny(s, "&# \t\r\n"); j >= 0 {
+			s = s[:j]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // ---------------------------------------------------------------------------
 // Reset tokens (§7.2)
 // ---------------------------------------------------------------------------

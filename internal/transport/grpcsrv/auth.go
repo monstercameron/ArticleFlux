@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/ArticleFlux/internal/apierr"
+	"github.com/monstercameron/ArticleFlux/internal/audit"
 	"github.com/monstercameron/ArticleFlux/internal/authn"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
@@ -33,6 +34,62 @@ import (
 // weak substitute for revocation, and this has real revocation.
 const SessionTTL = 30 * 24 * time.Hour
 
+// AccessTTL is how long a session lives when the client can renew it.
+//
+// # Why there are two numbers
+//
+// SessionTTL above is the honest ceiling for a client that has no way to renew:
+// thirty days, revocable, and the argument for it is written out there. It was
+// also the ONLY number, because refresh-token issuance was gated off and
+// nothing consumed a refresh token — so the whole rotation, reuse-detection and
+// short-lifetime apparatus §7.3a specifies was built, tested, and unreachable.
+// What actually protected a reader was a thirty-day bearer token in
+// localStorage with no rotation and no idle timeout, and `headers.go` was
+// honest that CSP was the only compensating control on it.
+//
+// Twelve hours is what a stolen token is worth once the client renews. Long
+// enough that a laptop closed over lunch does not re-authenticate, short enough
+// that a token lifted out of storage is a window rather than a month — and the
+// window is what changes, because renewal ROTATES: the refresh token is single
+// use, so the thief and the owner cannot both keep renewing. One of them
+// presents a spent token, the server sees a replay it cannot attribute, and the
+// family dies. That is the control the thirty-day token had no equivalent of.
+//
+// # Why not shorter
+//
+// Every renewal is an RPC on a tunnel that may be asleep, and a client that
+// wakes to an expired session shows a login screen. Twelve hours means the
+// overwhelmingly common patterns — a phone at breakfast, a laptop at night —
+// renew silently in the background, and the reader never sees the machinery.
+const AccessTTL = 12 * time.Hour
+
+// RefreshIdleTTL is how long a device family survives with nobody using it.
+//
+// The gap SEC4 named was "no idle timeout", and this is it. Rotation bounds
+// what a stolen ACCESS token is worth; nothing bounded what a stolen REFRESH
+// token was worth, because `RotateRefresh` only ever asked whether the presented
+// secret matched — a family registered eighteen months ago on a laptop that has
+// since been sold would still mint sessions.
+//
+// Sixty days, measured from `devices.last_seen_at`, which rotation already
+// updates on every use. Twice the old session lifetime, so nobody who used this
+// reader within the last two months is logged out by the change, and finite, so
+// a browser profile nobody has opened since spring cannot be one.
+const RefreshIdleTTL = 60 * 24 * time.Hour
+
+// accessTTL is the lifetime this server hands out.
+//
+// The short one only when refresh is on. An instance that does not issue
+// refresh tokens has clients that cannot renew, and giving those a twelve-hour
+// session would not be a security improvement — it would be a login prompt
+// twice a day for exactly the same credential exposure.
+func (s *AuthServer) accessTTL() time.Duration {
+	if s.issueRefresh {
+		return AccessTTL
+	}
+	return SessionTTL
+}
+
 // AuthServer implements pb.AuthServiceServer.
 //
 // It is the only service reachable without a credential, so everything here
@@ -46,6 +103,14 @@ type AuthServer struct {
 
 	// onOutcome counts login results. Nil disables it; see WithLoginMetrics.
 	onOutcome func(context.Context, store.LoginOutcome)
+
+	// trail records security events (§7.9, §7.3c).
+	//
+	// Never nil after NewAuthServer: an audit trail that is optional is an audit
+	// trail that is absent on the one deployment somebody forgot to configure,
+	// and this whole package exists because the previous arrangement — a writer
+	// with no callers — was indistinguishable from that.
+	trail *audit.Recorder
 
 	// issueRefresh gates whether Login/Setup hand out a refresh token at all.
 	// Off by default; see WithRefreshTokens.
@@ -83,6 +148,10 @@ func NewAuthServer(repo *store.ReaderRepo, scopeOf func(context.Context) (store.
 		repo: repo, scopeOf: scopeOf, log: log, devMode: devMode,
 		decoy:   decoy,
 		limiter: newAttemptLimiter(),
+		// Constructed here rather than injected, so there is no assembly in which
+		// the auth surface exists without a trail behind it. §7.3c's whole premise
+		// is that an optional control is an absent one.
+		trail: audit.New(repo, log),
 	}
 }
 
@@ -106,7 +175,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// the load-bearing one and this is defence in depth, not the defence.
 	uKey, cKey := "u:"+strings.ToLower(username), "c:"+clientKey(ctx)
 	if !s.limiter.allow(uKey) || !s.limiter.allow(cKey) {
-		s.log.Warn("login rate limited", "username", username, "client", clientKey(ctx))
+		s.log.WarnContext(ctx, "login rate limited", "username", username, "client", clientKey(ctx))
 		return nil, status.Error(codes.ResourceExhausted,
 			"too many attempts; wait a minute and try again")
 	}
@@ -126,9 +195,19 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// did not just cause themselves.
 	lower, addr := strings.ToLower(username), clientKey(ctx)
 	if d, ok := s.lockout(ctx, lower, addr); !ok {
-		s.log.Warn("login locked out", "username", username, "client", addr,
+		s.log.WarnContext(ctx, "login locked out", "username", username, "client", addr,
 			"reason", d.Reason, "retry_after", d.RetryAfter)
 		s.record(ctx, lower, addr, store.LoginLocked)
+		// The durable trail gets the THRESHOLD, not each guess. Individual
+		// failures are `login_attempts`' job and are purged; this one row is what
+		// somebody looking for "was this account under attack in March" finds.
+		s.trail.Record(ctx, audit.Event{
+			Action: audit.ActionLockout,
+			Detail: map[string]string{
+				"username": lower, "client": addr, "reason": d.Reason,
+				"retry_after": d.RetryAfter.String(),
+			},
+		})
 		return nil, apierr.Status(apierr.RateLimited("login", d.RetryAfter))
 	}
 
@@ -157,7 +236,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 			// Not a credential problem, and not something the person typing can
 			// fix. It means a second tenant exists and login has no way to say
 			// which one is meant — D12's decision arriving as an outage.
-			s.log.Error("login is ambiguous: username exists in more than one tenant",
+			s.log.ErrorContext(ctx, "login is ambiguous: username exists in more than one tenant",
 				"username", username)
 			return nil, status.Error(codes.FailedPrecondition,
 				"this username exists in more than one tenant; the server cannot tell them apart")
@@ -167,7 +246,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	}
 	if verifyErr != nil || !ok {
 		fail(store.LoginBadPassword)
-		s.log.Warn("login failed", "username", username, "client", clientKey(ctx))
+		s.log.WarnContext(ctx, "login failed", "username", username, "client", clientKey(ctx))
 		return nil, errBadCredentials
 	}
 
@@ -192,7 +271,9 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	// presentation metadata and never a lookup key.
 	record := idgen.DeviceID()
 	label := strings.TrimSpace(req.GetLabel())
-	expires := now.Add(SessionTTL)
+	// Twelve hours when the client can renew, thirty days when it cannot. See
+	// accessTTL.
+	expires := now.Add(s.accessTTL())
 
 	if err := s.repo.CreateSession(ctx, store.NewSession{
 		SessionID: idgen.New(),
@@ -210,7 +291,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		// walk straight past the control.
 		AuthenticatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {
-		s.log.Error("creating session", "err", err)
+		s.log.ErrorContext(ctx, "creating session", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
 
@@ -225,7 +306,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 	if rehash {
 		if fresh, err := secret.HashPassword(req.GetPassword(), secret.Active()); err == nil {
 			if err := s.repo.SetPasswordHash(ctx, u.UserID, fresh); err != nil {
-				s.log.Warn("re-hashing password", "err", err)
+				s.log.WarnContext(ctx, "re-hashing password", "err", err)
 			}
 		}
 	}
@@ -245,14 +326,21 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		scope := store.Scope{TenantID: u.TenantID, UserID: u.UserID, Role: u.Role}
 		if err := s.repo.RegisterDevice(ctx, scope, record, idgen.New(), refresh,
 			label, clientStamp(ctx)); err != nil {
-			s.log.Warn("registering the device family", "err", err, "record", record)
+			s.log.WarnContext(ctx, "registering the device family", "err", err, "record", record)
 			refresh = ""
 		} else {
 			refreshRecord = record
 		}
 	}
 
-	s.log.Info("login", "username", u.Username, "role", u.Role, "record", record)
+	s.log.InfoContext(ctx, "login", "username", u.Username, "role", u.Role, "record", record)
+	// Notice rather than Alert: a login is the most ordinary thing that happens
+	// here. It is recorded anyway because "when and from where did I sign in" is
+	// the question a reader asks when they suspect they are not the only one.
+	s.trail.Record(ctx, audit.Event{
+		Action: audit.ActionLogin, Actor: u.UserID, Tenant: u.TenantID,
+		Detail: map[string]string{"username": u.Username, "client": addr},
+	})
 	return &pb.LoginResponse{
 		Token:           token,
 		ExpiresAt:       expires.Format(time.RFC3339),
@@ -287,13 +375,20 @@ func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionR
 	}
 
 	replacement := idgen.Token()
-	if err := s.repo.RotateRefresh(ctx, record, presented, replacement); err != nil {
+	if err := s.repo.RotateRefresh(ctx, record, presented, replacement, RefreshIdleTTL); err != nil {
 		if errors.Is(err, store.ErrRefreshReuse) {
 			// Every device in the family is now revoked. Logged at Warn rather
 			// than Info because this is either an attack or a client bug, and
 			// both are things an operator wants to see.
-			s.log.Warn("refresh token reuse detected; the device family was revoked",
+			s.log.WarnContext(ctx, "refresh token reuse detected; the device family was revoked",
 				"record", record)
+			// Either an attack or a client bug, and the operator wants both. No
+			// actor: whoever presented the spent token is by definition not
+			// identified by it.
+			s.trail.Record(ctx, audit.Event{
+				Action: audit.ActionRefreshReuse,
+				Detail: map[string]string{"record": record, "client": clientKey(ctx)},
+			})
 		}
 		// One answer for reuse, unknown record, and revoked family alike: a
 		// caller holding a token that does not work learns nothing about WHY,
@@ -309,7 +404,10 @@ func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionR
 
 	now := time.Now().UTC()
 	token := idgen.Token()
-	expires := now.Add(SessionTTL)
+	// Always the short one here, without consulting issueRefresh: reaching this
+	// handler at all means a client that holds a refresh token and knows how to
+	// spend it, which is the only fact accessTTL's fallback exists to doubt.
+	expires := now.Add(AccessTTL)
 	if err := s.repo.CreateSession(ctx, store.NewSession{
 		SessionID: idgen.New(),
 		UserID:    sc.UserID,
@@ -398,17 +496,28 @@ func (s *AuthServer) WithLoginMetrics(fn func(context.Context, store.LoginOutcom
 
 // WithRefreshTokens turns on refresh-token issuance (§7.3a SEC4).
 //
-// Off unless a caller opts in, and production does not: the server has
-// minted refresh families since 6.1, but the wasm client discards them —
-// LoginResponse.RefreshToken is read once at Login and never stored, and
-// there is no code path that ever calls RefreshSession. Handing out a
-// credential nothing consumes is not a compensating control, it is a stolen
-// token waiting to be found, so this stays gated until the client
-// implements the versioned bundle, atomic rotation and cross-tab
-// coordination §7.3a specifies. Test code that exercises rotation directly
-// opts in with this; the RotateRefresh/ScopeForDevice/RegisterDevice
-// machinery underneath is unaffected either way — this only controls
-// whether Login and Setup ever hand a caller something to rotate.
+// Off unless a caller opts in, and PRODUCTION NOW DOES — `internal/app`
+// passes true.
+//
+// It was off for a stated and correct reason, kept here because it is the
+// condition that had to be met: the server had minted refresh families since
+// 6.1 and the wasm client discarded them. `LoginResponse.RefreshToken` was
+// read once at Login and dropped, and nothing ever called `RefreshSession`.
+// Handing out a credential nothing consumes is not a compensating control,
+// it is a second thing to steal — so this stayed gated until the client
+// implemented the versioned bundle, atomic rotation and cross-tab
+// coordination §7.3a specifies. `client/data/session.go` is that, and
+// `client/data/refresh.go` spends it.
+//
+// The flag stays rather than being deleted. It is what an instance embedding
+// this package with a client of its own turns off, and it is what makes the
+// two-lifetimes rule in `accessTTL` expressible: a server that issues no
+// refresh token must not also hand out a twelve-hour session, because its
+// clients have no way to renew one.
+//
+// The RotateRefresh/ScopeForDevice/RegisterDevice machinery underneath is
+// unaffected either way — this only controls whether Login, Setup and
+// recovery ever hand a caller something to rotate.
 func (s *AuthServer) WithRefreshTokens(enabled bool) *AuthServer {
 	s.issueRefresh = enabled
 	return s
@@ -427,14 +536,25 @@ func (s *AuthServer) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.Logou
 		// token it no longer has is the normal shape of "log out twice".
 		return &pb.LogoutResponse{}, nil
 	}
+	// The scope is resolved BEFORE the revocation, because afterwards there is no
+	// session to resolve one from and the trail would record a sign-out by
+	// nobody. Best-effort: a token that no longer resolves is the ordinary
+	// "logged out twice" case, and it still gets a row with no actor rather than
+	// no row at all.
+	sc, _ := s.scopeOf(ctx)
+
 	// The session AND its refresh family (§7.3a SEC2) — a sign-out that only
 	// killed today's access token would leave the renewal authority standing,
 	// so a stolen refresh token could mint a replacement seconds later.
 	if err := s.repo.RevokeSessionAndFamily(ctx, secret.HashToken(tok),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		s.log.Error("revoking session and family", "err", err)
+		s.log.ErrorContext(ctx, "revoking session and family", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
+	s.trail.Record(ctx, audit.Event{
+		Action: audit.ActionLogout, Actor: sc.UserID, Tenant: sc.TenantID,
+		Detail: map[string]string{"client": clientKey(ctx)},
+	})
 	return &pb.LogoutResponse{}, nil
 }
 

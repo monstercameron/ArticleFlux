@@ -361,11 +361,21 @@ func TestRegenerateReplacesTheSheet(t *testing.T) {
 		t.Fatalf("regenerate again: %v", err)
 	}
 
-	// A code from the first sheet must be dead. Survivors would make
-	// "regenerate because I think the old ones leaked" a no-op that looked like
-	// it worked.
+	// recoveryCodeHash, NOT secret.HashToken — and the difference is the whole
+	// reason a broken feature passed its tests for a release (§7.3b).
+	//
+	// This test used to compute `secret.HashToken(code)`, which is exactly what
+	// the MINT side computed. So it proved the storage round-tripped against
+	// itself and never that a code redeems: the real path normalises first, that
+	// hash never matched, and every recovery code the application had ever issued
+	// was dead on arrival. A test that reimplements the code under test agrees
+	// with it by construction, including when it is wrong.
+	//
+	// Going through the shared function is what makes this assertion mean
+	// something. The end-to-end version — redeem through the RPC and check the
+	// account actually comes back — lives in recovery_test.go.
 	used, err := repo.ConsumeRecoveryCode(context.Background(), sc.UserID,
-		secret.HashToken(first.GetCodes()[0]))
+		recoveryCodeHash(first.GetCodes()[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +384,7 @@ func TestRegenerateReplacesTheSheet(t *testing.T) {
 	}
 	// And one from the new sheet must live.
 	used, err = repo.ConsumeRecoveryCode(context.Background(), sc.UserID,
-		secret.HashToken(second.GetCodes()[0]))
+		recoveryCodeHash(second.GetCodes()[0]))
 	if err != nil {
 		t.Fatal(err)
 	}

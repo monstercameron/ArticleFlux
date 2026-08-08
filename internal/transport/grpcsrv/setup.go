@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 
+	"github.com/monstercameron/ArticleFlux/internal/audit"
 	"github.com/monstercameron/ArticleFlux/internal/authn"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -105,9 +106,11 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 		s.log.Error("generating recovery codes", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
+	// recoveryCodeHash, not secret.HashToken — see its comment. The two have to
+	// agree with what redemption computes, and for the whole of 6.1 they did not.
 	hashes := make([]string, 0, len(sheet))
 	for _, c := range sheet {
-		hashes = append(hashes, secret.HashToken(c))
+		hashes = append(hashes, recoveryCodeHash(c))
 	}
 	if err := s.repo.ReplaceRecoveryCodes(ctx, scope, hashes); err != nil {
 		s.log.Error("storing recovery codes", "err", err)
@@ -119,7 +122,13 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	// earlier draft seeded this from the username, which would have made the
 	// device identifier guessable from a name the reader chose in public.
 	record := idgen.DeviceID()
-	expires := now.Add(SessionTTL)
+	// The same two-lifetimes rule Login follows: short when the client can
+	// renew, long when it cannot. Setup registers a device family below on
+	// exactly the same gate, so the two decisions have to read the same flag —
+	// a setup session that expired in twelve hours on an instance that issued
+	// no refresh token would lock the person who just claimed the box out of it
+	// by lunchtime.
+	expires := now.Add(s.accessTTL())
 	if err := s.repo.CreateSession(ctx, store.NewSession{
 		SessionID: idgen.New(),
 		UserID:    userID,
@@ -153,8 +162,18 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 		}
 	}
 
-	s.log.Info("instance claimed", "username", username, "role", "superadmin",
+	s.log.InfoContext(ctx, "instance claimed", "username", username, "role", "superadmin",
 		"email_given", email != "")
+	// The first row in the trail, and the one that establishes everything after
+	// it: this is an unauthenticated call that created a superadmin. If the
+	// instance was claimed by somebody other than its owner, this is where it
+	// shows — and it can only ever happen once.
+	s.trail.Record(ctx, audit.Event{
+		Action: audit.ActionInstanceClaim, Actor: userID, Tenant: tenantID,
+		Detail: map[string]string{
+			"username": username, "role": "superadmin", "client": clientKey(ctx),
+		},
+	})
 	return &pb.SetupResponse{
 		Token:           token,
 		ExpiresAt:       expires.Format(time.RFC3339),

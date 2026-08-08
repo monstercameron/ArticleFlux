@@ -72,10 +72,10 @@ func newAuth(t *testing.T) (*AuthServer, *store.ReaderRepo) {
 		}
 		return sc, nil
 	}
-	// Refresh-token issuance is gated off by default in production (§7.3a
-	// SEC4, WithRefreshTokens) because the wasm client does not yet consume
-	// one. This file's job is proving the rotation/reuse-detection machinery
-	// underneath is correct, so it opts back in.
+	// Refresh-token issuance is off in the CONSTRUCTOR and on in production
+	// (internal/app passes true). This fixture opts in the same way, because
+	// what this file proves is the rotation and reuse-detection machinery, and
+	// none of it is reachable without an issued token.
 	return NewAuthServer(repo, scopeOf, log, false).WithRefreshTokens(true), repo
 }
 
@@ -86,15 +86,17 @@ func withToken(tok string) context.Context {
 
 func codeOf(err error) codes.Code { return status.Code(err) }
 
-// §7.3a SEC4: the wasm client discards whatever refresh token it is handed —
-// it has no rotation, no versioned bundle, and no cross-tab coordination — so
-// issuing one anyway is an unconsumed credential sitting in a response,
-// useful to nobody but an attacker who can read it off the wire before the
-// client throws it away. WithRefreshTokens defaults to off, and this pins
-// that default directly against a server built the way NewAuthServer is
-// wired in production (internal/app/app.go), not against this file's own
-// opted-in fixture.
-func TestRefreshTokensAreGatedOffByDefault(t *testing.T) {
+// The constructor default is OFF, and an instance running that way must get the
+// LONG session rather than the short one.
+//
+// That pairing is the whole substance of the test now. It used to pin the
+// default because the shipped client discarded refresh tokens (§7.3a SEC4) —
+// that is fixed, `internal/app` passes true, and the flag survives for an
+// embedder with a client of its own. What survives WITH it is a trap: a server
+// that issues no refresh token and hands out a twelve-hour session gives its
+// clients no way to renew and logs everybody out twice a day. `accessTTL` is
+// the one line preventing that, and this is what holds it.
+func TestRefreshTokensOffMeansTheLongSession(t *testing.T) {
 	db, err := store.Open(store.Options{Path: filepath.Join(t.TempDir(), "gate.db")})
 	if err != nil {
 		t.Fatal(err)
@@ -125,11 +127,70 @@ func TestRefreshTokensAreGatedOffByDefault(t *testing.T) {
 		t.Fatalf("login: %v", err)
 	}
 	if res.GetRefreshToken() != "" || res.GetRefreshRecordId() != "" {
-		t.Error("a server built with the production defaults issued a refresh token " +
-			"nothing in the shipped client consumes")
+		t.Error("a server with issuance off handed out a refresh token anyway")
 	}
 	if res.GetToken() == "" {
 		t.Error("gating refresh tokens off must not gate the access token off too")
+	}
+	// And the lifetime that goes with it. Off means the client cannot renew, so
+	// anything shorter than SessionTTL is a login prompt rather than a control.
+	exp, perr := time.Parse(time.RFC3339, res.GetExpiresAt())
+	if perr != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", res.GetExpiresAt(), perr)
+	}
+	if d := time.Until(exp); d < SessionTTL-time.Hour {
+		t.Errorf("a non-renewable session expires in %s; want ~%s. A client that "+
+			"cannot refresh must not be given the short lifetime", d.Round(time.Hour), SessionTTL)
+	}
+}
+
+// And the other side of the same rule: issuance on means the SHORT session.
+//
+// This is what SEC4 actually bought. A thirty-day bearer token in localStorage
+// with no rotation was the real session model for as long as the refresh path
+// was unreachable, and the fix is only a fix if the lifetime came down with it
+// — a client that renews against a thirty-day token has gained nothing but a
+// second credential to lose.
+func TestRefreshTokensOnMeansTheShortSession(t *testing.T) {
+	s, _ := newAuth(t)
+
+	res, err := s.Login(context.Background(), &pb.LoginRequest{Username: "cam", Password: testPassword})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if res.GetRefreshToken() == "" || res.GetRefreshRecordId() == "" {
+		t.Fatal("issuance is on and no refresh half came back; nothing below can renew")
+	}
+	exp, perr := time.Parse(time.RFC3339, res.GetExpiresAt())
+	if perr != nil {
+		t.Fatalf("expires_at %q is not RFC3339: %v", res.GetExpiresAt(), perr)
+	}
+	if d := time.Until(exp); d > AccessTTL+time.Hour {
+		t.Errorf("a renewable session expires in %s; want ~%s. The whole point of the "+
+			"refresh path is that the access token stops being a month long",
+			d.Round(time.Hour), AccessTTL)
+	}
+
+	// A rotation lands on the short lifetime too — RefreshSession uses AccessTTL
+	// unconditionally rather than consulting the flag, and a renewal that reset
+	// the clock to thirty days would undo the control one call after login.
+	got, err := s.RefreshSession(context.Background(), &pb.RefreshSessionRequest{
+		RefreshRecordId: res.GetRefreshRecordId(),
+		RefreshToken:    res.GetRefreshToken(),
+	})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got.GetRefreshToken() == res.GetRefreshToken() {
+		t.Error("the refresh token came back unchanged; single-use rotation is what " +
+			"makes reuse detection possible at all")
+	}
+	rexp, perr := time.Parse(time.RFC3339, got.GetExpiresAt())
+	if perr != nil {
+		t.Fatalf("refreshed expires_at %q is not RFC3339: %v", got.GetExpiresAt(), perr)
+	}
+	if d := time.Until(rexp); d > AccessTTL+time.Hour {
+		t.Errorf("a refreshed session expires in %s; want ~%s", d.Round(time.Hour), AccessTTL)
 	}
 }
 

@@ -77,6 +77,14 @@ func DefaultPolicy() *authz.Map {
 	//     runs, and it refuses itself the moment one account exists — the
 	//     refusal is inside the creating transaction, not in this map. A
 	//     capability check here would be a capability nobody could hold.
+	//   - RedeemRecoveryCode and RedeemResetToken are public for the same reason
+	//     Login is, and the reason is the whole feature: they are reached by
+	//     somebody who cannot authenticate. A capability check on account
+	//     recovery would be a capability only a working session could hold,
+	//     which is the one thing the caller does not have. What stands in for it
+	//     is the credential each carries — a hashed single-use code, or a
+	//     256-bit token with an hour to live — plus the same limiter, ledger and
+	//     lockout curve that guard Login (see internal/transport/grpcsrv/recovery.go).
 	m.Public(
 		auth+"Setup",
 		auth+"Login",
@@ -84,6 +92,8 @@ func DefaultPolicy() *authz.Map {
 		auth+"WhoAmI",
 		auth+"RefreshSession",
 		auth+"Reauthenticate",
+		auth+"RedeemRecoveryCode",
+		auth+"RedeemResetToken",
 		system+"GetVersion",
 		system+"CheckHealth",
 	)
@@ -245,6 +255,39 @@ type ScopeFunc func(context.Context) (store.Scope, error)
 // which is a policy working.
 type DenialFunc func(ctx context.Context, method string, mapped bool)
 
+// callerFor turns a resolved credential into the thing the policy asks about.
+//
+// One constructor, used by both interceptors, because the two of them building a
+// Caller independently is precisely how the streaming path came to be missing
+// something the unary path had. A field added here reaches both or neither.
+//
+// # TokenScope is the narrowing, and dropping it is silent
+//
+// `authz.Caller.Caps` intersects the role's capabilities with the token scope's,
+// so a `reader_ro` token held by an admin is a read-only credential. That
+// intersection only happens if the scope actually arrives — a Caller built
+// without it reports the FULL ROLE and nothing anywhere says so. It is carried
+// on store.Scope for that reason: the credential resolves to one value, and the
+// narrowing cannot be left behind by a caller who forgot it existed.
+//
+// # Extra is deliberately empty, and that is a bounded statement
+//
+// `authz.Caller.Extra` exists for capabilities granted through `user_roles`
+// beyond the role named on the users row. Populating it means `repo.RolesFor` —
+// a query — on EVERY authorised RPC, and today it could not change an answer:
+// `GrantRole` has no caller, so no user holds a second role. The moment one
+// does, this is where it has to be read, and the test beside it says so. Leaving
+// a fast path that becomes wrong the day a feature lands is worth naming rather
+// than discovering.
+func callerFor(sc store.Scope) authz.Caller {
+	return authz.Caller{
+		TenantID:   sc.TenantID,
+		UserID:     sc.UserID,
+		Role:       authz.Role(strings.ToLower(sc.Role)),
+		TokenScope: authz.TokenScope(sc.TokenScope),
+	}
+}
+
 // AuthzUnary enforces the policy before any handler runs.
 //
 // # Order in the chain
@@ -286,12 +329,7 @@ func AuthzUnary(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny D
 			return nil, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
 		}
 
-		caller := authz.Caller{
-			TenantID: sc.TenantID,
-			UserID:   sc.UserID,
-			Role:     authz.Role(strings.ToLower(sc.Role)),
-		}
-		if err := policy.Check(method, caller); err != nil {
+		if err := policy.Check(method, callerFor(sc)); err != nil {
 			var notMapped authz.ErrNotMapped
 			mapped := !errors.As(err, &notMapped)
 			if !mapped {
@@ -353,12 +391,7 @@ func AuthzStream(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny 
 			return errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
 		}
 
-		caller := authz.Caller{
-			TenantID: sc.TenantID,
-			UserID:   sc.UserID,
-			Role:     authz.Role(strings.ToLower(sc.Role)),
-		}
-		if err := policy.Check(method, caller); err != nil {
+		if err := policy.Check(method, callerFor(sc)); err != nil {
 			var notMapped authz.ErrNotMapped
 			mapped := !errors.As(err, &notMapped)
 			if !mapped {

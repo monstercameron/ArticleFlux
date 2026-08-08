@@ -30,6 +30,7 @@ package authz
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 )
@@ -290,6 +291,19 @@ func (m *Map) Unmapped(known []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// PublicMethods lists every method reachable with no credential at all.
+//
+// For a test, and the test is the point: the unauthenticated surface is the one
+// an attacker reaches first, and it is declared by a variadic call that grows by
+// one line. Something has to be able to read the set back and ask whether it is
+// still the set somebody intended — a declaration nothing can enumerate is a
+// declaration nothing can check.
+func (m *Map) PublicMethods() map[string]bool {
+	out := make(map[string]bool, len(m.public))
+	maps.Copy(out, m.public)
 	return out
 }
 

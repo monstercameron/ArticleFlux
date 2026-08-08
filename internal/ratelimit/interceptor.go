@@ -64,7 +64,7 @@ func Unary(l *Limiter, rule Rule, key KeyFunc, log *slog.Logger) grpc.UnaryServe
 			// The KEY, not the user's name or the method: the key is already an
 			// opaque handle, and §22.11's rule is that a log line explaining a
 			// refusal must not become a record of what somebody was reading.
-			log.Warn("rate limited", "rule", rule.Name, "key", k, "retry_after", wait)
+			log.WarnContext(ctx, "rate limited", "rule", rule.Name, "key", k, "retry_after", wait)
 		}
 		// apierr rather than a bare status so the client receives retry_after_s
 		// and can wait exactly long enough. A client left to guess backs off on
@@ -103,7 +103,7 @@ func Stream(l *Limiter, rule Rule, key KeyFunc, log *slog.Logger) grpc.StreamSer
 			return handler(srv, ss)
 		}
 		if log != nil {
-			log.Warn("rate limited", "rule", rule.Name, "key", k, "retry_after", wait, "kind", "stream")
+			log.WarnContext(ss.Context(), "rate limited", "rule", rule.Name, "key", k, "retry_after", wait, "kind", "stream")
 		}
 		return apierr.Status(apierr.RateLimited(rule.Name, wait))
 	}
@@ -177,7 +177,7 @@ func (c *Concurrent) Interceptor(rule string, log *slog.Logger, key KeyFunc) grp
 			c.refused++
 			c.mu.Unlock()
 			if log != nil {
-				log.Warn("stream refused: too many open for this caller",
+				log.WarnContext(ss.Context(), "stream refused: too many open for this caller",
 					"rule", rule, "key", k, "limit", c.limit)
 			}
 			// A retry hint of zero, deliberately: a slot frees when THIS caller
