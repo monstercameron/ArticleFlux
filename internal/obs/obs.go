@@ -55,10 +55,23 @@ type Ring struct {
 	at     int // next write position
 	filled bool
 	counts map[slog.Level]int64
-	// attrs are the handler-scoped attributes accumulated by WithAttrs, so a
-	// logger built with `.With("component", "poll")` records that on every line.
-	attrs []slog.Attr
-	group string
+	// spill is the on-disk copy, or nil. Lives on the root handler beside the
+	// buffer, for the same reason: every derived handler must write to the one
+	// file, not to its own.
+	spill *Spill
+	// ops is the chain of WithAttrs and WithGroup calls that produced this
+	// handler, in order.
+	//
+	// A CHAIN rather than a flat attribute slice plus a group name, because the
+	// two are not independent: `.WithGroup("job").With("id", 5)` puts the
+	// attribute INSIDE the group and `.With("id", 5).WithGroup("job")` leaves
+	// it outside, and a handler that keeps only "the attrs" and "the group"
+	// cannot tell those apart. The flat version rendered both as `id=5`, so the
+	// settings screen and the terminal — which uses a real slog handler and gets
+	// this right — disagreed about the name of a field on the same event. That
+	// is the divergence the request-id handler goes to some trouble to avoid,
+	// arriving through the other door.
+	ops []ringOp
 	// parent links a handler produced by WithAttrs/WithGroup back to the one
 	// that owns the buffer. slog derives a new handler per `.With(...)` call, and
 	// each of those must write into the SAME history — otherwise the settings
@@ -97,54 +110,157 @@ func (r *Ring) Handle(ctx context.Context, rec slog.Record) error {
 	// during Handle — keeping the record and formatting later would read freed
 	// state.
 	var b []byte
-	appendAttr := func(a slog.Attr) bool {
+	// appendAttr renders one attribute under the group path it belongs to.
+	//
+	// Declared as a var so it can recurse: a group-VALUED attribute
+	// (`slog.Group("http", "status", 500)`) expands into its members with the
+	// prefix extended, exactly as a text handler does. Rendering it through
+	// Value.String() instead produced `http=[status=500]`, which is not a field
+	// anybody can filter on.
+	var appendAttr func(prefix string, a slog.Attr) bool
+	appendAttr = func(prefix string, a slog.Attr) bool {
 		if a.Equal(slog.Attr{}) {
+			return true
+		}
+		// Resolved before anything is decided about it: a LogValuer's whole
+		// point is that the expensive or sensitive form is not what gets
+		// logged, and asking Kind() first would classify the wrapper.
+		v := a.Value.Resolve()
+		if v.Kind() == slog.KindGroup {
+			members := v.Group()
+			// An empty group contributes nothing and its name is not a field.
+			if len(members) == 0 {
+				return true
+			}
+			inner := prefix
+			// A group attribute with an empty key is inlined, per slog's rules.
+			if a.Key != "" {
+				inner = prefix + a.Key + "."
+			}
+			for _, m := range members {
+				appendAttr(inner, m)
+			}
 			return true
 		}
 		if len(b) > 0 {
 			b = append(b, ' ')
 		}
+		b = append(b, prefix...)
 		b = append(b, a.Key...)
 		b = append(b, '=')
-		b = append(b, a.Value.String()...)
+		b = append(b, v.String()...)
 		return true
 	}
-	for _, a := range r.attrs {
-		appendAttr(a)
+
+	// Replay the chain, accumulating the group path as it goes, so an attribute
+	// is rendered under the groups that were open when it was added.
+	prefix := ""
+	for _, o := range r.ops {
+		if o.group != "" {
+			prefix += o.group + "."
+			continue
+		}
+		for _, a := range o.attrs {
+			appendAttr(prefix, a)
+		}
 	}
-	rec.Attrs(func(a slog.Attr) bool { return appendAttr(a) })
+	// The record's own attributes sit inside every group opened so far.
+	rec.Attrs(func(a slog.Attr) bool { return appendAttr(prefix, a) })
+
+	out := Record{
+		Time: rec.Time, Level: rec.Level, Message: rec.Message, Attrs: string(b),
+	}
 
 	root := r.root()
 	root.mu.Lock()
-	root.buf[root.at] = Record{
-		Time: rec.Time, Level: rec.Level, Message: rec.Message, Attrs: string(b),
-	}
+	root.buf[root.at] = out
 	root.at++
 	if root.at == len(root.buf) {
 		root.at = 0
 		root.filled = true
 	}
 	root.counts[rec.Level]++
+	spill := root.spill
 	root.mu.Unlock()
+
+	// Written outside the lock: the spill does its own locking, and holding the
+	// ring's mutex across a file write would make every logging goroutine in
+	// the process wait on the disk.
+	spill.Write(out)
 
 	return r.next.Handle(ctx, rec)
 }
 
+// WithSpill attaches an on-disk copy and replays whatever it already holds.
+//
+// Replaying at attach time is what makes the feature worth having: the point is
+// not that records are on disk, it is that the settings screen shows what
+// happened BEFORE this process started. A crash loop otherwise presents as a
+// series of empty log views.
+//
+// Restored records go through the same buffer as live ones, so eviction, the
+// level filter and Recent's newest-first order all behave identically. The
+// COUNTS are deliberately not restored: "3 errors since boot" is a statement
+// about this process, and folding a previous life's errors into it would make
+// the number mean nothing in particular.
+func (r *Ring) WithSpill(s *Spill) *Ring {
+	root := r.root()
+	root.mu.Lock()
+	root.spill = s
+	root.mu.Unlock()
+
+	for _, rec := range s.Load(len(root.buf)) {
+		root.mu.Lock()
+		root.buf[root.at] = rec
+		root.at++
+		if root.at == len(root.buf) {
+			root.at = 0
+			root.filled = true
+		}
+		root.mu.Unlock()
+	}
+	return r
+}
+
 func (r *Ring) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// A new Ring sharing the SAME buffer and mutex, with its own attribute set.
+	if len(attrs) == 0 {
+		return r
+	}
+	// A new Ring sharing the SAME buffer and mutex, with its own chain.
 	// Copying the buffer would give every `logger.With(...)` its own history and
 	// the settings screen would show a fraction of the lines.
-	out := &Ring{next: r.next.WithAttrs(attrs), group: r.group}
+	out := &Ring{next: r.next.WithAttrs(attrs), ops: r.extend(ringOp{attrs: attrs})}
 	out.shareStorage(r)
-	out.attrs = append(append([]slog.Attr{}, r.attrs...), attrs...)
 	return out
 }
 
 func (r *Ring) WithGroup(name string) slog.Handler {
-	out := &Ring{next: r.next.WithGroup(name), group: name}
+	// slog defines WithGroup("") as a no-op, and treating it as a real group
+	// would prefix every later field with a lone dot.
+	if name == "" {
+		return r
+	}
+	out := &Ring{next: r.next.WithGroup(name), ops: r.extend(ringOp{group: name})}
 	out.shareStorage(r)
-	out.attrs = append([]slog.Attr{}, r.attrs...)
 	return out
+}
+
+// ringOp is one recorded WithAttrs or WithGroup. Exactly one field is set.
+type ringOp struct {
+	group string
+	attrs []slog.Attr
+}
+
+// extend returns the chain with one more op on the end.
+//
+// COPIED rather than appended in place: two handlers derived from the same
+// parent would otherwise share a backing array, and the second derivation would
+// overwrite the first's op — a bug that only appears once somebody derives
+// twice from one logger, which is exactly when nobody is looking for it.
+func (r *Ring) extend(o ringOp) []ringOp {
+	ops := make([]ringOp, len(r.ops), len(r.ops)+1)
+	copy(ops, r.ops)
+	return append(ops, o)
 }
 
 // shareStorage points a derived handler at the one that owns the buffer.

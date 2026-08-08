@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -83,6 +84,15 @@ type Config struct {
 	// and only sane when the collector is on the same host.
 	Insecure bool
 
+	// SampleRatio is the fraction of traces STARTED HERE that are exported,
+	// between 0 and 1. Zero means "unset" and is read as 1.0, so an operator
+	// who configures nothing gets the same complete traces as before.
+	//
+	// Only consulted for a trace with no upstream decision; see the sampler
+	// below. Ignored entirely without OTLPEndpoint, since there is no exporter
+	// to sample for.
+	SampleRatio float64
+
 	Log *slog.Logger
 }
 
@@ -93,6 +103,15 @@ type Telemetry struct {
 
 	// Handler serves the Prometheus exposition format. Never nil.
 	Handler http.Handler
+
+	// LogExport ships log records to the collector, or is NIL when no endpoint
+	// is configured — which is the default and the common case.
+	//
+	// Handed back rather than installed here because this package does not own
+	// the logger: the ring, the request-id stamp and the trace stamp are
+	// composed in app.Open, and an exporter that silently replaced that chain
+	// would drop the fields the rest of it exists to add.
+	LogExport slog.Handler
 
 	Instruments *Instruments
 
@@ -114,6 +133,11 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 	}
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = "articleflux"
+	}
+	// Zero means unset, not "sample nothing" — a ratio nobody configured must
+	// not silently switch tracing off for the operator who just turned it on.
+	if cfg.SampleRatio <= 0 || cfg.SampleRatio > 1 {
+		cfg.SampleRatio = 1.0
 	}
 
 	// NewSchemaless, not NewWithAttributes(semconv.SchemaURL, …).
@@ -147,6 +171,34 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 	// duplicate registration, and anything that happens to import a package with
 	// an init-time collector silently joins our exposition.
 	registry := prometheus.NewRegistry()
+
+	// The Go runtime and process collectors, which a dedicated registry does
+	// NOT get for free.
+	//
+	// prometheus.DefaultRegisterer ships with both pre-registered, and moving
+	// off it — correctly, for the reasons above — quietly took them with it. So
+	// /metrics carried this application's own counters and nothing about the
+	// process running them: no goroutine count, no heap, no resident memory, no
+	// open file descriptors.
+	//
+	// That is the wrong half to lose on an unattended box. A goroutine leak, a
+	// heap that only grows, and an fd leak from a publisher that never closes
+	// are the three failures a self-hosted reader actually dies of, and all
+	// three are invisible in application metrics right up to the moment the
+	// process is killed. It is the same argument the uptime gauge is here for:
+	// the failure nobody instruments is the one that looks fine at every
+	// instant you check it.
+	//
+	// Errors are logged, not returned. Missing runtime metrics is worse
+	// observability, not a reason to refuse to serve.
+	if err := registry.Register(collectors.NewGoCollector()); err != nil {
+		cfg.Log.Warn("telemetry: no Go runtime metrics", "err", err)
+	}
+	if err := registry.Register(collectors.NewProcessCollector(
+		collectors.ProcessCollectorOpts{})); err != nil {
+		cfg.Log.Warn("telemetry: no process metrics", "err", err)
+	}
+
 	readers := []sdkmetric.Option{}
 	if promExp, err := otelprom.New(otelprom.WithRegisterer(registry)); err != nil {
 		cfg.Log.Error("telemetry: no prometheus exporter; /metrics will be empty", "err", err)
@@ -189,9 +241,30 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 			cfg.Log.Error("telemetry: OTLP tracing disabled", "endpoint", cfg.OTLPEndpoint, "err", err)
 			t.Tracer = noop.NewTracerProvider().Tracer(ScopeName)
 		} else {
+			// An EXPLICIT sampler, because the SDK default is to sample
+			// everything.
+			//
+			// Turning on OTLP therefore used to mean exporting a span for every
+			// call this server serves, forever, with no way to turn the volume
+			// down short of turning tracing off. That is affordable on a
+			// personal instance and is not a property to leave implicit — the
+			// person who points this at a collector is usually doing it because
+			// something is already going wrong, which is exactly when traffic
+			// is highest.
+			//
+			// ParentBased so a decision made upstream is honoured: a reverse
+			// proxy or a client that already sampled a trace gets its child
+			// spans, and one that declined does not have them manufactured
+			// here. Only a trace that STARTS at this server consults the ratio.
+			//
+			// The default ratio is 1.0 — unchanged behaviour for the operator
+			// who sets nothing — so this is a knob that exists rather than a
+			// silent reduction in what anybody currently sees.
 			tp := sdktrace.NewTracerProvider(
 				sdktrace.WithBatcher(exp),
 				sdktrace.WithResource(res),
+				sdktrace.WithSampler(sdktrace.ParentBased(
+					sdktrace.TraceIDRatioBased(cfg.SampleRatio))),
 			)
 			otel.SetTracerProvider(tp)
 			t.shutdown = append(t.shutdown, tp.Shutdown)
@@ -213,7 +286,32 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 
 	t.Handler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorHandling: promhttp.ContinueOnError,
+		// Exemplars — the link from a histogram bucket to a trace that landed
+		// in it.
+		//
+		// They are the answer to the question a latency histogram always
+		// provokes and cannot answer: "something took nine seconds; WHICH
+		// something?" Without them the p99 is a number you can watch and not a
+		// thing you can open.
+		//
+		// The SDK already attaches them: its default exemplar filter keeps a
+		// sample only when the recording happened inside a SAMPLED span, which
+		// is both the useful case and the one that bounds the cost. The missing
+		// half was here — exemplars cannot be expressed in the classic
+		// Prometheus text format, so promhttp drops them unless it is allowed
+		// to negotiate OpenMetrics with the scraper.
+		//
+		// Negotiated, not forced: a scraper that asks for the classic format
+		// still gets it, unchanged. This only adds an option for one that asks
+		// for OpenMetrics, which every current Prometheus does.
+		EnableOpenMetrics: true,
 	})
+
+	// --- logs ---------------------------------------------------------------
+	if h, shutdown := newLogExporter(ctx, cfg, res); h != nil {
+		t.LogExport = h
+		t.shutdown = append(t.shutdown, shutdown)
+	}
 
 	inst, err := newInstruments(t.Meter)
 	if err != nil {
@@ -287,9 +385,29 @@ type Instruments struct {
 	// shipped (TODO P1).
 	StreamDuration metric.Float64Histogram
 
-	PollRuns      metric.Int64Counter
-	PollDuration  metric.Float64Histogram
-	ItemsIngested metric.Int64Counter
+	// PollRuns counts one SOURCE, and PollCycles counts one BATCH of them.
+	//
+	// They were one counter, and the two units were mixed into it: a failed
+	// cycle added 1 while a successful cycle added one per source polled. So
+	// `articleflux_poll_runs_total` was not a count of anything — dividing it
+	// by time gave a rate in units of "sources, except sometimes cycles", and
+	// the error ratio computed from it moved when the batch size changed
+	// rather than when polling got worse.
+	PollRuns   metric.Int64Counter
+	PollCycles metric.Int64Counter
+	// PollCycleDuration is the time for one batch, which is what the poller
+	// actually measures.
+	//
+	// It was named `articleflux.poll.duration` and described as "Time to poll
+	// one source" while recording `PollDue(ctx, 25)` — up to twenty-five of
+	// them, sequentially. Every percentile read off it answered a question
+	// nobody had asked, and the histogram's two-minute top bucket made that
+	// look deliberate. Renamed rather than re-pointed because there is no
+	// per-source timing to record here: the poller returns counts, not
+	// durations, and the per-source view already exists as the egress metrics,
+	// which time each outbound fetch with a purpose label.
+	PollCycleDuration metric.Float64Histogram
+	ItemsIngested     metric.Int64Counter
 
 	JobRuns     metric.Int64Counter
 	JobDuration metric.Float64Histogram
@@ -335,8 +453,10 @@ func newInstruments(m metric.Meter) (*Instruments, error) {
 		StreamDuration: hist("articleflux.rpc.stream.duration",
 			"How long a streaming RPC was held open, by method and outcome."),
 
-		PollRuns:      counter("articleflux.poll.runs", "Feed poll attempts, by outcome."),
-		PollDuration:  hist("articleflux.poll.duration", "Time to poll one source."),
+		PollRuns:   counter("articleflux.poll.runs", "Sources polled, by outcome. One per source."),
+		PollCycles: counter("articleflux.poll.cycles", "Poll cycles run, by outcome. One per batch."),
+		PollCycleDuration: hist("articleflux.poll.cycle.duration",
+			"Time to poll one batch of due sources."),
 		ItemsIngested: counter("articleflux.items.ingested", "New items written by the poller."),
 
 		JobRuns:     counter("articleflux.job.runs", "Background job runs, by kind and outcome."),
@@ -435,7 +555,15 @@ func (t *Telemetry) RecordError(ctx context.Context, log *slog.Logger, subsystem
 			attribute.String("class", class),
 		))
 	if log != nil {
-		log.Error(subsystem+": "+class, append([]any{"err", err}, args...)...)
+		// ErrorContext, not Error.
+		//
+		// slog's non-context methods pass context.Background(), so this line
+		// went out with no request id — on the ONE helper in the program whose
+		// entire purpose is to make an error findable afterwards, and which was
+		// handed the context two lines above to record the metric with. Every
+		// caller here already has the id on their context; the log line was the
+		// only thing not reading it.
+		log.ErrorContext(ctx, subsystem+": "+class, append([]any{"err", err}, args...)...)
 	}
 	if span := trace.SpanFromContext(ctx); span.IsRecording() {
 		span.RecordError(err)

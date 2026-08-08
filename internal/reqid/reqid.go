@@ -44,6 +44,27 @@ const Key = "request_id"
 // OriginKey names the id of the request that queued a job, on a job's log lines.
 const OriginKey = "origin_request_id"
 
+// MetadataKey is the gRPC trailer and HTTP header the id is returned on.
+//
+// Returning it is the half of §22.11 that makes the rest worth having. An id
+// that only ever appears in the server's own log lets an operator group what
+// they are already reading; it does not let a READER report anything, because
+// they have never seen it. The package comment's example — "it said internal
+// error, reference 7f3a9c" — requires the id to travel back.
+//
+// Lowercase because gRPC metadata keys are canonicalised to lowercase, and the
+// same string is used as an HTTP header name so the two surfaces agree.
+const MetadataKey = "x-request-id"
+
+// ArgKey is where the id appears in an ErrorDetail's args map.
+//
+// The args map rather than a new proto field: it is documented as carrying
+// server-side identifiers, which is exactly what this is, and an old client
+// that does not know the key ignores it rather than failing to parse the
+// error. Adding a field to ErrorDetail would have been tidier and is not worth
+// a schema migration to a message every transport already reads.
+const ArgKey = "request_id"
+
 type ctxKey int
 
 const (

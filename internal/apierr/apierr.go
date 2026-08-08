@@ -350,10 +350,52 @@ func Status(err error) error {
 		// Attaching the detail can fail on a marshalling error. The status still
 		// carries the code and a safe message, which is strictly better than
 		// returning nothing.
-		return st.Err()
+		return &statusError{st: st, src: e}
 	}
-	return withDetail.Err()
+	return &statusError{st: withDetail, src: e}
 }
+
+// statusError is a gRPC status that still remembers WHY.
+//
+// # The bug this exists to close
+//
+// `st.Err()` produces an error carrying only what goes on the wire: a code, a
+// safe message, and the detail. That is exactly right for the client and it
+// silently threw away the cause — so an internal error took this path,
+//
+//	handler → toStatus(err) → apierr.Status → st.Err() → grpc-go → client
+//
+// and the wrapped database error attached by `Internal(cause)` was dropped at
+// the third step. The client saw "internal error", and NOTHING ANYWHERE LOGGED
+// WHAT HAPPENED. Three separate comments in this codebase — this package's, the
+// one on reader.toStatus, and internal/reqid's — describe the original going
+// "to the log with a request id"; no code did it, because by the time any
+// interceptor saw the error there was nothing left to log.
+//
+// # How it stays safe
+//
+// grpc-go asks an error for its status through the GRPCStatus method, so the
+// WIRE form is `st` and is unchanged: same code, same safe message, same
+// detail. The classified error hangs off Unwrap, which reaches nothing but
+// server-side code — errors.As in an interceptor, and the logger it hands the
+// cause to.
+//
+// Error() deliberately returns the rich form, message and cause, because the
+// only consumers of an error's own string here are logs. Anything rendering to
+// a client goes through Status/HTTPStatus, which read `Message` and never this.
+type statusError struct {
+	st  *status.Status
+	src *Error
+}
+
+func (e *statusError) Error() string { return e.src.Error() }
+
+// GRPCStatus is what grpc-go calls to get the wire form. Its presence is the
+// entire reason this type can carry a cause without leaking it.
+func (e *statusError) GRPCStatus() *status.Status { return e.st }
+
+// Unwrap exposes the classification, and through it the cause, to errors.As.
+func (e *statusError) Unwrap() error { return e.src }
 
 // HTTPStatus returns the HTTP code and a JSON-shaped body for the sync API.
 func HTTPStatus(err error) (int, map[string]string) {
@@ -382,6 +424,30 @@ func HTTPStatus(err error) (int, map[string]string) {
 		body["doc_ref"] = e.DocRef
 	}
 	return e.Kind.HTTP(), body
+}
+
+// LogDetail returns what a SERVER-SIDE log line should say about an error.
+//
+// The safe message is what the client got and is nearly useless in a log — "not
+// found" tells whoever is reading nothing about what was not found or why. This
+// returns the cause when there is one, so the log line beside the request id
+// carries the wrapped database error, the parse failure, the timeout.
+//
+// Empty when the error carries no more than the client already knows, which is
+// the honest answer for a validation failure: there is no hidden detail, the
+// message IS the reason.
+func LogDetail(err error) string {
+	var e *Error
+	if !errors.As(err, &e) {
+		if err != nil {
+			return err.Error()
+		}
+		return ""
+	}
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
 }
 
 // KindOf reports the classification of an error, for tests and for logging.

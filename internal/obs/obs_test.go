@@ -111,6 +111,65 @@ func TestRingWithGroupSharesStorage(t *testing.T) {
 	}
 }
 
+// TestRingRendersTheSameFieldNamesAsTheTerminal is the property that matters
+// about groups, stated as the comparison rather than as a string literal.
+//
+// The ring and the wrapped text handler see the same event, and a field whose
+// NAME differs between them makes the settings screen and the terminal two
+// accounts of one thing. It renders `k=v` here rather than `g.k=v` if the group
+// chain is dropped, which is what it did before: the group was recorded on the
+// handler and never applied.
+func TestRingRendersTheSameFieldNamesAsTheTerminal(t *testing.T) {
+	var terminal strings.Builder
+	ring := NewRing(slog.NewTextHandler(&terminal, nil), 10)
+
+	cases := []struct {
+		name string
+		log  func(*slog.Logger)
+		want string
+	}{
+		{"group then attr", func(l *slog.Logger) {
+			l.WithGroup("job").Info("m", "id", 5)
+		}, "job.id=5"},
+		{"attr then group", func(l *slog.Logger) {
+			l.With("outer", 1).WithGroup("job").Info("m", "id", 5)
+		}, "job.id=5"},
+		{"attr before the group stays outside it", func(l *slog.Logger) {
+			l.With("outer", 1).WithGroup("job").Info("m", "id", 5)
+		}, "outer=1"},
+		{"nested groups", func(l *slog.Logger) {
+			l.WithGroup("a").WithGroup("b").Info("m", "id", 5)
+		}, "a.b.id=5"},
+		{"handler attrs inside a group", func(l *slog.Logger) {
+			l.WithGroup("job").With("kind", "poll").Info("m")
+		}, "job.kind=poll"},
+		{"a group-valued attribute expands", func(l *slog.Logger) {
+			l.Info("m", slog.Group("http", "status", 500))
+		}, "http.status=500"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			terminal.Reset()
+			c.log(newTestLogger(ring))
+
+			recs := ring.Recent(1, slog.LevelDebug)
+			if len(recs) != 1 {
+				t.Fatalf("Recent() = %d records, want 1", len(recs))
+			}
+			if !strings.Contains(recs[0].Attrs, c.want) {
+				t.Errorf("ring rendered %q, want it to contain %q", recs[0].Attrs, c.want)
+			}
+			// The terminal is the reference implementation, not a second
+			// expectation to keep in sync by hand.
+			if !strings.Contains(terminal.String(), c.want) {
+				t.Errorf("the wrapped text handler wrote %q, which does not contain %q — "+
+					"the expectation itself is wrong, not the ring",
+					strings.TrimSpace(terminal.String()), c.want)
+			}
+		})
+	}
+}
+
 // TestRingEnabledDefersToNext: raising the wrapped handler's level must
 // silence the ring too, not just the terminal output.
 func TestRingEnabledDefersToNext(t *testing.T) {

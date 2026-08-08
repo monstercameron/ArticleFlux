@@ -26,12 +26,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -389,18 +396,161 @@ type uaTransport struct {
 	purpose string
 }
 
+// tracer is resolved through OTel's GLOBAL provider, deliberately.
+//
+// The alternative is threading a tracer through seven constructors in six
+// packages, which is the same argument the Observer hook above already makes
+// and lost. The global is safe to take at package init: OTel returns a
+// delegating tracer that becomes real if and when a provider is installed, and
+// stays a no-op otherwise — which is every instance with no collector
+// configured, i.e. the default.
+var tracer = otel.Tracer("github.com/monstercameron/ArticleFlux/internal/netguard")
+
 func (t *uaTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if t.ua != "" && r.Header.Get("User-Agent") == "" {
 		r = r.Clone(r.Context())
 		r.Header.Set("User-Agent", t.ua)
 	}
+
+	// A span per hop, so a trace shows WHERE an outbound fetch went slow rather
+	// than only that it did. This is the largest unexplained interval in most
+	// of this program's work: polling a feed, extracting a page and warming a
+	// favicon are all mostly waiting on somebody else's server.
+	//
+	// The span name is the PURPOSE, which is a fixed word chosen by the caller
+	// — never the URL, which would give every article its own span name and
+	// make the trace list a reading history.
+	//
+	// The host IS recorded, and the path is not. That line is where it is for a
+	// reason: the host is the publisher, which the logs already record as
+	// feed_url and which is what "who is slow" means; the path is the article,
+	// which is the reading history itself. Spans also go to a collector the
+	// operator deliberately configured, unlike /metrics which answers anyone
+	// who can reach it — but that is an argument for recording the host, not
+	// for recording everything.
+	ctx, span := tracer.Start(r.Context(), "egress."+t.purpose,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("http.request.method", r.Method),
+			attribute.String("server.address", r.URL.Hostname()),
+			attribute.String("egress.purpose", t.purpose),
+		))
+	// **NOT `defer span.End()`.** A RoundTripper returns as soon as the response
+	// HEADERS have arrived, and for the fetches this guards — a feed document, an
+	// article page, an image being proxied — the headers are the cheap part. A
+	// span that closed here answered "where did the fetch go slow" with
+	// everything except the transfer, which is most of it: a 3 MB image over a
+	// slow link read as a fast request, because the milliseconds it reported were
+	// the milliseconds before the download started.
+	//
+	// So the span outlives this function and is ended by whoever finishes with
+	// the body (see spanBody). Every path below ends it exactly once.
+	r = r.WithContext(ctx)
+
 	// Per HOP, which is what makes a redirect chain and a blocked address both
 	// visible: a fetch refused by Control never reaches a status code, and
 	// counting only the final response would record it as nothing at all.
 	start := time.Now()
 	res, err := t.next.RoundTrip(r)
+	// The METRIC still stops here, and the span no longer does. That is
+	// deliberate and worth stating, because the two now disagree by the transfer
+	// time and somebody will notice: a histogram bucketed on total transfer
+	// would mix "the publisher is slow to answer" with "the publisher's article
+	// is large", and the first is the one an operator can act on. The span keeps
+	// the whole story for the one fetch being looked at.
 	observe(t.purpose, start, res, err)
+
+	switch {
+	case err != nil:
+		// The transport error carries the host and often the URL, which is why
+		// it must never become a metric label — but a span is not a label, and
+		// "connection refused" versus "certificate expired" is the whole
+		// answer when a feed stops updating.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "request failed")
+		span.End()
+	case res != nil:
+		span.SetAttributes(attribute.Int("http.response.status_code", res.StatusCode))
+		// 4xx and 5xx from a publisher are not THIS server erroring, so the
+		// span is left Unset rather than Error: marking them red would make
+		// every trace containing a dead feed look like an outage here.
+		if res.StatusCode >= 500 {
+			span.SetStatus(codes.Error, "upstream server error")
+		}
+		// Handed to the body, which ends it. `Body` is never nil from a
+		// RoundTripper — http.NoBody stands in for an empty one — but the guard
+		// costs a line and the failure it prevents is a span that never closes.
+		if res.Body != nil {
+			res.Body = &spanBody{ReadCloser: res.Body, span: span}
+		} else {
+			span.End()
+		}
+	default:
+		// Neither a response nor an error is a transport contract violation, and
+		// this exists so it costs a closed span rather than a leaked one.
+		span.End()
+	}
 	return res, err
+}
+
+// spanBody ends the egress span when the response body is done with, which is
+// the actual end of the fetch — see the note in RoundTrip.
+//
+// # Why Read ends it too, rather than only Close
+//
+// A reader that consumes to EOF and a reader that closes early are both
+// finished, and only one of them is guaranteed to happen: `io.ReadAll` followed
+// by a deferred `Close` does both, but a caller that reads to EOF inside a
+// `defer`-less path would otherwise leave the span open until the request that
+// created it was garbage. Ending on the first of the two — with `sync.Once`
+// making the second free — is what makes this correct for both.
+//
+// The bytes read are recorded because they are the answer to the question the
+// duration raises. "This fetch took nine seconds" is a different problem when it
+// moved 40 KB than when it moved 12 MB, and without the size the two are
+// indistinguishable.
+type spanBody struct {
+	io.ReadCloser
+	span trace.Span
+	once sync.Once
+	n    int64
+}
+
+func (b *spanBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.n += int64(n)
+	switch {
+	case errors.Is(err, io.EOF):
+		b.end(nil)
+	case err != nil:
+		// A body that stopped mid-transfer. This is the case the old span could
+		// not see AT ALL: the headers had arrived, so it had already recorded a
+		// successful fast request, and the connection dying halfway through a
+		// 3 MB article left no trace anywhere.
+		b.end(err)
+	}
+	return n, err
+}
+
+func (b *spanBody) Close() error {
+	err := b.ReadCloser.Close()
+	// The close error is deliberately not recorded as a span error. A caller
+	// that has finished early — a size cap, a parse failure, a cancelled poll —
+	// closes a body it did not drain, and the transport reports that; calling it
+	// a failed egress would paint every bounded read red.
+	b.end(nil)
+	return err
+}
+
+func (b *spanBody) end(err error) {
+	b.once.Do(func() {
+		b.span.SetAttributes(attribute.Int64("http.response.body.size", b.n))
+		if err != nil {
+			b.span.RecordError(err)
+			b.span.SetStatus(codes.Error, "response body did not finish")
+		}
+		b.span.End()
+	})
 }
 
 // Get is the convenience path: validate, then fetch with a guarded client.
