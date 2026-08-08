@@ -62,7 +62,7 @@ func init() {
 		// A timestamp field the server could not read. Names the format rather
 		// than saying "invalid", because the caller here is a client author or
 		// the sync API, and the thing they can DO about it is send RFC3339.
-		"badTimestamp": "That is not a time this server can store. Send an RFC3339 timestamp.",
+		"badTimestamp": "that is not a time this server can store — send an RFC3339 timestamp",
 
 		// --- §20.7's taxonomy (internal/apierr, TODO 7.3a)
 		//

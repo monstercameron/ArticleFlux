@@ -49,7 +49,7 @@ func FromDomain(err error) error {
 		// A caller's field, not a server fault: Internal here would tell the
 		// client to retry something that will fail identically forever.
 		return Invalid("muted_until", "srv.badTimestamp",
-			"That is not a time this server can store. Send an RFC3339 timestamp.").
+			"that is not a time this server can store — send an RFC3339 timestamp").
 			WithCause(err)
 
 	case errors.Is(err, store.ErrIdemConflict):
