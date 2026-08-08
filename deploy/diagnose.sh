@@ -14,9 +14,31 @@
 # typing that list from memory at 2am is how steps get skipped.
 set -uo pipefail
 
+# The checkout, FOUND rather than assumed.
+#
+# install.sh puts it at /opt/ArticleFlux and deploy/README.md's by-hand
+# instructions put it at /opt/src/ArticleFlux. A default that names only one of
+# those is wrong on the other kind of box, and the symptom is this script
+# reporting "GoWebComponents checkout: FAIL" and a blank deployed-commit line
+# about a perfectly healthy install — a diagnostic inventing the fault it was
+# run to find, which is the same failure the ORIGIN guess below already caused
+# once.
+if [ -z "${ARTICLEFLUX_REPO:-}" ]; then
+	for candidate in /opt/ArticleFlux /opt/src/ArticleFlux /opt/articleflux; do
+		if [ -d "$candidate/.git" ]; then ARTICLEFLUX_REPO="$candidate"; break; fi
+	done
+fi
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
+if [ -z "${GWC_REPO:-}" ]; then
+	for candidate in /opt/GoWebComponents /opt/src/GoWebComponents; do
+		if [ -d "$candidate/.git" ]; then GWC_REPO="$candidate"; break; fi
+	done
+fi
 GWC="${GWC_REPO:-/opt/GoWebComponents}"
 HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
+# Readiness, which is a different question: /healthz says the process answers,
+# /readyz says it can still read AND write. See internal/app/diskhealth.go.
+READY="${ARTICLEFLUX_READY_URL:-$(printf '%s' "$HEALTH" | sed 's|/healthz$|/readyz|')}"
 # The app's OWN allowlist, read off the running unit rather than guessed.
 #
 # The server compares a browser's Origin against the `-origin` it was started
@@ -107,6 +129,13 @@ state=$(systemctl is-active articleflux 2>/dev/null)
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$HEALTH" 2>/dev/null)
 [ "$code" = 200 ]; check "server answers /healthz" $? "HTTP $code on $HEALTH"
 
+# The one that catches a full disk. /healthz deliberately does not touch the
+# database, so it stays green through the read-works-write-fails state this box
+# is most likely to reach; /readyz probes the data directory and refuses.
+rcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$READY" 2>/dev/null)
+[ "$rcode" = 200 ]
+check "server answers /readyz" $? "HTTP $rcode on $READY$([ "$rcode" = 503 ] && printf '%s' ' — reads work, writes may not; check the data directory below')"
+
 if systemctl is-active --quiet nginx; then
 	# -L, because the canonical redirect to https:// IS the correct answer to a
 	# plaintext request on :80 and following it is what a browser does. Without it
@@ -128,8 +157,38 @@ else
 	check "nginx running" 1 "inactive — nothing is serving :80"
 fi
 
-free_mb=$(df -Pm "$REPO" | awk 'NR==2{print $4}')
-[ "$free_mb" -gt 500 ]; check "disk has room" $? "${free_mb}MB free (a build needs ~1500MB)"
+# Two disks, two questions, and only one of them was being asked.
+#
+# The check here was `df` on $REPO against a build-sized threshold, which
+# answers "can I compile" — a question that matters during a deploy and not at
+# 2am when the reader is misbehaving. The question that matters then is "can the
+# database WRITE", and on a box where /opt and /var are separate filesystems the
+# first answer says nothing about the second. Even where they are the same
+# volume the thresholds differ by an order of magnitude: a build wants a
+# gigabyte and a database wants enough for a WAL checkpoint.
+#
+# Both are reported, and the data directory's is the one that fails a run.
+data_dir=$(dirname "${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}")
+data_free_mb=$(df -Pm "$data_dir" 2>/dev/null | awk 'NR==2{print $4}')
+data_free_mb="${data_free_mb:-0}"
+[ "$data_free_mb" -gt 256 ]
+check "data directory has room" $? "${data_free_mb}MB free at $data_dir (writes start failing near zero; /readyz refuses below 256MB)"
+
+# What is taking it, when it is going. The five caches share this volume with
+# the database and had no total ceiling until the server started sweeping them
+# — so a data directory filling up has one likely culprit and it is worth naming
+# rather than making somebody go and find it.
+if [ -d "$data_dir" ]; then
+	cache_mb=$(du -sm "$data_dir"/*-cache 2>/dev/null | awk '{s+=$1} END{print s+0}')
+	db_mb=$(du -sm "${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}" 2>/dev/null | cut -f1)
+	printf '%s  data      %sMB of caches, %sMB of database%s\n' \
+		"$C_DIM" "${cache_mb:-0}" "${db_mb:-?}" "$C_OFF"
+fi
+
+# And the build disk, which is a different filesystem on some layouts.
+free_mb=$(df -Pm "$REPO" 2>/dev/null | awk 'NR==2{print $4}')
+free_mb="${free_mb:-0}"
+[ "$free_mb" -gt 500 ]; check "build disk has room" $? "${free_mb}MB free at $REPO (a build needs ~1500MB)"
 
 avail_mb=$(free -m | awk 'NR==2{print $7}')
 [ "$avail_mb" -gt 150 ]; check "memory available" $? "${avail_mb}MB available, $(free -m | awk 'NR==3{print $3}')MB swap used"

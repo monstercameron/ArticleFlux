@@ -21,6 +21,39 @@ Everything runs as an unprivileged `articleflux` user. Nothing in this guide
 needs the app to touch anything outside `/opt/articleflux`,
 `/var/lib/articleflux`, and `/var/backups/articleflux`.
 
+### Two layouts, and why the scripts search for the checkout
+
+There are two ways a box ends up installed, and they put the **source** in
+different places:
+
+| | Checkout | Installed binary |
+|---|---|---|
+| `install.sh` | `/opt/ArticleFlux` | `/opt/ArticleFlux/bin` |
+| This guide, by hand | `/opt/src/ArticleFlux` | `/opt/articleflux/bin` |
+
+That is a real disagreement and not just cosmetic — `/opt/articleflux` and
+`/opt/ArticleFlux` are different directories on a case-sensitive filesystem, and
+a unit copied verbatim between the two fails with `203/EXEC`.
+
+It used to bite silently in one specific place: `articleflux-health.sh`
+hardcoded `/opt/ArticleFlux/deploy/diagnose.sh`, so on a box installed by this
+guide the watchdog's pre-restart state snapshot never ran — and a snapshot that
+never ran looks exactly like one that found nothing.
+
+Both scripts now **search** (`/opt/ArticleFlux`, `/opt/src/ArticleFlux`,
+`/opt/articleflux`) and say so loudly when none of them is there. `install.sh`
+additionally writes the real path into a systemd drop-in, because it knows.
+If you install by hand and want the same certainty, set it yourself:
+
+```bash
+sudo mkdir -p /etc/systemd/system/articleflux-health.service.d
+printf '[Service]
+Environment=ARTICLEFLUX_REPO=/opt/src/ArticleFlux
+' |
+  sudo tee /etc/systemd/system/articleflux-health.service.d/paths.conf
+sudo systemctl daemon-reload
+```
+
 ---
 
 ## 1. The box
@@ -184,6 +217,19 @@ If this instance sets `ARTICLEFLUX_SECRET_KEY` instead of using the file, the
 backup says so and copies nothing — that value is yours to keep somewhere else,
 and it is as irreplaceable as the file would have been.
 
+**What a backup deliberately leaves out: `articleflux.db.log.jsonl`.** That is
+the server's on-disk log copy (`internal/obs/spill.go`), and it is diagnostic
+rather than data — it exists so that a crash loop does not erase the record of
+why the last process died, and a restored instance has nothing to do with the
+previous one's crashes. It is also the file with the least reason to be
+duplicated: it carries usernames, client addresses and authentication-failure
+text, so every extra copy is another place that material lives. It is bounded
+two ways — two megabytes by rotation, and by the **audit retention window**
+(`retention.security.audit.days`, 365 days by default), which the server applies
+to it on the same sweep that prunes `audit_log`. Narrowing that setting narrows
+both. If you want the log kept beyond that, ship it to a collector via the OTLP
+exporter rather than lengthening the window.
+
 **A backup nobody has restored is a belief, not a backup.** Restore once, now,
 while nothing is wrong — and restore it the way a real recovery would, into its
 own directory with the keys beside it:
@@ -204,9 +250,97 @@ sudo -u articleflux /opt/articleflux/bin/articleflux serve \
 The old version of this drill copied the `.db` alone and ran `migrate` against
 it, which is exactly the rehearsal that passes while the real thing fails.
 
-These files leave the droplet only if you copy them off it. A droplet snapshot
-is not a backup of the database — it is a backup of a *running* WAL, with the
-same hazard.
+### Getting a copy off the box
+
+A backup on the same disk as its source defends against `rm`, not against loss.
+Fourteen verified backups, the database they came from and `secrets.key` all
+live on one DigitalOcean volume, so the single event this is insurance against
+takes all three at once. (A droplet snapshot is not the answer either: it is a
+snapshot of a *running* WAL, with the same hazard the nightly job exists to
+avoid.)
+
+`articleflux-backup.service` runs a wrapper that takes the same verified backup
+and then, if configured, tars it with its key material, encrypts it and ships
+it. Configure it in `/etc/articleflux/backup.env` (chmod 600, root):
+
+```sh
+OFFSITE_AGE_RECIPIENT=age1ql3z...        # `age-keygen`; keep the PRIVATE key OFF this box
+OFFSITE_RCLONE_REMOTE=b2:bucket/af       # any rclone remote, or
+OFFSITE_RSYNC_TARGET=user@host:/backups  # rsync over ssh
+OFFSITE_KEEP=30                          # days to keep remotely (rclone only)
+```
+
+**Encryption is required, not optional.** The archive contains `secrets.key`,
+which seals the Smart+ key and every mailbox password — it is, in one file, the
+whole instance. A target set without `OFFSITE_AGE_RECIPIENT` makes the job fail
+rather than ship it in the clear. Keep the age private key somewhere that is not
+this droplet; an encrypted backup whose key is on the machine that died is not a
+backup either.
+
+With nothing configured the job behaves exactly as it did before and logs
+`LOCAL ONLY` every night, which is deliberate: *"I thought that was set up"* is
+the belief this is here to interrupt.
+
+### The drill, on a schedule
+
+`articleflux-restore-drill.timer` performs the restore above every Sunday, into
+a temp directory, and fails loudly if the newest backup does not migrate and
+open — or if it is more than two days old, which means the nightly job has been
+failing. Enable it with the rest:
+
+```bash
+sudo systemctl enable --now articleflux-restore-drill.timer
+```
+
+---
+
+## Alerting — the only thing that leaves the box
+
+Every failure path here used to end at `logger`. The watchdog's
+`RESTART DID NOT HELP`, a failed nightly backup, a crash loop that exhausted its
+start limit — all of them wrote into journald on a droplet nobody logs into.
+Mean time to detection was *"when somebody opens the reader"*.
+
+`articleflux-alert` is the missing edge. It is wired as `OnFailure=` on
+`articleflux.service`, `articleflux-backup.service`,
+`articleflux-health.service` and `articleflux-restore-drill.service`, and it is
+called directly for the two conditions that are not unit failures: a restart
+that did not help, and a server that answers `/healthz` but reports **unready**
+on `/readyz`.
+
+Configure a channel in `/etc/articleflux/alert.env` (chmod 600, root):
+
+```sh
+ALERT_WEBHOOK_URL=https://ntfy.sh/pick-something-unguessable
+ALERT_WEBHOOK_FORMAT=text          # text (default) | slack | discord | json
+ALERT_EMAIL=you@example.com        # needs a working sendmail
+ALERT_HOSTNAME=feed.example.com
+```
+
+The URL is a bearer credential for whatever topic it names — anyone who has it
+can post to your phone — which is why the file is root-only and why the notifier
+unit is the one thing here that runs as root.
+
+Unconfigured, alerts still reach journald and nothing fails. Test it without
+breaking anything:
+
+```bash
+sudo /usr/local/bin/articleflux-alert "ArticleFlux test" "if you are reading this, the channel works"
+```
+
+### Why the watchdog does not restart on `/readyz`
+
+`/healthz` says the process is answering; `/readyz` says it can still read
+**and write**. The gap between them is the failure this box is most likely to
+reach — a full data directory, where SQLite returns `SQLITE_FULL` on every write
+while every read keeps working. The reader loads, articles appear, and nothing
+anybody does is remembered.
+
+A restart does not create disk space. So the watchdog probes `/healthz` and
+**alerts** on `/readyz` instead of restarting: cycling a degraded-but-usable
+instance every two minutes, dropping every reader's tunnel each time, would be
+worse than the condition. `diagnose.sh` reports both, alongside how much of the
+data directory is caches versus database.
 
 ---
 
@@ -400,6 +534,13 @@ first anyway if the release touches the schema — migrations here are forward-o
 
 Browsers cache the wasm bundle aggressively. After an update, hard-refresh
 (Ctrl-Shift-R) before concluding a change did not land.
+
+**Read `CHANGELOG.md` → "Upgrade notes" before you walk away from a deploy.**
+Some releases need an action that nothing in the running server will prompt you
+for. The current one does: recovery-code sheets printed before it are permanently
+unredeemable, including the superadmin's, and the only way to find that out
+otherwise is to be locked out and reach for one. Regenerate them, starting with
+the superadmin's, and destroy the old printouts.
 
 ---
 

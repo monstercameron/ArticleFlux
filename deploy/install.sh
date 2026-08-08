@@ -14,6 +14,7 @@
 #   /opt/GoWebComponents        the sibling library go.mod's replace points at
 #   /var/lib/articleflux        the database, the keys, the asset cache
 #   /var/backups/articleflux    rollback points, written by update.sh
+#   /etc/articleflux/*.env      alerting and off-box backup, both empty by default
 #   articleflux.service         the server, restarted on failure and at boot
 #   articleflux-health.timer    the watchdog that restarts it when it wedges
 #   nginx on :80                the only thing the internet can reach
@@ -187,19 +188,83 @@ sed -e "s#/opt/articleflux#$REPO#g" \
 # The backup unit carries the same example paths as the main one, so it gets the
 # same substitution. Copied verbatim, it fails with 203/EXEC on a case-sensitive
 # filesystem — /opt/articleflux is not /opt/ArticleFlux.
-for u in articleflux-health.service articleflux-health.timer articleflux-backup.service articleflux-backup.timer; do
+for u in articleflux-health.service articleflux-health.timer articleflux-backup.service articleflux-backup.timer articleflux-restore-drill.service articleflux-restore-drill.timer "articleflux-alert@.service"; do
 	[ -f "$REPO/deploy/$u" ] || continue
-	sed -e "s#/opt/articleflux#$REPO#g" -e "s#/var/lib/articleflux#$DATA#g" 	    "$REPO/deploy/$u" > "/etc/systemd/system/$u"
+	sed -e "s#/opt/articleflux#$REPO#g" -e "s#/var/lib/articleflux#$DATA#g" -e "s#/var/backups/articleflux#$BACKUPS#g" "$REPO/deploy/$u" > "/etc/systemd/system/$u"
 done
 install -m 755 "$REPO/deploy/articleflux-health.sh" /usr/local/bin/articleflux-health
+install -m 755 "$REPO/deploy/articleflux-alert.sh" /usr/local/bin/articleflux-alert
+install -m 755 "$REPO/deploy/articleflux-backup.sh" /usr/local/bin/articleflux-backup
+install -m 755 "$REPO/deploy/articleflux-restore-drill.sh" /usr/local/bin/articleflux-restore-drill
 install -m 755 "$REPO/deploy/update.sh" /usr/local/bin/articleflux-update 2>/dev/null || true
+
+# Where the scripts look for the checkout, said once rather than guessed four
+# times.
+#
+# articleflux-health.sh and diagnose.sh both search a list of likely paths, and
+# the list is a fallback rather than the answer: install.sh KNOWS where it put
+# things. Writing it into a drop-in means the pre-restart state snapshot runs on
+# this box whatever the layout, which is the failure the hardcoded
+# /opt/ArticleFlux caused on a README-installed one — silently, because a
+# snapshot that never ran looks exactly like a snapshot that found nothing.
+mkdir -p /etc/systemd/system/articleflux-health.service.d
+cat > /etc/systemd/system/articleflux-health.service.d/paths.conf <<CONF
+[Service]
+Environment=ARTICLEFLUX_REPO=$REPO
+Environment=ARTICLEFLUX_HEALTH_URL=http://127.0.0.1:$PORT/healthz
+CONF
+
+# The alert channel's config file, created empty and readable only by root.
+#
+# Empty on purpose: an alert URL is a bearer credential for a notification topic
+# and this script has no business inventing one. What the file being THERE buys
+# is that somebody who opens it finds the four variable names and the comment
+# explaining them, rather than having to find the script that reads it.
+if [ ! -f /etc/articleflux/alert.env ]; then
+	mkdir -p /etc/articleflux
+	cat > /etc/articleflux/alert.env <<'CONF'
+# ArticleFlux alerting. Nothing here is set, so alerts reach journald only —
+# which is where every failure on this box already went, unread.
+#
+# Set a webhook and they leave the machine. Works with ntfy, Gotify, Slack,
+# Discord and anything else that accepts a POST. See articleflux-alert.
+#
+# ALERT_WEBHOOK_URL=https://ntfy.sh/pick-something-unguessable
+# ALERT_WEBHOOK_FORMAT=text          # text (default) | slack | discord | json
+# ALERT_EMAIL=you@example.com        # needs a working sendmail
+# ALERT_HOSTNAME=feed.example.com
+CONF
+	chmod 600 /etc/articleflux/alert.env
+fi
+
+# And the backup channel's, on the same terms. Off-box shipping is off until
+# somebody sets a target AND an age recipient — see articleflux-backup.
+if [ ! -f /etc/articleflux/backup.env ]; then
+	mkdir -p /etc/articleflux
+	cat > /etc/articleflux/backup.env <<'CONF'
+# ArticleFlux off-box backups. Nothing here is set, so backups stay on this
+# volume — which means losing the volume loses the database and every backup of
+# it in one event.
+#
+# Encryption is REQUIRED for shipping, not optional: the archive contains
+# secrets.key and is, in one file, every credential this instance holds.
+#
+# OFFSITE_AGE_RECIPIENT=age1...           # `age-keygen`; keep the PRIVATE key off this box
+# OFFSITE_RCLONE_REMOTE=b2:bucket/af      # rclone destination, or
+# OFFSITE_RSYNC_TARGET=user@host:/backups # rsync over ssh
+# OFFSITE_KEEP=30                         # days to keep remotely (rclone only)
+CONF
+	chmod 600 /etc/articleflux/backup.env
+fi
 
 run systemctl daemon-reload
 run sudo -u "$OWNER" "$REPO/bin/articleflux" migrate -db "$DATA/articleflux.db"
 run systemctl enable --now articleflux
 run systemctl enable --now articleflux-health.timer
 [ -f /etc/systemd/system/articleflux-backup.timer ] && run systemctl enable --now articleflux-backup.timer
+[ -f /etc/systemd/system/articleflux-restore-drill.timer ] && run systemctl enable --now articleflux-restore-drill.timer
 note "restart=always, enabled at boot, health-checked every 2 minutes"
+note "backups nightly, restore drilled weekly; alerts go to journald until /etc/articleflux/alert.env names a channel"
 done_ok "service running"
 
 # --- 8. nginx ----------------------------------------------------------------

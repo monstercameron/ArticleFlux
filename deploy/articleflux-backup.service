@@ -14,6 +14,12 @@
 
 [Unit]
 Description=ArticleFlux nightly backup
+# The only reason anybody finds out this failed.
+#
+# A backup is the one job whose failure is completely invisible until the moment
+# it is needed, and at that moment the news is two disasters rather than one.
+# Before this line, a failed run wrote to journald on a box nobody logs into.
+OnFailure=articleflux-alert@%n.service
 # Not After=articleflux.service: the backup opens the database directly and does
 # not need the server up. A backup that silently skips itself because the server
 # happened to be down is a backup missing from exactly the week you needed it.
@@ -36,10 +42,29 @@ Group=articleflux
 # It follows that /var/backups/articleflux holds key material and must stay
 # chmod 700 to this user, exactly like /var/lib/articleflux. The install steps in
 # deploy/README.md already do that.
-ExecStart=/opt/articleflux/bin/articleflux backup \
-    -db /var/lib/articleflux/articleflux.db \
-    -out /var/backups/articleflux/ \
-    -keep 14
+# A wrapper rather than `articleflux backup` directly, and the difference is
+# the second half of the job: getting a copy OFF this machine.
+#
+# Fourteen verified backups, the database they came from and secrets.key all
+# lived on one DigitalOcean volume, so the single event this is insurance
+# against — losing the volume — took all three at once. A backup on the same
+# disk as its source defends against `rm`, not against loss.
+#
+# The wrapper still runs the same command with the same flags; it then tars the
+# newest copy with its key material, encrypts it to an `age` recipient, and
+# ships it wherever /etc/articleflux/backup.env names. Encryption is REQUIRED
+# rather than optional there, because that archive is the whole instance —
+# every stored credential and the Smart+ key included.
+#
+# With nothing configured it is exactly the old behaviour plus one log line
+# saying so, which is the point: "I thought that was set up" is the belief this
+# is here to interrupt.
+ExecStart=/usr/local/bin/articleflux-backup
+
+Environment=ARTICLEFLUX_DB=/var/lib/articleflux/articleflux.db
+Environment=ARTICLEFLUX_BACKUPS=/var/backups/articleflux
+Environment=ARTICLEFLUX_BIN=/opt/articleflux/bin/articleflux
+Environment=ARTICLEFLUX_KEEP=14
 
 NoNewPrivileges=yes
 PrivateTmp=yes

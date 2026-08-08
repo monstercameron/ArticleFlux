@@ -14,6 +14,23 @@
 # hour ago has had an hour of writes on top of it, and restoring the pre-deploy
 # copy would throw them away — usually a worse outcome than the bug being rolled
 # back. The .db backups are listed so a human can make that call themselves.
+#
+# THE CASE THAT FOLLOWS FROM THAT: if the build being rolled back ran a
+# migration, the old binary now faces a schema it does not know. The server
+# refuses to start and says so — "this database is at schema NNNN ... it was
+# migrated by a newer version" (store.Migrate). That refusal is the correct
+# answer and not a fault in this script: an old binary reading a forward schema
+# starts fine, looks healthy, and then writes against columns it does not
+# understand.
+#
+# So if the rollback below ends with the service failing to come up on exactly
+# that message, this is the fork:
+#
+#   - roll FORWARD instead (fix the bug in a new build), or
+#   - restore the .db snapshot taken before the deploy, accepting the lost
+#     writes — the trade the paragraph above is describing.
+#
+# There is no third option. Down-migrations do not exist here by design (A23).
 set -euo pipefail
 
 # Recorded verbatim in the failure report: how the script was invoked is half of

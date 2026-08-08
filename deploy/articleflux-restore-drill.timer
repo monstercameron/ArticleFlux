@@ -1,0 +1,15 @@
+[Unit]
+Description=Prove the newest ArticleFlux backup restores, weekly
+
+[Timer]
+# Sunday morning, well after the 03:30 nightly so it is drilling last night's
+# copy rather than racing it.
+OnCalendar=Sun *-*-* 05:00:00
+RandomizedDelaySec=20m
+# A droplet that was down on Sunday drills on Monday rather than skipping the
+# week. The whole value of this job is its cadence, and a silently skipped run
+# is indistinguishable from a passing one.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

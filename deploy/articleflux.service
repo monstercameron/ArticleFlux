@@ -21,6 +21,15 @@ Documentation=https://github.com/monstercameron/ArticleFlux
 # "no such host" in the log for feeds that are fine.
 After=network-online.target
 Wants=network-online.target
+# Fires when the unit reaches `failed`, which with Restart=always below means
+# one thing only: the start limit was exhausted. That is the crash-loop case —
+# the server is DOWN and staying down until something intervenes.
+#
+# The health timer intervenes and usually wins, so this is not the primary
+# recovery path; it is the record that recovery was needed. A box that quietly
+# self-heals from a crash loop every night is a box with a problem nobody has
+# been told about.
+OnFailure=articleflux-alert@%n.service
 
 # A crash loop should be loud, and it must not be terminal. The burst limit
 # stops a broken binary from restarting every five seconds forever, so

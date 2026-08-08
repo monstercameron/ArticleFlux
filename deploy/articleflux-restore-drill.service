@@ -1,0 +1,42 @@
+# ArticleFlux — the weekly proof that a backup restores.
+#
+# Install alongside the timer:
+#   sudo install -m 0755 deploy/articleflux-restore-drill.sh /usr/local/bin/articleflux-restore-drill
+#   sudo install -m 0644 deploy/articleflux-restore-drill.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now articleflux-restore-drill.timer
+#
+# An untested backup is a belief, not a backup. The nightly job already
+# integrity-checks the copy it writes, which proves the file is well-formed
+# SQLite and nothing about whether this binary can still open it, whether the
+# keys are beside it, or whether the job has been quietly failing for a month.
+# See the script for the whole argument.
+
+[Unit]
+Description=ArticleFlux weekly restore drill
+# The only unit here whose failure is genuinely urgent: a backup that does not
+# restore is a problem that is entirely silent until the day it is fatal.
+OnFailure=articleflux-alert@%n.service
+
+[Service]
+Type=oneshot
+User=articleflux
+Group=articleflux
+
+ExecStart=/usr/local/bin/articleflux-restore-drill
+
+# The same paths the backup unit sets, and set HERE rather than left to
+# the script's defaults for the same reason: install.sh rewrites these lines for
+# whatever layout this box actually uses, and a default baked into the script
+# would be right on one kind of install and silently wrong on the other.
+Environment=ARTICLEFLUX_BACKUPS=/var/backups/articleflux
+Environment=ARTICLEFLUX_BIN=/opt/articleflux/bin/articleflux
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Read-write on neither the data directory nor the backups: the drill copies OUT
+# of /var/backups and works entirely inside PrivateTmp. Nothing it does should
+# be able to touch the live database, and this is that stated structurally
+# rather than trusted to the script.
+ReadOnlyPaths=/var/backups/articleflux

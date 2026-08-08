@@ -19,6 +19,11 @@
 Description=ArticleFlux health check and recovery
 Documentation=https://github.com/monstercameron/ArticleFlux
 After=articleflux.service
+# The watchdog failing is itself worth knowing: it is the thing that was
+# supposed to notice, and a box whose watchdog has stopped is unmonitored while
+# looking monitored. The script also alerts directly on the case that matters
+# most — a restart that did not help — because that one is not a unit failure.
+OnFailure=articleflux-alert@%n.service
 
 [Service]
 Type=oneshot

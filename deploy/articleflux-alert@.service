@@ -1,0 +1,41 @@
+# ArticleFlux — the OnFailure= target every other unit points at.
+#
+# A TEMPLATE unit, instantiated with the name of whatever failed:
+#
+#   [Unit]
+#   OnFailure=articleflux-alert@%n.service
+#
+# systemd expands %n to the failing unit's full name and passes it here as %i,
+# so one unit covers every producer of bad news and there is exactly one place
+# to change where that news goes.
+#
+# Install:
+#   sudo install -m 0755 deploy/articleflux-alert.sh /usr/local/bin/articleflux-alert
+#   sudo install -m 0644 deploy/articleflux-alert@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Then configure a channel in /etc/articleflux/alert.env — see the script's
+# header. Without one this still runs and still writes to journald; it just does
+# not leave the box, which is the state everything was in before this existed.
+
+[Unit]
+Description=Send an alert about %i
+# Not Requires= on anything: this runs BECAUSE something failed, and a
+# dependency that could itself fail would be one more way for the alert not to
+# arrive.
+
+[Service]
+Type=oneshot
+# root, unlike the units it reports on. It reads /etc/articleflux/alert.env,
+# which holds a webhook URL that is a bearer credential for a notification topic
+# and is therefore chmod 600 to root — and it calls `journalctl -u <unit>`,
+# which needs to read a journal that is not its own.
+User=root
+ExecStart=/usr/local/bin/articleflux-alert --unit %i
+
+# No OnFailure= here, deliberately. A notifier that alerted about its own
+# failure would recurse, and the script exits 0 on every path precisely so this
+# unit cannot become the thing that needs alerting about.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
