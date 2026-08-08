@@ -88,6 +88,10 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 		// kept alongside that nothing checked agreed with it.
 		answer, err := schemaflux.Extracting[jsonAnswer](in).
 			Steer(jsonInstructions).
+			// The same 6000 as scrape.go's, and for the same reason: this is the
+			// second dialect of one feature (ceilings.go).
+			Configure(capExtract(analyzeMaxTokensSF)).
+			Model(a.llm.OpsModel(ctx)).
 			Fast().
 			Run(a.llm.OpsContext(ctx))
 		if err != nil {

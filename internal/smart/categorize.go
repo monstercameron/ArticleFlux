@@ -85,20 +85,6 @@ always propose a new one.
 Do not invent an existing name that was not given to you. Do not explain your
 choice.`
 
-// categorizeSchema forces the object, for the reason paletteSchema gives:
-// "return a category" is answered with prose, a markdown fence, or a sentence
-// that happens to contain a category name, and a parser that accepts those
-// accepts a fifth thing that means something else.
-var categorizeSchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required":             []string{"category", "isNew"},
-	"properties": map[string]any{
-		"category": map[string]any{"type": "string"},
-		"isNew":    map[string]any{"type": "boolean"},
-	},
-}
-
 // categorizePayload is what leaves for one feed.
 type categorizePayload struct {
 	Title       string   `json:"title"`
@@ -201,9 +187,12 @@ func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription st
 		By("which of these folders this feed most obviously belongs in",
 			"pick "+strconv.Quote(noneFit)+" only when none of them is a reasonable home for it").
 		Steer(about).
+		// The ceiling, stated rather than inherited from the tier (ceilings.go).
+		Configure(capChoose(categorizeMaxTokens)).
 		// Fast: this is a pick from a short list already in front of the model,
 		// not a judgement call. The old request said the same thing by setting
 		// Effort low, and for the same reason.
+		Model(c.llm.OpsModel(ctx)).
 		Fast().
 		Run(call)
 	if err != nil {
@@ -233,6 +222,8 @@ func (c *Categorizer) invent(ctx context.Context, about string) (string, error) 
 		"Name one folder this feed belongs in. Two words at most, title case, " +
 			"the kind of name somebody would give a folder in a reader — a subject, " +
 			"not a description of the feed. " + about).
+		Configure(capGenerate(inventMaxTokens)).
+		Model(c.llm.OpsModel(ctx)).
 		Fast().
 		Run(ctx)
 	if err != nil {

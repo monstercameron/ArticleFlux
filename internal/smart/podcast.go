@@ -699,7 +699,14 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	// passed through byte for byte rather than reworded to suit the operation.
 	out, err := schemaflux.Summarizing(podcastInput(seg, body)).
 		Steer(podcastInstructionsOf(seg)).
-		MaxLength(podcastMaxTokens).
+		// The token ceiling, not a sentence count. `MaxLength` sets
+		// `TargetLength` in SENTENCES — see digest.go, which had the same
+		// mistake — so this read as "target length: 4200 sentences" while the
+		// real ceiling fell to Fast's 2000. Truncation is worse here than
+		// anywhere else in the package: a segment that stops mid-sentence is
+		// audible.
+		Configure(capSummarize(podcastMaxTokens)).
+		Model(p.llm.OpsModel(ctx)).
 		Fast().
 		Context(p.llm.OpsContext(ctx)).
 		Run()
@@ -1129,17 +1136,16 @@ type SegmentBlock struct {
 	Text   string
 }
 
-// podcastGroupSchema forces one block per story rather than a single prose
-// blob the caller would then have to guess how to split.
+// podcastGroupReply forces one block per story rather than a single prose blob
+// the caller would then have to guess how to split.
 //
 // That guess is exactly the thing this call exists to avoid: paragraph breaks
-// in free text do not reliably land on story boundaries, and a split
-// recovered after the fact would occasionally cut a sentence in half across
-// two audio files. The schema makes the split a GUARANTEE from the provider
-// instead — the same reasoning `rerankSchema` and `entitySchema` (interest.go)
-// are built on.
-// podcastGroupReply is the shape a grouped write comes back in; the schema is
-// derived from it.
+// in free text do not reliably land on story boundaries, and a split recovered
+// after the fact would occasionally cut a sentence in half across two audio
+// files. A schema makes the split a GUARANTEE from the provider instead — the
+// same reasoning rerankReply and entityReply (interest.go) are built on. The
+// schema is derived from this type rather than hand-written beside it, so the
+// shape asked for and the shape decoded into cannot drift apart.
 type podcastGroupReply struct {
 	Blocks []podcastBlock `json:"blocks"`
 }
@@ -1152,29 +1158,6 @@ type podcastGroupReply struct {
 type podcastBlock struct {
 	Story *int   `json:"story"`
 	Text  string `json:"text"`
-}
-
-var podcastGroupSchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required":             []string{"blocks"},
-	"properties": map[string]any{
-		"blocks": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"required":             []string{"story", "text"},
-				"properties": map[string]any{
-					// story is a one-based ordinal into the STORY list this request
-					// carried, exactly as rerankSchema's `id` is an ordinal into its
-					// candidates — never anything the model invents on its own.
-					"story": map[string]any{"type": "integer"},
-					"text":  map[string]any{"type": "string"},
-				},
-			},
-		},
-	},
 }
 
 // podcastGroupInstructionsFor builds the instructions for writing a whole
@@ -1356,6 +1339,11 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 	// Every block is re-validated below regardless.
 	reply, err := schemaflux.Extracting[podcastGroupReply](segmentGroupInput(g, bodies)).
 		Steer(podcastGroupInstructionsFor(g.Vibe)).
+		// A whole segment's stories in one request, so the ceiling is a multiple
+		// of the single-segment one — see podcastGroupMaxTokens. Fast's 2000
+		// would refuse every group of more than one.
+		Configure(capExtract(podcastGroupMaxTokens)).
+		Model(p.llm.OpsModel(ctx)).
 		Fast().
 		Run(p.llm.OpsContext(ctx))
 	if err != nil {

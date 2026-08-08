@@ -107,36 +107,6 @@ Do NOT:
 - Reorder everything. Only return ids you have a real reason to promote.
 - Invent ids. Every id you return must appear in the input.`
 
-// rerankSchema forces a bare list of ids.
-//
-// A schema rather than parsed prose, for the reason every structured call here uses one:
-// "return ids" is answered with a numbered list, a JSON array, a sentence, or a sentence
-// containing a JSON array, and a parser that accepts all four accepts a fifth thing that
-// means something else.
-var rerankSchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required":             []string{"picks"},
-	"properties": map[string]any{
-		"picks": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				// `why` is REQUIRED in the schema and OPTIONAL to the caller, which is not a
-				// contradiction: requiring it is how the model is made to produce one, and
-				// tolerating its absence is how a provider that drops the field costs the
-				// explanation instead of the whole re-rank.
-				"required": []string{"id", "why"},
-				"properties": map[string]any{
-					"id":  map[string]any{"type": "integer"},
-					"why": map[string]any{"type": "string"},
-				},
-			},
-		},
-	},
-}
-
 // MaxWhyRunes caps a promotion reason.
 //
 // Eighty. The prompt asks for at most eight words and a model asked for eight words
@@ -212,6 +182,9 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 	// ids are re-validated below either way, which is the check that matters.
 	reply, err := schemaflux.Extracting[rerankReply](string(body)).
 		Steer(rerankInstructions).
+		// The ceiling, stated rather than inherited from the tier (ceilings.go).
+		Configure(capExtract(rerankMaxTokens)).
+		Model(in.llm.OpsModel(ctx)).
 		Smart().
 		Run(call)
 	if err != nil {
@@ -273,26 +246,6 @@ Do NOT return:
 Give each name a normalised lowercase key and the correct display form. If a headline set
 contains no named things, return an empty list.`
 
-var entitySchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required":             []string{"entities"},
-	"properties": map[string]any{
-		"entities": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"required":             []string{"name", "label"},
-				"properties": map[string]any{
-					"name":  map[string]any{"type": "string"},
-					"label": map[string]any{"type": "string"},
-				},
-			},
-		},
-	},
-}
-
 // MaxEntityTitles bounds one extraction call.
 //
 // A hundred and twenty headlines. Titles are short, so this is a small request by token
@@ -341,6 +294,11 @@ func (in *Interest) ExtractEntities(ctx context.Context, titles []string) ([]der
 	// before it becomes a row.
 	reply, err := schemaflux.Extracting[entityReply](string(body)).
 		Steer(entityInstructions).
+		// 4000, restored: this call had it explicitly before the migration and
+		// inherited Fast's 2000 afterwards, which is a refusal rather than a
+		// shorter list once an article names enough things (ceilings.go).
+		Configure(capExtract(entityMaxTokens)).
+		Model(in.llm.OpsModel(ctx)).
 		Fast().
 		Run(call)
 	if err != nil {
@@ -377,17 +335,9 @@ Keep it concrete. "NPU inference" beats "machine learning"; "SQLite internals" b
 "databases". If the terms do not describe a coherent subject, return the fallback
 unchanged rather than inventing a theme.`
 
-var topicLabelSchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required":             []string{"label"},
-	"properties": map[string]any{
-		"label": map[string]any{"type": "string"},
-	},
-}
-
-// entityReply is the shape an entity pass comes back in; the schema is derived
-// from it rather than kept in `entitySchema` beside it.
+// entityReply is the shape an entity pass comes back in. The schema is derived
+// from this type rather than hand-written beside it, so the shape asked for and
+// the shape decoded into cannot drift apart.
 type entityReply struct {
 	Entities []entityMention `json:"entities"`
 }
@@ -415,8 +365,9 @@ type entityMention struct {
 	Label *string `json:"label"`
 }
 
-// rerankReply is the shape a re-rank comes back in; the schema is derived from
-// it rather than kept in `rerankSchema` beside it.
+// rerankReply is the shape a re-rank comes back in. The schema is derived from
+// this type rather than hand-written beside it, so the shape asked for and the
+// shape decoded into cannot drift apart.
 type rerankReply struct {
 	Picks []rerankPick `json:"picks"`
 }
@@ -482,6 +433,8 @@ func (in *Interest) LabelTopic(ctx context.Context, terms []string, fallback str
 			"do not describe a coherent subject: " + fallback).
 		// Low deliberation, as the hand-built request said with Effort: the
 		// terms are in front of the model and more thinking buys tokens.
+		Configure(capGenerate(topicLabelMaxTokens)).
+		Model(in.llm.OpsModel(ctx)).
 		Fast().
 		Run(call)
 	if err != nil {

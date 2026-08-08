@@ -315,6 +315,10 @@ func (t *Translator) translateBatch(ctx context.Context, lang Language, model st
 	// `model_confidence` nobody asked for. Every entry is checked below.
 	parsed, err := schemaflux.Extracting[translationBatch](input).
 		Steer(instructions).
+		// The largest ceiling in the package, and the one whose loss was most
+		// expensive: sixty UI strings answered in one call against a default of
+		// 2000 is ErrTruncated, and the whole batch is redone (ceilings.go).
+		Configure(capExtract(translateMaxTokens)).
 		Run(t.llm.OpsContext(ctx))
 	if err != nil {
 		return nil, err

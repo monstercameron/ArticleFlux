@@ -162,39 +162,6 @@ should describe the ROOM, not the subjects — it appears in a theme picker.
 
 Match the tone you are given, exactly.`
 
-// paletteSchema forces the object.
-//
-// Strict, with every field required and no additional properties, for the reason
-// every structured call in this package uses one: "return a palette" is answered
-// with an object, an object wrapped in prose, a markdown fence containing an
-// object, or a CSS block — and a parser that accepts all four accepts a fifth
-// thing that means something else.
-//
-// Note that `wash` is an INTEGER and there is no `shadow` at all. Those are the
-// two tokens whose values are not colours, and they are the reason: a shadow is a
-// whole CSS declaration and would be the one place model output reached a CSS
-// parser (see design.NewGenerated).
-var paletteSchema = map[string]any{
-	"type":                 "object",
-	"additionalProperties": false,
-	"required": []string{
-		"label", "blurb", "ground", "raised", "sunk", "line", "hair",
-		"cream", "soft", "dim", "read", "accent", "pos", "neg", "wash",
-	},
-	"properties": map[string]any{
-		"label": map[string]any{"type": "string"},
-		"blurb": map[string]any{"type": "string"},
-		// A pattern on every colour. The schema is not the enforcement —
-		// design.ParseHex is — but a model handed a pattern returns hex the first
-		// time instead of on the retry nobody has written.
-		"ground": hexProp, "raised": hexProp, "sunk": hexProp,
-		"line": hexProp, "hair": hexProp,
-		"cream": hexProp, "soft": hexProp, "dim": hexProp, "read": hexProp,
-		"accent": hexProp, "pos": hexProp, "neg": hexProp,
-		"wash": map[string]any{"type": "integer", "minimum": 0, "maximum": design.MaxWash},
-	},
-}
-
 var hexProp = map[string]any{
 	"type":    "string",
 	"pattern": "^#[0-9A-Fa-f]{6}$",
@@ -271,7 +238,7 @@ func (p *Palettes) ask(ctx context.Context, instructions string, payload llm.The
 	defer cancel()
 
 	// Rebuilt on `Generating` (plan P3.7). The schema comes from `paletteReply`
-	// now rather than from `paletteSchema` beside it — thirteen colour fields
+	// derived from paletteReply rather than hand-written beside it — thirteen colour fields
 	// that had to agree across two declarations and nothing checked they did.
 	//
 	// **The AA repair stays server-side**, below: `design.NewGenerated` is what
@@ -286,6 +253,9 @@ func (p *Palettes) ask(ctx context.Context, instructions string, payload llm.The
 	// together look like a spreadsheet.
 	reply, err := schemaflux.Generating[paletteReply](string(body)).
 		Steer(instructions).
+		// The ceiling, stated rather than inherited from the tier (ceilings.go).
+		Configure(capGenerate(paletteMaxTokens)).
+		Model(p.llm.OpsModel(ctx)).
 		Smart().
 		Strict().
 		Run(call)

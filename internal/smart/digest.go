@@ -205,7 +205,16 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 	// global, which on a fresh process is a mock.
 	out, err := schemaflux.Summarizing(in.String()).
 		Steer(digestInstructions).
-		MaxLength(digestMaxTokens).
+		// The ceiling, restated rather than inherited from `Fast` — see
+		// ceilings.go. It was `MaxLength(digestMaxTokens)` for a while, which
+		// is a DIFFERENT KNOB wearing a similar name: `MaxLength` sets
+		// `TargetLength`, measured in SENTENCES, and the library put "Target
+		// length: 4000 sentences" in the prompt while the actual token ceiling
+		// quietly fell to Fast's 2000. The only reason that was not visibly
+		// broken is that the length invariant is an upper bound and no summary
+		// has ever been four thousand sentences.
+		Configure(capSummarize(digestMaxTokens)).
+		Model(d.llm.OpsModel(ctx)).
 		Fast().
 		Context(d.llm.OpsContext(ctx)).
 		Run()

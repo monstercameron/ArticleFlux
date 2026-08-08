@@ -200,6 +200,9 @@ func (c *RelevanceChecker) Check(
 		Strict().
 		// Short: a two-post read against a topic string, not a judgement over
 		// forty candidates.
+		// The ceiling, stated rather than inherited from the tier (ceilings.go).
+		Configure(capExtract(relevanceMaxTokens)).
+		Model(c.llm.OpsModel(ctx)).
 		Fast().
 		Run(call)
 	if err != nil {

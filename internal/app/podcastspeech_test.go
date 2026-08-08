@@ -549,6 +549,15 @@ func (f *fakeWriter) Configured(context.Context) bool { return true }
 // would defeat a test-installed provider.
 func (f *fakeWriter) OpsContext(ctx context.Context) context.Context { return ctx }
 
+// OpsModel names no model, which is what a test wants.
+//
+// The seam's real implementation returns the instance's configured model or the
+// built-in default; here there is neither, and an empty string leaves the
+// operation resolving from its speed tier against the installed test provider.
+// Naming a real model would pin these tests to a string that has to be updated
+// every time the default moves, for no property they assert.
+func (f *fakeWriter) OpsModel(context.Context) string { return "" }
+
 // Do is unreachable on the paths these tests exercise and says so, rather than
 // answering plausibly: a silent fallback here would let a feature that stopped
 // using its operation keep passing.

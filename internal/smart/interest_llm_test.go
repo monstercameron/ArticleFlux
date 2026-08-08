@@ -181,7 +181,7 @@ func TestRerankCandidatesWrapsTheContextWithInterestTimeout(t *testing.T) {
 		derive.ProfileHint{}, 1); err != nil {
 		t.Fatalf("RerankCandidates: %v", err)
 	}
-	deadline, ok := spy.ctxN(0).Deadline()
+	deadline, ok := spy.ContextN(0).Deadline()
 	if !ok {
 		t.Fatal("the context handed to the provider has no deadline; interestTimeout is not being applied")
 	}

@@ -39,6 +39,20 @@ type llmClient interface {
 	// package is given one of these, and the fake in the tests returns the
 	// context untouched so `schemafluxtest.Install` is what answers there.
 	OpsContext(ctx context.Context) context.Context
+
+	// OpsModel is the model an operation should run on: the instance's
+	// configured one, or the built-in default.
+	//
+	// It is named at the CALL SITE now rather than substituted underneath the
+	// call. SchemaFlux resolves a model from the operation's speed tier against
+	// a per-provider table, and until DX-001 it gave a caller no way to say
+	// which one it wanted — so this package named its provider "openai" purely
+	// to make that table resolve to something, then overwrote the model inside
+	// the provider on the way past. Two untruths: about which provider was
+	// configured, and about where the model was decided. `.Model(...)` on the
+	// operation replaces both, and the tier still does the part it is good for,
+	// which is the token ceiling and the temperature.
+	OpsModel(ctx context.Context) string
 }
 
 // Compile-time proof that the real client still satisfies the seam. Without

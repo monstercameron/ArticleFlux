@@ -108,7 +108,7 @@ func TestSegmentContextCancellationPropagates(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
 	}
-	if spy.ctxN(0).Err() == nil {
+	if spy.ContextN(0).Err() == nil {
 		t.Error("the context handed to the provider was not the caller's cancelled one")
 	}
 }

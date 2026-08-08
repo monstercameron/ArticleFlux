@@ -57,6 +57,7 @@ func TestATypedOperationReachesTheProviderAtAll(t *testing.T) {
 	c, cap := opsClientFor(t, `Woodworking`)
 
 	got, err := schemaflux.Generating[string]("Name a folder for a hand-tools blog.").
+		Model(c.OpsModel(context.Background())).
 		Fast().
 		Run(c.OpsContext(context.Background()))
 	if err != nil {
@@ -70,16 +71,25 @@ func TestATypedOperationReachesTheProviderAtAll(t *testing.T) {
 	}
 }
 
-func TestTheInstancesConfiguredModelWinsOverTheOperationsTier(t *testing.T) {
-	// G5, resolved on this side. SchemaFlux picks a model from the speed tier
-	// and the environment and gives a caller no way to name one; ArticleFlux's
-	// model is a setting somebody chose, and an instance quietly running a
-	// different one is the billing surprise that setting exists to prevent.
+// The instance's model reaches the wire when a call site names it.
+//
+// This used to assert the opposite mechanism: G5 said SchemaFlux gave a caller
+// no way to name a model, so the bridge overwrote whatever the tier resolved
+// with the instance's. SchemaFlux DX-001 added `.Model(...)`, the overwrite is
+// gone, and the model is now stated where it is chosen — so what this checks is
+// that `OpsModel` answers with the configured model and that naming it puts it
+// on the wire. The guarantee a reader cares about is unchanged: the instance
+// runs the model somebody selected on the Smart+ tab.
+func TestTheInstancesConfiguredModelReachesTheWireWhenNamed(t *testing.T) {
 	c, cap := opsClientFor(t, `x`)
 	c.WithModel(func(context.Context) string { return "gpt-5" })
 
-	if _, err := schemaflux.Generating[string]("anything").Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	ctx := context.Background()
+	if _, err := schemaflux.Generating[string]("anything").
+		Model(c.OpsModel(context.Background())).
+		Model(c.OpsModel(ctx)).
+		Fast().
+		Run(c.OpsContext(ctx)); err != nil {
 		t.Fatal(err)
 	}
 	if cap.wire.Model != "gpt-5" {
@@ -87,15 +97,59 @@ func TestTheInstancesConfiguredModelWinsOverTheOperationsTier(t *testing.T) {
 	}
 }
 
+// With no model configured, OpsModel answers with the built-in default rather
+// than an empty string. An empty one would fall through to SchemaFlux's
+// per-provider tier table, which this provider is deliberately not in, and the
+// call would be refused before it was made.
 func TestWithoutAConfiguredModelTheBuiltInDefaultIsSent(t *testing.T) {
 	c, cap := opsClientFor(t, `x`)
 
-	if _, err := schemaflux.Generating[string]("anything").Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	ctx := context.Background()
+	if got := c.OpsModel(ctx); got != DefaultModel {
+		t.Errorf("OpsModel = %q, want the built-in %q", got, DefaultModel)
+	}
+	if _, err := schemaflux.Generating[string]("anything").
+		Model(c.OpsModel(context.Background())).
+		Model(c.OpsModel(ctx)).
+		Fast().
+		Run(c.OpsContext(ctx)); err != nil {
 		t.Fatal(err)
 	}
 	if cap.wire.Model != DefaultModel {
 		t.Errorf("model = %q, want %q", cap.wire.Model, DefaultModel)
+	}
+}
+
+// A call site that forgets to name a model fails LOUDLY rather than quietly
+// running somebody else's default.
+//
+// This is the safety the honest provider name buys. "articleflux" is not in
+// SchemaFlux's per-provider tier table, so an unnamed model has nothing to
+// resolve to and the library refuses before making the call. When the provider
+// was named "openai" — which it was, purely to make that table resolve — the
+// same mistake would have silently run an OpenAI default instead.
+func TestAnOperationThatNamesNoModelIsRefusedRatherThanGuessed(t *testing.T) {
+	// The environment overrides are cleared first, and that is the whole
+	// precondition worth stating: SCHEMAFLUX_MODEL and its per-tier siblings
+	// short-circuit provider resolution entirely, so on a machine where one is
+	// set an unnamed model resolves to whatever it names regardless of who the
+	// provider is. The guarantee below holds when nothing has been set, which is
+	// the deployed case.
+	t.Setenv("SCHEMAFLUX_MODEL", "")
+	t.Setenv("SCHEMAFLUX_MODEL_SMART", "")
+	t.Setenv("SCHEMAFLUX_MODEL_FAST", "")
+	t.Setenv("SCHEMAFLUX_MODEL_QUICK", "")
+
+	c, _ := opsClientFor(t, `x`)
+
+	_, err := schemaflux.Generating[string]("anything").
+		Fast().
+		Run(c.OpsContext(context.Background()))
+	if err == nil {
+		t.Fatal("an operation with no model ran anyway")
+	}
+	if !strings.Contains(err.Error(), "no default model") {
+		t.Errorf("err = %v, want it to say there is no default model for this provider", err)
 	}
 }
 
@@ -106,7 +160,8 @@ func TestTheAuditedGuaranteesHoldForTypedOperationsToo(t *testing.T) {
 	// provider-side, or where they are sent.
 	c, cap := opsClientFor(t, `x`)
 
-	if _, err := schemaflux.Generating[string]("anything").Fast().
+	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
+		Fast().
 		Run(c.OpsContext(context.Background())); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +183,8 @@ func TestTheKeyIsResolvedPerCallForTypedOperationsToo(t *testing.T) {
 	key := "sk-first"
 	c, cap := fakeClientKeyed(t, func(context.Context) string { return key }, `x`)
 
-	if _, err := schemaflux.Generating[string]("anything").Fast().
+	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
+		Fast().
 		Run(c.OpsContext(context.Background())); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +193,8 @@ func TestTheKeyIsResolvedPerCallForTypedOperationsToo(t *testing.T) {
 	}
 
 	key = "sk-second"
-	if _, err := schemaflux.Generating[string]("anything").Fast().
+	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
+		Fast().
 		Run(c.OpsContext(context.Background())); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +211,8 @@ func TestAnOperationWithNoKeyNeverLeaves(t *testing.T) {
 		return jsonResponse(http.StatusOK, responsesReply{Status: "completed", OutputText: "x"}), nil
 	})}
 
-	if _, err := schemaflux.Generating[string]("anything").Fast().
+	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
+		Fast().
 		Run(c.OpsContext(context.Background())); err == nil {
 		t.Fatal("an unconfigured instance ran an operation")
 	}
@@ -172,6 +230,7 @@ func TestTheOperationsOwnPromptAndSchemaAreCarriedThrough(t *testing.T) {
 
 	if _, err := schemaflux.Choosing[string]([]string{"Tech", "Cooking"}).
 		By("which folder this belongs in").
+		Model(c.OpsModel(context.Background())).
 		Fast().
 		Run(c.OpsContext(context.Background())); err != nil {
 		t.Fatal(err)

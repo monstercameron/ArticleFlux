@@ -316,6 +316,10 @@ func (f *fakePaletteClient) Configured(context.Context) bool { return f.configur
 // a context provider over anything a test registered. See smart's own fake.
 func (f *fakePaletteClient) OpsContext(ctx context.Context) context.Context { return ctx }
 
+// OpsModel names the model the operation runs on. A model has to arrive at
+// the provider or SchemaFlux refuses the call before making it.
+func (f *fakePaletteClient) OpsModel(context.Context) string { return "test-model" }
+
 func (f *fakePaletteClient) Do(context.Context, llm.Request) (string, error) {
 	f.n++
 	return f.reply, f.err

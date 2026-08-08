@@ -46,20 +46,29 @@ import (
 // public route to the same thing, so a Client is constructed purely to be asked
 // for contexts. It makes no calls of its own.
 
-// opsProviderName is what this provider calls itself to SchemaFlux, and it has
-// to be "openai" rather than anything more descriptive.
+// opsProviderName is what this provider calls itself to SchemaFlux.
 //
-// The library resolves a model from `provider.Name()`: only "" and "openai"
-// normalise to OpenAI, and anything else falls through to a per-provider table
-// this provider is not in — which makes `CallLLM` refuse before the call with
-// "no default model for provider %q". Every typed operation in this repository
-// would have failed that way in production, while the tests passed, because the
-// test double answers to "local" and that name IS in the table.
+// It was "openai", and that was a lie told for a mechanical reason. The library
+// resolved a model from `provider.Name()`: only "" and "openai" normalise to
+// OpenAI, and any other name falls through to a per-provider table this
+// provider is not in, which makes `CallLLM` refuse before the call with "no
+// default model for provider %q". Every typed operation here would have failed
+// that way in production while the tests passed, because the test double
+// answers to "local" and that name IS in the table. So the honest name was the
+// one thing that could not go here.
 //
-// So the descriptive name is the one thing that cannot go here. The distinction
-// it was carrying — which client made the call — is not lost: cost records key
-// on the model, and the metrics this repo exports are its own.
-const opsProviderName = "openai"
+// SchemaFlux DX-001 added `.Model(...)` to the operations. Every call site in
+// internal/smart names this instance's model now (see the OpsModel seam), and a
+// named model is used verbatim without the table being consulted at all — so
+// the name is free to say what this actually is.
+//
+// It also makes a forgotten `.Model(...)` fail loudly rather than quietly: this
+// name is not in the table, so an unnamed model has nothing to resolve to and
+// the call is refused before it is made, instead of silently running an OpenAI
+// default. That holds unless SCHEMAFLUX_MODEL or one of its per-tier siblings
+// is set in the environment — those short-circuit provider resolution
+// entirely — which is not the case on a deployed instance.
+const opsProviderName = "articleflux"
 
 // OpsContext returns a context that runs SchemaFlux operations through this
 // client's provider.
@@ -170,27 +179,41 @@ func (c *Client) opsProvider() *sfprovider.Provider {
 
 	return sfprovider.New(opsProviderName,
 		func(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
-			// **This instance's model wins over the one the operation asked
-			// for**, and the request's own Model is deliberately discarded.
+			// The model is NOT substituted here any more, and that is the
+			// change worth noticing in this file.
 			//
-			// SchemaFlux resolves a model from the speed tier the operation
-			// chose (`Fast`, `Smart`) against environment variables and a
-			// per-provider table — it has no way for a caller to name one, which
-			// is G5. ArticleFlux's model is a SETTING somebody chose on the
-			// Smart+ tab, and an instance that quietly ran a different one would
-			// be the billing surprise that setting exists to prevent.
+			// It used to be: G5 said the library gave a caller no way to name a
+			// model, so this middleware overwrote whatever the speed tier had
+			// resolved with the instance's configured one. It worked, and it was
+			// dishonest — the model was decided somewhere no call site could
+			// see, and it forced the provider to be named after a vendor this is
+			// not (see opsProviderName) purely to get past the tier's lookup.
 			//
-			// The tier is not wasted: it still decides the token ceiling and the
-			// temperature, which are the parts of "how hard should this think"
-			// that do not contradict an operator's choice of model.
+			// SchemaFlux DX-001 added `.Model(...)` to the operations, so every
+			// feature in internal/smart names this instance's model itself and
+			// `req.Model` arrives already correct. That matters to the chain and
+			// not only to the call: the budget prices its estimate off
+			// `req.Model`, and a ceiling estimated against one model while the
+			// call runs another is a ceiling in the wrong currency. It is now
+			// the same value in both places because there is only one place that
+			// sets it.
 			//
-			// Overwritten HERE, before the chain rather than inside the audited
-			// call, because the chain reads it: the budget prices its estimate
-			// off `req.Model`, and a ceiling estimated against `gpt-5-mini`
-			// while the call runs `gpt-5` is a ceiling in the wrong currency.
-			req.Model = modelFor(ctx, c)
+			// The tier still decides the token ceiling and the temperature,
+			// which is the part of "how hard should this think" that does not
+			// contradict an operator's choice of model.
 			return c.run(ctx, audited, req)
 		})
+}
+
+// OpsModel is modelFor, exported for the call sites that now name the model on
+// the operation itself rather than having it substituted underneath them.
+//
+// See the seam in internal/smart/llmclient.go for why that moved. In short:
+// SchemaFlux gained `.Model(...)` (DX-001), so the model can be stated where it
+// is chosen instead of being swapped in by middleware, and the provider can go
+// back to being named after what it actually is.
+func (c *Client) OpsModel(ctx context.Context) string {
+	return modelFor(ctx, c)
 }
 
 // keyFrom resolves the credential for this call, which is the whole reason the

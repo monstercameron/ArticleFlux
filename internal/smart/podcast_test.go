@@ -605,7 +605,7 @@ func newFakeGroupLLM() *fakeLLM {
 
 // **The load-bearing test in this file's group half.** A three-story segment
 // must come back as three blocks, in call order, each addressed to its own
-// item id — the schema round-trip (podcastGroupSchema) is the one thing this
+// item id — the schema round-trip (podcastGroupReply) is the one thing this
 // call must not get wrong, because there is no way to recover a split from a
 // paragraph of prose after the fact.
 func TestSegmentGroupProducesOneBlockPerStory(t *testing.T) {

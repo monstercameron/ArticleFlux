@@ -173,6 +173,12 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 		// answer; this re-asks for a WORKING one).
 		answer, err := schemaflux.Extracting[scrapeAnswer](in).
 			Steer(scrapeInstructions).
+			// analyzeMaxTokens, restored. This request had 6000 explicitly and
+			// inherited Fast's 2000 through the migration — and scrape.go's own
+			// note records that 1200 already came back ErrTruncated having spent
+			// the budget thinking (ceilings.go).
+			Configure(capExtract(analyzeMaxTokensSF)).
+			Model(a.llm.OpsModel(ctx)).
 			Fast().
 			Run(a.llm.OpsContext(ctx))
 		if err != nil {
