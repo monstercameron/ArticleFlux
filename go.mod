@@ -3,7 +3,7 @@ module github.com/monstercameron/ArticleFlux
 go 1.26.5
 
 require (
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.2
 	github.com/andybalholm/cascadia v1.3.3
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
