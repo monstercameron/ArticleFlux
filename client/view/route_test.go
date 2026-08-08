@@ -464,3 +464,161 @@ func TestBorrowTitle(t *testing.T) {
 		})
 	}
 }
+
+// A settings address must not move the reader's saved place.
+//
+// The address for the settings surface carries no scope by construction
+// (routeSegments returns `/settings/<tab>` and nothing else), so parseRoute can
+// only answer with its default — All. Boot applied that default as though it had
+// been asked for, and an addressed boot also WRITES the scope, so opening
+// Settings while reading Liked and then reloading left the reader on All
+// articles with A30's saved place overwritten on every machine they use.
+//
+// Back and Forward never had this bug: apply() treats a settings entry as a
+// screen and leaves the place alone. This pins the same rule at boot.
+func TestBootRouteKeepsThePlaceUnderSettings(t *testing.T) {
+	tr := mustRuntime(t)
+	saved := map[string]string{
+		"read.kind": kindLiked, "read.title": "Liked", "read.item": "ITEM1",
+	}
+
+	got, addressed := bootRouteFor("/", "/settings/appearance", "", saved, tr)
+	if !addressed {
+		t.Error("a settings address is still an address; addressed = false")
+	}
+	if got.tab != setAppearance {
+		t.Errorf("tab = %q, want %q — the address named the panel", got.tab, setAppearance)
+	}
+	if k, _ := scopeKind(got.sel); k != kindLiked {
+		t.Errorf("scope = %q, want %q: the panel replaced the place underneath it, "+
+			"which the prefs effect then writes back as the reader's saved place", k, kindLiked)
+	}
+	if got.item != "ITEM1" {
+		t.Errorf("item = %q, want %q: closing the panel should land where it opened", got.item, "ITEM1")
+	}
+}
+
+// A settings address obeys a fixed landing view, the same as a bare one.
+//
+// effectiveResumeScope, not resumeScope: a reader who has chosen "always open My
+// Feed" gets that under the panel too, because the question the panel does not
+// answer is exactly the question that preference exists to answer.
+func TestBootRouteUnderSettingsHonoursFixedLanding(t *testing.T) {
+	tr := mustRuntime(t)
+	saved := map[string]string{
+		"read.kind": kindLiked, "read.item": "ITEM1",
+		"landing.mode": landingModeFixed, "landing.kind": kindMyFeed,
+	}
+
+	got, _ := bootRouteFor("/", "/settings/reading", "", saved, tr)
+	if k, _ := scopeKind(got.sel); k != kindMyFeed {
+		t.Errorf("scope = %q, want %q: a fixed landing view outranks the resume", k, kindMyFeed)
+	}
+	if got.item != "" {
+		t.Errorf("item = %q, want empty: a fixed landing view opens on the list", got.item)
+	}
+}
+
+// A feed's settings dialog DOES name a place, and keeps naming it.
+//
+// `/feed/<id>/settings` is the other shape with `settings` in it, and the carve
+// out above must not swallow it: that address is about a specific feed, so its
+// scope is the reader's request rather than a default standing in for one.
+func TestBootRouteKeepsAnAddressedFeedSettings(t *testing.T) {
+	tr := mustRuntime(t)
+	saved := map[string]string{"read.kind": kindLiked}
+
+	got, addressed := bootRouteFor("/", "/feed/SRC1/settings", "", saved, tr)
+	if !addressed {
+		t.Fatal("addressed = false")
+	}
+	if got.dlg != dialogFeed || got.dlgID != "SRC1" {
+		t.Errorf("dialog = (%q, %q), want (%q, %q)", got.dlg, got.dlgID, dialogFeed, "SRC1")
+	}
+	if k, v := scopeKind(got.sel); k != kindFeed || v != "SRC1" {
+		t.Errorf("scope = (%q, %q), want (%q, %q): the address named the feed", k, v, kindFeed, "SRC1")
+	}
+}
+
+// A renamed feed renames its header, and nothing else moves.
+//
+// The scope carries the name it was captured with. That is right — a header
+// must not blank while the rail is fetching — and stale the moment the feed is
+// renamed: the rail said "Renamed Journal", the rows said "Renamed Journal",
+// and the heading over them said "Big Journal", through a reload.
+func TestRetitleScopeFollowsARename(t *testing.T) {
+	// Id, not SourceId: scope.SourceID is matched against the SUBSCRIPTION id
+	// (titleForScope compares f.GetId()), which the field's name does not say and
+	// which cost this test a run to discover.
+	feeds := []*pb.Feed{{Id: "src-1", SourceId: "source-1", Title: "Renamed Journal"}}
+	tags := []*pb.Tag{{Id: "tag-1", Name: "morning read"}}
+	folders := []*pb.Folder{{Id: "cat-1", Name: "Reading"}}
+
+	got := retitleScope(scope{SourceID: "src-1", Title: "Big Journal"}, feeds, tags, folders)
+	if got.Title != "Renamed Journal" {
+		t.Errorf("title = %q, want the feed's CURRENT name", got.Title)
+	}
+	if got.SourceID != "src-1" {
+		t.Errorf("SourceID = %q, want it untouched", got.SourceID)
+	}
+
+	if got := retitleScope(scope{TagID: "tag-1", Title: "old"}, feeds, tags, folders); got.Title != "morning read" {
+		t.Errorf("tag title = %q, want %q", got.Title, "morning read")
+	}
+	if got := retitleScope(scope{FolderID: "cat-1", Title: "old"}, feeds, tags, folders); got.Title != "Reading" {
+		t.Errorf("folder title = %q, want %q", got.Title, "Reading")
+	}
+}
+
+// The two ways this could blank a header, which is worse than a stale one.
+func TestRetitleScopeLeavesWhatItCannotName(t *testing.T) {
+	feeds := []*pb.Feed{{Id: "src-1", Title: "Renamed Journal"}}
+
+	// A stream names nothing in the rail. Retitling one would replace "Read
+	// later" with whatever a lookup for the empty id returned, which is nothing.
+	for _, s := range []scope{
+		{Later: true, Title: "Read later"},
+		{Unread: true, Title: "Unread"},
+		{MyFeed: true, Title: "My Feed"},
+		{Notes: true, Title: "Notes"},
+		{Title: "All articles"},
+	} {
+		if got := retitleScope(s, feeds, nil, nil); got.Title != s.Title {
+			t.Errorf("retitleScope(%q) = %q, want it untouched", s.Title, got.Title)
+		}
+	}
+
+	// The rail has not arrived yet — the commonest frame of all, right after a
+	// reload. A lookup that finds nothing must leave the captured name alone.
+	if got := retitleScope(scope{SourceID: "src-9", Title: "Big Journal"}, nil, nil, nil); got.Title != "Big Journal" {
+		t.Errorf("title = %q, want the captured name kept while the rail is empty", got.Title)
+	}
+}
+
+// A feed is named by its SOURCE id, which is what a scope carries.
+//
+// Every writer of scope.SourceID in this client uses Feed.SourceId — the rail's
+// rows, the item and article chips, the palette, feedByID, and scopeOf reading
+// it back off the address. titleForScope compared Feed.Id, which is the
+// subscription, and the two hold the same value on an unshared source: every
+// subscription on a personal instance. Where a source IS shared they differ,
+// and a header seeded from `/feed/<id>` — the shape every shared link has —
+// would then come up blank beside a rail that named the feed perfectly well.
+func TestTitleForScopeAcceptsEitherFeedID(t *testing.T) {
+	feeds := []*pb.Feed{{Id: "sub-1", SourceId: "source-1", Title: "Big Journal"}}
+
+	// The one that matters: a scope built anywhere in this client carries this.
+	if got := titleForScope(scope{SourceID: "source-1"}, feeds, nil, nil); got.Title != "Big Journal" {
+		t.Errorf("by source id: title = %q, want %q", got.Title, "Big Journal")
+	}
+	// And the subscription id still resolves, so a caller holding one is not
+	// dropped on the floor.
+	if got := titleForScope(scope{SourceID: "sub-1"}, feeds, nil, nil); got.Title != "Big Journal" {
+		t.Errorf("by subscription id: title = %q, want %q", got.Title, "Big Journal")
+	}
+	// And an id belonging to neither still names nothing, rather than the first
+	// feed in the list.
+	if got := titleForScope(scope{SourceID: "sub-9"}, feeds, nil, nil); got.Title != "" {
+		t.Errorf("unknown id: title = %q, want it left empty", got.Title)
+	}
+}

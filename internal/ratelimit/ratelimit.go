@@ -53,6 +53,38 @@ type Rule struct {
 
 // The §20.7 table, as code. Named so a call site says which row it is enforcing
 // rather than repeating a number that then drifts from the document.
+//
+// # This block is the TABLE, not an inventory of what is enforced
+//
+// Worth stating outright, because it does not read that way and `ratelimit_test.go`
+// asserts every number below — which passes whether or not anything ever calls
+// Allow with the rule. Four of these have no caller at all, and the reason
+// differs by row:
+//
+//   - LoginPerUser / LoginPerIP are ENFORCED, in `internal/authn`, not here.
+//     `authn.DefaultLockout` implements the same §7.3/§20.7 row as a per-failure
+//     curve (Free 3, doubling from 5s to a 15m cap, AddressLimit 20) because a
+//     limiter forgets and a lockout accumulates. So these two are a SECOND COPY
+//     of numbers that live somewhere else, and the copy is the hazard: change
+//     one and the test below still passes.
+//   - RecoveryPerUser / RecoveryPerIP are likewise enforced elsewhere, by the
+//     limiter in `internal/transport/grpcsrv/recovery.go`, keyed on the username
+//     and the client together.
+//   - SyncAPIPerToken, WebSubPerSource and PackBuildPerUser are FORWARD
+//     DECLARATIONS. There is no /websub route and no sync-API route on the mux
+//     yet; these are the rows those surfaces will use when they exist, written
+//     down now so the number comes from the table rather than from whoever
+//     builds them.
+//
+// The rows with real call sites in this package's sense are PublicSharePerIP
+// (/pub), DefaultPerUser (the unary and stream interceptors), ProxyPerClient
+// (/asset and /p), SpeechPerClient (/speech) and ThemePerUser.
+//
+// Recorded rather than tidied away because this repository's own rule, written
+// in internal/retention/security.go about a purge that did not exist, is that a
+// documented control which is not in force is worse than an admitted absence:
+// it is the sentence somebody reads when deciding whether a surface needs
+// attention.
 var (
 	LoginPerUser     = Rule{Name: "login", Per: time.Minute, Limit: 5, Burst: 5}
 	LoginPerIP       = Rule{Name: "login (address)", Per: time.Minute, Limit: 20, Burst: 20}
@@ -114,6 +146,36 @@ var (
 	// second. Both halves matter: the burst is what makes it invisible to a
 	// reader, and the rate is what makes it a limit at all.
 	ProxyPerClient = Rule{Name: "proxy", Per: time.Minute, Limit: 600, Burst: 500}
+
+	// SpeechPerClient covers /speech, which was the only fetch-on-behalf
+	// endpoint on the instance with no limiter at all.
+	//
+	// It is also the most expensive one. `/asset` and `/p` spend bandwidth;
+	// `/speech` spends MONEY, per call, at a provider — and unlike the Smart+
+	// RPCs it is an ordinary HTTP GET with a signed ticket, so none of
+	// SmartService's per-user rules touch it. Authenticated and
+	// preference-gated is not a rate limit: it bounds who may spend, not how
+	// fast.
+	//
+	// # Sizing it against what listening actually does
+	//
+	// A reader pressing play on an article is one request. The broadcast (§19)
+	// is the demanding case: it fetches each segment as it approaches, which is
+	// a request every minute or two for as long as somebody is listening, plus
+	// a burst at the start when the first few are queued. A slideshow left
+	// running is the same shape.
+	//
+	// Sixty an hour with a burst of 10 covers an hour of continuous listening
+	// with room for the opening queue, and is nowhere near what a reader
+	// reaches by using it. What it stops is the runaway — a client bug, a
+	// stuck retry loop, or somebody replaying a ticket — turning into a bill
+	// nobody sees until the statement.
+	//
+	// PER HOUR rather than per minute, deliberately. A per-minute rule with the
+	// same average would let a loop spend sixty times in sixty seconds, over
+	// and over, and never trip; the thing being bounded here is spend over the
+	// time somebody would take to notice, not instantaneous rate.
+	SpeechPerClient = Rule{Name: "speech", Per: time.Hour, Limit: 60, Burst: 10}
 )
 
 // rate returns tokens per second.

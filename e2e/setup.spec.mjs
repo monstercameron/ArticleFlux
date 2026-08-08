@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
 import { APP_PORT } from './ports.mjs';
+import { serverBinary } from './platform.mjs';
 
 // First-run setup (§7.11), against a server with an EMPTY database.
 //
@@ -35,7 +36,7 @@ test.beforeAll(async () => {
   rmSync(`${DB}-shm`, { force: true });
 
   server = spawn(
-    join(repo, 'bin', 'articleflux.exe'),
+    serverBinary(repo),
     ['serve', '-addr', `127.0.0.1:${PORT}`, '-db', DB, '-web', join(repo, 'bin', 'web')],
     { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
   );
@@ -159,10 +160,11 @@ async function openAccountTab(page) {
   await expect(page.locator('.set-panel')).toBeVisible();
 }
 
-// The sign-out control exists ONLY on an authenticated instance, which is why
-// these tests live in this file rather than beside the other settings specs: the
-// shared instance every other spec drives is started with `-dev`, holds no
-// credential, and correctly renders no sign-out at all.
+// The control itself is now rendered everywhere, including on the `-dev`
+// instance every other spec drives, but only an authenticated instance can prove
+// the press did anything — a dev press clears a credential that was never issued
+// and reloads back into the reader. So these stay in this file, where signing in
+// is real: what they pin is the revocation, not the button's existence.
 test('signing out takes two presses, and the first one only asks', async ({ page }) => {
   await signIn(page);
   await openAccountTab(page);

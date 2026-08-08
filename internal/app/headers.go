@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // Response headers for the APP DOCUMENT (TODO: security review 2026-07-27).
@@ -222,6 +224,109 @@ func normalizeNewlines(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 }
 
+// cspCache holds the document policy and re-derives it when the shell changes
+// underneath the running server.
+//
+// The policy used to be computed once, when the middleware was built. That is
+// correct for a release — a deployed web root does not change while it is being
+// served — and it is exactly wrong for the machine the shell is EDITED on, which
+// is where the boot script gets touched. The static handler serves index.html
+// from disk on every request, so an edit shipped a page whose inline script the
+// header refused, and the symptom is the one the file's own opening note warns
+// about: a blank page that reads as "the wasm build broke". It cost an
+// afternoon, twice, and no test could catch it because the two halves only
+// disagree after a write that no test performs.
+//
+// Keyed on modtime and size rather than on the content: the point is to avoid
+// hashing 25KB on every document request, and a shell that is rewritten within a
+// filesystem timestamp's resolution AND to the same length is not a case worth
+// paying for. A stat is what an unchanged file costs, which is what the static
+// handler already pays to serve it.
+//
+// A shell that cannot be stat'd keeps the last policy rather than dropping to
+// one with no hash: the file being momentarily absent (an editor writing through
+// a temporary) must not publish a policy that refuses the script it is about to
+// serve.
+type cspCache struct {
+	root string
+
+	mu     sync.Mutex
+	key    string
+	policy string
+}
+
+func newCSPCache(root string) *cspCache {
+	c := &cspCache{root: root}
+	c.policy = documentCSP(root)
+	c.key = shellStamp(root)
+	return c
+}
+
+func (c *cspCache) get() string {
+	stamp := shellStamp(c.root)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if stamp != "" && stamp != c.key {
+		c.policy = documentCSP(c.root)
+		c.key = stamp
+	}
+	return c.policy
+}
+
+// shellStamp identifies a version of the shell, or "" when it cannot be read.
+func shellStamp(root string) string {
+	if root == "" {
+		return ""
+	}
+	fi, err := os.Stat(filepath.Join(root, "index.html"))
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatInt(fi.ModTime().UnixNano(), 10) + ":" + strconv.FormatInt(fi.Size(), 10)
+}
+
+// baselineHeaders puts nosniff on EVERY response, which is what securityHeaders
+// below already claims and could not deliver.
+//
+// # The gap
+//
+// securityHeaders says it plainly: "`nosniff` and the referrer policy DO apply
+// to every response, and go on unconditionally." That is the right rule. But
+// securityHeaders is mounted on two routes — `/` and `/welcome` — so the rule
+// only held for the static handler, and every other endpoint had to remember on
+// its own. Six did: /asset, /p (twice), /favicon, /stream and the static
+// handler. Two did not:
+//
+//   - `/pub` — the Atom share, the ONE endpoint on this instance that anybody
+//     in the world may fetch without a credential, whose entries carry
+//     publisher-supplied HTML in their summaries.
+//   - `/speech` — audio assembled from bytes a third party returned.
+//
+// Neither omission is a live exploit on a current browser: both send an
+// explicit Content-Type, and nothing modern sniffs `application/atom+xml` or
+// `audio/mpeg` into a document. It is the arrangement that is wrong. A rule
+// enforced by six handlers remembering it is a rule with a seventh handler
+// coming, and the two that already forgot are the unauthenticated one and the
+// one that costs money.
+//
+// # Why only nosniff
+//
+// Referrer-Policy is deliberately left to securityHeaders. It governs what a
+// browser sends when navigating AWAY from a document, and none of these
+// responses is one — an <img>, an <audio> or a feed takes its referrer policy
+// from the page that loaded it, so setting it here would be bytes on every
+// response for no behaviour. The full document policy stays where it is for the
+// same reason it is conditional there: a CSP on a .wasm is inert.
+//
+// Set rather than added only when absent, because the handlers that already do
+// this set the identical value.
+func baselineHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // securityHeaders applies the document policy to responses from the static
 // handler.
 //
@@ -231,7 +336,7 @@ func normalizeNewlines(s string) string {
 // serves and buy nothing. `nosniff` and the referrer policy DO apply to every
 // response, and go on unconditionally.
 func (a *App) securityHeaders(next http.Handler) http.Handler {
-	csp := documentCSP(a.cfg.WebRoot)
+	csp := newCSPCache(a.cfg.WebRoot)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -247,7 +352,7 @@ func (a *App) securityHeaders(next http.Handler) http.Handler {
 		}
 
 		if isDocument(r.URL.Path) {
-			h.Set("Content-Security-Policy", csp)
+			h.Set("Content-Security-Policy", csp.get())
 			// Cross-origin isolation. These cost nothing here — the app loads no
 			// third-party anything — and they close the window-handle and
 			// resource-inclusion side channels that the CSP does not speak to.

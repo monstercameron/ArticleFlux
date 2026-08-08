@@ -94,6 +94,82 @@ func TestRundownIsDeterministic(t *testing.T) {
 	}
 }
 
+// The same candidates in a different order must build the same rundown.
+//
+// # What the sibling test above cannot see
+//
+// TestRundownIsDeterministic builds twice from one slice, which catches map
+// iteration leaking into the output and nothing else. dedupeClusters' comment
+// makes the larger claim — that the choice "never depends on slice order —
+// which is what TestRundownIsDeterministic checks for the package as a whole"
+// — and that is the claim this test actually exercises.
+//
+// It matters because of what the package promises one level up: the on-screen
+// preview of a rundown and the producer that builds the broadcast have to be
+// the same code so they cannot disagree. Two callers that assemble the same
+// candidates in a different order are exactly the case that claim is about.
+//
+// Permutations are fixed rather than random, so a failure reproduces.
+func TestRundownDoesNotDependOnInputOrder(t *testing.T) {
+	cands := fixture200(t)
+	opts := Options{Title: "Test", Target: 20 * time.Minute, Rate: 1.0, Style: StyleBalanced, AllowQuickHits: true}
+	want := Build(cands, opts)
+
+	perms := map[string][]Candidate{
+		"reversed": reversedCands(cands),
+		"rotated":  append(append([]Candidate{}, cands[97:]...), cands[:97]...),
+	}
+	for name, in := range perms {
+		t.Run(name, func(t *testing.T) {
+			if len(in) != len(cands) {
+				t.Fatalf("permutation dropped candidates: %d, want %d", len(in), len(cands))
+			}
+			got := Build(in, opts)
+			if reflect.DeepEqual(got, want) {
+				return
+			}
+			// Narrow the report to the first real difference, so a failure says
+			// which field moved rather than printing two whole rundowns.
+			for si := range want.Segments {
+				if si >= len(got.Segments) {
+					t.Fatalf("segment count %d, want %d", len(got.Segments), len(want.Segments))
+				}
+				w, g := want.Segments[si], got.Segments[si]
+				if w.Theme != g.Theme {
+					t.Fatalf("segment %d theme %q, want %q", si, g.Theme, w.Theme)
+				}
+				for sti := range w.Stories {
+					if sti >= len(g.Stories) {
+						t.Fatalf("segment %q story count %d, want %d", w.Theme, len(g.Stories), len(w.Stories))
+					}
+					ws, gs := w.Stories[sti], g.Stories[sti]
+					if ws.ItemID != gs.ItemID {
+						t.Fatalf("segment %q story %d is %s, want %s", w.Theme, sti, gs.ItemID, ws.ItemID)
+					}
+					if !reflect.DeepEqual(ws.Sources, gs.Sources) {
+						t.Fatalf("%s names its outlets as %v, want %v — the running "+
+							"order is the same but the corroboration a listener hears "+
+							"read out depends on the order the caller happened to "+
+							"assemble the pool in", gs.ItemID, gs.Sources, ws.Sources)
+					}
+					if ws.Role != gs.Role || ws.Words != gs.Words {
+						t.Fatalf("%s is %s/%dw, want %s/%dw", gs.ItemID, gs.Role, gs.Words, ws.Role, ws.Words)
+					}
+				}
+			}
+			t.Fatal("rundowns differ in a way the field walk above did not name")
+		})
+	}
+}
+
+func reversedCands(in []Candidate) []Candidate {
+	out := make([]Candidate, len(in))
+	for i, c := range in {
+		out[len(in)-1-i] = c
+	}
+	return out
+}
+
 func TestTargetIsHit(t *testing.T) {
 	cands := fixture200(t)
 	for _, minutes := range []int{5, 10, 20, 40} {
@@ -225,6 +301,132 @@ func TestWordBudgetUnsetRate(t *testing.T) {
 	}
 }
 
+// A rate that is not a usable number falls back the same way an unset one does.
+//
+// # Why NaN and +Inf get in at all
+//
+// Every rate guard in this package is written `rate <= 0`, and neither NaN nor
+// +Inf satisfies it — a NaN comparison is false whichever way it is asked. The
+// value arrives from `-rate`, which the flag package parses with
+// strconv.ParseFloat, and ParseFloat accepts the literals "NaN", "Inf" and
+// "-Inf". So both reach wordBudget unaltered.
+//
+// Neither fails loudly, which is the problem. A NaN budget makes every `used +
+// words <= budget` test in fillToBudget false, so the fill admits only the one
+// story that bypasses the budget by design and stops: a twenty-minute request
+// answered with a single story and no error. +Inf is the same mistake pointing
+// the other way — nothing is ever over budget, so the whole 200-candidate pool
+// is admitted and the target stops meaning anything.
+//
+// `!(rate > 0)` is the guard that holds, because it is false for NaN too.
+func TestRateThatIsNotANumberFallsBack(t *testing.T) {
+	bad := []struct {
+		name string
+		rate float64
+	}{
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			if got, want := wordBudget(10*time.Minute, c.rate), wordBudget(10*time.Minute, 1); got != want {
+				t.Errorf("wordBudget at rate %v = %v, want the rate=1 fallback %v",
+					c.rate, got, want)
+			}
+			if got, want := wordsToDuration(300, c.rate), wordsToDuration(300, 1); got != want {
+				t.Errorf("wordsToDuration at rate %v = %s, want the rate=1 fallback %s",
+					c.rate, got, want)
+			}
+			o := Options{Rate: c.rate}
+			if got := o.normalized().Rate; got != 1 {
+				t.Errorf("normalized rate %v = %v, want 1", c.rate, got)
+			}
+
+			// The end of the chain, and the part a reader would see: a target
+			// asked for in minutes has to produce a rundown of about that
+			// length, not one story and not the whole pool.
+			cands := fixture200(t)
+			got := countStories(Build(cands, Options{Target: 10 * time.Minute, Rate: c.rate, AllowQuickHits: true}))
+			want := countStories(Build(cands, Options{Target: 10 * time.Minute, Rate: 1, AllowQuickHits: true}))
+			if got != want {
+				t.Errorf("a ten-minute rundown at rate %v has %d stories, want the "+
+					"rate=1 answer of %d — the target silently stopped meaning anything",
+					c.rate, got, want)
+			}
+		})
+	}
+}
+
+// The style weighting must mean the same thing at the bottom of the pool as at
+// the top.
+//
+// # Why a negative score is not a hypothetical
+//
+// rank.Score is a single linear sum and four of its terms subtract: volume,
+// duplicate, negative affinity and the repeatedly-skipped penalty, plus
+// Manual*(ManualWeight-1) for a feed the reader weighted down. Nothing clamps
+// the total — derive.go writes `Score: sc.res.Score` straight into
+// home_ranking, and produce reads it straight back out as Candidate.Score with
+// no positivity filter anywhere between. An item with no topic match, from a
+// firehose source, close to something already shown and in a topic the reader
+// marked as not an interest is comfortably negative, and rundown draws from the
+// whole 200-candidate pool, so a long target reaches that tail.
+//
+// # What the multiplier does down there
+//
+// styleWeight's comment says the focused weights "roughly halve (0.5) or
+// quarter (0.25) an explore or cluster_head candidate's effective priority".
+// Multiplying is only that operation for a positive number. At -10, halving
+// gives -5, which sorts ABOVE the -10 it was supposed to lose to: focused
+// style promotes exactly the surprises a focused listener asked to hear less
+// of, and explore style, multiplying by 1.6 to -16, demotes the ones it was
+// asked to favour. The weighting does not weaken near zero, it inverts through
+// it.
+func TestStyleWeightingIsNotInvertedByANegativeScore(t *testing.T) {
+	// Positive scores are the regression half: whatever the fix is, it must not
+	// disturb the ordinary path at all.
+	for _, score := range []float64{10, -10} {
+		t.Run(fmt.Sprintf("score%+.0f", score), func(t *testing.T) {
+			top := priorityFor(score, StyleFocused, SlotTop)
+			exp := priorityFor(score, StyleFocused, SlotExplore)
+			clu := priorityFor(score, StyleFocused, SlotClusterHead)
+			if !(exp < top) {
+				t.Errorf("focused: explore priority %v is not below top %v, so a "+
+					"focused listener is served MORE of the surprises they asked "+
+					"to hear fewer of", exp, top)
+			}
+			if !(clu < exp) {
+				t.Errorf("focused: cluster_head priority %v is not below explore %v", clu, exp)
+			}
+
+			top = priorityFor(score, StyleExplore, SlotTop)
+			exp = priorityFor(score, StyleExplore, SlotExplore)
+			clu = priorityFor(score, StyleExplore, SlotClusterHead)
+			if !(exp > top) {
+				t.Errorf("explore: explore priority %v is not above top %v, so the "+
+					"style boosts nothing", exp, top)
+			}
+			if !(clu > top) {
+				t.Errorf("explore: cluster_head priority %v is not above top %v", clu, top)
+			}
+			if !(clu < exp) {
+				t.Errorf("explore: cluster_head %v should be boosted less hard than "+
+					"explore %v — it is the least-vetted tier", clu, exp)
+			}
+		})
+	}
+
+	// A balanced show weights nothing, at either sign.
+	for _, score := range []float64{10, -10} {
+		for _, slot := range []string{SlotTop, SlotExplore, SlotClusterHead} {
+			if got := priorityFor(score, StyleBalanced, slot); got != score {
+				t.Errorf("balanced %s at %v = %v, want the score untouched", slot, score, got)
+			}
+		}
+	}
+}
+
 func TestOptionsNormalizedDefaults(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -276,29 +478,6 @@ func TestThemeForUnknownAndEmpty(t *testing.T) {
 				t.Errorf("themeFor(%+v) = %q, want %q", tc.cand, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestSegmentWeightUnrecognisedTheme(t *testing.T) {
-	cats := lexicon.Categories()
-	if len(cats) < 2 {
-		t.Fatal("need at least two shipped categories to check relative ordering")
-	}
-	first := segmentWeight(cats[0].Slug)
-	last := segmentWeight(cats[len(cats)-1].Slug)
-	if first <= last {
-		t.Fatalf("first-in-table slug should outweigh the last one: first=%d last=%d", first, last)
-	}
-
-	// Unrecognised and empty themes both fall to the floor, below every
-	// recognised slug, so a rundown never opens on stories nothing could place.
-	for _, theme := range []string{"", "not-a-real-slug"} {
-		if got := segmentWeight(theme); got != 0 {
-			t.Errorf("segmentWeight(%q) = %d, want 0", theme, got)
-		}
-		if segmentWeight(theme) >= last {
-			t.Errorf("segmentWeight(%q) = %d should be strictly below the lowest recognised slug's %d", theme, segmentWeight(theme), last)
-		}
 	}
 }
 

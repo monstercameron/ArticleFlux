@@ -201,6 +201,9 @@ type Key struct {
 	// combination the app claims, for "save this note" — plain Enter has to stay
 	// a newline in a textarea, or a note cannot hold two sentences.
 	Ctrl bool
+	// Shift reports the shift key, for the one binding that needs to know which
+	// DIRECTION a key means: Shift+Tab walks a dialog backwards.
+	Shift bool
 	// Prevent suppresses the browser's own handling of this keystroke, and it
 	// is only correct to call from inside the handler, on the event's own stack.
 	//
@@ -269,6 +272,7 @@ func OnKeyDown(fn func(Key)) Listener {
 		k := Key{
 			Name:    name.String(),
 			Ctrl:    boolOf(e, "ctrlKey") || boolOf(e, "metaKey"),
+			Shift:   boolOf(e, "shiftKey"),
 			Prevent: func() { e.Call("preventDefault") },
 		}
 		// A caret that has been asked for and has not arrived yet counts as
@@ -315,6 +319,87 @@ func FieldValue(role string) string {
 		return ""
 	}
 	return v.String()
+}
+
+// TrapTabTopDialog keeps Tab inside whichever modal is on screen, and reports
+// whether it handled the key.
+//
+// Every overlay here declares `aria-modal="true"`, which is a promise that the
+// rest of the page is not reachable while it is up. Nothing was keeping it: Tab
+// walked out of the open panel into the rail BEHIND the scrim — controls in the
+// tab order, covered on screen, unreachable by mouse. Measured on the feed
+// settings panel, forty tabs put eighteen of them outside; the add-a-feed dialog
+// and the shortcut sheet leaked from the first press.
+//
+// Driven off the DOM rather than off an "is open" flag, because there are six of
+// these and they open from four different places. The one that is VISIBLE owns
+// the key, which is also the rule a reader would state.
+//
+// A dialog with nothing focusable in it — the shortcut sheet is a reference card
+// — still consumes Tab rather than letting it escape. That is the modal promise
+// too: while the sheet is up, Tab does nothing and Escape is the way out.
+func TrapTabTopDialog(backwards bool) bool {
+	doc := js.Global().Get("document")
+	dialogs := doc.Call("querySelectorAll", "[role=dialog]")
+	n := dialogs.Get("length").Int()
+	var open js.Value
+	for i := 0; i < n; i++ {
+		d := dialogs.Index(i)
+		cs := js.Global().Call("getComputedStyle", d)
+		if cs.Get("visibility").String() == "hidden" || cs.Get("display").String() == "none" {
+			continue
+		}
+		if cs.Get("opacity").String() == "0" {
+			continue
+		}
+		// The last visible one wins: overlays are appended in the order they
+		// stack, so a dialog opened over another is later in the document.
+		open = d
+	}
+	if !open.Truthy() {
+		return false
+	}
+	items := open.Call("querySelectorAll",
+		`a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])`)
+	count := items.Get("length").Int()
+	if count == 0 {
+		return true // consumed: a modal with nothing to focus still owns Tab
+	}
+	active := doc.Get("activeElement")
+	idx := -1
+	for i := 0; i < count; i++ {
+		if active.Truthy() && items.Index(i).Equal(active) {
+			idx = i
+			break
+		}
+	}
+	next := 0
+	switch {
+	case idx < 0 && backwards:
+		next = count - 1
+	case idx < 0:
+		next = 0
+	case backwards:
+		next = (idx - 1 + count) % count
+	default:
+		next = (idx + 1) % count
+	}
+	items.Index(next).Call("focus")
+	return true
+}
+
+// FieldExists reports whether anything in the document carries data-role=role.
+//
+// It is what a key handler asks BEFORE claiming focus for a field that may not
+// be rendered. FocusField holds a "focus is owed" flag while it retries, and
+// OnKey reports keys as typing for as long as that flag is set — which is right
+// while a field is on its way in, and wrong when there is no field at all: the
+// twenty frames it waits before giving up are a third of a second in which every
+// other shortcut is swallowed. The rail's filter box is the case that showed it,
+// because it only renders past eight feeds.
+func FieldExists(role string) bool {
+	return js.Global().Get("document").
+		Call("querySelector", `[data-role="`+role+`"]`).Truthy()
 }
 
 // FocusField moves focus to the input carrying data-role=role.

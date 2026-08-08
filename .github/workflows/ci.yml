@@ -134,7 +134,19 @@ jobs:
         run: |
           # These packages are concurrent by construction and small enough to
           # run in full under the detector.
-          go test -race -timeout=5m ./internal/jobs/... ./internal/obs/...
+          go test -race -timeout=5m ./internal/jobs/... ./internal/obs/... ./internal/tts/...
+
+          # internal/tts joined this list late and should have been on it from
+          # the start: it hand-rolls a singleflight (a goroutine per synthesis,
+          # a mutex, a map of in-flight calls) so that one article is paid for
+          # once, and it now carries a second mutex-guarded meter for the spend
+          # ceiling. Every one of those is a correctness property about MONEY
+          # that only shows up under concurrency.
+          #
+          # It is also the one package that cannot be checked before it gets
+          # here: -race is unsupported on windows/arm64, which is the machine
+          # this is developed on, so CI is not a second opinion for tts — it is
+          # the only one. The whole package runs in well under a second.
 
           # `internal/store` has 179 tests, most of which are sequential query
           # and FTS5 correctness checks already covered by the ordinary suite.
@@ -390,3 +402,99 @@ jobs:
             echo "about whether A5 stays affordable, not a number to nudge."
             exit 1
           fi
+
+  # The browser suite, on the path that deploys.
+  #
+  # # Why this job did not exist and had to
+  #
+  # CI was four jobs — static, test, wasmtest, wasm-size — and promote.yml gates
+  # on this workflow. So the release gate was thorough about COMPILATION and
+  # blind to whether the application works in a browser: ~30 Playwright specs
+  # covering the one seam nothing else can reach (wasm ↔ gRPC-over-WebSocket ↔
+  # SQLite ↔ FTS5) ran on one developer's Windows box, or not at all.
+  #
+  # The reason it could not run here was mechanical rather than principled: the
+  # harness hardcoded `bin/articleflux.exe` and found listeners with
+  # `netstat -ano` + `taskkill`. e2e/platform.mjs is where those two decisions
+  # now live for both operating systems, which is what made this job possible.
+  #
+  # # Why `continue-on-error` is NOT set, and why the timeout is generous
+  #
+  # A gate that cannot fail is a report. The suite's own config already
+  # distinguishes flakiness from failure — `retries: 1` reports a
+  # fail-then-pass as `flaky` in its own section rather than counting it green —
+  # and the two specs its comment names as reliably red on a loaded box are the
+  # ones to fix rather than to exempt. If this job turns out to be too noisy to
+  # gate on, the honest change is to name the excluded specs the way the `test`
+  # job names its known-red pins, not to make the whole suite advisory.
+  #
+  # 45 minutes because the wasm bundle is ~25 MB, compiles on first load, and
+  # the suite runs `workers: 1` against one server and one database on purpose.
+  e2e:
+    name: e2e (Playwright, real server + real database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/gwc
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # The server and the client, both. `make build` does not produce the wasm
+      # bundle into bin/web — `make wasm` does — and global-setup refuses to
+      # start without it rather than serving a page with no application, which
+      # is the failure that looks like every test timing out on `.shell`.
+      - name: Build the server and the client
+        run: |
+          set -euo pipefail
+          mkdir -p bin/web
+          go build -o bin/articleflux ./cmd/articleflux
+          GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
+          # The JS shim the browser needs to load a Go wasm module. `make wasm`
+          # copies it from GOROOT; doing the same here rather than assuming a
+          # committed copy, because the shim has to match the toolchain that
+          # built the module and a stale one fails with a link error nobody
+          # reads as a version mismatch.
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" bin/web/wasm_exec.js
+          cp -r web/* bin/web/ 2>/dev/null || true
+          ls -la bin/web
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          npm ci || npm install
+          # --with-deps installs the system libraries headless Chromium needs.
+          # Chromium only: the suite's projects are Desktop Chrome and Pixel 7,
+          # both of which are Chromium, and pulling Firefox and WebKit would
+          # triple the download for browsers nothing runs.
+          npx playwright install --with-deps chromium
+
+      - name: Run the suite
+        working-directory: e2e
+        run: npx playwright test
+
+      # The evidence, when it fails. `trace: 'retain-on-failure'` and
+      # `screenshot: 'only-on-failure'` are already set in the config, and
+      # without this step they are written into a container that is then thrown
+      # away — which is how a red e2e job becomes "it failed, look at the log"
+      # for a suite whose whole value is being able to see the page.
+      - name: Upload traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

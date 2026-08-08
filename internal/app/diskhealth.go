@@ -123,11 +123,70 @@ func (a *App) diskReady(ctx context.Context) error {
 	// into the system temp dir, because those are frequently different
 	// filesystems and the one that matters is the one the database is on —
 	// `PrivateTmp=yes` in the unit makes that especially true.
-	if err := probeWrite(dir); err != nil {
+	if err := probeWriteBounded(ctx, dir); err != nil {
 		a.disk.lastErr = fmt.Errorf("the data directory is not writable: %w", err)
 		return a.disk.lastErr
 	}
 	return nil
+}
+
+// diskProbeTimeout bounds the write probe.
+//
+// Comfortably longer than an fsync on a working volume and comfortably shorter
+// than any monitor's patience, which is the window this has to sit in.
+const diskProbeTimeout = 5 * time.Second
+
+// probeWriteBounded runs the probe with a deadline, and reports a stall AS a
+// failure.
+//
+// # Why the unbounded version was wrong in the one case that matters
+//
+// probeWrite ends in f.Sync(), an fsync with no timeout, and diskReady runs it
+// while holding a.disk.mu. On a working disk that is microseconds. On a stalled
+// one — a detached block volume, a saturated device, an NFS mount that stopped
+// answering — it blocks indefinitely, and so does every caller queued behind the
+// mutex.
+//
+// That inverts the endpoint. `/readyz` exists to say "this instance cannot
+// write", and app.go is explicit that it is the ALERTING path: "the thing that
+// notices /readyz is the alerting path, which can wake somebody up." A probe
+// that hangs when the disk hangs makes the endpoint stop answering at precisely
+// the moment its answer is the most informative one. A monitor then sees a
+// timeout, which is a weaker signal than a 503 that names the reason, and every
+// concurrent prober piles up behind the lock.
+//
+// # The goroutine is deliberately allowed to outlive the call
+//
+// An fsync in flight cannot be cancelled — there is no syscall for it. So the
+// helper returns on the deadline and leaves the write to finish or not. That
+// leaks one goroutine and one file descriptor per stalled probe, bounded by
+// diskProbeTTL to roughly one per fifteen seconds, and the temp file is still
+// removed by probeWrite's own defer whenever the filesystem comes back.
+//
+// Answering is worth that. The alternative is answering nothing.
+// probeWriteFn is the probe itself, indirected so a test can stall it.
+//
+// A hung filesystem is not something a test can produce portably, and the
+// behaviour worth pinning is not "fsync can block" — it is that this function
+// answers when the probe does not. Without the seam the only honest test would
+// be a copy of the select below, which pins nothing about the code that ships.
+var probeWriteFn = probeWrite
+
+func probeWriteBounded(ctx context.Context, dir string) error {
+	done := make(chan error, 1) // buffered, so the goroutine never blocks on send
+	go func() { done <- probeWriteFn(dir) }()
+
+	timer := time.NewTimer(diskProbeTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("the write probe did not finish within %s, which is a "+
+			"stalled filesystem rather than a full one", diskProbeTimeout)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // probeWrite creates, writes, syncs and removes a small file.

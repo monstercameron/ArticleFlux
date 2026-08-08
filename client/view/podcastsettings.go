@@ -110,11 +110,17 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 			return html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "blocked")))
 		}),
 		html.Div(html.Props{Class: "set-actions"},
-			html.Button(html.Props{
-				Class: "chip",
-				Raw:   map[string]any{"data-action": actPodcastStart},
-				Aria:  map[string]string{"disabled": strconv.FormatBool(!met)},
-			}, html.Text(tr.T("slides", "needsStart"))),
+			// Genuinely disabled, not merely announced as such.
+			//
+			// This carried `aria-disabled` — the only one in the codebase, and
+			// the sheet has no rule for it — so the button kept its hover lift,
+			// its press, its pointer cursor and its place in the tab order while
+			// silently doing nothing (slideNeedsStart refuses on the same
+			// condition). Assistive tech was told it was unavailable and
+			// everybody else was told it was ready. `Disabled` is the property
+			// smartToggle already uses and the one the browser acts on.
+			html.Button(podcastStartProps(!met),
+				html.Text(tr.T("slides", "needsStart"))),
 		),
 
 		// The broadcast switch is NOT repeated here. It is the second row of the
@@ -134,6 +140,22 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "spendNote"))),
 	)
 	return out
+}
+
+// podcastStartProps is the start button, disabled or not.
+//
+// Split out because html.Props carries Disabled as a plain bool field: setting
+// it inline would mean building the struct twice, and the version that stays in
+// the tree would be the one nobody reads.
+func podcastStartProps(disabled bool) html.Props {
+	props := html.Props{
+		Class: "chip",
+		Raw:   map[string]any{"data-action": actPodcastStart},
+	}
+	if disabled {
+		props.Disabled = true
+	}
+	return props
 }
 
 // podcastNeedRow is one requirement: what it is, why, and its state.

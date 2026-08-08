@@ -1,6 +1,7 @@
 package textvec
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -269,6 +270,62 @@ func TestCosine(t *testing.T) {
 	scaled := Vector{"x": 10, "y": 10}
 	if got := Cosine(a, scaled); math.Abs(got-1) > 1e-9 {
 		t.Errorf("scaled vector = %v, want 1", got)
+	}
+}
+
+// Cosine's documented range is a contract, and [0,1] has to mean [0,1].
+//
+// # Why a vector compared with itself is the hard case
+//
+// For identical vectors the true answer is exactly 1, so it is the only input
+// where a result above 1 is unambiguously wrong rather than a matter of
+// tolerance. And it is where the arithmetic is least likely to cooperate:
+// Cosine computes dot(a,a) — a sum of squares — and Norm(a)*Norm(a), which is
+// sqrt of that same sum, squared. Two different roundings of one quantity, and
+// their quotient lands just off 1 in whichever direction the last bits fall.
+//
+// TestCosine above compares against 1 with a 1e-9 tolerance, which is right for
+// asking "did it find them similar" and blind to this: it passes just as
+// happily at 1.0000000000000018.
+//
+// Nothing downstream is hurt by it TODAY — derive thresholds at
+// SameStoryThreshold, well below 1, and topics only stores the number. The
+// reason to hold the range anyway is what a value above 1 does to the obvious
+// next callers: math.Acos of it is NaN, and so is math.Sqrt(1-c). Neither
+// fails loudly, and this session has already found a NaN making every
+// comparison it touches quietly false.
+//
+// The map iteration order behind it is real but not worth chasing on its own:
+// dot sums over a Go map, so the same call varies by a few ULP between runs.
+// Measured, the spread is under 1e-15 relative, and 60 repeats of
+// AgglomerativeCluster on the same input produced identical clusters, so the
+// nondeterminism does not reach a decision. Clamping the documented range is
+// the part that is cheap and worth doing.
+func TestCosineNeverLeavesItsDocumentedRange(t *testing.T) {
+	mk := func(seed, terms int) Vector {
+		v := Vector{}
+		x := uint64(seed*2654435761 + 1)
+		for i := 0; i < terms; i++ {
+			x = x*6364136223846793005 + 1442695040888963407
+			v[fmt.Sprintf("t%d", int(x>>33)%900)] += float64((x>>20)%1000) / 997.0
+		}
+		return v
+	}
+
+	for s := 0; s < 200; s++ {
+		v := mk(s, 200)
+		// Repeated because the sum is over a map: the order, and so the last
+		// bits, differ between calls on the very same vector.
+		for i := 0; i < 20; i++ {
+			if got := Cosine(v, v); got < 0 || got > 1 {
+				t.Fatalf("Cosine(v,v) = %.20g, outside the documented [0,1]", got)
+			}
+			if got := cosineNorms(v, v, Norm(v), Norm(v)); got < 0 || got > 1 {
+				t.Fatalf("cosineNorms(v,v) = %.20g, outside the documented [0,1] — "+
+					"and it must agree with Cosine, or a clustering result depends "+
+					"on which of the two the caller reached for", got)
+			}
+		}
 	}
 }
 

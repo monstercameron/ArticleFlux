@@ -62,12 +62,18 @@ func TestPodcastStartRefusesUntilTheRequirementsAreMet(t *testing.T) {
 	if !strings.Contains(blocked, `data-action="`+actPodcastStart+`"`) {
 		t.Fatal("the start control is missing entirely")
 	}
-	if !strings.Contains(blocked, `aria-disabled="true"`) {
+	// `disabled`, not `aria-disabled`, and the difference is why this assertion
+	// changed. aria-disabled is a description: it tells assistive tech the
+	// control is unavailable and tells the browser nothing, so the button kept
+	// its hover, its press and its place in the tab order and silently did
+	// nothing when clicked. Only the real attribute makes the refusal true for
+	// every reader rather than announced to one of them.
+	if !strings.Contains(blocked, `disabled`) {
 		t.Error("the start control is pressable with requirements unmet")
 	}
 
 	ready := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true), podcast: true})
-	if strings.Contains(ready, `aria-disabled="true"`) {
+	if strings.Contains(ready, `disabled`) {
 		t.Error("the start control still refuses with everything on")
 	}
 	if strings.Contains(ready, "Something above is still off") {

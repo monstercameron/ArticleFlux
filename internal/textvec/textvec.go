@@ -449,7 +449,38 @@ func Cosine(a, b Vector) float64 {
 	if d == 0 {
 		return 0
 	}
-	return d / (Norm(a) * Norm(b))
+	return clampSimilarity(d / (Norm(a) * Norm(b)))
+}
+
+// clampSimilarity holds the documented [0,1] range against rounding.
+//
+// The quotient can land just outside it, and a vector compared with itself is
+// where that is easiest to see: the numerator is a sum of squares and the
+// denominator is the square root of that same sum, squared. Two roundings of
+// one quantity, so their ratio is 1 only up to the last bits — measured here at
+// up to 1.0000000000000018.
+//
+// Nothing downstream is hurt by the excess today: derive thresholds well below
+// 1 and topics only stores the value. It is clamped because the range is
+// documented, and because the arithmetic a similarity invites is exactly the
+// arithmetic that breaks on it — math.Acos of anything above 1 is NaN, so is
+// math.Sqrt of 1 minus it, and a NaN makes every comparison it reaches false
+// without raising anything.
+//
+// Not a fix for the underlying wobble, and not meant as one. dot sums over a
+// Go map, so its result varies by a few ULP with iteration order; the spread
+// measures under 1e-15 relative and 60 repeats of AgglomerativeCluster on one
+// input give identical clusters, so it does not reach a decision. Making it
+// bit-exact would mean ordering the terms on the hot path this package's own
+// comments exist to keep cheap.
+func clampSimilarity(c float64) float64 {
+	if c > 1 {
+		return 1
+	}
+	if c < 0 {
+		return 0
+	}
+	return c
 }
 
 // cosineNorms is Cosine with the two norms already known.
@@ -470,7 +501,7 @@ func cosineNorms(a, b Vector, na, nb float64) float64 {
 	if d == 0 {
 		return 0
 	}
-	return d / (na * nb)
+	return clampSimilarity(d / (na * nb))
 }
 
 // dot is the inner product over the terms the two vectors share.

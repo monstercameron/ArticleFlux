@@ -636,19 +636,34 @@ func recoverCard(p recoverCardProps) ui.Node {
 				}),
 			),
 
-			html.Div(html.Props{
-				Class: errClass(p.errMsg),
-				Role:  "alert",
-				Aria:  map[string]string{"live": "polite"},
-			}, html.Text(p.errMsg)),
+			// One reserved band holding two slots, stacked on top of each other
+			// rather than one after the other.
+			//
+			// Both reserve their height so the button does not jump when a message
+			// arrives, which is right — but this screen has two of them and only
+			// ever fills one: the notice is what SUCCESS says and the error is what
+			// failure says. Stacked in sequence they reserved 68px, so the ordinary
+			// state of the recovery card was a field, a hand's width of nothing, and
+			// then the button. It reads as a rendering fault on the one screen
+			// somebody reaches while already locked out.
+			//
+			// Both stay in the document, both keep their live region, and the band
+			// is exactly one message tall whichever one speaks. See .login-slots.
+			html.Div(html.Props{Class: "login-slots"},
+				html.Div(html.Props{
+					Class: errClass(p.errMsg),
+					Role:  "alert",
+					Aria:  map[string]string{"live": "polite"},
+				}, html.Text(p.errMsg)),
 
-			// Separate from the error slot and announced politely: this is good
-			// news with a number in it, and a screen reader that skipped it would
-			// drop the one prompt telling somebody to print a new sheet.
-			html.Div(html.Props{
-				Class: noticeClass(p.notice),
-				Aria:  map[string]string{"live": "polite"},
-			}, html.Text(p.notice)),
+				// Separate from the error slot and announced politely: this is good
+				// news with a number in it, and a screen reader that skipped it would
+				// drop the one prompt telling somebody to print a new sheet.
+				html.Div(html.Props{
+					Class: noticeClass(p.notice),
+					Aria:  map[string]string{"live": "polite"},
+				}, html.Text(p.notice)),
+			),
 
 			html.Button(html.Props{
 				Class:    "btn login-submit",

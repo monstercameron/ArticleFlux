@@ -461,11 +461,50 @@ func motionWarm(r func(string, string) css.Rule) {
 		r("transition", "background-color "+warm+", border-color "+warm+
 			", color "+warm+", transform "+move),
 	)
-	css.Global(".chip:hover:not(.chip-static), .btn:hover", r("transform", "translateY(-1px)"))
-	css.Global(".chip:active:not(.chip-static), .btn:active",
+	// :not(:disabled) on both, because CSS still applies :hover and :active to a
+	// disabled button. Without it an unavailable chip lifts under the pointer and
+	// presses when clicked — it behaves like a live control and does nothing,
+	// which is the exact impression a disabled state exists to prevent. It was
+	// visible on the Classification tab's two "not wired" switches before
+	// FluxCast's start button made it matter.
+	css.Global(".chip:hover:not(.chip-static):not(:disabled), .btn:hover:not(:disabled)",
+		r("transform", "translateY(-1px)"))
+	css.Global(".chip:active:not(.chip-static):not(:disabled), .btn:active:not(:disabled)",
 		r("transform", "translateY(0) scale(.97)"),
 		// A press must feel immediate or it feels broken; the release is what
 		// gets the easing.
+		r("transition-duration", "0s"),
+	)
+
+	// The release ring, on icon-only chips (Cam, 2026-08-08: asked for the list
+	// head's three to be "a little cooler").
+	//
+	// A ring of accent that is thrown off the button when it is LET GO. The
+	// mechanism is the interesting part and it is entirely in the resting state:
+	// the ring rests large and invisible, and `:active` snaps it tight and
+	// visible with no transition at all — so it is never seen arriving. Removing
+	// `:active` is what starts the only transition anyone watches, which means
+	// the whole gesture plays on the release and none of it fights the press.
+	//
+	// Ink and light rather than the bouncing-card repertoire this file rules
+	// out: it is one hairline of the reader's own accent expanding and going
+	// out, in a screen already built from hairlines. It reads as a pulse of
+	// light off the control, not as a material ripple under it.
+	//
+	// Only these get it. The three open something — Discover, Settings, the
+	// shortcut sheet — so a mark travelling OUTWARD is the shape of what the
+	// press actually does, and it would be a lie on a chip that toggles a filter
+	// in place.
+	css.Global(".chip-icon::after",
+		r("content", `""`), r("position", "absolute"), r("inset", "-1px"),
+		r("border-radius", "50%"), r("border", "1px solid var(--cc)"),
+		r("opacity", "0"), r("transform", "scale(1.9)"),
+		// It must never eat the press it decorates.
+		r("pointer-events", "none"),
+		r("transition", "transform "+slow+", opacity "+slow),
+	)
+	css.Global(".chip-icon:active::after",
+		r("opacity", ".55"), r("transform", "scale(.85)"),
 		r("transition-duration", "0s"),
 	)
 

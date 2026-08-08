@@ -455,6 +455,55 @@ func rail(r func(string, string) css.Rule) {
 		r("transition", "transform var(--t2) var(--e-mark), color var(--t1) var(--e-out)"),
 	)
 	css.Global(".rail-band[data-open='true'] .rail-chev", r("transform", "rotate(90deg)"))
+	// The section fold itself (Cam, 2026-08-08: the rail's sections had no
+	// motion at all — the caret turned and everything below it jumped).
+	//
+	// A grid whose single row goes 0fr → 1fr, because that interpolates to the
+	// CONTENT's height and a rail section's height is genuinely unknown: five
+	// stream rows or a hundred and fifty feeds. The discover card's max-height
+	// ceiling cannot be reused here for that reason — see view.railFold.
+	//
+	// Keyframes rather than a transition, and that is not a style choice: a
+	// transition needs its start value to have been rendered in a previous
+	// frame, and a section that was closed was not in the document at all. An
+	// animation runs on the frame the element appears.
+	css.Global(".rail-fold",
+		r("display", "grid"), r("grid-template-rows", "1fr"),
+	)
+	// The rows have to be ONE grid item for the row track to size them; a run of
+	// siblings would each get a track of their own and only the first would fold.
+	css.Global(".rail-fold-in", r("min-height", "0"), r("overflow", "hidden"))
+
+	foldOpen := css.Keyframes("rail-fold-open",
+		css.At("0%", r("grid-template-rows", "0fr"), r("opacity", "0")),
+		// Ahead of the height, so the rows are legible for most of the movement
+		// rather than arriving grey at the end of it.
+		css.At("60%", r("opacity", "1")),
+		css.At("100%", r("grid-template-rows", "1fr"), r("opacity", "1")),
+	)
+	css.Global(".rail-fold",
+		foldOpen,
+		r("animation-duration", "var(--t2)"),
+		r("animation-timing-function", "var(--e-out)"),
+	)
+	// Leaving. The element is held in the tree for railFoldAnimMS and then
+	// removed, so this has to hold its end state for the gap between the two —
+	// without `forwards` the section would spring back to full height for one
+	// frame before it disappeared, which is the exact flicker this replaces.
+	foldShut := css.Keyframes("rail-fold-shut",
+		css.At("0%", r("grid-template-rows", "1fr"), r("opacity", "1")),
+		css.At("100%", r("grid-template-rows", "0fr"), r("opacity", "0")),
+	)
+	css.Global(`.rail-fold[data-shut="true"]`,
+		foldShut,
+		r("animation-duration", "var(--t2)"),
+		r("animation-timing-function", "var(--e-io)"),
+		r("animation-fill-mode", "forwards"),
+		// A row that is 4px tall and still moving is not a target anybody meant
+		// to hit.
+		r("pointer-events", "none"),
+	)
+
 	// What a folded section is hiding. Set like a feed count, because that is what
 	// it is — the number of rows behind the caret.
 	css.Global(".rail-band-count",
@@ -566,9 +615,57 @@ func list(r func(string, string) css.Rule) {
 		r("background", "var(--cream)"), r("color", "var(--bg)"),
 		r("border-color", "var(--cream)"), r("font-weight", "500"),
 	)
+	// A disabled chip has to LOOK unavailable, not merely be announced as it.
+	//
+	// There was no rule for this at all, which was survivable while the only
+	// disabled chips were the Classification tab's two "not wired" switches and
+	// became a bug the moment FluxCast's start button used the state to mean
+	// "your server is missing something" — see view.podcastStartProps. `.5` is
+	// the value discover.go's buttons already fade to, so this is the existing
+	// treatment reaching the control vocabulary rather than a new one.
+	css.Global(".chip:disabled", r("opacity", ".5"), r("cursor", "default"))
 	css.Global(".chip-static", r("cursor", "default"))
 	css.Global(".chip-static:hover", r("color", "var(--soft)"), r("border-color", "var(--line)"))
 	css.Global(".chip-mini", r("padding", "2px 9px"), r("font-size", "11px"))
+
+	// A chip carrying a glyph and NOTHING else (Cam, 2026-08-08: the list head's
+	// three were "not properly circular, too small").
+	//
+	// Both faults came from wearing a label chip's clothes. `.chip`'s padding is
+	// 5px against 13px because it is sized around a WORD, so an icon in it comes
+	// out 35x23 — an ellipse — and `.gl` carries a .45em right margin that exists
+	// to separate a glyph from the text after it, so with no text the icon sat
+	// 2.3px left of the centre of a button that already was not round. A square
+	// box with the glyph centred in it is the whole fix for the shape; the size
+	// is a separate decision and 32px is the smallest a lone icon target should
+	// be on a pointer device.
+	//
+	// It stays a `.chip` for its border, its hover and its pressed state — this
+	// is a modifier, not a second button vocabulary.
+	// Motion is NOT set here. `.chip` is already the app's pressable object and
+	// motionWarm owns what it does under a pointer — the 1px lift, the press,
+	// the timings. The one gesture this variant adds of its own is the release
+	// ring, and that lives in motion.go with the rest of the vocabulary rather
+	// than here.
+	//
+	// position: relative is for that ring, which is the only reason geometry and
+	// motion touch at all.
+	css.Global(".chip-icon",
+		r("width", "32px"), r("height", "32px"), r("padding", "0"),
+		r("display", "inline-grid"), r("place-items", "center"),
+		r("border-radius", "50%"), r("position", "relative"),
+		r("font-size", "15px"),
+	)
+	// Centred, full size, and no longer dimmed to .72: at this size the glyph IS
+	// the button, where in a labelled chip it is an annotation on the word.
+	css.Global(".chip-icon .gl",
+		r("margin-right", "0"), r("width", "auto"),
+		r("font-size", "1em"), r("opacity", ".78"),
+	)
+	// The fill is this variant's own: `.chip:hover` brightens the border and the
+	// text, which is enough behind a word and not enough behind a 15px glyph.
+	css.Global(".chip-icon:hover", r("background", "var(--sur)"))
+	css.Global(".chip-icon:hover .gl", r("opacity", "1"))
 
 	// Fixed height because the list is virtualised, and 96px is the mockup's
 	// value. view.ItemRowHeight must match this exactly or rows overlap and the
@@ -1705,9 +1802,30 @@ func helpCSS(r func(string, string) css.Rule) {
 
 	// Two columns on a wide sheet, one on a phone. Grouped by WHERE a key works,
 	// so the reader can find the group they are standing in.
+	//
+	// Multi-column rather than a grid, and the difference is the whole sheet
+	// fitting on a laptop. Grid places groups in fixed cells and makes every cell
+	// in a row as tall as the tallest one in it, so a two-item group beside an
+	// eight-item group left a 150px hole under it — twice — and pushed the last
+	// group, ON AN ARTICLE, entirely below a 900px window. The sheet scrolls, so
+	// nothing was unreachable; it was worse than that. The reader who presses `?`
+	// to find out what `l` does sees a sheet that looks complete, with white space
+	// to spare, and no reason to scroll. A32 says this sheet lists every key, and
+	// a key nobody scrolls to is not listed.
+	//
+	// `columns` balances the flow instead: the groups are poured into two columns
+	// of roughly equal height and the holes close. Ordering still means something
+	// (the browser fills the first column before the second), so the groups stay
+	// in the order they were written.
 	css.Global(".help-cols",
-		r("display", "grid"), r("gap", "26px 34px"),
-		r("grid-template-columns", "repeat(auto-fit, minmax(260px, 1fr))"),
+		r("columns", "2"), r("column-gap", "34px"),
+	)
+	// A group is never split across the fold between two columns: half a table
+	// under one heading, with the rest under no heading at all, is unreadable in
+	// exactly the way a grouped sheet exists to avoid.
+	css.Global(".help-group",
+		r("break-inside", "avoid"), r("-webkit-column-break-inside", "avoid"),
+		r("margin-bottom", "26px"),
 	)
 	css.Global(".help-title",
 		r("font-size", "10px"), r("letter-spacing", ".14em"),
@@ -1737,6 +1855,9 @@ func helpCSS(r func(string, string) css.Rule) {
 		r("box-shadow", "inset 0 0 0 1px var(--line), 0 1px 0 var(--line)"),
 	)
 	css.Global(".help", css.Media(css.MaxW(900), r("padding", "20px 18px 24px"))...)
+	// One column on a phone: 260px of key table in a 190px column is not two
+	// columns, it is two unreadable ones.
+	css.Global(".help-cols", css.Media(css.MaxW(760), r("columns", "1"))...)
 }
 
 // feedSettingsCSS is the gear and its panel.
@@ -2559,15 +2680,33 @@ func mobile(r func(string, string) css.Rule) {
 	// A three-column grid, not a list of paragraphs: time, level and message line
 	// up so the eye can run down the level column and stop at the one thing that
 	// is not INFO. That is the entire reason this screen exists.
+	// The log is virtualised (view.settingsActivity), which makes this element
+	// the scroll container rather than a run of rows in the page: the virtualiser
+	// needs a viewport to measure and a scroll offset to read, and neither exists
+	// if the rows simply grow the settings pane.
+	//
+	// It also stops the tab being a screen you have to scroll past. The level
+	// chips and the error counts stay put above a list that scrolls under them,
+	// which is the arrangement anyone reading a log actually wants.
+	//
+	// `overscroll-behavior` so reaching the bottom of the log does not then start
+	// scrolling the settings pane behind it.
 	css.Global(".log-list",
 		r("margin-top", "14px"), r("border-top", "1px solid var(--hair)"),
+		r("height", "min(58vh, 620px)"), r("overflow-y", "auto"),
+		r("overscroll-behavior", "contain"),
 	)
+	// Fixed height, and it must equal view.LogRowHeight — see that constant.
+	// box-sizing because the height is stated WITH the padding and the border in
+	// it, which is what the virtualiser's arithmetic assumes.
 	css.Global(".log-row",
 		r("display", "grid"),
 		r("grid-template-columns", "4.5rem 3.6rem 1fr"),
-		r("gap", "10px"), r("align-items", "baseline"),
+		r("gap", "10px"), r("align-content", "center"),
 		r("padding", "7px 0"), r("border-bottom", "1px solid var(--hair)"),
 		r("font-size", "12.5px"),
+		r("height", LogRowHeight), r("box-sizing", "border-box"),
+		r("overflow", "hidden"),
 	)
 	css.Global(".log-time",
 		r("color", "var(--mute)"), r("font-variant-numeric", "tabular-nums"),
@@ -2584,11 +2723,21 @@ func mobile(r func(string, string) css.Rule) {
 	css.Global(".log-row[data-level='error']",
 		r("background", "color-mix(in srgb, var(--neg) 8%, transparent)"),
 	)
-	css.Global(".log-msg", r("min-width", "0"), r("overflow-wrap", "anywhere"))
-	css.Global(".log-text", r("color", "var(--soft)"))
+	css.Global(".log-msg", r("min-width", "0"))
+	// One line each, ellipsised, because the row is a fixed height now. It used
+	// to wrap (`overflow-wrap: anywhere`), which is what made a row's height a
+	// function of its content and a virtual list impossible. The whole line is
+	// on the row's `title` — see the Render in view.settingsActivity.
+	css.Global(".log-text",
+		r("display", "block"), r("color", "var(--soft)"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
+	)
 	css.Global(".log-attrs",
 		r("display", "block"), r("margin-top", "2px"),
 		r("color", "var(--mute)"), r("font-size", "11.5px"),
+		r("white-space", "nowrap"), r("overflow", "hidden"),
+		r("text-overflow", "ellipsis"),
 	)
 	css.Global(".chip.log-warn", r("color", "var(--cc)"), r("border-color", "var(--cc)"))
 	css.Global(".chip.log-error", r("color", "var(--neg)"), r("border-color", "var(--neg)"))
@@ -2696,8 +2845,18 @@ func responsive(r func(string, string) css.Rule) {
 	css.Global(".list-head", css.Media(css.MaxW(900), r("padding", "20px 16px 14px"))...)
 	css.Global(".item-row", css.Media(css.MaxW(900), r("padding", "16px 16px"))...)
 
-	// The back buttons exist only where one pane can hide another.
+	// The back buttons exist only where one pane can hide another — and the two
+	// of them stop being needed at different widths, which is why there are two
+	// rules rather than one.
+	//
+	// 1221px is where the ARTICLE stops covering the list: below it they share the
+	// third column and slide between positions, so the article's "back to the
+	// list" is a real route.
 	css.Global(".back", css.Media(css.MinW(1221), r("display", "none"))...)
+	// 901px is where the RAIL stops being on screen. Above that the rail column is
+	// laid out (see the .panes rules at the top of this function), so the list's
+	// "‹ Feeds" would point at a sidebar the reader is already looking at.
+	css.Global(".back-rail", css.Media(css.MinW(901), r("display", "none"))...)
 
 	// Reduced motion is NOT handled here any more.
 	//
@@ -2844,6 +3003,15 @@ func loginCSS(r func(string, string) css.Rule) {
 		r("line-height", "1.45"),
 	)
 	css.Global(".login-notice.is-empty", r("visibility", "hidden"))
+	// The recovery screen's two slots share one cell, so the band is one message
+	// tall rather than two — see the note where it is rendered. The margins move
+	// from the slots to the band, or the stack would carry both of theirs.
+	css.Global(".login-slots",
+		r("display", "grid"), r("margin", "2px 0 14px"),
+	)
+	css.Global(".login-slots > *",
+		r("grid-area", "1 / 1"), r("margin", "0"),
+	)
 	// A text button, not a second primary action. It is a <button> because it
 	// changes a mode and navigates nowhere — an <a href="#"> would break
 	// middle-click and the back button — but it must not compete with the submit

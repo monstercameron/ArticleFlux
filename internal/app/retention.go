@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -91,29 +92,90 @@ func (a *App) retentionDays(ctx context.Context) int {
 	return a.windowDays(ctx, retentionKey, retention.DefaultItemDays)
 }
 
-// windowDays reads one retention window, falling back to its stated default.
+// windowDays reads one retention window.
 //
-// A value that cannot be parsed is treated as the default rather than as zero
-// by accident. For the item window those are the same number, and that is luck
-// rather than design; for the two security windows they are NOT — the defaults
-// there delete — so this is written out once: a corrupt setting must never be
-// read as "delete on some other schedule", in either direction.
+// # Absence means the default; FAILURE means do not act
+//
+// Those are two different things and this used to treat them as one. Every
+// error path returned `def`, including a settings read that simply did not
+// work — a locked database, a cancelled context, a closed pool. For the item
+// window that is harmless because its default is zero. For the two security
+// windows the defaults DELETE, ninety days and a year, and the value the read
+// failed to return may well have been the zero an operator set on purpose.
+//
+// So a transient database error could delete an audit log somebody had
+// explicitly chosen to keep forever, and nothing about the next successful read
+// would bring it back. This function's own comment claimed to prevent exactly
+// that — "a corrupt setting must never be read as 'delete on some other
+// schedule', in either direction" — and then did it, because it guarded the
+// PARSE failure and not the READ failure.
+//
+// The rule, written out once:
+//
+//   - No row: the default IS the policy. That is what a default means, and it
+//     is the common case on an instance nobody configured.
+//   - Read failed, or the value will not parse: the policy is UNKNOWN. Answer
+//     zero, which every caller treats as keep-everything and skips the sweep
+//     on. The sweep runs again in a few minutes; the deletion would not come
+//     back.
+//
+// Zero rather than an error return because every caller already gates on
+// `days > 0`, so the safe answer is one they all handle and none can forget.
 func (a *App) windowDays(ctx context.Context, key store.SystemKey, def int) int {
 	if a.settings == nil {
 		return def
 	}
 	raw, err := a.settings.SystemValue(ctx, key)
-	if err != nil || raw == "" {
-		// No row at all is the common case and the correct one: an instance
-		// nobody configured gets the stated default.
+	switch {
+	case errors.Is(err, store.ErrNoSetting):
+		// Nobody has configured this one. The stated default applies.
+		return def
+	case err != nil:
+		a.log.WarnContext(ctx, "a retention window could not be read; skipping this sweep "+
+			"rather than deleting on a guess",
+			"key", key, "default_not_applied", def, "err", err)
+		return 0
+	case raw == "":
+		// A row that exists and holds nothing. Same as no row: there is no
+		// policy here to misread.
 		return def
 	}
 	raw = strings.Trim(raw, `"`)
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
-		a.log.WarnContext(ctx, "a retention window is not a number; using the default",
-			"key", key, "value", raw, "default", def)
-		return def
+		// A row EXISTS, so somebody set this — which means the default is
+		// specifically not their intent, and applying it would delete on a
+		// schedule nobody chose.
+		a.log.WarnContext(ctx, "a retention window is not a number; skipping this sweep "+
+			"rather than deleting on a guess",
+			"key", key, "value", raw, "default_not_applied", def)
+		return 0
+	}
+	if n > retention.MaxItemDays {
+		// Out of range is refused HERE rather than only downstream, because the
+		// three things that consume this number did not agree about it.
+		//
+		// `SweepAttempts` and `SweepAudit` both reject a window past the ceiling
+		// and return an error. The on-disk log prune in sweepSecurity does not:
+		// it takes `days` straight into `time.Duration(days) * 24 * time.Hour`,
+		// inside the same `if days > 0` block, with nothing checking it.
+		//
+		// Past 106,751 days that multiplication OVERFLOWS int64 and comes out
+		// NEGATIVE, so `Add(-d)` moves the cutoff into the FUTURE — 200,000 days
+		// gives a cutoff in 2063 — and `pruneSpillFile` drops every line older
+		// than it, which is all of them. An absurdly large window means "keep
+		// more"; it was deleting the entire on-disk log copy, while the database
+		// sweep standing next to it safely refused the very same number.
+		//
+		// MaxItemDays exists as a typo limit, and this is the shape a typo takes
+		// here. Refused rather than clamped: clamping 200,000 to 3,650 would
+		// start deleting ten-year-old rows on behalf of somebody who asked to
+		// keep five centuries of them, which is the same mistake in the other
+		// direction. An unusable window is not a policy, so nothing is swept.
+		a.log.WarnContext(ctx, "a retention window is beyond the ceiling; skipping this "+
+			"sweep rather than deleting on a guess",
+			"key", key, "value", n, "ceiling", retention.MaxItemDays)
+		return 0
 	}
 	return n
 }

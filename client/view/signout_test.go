@@ -30,14 +30,23 @@ func accountHTML(t *testing.T, s sessionProps) string {
 	})
 }
 
-// TestAccountOffersSignOutWhenThereIsASession is the affordance itself: a
-// browser holding a credential gets a control that ends it, on the tab where
-// identity already lives.
-func TestAccountOffersSignOutWhenThereIsASession(t *testing.T) {
-	out := accountHTML(t, sessionProps{present: true})
+// TestAccountAlwaysOffersSignOut is the affordance itself, and it replaces a
+// pair of tests that pinned the opposite condition.
+//
+// The control used to be rendered only when this browser held a credential, on
+// the argument that a `serve -dev` instance issues none and a button clearing
+// nothing is worse than no button. The dev servers are the ones anybody ever
+// looks at, so the affordance was missing from every screen it was hunted for
+// on, and "ArticleFlux cannot sign you out" was the reasonable conclusion to
+// draw. It is unconditional now (Cam's call, 2026-08-08): a dev press is a
+// reload back into the reader, which is a far smaller harm than a logout nobody
+// can find. So there is no shape of this panel that does not offer it.
+func TestAccountAlwaysOffersSignOut(t *testing.T) {
+	out := accountHTML(t, sessionProps{})
 
 	if !strings.Contains(out, `data-action="`+actSignOut+`"`) {
-		t.Fatalf("the Account tab has no sign-out control for a signed-in browser:\n%s", out)
+		t.Fatalf("the Account tab hides the sign-out control again; on a dev server "+
+			"or in the demo that is every screen anyone looks at:\n%s", out)
 	}
 	if !strings.Contains(out, "Sign out") {
 		t.Errorf("the sign-out control is not labelled:\n%s", out)
@@ -50,24 +59,6 @@ func TestAccountOffersSignOutWhenThereIsASession(t *testing.T) {
 	}
 }
 
-// TestSignOutIsAbsentWithoutASession guards the dev-server and demo shapes.
-//
-// `serve -dev` hands the local account to whoever reaches the port and issues no
-// credential; the demo build has no accounts at all. A sign-out button there
-// would clear nothing, reload, and land the reader straight back in the reader —
-// a control that visibly does nothing, which teaches people not to trust the
-// ones that do.
-func TestSignOutIsAbsentWithoutASession(t *testing.T) {
-	out := accountHTML(t, sessionProps{present: false})
-
-	for _, action := range []string{actSignOut, actSignOutDo, actSignOutBack} {
-		if strings.Contains(out, `data-action="`+action+`"`) {
-			t.Errorf("a browser with no credential is offered %q, which would clear "+
-				"nothing and reload back into the reader:\n%s", action, out)
-		}
-	}
-}
-
 // TestArmingChangesWhatTheNextPressDoes pins the two-press shape.
 //
 // The failure this defends against is subtle and would ship silently: an armed
@@ -75,13 +66,13 @@ func TestSignOutIsAbsentWithoutASession(t *testing.T) {
 // times it is pressed. So the assertion is on the action attribute, not on the
 // label.
 func TestArmingChangesWhatTheNextPressDoes(t *testing.T) {
-	idle := accountHTML(t, sessionProps{present: true})
+	idle := accountHTML(t, sessionProps{})
 	if strings.Contains(idle, `data-action="`+actSignOutDo+`"`) {
 		t.Fatalf("the un-armed control already carries the confirming action, so one "+
 			"press ends the session with no confirmation:\n%s", idle)
 	}
 
-	armed := accountHTML(t, sessionProps{present: true, armed: true})
+	armed := accountHTML(t, sessionProps{armed: true})
 	if !strings.Contains(armed, `data-action="`+actSignOutDo+`"`) {
 		t.Fatalf("the armed control does not carry the confirming action — pressing it "+
 			"again would only re-arm it:\n%s", armed)
@@ -107,7 +98,7 @@ func TestArmingChangesWhatTheNextPressDoes(t *testing.T) {
 // whole app uses for "go". The armed fill has to come from --neg, which
 // `.fs-danger[data-armed="true"]` is, and which no accent can move.
 func TestArmedSignOutIsPaintedByNegNotTheAccent(t *testing.T) {
-	armed := accountHTML(t, sessionProps{present: true, armed: true})
+	armed := accountHTML(t, sessionProps{armed: true})
 	block := buttonBlock(t, armed, `data-action="`+actSignOutDo+`"`)
 
 	if !strings.Contains(block, `data-armed="true"`) {
@@ -120,7 +111,7 @@ func TestArmedSignOutIsPaintedByNegNotTheAccent(t *testing.T) {
 
 	// And the resting control does not wear the destructive colour at all: it is
 	// an ordinary chip until somebody commits to it once.
-	idle := accountHTML(t, sessionProps{present: true})
+	idle := accountHTML(t, sessionProps{})
 	idleBlock := buttonBlock(t, idle, `data-action="`+actSignOut+`"`)
 	if strings.Contains(idleBlock, "fs-danger") {
 		t.Errorf("the resting sign-out is already painted destructive, making the only "+
@@ -132,7 +123,7 @@ func TestArmedSignOutIsPaintedByNegNotTheAccent(t *testing.T) {
 // hesitation. Nobody stalling over this button is worried about a token; they are
 // worried about four years of saved reading.
 func TestArmedSignOutPromisesTheReadingIsSafe(t *testing.T) {
-	out := accountHTML(t, sessionProps{present: true, armed: true})
+	out := accountHTML(t, sessionProps{armed: true})
 	for _, want := range []string{"feeds", "notes", "stay on the server"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the confirmation does not say what survives signing out (missing %q):\n%s",
@@ -150,7 +141,7 @@ func TestArmedSignOutPromisesTheReadingIsSafe(t *testing.T) {
 // walking away from a shared machine would be entitled to believe the session
 // was revoked. The screen has to say so, and then let them leave.
 func TestStrandedSignOutTellsTheTruthAndOffersTheDoor(t *testing.T) {
-	out := accountHTML(t, sessionProps{present: true, stranded: true})
+	out := accountHTML(t, sessionProps{stranded: true})
 
 	if !strings.Contains(out, "The server did not answer") {
 		t.Errorf("a logout the server never confirmed is reported as if it had been:\n%s", out)
@@ -174,7 +165,7 @@ func TestStrandedSignOutTellsTheTruthAndOffersTheDoor(t *testing.T) {
 // a second press, and the second Logout carries a token the first one already
 // revoked — which the interceptor reads as a rejected credential.
 func TestSignOutInFlightCannotBeRearmed(t *testing.T) {
-	out := accountHTML(t, sessionProps{present: true, armed: true, busy: true})
+	out := accountHTML(t, sessionProps{armed: true, busy: true})
 
 	if strings.Contains(out, `data-action="`+actSignOut+`"`) {
 		t.Errorf("a sign-out in flight offers the arming action again:\n%s", out)

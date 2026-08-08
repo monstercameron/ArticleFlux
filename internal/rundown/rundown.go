@@ -68,9 +68,16 @@ type Rundown struct {
 	// can honestly fall short when the candidate pool is thin (see
 	// TestShortPoolIsHonestNotPadded).
 	Target time.Duration
-	// Segments are in final broadcast order: by segment weight (the fixed
-	// taxonomy order lexicon.Categories() ships in), then by score within a
-	// segment.
+	// Segments are in final broadcast order: by the score of each segment's
+	// strongest story, descending, with the unsorted "" segment always last.
+	// Stories within a segment are score descending too. See buildSegments.
+	//
+	// This used to read "by segment weight (the fixed taxonomy order
+	// lexicon.Categories() ships in)", which is the ordering TODO 11.27
+	// replaced and the reasoning it replaced it with: a programme that opened
+	// on whichever category the taxonomy happens to list first is indefensible
+	// on a programme whose whole claim is that it decided what mattered. The
+	// function that computed that weight is gone; this comment outlived it.
 	Segments []Segment
 }
 
@@ -240,25 +247,47 @@ func RoleWords(r Role) int {
 // never asked to."
 const WordsPerMinute = 150.0
 
-// wordsToDuration is 11.3's arithmetic, the one place it lives. rate <= 0 is
-// treated as 1 (normal speed) rather than producing a divide-by-zero or a
-// negative duration — a caller passing an unset tts.rate should get the
-// honest default, not a crash.
-func wordsToDuration(words int, rate float64) time.Duration {
-	if rate <= 0 {
-		rate = 1
+// SafeRate makes a tts.rate usable, and is the one place that decision is
+// made. A caller passing an unset or unusable rate should get the honest
+// default of 1 (normal speed), not a divide-by-zero, a negative duration or a
+// silently meaningless answer.
+//
+// The guard is `!(rate > 0)` rather than the more obvious `rate <= 0` because
+// NaN satisfies neither: every comparison against NaN is false, so `rate <= 0`
+// waves it through. NaN does arrive here — `-rate` is parsed by
+// strconv.ParseFloat, which accepts the literals "NaN", "Inf" and "-Inf" — and
+// what it does downstream is worth stating, because neither outcome is loud:
+//
+//   - NaN makes every `used + words <= budget` test in fillToBudget false, so
+//     the fill admits only the one story that bypasses the budget by design.
+//     A twenty-minute request answered with a single story and no error.
+//   - +Inf makes none of them false, so the entire candidate pool is admitted
+//     and the target stops meaning anything at all.
+//
+// It also removes a real piece of undefined behaviour: `time.Duration(NaN *
+// float64(time.Second))` is a float-to-integer conversion of a NaN, which the
+// Go spec leaves implementation-specific rather than defining.
+//
+// Exported because cmd/articleflux prints per-story durations and has to reach
+// the same verdict this package does; two copies of this guard would be two
+// answers to "what does rate 0 mean".
+func SafeRate(rate float64) float64 {
+	if !(rate > 0) || math.IsInf(rate, 1) {
+		return 1
 	}
-	seconds := float64(words) / (WordsPerMinute * rate) * 60
+	return rate
+}
+
+// wordsToDuration is 11.3's arithmetic, the one place it lives.
+func wordsToDuration(words int, rate float64) time.Duration {
+	seconds := float64(words) / (WordsPerMinute * SafeRate(rate)) * 60
 	return time.Duration(seconds * float64(time.Second))
 }
 
 // wordBudget is the inverse: how many words fit in target at rate. This is
 // what Build fills toward.
 func wordBudget(target time.Duration, rate float64) float64 {
-	if rate <= 0 {
-		rate = 1
-	}
-	return target.Minutes() * WordsPerMinute * rate
+	return target.Minutes() * WordsPerMinute * SafeRate(rate)
 }
 
 // ---------------------------------------------------------------------------
@@ -362,9 +391,7 @@ type Options struct {
 }
 
 func (o Options) normalized() Options {
-	if o.Rate <= 0 {
-		o.Rate = 1
-	}
+	o.Rate = SafeRate(o.Rate)
 	switch o.Style {
 	case StyleFocused, StyleBalanced, StyleExplore:
 	default:
@@ -415,18 +442,6 @@ func themeFor(c Candidate) string {
 	return slug
 }
 
-// segmentWeight is higher for a segment that should air earlier.
-// Recognised slugs get N-index (so index 0, the first row in lexicon's
-// table order, gets the highest weight); the unsorted "" segment gets 0,
-// below every recognised slug, so a rundown never opens on the stories
-// nothing could place.
-func segmentWeight(theme string) int {
-	if idx, ok := categoryOrder[theme]; ok {
-		return len(categoryOrder) - idx
-	}
-	return 0
-}
-
 // cluster is one deduplicated story: the highest-scoring candidate sharing
 // a ClusterID, plus every other Source seen under that same ClusterID.
 type cluster struct {
@@ -446,7 +461,11 @@ type cluster struct {
 // produced), just a deterministic tiebreak among duplicates that already
 // agree they are the same story. Ties broken by earliest Published, then by
 // ItemID, so the choice never depends on slice order — which is what
-// TestRundownIsDeterministic checks for the package as a whole.
+// TestRundownDoesNotDependOnInputOrder checks for the package as a whole, by
+// permuting the pool. (TestRundownIsDeterministic, which this used to cite,
+// builds twice from one slice: that catches map iteration reaching the output
+// and cannot see an input-order dependency at all. The outlet list below was
+// order-dependent for exactly as long as the weaker test was the cited one.)
 func dedupeClusters(cands []Candidate) []cluster {
 	order := make([]string, 0, len(cands))
 	groups := make(map[string][]Candidate, len(cands))
@@ -464,12 +483,24 @@ func dedupeClusters(cands []Candidate) []cluster {
 	out := make([]cluster, 0, len(order))
 	for _, key := range order {
 		members := groups[key]
+		// Sorted rather than scanned for a maximum, because the order of the
+		// members decides the order of the OUTLET LIST below and not just
+		// which candidate leads. Finding the maximum alone left every other
+		// source in whatever order the caller happened to assemble the pool
+		// in, so the same cluster named "AP, Reuters, BBC, Local Wire" or
+		// "AP, Local Wire, BBC, Reuters" depending on nothing the reader could
+		// see — and Story.Sources is the corroboration a listener actually
+		// hears read out. betterRepresentative is a total order with no ties,
+		// so this fixes the whole list and not just its head, which is what
+		// this package's determinism claim needs.
+		//
+		// Sorting groups[key] in place is safe: the slice was built by
+		// appending to a nil slice in the loop above, so it shares no backing
+		// array with the caller's argument.
+		sort.SliceStable(members, func(i, j int) bool {
+			return betterRepresentative(members[i], members[j])
+		})
 		rep := members[0]
-		for _, m := range members[1:] {
-			if betterRepresentative(m, rep) {
-				rep = m
-			}
-		}
 
 		seen := map[string]bool{}
 		var sources []string
@@ -480,9 +511,19 @@ func dedupeClusters(cands []Candidate) []cluster {
 			seen[s] = true
 			sources = append(sources, s)
 		}
+		// Two passes, and the split is deliberate. A member's own Source is an
+		// outlet with a ranked item of its own in the pool; an OtherSources
+		// entry is an outlet that was only ever mentioned by somebody else's
+		// row. Naming all of the former before any of the latter keeps the
+		// stronger corroboration at the front of the sentence a listener
+		// hears. A single pass ordered them by which member happened to carry
+		// them instead, so an outlet with its own item could be read out after
+		// one that was only referenced.
 		addSource(rep.Source)
 		for _, m := range members {
 			addSource(m.Source)
+		}
+		for _, m := range members {
 			for _, s := range m.OtherSources {
 				addSource(s)
 			}
@@ -641,6 +682,38 @@ func styleWeight(style Style, slot string) float64 {
 	return 1.0
 }
 
+// priorityFor turns a score and a slot into the fill-order priority Build
+// sorts on. It is where styleWeight is applied, and it is a function rather
+// than an inline product because the sign of the score decides the operation.
+//
+// # Multiplying inverts below zero
+//
+// styleWeight is described as halving or quartering a candidate's standing,
+// and multiplication is only that for a positive number. A score of -10
+// "halved" by 0.5 becomes -5, which sorts ABOVE the -10 it was meant to lose
+// to; the 1.6 explore boost applied to -10 gives -16 and buries it. The
+// weighting does not fade out as scores approach zero, it turns inside out
+// as they cross it.
+//
+// Negative scores are ordinary here rather than exotic. rank.Score is one
+// linear sum with four subtracting terms — volume, duplicate, negative
+// affinity, repeatedly-skipped — and nothing clamps the total between
+// derive writing it to home_ranking and produce reading it back, so the tail
+// of a 200-candidate pool holds real negatives and a long target reaches them.
+//
+// Dividing instead of multiplying is the same gesture carried across the sign:
+// a weight below 1 always moves a candidate down the order and a weight above
+// 1 always moves it up, at either sign. Positive scores are untouched, so the
+// ordinary path behaves exactly as before. styleWeight never returns 0 — 0.25
+// is its smallest value — so the division has no zero to guard against.
+func priorityFor(score float64, style Style, slot string) float64 {
+	w := styleWeight(style, slot)
+	if score < 0 {
+		return score / w
+	}
+	return score * w
+}
+
 // banded is a cluster with its assigned Role and fill-order priority
 // attached, carried through the rest of Build as one unit so the two
 // orderings (percentile banding, then fill priority) never have to be
@@ -693,7 +766,7 @@ func Build(cands []Candidate, opts Options) Rundown {
 		if role == RoleQuickHit && !opts.AllowQuickHits {
 			continue
 		}
-		priority := cl.rep.Score * styleWeight(opts.Style, cl.rep.Slot)
+		priority := priorityFor(cl.rep.Score, opts.Style, cl.rep.Slot)
 		bandedList = append(bandedList, banded{cluster: cl, role: role, priority: priority})
 	}
 	if opts.Target >= leadPromoteMinutes*time.Minute {

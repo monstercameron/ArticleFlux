@@ -30,6 +30,39 @@
 // a lock, or stop anything — the caller supplies free space and asks what is
 // allowed. A degrade ladder that can only be exercised by filling a real disk is
 // a degrade ladder nobody has ever seen run.
+//
+// # NOT WIRED. Nothing imports this package.
+//
+// Every function here — TierFor, Allowed, SweepTarget, Banner, Explain — has
+// zero callers outside its own tests. The ladder above describes a policy the
+// instance does not currently follow, and recording that is worth more than
+// leaving it to be discovered: internal/retention/security.go states the rule
+// this note exists under, that "a documented schedule that does not exist is
+// worse than an admitted absence, because it is the sentence somebody reads when
+// deciding whether the table needs attention."
+//
+// What actually protects the disk today is internal/app/diskhealth.go, and it is
+// a different shape in both axes:
+//
+//   - It measures an ABSOLUTE floor, `diskFloor = 256 MB`, not a fraction. On a
+//     1 TB volume that is 0.025%, so the first four rungs above never fire; on a
+//     25 GB droplet it is about 1%, which lands between this ladder's Frozen and
+//     ReadOnlyIngest rungs.
+//   - It is BINARY. `diskReady` either permits writes or refuses them. There is
+//     no warn rung, no shedding of packs or image caching, no SweepTarget, and
+//     none of the four banners below reaches a reader. (`sweepCaches` does bound
+//     the on-disk caches, but against its own budget rather than against free
+//     space.)
+//
+// So the live behaviour is the one Banner's comment names as the thing to avoid:
+// "an application that degrades silently and then refuses a write is one where
+// the first sign of trouble is a failure, and by then the operator has no
+// runway."
+//
+// Wiring it is a real piece of work — the capability table has to be threaded
+// through the call sites that can be shed, and the banner needs a surface — so
+// this note is not a plan. It is so that the next person to read the ladder
+// knows it is a design and not a description.
 package degrade
 
 import "fmt"

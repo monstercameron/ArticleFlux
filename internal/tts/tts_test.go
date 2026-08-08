@@ -402,3 +402,48 @@ func TestNilClientIsSafe(t *testing.T) {
 		t.Fatal("a nil client reports itself configured")
 	}
 }
+
+// The header wait must not be shorter than the timeout this package declares.
+//
+// # Why this is a test rather than a comment
+//
+// netguard defaults ResponseHeaderTimeout to twenty seconds, which is correct
+// for fetching a publisher and wrong for a model. `gpt-4o-mini-tts` is the
+// default voice, it is billed per audio token, and it spends real time deciding
+// before it emits a byte on up to MaxChars characters of article.
+//
+// Getting this wrong is invisible in every other way. `requestTimeout` still
+// reads ninety seconds, `slideVoiceWait` on the client still waits ninety, and
+// nothing between them mentions twenty — so the only symptom is synthesis that
+// dies on the dot with "timeout awaiting response headers" under load, and
+// never in a test, because a fake provider answers instantly.
+//
+// It costs money rather than latency: `synthesise` charges the meter BEFORE the
+// request by design, so a call killed by this ceiling is billed and returns no
+// audio, and the reader's next press pays again.
+//
+// netguard's own Options comment records this exact bug being found once
+// already, on the grouped podcast write. internal/llm carries the fix; this
+// client was added later, in the same change and for the same reason, and did
+// not get it.
+func TestTheSpeechClientWaitsAsLongAsItSaysItDoes(t *testing.T) {
+	opt := paidEgressOptions()
+
+	if opt.Timeout != requestTimeout {
+		t.Errorf("Timeout = %v, want %v", opt.Timeout, requestTimeout)
+	}
+	// Explicitly non-zero, because zero is the whole bug: netguard reads it as
+	// "use my default" and the default is twenty seconds.
+	if opt.ResponseHeaderTimeout == 0 {
+		t.Fatal("ResponseHeaderTimeout is unset, so netguard applies its own " +
+			"twenty-second default and that becomes the real ceiling on every " +
+			"synthesis, silently overriding requestTimeout")
+	}
+	if opt.ResponseHeaderTimeout < requestTimeout {
+		t.Errorf("ResponseHeaderTimeout = %v but requestTimeout = %v — the shorter "+
+			"one is the real ceiling, so a synthesis is bounded by %v while this "+
+			"package claims %v. A call killed there has already been charged",
+			opt.ResponseHeaderTimeout, requestTimeout,
+			opt.ResponseHeaderTimeout, requestTimeout)
+	}
+}

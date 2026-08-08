@@ -281,6 +281,35 @@ With nothing configured the job behaves exactly as it did before and logs
 `LOCAL ONLY` every night, which is deliberate: *"I thought that was set up"* is
 the belief this is here to interrupt.
 
+### Rotating `secrets.key`
+
+`secrets.key` seals the Smart+ API key and every mailbox password. Every backup
+keeps a copy of it — deliberately, because a key rotated out from under the
+copies that need it makes them unrestorable — and off-box shipping now sends it
+further. That is defensible only because the key can be replaced:
+
+```bash
+sudo systemctl stop articleflux          # REQUIRED, see below
+sudo -u articleflux /opt/articleflux/bin/articleflux rotate-key -n   # what it would move
+sudo -u articleflux /opt/articleflux/bin/articleflux rotate-key
+sudo systemctl start articleflux
+```
+
+It re-encrypts every stored credential in **one transaction** — a value that
+will not decrypt with the old key aborts the whole thing and writes nothing,
+because a database with half its rows under each key is unreadable by both and
+has no marker saying which is which. The old key is kept beside the new one as
+`secrets.key.<timestamp>.old`; **do not delete it until the server has started
+and read a stored secret**.
+
+**The server must be stopped.** A running one holds the old key in memory and
+would seal anything written afterwards with it — a Smart+ key pasted into the
+settings screen a minute later would be unreadable on the next boot. The command
+asks before proceeding; `-yes` is how a script says it has already arranged it.
+
+Existing backups keep the old key *and* the old ciphertext, which is correct —
+they restore as a pair. Backups taken after the rotation carry the new one.
+
 ### The drill, on a schedule
 
 `articleflux-restore-drill.timer` performs the restore above every Sunday, into

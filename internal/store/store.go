@@ -95,41 +95,82 @@ func Open(opt Options) (*DB, error) {
 	// WAL is what allows readers and the writer to proceed at once; it needs a
 	// real file, so an in-memory database would silently run in a different
 	// journal mode than production.
+	// auto_vacuum is a WRITE, so it cannot be on a read-only connection.
+	//
+	// Not a nicety: `_pragma=auto_vacuum(...)` against `mode=ro` fails the OPEN
+	// with "attempt to write a readonly database", which would break every
+	// ReadOnly caller (cmd/classifyprobe measures a live instance this way).
+	// Found by TestVacuumRefusesAReadOnlyDatabase rather than by that tool
+	// failing to start, which is the second time this option has been broken by
+	// a pragma added for the writable case — see Options.ReadOnly's own note
+	// about `temp.`.
+	autoVacuum := "_pragma=auto_vacuum(INCREMENTAL)&"
+	if opt.ReadOnly {
+		autoVacuum = ""
+	}
+
 	dsn := "file:" + opt.Path + "?" +
+		// busy_timeout FIRST, before any pragma that touches the FILE.
+		//
+		// It is connection-local and never reads or writes the database, so it
+		// has no ordering constraint of its own — and everything after it does.
+		// A pragma that contends for a lock while the timeout is still SQLite's
+		// default of ZERO does not wait: it fails the OPEN immediately with
+		// "database is locked", and the pool reports that as the connection
+		// lacking a feature rather than as contention.
+		//
+		// That is not hypothetical. It is what moving auto_vacuum ahead of
+		// journal_mode (below) actually did: `TestFTS5OnEveryPooledConnection`
+		// opens several pooled connections at once, and the ones that raced
+		// failed with `invalid _pragma: database is locked`. The old order hid
+		// it only because the first pragma happened to be one that did not
+		// contend.
+		"_pragma=busy_timeout(" + strconv.Itoa(int(opt.BusyTimeout.Milliseconds())) + ")&" +
+		// auto_vacuum before journal_mode, and the position is load-bearing
+		// rather than stylistic. See below.
+		//
+		// # What it is for
+		//
+		// SQLite defaults to auto_vacuum=NONE and never returns freed pages to
+		// the filesystem — they go on an internal free list and are reused.
+		// Nothing used to delete from this database at scale, so that was
+		// invisible. Retention does: items on the operator's window, and
+		// `login_attempts` and `audit_log` on windows that default to deleting
+		// (internal/retention). A year of pruned rows now makes the file stop
+		// growing and never makes it smaller, and `articleflux backup` hides
+		// that rather than showing it — VACUUM INTO produces a compact COPY, so
+		// the backups look reasonable while the live file does not.
+		//
+		// # Why the ORDER matters
+		//
+		// Switching to WAL writes the database header, and once the header
+		// exists auto_vacuum can only be changed by a full VACUUM. Written
+		// after journal_mode this line was silently ignored on brand-new
+		// databases too — which is the only case it exists for.
+		// `TestANewDatabaseIsCreatedWithIncrementalAutoVacuum` caught exactly
+		// that, and is why the test asserts the pragma rather than a behaviour:
+		// the failure is a setting that did not take, and nothing about how the
+		// database performs would have shown it.
+		//
+		// # Why this line is only half the fix
+		//
+		// It applies to a database being CREATED and is ignored on one that
+		// already exists, because the change would require rewriting the file —
+		// needing room for a second copy of it, on the disk that is filling up.
+		// That is the correct behaviour for a pragma applied on every connection
+		// open: the alternative is a boot path that rewrites somebody's
+		// database without being asked, at the worst possible moment.
+		//
+		// The other half is `articleflux vacuum -incremental`, which an operator
+		// runs deliberately and which checks the free space first. This line
+		// means nobody installing from here ever has to.
+		autoVacuum +
 		"_pragma=journal_mode(WAL)" +
-		"&_pragma=busy_timeout(" + strconv.Itoa(int(opt.BusyTimeout.Milliseconds())) + ")" +
 		"&_pragma=synchronous(NORMAL)" +
 		// SQLite defaults foreign_keys OFF, which would make every REFERENCES in
 		// 0001_init.sql decorative.
-		"&_pragma=foreign_keys(ON)" +
-		// INCREMENTAL rather than the NONE default, and it takes effect only on
-		// a database this call is CREATING.
-		//
-		// # Why it matters now and did not before
-		//
-		// Nothing used to delete from this database at scale. Retention does:
-		// items on the operator's window, and `login_attempts` and `audit_log`
-		// on windows that default to deleting (internal/retention). SQLite does
-		// not return freed pages to the filesystem — it keeps them on a free
-		// list and reuses them — so a sweep that removes a year of rows makes
-		// the file stop growing and never makes it smaller. `articleflux
-		// backup` VACUUMs the COPY, which is why the backups look reasonable
-		// while the live file does not.
-		//
-		// # Why this line alone is not the whole fix
-		//
-		// `auto_vacuum` can only be changed on an existing database by a full
-		// VACUUM, which rewrites the file and needs room for a second copy of
-		// it — precisely what a box in this state is short of. So it is
-		// silently ignored on every database that already exists, and that is
-		// the correct behaviour for a pragma applied on every connection open:
-		// the alternative is a boot path that rewrites somebody's database
-		// without being asked, on the disk that is filling up.
-		//
-		// The other half is `articleflux vacuum`, which an operator runs
-		// deliberately and which checks the free space first. This line means
-		// nobody who installs from here has to.
-		"&_pragma=auto_vacuum(INCREMENTAL)"
+		"&_pragma=foreign_keys(ON)"
+
 	if opt.ReadOnly {
 		dsn += "&mode=ro&_pragma=query_only(1)"
 	}

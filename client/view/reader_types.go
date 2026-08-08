@@ -83,6 +83,14 @@ const (
 // scope is what the item list is showing.
 type scope struct {
 	// SourceID empty means every subscribed feed.
+	//
+	// It is a Feed's SOURCE id (`Feed.SourceId`), never its subscription id
+	// (`Feed.Id`), and the distinction is invisible on a personal instance
+	// because an unshared source has the same value in both. Everything that
+	// writes this field uses the source id — the rail's rows and their
+	// `data-source-id`, the item and article chips, the palette, feedByID, and
+	// scopeOf reading it back off `/feed/<id>`. Named here because one lookup
+	// compared the other field for a long time and nothing could have told you.
 	SourceID string
 	Title    string
 	// Rating selects a verdict stream: +1 liked, -1 disliked, 0 no filter.
@@ -122,6 +130,25 @@ type scope struct {
 	// same thing as an unfiled feed — see store.ListQuery.Uncategorised.
 	Uncategorised bool
 	Search        string
+}
+
+// narrowed reports whether this scope selects a SUBSET of the account's
+// articles by source or subject — a feed, a tag, a folder, a classification
+// label, or the classifier's leftovers.
+//
+// It exists so that "is the account-wide unread count true of this list?" is
+// one question asked in one place. Written inline, it is five fields that have
+// to be remembered in full, and the two that get forgotten are CategorySlug and
+// Uncategorised — the classifier's labels, which read like folders and are a
+// different field. A guard missing them let a category holding one unread
+// article head itself "2,004 unread" (see listHead).
+//
+// The streams are deliberately NOT here. Unread, Later, Liked, Notes and My
+// Feed narrow by STATE rather than by subject, they each have a subtitle of
+// their own further up that switch, and none of them reaches the count case.
+func (s scope) narrowed() bool {
+	return s.SourceID != "" || s.TagID != "" || s.FolderID != "" ||
+		s.CategorySlug != "" || s.Uncategorised
 }
 
 // actions is the current render's callbacks, reached through a Ref.
@@ -434,8 +461,8 @@ type actions struct {
 	showTab         func(v view)
 
 	// advance and retreat extend the reading stream downward and upward.
-	advance      func()
-	retreat      func()
+	advance func()
+	retreat func()
 	// focusArticle records that a different article is now at the top of the
 	// reading pane. `moved` says whether the reader got there — see
 	// platform.OnTopmostChild, and focusArticle's own body for what it changes.
@@ -523,6 +550,19 @@ type readerProps struct {
 	// entirely. That is the right way round: a flash is a blemish, a reader
 	// dropped back to All every morning is the feature not working.
 	prefs map[string]string
+	// whoami is the account this browser is signed in as, from the WhoAmI Root
+	// already made while the splash was up.
+	//
+	// A prop for the same reason prefs is one, and for one more: asking again
+	// from the reader would be a second WhoAmI for an answer Root had in its
+	// hand and dropped on the floor. It did drop it — the Account tab read a
+	// field nothing ever assigned and reported "a local account" to everybody,
+	// on the one screen whose job is to say who you are.
+	//
+	// Empty is the honest zero: a dev server, the demo, and Root's own
+	// straight-to-reader path have no identity to report, and the Account tab
+	// already says so in words.
+	whoami string
 }
 
 // prefBool reads a stored flag, keeping the caller's default when it is absent.

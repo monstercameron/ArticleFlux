@@ -55,6 +55,79 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Fixed
 
+- **"Fetch every" did not set how often anything was fetched.** The control offers 5 min, 15 min,
+  30 min, 1 hour, 6 hours and daily under the hint "How often the server polls it", and on every
+  successful poll `RecordFetch` scheduled the next one at a flat `now + 30 minutes`, reading nothing
+  from `fetch_interval_s`. Every choice produced the same answer: a feed set to daily became eligible
+  again half an hour later, one set to five minutes could not be polled sooner than thirty. The
+  interval survived only as the failure-backoff base and as the divisor in `DueSources`' staleness
+  ratio — never as the period. What hid it is that the column defaults to 1800, exactly the thirty
+  minutes hardcoded beside it, so it was right for every source nobody had retuned. `DueSources`' own
+  worked example ("A: 15-minute interval, due at 10:00 / B: 24-hour interval, due at 09:00") is not
+  expressible unless due times come from each source's interval, so the scheduler's design had always
+  assumed the write that was missing.
+- **And the one place with the right arithmetic wrote it in the wrong format.** `UpdateFeedSettings`
+  recomputed `next_fetch_at` with SQLite's `datetime()`, which emits `2026-08-08 16:13:21` — a space
+  where RFC3339 has a `T`, and no zone — while every other writer of that column uses `stamp()`'s
+  RFC3339Nano. `DueSources` gates on `next_fetch_at <= ?` against `stamp(now)`, comparing BYTES, and a
+  space (0x20) sorts below `T` (0x54), so a `datetime()` value reads as due at every instant whatever
+  time it names. Retuning the interval therefore forced a poll on the next tick, the precise opposite
+  of the intent stated three lines above it. Now computed in Go through the new `parseStamp`, which
+  sits beside `stamp` because the pair is the contract for every timestamp column in this schema.
+- **A mute could be set to something that was not a time, and then never expired.** The transport
+  copied `muted_until` through untouched and the repo stored it verbatim, but the only thing that ends
+  a mute is that same byte comparison against `stamp(now)`. `"zzz"` sorts above every timestamp this
+  century, so the feed left the megafeed with no expiry that could ever pass — and the settings screen
+  could not explain it, because it parses the same value and could not read it either. A legal RFC3339
+  with a numeric offset failed the same way for hours at a time. Values are parsed and re-stamped at
+  the write; unparseable input returns the new `store.ErrBadTimestamp`, mapped to `InvalidArgument`
+  rather than Internal, because telling a client to retry something that will fail identically forever
+  is the wrong answer.
+- **A followed entity matched letters inside other words, and told the reader so.** `namedIn` used
+  `strings.Index`, a raw substring test with no notion of a word edge, so a reader following ARM was
+  told a story about an alarm "mentions Arm, which you follow" — likewise Meta in "metadata", AI in
+  "said", Arc in "March". The deterministic extractor hid it: `textvec.Phrases` builds names from
+  token pairs with `MinTermLen = 3`, and a string with a space cannot sit inside a word. The Smart+
+  path has no such shape — it normalises case and rejects only the empty string — so a model returning
+  "arm" or "ai" lands a name short enough to hide. The entity term is weighted 0.9 and `rank.Score`
+  stakes it on being the most CHECKABLE thing the ranker says, which makes a claim the reader can
+  check and find false the one failure it exists to avoid. Matching is now word-edged and rune-aware,
+  and keeps scanning past a buried hit so "In March, Arc shipped a browser" still finds the real
+  mention rather than trading a false positive for a false negative.
+- **The rundown's Style control did the opposite of its label on negatively-scored stories.**
+  Fill-order priority was `Score * styleWeight`, and multiplication is only "halve its standing" for a
+  positive number: at −10, the focused 0.5 gives −5, which sorts ABOVE the −10 it was meant to lose
+  to. So a focused listener was served more of the surprises they had asked to hear fewer of, and
+  explore buried the ones it was asked to favour. Negative scores are ordinary — `rank.Score` has four
+  subtracting terms and nothing clamps the total between `derive` writing it and `produce` reading it
+  back — so the tail of a 200-candidate pool holds real ones and a long target reaches them. The
+  weight now divides below zero and multiplies above it, leaving the positive path untouched.
+- **A `tts.rate` that was not a number silently destroyed the rundown's length target.** Every guard
+  was written `rate <= 0`, which is false for NaN and for `+Inf`, and `-rate` is parsed by
+  `strconv.ParseFloat`, which accepts both spellings. A ten-minute rundown that should hold 15 stories
+  gave 1 at NaN (every fit test false) and 182 at `+Inf` (none of them false). It also removed real
+  undefined behaviour: `time.Duration(NaN * float64(time.Second))` is a float-to-integer conversion of
+  a NaN, which the Go spec leaves implementation-specific. One exported `rundown.SafeRate` now guards
+  `!(rate > 0) || math.IsInf(rate, 1)` and replaces three copies of the check.
+- **The podcast player's hang detector did not watch the one case that is actually a hang.**
+  `tVoiceWait` is documented as a hang detector and `onPlaying` cancelled it, so a spoken beat had no
+  deadline at all once audio was audible — and a media element has no timeout of its own: a dropped
+  connection, a body short of its `Content-Length` or a wedged decoder fires `stalled` and then waits
+  indefinitely, which is neither the `ended` nor the `error` the player needs. It is now re-armed
+  rather than cancelled, scaled to the beat's own `Est` so a long story is not cut off, and expiry
+  emits `ActVoiceLost` through the existing path so the display takes its own clock back.
+  (`fluxcast.NewPlayer` still has no caller outside its tests, so this was latent.)
+- **An outlet list depended on the order the caller happened to assemble the pool in.**
+  `dedupeClusters` chose the cluster representative deterministically and then collected the
+  corroborating sources by walking members in input order, so reversing the pool turned
+  `[AP Reuters BBC Local Wire]` into `[AP Local Wire BBC Reuters]` for the same story — and that list
+  is the corroboration a listener hears read out. The sibling test cited as covering this builds twice
+  from ONE slice, which catches map iteration and cannot see an input-order dependency at all.
+- **`textvec.Cosine` left its documented `[0,1]` range.** A vector compared with itself returned
+  values above 1 in 4871 of 12000 trials, worst `1.0000000000000018`, because the numerator is a sum
+  of squares and the denominator the square root of that same sum, squared. Nothing downstream is hurt
+  today — `derive` thresholds well below 1 — but `math.Acos` of such a value is NaN, and so is
+  `math.Sqrt(1-c)`. Clamped in both `Cosine` and `cosineNorms`, which must agree.
 - **The Smart+ spend ceiling covered 2 of 12 features.** The budget lives on the middleware chain,
   and only `Client.Do` went through it — the typed SchemaFlux operations called the audited request
   directly. So a cap set on the Smart+ tab bounded categorisation and translation and nothing else:
@@ -101,6 +174,26 @@ The full reasoning behind any entry lives in the commit message; this file is th
   mid-stream, which previously left no trace anywhere because the span had already closed green. The
   duration *metric* still stops at the headers, deliberately: a histogram mixing "the publisher is
   slow to answer" with "the publisher's article is large" answers neither question.
+
+### Known
+
+- **Four subsystems are built, tested and unreachable, and now say so in their own doc comments.**
+  `internal/settingsreg` and `internal/store/settingslayers.go` — §6.3's typed three-layer settings
+  registry — have no production caller at all: no registry is ever constructed, and the only `Def`
+  tables that exist are never registered with one. Settings work through two older mechanisms it was
+  meant to unify and did not replace (`store.SettingsRepo` for system values, `repo.GetPrefs` for
+  reader preferences), so two of the three failures its package comment lists as solved are the live
+  situation — including "why is this off for me?", unanswerable because there is only ever one layer.
+  `rank`'s §18.5 highlights mode is the same shape: `derive` passes `ModeFull` unconditionally, and
+  `HighlightsCutoff` and `ApplyHighlights` have no callers, so the per-feed cutoff and the
+  redistribution of the feed weight onto item-level terms never run. (`ModeMuted` is merely redundant
+  rather than missing — muting is enforced earlier and more bluntly by `MegafeedSources`.)
+  `fluxcast`'s player and `internal/degrade` round out the set. Each is now recorded where a reader of
+  that package will meet it, on the reasoning `degrade` already states about its own ladder: a package
+  comment that reads as a description of how the application works, when it is a description of a
+  design, is worse than an admitted absence.
+- **`subscriptions.cache_depth` is stored and returned and nothing reads it.** It is clamped below at
+  zero and has no upper bound, which is harmless only because it has no consumer.
 
 ### Upgrade notes
 

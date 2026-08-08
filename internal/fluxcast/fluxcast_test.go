@@ -525,6 +525,51 @@ func TestAFailedSegmentDoesNotEndOrStallTheProgramme(t *testing.T) {
 	}
 }
 
+// A track that goes audible and then stops dead must not freeze the programme.
+//
+// # The hole in the hang detector
+//
+// VoiceWait is documented as "a hang detector, NOT a verdict about the server",
+// and onFailed exists because "a failed segment used to leave the session
+// waiting on an `ended` that was never coming". Both are about the same hazard.
+// But the detector is armed in begin and cancelled in onPlaying, so it covers
+// only the window before the narrator is audible. After `playing` the beat has
+// no deadline at all: EvEnded, EvError and EvNoAudio are the only three things
+// that can move the show on, and all three come from the media element.
+//
+// A media element has no timeout. Drop the connection mid-stream, serve a body
+// short of its Content-Length, or wedge the decoder, and it fires `stalled` or
+// `waiting` and then waits — forever, by specification. Neither is `ended` and
+// neither is `error`, so nothing reaches the player and the programme sits on
+// story two with the picture frozen on it. That is the exact symptom the
+// package doc says is unrepresentable here.
+//
+// Thirty minutes is far past any beat's Est, so a healthy show cannot reach
+// this assertion — see TestBackstopsCannotFireOnHealthyShows for the rule.
+func TestAStalledTrackDoesNotFreezeTheProgramme(t *testing.T) {
+	prog := planned(t, Default(), 4)
+	b := prog.Beats
+	r := newRun(t, prog)
+	r.play(b[0].ID, 5*time.Second)
+	r.advance(8 * time.Second)
+
+	mark := len(r.acts)
+	r.on(EvPlaying, b[1].ID)
+	r.advance(30 * time.Minute)
+
+	// ActVoiceLost is the whole remedy, and deliberately not an advance: fire's
+	// own comment for the backstop says the programme is not over and "the
+	// display takes its own clock back from here". Cutting the audio would be
+	// the wrong call on a track that is merely long. Saying nothing at all is
+	// the wrong call on one that is stuck, because the display is waiting.
+	if r.firstAfter(ActVoiceLost, mark) < 0 && !r.p.Done() {
+		cur, _ := r.p.Current()
+		t.Errorf("after thirty minutes with no `ended` the player has said "+
+			"nothing and is still on %s, so the display is still waiting on a "+
+			"beat that will never end and the slide is frozen", cur.ID)
+	}
+}
+
 func TestPauseHoldsTheBackstopsToo(t *testing.T) {
 	// A show resumed after a minute must not fire five backstops in its first
 	// frame.

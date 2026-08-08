@@ -469,3 +469,129 @@ func TestCategoryAndGenreCompose(t *testing.T) {
 		t.Errorf("unanalysed item hit a category rule: %+v", res.Hits)
 	}
 }
+
+// A blank condition value is refused, because blank means EVERY article.
+//
+// # The failure it prevents
+//
+// `strings.Contains(s, "")` is true. So is `strings.HasPrefix(s, "")`. An empty
+// regex matches every string, and lexically every non-empty subject is greater
+// than "". A condition left blank therefore does not quietly fail to match — it
+// matches the reader's whole feed, and rule actions include mute and mark-read.
+//
+// compareStrings already names this outcome in its regex branch: an invalid
+// pattern is made to match NOTHING because matching everything "turns a typo
+// into a rule that mutes the whole feed", and it points at Validate as the place
+// the author is told. Validate covered the pattern that would not COMPILE. An
+// empty pattern compiles.
+//
+// Measured before the fix: contains, starts_with, gt and regex all passed
+// Validate and matched an unrelated article; not_contains, equals and lt did not.
+func TestABlankConditionValueIsRefused(t *testing.T) {
+	universal := []Op{OpContains, OpStartsWith, OpGT, OpRegex}
+	for _, op := range universal {
+		r := Rule{
+			Name:    "blank " + string(op),
+			Enabled: true,
+			Match:   Match{Conditions: []Condition{{Field: FieldTitle, Op: op, Value: ""}}},
+			Actions: []Action{{Kind: ActionMute}},
+		}
+		if err := Validate(r); err == nil {
+			// Show what saving it would have done, so the failure names the
+			// consequence rather than the rule.
+			res := Evaluate(Item{Title: "An unrelated article"}, []Rule{r}, time.Now())
+			t.Errorf("%s with a blank value was accepted; evaluating it against an "+
+				"unrelated article matched=%v — with a mute action that is the "+
+				"whole feed", op, len(res.Hits) > 0)
+		}
+	}
+
+	// Equals keeps its blank: "the author is empty" is a real question, and it
+	// matches only the items where that is true rather than all of them.
+	blankEquals := Rule{
+		Name:    "no author",
+		Enabled: true,
+		Match:   Match{Conditions: []Condition{{Field: FieldAuthor, Op: OpEquals, Value: ""}}},
+		Actions: []Action{{Kind: ActionMute}},
+	}
+	if err := Validate(blankEquals); err != nil {
+		t.Errorf("equals with a blank value was refused (%v); it is the one "+
+			"operator for which blank is a question somebody means to ask", err)
+	}
+	if res := Evaluate(Item{Title: "x", Author: "Someone"}, []Rule{blankEquals}, time.Now()); len(res.Hits) > 0 {
+		t.Error("equals-blank matched an item that HAS an author")
+	}
+	if res := Evaluate(Item{Title: "x"}, []Rule{blankEquals}, time.Now()); len(res.Hits) == 0 {
+		t.Error("equals-blank did not match an item with no author, which is its point")
+	}
+
+	// And an ordinary rule is untouched.
+	ok := Rule{
+		Name:    "rust",
+		Enabled: true,
+		Match:   Match{Conditions: []Condition{{Field: FieldTitle, Op: OpContains, Value: "rust"}}},
+		Actions: []Action{{Kind: ActionMute}},
+	}
+	if err := Validate(ok); err != nil {
+		t.Errorf("an ordinary rule was refused: %v", err)
+	}
+}
+
+// set_home_weight must be a FINITE number, not merely a parseable one.
+//
+// # What ParseFloat says yes to
+//
+// "NaN", "Inf", "+Inf", "-Inf" and "infinity" all parse with a nil error. None
+// is a weight, and the value is spent in arithmetic that has no defence against
+// either shape.
+//
+// rank.go applies it as `w.Manual * (ManualWeight - 1)` behind a guard of
+// `!= 0 && != 1`. Both comparisons are TRUE for NaN — that is what NaN does — so
+// the branch fires and the item's entire score becomes NaN, which then sorts
+// against real scores by comparisons that are all false. An infinity is worse
+// for being well-defined: the source's items pin to the top of My Feed and stay
+// there.
+//
+// 1e400 was already refused, because ParseFloat returns ErrRange for a literal
+// out of range. It is only the spelled forms that arrived looking like numbers,
+// which is why "it parses" was not the same question as "it is a number".
+func TestSetHomeWeightMustBeFinite(t *testing.T) {
+	for _, v := range []string{"NaN", "nan", "Inf", "+Inf", "-Inf", "infinity"} {
+		r := Rule{
+			Name:    "weight " + v,
+			Enabled: true,
+			Match:   Match{Conditions: []Condition{{Field: FieldTitle, Op: OpContains, Value: "go"}}},
+			Actions: []Action{{Kind: ActionSetHomeWeight, Value: v}},
+		}
+		if err := Validate(r); err == nil {
+			t.Errorf("set_home_weight=%q was accepted; it reaches rank.go as "+
+				"w.Manual*(w-1) past a `!= 0 && != 1` guard that NaN passes", v)
+		}
+	}
+
+	// Ordinary weights, including a negative one and a fractional one, are
+	// untouched — no range is imposed beyond finiteness, because plan.md gives
+	// the column as REAL NOT NULL DEFAULT 1.0 and names no bounds.
+	for _, v := range []string{"0", "0.5", "1", "2", "-1.5", "1000"} {
+		r := Rule{
+			Name:    "weight " + v,
+			Enabled: true,
+			Match:   Match{Conditions: []Condition{{Field: FieldTitle, Op: OpContains, Value: "go"}}},
+			Actions: []Action{{Kind: ActionSetHomeWeight, Value: v}},
+		}
+		if err := Validate(r); err != nil {
+			t.Errorf("set_home_weight=%q was refused: %v", v, err)
+		}
+	}
+
+	// And a value that is not a number at all still fails the original check.
+	notANumber := Rule{
+		Name:    "weight heavy",
+		Enabled: true,
+		Match:   Match{Conditions: []Condition{{Field: FieldTitle, Op: OpContains, Value: "go"}}},
+		Actions: []Action{{Kind: ActionSetHomeWeight, Value: "heavy"}},
+	}
+	if err := Validate(notANumber); err == nil {
+		t.Error(`set_home_weight="heavy" was accepted`)
+	}
+}

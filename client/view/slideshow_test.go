@@ -3,6 +3,8 @@
 package view
 
 import (
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +39,55 @@ func TestDwellForHonoursAnExplicitPace(t *testing.T) {
 				t.Errorf("dwellFor(%d, %q) = %v, want %v", words, c.pref, got, c.want)
 			}
 		}
+	}
+}
+
+// A stored pace too large to be a pace must fall back to auto, not wrap into a
+// slide that ends instantly.
+//
+// # The inversion
+//
+// `dwellPrefFrom` deliberately keeps a value that is not one of the offered
+// choices — "a preference set through the API or hand-edited is still a
+// preference" — so arbitrary numbers reaching dwellFor is a documented input
+// rather than an impossible one. dwellFor guarded the low end with `secs > 0`
+// and left the high end open, and the high end is where the arithmetic wraps:
+// `time.Duration(secs) * time.Second` overflows int64 past about 9.2e9 seconds
+// and does not saturate.
+//
+// So 9,300,000,000 came out as MINUS 2,540,762 hours and 1<<62 came out as
+// exactly zero. Both mean the same thing on screen: `elapsed >= dwell-slideExit`
+// is true on the first frame, so the slideshow tears through every story as
+// fast as it can render them. The largest values behaved like the smallest,
+// which is the one failure a floor-only guard cannot catch.
+func TestAnImpossiblePaceFallsBackToAutoRatherThanWrapping(t *testing.T) {
+	// The auto answer for this story, which is what every case below must land
+	// on. Computed rather than written down so the test does not have to know
+	// the reading-speed constant.
+	const words = 300
+	auto := dwellFor(words, slideAuto)
+
+	for _, pref := range []string{
+		"9300000000",          // first multiple that goes negative
+		"4611686018427387904", // 1<<62 — lands on exactly zero
+		"9223372036854775807", // MaxInt64
+		"86401",               // one second past the ceiling, no overflow
+	} {
+		got := dwellFor(words, pref)
+		if got != auto {
+			t.Errorf("dwellFor(%d, %q) = %v, want the auto answer %v — "+
+				"a pace nobody could have chosen must not become one", words, pref, got, auto)
+		}
+		if got <= 0 {
+			t.Errorf("dwellFor(%d, %q) = %v, which is not a duration a slide can "+
+				"have; the slideshow would advance on the first frame", words, pref, got)
+		}
+	}
+
+	// The ceiling itself is still honoured, so this bounds the absurd without
+	// quietly narrowing what somebody may deliberately set.
+	if got := dwellFor(words, "86400"); got != 24*time.Hour {
+		t.Errorf("dwellFor(%d, \"86400\") = %v, want 24h — the ceiling is inclusive", words, got)
 	}
 }
 
@@ -941,6 +992,57 @@ func TestSlideLoopsOnlyForAClockPacedFeed(t *testing.T) {
 		if got := slideLoops(tc.hasOrder, tc.audio); got != tc.want {
 			t.Errorf("%s: slideLoops(hasOrder=%v, audio=%v) = %v, want %v",
 				tc.name, tc.hasOrder, tc.audio, got, tc.want)
+		}
+	}
+}
+
+// A stored speech rate that is not a number falls back, including the one
+// spelling that defeats a range check.
+//
+// # Why "NaN" is the case that matters
+//
+// The bounds here read `f < 0.5 || f > 3` — a closed range, apparently. It is
+// not one: strconv.ParseFloat accepts "NaN" with a nil error, and NaN compares
+// FALSE against everything, so both halves of the reject were false and the one
+// value that is not a number was the one value admitted.
+//
+// It is spent on `playbackRate`, where a non-finite double is a TypeError. So
+// the symptom is not an odd playback speed; it is an exception thrown from the
+// wasm client the moment somebody presses play.
+//
+// The pref is stored server-side, which is the same input class dwellFor names
+// — "a hand-edited or half-migrated pref" — and the same mistake pointing the
+// other way: dwellFor bounded the low end and left the high end open; this
+// bounded both ends against a value that ignores bounds.
+func TestSpeechRateRejectsValuesThatAreNotNumbers(t *testing.T) {
+	def, _ := strconv.ParseFloat(speechRateDefault, 64)
+
+	for _, pref := range []string{"NaN", "nan", "Inf", "+Inf", "-Inf", "infinity"} {
+		got := speechRateValue(pref)
+		if math.IsNaN(got) || math.IsInf(got, 0) {
+			t.Errorf("speechRateValue(%q) = %v, which is not a rate — setting "+
+				"playbackRate to a non-finite double throws", pref, got)
+		}
+		if got != def {
+			t.Errorf("speechRateValue(%q) = %v, want the default %v", pref, got, def)
+		}
+	}
+
+	// Out of range and unparseable still fall back, as before.
+	for _, pref := range []string{"0.1", "9", "-1", "fast", ""} {
+		if got := speechRateValue(pref); got != def {
+			t.Errorf("speechRateValue(%q) = %v, want the default %v", pref, got, def)
+		}
+	}
+
+	// And a rate somebody actually chose is honoured, so this rejects without
+	// flattening the setting.
+	for _, c := range []struct {
+		pref string
+		want float64
+	}{{"0.5", 0.5}, {"1", 1}, {"1.25", 1.25}, {"3", 3}} {
+		if got := speechRateValue(c.pref); got != c.want {
+			t.Errorf("speechRateValue(%q) = %v, want %v", c.pref, got, c.want)
 		}
 	}
 }

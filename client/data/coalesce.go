@@ -50,9 +50,24 @@ type Effect struct {
 
 // Empty reports whether this Effect asks for nothing.
 //
-// Worth having because the common case at rest is exactly that — a poll cycle
-// that found nothing new still publishes `poll_finished`, and a pump that
-// repainted for it would make an idle reader's screen flicker on a timer.
+// Worth having because a batch can legitimately invalidate nothing: `kindPollFinished`
+// is handled and deliberately sets no flag, so a pump that repainted for it
+// would make an idle reader's screen flicker on a timer.
+//
+// # What the server actually sends today, which is less than this says
+//
+// This used to read "a poll cycle that found nothing new still publishes
+// `poll_finished`". Nothing publishes it. `internal/app/events.go` has exactly
+// one publisher — `publishItemsAdded` — so `items_added` is the only kind that
+// crosses the wire; TODO 8.7 scoped it that way on purpose and the other four
+// kinds are declared in the bus for later.
+//
+// The guard below is still right, and is deliberately kept: it costs nothing, it
+// is the correct behaviour the moment `poll_finished` is wired, and the `default`
+// branch means an unknown kind from a newer server already produces a broad
+// Effect rather than an empty one. What was wrong was stating a heartbeat as
+// fact — a reader who believes one arrives will look for it when live updates
+// seem stuck, and it is not there to find.
 func (e Effect) Empty() bool {
 	return !e.Lists && !e.Feeds && !e.Tags && !e.Reload && len(e.Items) == 0
 }

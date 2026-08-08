@@ -35,6 +35,25 @@ func actionButton(action, class, label string) ui.Node {
 	}, html.Text(label))
 }
 
+// actionButtonRole is actionButton with a data-role as well, which is what
+// platform.FocusField looks for.
+//
+// It exists for the dialogs' close buttons. A panel that opens without moving
+// focus into itself leaves a keyboard reader tabbing through the rail BEHIND
+// the scrim — present in the tab order, covered on screen — and the focus trap
+// inside the panel never engages, because focus never gets in. The palette
+// solved this by focusing its search field on open (FocusField's doc comment
+// tells that story); a settings panel has no field it would be safe to put a
+// caret in, so the close button is the target: always present, unambiguous, and
+// harmless to press by accident.
+func actionButtonRole(action, role, class, label string) ui.Node {
+	return html.Button(html.Props{
+		Class: class,
+		Raw:   map[string]any{"data-action": action},
+		Data:  map[string]string{"role": role},
+	}, html.Text(label))
+}
+
 // The chosen design has NO top bar. Search, refresh and the connection state
 // live in the list pane's header; adding a feed lives at the foot of the rail.
 // The bar that used to be here was a utilitarian strip bolted across a design
@@ -180,7 +199,17 @@ const (
 	// A folder is a container, where a tag is a label stuck on one \u2014 so it is
 	// a box shape rather than the tag's ticket, and the two sections stay
 	// distinguishable at 12px in a column of 151 rows.
-	glyphCats = "\u2337"
+	//
+	// The tab in the corner is doing the work, and it is why this is not the
+	// plainer box it used to be. \u2337 (APL SQUISH QUAD) is a narrow empty
+	// rectangle in every font that has it: at rail size it is the shape a browser
+	// draws for a character it CANNOT draw, so the one row in the rail that named
+	// a container looked instead like a rendering fault \u2014 and it measured ~26%
+	// narrower than its neighbours, so it sat outside their optical column as
+	// well. Reported on sight, 2026-08-08. The replacement is a container that
+	// could not be mistaken for a missing glyph, at the same width as \u25c8 and
+	// \u25a6 either side of it.
+	glyphCats = "\u25f0"
 	// The Categories settings tab (client/view/classifysettings.go) gets its own
 	// mark rather than reusing glyphCats \u2014 D23 (plan.md \u00a727.0a) gave "category" to
 	// the classifier's 26 article sections and the rail's containers became
@@ -437,6 +466,11 @@ type railProps struct {
 	feedsClosed   bool
 	tagsClosed    bool
 	catsClosed    bool
+	// closing names the one section whose rows are being kept in the tree for a
+	// beat so its fold can play out — a band's action id, or railCatKey(id) for
+	// a category. "" almost always. A string rather than a set for the same
+	// value-comparison reason as the booleans above.
+	closing string
 	// folders are the categories, in rail order.
 	folders []*pb.Folder
 	// topicUnread is the unread count per classification label. Nil until the
@@ -542,8 +576,9 @@ func railPane(p railProps) ui.Node {
 		// different object.
 		railBandToggle(glyphAll, tr.T("rail", "bandStreams"), actStreams, !p.streamsClosed, 0),
 	}
-	if !p.streamsClosed {
-		head = append(head,
+	if !p.streamsClosed || p.closing == actStreams {
+		var streams []ui.Node
+		streams = append(streams,
 			// First, and above "All feeds", because it is the answer to a different
 			// question: the rows below are "show me everything / the unread / the ones
 			// I saved", and this one is "show me what is worth reading". A reader who
@@ -555,27 +590,28 @@ func railPane(p railProps) ui.Node {
 			//
 			// It is also the number that makes the stream legible next to the row beneath:
 			// 123 against 3,733 unread says what My Feed is FOR in a way no label does.
-			specialRow(glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, p.ranked, p.sel.MyFeed),
+			specialRow(tr, glyphMyFeed, tr.T("stream", "myFeed"), streamMyFeed, p.ranked, p.sel.MyFeed),
 			// "All articles" is current only when NOTHING narrows the list, so
 			// every field on scope has to appear here. Three did not — FolderID,
 			// CategorySlug and Uncategorised — and each omission put two rows in
 			// aria-current="true" at once: the topic the reader picked, and this
 			// row still claiming to be where they are. A sighted reader sees two
 			// highlights; a screen reader is told the wrong list.
-			specialRow(glyphAll, tr.T("stream", "all"), streamAll, p.total,
+			specialRow(tr, glyphAll, tr.T("stream", "all"), streamAll, p.total,
 				p.sel.SourceID == "" && p.sel.Rating == 0 && p.sel.Search == "" &&
 					!p.sel.Unread && !p.sel.Notes && !p.sel.Later && !p.sel.MyFeed &&
 					p.sel.TagID == "" && p.sel.FolderID == "" &&
 					p.sel.CategorySlug == "" && !p.sel.Uncategorised),
-			specialRow(glyphUnread, tr.T("stream", "unread"), streamUnread, p.total, p.sel.Unread),
-			specialRow(glyphLater, tr.T("stream", "later"), streamLater, -1, p.sel.Later),
-			specialRow(glyphLiked, tr.T("stream", "liked"), streamLiked, -1, p.sel.Rating > 0),
+			specialRow(tr, glyphUnread, tr.T("stream", "unread"), streamUnread, p.total, p.sel.Unread),
+			specialRow(tr, glyphLater, tr.T("stream", "later"), streamLater, -1, p.sel.Later),
+			specialRow(tr, glyphLiked, tr.T("stream", "liked"), streamLiked, -1, p.sel.Rating > 0),
 			// Liked is a stream; disliked is not. A list of things you decided
 			// were not worth your time is not somewhere anyone goes — the
 			// verdict's job is to feed ranking and to mark the row, and browsing
 			// it would only invite re-reading what you already rejected.
-			specialRow(glyphNotes, tr.T("stream", "notes"), streamNotes, -1, p.sel.Notes),
+			specialRow(tr, glyphNotes, tr.T("stream", "notes"), streamNotes, -1, p.sel.Notes),
 		)
+		head = append(head, railFold(actStreams, !p.streamsClosed, p.closing, streams...)...)
 	}
 
 	body := make([]ui.Node, 0, len(p.feeds)+len(p.tags)+4)
@@ -586,9 +622,10 @@ func railPane(p railProps) ui.Node {
 	// than replacing the whole rail. Blanking out controls that are already
 	// usable in order to say "loading" is a downgrade.
 	if p.loading && len(p.feeds) == 0 {
-		if !p.feedsClosed {
+		var sk []ui.Node
+		if !p.feedsClosed || p.closing == actFeeds {
 			for i := 0; i < 8; i++ {
-				body = append(body, html.Div(html.Props{
+				sk = append(sk, html.Div(html.Props{
 					Class: "feed-row",
 					Key:   "sk-feed-" + strconv.Itoa(i),
 					Aria:  map[string]string{"hidden": "true"},
@@ -599,15 +636,17 @@ func railPane(p railProps) ui.Node {
 				))
 			}
 		}
+		body = append(body, railFold(actFeeds, !p.feedsClosed, p.closing, sk...)...)
 		return railShell(tr, head, body, railFoot(tr, p), true)
 	}
 
-	if !p.feedsClosed {
+	var feeds []ui.Node
+	if !p.feedsClosed || p.closing == actFeeds {
 		// The filter box sits directly under the "Feeds" heading, above the rows
 		// it acts on, so it is obviously attached to them rather than to the
 		// streams above or the add-a-feed box below.
 		if len(p.feeds) > 8 {
-			body = append(body, html.Div(html.Props{Class: "rail-filter"},
+			feeds = append(feeds, html.Div(html.Props{Class: "rail-filter"},
 				html.Input(html.Props{
 					Class: "field", Type: "search", Placeholder: tr.T("rail", "filterPlaceholder"),
 					Value:   p.filterSeed,
@@ -634,32 +673,35 @@ func railPane(p railProps) ui.Node {
 			if p.unreadFeedsOnly && f.GetUnreadCount() == 0 && p.sel.SourceID != f.GetSourceId() {
 				continue
 			}
-			body = append(body, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), false))
+			feeds = append(feeds, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), false))
 			shown++
 		}
 		switch {
 		case len(p.feeds) == 0:
-			body = append(body, html.Div(html.Props{Class: "rail-section"},
+			feeds = append(feeds, html.Div(html.Props{Class: "rail-section"},
 				html.Text(tr.T("rail", "emptyNoFeeds"))))
 		case shown == 0 && needle != "":
-			body = append(body, html.Div(html.Props{Class: "rail-section"},
+			feeds = append(feeds, html.Div(html.Props{Class: "rail-section"},
 				html.Text(tr.T("rail", "emptyNoMatch", i18n.Args{"query": strings.TrimSpace(p.filter)}))))
 		case shown == 0:
-			body = append(body, html.Div(html.Props{Class: "rail-section"},
+			feeds = append(feeds, html.Div(html.Props{Class: "rail-section"},
 				html.Text(tr.T("rail", "emptyNoUnread"))))
 		}
 	}
+	body = append(body, railFold(actFeeds, !p.feedsClosed, p.closing, feeds...)...)
 
 	body = append(body, railCategories(tr, p)...)
 
 	if len(p.tags) > 0 {
 		body = append(body,
 			railBandToggle(glyphTags, tr.T("rail", "bandTags"), actTags, !p.tagsClosed, len(p.tags)))
-		if !p.tagsClosed {
+		var tags []ui.Node
+		if !p.tagsClosed || p.closing == actTags {
 			for _, t := range p.tags {
-				body = append(body, tagRow(tr, t, p.sel.TagID == t.GetId()))
+				tags = append(tags, tagRow(tr, t, p.sel.TagID == t.GetId()))
 			}
 		}
+		body = append(body, railFold(actTags, !p.tagsClosed, p.closing, tags...)...)
 	}
 
 	return railShell(tr, head, body, railFoot(tr, p), false)
@@ -707,12 +749,13 @@ func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
 	groups := feedsByFolder(p.feeds)
 	out := []ui.Node{railBandToggle(glyphCats, tr.T("rail", "bandCategories"), actCats, !p.catsClosed,
 		len(p.folders), newCat)}
-	if p.catsClosed {
+	if p.catsClosed && p.closing != actCats {
 		return out
 	}
 
+	var cats []ui.Node
 	for _, f := range p.folders {
-		out = append(out, categoryRows(tr, p, f.GetId(), f.GetName(), groups[f.GetId()], true)...)
+		cats = append(cats, categoryRows(tr, p, f.GetId(), f.GetName(), groups[f.GetId()], true)...)
 	}
 	// Unfiled last, and only when it is telling the reader something.
 	//
@@ -733,9 +776,10 @@ func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
 	// Once a single folder holds a feed the row means what it says — the
 	// leftovers — and its siblings on screen say which kind of leftover.
 	if rest := groups[unfiledID]; len(rest) > 0 && anyFolderHasFeeds(p.folders, groups) {
-		out = append(out, categoryRows(tr, p, unfiledID, tr.T("stream", "unfiled"), rest, false)...)
+		cats = append(cats, categoryRows(tr, p, unfiledID, tr.T("stream", "unfiled"), rest, false)...)
 	}
-	return append(out, topicRows(tr, p)...)
+	cats = append(cats, topicRows(tr, p)...)
+	return append(out, railFold(actCats, !p.catsClosed, p.closing, cats...)...)
 }
 
 // topicRows are the classification labels, under the folders in the same band.
@@ -813,7 +857,7 @@ func uncategorisedRow(tr i18n.Runtime, active bool, unread int) ui.Node {
 			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
 			ui.If(unread > 0, func() ui.Node {
 				return html.Span(html.Props{Class: "feed-count"},
-					html.Text(strconv.Itoa(unread)))
+					html.Text(thousands(tr, unread)))
 			}),
 		),
 	)
@@ -851,7 +895,7 @@ func topicRow(tr i18n.Runtime, slug string, active bool, unread int) ui.Node {
 			// but a column of noughts is twenty-six pieces of no information.
 			ui.If(unread > 0, func() ui.Node {
 				return html.Span(html.Props{Class: "feed-count"},
-					html.Text(strconv.Itoa(unread)))
+					html.Text(thousands(tr, unread)))
 			}),
 		),
 	)
@@ -890,7 +934,7 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
 			ui.If(unread > 0, func() ui.Node {
 				return html.Span(html.Props{Class: "feed-count"},
-					html.Text(strconv.Itoa(unread)))
+					html.Text(thousands(tr, unread)))
 			}),
 			html.Span(html.Props{Class: "feed-gap"}),
 		),
@@ -913,18 +957,22 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 		Data:  map[string]string{"open": strconv.FormatBool(open)},
 	}, kids...)}
 
-	if !open {
+	// A category folds the same way its section does, through the same one
+	// closing slot — see railFold.
+	key := railCatKey(id)
+	if !open && p.closing != key {
 		return out
 	}
+	var inside []ui.Node
 	if len(feeds) == 0 {
-		return append(out, html.Div(html.Props{
+		inside = append(inside, html.Div(html.Props{
 			Class: "rail-section cat-empty", Key: "cat-empty-" + id,
 		}, html.Text(tr.T("rail", "categoryEmpty"))))
 	}
 	for _, f := range feeds {
-		out = append(out, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), true))
+		inside = append(inside, feedRow(tr, f, p.sel.SourceID == f.GetSourceId(), true))
 	}
-	return out
+	return append(out, railFold(key, open, p.closing, inside...)...)
 }
 
 // feedsByFolder groups the sidebar's feeds by the category they are filed under,
@@ -1092,7 +1140,7 @@ func tagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 			tagMark(t),
 			html.Span(html.Props{Class: "feed-name"}, html.Text(name)),
 			html.Span(html.Props{Class: "feed-count"},
-				html.Text(strconv.Itoa(int(t.GetFeedCount())))),
+				html.Text(thousands(tr, int(t.GetFeedCount())))),
 			html.Span(html.Props{Class: "feed-gap"}),
 		),
 		html.Button(html.Props{
@@ -1177,6 +1225,99 @@ const (
 // A closed section reports what it is hiding. Folding a group away should not
 // also delete the fact that it has fourteen things in it; that is the number
 // that tells a reader whether unfolding it is worth the height.
+// --- folding a section ----------------------------------------------------------
+//
+// The rail's sections opened and closed by existing and not existing: the caret
+// turned, and everything below it jumped to a new position in the same frame
+// (Cam, 2026-08-08). The caret was already the only thing in the gesture that
+// moved, which made a fold read as a repaint rather than as a section going
+// away.
+//
+// # Why the rows have to outlive the press
+//
+// A closed section renders NOTHING — that is most of what folding is for in a
+// column that can hold 151 rows, and keeping the rows mounted behind a
+// `height: 0` would hand the reconciler the whole subscription list to diff on
+// every render, which is the cost the fold exists to avoid. So there is nothing
+// left on screen to animate on the frame the reader presses.
+//
+// The fix is the one Discover already uses for its cards: the rows stay in the
+// tree for exactly one animation, marked as leaving, and go afterwards. That is
+// railClosing in reader.go, this element's `data-shut`, and railFoldAnimMS.
+//
+// # Why a grid row rather than max-height
+//
+// A section's height is genuinely unknown — five stream rows or a hundred and
+// fifty feeds — and `height: auto` cannot be a keyframe endpoint. The discover
+// card answers this by declaring a ceiling (800px) and animating to it, which
+// works because a card's real height is a known small range. A ceiling here
+// would be wrong at both ends: too low clips the list, and too high spends most
+// of the duration animating through empty space, so the fold appears to finish
+// early and then jump.
+//
+// `grid-template-rows: 0fr → 1fr` interpolates to the CONTENT's height with no
+// number stated anywhere, which is exactly the missing primitive. It needs the
+// rows to be one grid item, hence the inner element.
+const railFoldAnimMS = 200 * time.Millisecond
+
+// railCatKey namespaces a category's fold so it cannot collide with a band's
+// action id in the single closing slot.
+func railCatKey(id string) string { return "cat:" + id }
+
+// playRailFold holds a section on screen for one fold, or releases one that is
+// being re-opened. `closing` is what the press just did, not what was showing.
+//
+// At --mo:0 the keyframe is instant and this merely keeps invisible rows in the
+// tree an extra 200ms, which costs nothing and is simpler than a second timing
+// path that would have to read the motion setting to stay in step with it.
+func playRailFold(key string, closing bool, slot ui.State[string]) {
+	if !closing {
+		// Re-opened, possibly mid-fold: drop the mark so the section is not
+		// still painted as leaving while it comes back.
+		if slot.Get() == key {
+			slot.Set("")
+		}
+		return
+	}
+	slot.Set(key)
+	go func() {
+		time.Sleep(railFoldAnimMS)
+		ui.PostAsync(func() {
+			// Superseded — the reader re-opened this section, or folded a
+			// different one — and clearing the slot now would cut that one's
+			// animation short.
+			if slot.Get() != key {
+				return
+			}
+			slot.Set("")
+		})
+	}()
+}
+
+// railFold wraps a section's rows so it can fold instead of vanishing.
+//
+// open is the section's real state; closing is the one section currently being
+// held for its exit. Returns nothing at all when the section is closed and not
+// leaving, which is the case that has to stay free.
+func railFold(key string, open bool, closing string, kids ...ui.Node) []ui.Node {
+	shut := !open && closing == key
+	if !open && !shut {
+		return nil
+	}
+	return []ui.Node{html.Div(html.Props{
+		Class: "rail-fold",
+		// Stable, so re-opening patches this element rather than replacing it.
+		// A new element would re-run the opening keyframe on every unrelated
+		// render of the rail.
+		Key:  "fold-" + key,
+		Data: map[string]string{"shut": strconv.FormatBool(shut)},
+		// The rows are on their way out and must not be clickable on the way:
+		// a press landing on a row that is 4px tall and still moving is a
+		// navigation nobody asked for.
+		Aria: map[string]string{"hidden": strconv.FormatBool(shut)},
+	}, html.Div(html.Props{Class: "rail-fold-in"}, kids...))}
+}
+
 func railBandToggle(glyph, label, action string, open bool, hidden int, extra ...ui.Node) ui.Node {
 	kids := []ui.Node{
 		html.Button(html.Props{
@@ -1253,14 +1394,18 @@ func railFeedsHeader(tr i18n.Runtime, p railProps) ui.Node {
 //
 // A zero count is not shown. "All feeds 0" is a number that says nothing and
 // draws the eye to the one place in the rail where nothing is happening.
-func specialRow(glyph, label, id string, count int, active bool) ui.Node {
+// tr is threaded in for the count alone: the rail was the one surface still
+// printing a raw integer, so a reader with twenty thousand unread saw "20004"
+// here and "20,004" everywhere else the same number appears. thousands() exists
+// precisely so those cannot disagree.
+func specialRow(tr i18n.Runtime, glyph, label, id string, count int, active bool) ui.Node {
 	children := []ui.Node{
 		lead(glyph),
 		html.Span(html.Props{Class: "feed-name"}, html.Text(label)),
 	}
 	if count > 0 {
 		children = append(children,
-			html.Span(html.Props{Class: "feed-count"}, html.Text(strconv.Itoa(count))))
+			html.Span(html.Props{Class: "feed-count"}, html.Text(thousands(tr, count))))
 	}
 	return html.Button(html.Props{
 		Class: "feed-row stream-row",
@@ -1290,7 +1435,7 @@ func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 	}
 	if n := f.GetUnreadCount(); n > 0 {
 		children = append(children,
-			html.Span(html.Props{Class: "feed-count"}, html.Text(strconv.Itoa(int(n)))))
+			html.Span(html.Props{Class: "feed-count"}, html.Text(thousands(tr, int(n)))))
 	}
 
 	// The gear.
@@ -1499,6 +1644,10 @@ type listProps struct {
 	// with no items sat on its loading skeleton forever, for a request that had
 	// succeeded. This field is what guarantees the props differ.
 	rev int
+	// loadFailed is set when the last page-one fetch came back with an error, so
+	// an empty list can tell "nothing matched" apart from "nothing arrived". They
+	// look the same and are not: see emptyList.
+	loadFailed bool
 	// loading is a page-one fetch in flight — the initial load, or a feed change.
 	// It is distinct from loadingMore, which appends to a list that is already on
 	// screen and therefore needs no placeholder.
@@ -1897,6 +2046,15 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		sub = tr.T("list", "subLiked")
 	case p.sel.Rating < 0:
 		sub = tr.T("list", "subDisliked")
+	case p.sel.Notes:
+		// The third stream to fall through this switch, and the third with the
+		// same symptom the two comments above describe: with no case of its own,
+		// Notes took `subUnreadCount` and announced "2,001 unread, newest first"
+		// over a list of the articles the reader had written on — a count from a
+		// different stream, on a list that had nothing to do with unread. Beside
+		// the other three rather than after the unread cases, because this says
+		// what the list IS and those say how it is filtered.
+		sub = tr.T("list", "subNotes")
 	case p.unreadOnly, p.sel.Unread:
 		// Same two fields, same OR, as emptyList and the chip below: the
 		// persistent "u" toggle and the rail's dedicated Unread stream row
@@ -1906,7 +2064,37 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		// which describe an UNfiltered list — "Newest first" under a list
 		// that is, in fact, unread-only.
 		sub = tr.T("list", "subUnread")
-	case p.unread > 0:
+	// The count belongs to the WHOLE ACCOUNT, so only the whole account may
+	// quote it.
+	//
+	// listProps.unread is totalUnread — every feed, every category, the number
+	// the masthead carries. Rendered under a scope that is not the whole
+	// account it is the My Feed defect above, again, on the commonest scope
+	// there is: a feed with two unread articles was headed "2,004 unread,
+	// newest first", with the rail badge beside it reading 2. Whichever number
+	// the reader believes, one of them is a lie, and the bigger one is the one
+	// that looks authoritative.
+	//
+	// Five items hid this for as long as the test data was five items — the
+	// account total and one feed's total were the same number. Two thousand
+	// separated them.
+	//
+	// The ordering claim survives without the count (subNewest), because that
+	// part IS true of these lists. A per-scope count would be better still, but
+	// it is a different number for a feed, a tag and a category, and inventing
+	// one here to fill the sentence is how the wrong number got in.
+	// Six things narrow the list, and narrowed() tests FIVE of them: Search has
+	// its own case at the top of this switch and never reaches here, so adding
+	// it below would be dead. The count in this comment used to read "six",
+	// which sits badly above a five-field call — anyone checking the guard
+	// counts five and concludes one is missing.
+	//
+	// CategorySlug and Uncategorised are the two that are easy to leave out, and
+	// were: they are the classifier's labels rather than the reader's folders
+	// (see scope's own note on why the two are separate fields), so a guard
+	// written against FolderID alone still let "Software" — one unread article
+	// — call itself 2,004 unread.
+	case p.unread > 0 && !p.sel.narrowed():
 		sub = tr.T("list", "subUnreadCount", i18n.Count(p.unread))
 	}
 
@@ -1925,14 +2113,23 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		// The way back to the rail, in the HEAD rather than in the empty-list
 		// branch it used to live in.
 		//
-		// Below 1221px the rail is off-screen and this is the only route to it
-		// (`.back` is display:none above that width, so desktop is unaffected).
-		// Rendering it only when the list was EMPTY meant that as soon as a feed
-		// had articles — which is the normal state, and the state a reader is in
-		// after tapping a feed — the phone had no way back to the sidebar at all.
-		// A secondary action can be traded away for space; the sole means of
+		// At or below 900px the rail is off-screen and this is the only route to
+		// it. Rendering it only when the list was EMPTY meant that as soon as a
+		// feed had articles — which is the normal state, and the state a reader is
+		// in after tapping a feed — the phone had no way back to the sidebar at
+		// all. A secondary action can be traded away for space; the sole means of
 		// navigation cannot.
-		actionButton("back-rail", "btn btn-ghost back", tr.T("list", "backToFeeds")),
+		//
+		// `.back-rail` as well as `.back`, and the extra class is the fix for a
+		// 320px-wide band of screens. Both back buttons shared one class and
+		// therefore one breakpoint, 1221px — which is the width the ARTICLE starts
+		// covering the list at, and has never been the width the rail disappears
+		// at (see responsive(): the rail column survives down to 900px). So every
+		// window from 901px to 1220px — a small laptop, a tablet in landscape, a
+		// half-screen window — showed "‹ Feeds" above a feed list with the feeds
+		// already beside it. A control that navigates to something on screen
+		// teaches the reader that the chrome does not know what it is showing.
+		actionButton("back-rail", "btn btn-ghost back back-rail", tr.T("list", "backToFeeds")),
 		// Keyed on the scope, so switching feeds REPLACES these two lines rather
 		// than patching their text — which is what lets them fade in again. A CSS
 		// animation fires when an element is created and never afterwards, so
@@ -1958,13 +2155,13 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			// Settings is reachable from the phone's tab bar and from a comma.
 			// Neither is discoverable on a desktop, so it also gets a gear here.
 			html.Button(html.Props{
-				Class: "chip chip-mini",
+				Class: "chip chip-mini chip-icon",
 				Raw:   map[string]any{"data-action": "open-discover"},
 				Title: tr.T("discover", "title"),
 				Aria:  map[string]string{"label": tr.T("discover", "title")},
 			}, lead(glyphDiscover)),
 			html.Button(html.Props{
-				Class: "chip chip-mini",
+				Class: "chip chip-mini chip-icon",
 				Raw:   map[string]any{"data-action": "open-settings"},
 				Title: tr.T("list", "settings"),
 				Aria:  map[string]string{"label": tr.T("list", "settings")},
@@ -1973,7 +2170,7 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 			// whose best interface is its keys is keyboard-first for exactly one
 			// person — the one who wrote it.
 			html.Button(html.Props{
-				Class: "chip chip-mini",
+				Class: "chip chip-mini chip-icon",
 				Raw:   map[string]any{"data-action": "help-open"},
 				Title: tr.T("list", "shortcuts"),
 				Aria:  map[string]string{"label": tr.T("list", "shortcuts")},
@@ -2420,6 +2617,19 @@ func learningBand(tr i18n.Runtime, p listProps) ui.Node {
 // it is empty, and those are three different situations.
 func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 	switch {
+	case p.loadFailed:
+		// First, because it outranks every reason below it. Those all answer "why
+		// is this list empty" with something about the reader's data — a filter
+		// they chose, a stream they have not filled yet — and every one of them is
+		// a confident wrong answer when the truth is that the request did not come
+		// back. Going offline on a feed with three unread articles in it produced
+		// "No articles yet — add a feed, the button sits at the bottom of the
+		// sidebar", to somebody who had feeds and was looking at one.
+		//
+		// No direction on the second line beyond waiting, because there is nothing
+		// to do: the notice above says whether it was the network or the server,
+		// and inventing an action here would be the same mistake one layer down.
+		return emptyState(tr, "emptyFailed", "emptyFailedHint")
 	case p.sel.Search != "":
 		return emptyState(tr, "emptySearch", "emptySearchHint")
 	case p.sel.MyFeed:

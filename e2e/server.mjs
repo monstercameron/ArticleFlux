@@ -1,10 +1,9 @@
 import { spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 
 import { APP_PORT } from './ports.mjs';
+import { listenerPids, killPid } from './platform.mjs';
 
 // The repository root, which the server is spawned FROM.
 //
@@ -13,8 +12,6 @@ import { APP_PORT } from './ports.mjs';
 // answers 404 for the page while /healthz stays green. That failure looks
 // exactly like "the restart did not work" and is not.
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-const run = promisify(execFile);
 
 // Stopping and starting the app server FROM A TEST, for T21(e) (TODO 8c.17).
 //
@@ -28,9 +25,11 @@ const run = promisify(execFile);
 //
 // # Killing by port, not by image name
 //
-// `taskkill /IM articleflux.exe` would take out every other run on this machine,
-// including the other agent's. The PID comes from netstat for the port this run
-// owns, which is the same rule global-setup follows and for the same reason.
+// An image-name kill — `taskkill /IM articleflux.exe`, `pkill articleflux` —
+// would take out every other run on this machine, including the other agent's.
+// The PID comes from the port this run owns, which is the same rule global-setup
+// follows and for the same reason. Both go through platform.mjs, because the
+// tool differs between Linux and Windows and the intent does not.
 
 /**
  * stopServer kills whatever holds this run's app port.
@@ -44,7 +43,7 @@ export async function stopServer() {
   const pid = await pidOnPort(APP_PORT);
   if (!pid) return false;
   try {
-    await run('taskkill', ['/PID', pid, '/F']);
+    await killPid(pid);
   } catch {
     // Already gone between the lookup and the kill, which is a success.
   }
@@ -141,17 +140,14 @@ ${said.trim() || '(nothing)'}`);
   return app;
 }
 
+// pidOnPort returns one pid LISTENING on the port, or null.
+//
+// Listening only — an established connection to the port is a CLIENT, and
+// killing that would kill the browser rather than the server. platform.mjs
+// enforces that on both operating systems, which is why this is a call rather
+// than the `netstat` parse it used to be: the suite runs on Linux in CI now.
 async function pidOnPort(port) {
-  try {
-    const { stdout } = await run('netstat', ['-ano', '-p', 'TCP']);
-    for (const line of stdout.split(/\r?\n/)) {
-      // LISTENING only: an established connection to the port is a CLIENT, and
-      // killing it would kill the browser rather than the server.
-      if (!line.includes(`:${port} `) || !line.includes('LISTENING')) continue;
-      const pid = line.trim().split(/\s+/).pop();
-      if (pid && pid !== '0') return pid;
-    }
-  } catch { /* netstat unavailable; treat as nothing listening */ }
+  for (const pid of await listenerPids(port)) return pid;
   return null;
 }
 

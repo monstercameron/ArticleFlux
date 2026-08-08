@@ -57,8 +57,10 @@ type tagSettingsProps struct {
 const (
 	actTagSettings      = "tag-settings"
 	actTagSettingsClose = "tag-settings-close"
-	actTagRename        = "ts-rename"
-	actTagGlyph         = "ts-glyph"
+	// What openTagSettings focuses when the panel opens; see actionButtonRole.
+	roleTagSettingsClose = "tag-settings-close-btn"
+	actTagRename         = "ts-rename"
+	actTagGlyph          = "ts-glyph"
 )
 
 // glyphNone is the sentinel for "no glyph — use the section default". A value
@@ -90,7 +92,8 @@ func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
 				ui.If(p.saving, func() ui.Node {
 					return html.Span(html.Props{Class: "fs-saving"}, html.Text(tr.T("tagSettings", "saving")))
 				}),
-				actionButton(actTagSettingsClose, "btn btn-ghost fs-close", tr.T("tagSettings", "close")),
+				actionButtonRole(actTagSettingsClose, roleTagSettingsClose,
+					"btn btn-ghost fs-close", tr.T("tagSettings", "close")),
 			),
 			html.Div(html.Props{Class: "fs-body"}, tagSettingsBody(tr, p)...),
 		),

@@ -276,3 +276,122 @@ func TestShellMakesNoThirdPartyRequests(t *testing.T) {
 		t.Errorf("default-src = %q, want 'self'", src)
 	}
 }
+
+// The policy follows the shell when the shell changes underneath the server.
+//
+// This is the development box's failure, and it is silent: the static handler
+// serves index.html from disk on every request, so editing the boot script
+// shipped a page whose inline script the header — computed once, at start —
+// refused. The browser reports a CSP violation and nothing else; the page is
+// blank, the server is healthy, and the only symptom points at the wasm build.
+func TestCSPFollowsAnEditedShell(t *testing.T) {
+	first := "\n  console.log('one');\n"
+	root := shellWith(t, "<html><body><script>"+first+"</script></body></html>")
+	cache := newCSPCache(root)
+
+	hashOf := func(body string) string {
+		sum := sha256.Sum256([]byte(body))
+		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	}
+	if got := directive(cache.get(), "script-src"); !strings.Contains(got, hashOf(first)) {
+		t.Fatalf("script-src = %q, want the hash of the shell it was built from", got)
+	}
+
+	second := "\n  console.log('two, and rather longer than the first');\n"
+	// The stamp is modtime plus size, and a test writes both files inside one
+	// timestamp tick — so the size difference above is what makes this a change
+	// on every filesystem, rather than only on the ones with a fine clock.
+	if err := os.WriteFile(filepath.Join(root, "index.html"),
+		[]byte("<html><body><script>"+second+"</script></body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := directive(cache.get(), "script-src")
+	if !strings.Contains(got, hashOf(second)) {
+		t.Errorf("script-src = %q, want the hash of the EDITED shell %s — a stale "+
+			"policy refuses the script the server is serving", got, hashOf(second))
+	}
+	if strings.Contains(got, hashOf(first)) {
+		t.Errorf("script-src = %q still carries the old shell's hash, which grants a "+
+			"script no longer on the page", got)
+	}
+}
+
+// A shell that cannot be read keeps the last good policy.
+//
+// An editor writing through a temporary makes index.html briefly absent, and a
+// policy rebuilt at that instant would carry no hash at all — refusing the boot
+// script of the page served a millisecond later.
+func TestCSPKeepsTheLastPolicyWhenTheShellIsMissing(t *testing.T) {
+	root := shellWith(t, "<html><body><script>\n  console.log('boot');\n</script></body></html>")
+	cache := newCSPCache(root)
+	want := cache.get()
+
+	if err := os.Remove(filepath.Join(root, "index.html")); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.get(); got != want {
+		t.Errorf("policy = %q, want the last good one %q", got, want)
+	}
+}
+
+// Every route the mux answers carries nosniff, not only the two that happened
+// to be wrapped in securityHeaders.
+//
+// # What this pins
+//
+// securityHeaders states the rule — "nosniff ... applies to every response, and
+// goes on unconditionally" — but it is mounted on `/` and `/welcome`, so the
+// rule only ever held for the static handler. Every other endpoint had to
+// remember for itself, and two did not: `/pub`, the Atom share that anybody in
+// the world may fetch without a credential and whose entries carry
+// publisher-supplied HTML, and `/speech`, audio assembled from bytes a third
+// party returned. Both set their own Content-Type on the way out and neither
+// set this.
+//
+// # Why the cases below are the ones they are
+//
+// `http.Error` sets nosniff itself, on every refusal, for free. So a request
+// that 400s or 404s proves nothing about the arrangement — the first version of
+// this test asked for `/pub/does-not-exist` and `/speech` with no ticket, got
+// nosniff on both, and would have passed with the wrapper deleted.
+//
+// Only SUCCESS responses were ever exposed, so only success responses can
+// demonstrate the fix. `/healthz`, `/readyz` and `/metrics` answer 200 without
+// a fixture and are the reachable proof. `/pub` and `/speech` need a real share
+// and a real API key respectively; they are covered by the same one wrapper, on
+// the same line, which is the whole reason the fix is one wrapper.
+func TestEveryRouteCarriesNosniff(t *testing.T) {
+	// A real Open, because this is about the assembled mux rather than about one
+	// middleware — newTestApp builds an App that never calls buildHandler, so
+	// Handler() is nil there.
+	a, err := Open(t.Context(), Config{
+		DBPath:       filepath.Join(t.TempDir(), "nosniff.db"),
+		WebRoot:      shellWith(t, "<html></html>"),
+		PollInterval: 0,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	h := a.Handler()
+
+	for _, c := range []struct{ path, why string }{
+		{"/healthz", "a 200 with no fixture, and one of the responses that lacked it"},
+		{"/readyz", "same"},
+		{"/metrics", "operational output is still a response"},
+		{"/", "the static handler, which had it via securityHeaders"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, c.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s answered %d; this case only means something on a SUCCESS "+
+				"response, because http.Error supplies nosniff on every refusal",
+				c.path, rec.Code)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want \"nosniff\" — %s",
+				c.path, got, c.why)
+		}
+	}
+}

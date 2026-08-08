@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/tts"
 )
 
 // Where the Smart+ spend total survives a restart (llm.SpendStore).
@@ -33,7 +35,10 @@ type settingsSpend struct {
 	log      *slog.Logger
 }
 
-var _ llm.SpendStore = settingsSpend{}
+var (
+	_ llm.SpendStore = settingsSpend{}
+	_ tts.SpendStore = settingsSpend{}
+)
 
 // spendWriteTimeout bounds the write.
 //
@@ -48,6 +53,17 @@ var _ llm.SpendStore = settingsSpend{}
 // longer than this is a locked database, where giving up quietly is worse than
 // the pause.
 const spendWriteTimeout = 5 * time.Second
+
+// budgetReadTimeout bounds the ceiling lookup. See smartBudgetUSD for why the
+// read needs a deadline of its own at all.
+//
+// Shorter than the write's five seconds, and the asymmetry is the point. A
+// write that gives up LOSES the spend it was recording, so waiting beats
+// forgetting. A read that gives up costs one uncapped call and the next one
+// asks again — so the cheaper mistake is to stop waiting, especially since the
+// caller most likely to be blocked here is holding a slot the whole feature
+// shares.
+const budgetReadTimeout = 2 * time.Second
 
 // LoadSpend reads the instance's running total.
 //
@@ -116,4 +132,126 @@ func (s settingsSpend) warn(msg string, err error) {
 		return
 	}
 	s.log.Warn(msg, "key", string(store.KeySmartSpendTotal), "err", err)
+}
+
+// The voice's half of the same meter (tts.SpendStore).
+//
+// # Why the same adapter and a different row
+//
+// One adapter because the argument above is unchanged: the storage layer knows
+// where a number lives and the egress packages do not. A different ROW because
+// the two are billed on different units — the model on tokens, the voice on
+// characters — and priced from different tables, so a single accumulated figure
+// could not be corrected or explained if either rate changed, and could not
+// answer "which half is spending".
+//
+// The CEILING is shared even though the rows are not: `internal/app` gives both
+// clients the same cap and a total that sums both. Two ceilings would mean an
+// operator who set $5 got $10, which is the shape of the gap this closes — the
+// setting said "Smart+ budget" and bounded only the model.
+
+// LoadSpeechSpend reads the instance's running speech total.
+func (s settingsSpend) LoadSpeechSpend(ctx context.Context) (tts.Cost, error) {
+	if s.settings == nil {
+		return tts.Cost{}, nil
+	}
+	raw, err := s.settings.SystemValue(ctx, store.KeySpeechSpendTotal)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return tts.Cost{}, nil
+	}
+	var c tts.Cost
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		s.warnKey(store.KeySpeechSpendTotal,
+			"the speech spend total could not be read; the meter restarts from zero", err)
+		return tts.Cost{}, nil
+	}
+	return c, nil
+}
+
+// SaveSpeechSpend writes the running speech total back.
+func (s settingsSpend) SaveSpeechSpend(ctx context.Context, c tts.Cost) error {
+	if s.settings == nil {
+		return nil
+	}
+	enc, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	// Detached, and with no author, for the two reasons SaveSpend gives at
+	// length: the caller's context dies with the request that triggered the
+	// call, and `settings.updated_by` is a foreign key to `users(id)` that the
+	// string "system" fails silently.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), spendWriteTimeout)
+	defer cancel()
+
+	if err := s.settings.SetSystemValue(ctx, store.KeySpeechSpendTotal, string(enc), ""); err != nil {
+		s.warnKey(store.KeySpeechSpendTotal,
+			"the speech spend total was not saved; the ceiling will be short by this call", err)
+		return err
+	}
+	return nil
+}
+
+// warnKey is warn with the key named, for the second meter.
+func (s settingsSpend) warnKey(key store.SystemKey, msg string, err error) {
+	if s.log == nil {
+		return
+	}
+	s.log.Warn(msg, "key", string(key), "err", err)
+}
+
+// smartBudgetUSD is the one ceiling, read per call.
+//
+// One function rather than two closures, because the model and the voice must
+// read the SAME number: two copies of this parse would be two chances to
+// disagree about what "unset" means, and the failure mode of disagreeing is a
+// ceiling that binds one half of Smart+ and not the other — which is exactly
+// the gap this exists to close.
+//
+// Per call rather than at boot, so raising it while a job is hitting it takes
+// effect without a restart, which is precisely when nobody wants one.
+//
+// Absent, unparseable and "0" all mean NO ceiling. A cap is something somebody
+// opts into, and a malformed row must not silently become the strictest
+// possible limit — an instance that has been working for months must not stop
+// because a settings row got mangled.
+//
+// # Why the read has its own deadline
+//
+// One of the two callers reaches this on a context that CANNOT time out. The
+// voice checks the ceiling from `tts.synthesise`, which runs on
+// `context.WithoutCancel` by design — a synthesis already billed is finished
+// even if the reader navigates away — and it checks it while holding one of
+// only four `bound` slots. So a settings read that blocks there blocks with no
+// deadline, no cancellation and a slot in hand, and four of them wedge
+// listening for the whole instance until somebody restarts it.
+//
+// That is a new hazard rather than a pre-existing one: before the ceiling
+// existed, nothing inside that slot touched the database at all — the only
+// thing between acquire and release was an HTTP call carrying its own timeout.
+//
+// Bounded here rather than at either call site, for the reason the function is
+// shared at all: one place to read means one place that cannot hang.
+// `WithTimeout` never extends a deadline, so a caller that already has a
+// shorter one keeps it.
+func (a *App) smartBudgetUSD(ctx context.Context) float64 {
+	if a.settings == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(ctx, budgetReadTimeout)
+	defer cancel()
+
+	v, err := a.settings.SystemValue(ctx, store.KeySmartBudgetUSD)
+	if err != nil {
+		// Unreadable is the same answer as unset: NO ceiling. Stated again here
+		// because the timeout above makes a slow database reach this line, and
+		// failing open is the deliberate choice — a cap that stops paid work
+		// because a settings read was slow is a cap that gets switched off.
+		return 0
+	}
+	usd, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0
+	}
+	return usd
 }

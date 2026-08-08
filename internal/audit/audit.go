@@ -89,6 +89,21 @@ const (
 	ActionAccountCreated Action = "account.created"
 	ActionPasswordReset  Action = "account.password.reset"
 	ActionInstanceClaim  Action = "instance.claimed"
+	// ActionKeyRotated is `articleflux rotate-key`: every stored credential
+	// re-encrypted and secrets.key replaced.
+	//
+	// The paragraph above is the whole argument for it, and this is the action it
+	// fits best. A rotation is legitimate, it is invisible from inside the app —
+	// nothing on any screen changes — and it is indistinguishable from an
+	// intruder with filesystem access re-sealing the database under a key of
+	// their own.
+	//
+	// It also has a shape none of the others do: the operation people run it for
+	// is a SUSPECTED EXPOSURE. So the moment somebody reads `articleflux audit`
+	// in earnest is the moment they most need to see whether the key was rotated,
+	// by whom, and when — and until this existed the answer was a timestamped
+	// `.old` file in a directory, or nothing.
+	ActionKeyRotated Action = "instance.key.rotated"
 )
 
 // Severity splits the trail into what is recorded and what is worth waking up

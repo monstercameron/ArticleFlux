@@ -256,6 +256,31 @@ func TestWriteGroupsByFolderAndDefaultsTitle(t *testing.T) {
 
 // An importer without an exporter is a roach motel, so the round trip is the
 // thing worth testing.
+// A parsed document survives being written and parsed again — every field, and
+// as a SET.
+//
+// # Why not index by index, which is what this used to do
+//
+// Write reorders deliberately: top-level feeds are emitted first, then each
+// folder with its own inside. So `orig.Feeds[i]` and `again.Feeds[i]` are only
+// the same subscription when the input happened to be in that order already,
+// which the checked-in fixture is. Comparing positionally therefore tested the
+// fixture's ordering as much as the round trip, and would have failed on a
+// document that listed a foldered feed before an unfoldered one — a false alarm
+// about correct behaviour.
+//
+// Keyed on FeedURL instead, which is the one field that identifies a
+// subscription and the one a round trip must never change.
+//
+// # Why all four fields
+//
+// This checked Title and FeedURL. It did not check FOLDER, which is the field
+// somebody's filing work lives in and the exact thing that has already been lost
+// once here: cmd/articleflux's exporter carries categories because writing feeds
+// flat "made the round trip lossy in exactly the way that matters to somebody
+// who spent an evening filing 151 feeds". A round-trip test that does not look
+// at the folder cannot see that failure, which is the only reason it is worth
+// saying out loud that it now does.
 func TestRoundTrip(t *testing.T) {
 	f, err := os.Open("testdata/freshrss.opml")
 	if err != nil {
@@ -266,26 +291,122 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(orig.Feeds) == 0 {
+		t.Fatal("the fixture parsed to no feeds, so this test would prove nothing")
+	}
+
+	// Snapshotted BEFORE Write, and that is not defensive padding. Write takes a
+	// *Document; if it ever mutated the caller's slice, comparing the result
+	// against `orig` afterwards would compare the damage with itself and pass.
+	// Verified: breaking Write to file every feed flat did exactly that, and this
+	// test could not see it until the expectation stopped sharing memory with the
+	// input.
+	want := append([]Feed(nil), orig.Feeds...)
 
 	var buf strings.Builder
 	if err := Write(&buf, orig); err != nil {
 		t.Fatal(err)
 	}
+	for i := range want {
+		if orig.Feeds[i] != want[i] {
+			t.Errorf("Write mutated its input: feed %d became %+v, was %+v",
+				i, orig.Feeds[i], want[i])
+		}
+	}
 	again, err := Parse(strings.NewReader(buf.String()))
 	if err != nil {
 		t.Fatalf("re-parsing our own output failed: %v", err)
 	}
-	if len(again.Feeds) != len(orig.Feeds) {
-		t.Fatalf("round trip lost feeds: %d -> %d", len(orig.Feeds), len(again.Feeds))
+	if len(again.Feeds) != len(want) {
+		t.Fatalf("round trip lost feeds: %d -> %d", len(want), len(again.Feeds))
 	}
-	for i := range orig.Feeds {
-		if again.Feeds[i].FeedURL != orig.Feeds[i].FeedURL {
-			t.Errorf("feed %d url changed: %q -> %q", i,
-				orig.Feeds[i].FeedURL, again.Feeds[i].FeedURL)
+
+	got := make(map[string]Feed, len(again.Feeds))
+	for _, f := range again.Feeds {
+		if _, dup := got[f.FeedURL]; dup {
+			t.Errorf("round trip produced two feeds with url %q", f.FeedURL)
 		}
-		if again.Feeds[i].Title != orig.Feeds[i].Title {
-			t.Errorf("feed %d title changed: %q -> %q", i,
-				orig.Feeds[i].Title, again.Feeds[i].Title)
+		got[f.FeedURL] = f
+	}
+	for _, want := range want {
+		have, ok := got[want.FeedURL]
+		if !ok {
+			t.Errorf("feed %q (%s) did not survive the round trip", want.Title, want.FeedURL)
+			continue
+		}
+		if have.Title != want.Title {
+			t.Errorf("%s: title %q -> %q", want.FeedURL, want.Title, have.Title)
+		}
+		if have.SiteURL != want.SiteURL {
+			t.Errorf("%s: site url %q -> %q", want.FeedURL, want.SiteURL, have.SiteURL)
+		}
+		if have.Folder != want.Folder {
+			t.Errorf("%s: folder %q -> %q — this is where a reader's filing lives",
+				want.FeedURL, want.Folder, have.Folder)
+		}
+	}
+}
+
+// The same claim on a document the fixture cannot express: a foldered feed
+// listed BEFORE an unfoldered one, an empty site url, and an ampersand in a
+// folder name.
+//
+// Write emits unfoldered feeds first, so this input comes back in a different
+// order than it went in. That is correct and is why the test above is keyed
+// rather than positional; this pins that the reordering is all that changes.
+func TestRoundTripSurvivesReorderingAndEscaping(t *testing.T) {
+	orig := &Document{
+		Title: "Subs",
+		Feeds: []Feed{
+			{Title: "Alpha", FeedURL: "https://a.example/feed", SiteURL: "https://a.example/", Folder: "Tech"},
+			{Title: "Gamma", FeedURL: "https://c.example/feed", SiteURL: "https://c.example/"},
+			{Title: "Delta", FeedURL: "https://d.example/feed", Folder: "News & Views"},
+		},
+		Folders: []string{"Tech", "News & Views"},
+	}
+
+	// Snapshotted before Write, for the reason TestRoundTrip gives: Write takes a
+	// pointer, and an expectation that shares memory with the input compares the
+	// damage with itself.
+	//
+	// This is the test that can actually SEE a lost folder. The checked-in
+	// fixture is a single "Subscriptions" wrapper, which TestSingleWrapperIsUnwrapped
+	// strips — so every feed in it has an empty folder, and the folder assertion
+	// over there is true but vacuous. These three feeds are the ones with filing
+	// on them.
+	want := append([]Feed(nil), orig.Feeds...)
+
+	var buf strings.Builder
+	if err := Write(&buf, orig); err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if orig.Feeds[i] != want[i] {
+			t.Errorf("Write mutated its input: feed %d became %+v, was %+v",
+				i, orig.Feeds[i], want[i])
+		}
+	}
+	again, err := Parse(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("re-parsing our own output failed: %v", err)
+	}
+	if len(again.Feeds) != len(want) {
+		t.Fatalf("round trip lost feeds: %d -> %d", len(want), len(again.Feeds))
+	}
+
+	got := map[string]Feed{}
+	for _, f := range again.Feeds {
+		got[f.FeedURL] = f
+	}
+	for _, want := range want {
+		have, ok := got[want.FeedURL]
+		if !ok {
+			t.Fatalf("%s did not survive", want.FeedURL)
+		}
+		if have.Title != want.Title || have.SiteURL != want.SiteURL || have.Folder != want.Folder {
+			t.Errorf("%s round-tripped as {title:%q site:%q folder:%q}, want {%q %q %q}",
+				want.FeedURL, have.Title, have.SiteURL, have.Folder,
+				want.Title, want.SiteURL, want.Folder)
 		}
 	}
 }

@@ -177,6 +177,13 @@ func ScrollPaneToTop(selector string) {}
 
 func ScrollIntoView(selector string) {}
 
+// FieldExists is false off the browser: there is no document to look in, and a
+// caller guarding a focus call wants "do not try" rather than a lie.
+func FieldExists(role string) bool { return false }
+
+// TrapTabTopDialog does nothing off the browser: there is no focus to keep.
+func TrapTabTopDialog(backwards bool) bool { return false }
+
 func Origin() string { return "" }
 
 // BasePath is "/" for a process with no document. See the wasm build for what it

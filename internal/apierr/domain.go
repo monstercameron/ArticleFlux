@@ -45,6 +45,13 @@ func FromDomain(err error) error {
 	case errors.Is(err, store.ErrBadCursor), errors.Is(err, store.ErrCursorSpecMismatch):
 		return StaleCursor().WithCause(err)
 
+	case errors.Is(err, store.ErrBadTimestamp):
+		// A caller's field, not a server fault: Internal here would tell the
+		// client to retry something that will fail identically forever.
+		return Invalid("muted_until", "srv.badTimestamp",
+			"That is not a time this server can store. Send an RFC3339 timestamp.").
+			WithCause(err)
+
 	case errors.Is(err, store.ErrIdemConflict):
 		// The same idempotency key with a DIFFERENT request body. Not a replay
 		// to be answered from the cache — a client bug or a key collision, and

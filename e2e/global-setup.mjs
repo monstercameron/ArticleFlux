@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { APP_PORT, FEED_PORT, releaseSlot } from './ports.mjs';
+import { serverBinary, listenerPids, killPid } from './platform.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
@@ -43,12 +44,12 @@ let app;
 export default async function globalSetup() {
   mkdirSync(join(here, '.tmp'), { recursive: true });
 
-  // A previous run that was killed rather than closed leaves a articleflux.exe
+  // A previous run that was killed rather than closed leaves an articleflux
   // holding the database open, and Windows refuses to delete a locked file —
   // so the next run dies at rmSync with EPERM and blames the filesystem.
   //
   // Two defences, because either alone is insufficient:
-  //   1. kill whatever is listening on the app port (by PID from netstat, never
+  //   1. kill whatever is listening on the app port (by PID, never
   //      a blanket kill by image name — that would take out unrelated servers)
   //   2. name the database uniquely per run, so a lock we failed to clear is an
   //      orphaned file rather than a broken suite
@@ -118,10 +119,17 @@ export default async function globalSetup() {
   });
 
   // --- 2. build + seed ----------------------------------------------------
-  const bin = join(repo, 'bin', 'articleflux.exe');
+  // The binary's name depends on the platform, which this used to assume.
+  //
+  // `articleflux.exe` was hardcoded, and that was the single reason this suite
+  // could never run in CI: every runner is Linux and every path here was
+  // Windows. Thirty specs that exercise wasm ↔ gRPC ↔ SQLite ↔ FTS5 sat outside
+  // the gate that deploys, so the release check was thorough about compilation
+  // and blind to whether the application works in a browser.
+  const bin = serverBinary(repo);
   if (!existsSync(bin)) throw new Error(`build the server first: ${bin} is missing`);
   if (!existsSync(join(repo, 'bin', 'web', 'app.wasm'))) {
-    throw new Error('build the client first: bin/web/app.wasm is missing (./scripts/make.ps1 wasm)');
+    throw new Error('build the client first: bin/web/app.wasm is missing (`make wasm`, or ./scripts/make.ps1 wasm)');
   }
 
   const urls = [
@@ -204,23 +212,17 @@ export default async function globalSetup() {
   };
 }
 
-// killListener terminates whatever holds a TCP port, identified by PID from
-// netstat. Deliberately NOT `taskkill /IM articleflux.exe`: an image-name kill would
-// also take out the dev server on :9000 that someone is watching.
+// killListener terminates whatever holds a TCP port, identified BY PID.
+//
+// The finding and the killing both live in platform.mjs — the suite runs on
+// Linux in CI and on Windows here, and four copies of `netstat`/`taskkill` is
+// how one of them ends up killing by image name and taking out the dev server
+// on :9000 somebody is watching. See that file.
 async function killListener(port) {
-  const netstat = await run('netstat', ['-ano'], here);
-  const pids = new Set();
-  for (const line of netstat.out.split(String.fromCharCode(10))) {
-    if (!line.includes('LISTENING')) continue;
-    const cols = line.trim().split(/\s+/);
-    const local = cols[1] || '';
-    if (!local.endsWith(`:${port}`)) continue;
-    const pid = cols[cols.length - 1];
-    if (pid && pid !== '0') pids.add(pid);
-  }
+  const pids = await listenerPids(port);
   for (const pid of pids) {
     console.log(`[setup] killing stale listener on :${port} (pid ${pid})`);
-    await run('taskkill', ['/PID', pid, '/F'], here);
+    await killPid(pid);
   }
   if (pids.size) await new Promise((r) => setTimeout(r, 500));
 }

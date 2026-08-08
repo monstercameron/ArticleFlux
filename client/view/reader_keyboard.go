@@ -83,6 +83,21 @@ func (r keyboardMap) wire() {
 				ui.PostAsync(func() { r.act.Get().openPalette() })
 				return
 			}
+			// Tab belongs to whichever modal is on screen.
+			//
+			// Ahead of the typing guard, because the dialogs that leak worst are
+			// the ones with a text field in them: guarded later, Tab inside the
+			// add-a-feed URL box would fall through to the browser and land in the
+			// rail behind the scrim. Ahead of the palette branch too — the palette
+			// is a dialog like the others and its rows are what Tab should walk.
+			//
+			// preventKey, or the browser moves focus as well and the two fight:
+			// ours lands on the next control in the dialog, the browser's on
+			// whatever follows it in the document, and the browser goes last.
+			if k.Name == "Tab" && platform.TrapTabTopDialog(k.Shift) {
+				preventKey(k)
+				return
+			}
 			// While the palette is open it owns the arrows, Enter and Escape,
 			// even though focus is in a text field.
 			if k.Role == "palette" {
@@ -274,7 +289,21 @@ func (r keyboardMap) wire() {
 				return
 			case "f":
 				preventKey(k)
-				platform.FocusField("feed-filter")
+				// Only when there is a box to focus.
+				//
+				// The rail renders its filter past eight feeds and not before, so
+				// on a small account this key names nothing. Asking for it anyway
+				// was not merely a no-op: FocusField holds a "focus is owed" claim
+				// while it retries, OnKey reports keys as typing for as long as
+				// that claim stands, and it retries for twenty frames before giving
+				// up — so pressing `f` on an account with three feeds swallowed
+				// every shortcut for a third of a second afterwards.
+				//
+				// The key still does nothing here, which is the rail's decision and
+				// not this file's to reverse. It now does nothing QUIETLY.
+				if platform.FieldExists("feed-filter") {
+					platform.FocusField("feed-filter")
+				}
 				return
 			case "Escape":
 				ui.PostAsync(func() {

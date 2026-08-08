@@ -1333,6 +1333,16 @@ func decodeCursor(c string, spec specHash) (published, id string, err error) {
 // ErrBadCursor means the cursor could not be decoded at all.
 var ErrBadCursor = errors.New("store: malformed cursor")
 
+// ErrBadTimestamp means a caller supplied something that is not a timestamp
+// where a stored time was required.
+//
+// A sentinel rather than a bare error because it has to reach the client as
+// InvalidArgument. Timestamp columns in this schema are compared as STRINGS
+// against stamp(now), so a value that does not parse cannot be stored and
+// sorted out later — it would compare wrongly at every future instant instead
+// of failing once, here, where the caller can still be told.
+var ErrBadTimestamp = errors.New("store: not an RFC3339 timestamp")
+
 // ErrCursorSpecMismatch means the cursor belongs to a different query.
 //
 // §20.7 maps this to InvalidArgument rather than to an empty page, because the
@@ -2352,8 +2362,27 @@ func (r *ReaderRepo) UpdateFeedSettings(ctx context.Context, s Scope, sourceID s
 			if strings.TrimSpace(*p.MutedUntil) == "" {
 				set = append(set, "muted_until = NULL")
 			} else {
+				// Parsed and re-stamped rather than stored as sent, because the
+				// only thing that ever ends a mute is MegafeedSources comparing
+				// this column to stamp(now) as a STRING. That comparison is
+				// sound exactly as long as everything in the column is in the
+				// one canonical spelling, and this is the only place that can
+				// promise it.
+				//
+				// Stored verbatim, a value that is not a timestamp does not
+				// error, it answers wrongly forever: "zzz" is above every
+				// timestamp this century, so `muted_until <= now` is false at
+				// every future instant and the feed leaves the megafeed with no
+				// expiry that can ever pass. A legal RFC3339 with a numeric
+				// offset fails the same way for hours at a time — the shipped
+				// UI sends UTC, but this field is on the sync API too.
+				t, err := parseStamp(*p.MutedUntil)
+				if err != nil {
+					return fmt.Errorf("%w: muted_until = %q", ErrBadTimestamp,
+						strings.TrimSpace(*p.MutedUntil))
+				}
 				set = append(set, "muted_until = ?")
-				args = append(args, *p.MutedUntil)
+				args = append(args, stamp(t))
 			}
 		}
 		if p.CacheDepth != nil {
@@ -2388,12 +2417,36 @@ func (r *ReaderRepo) UpdateFeedSettings(ctx context.Context, s Scope, sourceID s
 			// lengthening the interval must not postpone a poll that is already
 			// overdue, and shortening it should bring the next one forward
 			// immediately rather than after one more old-interval wait.
+			//
+			// Computed in Go rather than by SQLite's datetime(), which was the
+			// arithmetic this needs written in the one format this column must
+			// not hold. datetime() emits "2026-08-08 16:13:21" — a space where
+			// RFC3339 has a T, and no zone — while every other writer of this
+			// column uses stamp()'s RFC3339Nano. DueSources gates on
+			// `next_fetch_at <= ?` against stamp(now), a comparison of BYTES,
+			// and a space (0x20) sorts below T (0x54): a datetime() value reads
+			// as due at every instant, whatever time it names. Retuning the
+			// interval therefore forced a poll on the next tick, which is the
+			// precise opposite of what the paragraph above is for.
+			var base string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(last_fetch_at, created_at) FROM sources WHERE id = ?`,
+				sourceID).Scan(&base); err != nil {
+				return err
+			}
+			next := ""
+			if t, perr := parseStamp(base); perr == nil {
+				next = stamp(t.Add(time.Duration(v) * time.Second))
+			}
+			// An unparseable base leaves next_fetch_at NULL, which DueSources
+			// reads as "never fetched, poll me first" — the safe direction: a
+			// poll too early costs one request, and a bad timestamp left in
+			// place costs every future one.
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE sources
 				   SET fetch_interval_s = ?,
-				       next_fetch_at = datetime(COALESCE(last_fetch_at, created_at),
-				                                '+' || ? || ' seconds')
-				 WHERE id = ?`, v, v, sourceID); err != nil {
+				       next_fetch_at = NULLIF(?, '')
+				 WHERE id = ?`, v, next, sourceID); err != nil {
 				return err
 			}
 		}

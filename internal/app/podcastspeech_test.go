@@ -399,6 +399,62 @@ func TestHeadIsAnsweredWithoutABody(t *testing.T) {
 	}
 }
 
+// And it is answered without BUYING one, which is the half the test above
+// cannot see.
+//
+// Separate rather than folded in, because they fail for different reasons and a
+// reader should be able to tell which broke. The one above is about the
+// RESPONSE — status, type, no body — and it passed for as long as the bug
+// existed: the handler synthesised the whole article, set Content-Length from
+// it and then returned before writing, so every assertion up there held while
+// money was being spent on every request.
+//
+// This one is about the CALL, and it is the only thing standing between a
+// listening URL and a bill. That URL is a six-hour ticket living in an
+// <audio src>, so it reaches browser history, extensions, link prefetchers and
+// uptime checks — all of which send HEAD. /asset ends the same way and is right
+// to; the difference is that a speech miss is a paid call to a provider and an
+// asset miss is bandwidth.
+func TestHeadDoesNotPayForSynthesis(t *testing.T) {
+	a, voice, _, ids := broadcastApp(t)
+
+	rec := httptest.NewRecorder()
+	a.serveSpeech(rec, httptest.NewRequest(http.MethodHead, "/speech?item="+ids[0], nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	voice.mu.Lock()
+	calls := len(voice.calls)
+	voice.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("HEAD made %d synthesis call(s); it must make none — "+
+			"every one of those is billed", calls)
+	}
+
+	// Content-Length is deliberately absent, and asserted so that restoring it
+	// has to be a decision. The only way to know the length is to buy the
+	// audio, which is the thing this test exists to prevent.
+	if got := rec.Header().Get("Content-Length"); got != "" {
+		t.Errorf("Content-Length = %q on a HEAD; knowing it means having paid "+
+			"for the synthesis", got)
+	}
+
+	// A GET for the same item still speaks, so this is a HEAD rule and not a
+	// broken endpoint.
+	rec = httptest.NewRecorder()
+	a.serveSpeech(rec, httptest.NewRequest(http.MethodGet, "/speech?item="+ids[0], nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET after HEAD: status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	voice.mu.Lock()
+	calls = len(voice.calls)
+	voice.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("GET made %d synthesis call(s), want exactly 1", calls)
+	}
+}
+
 // An instance whose key is removed at runtime stops minting and stops speaking,
 // without a restart — which is the whole reason Configured is consulted per
 // request rather than at boot.

@@ -110,6 +110,9 @@ func walkErrKey(t *testing.T) map[string][2]string {
 	// keyed by key, value {message, position}
 	found := map[string][2]string{}
 
+	// Skips where directories cannot be listed at all. See requireDirScan.
+	requireDirScan(t)
+
 	fset := token.NewFileSet()
 	for _, dir := range serverKeyDirs {
 		entries, err := os.ReadDir(dir)

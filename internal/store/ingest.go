@@ -278,20 +278,43 @@ func (r *ReaderRepo) RecordFetch(ctx context.Context, o FetchOutcome) error {
 
 	// On success the interval resets and the error clears, so one bad afternoon
 	// does not leave a healthy feed on a day-long backoff.
-	_, err := r.db.Write.ExecContext(ctx, `
-		UPDATE sources
-		   SET last_fetch_at=?, last_success_at=?, last_error=NULL,
-		       consecutive_failures=0,
-		       etag=COALESCE(NULLIF(?,''), etag),
-		       last_modified=COALESCE(NULLIF(?,''), last_modified),
-		       title=CASE WHEN ?<>'' THEN ? ELSE title END,
-		       site_url=COALESCE(NULLIF(?,''), site_url),
-		       icon_url=COALESCE(NULLIF(?,''), icon_url),
-		       next_fetch_at=?
-		 WHERE id=?`,
-		nowStr, nowStr, o.ETag, o.LastModified, o.Title, o.Title, o.SiteURL, o.IconURL,
-		now.Add(30*time.Minute).Format(time.RFC3339Nano), o.SourceID)
-	return err
+	//
+	// The next poll is scheduled at the SOURCE'S OWN interval, read from the
+	// column rather than assumed. A flat thirty minutes stood here, which is
+	// exactly fetch_interval_s's default of 1800 — right for every source
+	// nobody had retuned and wrong for every source a reader had, because the
+	// "Fetch every" control writes that column and this is what decides when
+	// the next poll happens. A feed set to daily became due again half an hour
+	// later; one set to five minutes could not be polled sooner than thirty.
+	// DueSources' staleness ratio assumes due times come from each source's
+	// interval too — its own worked example is not expressible otherwise.
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+		var interval int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT fetch_interval_s FROM sources WHERE id = ?`, o.SourceID).Scan(&interval); err != nil {
+			return err
+		}
+		// The same floor DueSources applies when it divides by this column, for
+		// the same reason: a zero or absurd interval from an older row must not
+		// turn into a source that is due again the instant it is polled.
+		if interval < minFetchInterval {
+			interval = minFetchInterval
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE sources
+			   SET last_fetch_at=?, last_success_at=?, last_error=NULL,
+			       consecutive_failures=0,
+			       etag=COALESCE(NULLIF(?,''), etag),
+			       last_modified=COALESCE(NULLIF(?,''), last_modified),
+			       title=CASE WHEN ?<>'' THEN ? ELSE title END,
+			       site_url=COALESCE(NULLIF(?,''), site_url),
+			       icon_url=COALESCE(NULLIF(?,''), icon_url),
+			       next_fetch_at=?
+			 WHERE id=?`,
+			nowStr, nowStr, o.ETag, o.LastModified, o.Title, o.Title, o.SiteURL, o.IconURL,
+			now.Add(time.Duration(interval)*time.Second).Format(time.RFC3339Nano), o.SourceID)
+		return err
+	})
 }
 
 // DueSources returns sources to poll next, ordered by STALENESS RATIO

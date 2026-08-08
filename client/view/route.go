@@ -552,8 +552,30 @@ func titleForScope(sc scope, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Fol
 	}
 	switch {
 	case sc.SourceID != "":
+		// SourceId, which is what a scope's SourceID actually holds.
+		//
+		// A Feed carries two ids: `Id` is the subscription and `SourceId` is the
+		// source behind it. Every writer of scope.SourceID in this client uses
+		// the SOURCE id — the rail's rows compare against `GetSourceId()` and
+		// publish it as `data-source-id`, the item and article chips carry the
+		// same attribute, the palette builds its entries from it, feedByID
+		// matches on it, and scopeOf reads it back off the address. This lookup
+		// was the one place comparing `GetId()`, and it is wrong rather than
+		// merely inconsistent.
+		//
+		// It has never shown, because a subscription to an UNSHARED source has
+		// the same value in both fields, which is every subscription on a
+		// personal instance. Where a source is shared between accounts they
+		// differ, and this comparison would then fail for every feed — so a
+		// header seeded from an address (`/feed/<id>`, the shape every shared
+		// link has) would come up blank while the rail beside it named the feed
+		// perfectly well.
+		//
+		// `Id` is kept as a second chance rather than removed: both fields are
+		// unique, accepting either costs one comparison, and a caller that does
+		// hold a subscription id is better served than dropped.
 		for _, f := range feeds {
-			if f.GetId() == sc.SourceID {
+			if f.GetSourceId() == sc.SourceID || f.GetId() == sc.SourceID {
 				sc.Title = f.GetTitle()
 				return sc
 			}
@@ -579,6 +601,37 @@ func titleForScope(sc scope, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Fol
 				return sc
 			}
 		}
+	}
+	return sc
+}
+
+// retitleScope is titleForScope for a scope that already HAS a name, when the
+// thing it names may have been renamed since it was captured.
+//
+// The two are deliberately different functions rather than one with a flag.
+// titleForScope fills a blank — an addressed scope arrives carrying an id and no
+// name, and it reads one out of the rail. This one REPLACES a name that is
+// already there, which is a different and more dangerous operation: called on a
+// stream it would blank the header, and called while the rail is still empty it
+// would blank it for a round trip.
+//
+// Both hazards are closed here rather than at the call site. A scope that names
+// nothing in the rail is returned untouched, and a lookup that finds nothing
+// leaves the old name in place — a stale name is a much smaller wrong than no
+// name at all.
+//
+// What it fixes: renaming a feed updated the rail immediately and the rows on
+// the next load, while the list header kept the name the scope was captured
+// with — so the sidebar said "Renamed Journal", the rows said "Renamed
+// Journal", and the heading over them said "Big Journal", through a reload.
+func retitleScope(sc scope, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) scope {
+	if sc.SourceID == "" && sc.TagID == "" && sc.FolderID == "" {
+		return sc
+	}
+	probe := sc
+	probe.Title = ""
+	if named := titleForScope(probe, feeds, tags, folders); named.Title != "" {
+		sc.Title = named.Title
 	}
 	return sc
 }

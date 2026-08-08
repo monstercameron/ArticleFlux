@@ -35,6 +35,12 @@ func init() {
 		"offlineRefresh":   "Can't fetch new articles while you're offline — the server does the fetching.",
 		"offlineMarkAll":   "Marking everything read needs the server, so it can be undone. It'll work when you're back.",
 		"offlineSubscribe": "Adding a feed needs the server to check it first. Try again when you're back online.",
+		// A list this device has never held cannot be served from the cache, so
+		// going offline on a feed you have not opened before is the one case where
+		// there is genuinely nothing to show. It says WHY, and that it will fix
+		// itself — the alternative was the transport's own words, which named a
+		// deadline the reader has no relationship with.
+		"offlineList": "Can't load this list while you're offline — it'll arrive when you're back.",
 
 		"errLoadItems":   "Couldn't load items: {err}",
 		"errLoadMore":    "Couldn't load more: {err}",

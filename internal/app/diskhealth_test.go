@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,4 +262,163 @@ func authWiring(t *testing.T) string {
 		end = len(src)
 	}
 	return src[i:end]
+}
+
+// Every package that makes an outbound request builds its client through
+// netguard.
+//
+// # Why a source grep
+//
+// The property is a NEGATIVE — "nobody constructs their own http.Client" — and
+// a negative has no behaviour to observe. A package that builds a bare one
+// works perfectly: it fetches, it returns bytes, every test passes. What it
+// loses is invisible from inside it — the egress metrics, the span, the shared
+// dial and redirect policy — and the loss only shows up as an absence on a
+// dashboard nobody is looking at when it happens.
+//
+// That is how internal/llm and internal/tts came to be the two paths that cost
+// money and the two paths with no telemetry, while app.go's own comment said
+// "every outbound fetch, from all seven callers". A grep is blunt and it is the
+// only instrument that can see this.
+func TestEveryEgressPathIsGuarded(t *testing.T) {
+	// The packages that egress. Adding one means adding it here, which is the
+	// point: a new outbound path should have to think about the guard once.
+	paths := []string{
+		"../llm", "../tts", "../assetproxy", "../discover", "../extract", "../favicon",
+	}
+	checked := 0
+	for _, dir := range paths {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		guarded := false
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Comments stripped first. The doc on `paidEgressClient` argues
+			// against `&http.Client{Timeout:…}` by quoting it, and a grep that
+			// cannot tell an argument from an instance fails on the fix.
+			src := withoutComments(string(body))
+			if strings.Contains(src, "netguard.Client(") {
+				guarded = true
+			}
+			// The one exemption, by name and with a reason. `NewWithTransport`
+			// takes a RoundTripper FROM its caller — it is the seam a test uses
+			// to answer without a network, and wrapping a supplied transport in
+			// netguard's would defeat the only thing it is for. It has no
+			// production caller, which is the property that makes it safe.
+			if e.Name() == "transport.go" {
+				continue
+			}
+			// The specific shape that went unnoticed twice. Not every
+			// `&http.Client{` is wrong — a test double is fine — but this scan
+			// skips _test.go files, so one here is a production client built
+			// outside the guard.
+			if strings.Contains(src, "&http.Client{") {
+				t.Errorf("%s/%s builds its own http.Client. It will fetch perfectly and be "+
+					"invisible: no egress.* metrics, no span, no shared dial or redirect "+
+					"policy. Use netguard.Client — see internal/llm's paidEgressClient for "+
+					"the case where the host is a constant and the guard is still worth it.",
+					dir, e.Name())
+			}
+		}
+		if !guarded {
+			t.Errorf("%s never calls netguard.Client; either it stopped egressing (remove it "+
+				"from this list) or it started doing so unguarded", dir)
+		}
+		checked++
+	}
+	if checked != len(paths) {
+		t.Errorf("checked %d of %d packages", checked, len(paths))
+	}
+}
+
+// withoutComments removes // comments so a grep for a code pattern does not
+// match the prose explaining why that pattern is wrong.
+//
+// Line comments only. Block comments are not used in this repository's Go, and
+// a half-correct stripper that handled them would be more code than the thing
+// it serves.
+func withoutComments(src string) string {
+	var b strings.Builder
+	for line := range strings.SplitSeq(src, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// A stalled write probe is reported as a failure rather than waited out.
+//
+// # Why this is the case that matters
+//
+// probeWrite ends in an fsync with no timeout, and diskReady runs it holding
+// a.disk.mu. On a working disk that is microseconds; on a stalled one — a
+// detached volume, a saturated device, an NFS mount that stopped answering — it
+// blocks indefinitely and every caller queues behind the lock.
+//
+// That inverts /readyz. app.go states its purpose plainly: it is the ALERTING
+// path, "the thing that notices /readyz is the alerting path, which can wake
+// somebody up". An endpoint whose whole job is to report "this instance cannot
+// write" must not stop answering when the disk stops answering — a monitor then
+// sees a timeout, which says less than a refusal that names the reason.
+//
+// The stall is simulated at the helper rather than by wedging a real
+// filesystem, which no test can do portably: what is being pinned is that the
+// deadline is honoured and reported, not that fsync can hang.
+func TestAStalledWriteProbeIsReportedNotAwaited(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+
+	orig := probeWriteFn
+	probeWriteFn = func(string) error { <-release; return nil }
+	t.Cleanup(func() { probeWriteFn = orig })
+
+	start := time.Now()
+	err := probeWriteBounded(context.Background(), t.TempDir())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a stalled probe reported the disk writable; /readyz would say " +
+			"ready while nothing can be written")
+	}
+	if !strings.Contains(err.Error(), "stalled") {
+		t.Errorf("the failure does not name the condition: %v", err)
+	}
+	// It must return on the deadline rather than waiting the probe out. Generous
+	// upper bound so a slow CI box does not fail this for the wrong reason.
+	if elapsed > diskProbeTimeout+5*time.Second {
+		t.Errorf("returned after %v; the deadline is %v", elapsed, diskProbeTimeout)
+	}
+}
+
+// And the real helper still answers normally on a working directory, so the
+// bound did not turn every healthy probe into an error.
+func TestABoundedWriteProbeSucceedsOnAWritableDir(t *testing.T) {
+	if err := probeWriteBounded(context.Background(), t.TempDir()); err != nil {
+		t.Errorf("a writable directory reported %v", err)
+	}
+}
+
+// A cancelled context ends the wait too, so a caller that gave up is not held
+// by a probe it no longer wants.
+func TestABoundedWriteProbeHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A real directory, so any failure comes from the cancellation rather than
+	// from the write. The probe may still win the race on a fast disk, which is
+	// fine — what must not happen is a hang.
+	err := probeWriteBounded(ctx, t.TempDir())
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Errorf("got %v, want nil or context.Canceled", err)
+	}
 }

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
 import { APP_PORT } from './ports.mjs';
+import { serverBinary } from './platform.mjs';
 
 /**
  * The keyboard path through the credential screens.
@@ -46,7 +47,7 @@ test.beforeAll(async () => {
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) rmSync(f, { force: true });
 
   server = spawn(
-    join(repo, 'bin', 'articleflux.exe'),
+    serverBinary(repo),
     ['serve', '-addr', `127.0.0.1:${PORT}`, '-db', DB, '-web', join(repo, 'bin', 'web')],
     { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
   );

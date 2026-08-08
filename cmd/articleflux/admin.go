@@ -664,3 +664,189 @@ func vacuumCmd(log *slog.Logger, args []string) error {
 		"seconds", int(time.Since(start).Seconds()))
 	return nil
 }
+
+// rotateKeyCmd replaces secrets.key, re-sealing every stored credential.
+//
+// # Why this exists
+//
+// `secrets.key` seals the Smart+ API key and every mailbox password, and there
+// was no way to change it. Every backup keeps a copy forever — `-keep` prunes
+// the databases and never the keys, on purpose, because a key rotated out from
+// under the copies that need it makes them unrestorable — and off-box shipping
+// now sends it further. So a suspected exposure had no remedy short of clearing
+// every stored secret by hand and typing them all back in.
+//
+// # The order, which is the whole design
+//
+//  1. Re-encrypt everything in the database, in one transaction. If any value
+//     will not decrypt with the old key, nothing is written.
+//  2. Copy the old key aside, timestamped.
+//  3. Write the new key, atomically.
+//
+// A database with half its rows under each key is unreadable by both and has no
+// marker saying which is which — strictly worse than the exposure being
+// answered — so step 1 is all-or-nothing and steps 2 and 3 only happen after it
+// returns. If the process dies between 1 and 3, the old key file is still there
+// and does not match the database; step 2's copy is what makes that recoverable
+// by hand, and the message below says so before anything is touched.
+//
+// # Why it insists the server is stopped
+//
+// A running server holds the old key in memory and would seal anything written
+// after the rotation with it — a Smart+ key pasted into the settings screen
+// thirty seconds later would be unreadable on the next boot. This cannot detect
+// that from here, so it asks, and `-yes` is how a script says it has already
+// arranged it.
+func rotateKeyCmd(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	yes := fs.Bool("yes", false, "do not ask; the caller confirms the server is stopped")
+	dryRun := fs.Bool("n", false, "report what would be re-encrypted and do nothing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(*dbPath)
+	keyPath := filepath.Join(dir, app.SecretKeyFile)
+
+	if env := os.Getenv("ARTICLEFLUX_SECRET_KEY"); env != "" {
+		// The env var wins over the file at boot, so rotating the file would
+		// change nothing and the next start would find every re-sealed value
+		// unreadable. Refused rather than half-performed.
+		//
+		// The instruction is spelled out in full rather than gestured at,
+		// because the obvious reading of "unset it and run this" is a rotation
+		// that ABORTS: with the variable unset this command rotates FROM
+		// whatever is in the file, and on an instance that boots from the
+		// environment the file is either absent or stale, so it will not
+		// decrypt. That failure is safe — nothing is written — but it is a
+		// wasted maintenance window, and the step people miss is the last one:
+		// the environment has to be updated to the new value afterwards, or the
+		// next start reads the old key and every re-sealed value is unreadable.
+		return fmt.Errorf("rotate-key: this instance takes its key from ARTICLEFLUX_SECRET_KEY, "+
+			"so rotating %s would change nothing the server reads. To rotate: write the "+
+			"CURRENT key value into %s, run this with ARTICLEFLUX_SECRET_KEY unset, then "+
+			"set ARTICLEFLUX_SECRET_KEY to the NEW contents of that file before starting "+
+			"the server again", keyPath, keyPath)
+	}
+
+	old, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("rotate-key: cannot read the current key at %s: %w", keyPath, err)
+	}
+	if len(old) < 32 {
+		return fmt.Errorf("rotate-key: %s is %d bytes; a key is 32", keyPath, len(old))
+	}
+	// Truncated exactly as loadOrCreateSecretKey does, so this rotates from the
+	// key the server actually uses rather than from the file's whole contents —
+	// a trailing newline from an editor would otherwise make every decrypt fail
+	// here while the server ran perfectly.
+	oldKey := old[:32]
+
+	ctx := context.Background()
+	db, err := store.Open(store.Options{Path: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	counts, err := db.CountSealedSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	log.Info("this rotation will re-encrypt",
+		"settings", counts.Settings, "mailbox_passwords", counts.Mailboxes,
+		"key", keyPath)
+	if counts.Settings == 0 && counts.Mailboxes == 0 {
+		// Still worth doing: the file itself is what has been copied into every
+		// backup, and replacing it retires those copies even when there is
+		// nothing sealed under it today.
+		log.Info("nothing is currently sealed under this key; the file is still replaced, " +
+			"which is what retires the copies in the backups")
+	}
+	if *dryRun {
+		log.Info("dry run; nothing was changed")
+		return nil
+	}
+
+	if !*yes {
+		fmt.Fprintf(os.Stderr,
+			"\nThe server MUST be stopped: a running one holds the old key in memory and\n"+
+				"would seal anything written after this with it.\n\n"+
+				"  sudo systemctl stop articleflux\n\n"+
+				"The old key will be kept as %s.<timestamp>.old — do not delete it until the\n"+
+				"server has started and read a stored secret successfully.\n\n"+
+				"Type 'rotate' to continue: ", keyPath)
+		reader := bufio.NewReader(os.Stdin)
+		line, _ := reader.ReadString('\n')
+		if strings.TrimSpace(line) != "rotate" {
+			return errors.New("rotate-key: cancelled")
+		}
+	}
+
+	newKey, err := secret.NewKey()
+	if err != nil {
+		return err
+	}
+
+	// The database first. Nothing touches the key file until this returns nil.
+	moved, err := db.RotateSecretKey(ctx, oldKey, newKey)
+	if err != nil {
+		return fmt.Errorf("rotate-key: nothing was changed: %w", err)
+	}
+
+	// The old key aside, before the new one lands. This is the file somebody
+	// needs if the process dies in the next two lines, and writing the new key
+	// first would destroy it.
+	aside := keyPath + "." + time.Now().UTC().Format("20060102-150405") + ".old"
+	if err := os.WriteFile(aside, old, 0o600); err != nil {
+		return fmt.Errorf("rotate-key: the database was re-encrypted but the old key could "+
+			"not be copied aside, so the new one has NOT been written. The database is now "+
+			"sealed under a key that exists only in this process — restore the backup taken "+
+			"before this ran: %w", err)
+	}
+
+	// Temp-then-rename, so a reader that opens the file mid-write cannot get
+	// half a key — the same reason every cache write in this repository does it.
+	tmp := keyPath + ".new"
+	if err := os.WriteFile(tmp, newKey, 0o600); err != nil {
+		return fmt.Errorf("rotate-key: the database was re-encrypted and the new key could "+
+			"not be written; it is in %s and the database needs it: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, keyPath); err != nil {
+		return fmt.Errorf("rotate-key: the new key is at %s and could not be moved into "+
+			"place; move it to %s by hand before starting the server: %w", tmp, keyPath, err)
+	}
+
+	log.Info("rotated",
+		"settings", moved.Settings, "mailbox_passwords", moved.Mailboxes,
+		"key", keyPath, "old_key_kept_at", aside)
+
+	// Written AFTER the rename, so the row means "the rotation completed" rather
+	// than "it was attempted". Every failure above returns, and each of those
+	// messages says what state the instance is in — a trail row for a rotation
+	// that half happened would be worse than none.
+	//
+	// No actor and no tenant: this is the shell acting on the whole instance, and
+	// audit_log's actor and tenant columns are nullable for exactly that. The
+	// counts go in because "1 setting and 2 mailbox passwords" is what somebody
+	// checks against what they expected; the key PATHS go in because the `.old`
+	// copy is the recovery route and its name is a timestamp nobody memorises.
+	//
+	// No key material, in either field. See audit.Event.Detail: this table
+	// outlives the sessions it describes and is quoted in incident reports.
+	audit.New(store.NewReaderRepo(db), log).Record(ctx, audit.Event{
+		Action: audit.ActionKeyRotated,
+		Detail: map[string]string{
+			"settings":          strconv.Itoa(moved.Settings),
+			"mailbox_passwords": strconv.Itoa(moved.Mailboxes),
+			"key":               keyPath,
+			"old_key_kept_at":   aside,
+			"via":               "cli",
+		},
+	})
+	log.Warn("every EXISTING BACKUP still holds the old key and the old ciphertext, which " +
+		"is correct — they restore as a pair. New backups will carry the new key. Keep " +
+		"the copy above until the server has started and read a stored secret")
+	return nil
+}

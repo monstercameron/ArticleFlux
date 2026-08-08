@@ -88,6 +88,13 @@ func (r addFeedWiring) wire() {
 	r.act.Get().openAddFeed = func() {
 		r.addErr.Set("")
 		r.addOpen.Set(true)
+		// The address box takes focus, because typing one is the entire point of
+		// this dialog and because a modal that opens with focus still on the
+		// button behind it leaves a keyboard reader tabbing the rail under the
+		// scrim. FocusField is the retrying one: these overlays are rendered at
+		// all times so they can animate closed, so the input exists long before
+		// it is focusable.
+		platform.FocusField("add-feed")
 		clearLadder()
 		// The categories may have changed on another device since boot, and this
 		// dialog is where a stale list would be visible.

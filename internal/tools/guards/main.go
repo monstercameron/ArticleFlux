@@ -1,4 +1,4 @@
-// Command guards enforces the five structural decisions that a plausible-looking
+// Command guards enforces the structural decisions that a plausible-looking
 // change could otherwise violate silently (TODO 1.8, plan.md §22.14).
 //
 // Why this exists at Tier 1, before there is anything to guard: under
@@ -16,6 +16,8 @@
 //  4. Every repository method takes Scope — tenant isolation is structural, not remembered (T1)
 //  5. No hardcoded UI copy in client/view — the i18n catalog stays complete (8.4a, §22.16)
 //  6. No global SchemaFlux provider      — one tenant's key must not become everyone's (G1, P1.6)
+//  7. No unsanitised render path in client/ — article HTML is stored RAW, so the
+//     sanitizer on the read side is the only thing between a publisher and the DOM
 //
 // A guard with nothing to check yet reports "n/a" rather than "pass". Passing
 // vacuously is how a guard quietly stops being a guard.
@@ -60,6 +62,7 @@ func main() {
 		guardRepoScope(root),
 		guardNoInlineCopy(root),
 		guardNoGlobalLLMProvider(root),
+		guardNoUnsanitisedRender(root),
 	}
 
 	failed := false
@@ -698,4 +701,93 @@ func importsSchemaFlux(f *ast.File) bool {
 		}
 	}
 	return false
+}
+
+// --- 7. no unsanitised render path in the client -----------------------------
+
+// forbiddenRenderSink names the ways client code can put a string into the DOM
+// as MARKUP without it passing a sanitizer, and why each one matters.
+var forbiddenRenderSink = map[string]string{
+	"RawHTMLUnsafe": "parses markup WITHOUT sanitizing it. Use html.RawHTML, which " +
+		"is the same call with sanitize.Sanitize in front",
+}
+
+// guardNoUnsanitisedRender keeps publisher markup from reaching the DOM unfiltered.
+//
+// # Why this is a structural decision rather than a code-review note
+//
+// Article HTML is stored RAW. internal/feed does not sanitize on ingest — it says
+// so, and it is right to: sanitizing on write bakes today's policy into the
+// database and cannot be revised without a migration over every row. The rule
+// that makes that safe is stated in the same comment: "anything that IS rendered
+// goes through the sanitizer."
+//
+// Which means the sanitizer on the READ side is not one defence among several.
+// It is the only thing between a feed publisher and script running in the
+// reader's page. Everything upstream — the store, the RPC layer, toPBItem — hands
+// the bytes along untouched by design, and correctly so.
+//
+// Today the whole client goes through one door: parsedBody -> html.RawHTML ->
+// sanitize.Sanitize, shared by the reading pane and the slideshow. The hazard is
+// how easy it is to open a second one. `html.RawHTMLUnsafe` exists in the
+// dependency, differs by one word, and its own doc comment is the only thing
+// saying not to use it — which is exactly the 2am change this command's package
+// comment describes.
+//
+// Scoped to client/ because that is where rendering happens; the server emits
+// markup in one place (/pub) and sanitizes it explicitly there.
+func guardNoUnsanitisedRender(root string) *guard {
+	g := &guard{
+		name: "no unsanitised render path in the client",
+		note: "no client Go files inspected",
+	}
+	walkGo(root, func(path string, f *ast.File, fset *token.FileSet) {
+		rel := relSlash(root, path)
+		// This file names the forbidden identifier, in the map above.
+		if strings.HasPrefix(rel, "internal/tools/guards/") {
+			return
+		}
+		if !strings.HasPrefix(rel, "client/") {
+			return
+		}
+		g.checked++
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			// The direct DOM sink, whatever it is called on: js.Value.Set with
+			// an innerHTML-shaped property assigns markup with nothing in the
+			// way. GWC's runtime asserts it has no such sink on its render path,
+			// and the application must not add one beside it.
+			if sel.Sel.Name == "Set" && len(call.Args) > 0 {
+				if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					switch strings.Trim(lit.Value, `"`) {
+					case "innerHTML", "outerHTML":
+						g.findings = append(g.findings, finding{
+							file: fmt.Sprintf("%s:%d", rel, fset.Position(sel.Pos()).Line),
+							detail: "assigns " + strings.Trim(lit.Value, `"`) +
+								" directly, which puts a string into the DOM as markup " +
+								"with no sanitizer in front",
+						})
+					}
+				}
+				return true
+			}
+			why, bad := forbiddenRenderSink[sel.Sel.Name]
+			if !bad {
+				return true
+			}
+			g.findings = append(g.findings, finding{
+				file:   fmt.Sprintf("%s:%d", rel, fset.Position(sel.Pos()).Line),
+				detail: sel.Sel.Name + " " + why,
+			})
+			return true
+		})
+	})
+	return g
 }

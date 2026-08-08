@@ -431,6 +431,12 @@ type Calibration struct {
 // Only beats that started AND ended are counted, and breaks are skipped — a
 // break has no words, so including it would drag the measured rate toward zero
 // for a beat nobody wrote.
+//
+// Rate is positive by construction: Plan clamps a non-positive in.Rate to 1
+// before it ever reaches a Program, which is what makes the division by p.Rate
+// below safe. Recorded because the flag behind it (`-rate`) is an unvalidated
+// Float64 and the guard is three files away — worth one line here so the next
+// person does not have to go and find it, as I did.
 func (t Trace) Calibrate(p Program) (Calibration, bool) {
 	words := map[string]int{}
 	for _, b := range p.Beats {

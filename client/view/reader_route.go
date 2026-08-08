@@ -394,9 +394,18 @@ func readBootState(saved map[string]string, tr i18n.Runtime) bootState {
 // applies them has to know not to overwrite a destination the address already
 // chose — see reader.go's prefs effect.
 func bootRoute(saved map[string]string, tr i18n.Runtime) (boot route, addressed bool) {
-	base := platform.BasePath()
-	path, query := platform.Path(), platform.Query()
+	return bootRouteFor(platform.BasePath(), platform.Path(), platform.Query(), saved, tr)
+}
 
+// bootRouteFor is bootRoute's body, with the address passed in rather than read
+// out of the browser.
+//
+// Split for the same reason route.go is a pure string codec: the precedence rule
+// is the part that gets subtly wrong, and it is worth pinning without mounting a
+// Reader — bootRoute itself cannot be called from a test because platform.Path
+// is the window's, and the settings-address regression below reached production
+// precisely because nothing could assert on this decision directly.
+func bootRouteFor(base, path, query string, saved map[string]string, tr i18n.Runtime) (boot route, addressed bool) {
 	if len(pathSegments(base, path)) == 0 {
 		// A bare address. Resume, exactly as before this file existed — unless
 		// the reader has since chosen a fixed landing view, which outranks it.
@@ -418,6 +427,35 @@ func bootRoute(saved map[string]string, tr i18n.Runtime) (boot route, addressed 
 	// because by then the reader is present and pressing keys.
 	if r.dlg == dialogShow {
 		r.dlg = dialogNone
+	}
+
+	// A settings address names a PANEL, not a place, so the place underneath it
+	// resumes.
+	//
+	// routeSegments emits `/settings/<tab>` with no scope in it, deliberately: the
+	// surface replaces the reading panes, so an address that still named a feed
+	// would describe a screen the feed is not on. parseRoute therefore has nothing
+	// to read back and returns its default, which is All — and boot applied that
+	// default as though the reader had asked for it. Since an addressed boot also
+	// WRITES the scope (reader.go's prefs effect calls rememberScope(boot.sel)),
+	// the damage outlived the tab: open Settings while reading Liked, reload, and
+	// the reader is on All articles — on this machine and on every other one,
+	// because A30's saved place has been overwritten with a default nobody chose.
+	//
+	// This is the same rule apply() already follows for Back and Forward, where a
+	// settings entry is a `screen` and deliberately leaves the reader where they
+	// are. That note says boot is different "because at boot there is no place yet
+	// to preserve", which is true of the SESSION and not of the reader: the saved
+	// place is exactly that, and it is already in hand here.
+	//
+	// The item comes with it for the same reason it does on a bare address —
+	// closing the panel should put the reader back where they were, article
+	// included — and because `addressed` stays true, the prefs effect will not
+	// restore it a round trip later.
+	if segs := pathSegments(base, path); len(segs) > 0 && segs[0] == segSettings {
+		r.sel = effectiveResumeScope(saved, tr)
+		r.item = effectiveResumeItem(saved)
+		return r, true
 	}
 
 	return borrowTitle(r, saved), true

@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/feeddate"
+	"github.com/monstercameron/ArticleFlux/internal/sanitize"
+	"github.com/monstercameron/ArticleFlux/internal/timeutil"
 	"github.com/monstercameron/ArticleFlux/internal/urlnorm"
 )
 
@@ -224,25 +226,45 @@ func Extract(c *Compiled, body []byte, now time.Time) (Result, error) {
 		it := Item{
 			Title:   title,
 			URL:     abs,
-			Author:  strings.TrimSpace(text(walk(entry, c.author))),
-			Summary: strings.TrimSpace(text(walk(entry, c.summary))),
+			Author:  collapse(strings.TrimSpace(text(walk(entry, c.author)))),
+			Summary: summaryOf(text(walk(entry, c.summary))),
 			DupeKey: urlnorm.DupeKey(abs),
 		}
 		if img := c.absolute(strings.TrimSpace(text(walk(entry, c.image)))); img != "" {
 			it.ImageURL = img
 		}
+		// The same parser AND the same clamp the feed pipeline uses, so a date in
+		// an API and a date in an Atom entry cannot be interpreted differently.
+		//
+		// The clamp was the half this was missing. The comment already claimed
+		// parity with the feed path, and the parser alone does not give it:
+		// internal/feed, internal/extract, internal/mailparse and
+		// internal/scrapesel all run their result through ClampPublished and this
+		// was the one source that did not, so two dates that are the same string
+		// were stored differently depending on which door they came through.
+		//
+		// What got through, and why the falsy-looking case is the dangerous one:
+		//
+		//   - A date PAST now+MaxSkew pinned the entry to the top of every list
+		//     forever. That is the failure ClampPublished's own doc names.
+		//   - A date before MinPublished (1990) was stored as-is. Epoch-zero is
+		//     not exotic here — timeutil says feeds emit it for "no date" often
+		//     enough to need a floor — and `1970-01-01T00:00:00Z` PARSES, so
+		//     `IsZero()` is false and the guard below never saw it. An item
+		//     stamped 1970 sorts to the bottom of every list and is deleted by
+		//     the first retention sweep, because SweepItems deletes
+		//     `WHERE published_at < cut`. Silently, and on the next cycle.
+		//
+		// ClampPublished folds in the empty and unparseable cases too — both
+		// leave `claimed` zero and come back as first-seen — which is what the
+		// separate IsZero branch here used to do.
+		var claimed time.Time
 		if d := strings.TrimSpace(text(walk(entry, c.date))); d != "" {
-			// The same parser the feed pipeline uses, so a date in an API and a
-			// date in an Atom entry cannot be interpreted differently.
-			if t, err := feeddate.Parse(d); err == nil {
-				it.PublishedAt = t
-			}
+			claimed, _ = feeddate.Parse(d)
 		}
-		if it.PublishedAt.IsZero() {
-			// First seen, like a feed entry with no date. Stable afterwards:
-			// published_at is never rewritten on re-ingest.
-			it.PublishedAt = now
-		}
+		// First seen when there is nothing trustworthy to use. Stable afterwards:
+		// published_at is never rewritten on re-ingest.
+		it.PublishedAt = timeutil.ClampPublished(claimed, now)
 
 		// Identity, in order of how well it survives the site editing itself:
 		// an explicit id, then the URL, then the title. The last is the weakest
@@ -251,7 +273,34 @@ func Extract(c *Compiled, body []byte, now time.Time) (Result, error) {
 		case len(c.id) > 0 && text(walk(entry, c.id)) != "":
 			it.GUID = "id:" + text(walk(entry, c.id))
 		default:
-			it.GUID = abs
+			// ItemKey, not the raw URL — the same derivation internal/feed and
+			// internal/scrapesel use for their URL fallback.
+			//
+			// This is IDENTITY. `items` carries `UNIQUE(source_id, guid)` and
+			// ingest looks a row up by exactly that pair, so a guid that differs
+			// between two polls is not a near-miss: it is a second article. The
+			// raw address is a bad identity because three things about it move
+			// without the entry changing, and ItemKey removes all three:
+			//
+			//   - Query ORDER. stripQuery sorts what it keeps, so ?b=2&a=1 and
+			//     ?a=1&b=2 are one key. A JSON API assembling a link from a map
+			//     has no reason to emit a stable order, and nothing about the
+			//     response would look wrong when it does not.
+			//   - Tracking parameters. `ref`, `source`, `s` and `share` are in
+			//     the strip list and are exactly the kind an API attaches to the
+			//     links it hands out.
+			//   - A trailing slash.
+			//
+			// Any of those changing produced a NEW item on every poll, forever,
+			// for that source. DupeKey above did not save it: that index is not
+			// unique and is for cross-source suppression, not ingest identity.
+			//
+			// One-time effect worth knowing: on the next poll after this change,
+			// an existing entry whose stored guid is a raw URL that ItemKey would
+			// rewrite ingests once as new. That is the same set of entries that
+			// was re-ingesting on EVERY poll, so this trades an unbounded
+			// duplication for a single one.
+			it.GUID = urlnorm.ItemKey(abs)
 		}
 		res.Items = append(res.Items, it)
 	}
@@ -396,3 +445,47 @@ func addProblem(r *Result, s string) {
 }
 
 func quote(s string) string { return "“" + s + "”" }
+
+// summaryOf renders an entry's summary field the way this pipeline's siblings do.
+//
+// # Why a JSON string still needs the HTML treatment
+//
+// This package's own doc says items come out in "the same shape scrapesel
+// produces, on purpose. Nothing downstream should be able to tell how a source
+// was extracted." Summary was the field where that stopped being true: scrapesel
+// stores `truncate(collapse(sanitize.Text(raw)), 280)` and internal/feed stores
+// `summarizeText(stripTags(...))`, and this stored whatever the API said, whole.
+//
+// Three consequences, in the order they bite:
+//
+//   - MARKUP SHOWS. A `"description"` carrying `<p>Chapter 12 is out</p>` is
+//     ordinary in an API response, and the item list renders the summary with
+//     `html.Text` — escaped, correctly, because it is supposed to be text. So the
+//     reader saw the tags. sanitize.Text is what the other two paths use to make
+//     it text, and it parses rather than pattern-matching, so entities and
+//     malformed markup come out right.
+//   - NO CEILING. Plenty of APIs return the whole article in the summary field.
+//     Stored whole, it is carried on every list query and rendered into a row
+//     built for two lines.
+//   - WHITESPACE. JSON strings keep their newlines and tabs; collapse is what
+//     turns them into one line, as it does for scrapesel.
+//
+// 280 matches scrapesel deliberately rather than by coincidence: two ingest
+// paths feeding one list should not disagree about how long a row's text is.
+func summaryOf(raw string) string {
+	return truncate(collapse(sanitize.Text(raw)), 280)
+}
+
+// collapse and truncate mirror scrapesel's, which is the point — see summaryOf.
+func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := s[:n]
+	if i := strings.LastIndexByte(cut, ' '); i > n/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:") + "…"
+}

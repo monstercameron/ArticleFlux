@@ -387,9 +387,18 @@ func (p *Player) onReady(ev Event) []Action {
 // start that never reported ready — a cached response can go straight to
 // playing on some browsers.
 func (p *Player) onPlaying(ev Event) []Action {
-	p.cancel(tVoiceWait)
 	var out []Action
 	cur, _ := p.Current()
+
+	// Re-armed rather than cancelled, and that is the point. A media element
+	// has no timeout of its own: a connection dropped mid-stream, a body short
+	// of its Content-Length or a wedged decoder all fire `stalled` or
+	// `waiting` and then wait, by specification, forever. Neither is the
+	// `ended` this beat needs and neither is the `error` onFailed handles, so
+	// nothing reaches the player at all. Cancelling here left the one genuine
+	// hang — the one AFTER the narrator is audible — as the single case the
+	// hang detector did not watch.
+	p.arm(tVoiceWait, stallBackstop(cur, p.prof()))
 
 	if p.gate != gateNone {
 		// It started without waiting to be told. Whatever the music was about
@@ -595,7 +604,9 @@ func (p *Player) fire(t timer) []Action {
 		p.voiceLost[cur.ID] = true
 		// An observation, not a diagnosis. The display takes its own clock
 		// back from here; the programme is not over and the audio may still
-		// arrive, in which case `playing` clears this.
+		// arrive, in which case `playing` rescales this to the beat's own
+		// length (stallBackstop) rather than clearing it — a track can hang
+		// after it becomes audible just as easily as before.
 		return p.emit(nil, Action{Kind: ActVoiceLost, BeatID: cur.ID, ItemID: cur.ItemID,
 			Why: "nothing has been heard for the whole backstop; the display paces itself from here"})
 	}
@@ -643,6 +654,26 @@ func (p *Player) release(already bool) []Action {
 func (p *Player) clearGate() {
 	p.gate = gateNone
 	p.cancel(tIntroHold, tIntroLead, tIntroWait, tSeamHold, tSeamWait, tPad)
+}
+
+// stallBackstop is how long a beat may be audible without ending.
+//
+// Before `playing` the backstop is a flat VoiceWait, because nothing is known
+// yet — the audio has not started and there is nothing to scale against. Once
+// the narrator is audible the beat's own estimate is the better ruler: a forty
+// second story and a four minute one should not share one deadline, and a flat
+// ninety seconds would cut the long one off in the middle.
+//
+// Est is doubled and then given the whole of VoiceWait on top, so reaching this
+// takes a track running at under half its estimated rate. Rate is calibrated
+// from real samples (Trace.Calibrate), so that is a hang and not a slow voice.
+// The floor covers a beat with no usable estimate.
+func stallBackstop(b Beat, pr Profile) time.Duration {
+	wait := pr.Pacing.VoiceWait.D()
+	if b.Est <= 0 {
+		return wait
+	}
+	return 2*b.Est + wait
 }
 
 func (p *Player) arm(t timer, d time.Duration) {

@@ -140,6 +140,80 @@ func TestNamedInResolvesOverlappingEntitiesToTheLongestMatch(t *testing.T) {
 	}
 }
 
+// A followed name must be a WORD in the headline, not a run of letters inside one.
+//
+// # Why the deterministic extractor hid this
+//
+// namedIn matched with strings.Index, a raw substring test with no notion of a
+// word edge. pipeline's entityAnalyzer never exposed it: textvec.Phrases builds
+// entities from token PAIRS with MinTermLen = 3, so its shortest name is a
+// two-word phrase, and a string containing a space cannot sit inside a single
+// word.
+//
+// The Smart+ path has no such shape. internal/smart's interest extractor
+// normalises case and rejects only the empty string — no length floor, no token
+// floor — and store.EntityLLM is a first-class kind beside EntityPhrase. So a
+// model returning "arm", "meta" or "ai", which is exactly what a model asked
+// for entities returns, lands a name short enough to hide inside ordinary
+// words.
+//
+// # Why this is worse than a scoring wobble
+//
+// The entity term is weighted 0.9, behind only freshness and topic, and
+// rank.go stakes it on being checkable: "'mentions Android Auto' is something
+// the reader can agree or disagree with by looking at the row, which is what
+// §18.9 means by explainability being the product." A reader following ARM,
+// told a piece about a house fire "mentions Arm, which you follow", checks the
+// row and finds the claim false. That is the one failure this term's design
+// says it exists to avoid.
+func TestAFollowedNameMustBeAWordNotASubstring(t *testing.T) {
+	ent := func(name, label string) []store.Entity {
+		return []store.Entity{{Name: name, Label: label, Steer: store.SteerNormal}}
+	}
+
+	// Names a model would plausibly return, inside words a headline would
+	// plausibly contain.
+	for _, c := range []struct{ name, label, title string }{
+		{"arm", "Arm", "Alarm raised as the army warns of harm"},
+		{"meta", "Meta", "The metal price and the metadata behind it"},
+		{"ai", "AI", "He said the campaign was detailed"},
+		{"arc", "Arc", "Researchers search the archive in March"},
+		{"eff", "EFF", "A different approach to the effort"},
+		{"ars", "Ars Technica", "Mars rover parses new stars data"},
+	} {
+		if got, _ := namedIn(c.title, ent(c.name, c.label)); len(got) != 0 {
+			t.Errorf("%q in %q matched %v — the reader is told the row mentions "+
+				"something they follow, and the row plainly does not", c.name, c.title, got)
+		}
+	}
+
+	// The other half, and the one that makes this a boundary fix rather than a
+	// length floor: a short name that really is a word must still match. A
+	// reader following ARM wants the ARM stories.
+	for _, c := range []struct{ name, label, title string }{
+		{"arm", "Arm", "Arm licences a new core"},
+		{"arm", "Arm", "The new arm-based laptops ship"}, // hyphen is an edge
+		{"arm", "Arm", "Analysts price Arm's IPO"},       // apostrophe is an edge
+		{"meta", "Meta", "Meta reports quarterly earnings"},
+		{"ai", "AI", "The AI rules take effect"},
+		{"ars", "Ars Technica", "Ars Technica reviews the handset"},
+	} {
+		got, _ := namedIn(c.title, ent(c.name, c.label))
+		if len(got) != 1 || got[0] != c.label {
+			t.Errorf("%q in %q gave %v, want [%s] — a real mention was dropped",
+				c.name, c.title, got, c.label)
+		}
+	}
+
+	// A false hit must not consume the entity: the real mention later in the
+	// same headline still has to be found. This is why the scan cannot stop at
+	// the first substring occurrence.
+	if got, _ := namedIn("In March, Arc shipped a browser", ent("arc", "Arc")); len(got) != 1 {
+		t.Errorf("got %v, want [Arc] — the match inside \"March\" came first and "+
+			"must not hide the real mention after it", got)
+	}
+}
+
 // A suppression is an instruction, so it has to survive the next derivation.
 //
 // Without this the control is a gesture: the reader says "not something I follow", the

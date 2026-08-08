@@ -27,6 +27,7 @@ package rules
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -483,6 +484,49 @@ func Validate(r Rule) error {
 		if !knownOp(c.Op) {
 			return fmt.Errorf("rules: %q condition %d: unknown operator %q", r.Name, i+1, c.Op)
 		}
+		// A blank value, on every operator where blank means EVERYTHING.
+		//
+		// `strings.Contains(s, "")` is true, `strings.HasPrefix(s, "")` is true,
+		// an empty regex matches every string, and lexically every non-empty
+		// subject is greater than "". So a condition with the value left blank
+		// does not fail to match — it matches every article in the reader, and
+		// the actions beside it include mute and mark-read.
+		//
+		// That is the outcome compareStrings' regex branch already names: an
+		// invalid pattern matches NOTHING rather than everything, because
+		// matching everything "turns a typo into a rule that mutes the whole
+		// feed", and it points here for the author to be told. It was only half
+		// true — this told them about a pattern that would not compile, and an
+		// empty one compiles.
+		//
+		// OpEquals is deliberately still allowed to be blank: "the author is
+		// empty" is a question somebody means to ask, and it matches only the
+		// items where that is so. Every other operator with a blank operand is
+		// either a typo or a no-op, and neither is worth saving.
+		// A blank value, on every operator where blank means EVERYTHING.
+		//
+		// `strings.Contains(s, "")` is true, `strings.HasPrefix(s, "")` is true,
+		// an empty regex matches every string, and lexically every non-empty
+		// subject is greater than "". So a condition with the value left blank
+		// does not fail to match — it matches every article in the reader, and
+		// the actions beside it include mute and mark-read.
+		//
+		// That is the outcome compareStrings' regex branch already names: an
+		// invalid pattern matches NOTHING rather than everything, because
+		// matching everything "turns a typo into a rule that mutes the whole
+		// feed", and it points here for the author to be told. It was only half
+		// true — this told them about a pattern that would not compile, and an
+		// empty one compiles.
+		//
+		// OpEquals is deliberately still allowed to be blank: "the author is
+		// empty" is a question somebody means to ask, and it matches only the
+		// items where that is so. Every other operator with a blank operand is
+		// either a typo or a no-op, and neither is worth saving.
+		if c.Op != OpEquals && strings.TrimSpace(c.Value) == "" {
+			return fmt.Errorf("rules: %q condition %d: %s needs a value — blank "+
+				"matches every article, which with this rule's actions is almost "+
+				"certainly not what was meant", r.Name, i+1, c.Op)
+		}
 		if c.Op == OpRegex {
 			if _, err := regexp.Compile(c.Value); err != nil {
 				return fmt.Errorf("rules: %q condition %d: %w", r.Name, i+1, err)
@@ -505,10 +549,51 @@ func Validate(r Rule) error {
 				return fmt.Errorf("rules: %q action %d: %s needs a value", r.Name, i+1, a.Kind)
 			}
 		case ActionSetHomeWeight:
-			if _, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64); err != nil {
+			w, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64)
+			if err != nil {
 				return fmt.Errorf("rules: %q action %d: set_home_weight needs a number, got %q",
 					r.Name, i+1, a.Value)
 			}
+			// ParseFloat says yes to "NaN", "Inf", "+Inf" and "infinity", with a
+			// nil error, and none of those is a weight.
+			//
+			// It matters because of how the value is spent. rank.go applies it as
+			// `w.Manual * (ManualWeight - 1)` behind `!= 0 && != 1`, and both
+			// comparisons are TRUE for NaN — so the branch fires and the item's
+			// whole score becomes NaN, which then sorts against other scores by
+			// comparisons that are all false. An infinity is worse for being
+			// well-defined: that source's items pin to the top of My Feed and
+			// stay there.
+			//
+			// Out-of-range literals like 1e400 were already refused, because
+			// ParseFloat returns ErrRange for those. It is only the three spelled
+			// forms that arrived looking like numbers.
+			//
+			// No range is imposed beyond finiteness. plan.md gives the column as
+			// `REAL NOT NULL DEFAULT 1.0` and names no bounds, and inventing one
+			// here would be a policy decision wearing a validation's clothes.
+			if math.IsNaN(w) || math.IsInf(w, 0) {
+				return fmt.Errorf("rules: %q action %d: set_home_weight needs a finite "+
+					"number, got %q", r.Name, i+1, a.Value)
+			}
+			// ParseFloat says yes to "NaN", "Inf", "+Inf" and "infinity", with a
+			// nil error, and none of those is a weight.
+			//
+			// It matters because of how the value is spent. rank.go applies it as
+			// `w.Manual * (ManualWeight - 1)` behind `!= 0 && != 1`, and both
+			// comparisons are TRUE for NaN — so the branch fires and the item's
+			// whole score becomes NaN, which then sorts against other scores by
+			// comparisons that are all false. An infinity is worse for being
+			// well-defined: that source's items pin to the top of My Feed and
+			// stay there.
+			//
+			// Out-of-range literals like 1e400 were already refused, because
+			// ParseFloat returns ErrRange for those. It is only the three spelled
+			// forms that arrived looking like numbers.
+			//
+			// No range is imposed beyond finiteness. plan.md gives the column as
+			// `REAL NOT NULL DEFAULT 1.0` and names no bounds, and inventing one
+			// here would be a policy decision wearing a validation's clothes.
 		}
 	}
 	return nil

@@ -146,7 +146,6 @@ type settingsProps struct {
 	// number of seconds — rather than a resolved duration, because "auto" is a
 	// choice the screen has to be able to show as chosen.
 	slideDwell string
-	slideAudio bool
 	// The fixed landing view (§ landing view setting): empty landingMode
 	// means "resume where I left off" (A30, the default); landingModeFixed
 	// means land on landingKind/landingValue instead, named for display by
@@ -174,13 +173,24 @@ type settingsProps struct {
 	busy        string
 
 	// Server-side, fetched on demand.
-	stats     *pb.GetServerStatsResponse
-	logs      []*pb.LogRecord
-	logLevel  string
-	loading   bool
-	statsErr  string
-	whoami    string
-	serverURL string
+	stats    *pb.GetServerStatsResponse
+	logs     []*pb.LogRecord
+	logLevel string
+	// logsErr is the log call's own failure, separate from statsErr — see the
+	// state's declaration in reader.go. Without it a failed fetch reached this
+	// screen as an empty list, and the Activity tab reported "nothing has
+	// happened yet" for "I could not find out what happened".
+	logsErr string
+	// Virtualisation inputs for the Activity list, fed by the scroll listener in
+	// reader.go exactly the way the reading list's are. Zero means "not measured
+	// yet", which html.VirtualList reads as "render everything" — correct for one
+	// frame, and the measure effect lands before anybody has scrolled.
+	logScrollTop float64
+	logViewport  float64
+	loading      bool
+	statsErr     string
+	whoami       string
+	serverURL    string
 
 	// session is the Account tab's sign-out state: whether there is a credential
 	// to give up, how far through giving it up we are, and whether the server
@@ -394,8 +404,19 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 			tr.T("settings", "slidesGroupHint")),
 		setRow(tr.T("settings", "slidesPace"), tr.T("settings", "slidesPaceHint"),
 			slideDwellPicker(tr, p.slideDwell)),
-		setRow(tr.T("settings", "slidesRead"), tr.T("settings", "slidesReadHint"),
-			glyphChip(actSlideListen, glyphListen, onOff(tr, p.slideAudio), p.slideAudio)),
+		// Read-to-me is NOT a row here, and its absence is the decision rather
+		// than an omission.
+		//
+		// It used to be one, sitting among preferences that persist, for a value
+		// that deliberately does not (TODO 11.50, reader.go's showAudio) and that
+		// is overwritten by whichever button opens the show. So it could not be
+		// obeyed: set it, reload, it is off again; set it, press Slideshow, the
+		// button decides. A control that cannot affect anything is worse on a
+		// settings screen than on any other, because this is the screen a reader
+		// consults to find out what is true.
+		//
+		// The mode is chosen where it is chosen — Slideshow starts silent,
+		// FluxCast starts narrated, and `v` switches mid-show.
 	}
 }
 
@@ -712,14 +733,21 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 // keystroke away (a comma), the Account tab is where identity already lives, and
 // somebody who has decided to leave will spend the extra click.
 //
-// # Why it can be absent
+// # Why it is always here
 //
-// A `serve -dev` instance issues no credential at all: the server hands over the
-// local account to whoever reaches the port, and Root never shows a login screen.
-// A sign-out button there would clear nothing, reload, and sign the reader
-// straight back in — a control that visibly does nothing, which is worse than a
-// control that is missing. The demo build is the same shape. So the group appears
-// only when this browser is actually holding something to give up.
+// It used to appear only when this browser held a credential, on the argument
+// that a `serve -dev` instance issues none — the server hands the local account
+// to whoever reaches the port — so the button there would clear nothing, reload,
+// and sign the reader straight back in. That reasoning is sound about the dev
+// server and wrong about everything else: the two instances anyone develops
+// against are `-dev` instances, so the control was invisible on every screen it
+// was ever looked for on, and "there is no sign-out" is a far more expensive
+// wrong belief than "on a dev server it only reloads". Cam's call, 2026-08-08.
+//
+// The press is harmless in that state rather than broken: `AuthServer.Logout`
+// answers OK to a request carrying no bearer token (nothing to revoke is not an
+// error), the demo build's stub does the same, so the dev path is a clean reload
+// that lands back in the reader.
 //
 // # Why the failure path does not reload
 //
@@ -731,9 +759,6 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 // reader would walk away from a shared machine believing the session was revoked.
 // So the note stays up, and going back to the door becomes the reader's own press.
 type sessionProps struct {
-	// present is whether this browser holds a credential at all. False on a dev
-	// server and in the demo — see above.
-	present bool
 	// armed is the first press. Per-visit, like the category editor's delete:
 	// a confirm that survives leaving the tab is a confirm nobody remembers
 	// giving.
@@ -751,10 +776,6 @@ const (
 )
 
 func signOutGroup(tr i18n.Runtime, s sessionProps) []ui.Node {
-	if !s.present {
-		return nil
-	}
-
 	// Stranded replaces the button rather than sitting beside it. There is
 	// nothing left to sign out of here, so offering to do it again would be
 	// offering to repeat work that has already happened.
@@ -928,34 +949,97 @@ func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if p.loading {
 		return append(head, settingsSkeleton()...)
 	}
+	// Before the empty state, because they are not the same fact and this screen
+	// used to report the wrong one: a failed fetch left `logs` nil and fell
+	// through to "nothing has happened yet", which is a claim about the server
+	// made by a client that could not reach it.
+	//
+	// Appended to `head` rather than returned alone, unlike the Speed tab: the
+	// level chips and Reload are how a reader retries, and a screen that removes
+	// its own retry button on failure is one you have to reload the page to use.
+	if p.logsErr != "" {
+		out := append(head, html.Div(html.Props{Class: "fs-error", Role: "alert"},
+			html.Text(p.logsErr)))
+		// Whatever was already on screen stays under it. Stale records with a
+		// sentence saying the reload failed beat a blank tab.
+		if len(p.logs) == 0 {
+			return out
+		}
+		head = out
+	}
 	if len(p.logs) == 0 {
 		return append(head, html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "activityEmpty"))))
 	}
 
-	rows := make([]ui.Node, 0, len(p.logs))
-	for i, r := range p.logs {
-		rows = append(rows, html.Div(html.Props{
-			Class: "log-row",
-			Key:   "log-" + strconv.Itoa(i),
-			Data:  map[string]string{"level": strings.ToLower(r.GetLevel())},
+	return append(head, html.VirtualList(html.VirtualListProps{
+		Props:          html.Props{Class: "log-list"},
+		ItemCount:      len(p.logs),
+		ItemHeight:     LogRowHeight,
+		ViewportHeight: p.logViewport,
+		ScrollTop:      p.logScrollTop,
+		// The timestamp AND the index. The index alone is stable while a
+		// snapshot is on screen — scrolling does not move a record from row 100
+		// to row 99 — but a refresh that prepends three entries would leave every
+		// fiber holding the record three rows above the one it now renders. The
+		// time makes that a different key and the row rebuilds.
+		Key: func(i int) any { return p.logs[i].GetTime() + "#" + strconv.Itoa(i) },
+		Render: func(i int) ui.Node {
+			r := p.logs[i]
+			// The full text, for the one that was too long for its line. The
+			// row is a fixed height because a virtual list cannot be anything
+			// else, so a 400-character error is one line and an ellipsis —
+			// which is fine for scanning and not fine for the reader who has
+			// found the line they came here for.
+			full := r.GetMessage()
+			if r.GetAttrs() != "" {
+				full += "\n" + r.GetAttrs()
+			}
+			return html.Div(html.Props{
+				Class: "log-row",
+				Title: full,
+				Data:  map[string]string{"level": strings.ToLower(r.GetLevel())},
+			},
+				html.Span(html.Props{Class: "log-time"}, html.Text(relOrNever(tr, r.GetTime()))),
+				html.Span(html.Props{Class: "log-level"}, html.Text(strings.ToLower(r.GetLevel()))),
+				html.Div(html.Props{Class: "log-msg"},
+					html.Span(html.Props{Class: "log-text"}, html.Text(r.GetMessage())),
+					ui.If(r.GetAttrs() != "", func() ui.Node {
+						return html.Span(html.Props{Class: "log-attrs"}, html.Text(r.GetAttrs()))
+					}),
+				),
+			)
 		},
-			html.Span(html.Props{Class: "log-time"}, html.Text(relOrNever(tr, r.GetTime()))),
-			html.Span(html.Props{Class: "log-level"}, html.Text(strings.ToLower(r.GetLevel()))),
-			html.Div(html.Props{Class: "log-msg"},
-				html.Span(html.Props{Class: "log-text"}, html.Text(r.GetMessage())),
-				ui.If(r.GetAttrs() != "", func() ui.Node {
-					return html.Span(html.Props{Class: "log-attrs"}, html.Text(r.GetAttrs()))
-				}),
-			),
-		))
-	}
-	return append(head, html.Div(html.Props{Class: "log-list"}, rows...))
+	}))
 }
+
+// LogRowHeight is the fixed height of one row on the Activity tab, in CSS
+// pixels, and it MUST equal design.LogRowHeight — which is the same number as a
+// CSS string, and is what `.log-row` is actually set to.
+//
+// Two values for one number, like ItemRowHeight and `--row` before it, and for
+// the same reason: the virtualiser positions rows by arithmetic while the
+// browser lays them out by CSS, so a disagreement is not a style bug but rows
+// that drift further from their spacers the further down the list you scroll.
+//
+// 52px is two lines and the padding: the message, and the attrs under it. Rows
+// with no attrs keep the height and leave the second line empty rather than
+// closing up — uniform is the price of virtualising, and a log where every row
+// is the same size is easier to scan down anyway.
+const LogRowHeight = 52.0
 
 // --- speed ---------------------------------------------------------------------
 
 func settingsSpeed(tr i18n.Runtime, p settingsProps) []ui.Node {
+	// The error FIRST, exactly as settingsServer does it, and for a reason that
+	// is specific rather than tidy: this tab and Server are fed by one call, and
+	// a failed one leaves `loading` false and `stats` nil forever. Checking only
+	// those two — which is what this did — renders the loading skeleton until
+	// the reader gives up, while the sentence explaining why sits unread in
+	// state. A permanent spinner is the worst of the three things this could say.
+	if p.statsErr != "" {
+		return []ui.Node{html.Div(html.Props{Class: "fs-error"}, html.Text(p.statsErr))}
+	}
 	if p.loading || p.stats == nil {
 		return settingsSkeleton()
 	}

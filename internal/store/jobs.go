@@ -39,6 +39,32 @@ import (
 // is what lets `run_after <= ?` be a string comparison against an index.
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
+// parseStamp is stamp's inverse, for turning a caller's timestamp into one this
+// schema can store.
+//
+// It exists next to stamp because the pair is the contract: every timestamp
+// column here is compared with <= and >= against stamp(now), which is a
+// comparison of BYTES. That is only equivalent to comparing instants while
+// every value in the column carries the same spelling — same zone, same layout
+// — so a caller's string has to be turned back into a time and re-stamped
+// rather than written through. "2026-08-08T18:52:22+05:00" and
+// "2026-08-08T13:52:22Z" are the same instant and sort three hours apart.
+//
+// RFC3339Nano first because that is what stamp writes; plain RFC3339 second
+// because that is what clients send, and rejecting a valid timestamp for
+// having no fractional part would be pedantry with a bug attached.
+func parseStamp(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
+}
+
 // JobKind names a queue. Per-kind concurrency caps are enforced against these.
 type JobKind string
 

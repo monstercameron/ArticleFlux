@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -559,8 +558,16 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		}
 	}
 
-	// Every outbound fetch, from all seven callers, through the one guard they
-	// already share. Installed before any client is constructed.
+	// Every outbound fetch, from every caller, through the one guard they all
+	// share. Installed before any client is constructed.
+	//
+	// "All seven callers" is what this said, and it was not true: six went
+	// through netguard and the two that SPEND MONEY — internal/llm and
+	// internal/tts — built bare `&http.Client{Timeout:…}` of their own. So the
+	// only paths with a bill attached were the only paths with no egress
+	// metrics, no per-hop span and no shared dial policy, which is exactly
+	// backwards. Both use netguard.Client now (`purpose=smart`, `purpose=speech`),
+	// and `TestEveryEgressPathIsGuarded` fails if a new one does not.
 	//
 	// This is the metric that answers "is the internet broken, or is it us?" —
 	// a reader whose feeds stop updating looks identical whether the publisher is
@@ -643,17 +650,18 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// Installed as SchemaFlux middleware rather than as a check inside the
 	// client, so it composes with whatever else the chain grows — see
 	// internal/llm/cost.go.
-	a.llm.Use(a.llm.Budget(func(ctx context.Context) float64 {
-		v, err := a.settings.SystemValue(ctx, store.KeySmartBudgetUSD)
-		if err != nil {
-			return 0
-		}
-		usd, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		if err != nil {
-			return 0
-		}
-		return usd
-	}))
+	a.llm.Use(a.llm.Budget(a.smartBudgetUSD))
+	// And the ceiling counts the VOICE as well as the model.
+	//
+	// It did not, and the setting's name said otherwise: an operator set
+	// "Smart+ budget" and bounded `internal/llm` only, while `internal/tts` —
+	// the half a reader can leave running through a whole broadcast — spent
+	// past it with nothing but a concurrency cap of four in the way.
+	//
+	// One cap and one SUM rather than a ceiling each. Two ceilings reading the
+	// same setting would mean $5 meant $10, which is a worse answer than the
+	// gap: at least the gap was visible once somebody read the code.
+	a.llm.WithExternalSpend(func(context.Context) float64 { return a.tts.Cost().USD })
 	// Where the ceiling's other half lives: what has already been spent.
 	//
 	// Without it the total is process state, and a cap enforced against process
@@ -859,7 +867,23 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// Cached beside the database, so a backup that copies the data directory
 	// carries the audio with it and a re-listen after a restore is still free.
 	a.tts = tts.New(filepath.Join(filepath.Dir(cfg.DBPath), "speech-cache"),
-		tts.KeyFunc(smartKey))
+		tts.KeyFunc(smartKey)).
+		// The dollar ceiling, which this client had none of. `bound.go` caps
+		// four concurrent syntheses, which bounds how many paid calls are in
+		// the air and says nothing about how many happen — a broadcast left
+		// running makes them one after another, forever.
+		//
+		// The SAME setting the model reads, and a total that SUMS both, so the
+		// number an operator typed is the number that binds. See
+		// internal/tts/cost.go for why the speech half of that total is partly
+		// an estimate and why that is the right trade for a safety limit.
+		WithSpendStore(settingsSpend{settings: a.settings, log: cfg.Log}).
+		WithBudget(a.smartBudgetUSD, func(ctx context.Context) float64 {
+			return a.llm.Cost().USD + a.tts.Cost().USD
+		})
+	// Read once here, like the model's, so the ceiling is enforced against the
+	// persisted total from the first call rather than from the second.
+	a.tts.Hydrate(ctx)
 	// The same object, seen through the narrow seam the listening path uses.
 	// Assigned here rather than derived at the call site so there is exactly one
 	// line to look at when asking "can these two ever disagree".
@@ -1524,7 +1548,10 @@ func (a *App) buildHandler() {
 	// 501 with no key and 403 without the per-user opt-in. Registering it only
 	// when configured would make "why is listening missing?" answerable only by
 	// reading the server logs.
-	mux.HandleFunc("/speech", a.serveSpeech)
+	// Behind its own limiter (§20.7). This was the only fetch-on-behalf
+	// endpoint on the instance with none, and it is the one that spends money
+	// per call — see speechLimit for why it does not share the proxy's.
+	mux.Handle("/speech", a.speechLimit(http.HandlerFunc(a.serveSpeech)))
 	// Registered unconditionally and gated inside, for the same reason /speech
 	// is: "why are the images missing?" should be answerable from the response
 	// rather than only from the server log.
@@ -1815,7 +1842,10 @@ func (a *App) buildHandler() {
 	// the lockout ledger — asks who the client is, and behind a reverse proxy
 	// the transport address answers "nginx" for all of them. Inert unless
 	// -behind-proxy says a proxy is there to be believed.
-	a.handler = a.trueClientAddr(a.httpMetrics(mux))
+	// nosniff on everything this mux answers, rather than on the two routes that
+	// happened to be wrapped in securityHeaders. See baselineHeaders for which
+	// endpoints were missing it and why the two that were are the worst two.
+	a.handler = a.trueClientAddr(a.httpMetrics(baselineHeaders(mux)))
 }
 
 // static serves the client with the headers a wasm app needs.

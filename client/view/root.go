@@ -85,6 +85,10 @@ func Root() ui.Node {
 	// preferences for this account, which is a first-ever boot and looks
 	// identical from the reader's side — the distinction only matters here.
 	saved := ui.UseRef[map[string]string](nil)
+	// Who the WhoAmI above answered with, kept for the Account tab. A Ref beside
+	// `saved` and for its reasons: read once when Reader mounts, and this is the
+	// only place in the app that already knows the answer.
+	whoami := ui.UseRef("")
 	// catalogReady exists only to force one re-render after a translated catalog
 	// lands. The locale has not changed at that point — it was already set — so
 	// nothing else would invalidate the tree, and the reader would sit looking
@@ -220,6 +224,10 @@ func Root() ui.Node {
 				}
 				authed.Set(c)
 				saved.Set(prefs)
+				// The identity this whole effect already asked for. Unreachable
+				// unless WhoAmI answered — the error path above returns — and an
+				// empty name is what the Account tab already handles anyway.
+				whoami.Set(who.GetUsername())
 				phase.Set(phaseReader)
 			})
 		}()
@@ -299,7 +307,7 @@ func Root() ui.Node {
 	case phaseHome:
 		child = ui.CreateElement(Home)
 	case phaseReader:
-		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get()})
+		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get(), whoami: whoami.Get()})
 	case phaseSetup:
 		child = ui.CreateElement(Setup, setupProps{
 			tunnel: tunnel,

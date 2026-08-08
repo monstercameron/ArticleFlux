@@ -87,6 +87,50 @@ func TestForeverKeepsTheOnDiskLogToo(t *testing.T) {
 	}
 }
 
+// A window too large to be real must keep everything, not delete everything.
+//
+// # The inversion this pins
+//
+// A huge number here means "keep more". It was doing the exact opposite, and
+// only to the on-disk copy.
+//
+// `SweepAttempts` and `SweepAudit` both refuse a window past MaxItemDays and
+// return an error. The prune beside them took `days` straight into
+// `time.Duration(days) * 24 * time.Hour` with nothing checking it — and past
+// 106,751 days that multiplication overflows int64 and comes out NEGATIVE, so
+// `Add(-d)` puts the cutoff in the FUTURE. 200,000 days lands in 2063, and
+// `pruneSpillFile` drops every line older than the cutoff, which is every line
+// there is.
+//
+// So the database sweep safely refused the number while the log copy standing
+// next to it was wiped by it. 200,000 is a plausible typo, and MaxItemDays
+// exists precisely because "the difference between 365 and 3650 is one
+// keystroke".
+func TestAWindowBeyondTheCeilingKeepsTheOnDiskLog(t *testing.T) {
+	a, sc := retentionApp(t)
+	ctx := context.Background()
+
+	// Past the overflow threshold of 106,751 days, which is where the sign
+	// flips. Written as a literal rather than derived, so that changing
+	// MaxItemDays cannot quietly move this test off the case it is about.
+	if err := a.settings.SetSystemValue(ctx, store.KeyRetentionAuditDays, "200000", sc.UserID); err != nil {
+		t.Fatalf("SetSystemValue: %v", err)
+	}
+	s := spillFor(t, a, 4000*24*time.Hour, 1*time.Hour)
+
+	a.sweepSecurity(ctx)
+
+	if !spillHolds(s, "record0") {
+		t.Error("an eleven-year-old line was deleted under a 200,000-day window; " +
+			"a window that large means keep everything, and the duration overflowed " +
+			"into a cutoff in the future")
+	}
+	if !spillHolds(s, "record1") {
+		t.Error("a one-hour-old line was deleted under a 200,000-day window; " +
+			"the whole log was wiped")
+	}
+}
+
 // spillHolds reports whether a message survived the sweep.
 func spillHolds(s *obs.Spill, msg string) bool {
 	for _, r := range s.Load(500) {

@@ -115,10 +115,36 @@ func Unary(st Store, scopeOf ScopeFunc) grpc.UnaryServerInterceptor {
 			out, uerr := decode(method, rec.Response)
 			if uerr != nil {
 				// The stored bytes no longer parse — a response message whose
-				// shape changed across a deploy. Re-running is the safe answer
-				// for the mutations that exist: they set absolute values, so a
-				// second application is a no-op. Returning an error instead
-				// would strand a client that cannot stop retrying the key.
+				// shape changed across a deploy. Re-running rather than erroring,
+				// because an error strands a client that cannot stop retrying the
+				// key.
+				//
+				// # Re-running is NOT free, and the old note here said it was
+				//
+				// It claimed "the mutations that exist set absolute values, so a
+				// second application is a no-op". That is true of SetItemState —
+				// read, starred and rating are absolute tri-states — and it is
+				// NOT true of MarkAllRead, the only other keyed request:
+				//
+				//   - It mints an UNDO BATCH per call. client/data/conn.go says so
+				//     in as many words, and refuses to queue it offline for
+				//     exactly this reason: replaying it "would create two batches
+				//     and leave the undo offering to reverse half its own work"
+				//     (§20.19.8). Two files held opposite beliefs about the same
+				//     RPC and this was the one that acted on its own.
+				//   - Its `before` bound is what makes the marked SET stable, and
+				//     the client deliberately leaves it empty so the server's clock
+				//     decides. So a re-run marks everything up to the NEW now,
+				//     silently including articles that arrived in between — which
+				//     is the precise thing the field exists to prevent.
+				//
+				// It is not reachable today: this client sends no idempotency key
+				// with MarkAllRead and never queues it, so the interceptor passes
+				// it straight through. What makes it worth naming is that idem is
+				// OPT-IN BY DECLARING A PROTO FIELD, so the assumption above is
+				// inherited by whatever declares one next, silently. See
+				// TestOnlyKnownRequestsCarryAnIdempotencyKey, which is what turns
+				// "somebody should check" into a failing build.
 				return runAndStore(ctx, st, sc, key, method, reqBytes, req, handler)
 			}
 			return out, nil

@@ -199,6 +199,9 @@ func referencedKeys(t *testing.T) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 
+	// Skips where directories cannot be listed at all. See requireDirScan.
+	requireDirScan(t)
+
 	entries, err := os.ReadDir(viewDir)
 	if err != nil {
 		t.Fatalf("cannot read %s: %v", viewDir, err)

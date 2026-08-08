@@ -8182,6 +8182,23 @@ are in good shape; traces are three spans; logs and traces share no identifier.*
       *Done when: spans exist at the boundaries that can actually be slow — `store` query, `extract`,
       `analyze`, `llm.Do`, and one span per source inside `poll.cycle`.*
 
+- [x] **The e2e suite gates the release now.** ✅ 2026-08-08.
+      CI was four jobs — static, test, wasmtest, wasm-size — and `promote.yml` gates on `ci.yml`, so
+      the ~30 Playwright specs never ran on the path that deploys. The release check was thorough
+      about compilation and blind to whether the application works in a browser.
+      The blocker was mechanical rather than principled: the harness hardcoded
+      `bin/articleflux.exe` and found listeners with `netstat -ano` + `taskkill`, so it could only
+      ever run on one Windows box. `e2e/platform.mjs` now holds `serverBinary`, `listenerPids` and
+      `killPid` for both operating systems — one module rather than the four copies that existed,
+      because a fifth is how one of them ends up killing by image name and taking out the dev
+      server on :9000. `ci.yml` gained an `e2e` job (chromium only, traces uploaded on failure),
+      and because `promote.yml` calls the whole workflow it is in the promotion gate for free.
+      *Verified locally:* `connection.spec.mjs` passes both specs including the stop/start one,
+      which is what exercises `platform.mjs` hardest. It also caught a bug in the first draft:
+      `new URL('.', import.meta.url).pathname` yields `/C:/…` on Windows, which is not a spawnable
+      cwd, so every lookup returned nothing and `stopServer()` reported "nothing was listening to
+      kill" about a server that plainly was.
+
 - [ ] **OTEL-6 — Jobs cannot be linked to the request that queued them, although the pattern for it
       already exists.** `internal/reqid`'s own doc calls the queue boundary "the part that is usually
       missed" and solves it for log ids via `Origin`. The trace half is unbuilt: `JobRuns` and

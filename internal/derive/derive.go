@@ -45,6 +45,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/monstercameron/ArticleFlux/internal/rank"
 	"github.com/monstercameron/ArticleFlux/internal/sanitize"
@@ -1465,7 +1467,7 @@ func namedIn(title string, followed []store.Entity) ([]string, float64) {
 	}
 	var spans []span
 	for _, e := range followed {
-		if idx := strings.Index(lower, e.Name); idx >= 0 {
+		if idx := indexWord(lower, e.Name); idx >= 0 {
 			spans = append(spans, span{e.Label, idx, idx + len(e.Name), clampSteer(e.Steer)})
 		}
 	}
@@ -1514,6 +1516,78 @@ func namedIn(title string, followed []store.Entity) ([]string, float64) {
 		scale = store.SteerNormal
 	}
 	return out, scale
+}
+
+// indexWord is strings.Index restricted to whole-word matches: the offset of the
+// first occurrence of needle in hay that is not buried inside a longer word, or
+// -1.
+//
+// # Why a plain substring test was not enough
+//
+// pipeline's entityAnalyzer builds names from token PAIRS with MinTermLen = 3,
+// so its shortest entity is a two-word phrase — and a string with a space in it
+// cannot hide inside a single word. That is why strings.Index survived here.
+//
+// internal/smart's extractor has no such shape. It lowercases the model's answer
+// and rejects only the empty string: no length floor, no token floor. A model
+// asked for entities returns "arm", "meta", "ai", "arc" — and then a reader
+// following ARM is told that a story about an alarm "mentions Arm, which you
+// follow". The entity term is weighted 0.9, behind only freshness and topic, and
+// rank.go stakes it on being the most CHECKABLE thing the ranker says. A claim
+// the reader can check and find false is worse there than a term that stayed
+// quiet.
+//
+// # Every occurrence, not just the first
+//
+// The scan continues past a buried hit rather than giving up on the name.
+// "In March, Arc shipped a browser" contains "arc" twice; the first is inside
+// "March" and the second is the mention. Stopping at the first would trade a
+// false positive for a false negative, which is not an improvement, just a
+// different wrong answer.
+//
+// A boundary is anything that is not a letter or a digit, so possessives,
+// hyphens and punctuation still read as edges: "Arm's", "arm-based" and "(Arm)"
+// are all mentions of Arm. Runes, not bytes — an accented letter beside a name
+// is a letter.
+func indexWord(hay, needle string) int {
+	if needle == "" {
+		return -1
+	}
+	for off := 0; off <= len(hay)-len(needle); {
+		i := strings.Index(hay[off:], needle)
+		if i < 0 {
+			return -1
+		}
+		i += off
+		if wordEdged(hay, i, i+len(needle)) {
+			return i
+		}
+		// Advance one rune, not one byte, so the next search starts on a
+		// character boundary and overlapping occurrences are still reachable.
+		_, sz := utf8.DecodeRuneInString(hay[i:])
+		off = i + sz
+	}
+	return -1
+}
+
+// wordEdged reports whether hay[start:end] has a non-word character (or the end
+// of the string) on both sides.
+func wordEdged(hay string, start, end int) bool {
+	if start > 0 {
+		if r, _ := utf8.DecodeLastRuneInString(hay[:start]); isWordRune(r) {
+			return false
+		}
+	}
+	if end < len(hay) {
+		if r, _ := utf8.DecodeRuneInString(hay[end:]); isWordRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // clampSteer keeps a dial the store has not vetted inside the range rank was

@@ -62,6 +62,12 @@ const (
 	GripWidth  = "6px"
 	BodySize   = "14.5px"
 	BodyHeight = "1.55"
+	// LogRowHeight is the Activity tab's row, which is fixed for the same reason
+	// RowHeight is: that list is virtualised too. Stated here rather than inline
+	// in the sheet so it sits beside its twin, view.LogRowHeight — the pairing
+	// RowHeight/ItemRowHeight already has, and the one a reader changing either
+	// number needs to trip over.
+	LogRowHeight = "52px"
 )
 
 // sourceHues are the mockup's seven hand-picked source colours.

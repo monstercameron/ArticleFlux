@@ -260,3 +260,75 @@ func TestRecordingAFailureForAnUnknownSourceIsAnError(t *testing.T) {
 		t.Error("a failure was recorded against a source that does not exist")
 	}
 }
+
+// A successful poll has to schedule the next one at the source's own interval.
+//
+// # The setting and the scheduler disagreed
+//
+// The reader picks from "Fetch every" — 5 min, 15 min, 30 min, 1 hour, 6 hours,
+// daily — and the hint under it reads "How often the server polls it." That
+// choice is clamped and written to sources.fetch_interval_s by
+// UpdateFeedSettings, which also recomputes next_fetch_at as last-fetch plus the
+// new interval. Correct arithmetic, in one place.
+//
+// RecordFetch then overwrote it on the very next successful poll with a flat
+// `now.Add(30*time.Minute)`, reading nothing from the column. The interval
+// survived only as the FAILURE backoff base (`interval << failures`) and as the
+// divisor in DueSources' staleness ratio — never as the period, which is the one
+// thing the control claims to set.
+//
+// So the two ends of the same feature disagreed: a feed set to "daily" became
+// eligible again half an hour after each poll, and a feed set to "5 min" could
+// not be polled sooner than thirty regardless. DueSources' own worked example
+// ("A: 15-minute interval, due at 10:00 / B: 24-hour interval, due at 09:00")
+// is only expressible if due times come from each source's interval, so the
+// scheduler's design assumed the write this test pins down.
+//
+// The default column value is 1800 — exactly the thirty minutes that was
+// hardcoded — so a source nobody has retuned behaves identically either way.
+// That is what made the literal survive: it was right for every source in the
+// fixture and wrong for every source a reader had touched.
+func TestASuccessfulFetchSchedulesTheNextOneAtTheSourcesInterval(t *testing.T) {
+	db := openTest(t)
+	repo, sourceID := oneSource(t, db)
+	ctx := context.Background()
+
+	for _, interval := range []int{300, 3600, 21600, 86400} {
+		if _, err := db.Write.Exec(
+			`UPDATE sources SET fetch_interval_s = ? WHERE id = ?`, interval, sourceID); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.RecordFetch(ctx, FetchOutcome{SourceID: sourceID}); err != nil {
+			t.Fatalf("RecordFetch: %v", err)
+		}
+		h := healthOf(t, db, sourceID)
+		got := h.nextFetchIn(t)
+		want := time.Duration(interval) * time.Second
+
+		// A generous window: the point is which interval was used, not clock skew.
+		if got < want-time.Minute || got > want+time.Minute {
+			t.Errorf("interval %ds: next poll scheduled in %v, want about %v — the "+
+				"reader chose %v under a control labelled \"How often the server polls it\"",
+				interval, got.Round(time.Second), want, want)
+		}
+	}
+
+	// And the scheduler agrees: a source just polled on a six-hour interval is
+	// not due, where before it became due after thirty minutes.
+	if _, err := db.Write.Exec(
+		`UPDATE sources SET fetch_interval_s = 21600 WHERE id = ?`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordFetch(ctx, FetchOutcome{SourceID: sourceID}); err != nil {
+		t.Fatalf("RecordFetch: %v", err)
+	}
+	due, err := repo.DueSources(ctx, 50)
+	if err != nil {
+		t.Fatalf("DueSources: %v", err)
+	}
+	for _, s := range due {
+		if s.ID == sourceID {
+			t.Error("a source polled moments ago on a six-hour interval is already due")
+		}
+	}
+}

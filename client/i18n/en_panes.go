@@ -107,6 +107,11 @@ func init() {
 		"subLater":    "Saved to read later.",
 		"subLiked":    "Everything you liked.",
 		"subDisliked": "Everything you'd rather not read again.",
+		// Notes had no line of its own, so it fell through to the unfiltered
+		// "{n} unread, newest first" — a number about a different stream sitting
+		// under a list of the articles you wrote on. Same shape as the other
+		// three: what this list IS, in four words, and no count.
+		"subNotes": "Everything you wrote on.",
 		"subUnread":   "Unread only. Press u to show everything.",
 
 		"searchPlaceholder": "Search",
@@ -203,7 +208,12 @@ func init() {
 		"emptyLikedHint":    "Press l on an article, or use ▲ Like.",
 		"emptyDisliked":     "Nothing disliked yet",
 		"emptyDislikedHint": "Press d on an article you'd rather not have read.",
-		"emptyNoArticles":   "No articles yet",
+		// The list did not arrive, which is not the same as being empty. Every
+		// other pair in this block explains the reader's own data back to them,
+		// and all of them are wrong here — see emptyList's first case.
+		"emptyFailed":     "This list didn't load",
+		"emptyFailedHint": "The message above says why. Nothing has been lost.",
+		"emptyNoArticles": "No articles yet",
 		// The pinned URL box this used to point at is gone — the chosen design has
 		// no top bar at all (see railPane's head comment in panes.go). Adding a
 		// feed now opens a dialog from the button at the foot of the rail, so the

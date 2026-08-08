@@ -158,6 +158,19 @@ func Reader(p readerProps) ui.Node {
 	railFeedsClosed := ui.UseState(prefBool(saved, "rail.closed."+actFeeds, false))
 	railTagsClosed := ui.UseState(prefBool(saved, "rail.closed."+actTags, false))
 	railCatsClosed := ui.UseState(prefBool(saved, "rail.closed."+actCats, false))
+	// The one section currently folding shut, held for exactly as long as the
+	// fold takes to play (see railFold, and playRailFold below).
+	//
+	// A section that is closed is not rendered — that is most of what folding is
+	// FOR in a column that can hold 151 rows — so without this the rows would be
+	// gone from the tree on the frame the caret turned, and there would be
+	// nothing left on screen for a collapse animation to happen to. This keeps
+	// them one beat longer.
+	//
+	// One slot, not a set, matching Discover's `leaving`: two sections folding
+	// inside the same 180ms is a gesture nobody makes on purpose, and the loser
+	// snaps shut instead of animating rather than doing anything incorrect.
+	railClosing := ui.UseState("")
 	tags := ui.UseState[[]*pb.Tag](nil)
 	tagFeeds := ui.UseState[map[string][]string](nil)
 	// The categories, and which of them are unfolded in the rail.
@@ -484,6 +497,18 @@ func Reader(p readerProps) ui.Node {
 	setTab := ui.UseState(bootTab(boot))
 	serverStats := ui.UseState[*pb.GetServerStatsResponse](nil)
 	serverLogs := ui.UseState[[]*pb.LogRecord](nil)
+	// The Activity list is virtualised, and these are its two inputs — the same
+	// pair the reading list keeps, fed by the same kind of rAF-throttled scroll
+	// listener further down. Separate from the reading list's: both can be
+	// scrolled in one session and neither's offset means anything to the other.
+	// Why the log half gets its own error and does not borrow statsErr: they are
+	// two calls behind one button, shown on two different tabs. A server with no
+	// log ring answers ListLogs with Unimplemented and GetServerStats normally,
+	// and putting that on statsErr would replace the Server tab's perfectly good
+	// numbers with a complaint about a screen the reader is not looking at.
+	logsErr := ui.UseState("")
+	logScrollTop := ui.UseState(0.0)
+	logViewport := ui.UseState(0.0)
 	logLevel := ui.UseState("INFO")
 	statsLoading := ui.UseState(false)
 	statsErr := ui.UseState("")
@@ -505,16 +530,6 @@ func Reader(p readerProps) ui.Node {
 	signOutArmed := ui.UseState(false)
 	signOutBusy := ui.UseState(false)
 	signOutStranded := ui.UseState(false)
-	// Whether this browser was holding a credential when the reader mounted,
-	// which is what decides whether the sign-out control exists at all (see
-	// view.signOutGroup: a dev server issues none, and a button that clears
-	// nothing is worse than no button).
-	//
-	// A Ref, read once, rather than data.Token() at render time. Signing out
-	// clears the token, so a live read would delete the group from under the
-	// message explaining what just happened — the one screen state that exists
-	// precisely because the credential is already gone.
-	hadSession := ui.UseRef(data.Token() != "")
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -778,6 +793,16 @@ func Reader(p readerProps) ui.Node {
 	// made feed switching feel like a page load in the first place.
 	feedsLoading := ui.UseState(true)
 	itemsLoading := ui.UseState(true)
+	// Whether the last page-one load FAILED, as distinct from returning nothing.
+	//
+	// The two look identical on screen and they are not the same situation. An
+	// empty list gives directions — "press t on an article to put it here", "add
+	// a feed, the button is at the foot of the sidebar" — and every one of those
+	// is wrong when the rows are missing because the request did not arrive. A
+	// reader whose train went into a tunnel was being told to add a feed to an
+	// account with feeds in it, under a list that had three unread articles in it
+	// a second earlier. See emptyList.
+	listFailed := ui.UseState(false)
 	// Whether what is on screen came from the server or from the last time it
 	// answered. §12.3 requires the fallback to be visible and it is right to:
 	// a list that silently shows yesterday's articles during an outage is the
@@ -1483,8 +1508,48 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				if err != nil {
-					notice.Set(tr.T("reader", "errLoadItems", i18n.Args{"err": err.Error()}))
+					// A list that did not arrive is remembered, so the empty box
+					// underneath this notice stops giving directions for a
+					// situation the reader is not in. See listProps.loadFailed.
+					listFailed.Set(true)
+					// Offline is a reason it could not be attempted, not a failure
+					// of the request — the same distinction refresh already draws a
+					// few hundred lines below, and the one the reader acts on.
+					//
+					// Both tests, because they catch it at different depths: the
+					// data layer short-circuits some calls with ErrOffline, and a
+					// call already in flight when the network goes comes back as a
+					// deadline instead. A reader in a tunnel gets one sentence
+					// either way.
+					if errors.Is(err, data.ErrOffline) || !platform.Online() {
+						notice.Set(tr.T("reader", "offlineList"))
+						return
+					}
+					// serverText, never err.Error(): gRPC renders its own failures as
+					// `rpc error: code = DeadlineExceeded desc = context deadline
+					// exceeded`, and that is what this line used to put in front of
+					// the reader — srverr.go's doc comment names that exact string as
+					// the thing it exists to prevent, and this was the call site
+					// ignoring it.
+					notice.Set(tr.T("reader", "errLoadItems", i18n.Args{"err": serverText(tr, err)}))
 					return
+				}
+				// A list that arrived clears the apology for the one that did not.
+				//
+				// Guarded on listFailed rather than clearing unconditionally: the
+				// notice line is shared — the outbox drain, the offline refusals,
+				// the mark-all undo all speak through it — so a list load wiping it
+				// on principle would swallow messages it has nothing to do with.
+				// Only the failure this same code path set gets withdrawn.
+				//
+				// Without it the reader came back from a tunnel to a working list
+				// with "Can't load this list while you're offline" still sitting
+				// above it, next to an indicator reading "live". A stale apology is
+				// worse than none: it contradicts the thing beside it, and the
+				// reader has to work out which half of the screen to believe.
+				if listFailed.Get() {
+					listFailed.Set(false)
+					notice.Set("")
 				}
 				listFrom.Set(from)
 				setItems(list)
@@ -1793,6 +1858,33 @@ func Reader(p readerProps) ui.Node {
 			fetchBody(list[i+1])
 		}
 	}
+
+	// The header follows a rename.
+	//
+	// A scope carries the name it was captured with, which is right — the header
+	// must not go blank while the rail is fetching — and stale the moment the
+	// thing it names is renamed. Renaming a feed updated the rail at once and the
+	// rows on the next load, while the heading over those rows kept the old name
+	// through a reload: three parts of one screen, two names.
+	//
+	// Keyed on the DERIVED name rather than on the rail's length, because a
+	// rename changes no count: the dependency is the answer itself, so the effect
+	// runs exactly when the answer changes. It cannot loop — the name is derived
+	// from the rail and not from what this writes back — and retitleScope leaves
+	// streams and not-yet-loaded lookups alone, so there is no frame where this
+	// can empty a header.
+	//
+	// Written through rememberScope as well, because A30's saved place stores the
+	// title: without it, reopening the app would restore yesterday's name.
+	retitled := retitleScope(sel.Get(), feeds.Get(), tags.Get(), folders.Get())
+	ui.UseEffect(func() func() {
+		if s := sel.Get(); retitled.Title != "" && retitled.Title != s.Title {
+			s.Title = retitled.Title
+			sel.Set(s)
+			rememberScope(s)
+		}
+		return nil
+	}, []any{retitled.Title})
 
 	// focus decides whether opening also NAVIGATES. Clicking a headline should
 	// bring the article forward on a phone; pre-opening the top of a feed the
@@ -2344,8 +2436,36 @@ func Reader(p readerProps) ui.Node {
 		s := sel.Get()
 		s.Search = q
 		if q == "" {
-			s.Title = tr.T("stream", "all")
+			// Clearing the box returns the reader to the place they searched
+			// FROM, so the header has to name that place rather than assert the
+			// default.
+			//
+			// It used to write "All articles" flat. The rest of the scope was left
+			// intact — Unread stayed Unread, Read later stayed Read later, and the
+			// address and the rows agreed with that — so the only thing that moved
+			// was the name at the top of the list, which then disagreed with
+			// everything under it. Clearing a search on Unread left a list of
+			// unread articles titled "All articles"; the count in the rail said one
+			// thing and the header said another, and neither was obviously the
+			// liar.
+			//
+			// Derived the same way a resume derives it: the kind round-trips
+			// through scopeOf — the codec route.go pins against the address — and a
+			// feed, tag or category falls through to titleForScope, which reads the
+			// name out of the rail. SourceID is still dropped, because a search is
+			// global (the address becomes /search, not /feed/<id>/search) and there
+			// is no feed left to return to.
 			s.SourceID = ""
+			k, v := scopeKind(s)
+			if named, ok := scopeOf(k, v, "", tr); ok && named.Title != "" {
+				s.Title = named.Title
+			} else {
+				s.Title = ""
+				s = titleForScope(s, feeds.Get(), tags.Get(), folders.Get())
+			}
+			if s.Title == "" {
+				s.Title = tr.T("stream", "all")
+			}
 		} else {
 			s.Title = tr.T("reader", "scopeSearch", i18n.Args{"query": q})
 		}
@@ -2777,6 +2897,60 @@ func Reader(p readerProps) ui.Node {
 		}
 		return nil
 	}, []any{reconnected.Get()})
+
+	// And catch up the one case the recovery above does not reach: a list that
+	// FAILED, on a connection that is now live.
+	//
+	// The refetch above hangs off data's `Watch` callback, which fires when the
+	// tunnel itself drops and comes back. A reader who loses the network without
+	// the socket noticing — the tab backgrounded on a phone, a captive portal, a
+	// laptop lid — takes a different path: the request in flight times out, the
+	// indicator goes to offline and back to live off `OnState`, and no recovery
+	// is ever announced. Measured: ninety seconds after the network returned and
+	// the indicator said "live", the list was still empty and still apologising.
+	//
+	// This cannot produce the refetch storm the gate exists to prevent, because
+	// it is not a general recovery hook: it fires only when a load actually
+	// failed, and a successful load clears the flag. A connection flapping under
+	// a healthy list does nothing here at all.
+	// It also drains the outbox, and that half is the one that was losing the
+	// reader's work rather than merely their patience.
+	//
+	// An action taken with no network comes back as data.ErrQueued, keptOptimistic
+	// reads that as "kept", and the chip stays pressed — correctly, because the
+	// write is in the outbox and the outbox is meant to deliver it. `Drain` has
+	// exactly one other call site: inside the same `Watch` callback the refetch
+	// above hangs off. So for the outage shape that callback misses, nothing ever
+	// drains: measured, an article liked offline was still showing as liked forty
+	// seconds after the connection came back, and the Liked stream was empty. The
+	// verdict had not been recorded anywhere but in the button.
+	//
+	// A drain with an empty outbox is a no-op that returns zero, so running it on
+	// a transition costs nothing when there is nothing owed.
+	ui.UseEffect(func() func() {
+		if conn.Get() != data.Live {
+			return nil
+		}
+		if listFailed.Get() {
+			loadItems(sel.Get(), unreadOnly.Get())
+		}
+		c := client.Get()
+		if c == nil {
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			// Same threshold as the Watch path's drain: worth saying only when it
+			// was enough to notice, and silent otherwise — a reader who liked one
+			// article does not need to be told the sentence went through.
+			if n, err := c.Drain(ctx); err == nil && n > 2 {
+				ui.PostAsync(func() {
+					notice.Set(tr.T("reader", "outboxDrained", i18n.Args{"count": strconv.Itoa(n)}))
+				})
+			}
+		}()
+		return cancel
+	}, []any{string(conn.Get()), listFailed.Get()})
 
 	// Load once, when the connection appears.
 	//
@@ -3487,7 +3661,11 @@ func Reader(p readerProps) ui.Node {
 	// looking inside is about the minute you are in; whether the whole section is
 	// folded away is a lasting decision, and that one IS saved.
 	act.Get().toggleCategory = func(id string) {
+		was := catOpen(openCats.Get(), id)
 		openCats.Set(toggleCat(openCats.Get(), id))
+		// A category is a fold inside a fold, and it gets the same beat: the key
+		// is namespaced so it cannot collide with a band's action name.
+		playRailFold(railCatKey(id), was, railClosing)
 	}
 
 	// onLandingEdit commits a fixed landing view straight from the settings
@@ -3788,6 +3966,7 @@ func Reader(p readerProps) ui.Node {
 		}
 		next := !st.Get()
 		st.Set(next)
+		playRailFold(which, next, railClosing)
 		if c := client.Get(); c != nil {
 			go func() {
 				_ = c.SetPrefs(context.Background(),
@@ -5641,6 +5820,13 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		fsOpen.Set(id)
+		// Move focus INTO the panel, or a keyboard reader who opened it is still
+		// standing in the rail: the gear keeps focus, Tab walks the sidebar behind
+		// the scrim, and the panel's own focus trap never engages because focus
+		// never gets inside it. FocusField is the retrying one — these dialogs are
+		// rendered at all times so they can animate closed, so the button exists
+		// long before it is focusable. Same fix the palette already carries.
+		platform.FocusField(roleFeedSettingsClose)
 		fsLoading.Set(true)
 		fsErr.Set("")
 		fsData.Set(nil)
@@ -5700,6 +5886,9 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		tsOpen.Set(id)
+		// See openFeedSettings: the panel has to take focus, or it cannot be
+		// reached from the keyboard at all.
+		platform.FocusField(roleTagSettingsClose)
 		tsSaving.Set(false)
 		// The field is seeded with the OVERRIDE, not the resolved name. Seeding
 		// it with the tag's own name would make every panel look renamed, and
@@ -5812,10 +6001,19 @@ func Reader(p readerProps) ui.Node {
 		}
 		statsLoading.Set(true)
 		statsErr.Set("")
+		logsErr.Set("")
 		lvl := logLevel.Get()
 		go func() {
 			st, serr := c.GetServerStats(context.Background())
-			lg, lerr := c.ListLogs(context.Background(), lvl, 200)
+			// The WHOLE ring, not the 200-record tail this used to ask for.
+			//
+			// obs.DefaultSize is 500 and ListLogs clamps to exactly that, so this
+			// is "everything the server still remembers" rather than a number.
+			// The tail was a rendering budget — 200 rows was already a lot of DOM
+			// — and now that the list is virtualised the rendered cost is the
+			// viewport whether this is 200 or 500. What it buys is the failure
+			// that happened forty minutes ago still being on the screen.
+			lg, lerr := c.ListLogs(context.Background(), lvl, 500)
 			ui.PostAsync(func() {
 				statsLoading.Set(false)
 				if serr != nil {
@@ -5826,7 +6024,21 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				serverStats.Set(st)
-				if lerr == nil {
+				// The log half reports separately, because it fails
+				// separately: ListLogs answers Unimplemented on a server built
+				// without the ring while GetServerStats is perfectly happy, and
+				// the two are shown on different tabs.
+				//
+				// Discarding lerr — which is what this did — meant a failed
+				// reload kept the previous records on screen with nothing
+				// saying so, so pressing Reload looked like a button that did
+				// nothing. The records are still kept: stale logs beside an
+				// error beat an empty screen, and the Activity tab says which
+				// it is looking at.
+				if lerr != nil {
+					logsErr.Set(tr.T("reader", "errStats", i18n.Args{"err": lerr.Error()}))
+				} else {
+					logsErr.Set("")
 					serverLogs.Set(lg)
 				}
 			})
@@ -7156,6 +7368,20 @@ func Reader(p readerProps) ui.Node {
 				if v, ok := p[smartCategorizePref]; ok {
 					smartCategorize.Set(v == "true")
 				}
+				// These two were read at mount and nowhere else, which made them
+				// the only preferences this block did not restore — and this
+				// block exists precisely for the boot where the mount-time read
+				// had nothing to read. Root's prefs call failing is not common
+				// and it is not rare either (a slow server, a tunnel that came
+				// up late), and the result was a reader whose hidden categories
+				// came back and whose Smart+ default reset, once, with no
+				// pattern they could describe.
+				if v, ok := p["classify.hidden"]; ok {
+					catHidden.Set(v)
+				}
+				if v, ok := p["feed.smartPlus"]; ok {
+					feedPlus.Set(v == "true")
+				}
 				if v, ok := p["tts.smartPlus"]; ok {
 					speakSmart.Set(v == "true")
 				}
@@ -7690,6 +7916,49 @@ func Reader(p readerProps) ui.Node {
 		return l.Release
 	}, []any{})
 
+	// The same pair for the Activity tab's log, which is virtualised for the same
+	// reason (view.settingsActivity).
+	//
+	// A second listener rather than a second selector on the first: the callback
+	// writes to different state and the two lists are never scrolled at the same
+	// time, so sharing one would mean asking "which element was that?" on every
+	// frame of every scroll in the app.
+	ui.UseEffect(func() func() {
+		l := platform.OnScrollMetrics("#app", ".log-list", func(top, view, _ float64) {
+			ui.PostAsync(func() {
+				logScrollTop.Set(top)
+				if view > 0 {
+					logViewport.Set(view)
+				}
+			})
+		})
+		return l.Release
+	}, []any{})
+
+	// And its measurement. The log list is not in the document until the Activity
+	// tab is open AND the records have landed, so this cannot be a mount-time
+	// one-shot like the reading list's below — it re-runs on both, and re-arms
+	// when the tab is left so that a different window size is picked up the next
+	// time the tab is opened.
+	logMeasured := ui.UseRef(false)
+	ui.UseEffect(func() func() {
+		if setTab.Get() != string(setActivity) {
+			logMeasured.Set(false)
+			return nil
+		}
+		if logMeasured.Get() {
+			return nil
+		}
+		if h := platform.ElementHeight(".log-list"); h > 0 {
+			logMeasured.Set(true)
+			logViewport.Set(h)
+			// A tab opened at yesterday's scroll offset would show the middle of
+			// the log with no way to tell that is where it started.
+			logScrollTop.Set(0)
+		}
+		return nil
+	}, []any{setTab.Get(), len(serverLogs.Get())})
+
 	// The first render has no scroll event to learn the viewport height from, so
 	// it is measured once after mount. Without this the initial window is sized
 	// from a guess and the list renders too few or too many rows.
@@ -8025,14 +8294,15 @@ func Reader(p readerProps) ui.Node {
 				unreadFeedsOnly: unreadFeedsOnly.Get(),
 				loading:         feedsLoading.Get(),
 				filter:          feedFilter.Get(),
-			// The BOX's value is a separate state from what the filter is
-			// doing: it owns its own text while the reader is typing. See
-			// feedFilterSeed's declaration.
-			filterSeed:      feedFilterSeed.Get(),
-				onFilterInput:   onFilterInputRef,
-				streamsClosed:   railStreamsClosed.Get(),
-				feedsClosed:     railFeedsClosed.Get(),
-				tagsClosed:      railTagsClosed.Get(),
+				// The BOX's value is a separate state from what the filter is
+				// doing: it owns its own text while the reader is typing. See
+				// feedFilterSeed's declaration.
+				filterSeed:    feedFilterSeed.Get(),
+				onFilterInput: onFilterInputRef,
+				streamsClosed: railStreamsClosed.Get(),
+				feedsClosed:   railFeedsClosed.Get(),
+				tagsClosed:    railTagsClosed.Get(),
+				closing:       railClosing.Get(),
 			}),
 			grip(tr, "rail"),
 			// NOT a component, deliberately: listProps carries the item slice, and
@@ -8048,6 +8318,7 @@ func Reader(p readerProps) ui.Node {
 				hasMore:     nextCursor.Get() != "",
 				loadingMore: loadingMore.Get(),
 				loading:     itemsLoading.Get(),
+				loadFailed:  listFailed.Get(),
 				rev:         listRev.Get(),
 				undo:        undoToken.Get(),
 				total:       totalItems.Get(),
@@ -8086,10 +8357,10 @@ func Reader(p readerProps) ui.Node {
 				catSuggestName: catSuggestName.Get(),
 				catSuggestBusy: catSuggestBusy.Get(),
 				// searchSeed, not searchText: the box owns its own text while the
-			// reader is typing into it. See searchSeed's declaration.
-			searchValue:    searchSeed.Get(),
-				onSearchInput:  onSearchInput,
-				onSearchKey:    noopHandler,
+				// reader is typing into it. See searchSeed's declaration.
+				searchValue:   searchSeed.Get(),
+				onSearchInput: onSearchInput,
+				onSearchKey:   noopHandler,
 			}),
 			grip(tr, "list"),
 			ui.If(pane.Get() == viewSettings, func() ui.Node {
@@ -8116,7 +8387,6 @@ func Reader(p readerProps) ui.Node {
 					bedTracks:      bedTracks.Get(),
 					speakRate:      speakRate.Get(),
 					slideDwell:     showDwell.Get(),
-					slideAudio:     showAudio.Get(),
 					landingMode:    landingMode.Get(),
 					landingKind:    landingKind.Get(),
 					landingValue:   landingValue.Get(),
@@ -8128,12 +8398,15 @@ func Reader(p readerProps) ui.Node {
 					busy:           busy.Get(),
 					stats:          serverStats.Get(),
 					logs:           serverLogs.Get(),
+					logsErr:        logsErr.Get(),
+					logScrollTop:   logScrollTop.Get(),
+					logViewport:    logViewport.Get(),
 					logLevel:       logLevel.Get(),
 					loading:        statsLoading.Get(),
 					statsErr:       statsErr.Get(),
 					serverURL:      platform.Origin(),
+					whoami:         p.whoami,
 					session: sessionProps{
-						present:  hadSession.Get(),
 						armed:    signOutArmed.Get(),
 						busy:     signOutBusy.Get(),
 						stranded: signOutStranded.Get(),

@@ -561,7 +561,28 @@ func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, rep
 			}
 		}
 
-		if storedHash != secret.HashToken(presented) {
+		// secret.VerifyToken rather than `storedHash != HashToken(presented)`,
+		// which is what this was.
+		//
+		// This is the ONE hash comparison in the application that happens in Go.
+		// Every other credential lookup passes HashToken(...) into a SQL WHERE
+		// and lets SQLite match it against an index — see the sessions, invites
+		// and reset-token paths — so there is no byte-by-byte compare to get
+		// wrong. This one fetched the row by device id first and therefore has
+		// to compare afterwards, which makes it the only place the question
+		// arises, and it was answered with `!=`.
+		//
+		// The practical exposure is small and worth stating plainly rather than
+		// overstating: these are SHA-256 digests, so what an early-exit compare
+		// leaks is the stored HASH, and turning that into a usable refresh token
+		// needs a preimage. This is hardening, not a hole.
+		//
+		// It is still worth doing, because `secret.VerifyToken` was written for
+		// exactly this comparison and — until now — had no caller outside its own
+		// test. A constant-time helper that nothing uses is one somebody deletes
+		// as dead code, and the next hash compared in Go gets `!=` too, on a
+		// path where the digest might be all an attacker needs.
+		if !secret.VerifyToken(presented, storedHash) {
 			// Reuse. Revoke the whole family, and return nil so the revocation
 			// commits — see the note above.
 			if _, err := tx.ExecContext(ctx,

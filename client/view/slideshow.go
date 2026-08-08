@@ -99,6 +99,29 @@ const (
 	slideMaxDwell = 60 * time.Second
 )
 
+// slideMaxDwellPref is the largest EXPLICIT pace this will honour.
+//
+// Deliberately not slideMaxDwell. That one bounds the computed answer, and the
+// choices offered on the settings screen already run past it — "90" is on the
+// list — because a reader who names a pace has overridden the computation
+// rather than fed into it. So this is a separate, much looser limit whose only
+// job is to keep a stored number that cannot be a preference from becoming a
+// dwell that is worse than any of them.
+//
+// A day. Nobody sets a slideshow to advance once a day, and anything past this
+// is a hand-edited or half-migrated row rather than an intention — which is the
+// case dwellFor already falls back to auto for when the value will not parse.
+//
+// The reason there has to be a ceiling at all is that `time.Duration(secs) *
+// time.Second` OVERFLOWS int64 past about 9.2e9 seconds, and it does not
+// saturate — it wraps. 9,300,000,000 comes out as MINUS 2,540,762 hours and
+// 1<<62 comes out as exactly zero. Both invert the setting: a number meaning
+// "never advance" becomes "advance immediately", so the slideshow races through
+// every story as fast as it can render them. Guarding the low end with
+// `secs > 0` and leaving the high end open is what let the largest possible
+// values behave like the smallest.
+const slideMaxDwellPref = 24 * time.Hour
+
 // slideVoiceWait is how long read-to-me waits for the narrator before giving up
 // on it and running the story on the clock instead.
 //
@@ -341,7 +364,12 @@ var slideDwellChoices = []string{slideAuto, "20", "30", "45", "60", "90"}
 // choice in a list happens to be.
 func dwellFor(words int32, pref string) time.Duration {
 	if pref != "" && pref != slideAuto {
-		if secs, err := strconv.Atoi(pref); err == nil && secs > 0 {
+		// Bounded at BOTH ends. `secs > 0` alone left the top open, and the top
+		// is where this wraps — see slideMaxDwellPref. A value past the ceiling
+		// falls through to auto, which is exactly what an unparseable one does,
+		// and for the same reason: it is not a pace anybody chose.
+		if secs, err := strconv.Atoi(pref); err == nil && secs > 0 &&
+			secs <= int(slideMaxDwellPref/time.Second) {
 			return time.Duration(secs) * time.Second
 		}
 	}
@@ -986,11 +1014,33 @@ func speechRateFrom(prefs map[string]string) string {
 }
 
 // speechRateValue turns the stored string into the multiplier the player wants.
+//
+// # The bounds are written as an ACCEPT, because a reject lets NaN through
+//
+// This read `if err != nil || f < 0.5 || f > 3 { use the default }`, which looks
+// like a closed range and is not one. `strconv.ParseFloat` accepts "NaN" with a
+// nil error, and NaN compares FALSE against everything — `NaN < 0.5` is false
+// and `NaN > 3` is false — so the one value that is not a number was the one
+// value the range check admitted.
+//
+// It reaches `playbackRate` on the media element. Setting that to a non-finite
+// double is a TypeError, so the failure is not a strange playback speed; it is
+// an exception thrown from the wasm client at the moment somebody presses play.
+//
+// The pref is stored, so this is the same input class dwellFor guards against a
+// few hundred lines up — "a hand-edited or half-migrated pref" — and the same
+// mistake in the opposite direction: that one bounded the low end and left the
+// high end open, this one bounded both ends against a value that ignores bounds.
+//
+// Phrased as `f >= 0.5 && f <= 3` so the fix cannot be undone by adding another
+// clause: every comparison against NaN is false, so an accept-form condition
+// rejects it automatically and a reject-form one never will.
 func speechRateValue(pref string) float64 {
-	f, err := strconv.ParseFloat(strings.TrimSpace(pref), 64)
-	if err != nil || f < 0.5 || f > 3 {
-		f, _ = strconv.ParseFloat(speechRateDefault, 64)
+	if f, err := strconv.ParseFloat(strings.TrimSpace(pref), 64); err == nil &&
+		f >= 0.5 && f <= 3 {
+		return f
 	}
+	f, _ := strconv.ParseFloat(speechRateDefault, 64)
 	return f
 }
 

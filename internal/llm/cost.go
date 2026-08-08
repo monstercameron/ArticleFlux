@@ -187,6 +187,40 @@ func (c *Client) Budget(capOf CapFunc) mw.Middleware {
 	}
 }
 
+// WithExternalSpend adds another package's spend to what the ceiling measures.
+//
+// # Why the budget cannot just read this client's own total
+//
+// The ceiling is one number an operator typed on the Smart+ tab, and Smart+ is
+// two egress paths: the model here and the voice in `internal/tts`. Speech
+// spent past the cap entirely for as long as this client was the only thing
+// enforcing it — the setting said "Smart+ budget" and bounded some of Smart+.
+//
+// The obvious fix, giving each client its own ceiling reading the same setting,
+// is worse than the gap: an operator who set $5 would get $10, and would have
+// no way to tell from the screen. So there is ONE ceiling and it is measured
+// against a SUM.
+//
+// Injected rather than imported, because `internal/llm` importing
+// `internal/tts` to ask it a question would couple the two egress boundaries
+// for the sake of an addition — and `internal/app`, which builds both, is where
+// knowing that they are two halves of one bill belongs.
+//
+// Nil means "nothing else spends", which is what a test and any other embedder
+// gets.
+func (c *Client) WithExternalSpend(fn func(context.Context) float64) *Client {
+	c.externalSpend = fn
+	return c
+}
+
+// externalUSD is what the other half has spent, or zero.
+func (c *Client) externalUSD(ctx context.Context) float64 {
+	if c == nil || c.externalSpend == nil {
+		return 0
+	}
+	return c.externalSpend(ctx)
+}
+
 // ErrOverBudget means the instance has spent its allowance.
 //
 // Its own error so a caller can degrade rather than report a fault: a feature
@@ -224,7 +258,10 @@ func (b *budget) Complete(ctx context.Context, req schemaflux.CompletionRequest)
 		// one place where reading it late would be indistinguishable from not
 		// having it at all.
 		b.client.Hydrate(ctx)
-		if limit := b.capOf(ctx); limit > 0 && b.client.Cost().USD >= limit {
+		// The model's spend PLUS the voice's. See WithExternalSpend for why
+		// the sum is here rather than each client holding its own ceiling.
+		spent := b.client.Cost().USD + b.client.externalUSD(ctx)
+		if limit := b.capOf(ctx); limit > 0 && spent >= limit {
 			return schemaflux.CompletionResponse{}, ErrOverBudget
 		}
 	}

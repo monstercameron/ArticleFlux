@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // SetPrefs and UpdateFeedSettings are both write paths that take values straight
@@ -278,5 +279,101 @@ func TestUpdateFeedSettingsClearsTheMuteWithAnEmptyString(t *testing.T) {
 	}
 	if got.MutedUntil != "" {
 		t.Errorf("muted_until = %q; whitespace should clear the mute, not store it", got.MutedUntil)
+	}
+}
+
+// A mute has to be a time, because the only thing that ever ends one is a
+// string comparison against the clock.
+//
+// # The shape of the failure
+//
+// MegafeedSources decides whether a feed is muted with
+// `sub.muted_until <= ?`, where the parameter is stamp(now) — a byte-for-byte
+// comparison of two timestamp STRINGS. That is sound only while everything
+// stored in the column is in the one canonical format. Nothing enforced it:
+// the gRPC layer copies req.MutedUntil through untouched and the repo wrote it
+// verbatim, so the column held whatever the caller sent.
+//
+// Send something that is not a timestamp and the comparison does not error, it
+// just answers wrongly forever. "zzz" is greater than every timestamp this
+// century, so `muted_until <= now` is false at every future instant and the
+// feed leaves the megafeed permanently. There is no expiry that can pass, and
+// nothing on the settings screen can explain it, because the screen parses the
+// same value and cannot read it either.
+//
+// A numeric UTC offset is the same bug wearing a valid costume. "+02:00" is
+// legal RFC3339 and the shipped UI never emits it, but this field is on the
+// sync API too, and lexicographically "T12:00:00+02:00" sorts after
+// "T10:00:00Z" — so a mute that expired two hours ago is still in force.
+func TestAMutedUntilThatIsNotATimestampDoesNotMuteForever(t *testing.T) {
+	for _, bad := range []string{"zzz", "later", "9999", "not-a-date"} {
+		t.Run(bad, func(t *testing.T) {
+			repo, sc, ctx := prefsRepo(t)
+			id := firstSource(t, repo, ctx, sc)
+			v := bad
+			if _, err := repo.UpdateFeedSettings(ctx, sc, id, FeedSettingsPatch{MutedUntil: &v}); err == nil {
+				t.Fatalf("%q was accepted as a mute expiry", bad)
+			}
+			// Refused, so the feed is still on the megafeed. The alternative —
+			// storing it — is the permanent mute described above.
+			live, err := repo.MegafeedSources(ctx, sc)
+			if err != nil {
+				t.Fatalf("MegafeedSources: %v", err)
+			}
+			if !live[id] {
+				t.Errorf("the feed left the megafeed on an unparseable mute expiry, "+
+					"and no future instant can bring it back: %q", bad)
+			}
+		})
+	}
+}
+
+// A mute in a legal but non-canonical spelling has to expire when it says it
+// does, not when its bytes happen to sort past the clock.
+func TestAMutedUntilIsStoredInTheFormatTheComparisonAssumes(t *testing.T) {
+	repo, sc, ctx := prefsRepo(t)
+	id := firstSource(t, repo, ctx, sc)
+
+	// Two hours in the past, written with a +05:00 offset. As an instant it is
+	// long expired; rendered in that zone its wall clock reads three hours
+	// AHEAD of now, so as bytes it sorts after stamp(now). The offset has to
+	// exceed the age for the digits to diverge — at +02:00 on a two-hour-old
+	// time they cancel exactly, which is a coincidence and not a guarantee.
+	past := time.Now().UTC().Add(-2 * time.Hour).In(time.FixedZone("UTC+5", 5*60*60))
+	v := past.Format(time.RFC3339)
+	if _, err := repo.UpdateFeedSettings(ctx, sc, id, FeedSettingsPatch{MutedUntil: &v}); err != nil {
+		t.Fatalf("a valid RFC3339 timestamp was refused: %v", err)
+	}
+	live, err := repo.MegafeedSources(ctx, sc)
+	if err != nil {
+		t.Fatalf("MegafeedSources: %v", err)
+	}
+	if !live[id] {
+		t.Errorf("a mute that expired two hours ago is still in force: the stored "+
+			"value %q was compared as bytes against the clock rather than as a time", v)
+	}
+
+	// And the ordinary path still works: a mute in the future mutes.
+	fut := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	if _, err := repo.UpdateFeedSettings(ctx, sc, id, FeedSettingsPatch{MutedUntil: &fut}); err != nil {
+		t.Fatalf("UpdateFeedSettings: %v", err)
+	}
+	if live, err = repo.MegafeedSources(ctx, sc); err != nil {
+		t.Fatalf("MegafeedSources: %v", err)
+	}
+	if live[id] {
+		t.Error("a feed muted for the next two hours is still on the megafeed")
+	}
+
+	// Clearing still works.
+	empty := ""
+	if _, err := repo.UpdateFeedSettings(ctx, sc, id, FeedSettingsPatch{MutedUntil: &empty}); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if live, err = repo.MegafeedSources(ctx, sc); err != nil {
+		t.Fatalf("MegafeedSources: %v", err)
+	}
+	if !live[id] {
+		t.Error("an unmuted feed did not come back to the megafeed")
 	}
 }

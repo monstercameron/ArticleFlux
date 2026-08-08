@@ -95,6 +95,35 @@ func DefaultWeights() Weights {
 }
 
 // HomeMode is §18.5's per-subscription setting.
+//
+// # Only ModeFull is ever set
+//
+// rank.Score has one production caller, derive.go's ranking pass, and it
+// passes Mode: ModeFull unconditionally. Nothing in the application constructs
+// ModeHighlights or ModeMuted, so the two branches below that read them —
+// the ineligible return and the feed-weight redistribution — do not run, and
+// HighlightsCutoff and ApplyHighlights have no callers outside their own
+// tests. The word "highlights" does not appear anywhere in internal/store or
+// internal/app either: there is no column, no setting and no endpoint behind
+// it. §18.5 as described here is a design, not a description.
+//
+// The two are not in the same position, though, and the difference matters:
+//
+//   - ModeMuted is redundant rather than missing. Muting works, enforced
+//     earlier and more bluntly: derive reads repo.MegafeedSources, which
+//     excludes an unsubscribed or muted source before ranking sees it at all.
+//     A reader who mutes a feed gets what they asked for; the check here is a
+//     second gate on a door already locked.
+//   - ModeHighlights has no equivalent anywhere. The per-feed cutoff, the
+//     "roughly three a week" rate the reader was to set, and the redistribution
+//     of the feed weight onto the item-level terms are all unreachable.
+//
+// Recorded rather than quietly left, on the same reasoning internal/degrade
+// states about its own ladder and that the mute comment in derive.go states
+// about settings generally: a setting that is visibly present and visibly does
+// nothing is worse than an admitted absence. Wiring highlights is a feature
+// decision — it needs storage, a surface and a fitting schedule — so this note
+// is not a plan. It is so the next reader knows which half of §18.5 is real.
 type HomeMode string
 
 const (

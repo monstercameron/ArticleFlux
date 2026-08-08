@@ -89,15 +89,6 @@ func init() {
 		// abbreviation for a second is not universal and a bare number is not a
 		// duration in any language.
 		"slidesSeconds": "{n} sec",
-		"slidesRead":    "Read to me",
-		// The dependency is stated FIRST rather than as a footnote. It is the
-		// whole reason someone turns this on and finds a silent slideshow: the
-		// browser's own synthesiser reads the page rather than a written segment,
-		// and reports no position for the display to follow.
-		"slidesReadHint": "Needs the Smart+ voice, which is under Listening. The voice then sets the pace instead of the clock: " +
-			"each story stays up until it has been read out, and the page scrolls in step with it. " +
-			"Without it, the slideshow runs silently on the clock and says so.",
-
 		// --- listening
 		"voiceGroup":       "Voice",
 		"browserVoice":     "Read articles aloud",

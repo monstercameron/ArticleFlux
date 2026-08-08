@@ -100,6 +100,21 @@ const (
 	// encrypting it would mean an instance that lost secrets.key also lost its
 	// ceiling.
 	KeySmartSpendTotal SystemKey = "smart.spend.total"
+	// KeySpeechSpendTotal is the VOICE's half of the same meter.
+	//
+	// Two rows for one ceiling, deliberately. The model is billed on tokens and
+	// the voice on characters, priced from different tables, so a single
+	// accumulated figure could not be corrected if either rate changed and
+	// could not answer "which half is spending". `internal/app` gives both
+	// clients the same cap and a total that SUMS these two — the alternative,
+	// a ceiling per client, would mean an operator who set $5 got $10.
+	//
+	// Its own row also means the speech meter can be reset without discarding
+	// the model's, which matters because the speech figure is partly an
+	// ESTIMATE: the default voice model is billed per audio token and this
+	// layer only counts characters. See internal/tts/cost.go for why that trade
+	// is the right one for a safety limit and the wrong one for an invoice.
+	KeySpeechSpendTotal SystemKey = "smart.spend.speech"
 	// KeyUITranslationPrefix is joined with a locale to hold that language's
 	// translated catalog: "smart.ui_translation.fr".
 	KeyUITranslationPrefix SystemKey = "smart.ui_translation."

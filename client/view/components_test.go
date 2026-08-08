@@ -613,3 +613,101 @@ func TestSettingsPaneUnrecognisedTabFallsBackToReadingWithNoneCurrent(t *testing
 		t.Errorf("an unrecognised p.tab should still render the Reading body (settingsPane's default arm):\n%s", out)
 	}
 }
+
+// The subtitle names the stream, and every stream has one of its own.
+//
+// listHead's switch already carries two comments about what happens when a
+// stream falls through it: My Feed announced a different stream's unread count,
+// and the rail's Unread row claimed "newest first" over a filtered list. Notes
+// was the third — it took `subUnreadCount` and said "2,001 unread, newest
+// first" over the articles the reader had written on, a number with no relation
+// to the list under it.
+//
+// A table rather than one case for Notes, because the defect is structural: the
+// next stream added without a subtitle falls through in exactly the same way,
+// and the failure is a plausible-looking sentence rather than a crash.
+func TestListHeadSubtitleNamesEachStream(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+
+	cases := []struct {
+		name  string
+		props listProps
+		want  string
+	}{
+		{"read later", listProps{sel: scope{Later: true}}, ns.T("subLater")},
+		{"liked", listProps{sel: scope{Rating: 1}}, ns.T("subLiked")},
+		{"disliked", listProps{sel: scope{Rating: -1}}, ns.T("subDisliked")},
+		{"the Notes stream", listProps{sel: scope{Notes: true}}, ns.T("subNotes")},
+		{"the rail's Unread stream", listProps{sel: scope{Unread: true}}, ns.T("subUnread")},
+		{"the unread-only toggle", listProps{unreadOnly: true}, ns.T("subUnread")},
+		{"a search", listProps{sel: scope{Search: "golang"}}, ns.T("subSearch")},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// An unread count on the props, because that is the value the
+			// fall-through case renders: a stream with its own line must not
+			// pick this number up, and a stream without one visibly does.
+			props := c.props
+			props.unread = 2001
+			out := renderView(t, func(tr i18n.Runtime) ui.Node { return listHead(tr, props) })
+			want := html.EscapeString(c.want)
+			if !strings.Contains(out, want) {
+				t.Errorf("listHead(%s) subtitle = missing %q:\n%s", c.name, want, out)
+			}
+			if strings.Contains(out, html.EscapeString(ns.T("subUnreadCount", i18n.Count(2001)))) {
+				t.Errorf("listHead(%s) fell through to the unread count, which "+
+					"describes a different list", c.name)
+			}
+		})
+	}
+}
+
+// A scoped list must not quote the account's unread count.
+//
+// listProps.unread is totalUnread — every feed, every category. A feed, tag or
+// category list that renders it is making the My Feed mistake the switch above
+// already documents: "two numbers for one list, and the larger one belonged to
+// a different stream". Measured before the guard: a feed with two unread
+// articles was headed "2,004 unread, newest first" beside a rail badge of 2.
+func TestListHeadDoesNotQuoteTheAccountCountInAScope(t *testing.T) {
+	tr := mustRuntime(t)
+	ns := tr.NS("list")
+	account := html.EscapeString(ns.T("subUnreadCount", i18n.Count(2004)))
+
+	scoped := []struct {
+		name string
+		sel  scope
+	}{
+		{"a feed", scope{SourceID: "src-1", Title: "Alpha Journal"}},
+		{"a tag", scope{TagID: "tag-1", Title: "morning read"}},
+		{"a category", scope{FolderID: "cat-1", Title: "Software"}},
+		// The classifier's own labels, which are a different field from the
+		// reader's folders and were what the first version of this guard missed.
+		{"a classification label", scope{CategorySlug: "software", Title: "Software"}},
+		{"the classifier's leftovers", scope{Uncategorised: true, Title: "Uncategorised"}},
+	}
+	for _, c := range scoped {
+		t.Run(c.name, func(t *testing.T) {
+			out := renderView(t, func(tr i18n.Runtime) ui.Node {
+				return listHead(tr, listProps{sel: c.sel, unread: 2004})
+			})
+			if strings.Contains(out, account) {
+				t.Errorf("listHead(%s) quotes the ACCOUNT's unread count (%q), which is "+
+					"not this list's number:\n%s", c.name, account, out)
+			}
+			if want := html.EscapeString(ns.T("subNewest")); !strings.Contains(out, want) {
+				t.Errorf("listHead(%s) subtitle = missing %q:\n%s", c.name, want, out)
+			}
+		})
+	}
+
+	// And the one scope the count IS true of keeps it.
+	out := renderView(t, func(tr i18n.Runtime) ui.Node {
+		return listHead(tr, listProps{unread: 2004})
+	})
+	if !strings.Contains(out, account) {
+		t.Errorf("the whole-account list should still report %q:\n%s", account, out)
+	}
+}

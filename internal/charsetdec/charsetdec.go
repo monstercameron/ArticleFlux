@@ -114,6 +114,25 @@ func decode(body []byte, contentType string) ([]byte, Result, error) {
 }
 
 // DecodeReader is Decode for a stream, bounded by limit bytes.
+//
+// # It TRUNCATES silently, and nothing in this package uses it
+//
+// A body longer than limit comes back cut, with no error and nothing on Result
+// to say so — `io.LimitReader` reports EOF, not overflow. For a document that is
+// a fair trade only if the caller does not care about completeness, and every
+// caller here does: a truncated article is a wrong article, and a truncated feed
+// loses entries silently.
+//
+// So the six real callers all use Decode with a body they bounded themselves,
+// and they bound it the way that can TELL: read limit+1 and treat the extra byte
+// as overflow. internal/pageproxy is the example — `io.ReadAll(io.LimitReader(
+// resp.Body, f.maxBytes+1))` followed by `if int64(len(body)) > f.maxBytes {
+// return ErrTooLarge }`. That reports the condition instead of hiding it.
+//
+// This function is kept because it is a reasonable shape for a caller that
+// genuinely wants best-effort truncation, and noted because it is exported with
+// no user: the next person to reach for it would be trading a detectable failure
+// for an undetectable one without being told.
 func DecodeReader(r io.Reader, contentType string, limit int64) ([]byte, Result, error) {
 	body, err := io.ReadAll(io.LimitReader(r, limit))
 	if err != nil {

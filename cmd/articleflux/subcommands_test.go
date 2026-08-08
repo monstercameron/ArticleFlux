@@ -599,3 +599,48 @@ func TestPollOnAnEmptyInstanceIsANoOp(t *testing.T) {
 		t.Errorf("poll on an empty instance: %v", err)
 	}
 }
+
+// A failed export must not report success.
+//
+// The close is where the interesting failure lives — a Write that returns nil
+// followed by a Close that fails is how an out-of-space or writeback error
+// reaches a caller, and `defer fh.Close()` threw that away, so the command
+// logged "exported" and exited zero over a file that had been truncated to
+// nothing. That matters here more than almost anywhere: export is how somebody
+// keeps a copy of their subscriptions, and a silent truncation is discovered the
+// day they need it back.
+//
+// Forcing a genuine close failure is not portable, so this covers the reachable
+// half — that a path which cannot be written is an ERROR rather than a cheerful
+// log line. It is deliberately not claimed to exercise the close itself; what it
+// pins is that the success path is the only path that reports success.
+func TestExportOPMLDoesNotClaimSuccessOnAFailedWrite(t *testing.T) {
+	// Inside a directory that does not exist, which fails at Create on every
+	// platform this builds for.
+	bad := filepath.Join(t.TempDir(), "no-such-dir", "feeds.opml")
+
+	err := exportOPML(cliLogger(), []string{"-db", tempDB(t), "-file", bad})
+	if err == nil {
+		t.Fatal("exporting to an unwritable path returned nil; the command would " +
+			"exit zero having written nothing")
+	}
+	if _, serr := os.Stat(bad); serr == nil {
+		t.Errorf("%s exists after a failed export", bad)
+	}
+}
+
+// And the ordinary path still writes a file that parses, which is the thing the
+// restructuring above could plausibly have broken.
+func TestExportOPMLStillWritesAFileAfterTheCloseFix(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "feeds.opml")
+	if err := exportOPML(cliLogger(), []string{"-db", tempDB(t), "-file", out}); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(string(b), "<opml") {
+		t.Errorf("exported file does not look like OPML: %q", string(b))
+	}
+}

@@ -64,6 +64,10 @@ var cacheChoices = []int32{0, 25, 100, 500}
 // unsubscribing is the other button, and conflating the two loses the archive.
 var muteChoices = []int{0, 24, 24 * 7, 24 * 30}
 
+// roleFeedSettingsClose is what openFeedSettings focuses when the panel opens.
+// See actionButtonRole for why the close button rather than the first field.
+const roleFeedSettingsClose = "feed-settings-close"
+
 func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 	body := []ui.Node{}
 	switch {
@@ -107,8 +111,8 @@ func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 					return html.Span(html.Props{Class: "fs-saving"},
 						html.Text(tr.T("feedSettings", "saving")))
 				}),
-				actionButton("feed-settings-close", "btn btn-ghost fs-close",
-					tr.T("feedSettings", "close")),
+				actionButtonRole("feed-settings-close", roleFeedSettingsClose,
+					"btn btn-ghost fs-close", tr.T("feedSettings", "close")),
 			),
 			html.Div(html.Props{Class: "fs-body"}, body...),
 		),

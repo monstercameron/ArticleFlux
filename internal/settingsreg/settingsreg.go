@@ -22,6 +22,45 @@
 // First hit wins. The layer is reported so a settings screen can distinguish an
 // inherited value from an override, which is what makes "reset to default" a
 // meaningful button rather than a write of the current value.
+//
+// # NOT WIRED. Nothing resolves a setting through this package.
+//
+// New, Register, MustRegister, Resolve, SetUser, SetTenant and ResetUser have no
+// callers outside these tests, and neither do the store methods they are built
+// on — ReaderRepo.ResolveSettings, SetUserSetting, SetTenantSetting and
+// ClearUserSetting, the whole of settingslayers.go. The only Defs that exist,
+// retention.Defs and retention.SecurityDefs, are never registered with anything.
+// No registry is ever constructed, so the tenant and user layers hold no rows.
+//
+// Settings themselves do work, through two older mechanisms this was meant to
+// unify and did not replace:
+//
+//   - store.SettingsRepo for the system layer — the OpenAI key, the Smart model,
+//     the retention windows. Read directly by internal/app.
+//   - repo.GetPrefs for per-reader preferences.
+//
+// So the three failures listed above are not hypothetical descriptions of a
+// problem this package solved; two of them are the live situation. In
+// particular the third one is: nothing reports which layer supplied a value,
+// because there is only ever one layer. And the second has a worked example —
+// retention's item-days window is declared twice, once as a Def here with Min,
+// Max and Default, and once in app.windowDays which reads it through
+// SettingsRepo and re-checks the bounds itself. They agree only because both
+// spell them with the same constants.
+//
+// # One trap for whoever wires it
+//
+// Value.Float and Value.Int recover the fallback with a Go type assertion —
+// `v.def.Default.(float64)` and `.(int)`. A Def written `Default: 1` for a
+// KindFloat setting holds an int, so that assertion fails and the fallback
+// becomes 0 rather than 1, silently. validate does not catch it, because
+// toFloat accepts both. Write float defaults as `1.0`. It only bites on the
+// corrupt-value path today, which is exactly the path nobody exercises.
+//
+// Recorded rather than left to be discovered, on the same reasoning
+// internal/degrade states about its ladder: a registry that does not run is
+// worse undocumented than admitted, because its package comment reads as a
+// description of how settings work here, and it is not one.
 package settingsreg
 
 import (

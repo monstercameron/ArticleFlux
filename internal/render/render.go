@@ -97,9 +97,8 @@ type Options struct {
 
 // Renderer owns the browser.
 type Renderer struct {
-	opt  Options
-	sem  chan struct{}
-	once sync.Once
+	opt Options
+	sem chan struct{}
 	// live maps a session key to the tab currently serving it, so input can be
 	// delivered to a stream that is already running. Guarded by mu.
 	mu   sync.Mutex
@@ -107,9 +106,11 @@ type Renderer struct {
 	// alloc is the shared browser process. Created on first use rather than at
 	// boot: an instance where nobody opens a live view should never pay for a
 	// browser, and on a small box that is 300 MB of not paying for it.
+	// allocMu guards the three fields below. Its own lock rather than mu,
+	// which is held while the live-session map is touched.
+	allocMu     sync.Mutex
 	alloc       context.Context
 	allocCancel context.CancelFunc
-	allocErr    error
 }
 
 // New builds a Renderer. It does not start a browser.
@@ -141,8 +142,15 @@ func (r *Renderer) Available() bool { return FindBrowser(r.opt.ExecPath) != "" }
 
 // Close shuts the browser down.
 func (r *Renderer) Close() {
+	// Under allocMu, like every other reader of these fields. browser() can now
+	// be called concurrently with a shutdown, and an unguarded read of
+	// allocCancel while another goroutine writes it is a race the Once used to
+	// hide.
+	r.allocMu.Lock()
+	defer r.allocMu.Unlock()
 	if r.allocCancel != nil {
 		r.allocCancel()
+		r.allocCancel, r.alloc = nil, nil
 	}
 }
 
@@ -191,13 +199,39 @@ func FindBrowser(override string) string {
 	return ""
 }
 
-// browser starts the shared process once.
+// browser starts the shared process once, and retries the LOOKUP every time.
+//
+// # Why this is not a sync.Once
+//
+// It was one, and a Once caches whatever the first call decided — including
+// "there is no browser on this machine". That is the one outcome here that
+// changes without a restart: a self-hosted operator opens the live view, is told
+// no browser was found, installs Chromium, and tries again. With the result
+// latched, every attempt after that failed identically until the process was
+// restarted, and nothing on screen suggested restarting was the remedy.
+//
+// It also put two methods on this type into open disagreement. `Available`
+// calls FindBrowser fresh on every call, so the surface reported the feature as
+// available while Stream refused it with ErrNoBrowser — the same question
+// answered two ways by the same object.
+//
+// So the ALLOCATOR is created once and cached, which is what the Once was
+// actually for — an instance where nobody opens a live view still never pays for
+// a browser — and the lookup is retried on every call that has not yet
+// succeeded. Guarded by its own mutex rather than r.mu: that one is held while
+// the live-session map is touched, and this holds its lock across allocator
+// construction.
 func (r *Renderer) browser() (context.Context, error) {
-	r.once.Do(func() {
+	r.allocMu.Lock()
+	defer r.allocMu.Unlock()
+	if r.alloc != nil {
+		return r.alloc, nil
+	}
+	{
 		exec := FindBrowser(r.opt.ExecPath)
 		if exec == "" {
-			r.allocErr = ErrNoBrowser
-			return
+			// Deliberately NOT recorded. The next call looks again.
+			return nil, ErrNoBrowser
 		}
 		opts := append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.ExecPath(exec),
@@ -220,9 +254,6 @@ func (r *Renderer) browser() (context.Context, error) {
 		)
 		ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 		r.alloc, r.allocCancel = ctx, cancel
-	})
-	if r.allocErr != nil {
-		return nil, r.allocErr
 	}
 	return r.alloc, nil
 }
@@ -249,6 +280,20 @@ func (r *Renderer) browser() (context.Context, error) {
 type liveSession struct {
 	tab context.Context
 	vp  Viewport
+	// lastInput is when the reader last acted on this session. Guarded by
+	// Renderer.mu, like the map that holds it.
+	//
+	// It exists because the idle timeout measures FRAMES, and frames are
+	// damage-driven: a settled article emits none. The loop's own comment says
+	// so — "on a settled article is the normal state" — and then relies on the
+	// timeout being generous to cover it. Three minutes is not generous next to
+	// reading a dense page, so a reader who was present but not scrolling had
+	// their session reclaimed underneath them.
+	//
+	// A scroll is the one signal that says "somebody is still here" without
+	// needing the page to change, and it already arrives at the Renderer. This
+	// is what lets the loop tell a quiet reader from an abandoned tab.
+	lastInput time.Time
 }
 
 // Scroll delivers a wheel event to a running session.
@@ -261,6 +306,11 @@ type liveSession struct {
 func (r *Renderer) Scroll(key string, dx, dy float64) error {
 	r.mu.Lock()
 	s, ok := r.live[key]
+	if ok {
+		// Stamped under the same lock that found it, so the idle loop cannot
+		// read a half-updated session.
+		s.lastInput = time.Now()
+	}
 	r.mu.Unlock()
 	if !ok {
 		return ErrNoSession
@@ -275,15 +325,60 @@ func (r *Renderer) Scroll(key string, dx, dy float64) error {
 			WithDeltaX(dx).WithDeltaY(dy))
 }
 
-func (r *Renderer) register(key string, tab context.Context, vp Viewport) {
+// register records a session and returns the handle unregister needs.
+//
+// # The key is not unique per stream, whatever Scroll's comment says
+//
+// It says the caller "uses the capability signature, which is already
+// unguessable and already unique per stream". The first half is true. The second
+// is not: §10.1d's handler passes `q.Get("s")`, which is the HMAC over
+// (url, expiry) — deterministic, so the SAME link produces the SAME key every
+// time it is used. Reloading the live view, opening it in a second tab, or an
+// <img> re-establishing itself after a network blip all arrive here with a key
+// that is already in the map.
+//
+// Last-in wins, which is right: the newest stream is the one on screen, and it
+// is the one a scroll should reach.
+func (r *Renderer) register(key string, tab context.Context, vp Viewport) *liveSession {
+	s := &liveSession{tab: tab, vp: vp}
 	r.mu.Lock()
-	r.live[key] = &liveSession{tab: tab, vp: vp}
+	r.live[key] = s
 	r.mu.Unlock()
+	return s
 }
 
-func (r *Renderer) unregister(key string) {
+// unregister removes a session only if it is still the registered one.
+//
+// A plain `delete(r.live, key)` was wrong for the reason above. Two streams on
+// one capability interleave like this:
+//
+//	A registers   live[K] = A
+//	B registers   live[K] = B      (A's entry replaced; A's tab still running)
+//	A ends        delete(live, K)  ← removes B, which is the LIVE session
+//	B scrolls     ErrNoSession
+//
+// So the reader whose view is actually on screen loses scrolling, silently and
+// permanently, because a different stream finished. That is precisely the
+// outcome Scroll's own comment argues against: "a scroll that goes nowhere looks
+// exactly like a page that will not move, and the reader would keep trying."
+//
+// Comparing the pointer is enough. Sessions are heap-allocated per stream and
+// never copied, so identity is exactly the question being asked.
+// lastInputAt reports when the reader last acted on a session, or the zero time.
+func (r *Renderer) lastInputAt(s *liveSession) time.Time {
+	if s == nil {
+		return time.Time{}
+	}
 	r.mu.Lock()
-	delete(r.live, key)
+	defer r.mu.Unlock()
+	return s.lastInput
+}
+
+func (r *Renderer) unregister(key string, s *liveSession) {
+	r.mu.Lock()
+	if r.live[key] == s {
+		delete(r.live, key)
+	}
 	r.mu.Unlock()
 }
 
@@ -362,8 +457,8 @@ func (r *Renderer) Stream(ctx context.Context, key, rawURL string, vp Viewport, 
 	// arriving a moment after the reader closed the view is an honest
 	// ErrNoSession rather than a panic on a dead context.
 	vp = vp.Clamp(Viewport{Width: r.opt.Width, Height: r.opt.Height})
-	r.register(key, tabCtx, vp)
-	defer r.unregister(key)
+	sess := r.register(key, tabCtx, vp)
+	defer r.unregister(key, sess)
 
 	// The whole session is bounded. A page that never settles must not hold a
 	// tab open until the process restarts.
@@ -441,6 +536,15 @@ func (r *Renderer) Stream(ctx context.Context, key, rawURL string, vp Viewport, 
 			mu.Lock()
 			idle := time.Since(last)
 			mu.Unlock()
+			// A scroll counts as activity, because a frame is not the only
+			// evidence a reader is there — and on a static article it is
+			// evidence that never arrives. Without this the timeout below
+			// reclaims the session of somebody who is looking straight at it.
+			if in := r.lastInputAt(sess); !in.IsZero() {
+				if since := time.Since(in); since < idle {
+					idle = since
+				}
+			}
 			// Idle means "no NEW frames", which on a settled article is the
 			// normal state — the reader is looking at a page that is not
 			// changing. So the timeout is generous and exists to reclaim a tab

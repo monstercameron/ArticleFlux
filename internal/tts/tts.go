@@ -35,6 +35,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 )
 
 // Endpoint is the only address this package will ever call.
@@ -96,6 +98,14 @@ type Client struct {
 	// ceiling — a hundred readers listening to a hundred different articles
 	// collapse to nothing under the first and are held to MaxInFlight by this.
 	bound bound
+
+	// spend is the DOLLAR ceiling, which `bound` above is not.
+	//
+	// MaxInFlight bounds how many paid calls are in the air at once and says
+	// nothing about how many happen — a concurrency limit wearing a budget's
+	// clothes. A broadcast left running synthesises segment after segment,
+	// four at a time, forever. See cost.go.
+	spend spend
 }
 
 // synthesis is one in-progress paid call that several callers are waiting on.
@@ -121,7 +131,90 @@ func New(cacheDir string, keyOf KeyFunc) *Client {
 	return &Client{
 		keyOf:    keyOf,
 		cacheDir: cacheDir,
-		http:     &http.Client{Timeout: requestTimeout},
+		http:     paidEgressClient(),
+	}
+}
+
+// paidEgressClient builds the HTTP client for a speech call.
+//
+// # Why netguard, for a host that is a constant
+//
+// netguard exists to make a USER-SUPPLIED URL safe, and this endpoint is a
+// compile-time constant checked against an allowlist one line before the
+// request goes out — so the SSRF half of it has nothing to do here. What it
+// also is, and what this was missing, is the ONE PLACE every outbound request
+// in this application shares a policy and is measured:
+//
+//   - `egress.requests` and `egress.duration`, labelled purpose="speech".
+//     Without them the two paths that cost money were the two paths with no
+//     egress metrics — invisible in the dashboard that answers "is the internet
+//     broken, or is it us", which is exactly backwards.
+//   - A span per request, so a slow call shows where the time went instead of
+//     being one opaque gap in the trace.
+//   - Dial and TLS handshake timeouts, a response-header timeout, a redirect
+//     ceiling and a bounded idle pool. A bare `&http.Client{Timeout:…}` has one
+//     deadline for the whole request and nothing between dialling and it.
+//
+// `internal/app`'s comment claimed "every outbound fetch, from all seven
+// callers" already went through here. It did not: six did, and the two that
+// spend money did not.
+//
+// # What changes, and the one thing an operator might notice
+//
+// netguard's transport sets `Proxy: nil` — deliberately, because an
+// env-configured proxy routes around the dialer's Control hook and defeats the
+// guard entirely. A deployment reaching the provider through HTTP_PROXY was
+// relying on behaviour this client never promised, and stops. That is the right
+// side of the trade for a boundary this file exists to be, and it is stated
+// here rather than discovered.
+//
+// AllowPrivate is false: this talks to one public host, and permitting private
+// addresses would only ever help a redirect nobody wants to follow.
+func paidEgressClient() *http.Client {
+	return netguard.Client(paidEgressOptions())
+}
+
+// paidEgressOptions is separate from the client only so a test can read it.
+//
+// netguard wraps its transport in an unexported type, so the header timeout is
+// not reachable from the finished client — and that timeout is the one setting
+// here whose absence is silent and expensive. Naming the options makes the
+// invariant assertable without exporting anything from netguard or reflecting
+// into it. See TestTheSpeechClientWaitsAsLongAsItSaysItDoes.
+func paidEgressOptions() netguard.Options {
+	return netguard.Options{
+		Timeout: requestTimeout,
+		// The header wait has to be raised too, or requestTimeout above is
+		// decoration.
+		//
+		// netguard defaults ResponseHeaderTimeout to twenty seconds, which is
+		// right for the six fetching purposes it was built for — a publisher
+		// that has not begun answering in twenty seconds is down. It is wrong
+		// for a MODEL, and the default voice (`gpt-4o-mini-tts`) is one: it is
+		// billed per audio token and spends real time deciding before it emits
+		// a byte, on up to MaxChars = 4000 characters of article.
+		//
+		// Without this line the ceiling that actually bound every synthesis was
+		// twenty seconds while this file said ninety, `slideVoiceWait` on the
+		// client waited ninety, and nothing in between mentioned twenty. That
+		// is the exact failure netguard's own Options comment records having
+		// already been found once, on the grouped podcast write — `internal/llm`
+		// carries the fix and this client, added in the same change and for the
+		// same reason, did not get it.
+		//
+		// It costs money to get wrong rather than just latency: `synthesise`
+		// charges the meter BEFORE the request, deliberately, so a call killed
+		// at twenty seconds is a call that has been billed and produced no
+		// audio — and the reader's next press pays again.
+		//
+		// Safe to relax here for the reason it is safe in internal/llm and not
+		// for the publisher-fetching clients: this talks to exactly one host,
+		// pinned by `Endpoint` and re-checked against `allowedHost` on the
+		// request actually being sent. The slow-loris risk the default guards
+		// against is a property of fetching arbitrary URLs.
+		ResponseHeaderTimeout: requestTimeout,
+		UserAgent:             "ArticleFlux (+Smart+ voice)",
+		Purpose:               "speech",
 	}
 }
 
@@ -257,10 +350,30 @@ func (c *Client) synthesise(ctx context.Context, apiKey, path, text, model, voic
 		return nil, err
 	}
 	defer c.bound.release()
+
+	// The DOLLAR ceiling, checked after the slot and before the request.
+	//
+	// After the slot because a caller waiting for one may wait through the
+	// moment the budget runs out, and the answer that matters is the one true
+	// when the call is about to be made. Before the request because that is the
+	// only place refusing costs nothing — one line later and the money is
+	// already spent.
+	//
+	// Refused rather than degraded, and the caller decides what that means:
+	// `/speech` reports it, and the reader still has the browser's own
+	// synthesiser, which is the default anyway.
+	if !c.affordable(ctx) {
+		return nil, ErrOverBudget
+	}
+
 	// Charged before the call rather than after it. A request that times out or
 	// is refused mid-stream has still been made, and a meter that only counts
 	// the successes is one that reads lowest exactly when something is wrong.
+	// Both meters, for the same reason and at the same moment: `bound` counts
+	// characters for the Settings screen, `spend` converts them to dollars for
+	// the ceiling above.
 	c.bound.charge(len(text))
+	c.charge(ctx, model, len(text))
 
 	body, _ := json.Marshal(map[string]any{
 		"model":           model,

@@ -73,6 +73,57 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// Registering a handler after Start is a wiring mistake, and it must FAIL
+// rather than corrupt the map.
+//
+// # What it does without the guard
+//
+// `p.handlers[kind] = h` while workers are reading the same map is a concurrent
+// map write. The Go runtime answers that with an unrecoverable throw — not an
+// error, not a panic a recover can catch, and not reliably on the goroutine
+// that caused it. So the outcome of getting this wrong was a process that died
+// somewhere else, intermittently, with a stack pointing at a worker rather than
+// at the registration.
+//
+// The rule was documented on both Handle and New and enforced by nothing except
+// the four call sites in internal/app happening to sit above `pool.Start`.
+func TestRegisteringAHandlerAfterStartIsRefused(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+
+	p := New(repo, Options{Workers: 1, Idle: 5 * time.Millisecond})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+	p.Start(ctx)
+	defer p.Stop()
+
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Fatal("Handle after Start returned normally; it wrote to a map that " +
+				"running workers are reading, which is a data race the runtime " +
+				"punishes somewhere else entirely")
+		}
+		// The kind is in the message because the whole value of failing here is
+		// naming the registration that was wrong.
+		if msg := fmt.Sprint(v); !strings.Contains(msg, string(store.JobRank)) {
+			t.Errorf("panic message %q does not name the kind that was registered late", msg)
+		}
+	}()
+
+	p.Handle(store.JobRank, func(context.Context, store.Job) error { return nil })
+}
+
+// And the ordinary order is untouched: every registration before Start, which
+// is what all the other tests here and all four call sites in internal/app do.
+func TestRegisteringBeforeStartIsFine(t *testing.T) {
+	repo := newRepo(t)
+	p := New(repo, Options{Workers: 1, Idle: 5 * time.Millisecond})
+	p.Handle(store.JobFanout, func(context.Context, store.Job) error { return nil })
+	p.Handle(store.JobRank, func(context.Context, store.Job) error { return nil })
+	p.Start(context.Background())
+	p.Stop()
+}
+
 func TestJobsRunAndComplete(t *testing.T) {
 	repo := newRepo(t)
 	ctx := context.Background()

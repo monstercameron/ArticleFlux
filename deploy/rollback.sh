@@ -77,10 +77,22 @@ note "to:   $(du -h "$BIN" | cut -f1) built $(date -r "$BIN" '+%Y-%m-%d %H:%M')"
 cp -a "$BIN" "$REPO/bin/articleflux.rollback"
 mv -f "$REPO/bin/articleflux.rollback" "$REPO/bin/articleflux"
 if [ -d "$WEB" ]; then
-	rm -rf "$REPO/bin/web.rollback"
+	# The live directory is moved ASIDE rather than deleted, and only removed
+	# once the replacement is in place — the same order update.sh uses for the
+	# same swap.
+	#
+	# This read `rm -rf web` immediately before the `mv`. A directory cannot be
+	# replaced atomically, so some window is unavoidable, but deleting first
+	# makes it as wide as the tree is large and leaves nothing to fall back on:
+	# an `rm -rf` that fails partway aborts here under `set -e` with a
+	# half-deleted web directory, and the `mv` that would have repaired it never
+	# runs. That is the state you least want to reach on the script you are
+	# running BECAUSE something already went wrong.
+	rm -rf "$REPO/bin/web.rollback" "$REPO/bin/web.old"
 	cp -a "$WEB" "$REPO/bin/web.rollback"
-	rm -rf "$REPO/bin/web"
+	[ -d "$REPO/bin/web" ] && mv "$REPO/bin/web" "$REPO/bin/web.old"
 	mv "$REPO/bin/web.rollback" "$REPO/bin/web"
+	rm -rf "$REPO/bin/web.old"
 	note "client assets restored from $(basename "$WEB")"
 else
 	warn "no client backup for $stamp — the wasm on disk is still the new one"

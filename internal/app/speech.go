@@ -843,15 +843,30 @@ var errBadTicket = errors.New("speech: ticket will not open")
 // scope instead, sealed, minted by GetItem for a reader who was already allowed
 // to see the article. See SpeechURL.
 //
-// Four gates, in order, and each one is a different failure the reader needs
-// told apart:
+// Four gates, and each one is a different failure the reader needs told apart:
 //
 //  1. Authenticated — 401, or 403 for a ticket that will not open. Article
 //     text is private.
-//  2. Item visible to this scope — 404, never 403 (§20.7): a permission error
+//  2. The instance has a key at all — 501. Nothing the reader can do.
+//  3. This user opted in — 403. Something the reader CAN do, in settings.
+//  4. Item visible to this scope — 404, never 403 (§20.7): a permission error
 //     would confirm the item exists.
-//  3. The instance has a key at all — 501. Nothing the reader can do.
-//  4. This user opted in — 403. Something the reader CAN do, in settings.
+//
+// The item check is LAST rather than second, which is worth stating because
+// this list previously claimed the opposite and a reader auditing the privacy
+// property would have checked the wrong line. Two things make the order safe,
+// and both have to hold:
+//
+//   - GetItem is scoped, so 404 already covers "no such item" and "not yours"
+//     with one answer. That is the property §20.7 actually asks for, and it
+//     lives in GetItem rather than in this ordering.
+//   - The two gates that now run first answer identically for every id — an
+//     instance with no key says 501 to all of them, and a reader who has not
+//     opted in gets 403 for an article that exists and one that does not. A
+//     gate that cannot vary with the item cannot leak it.
+//
+// The payoff is that neither an unconfigured instance nor an opted-out reader
+// costs a database query.
 func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -1048,6 +1063,37 @@ func (a *App) serveSpeech(w http.ResponseWriter, r *http.Request) {
 func (a *App) serveSpoken(w http.ResponseWriter, r *http.Request,
 	prefs map[string]string, id, text, cacheKey string) {
 
+	// HEAD answers BEFORE the paid call, which is the whole reason this is not
+	// the `if r.Method == http.MethodHead { return }` that used to sit beside
+	// the Write below.
+	//
+	// /asset ends the same way and is right to: its work is a bandwidth-only
+	// fetch that populates a cache, so a HEAD that warms it costs nothing anybody
+	// is billed for. This endpoint is the one place in the application where the
+	// identical shape spends MONEY at a provider — so a HEAD arriving here
+	// synthesised a whole article, wrote it to the cache, set Content-Length and
+	// then threw the bytes away.
+	//
+	// That is not a hypothetical caller. A listening URL is a six-hour ticket
+	// that lives in an <audio src>, which means it also lives in browser
+	// history, in extensions, in link prefetchers and in whatever uptime check
+	// somebody pointed at the page — and HEAD is exactly what those send. The
+	// per-client limiter added with the ceiling bounds how fast that can happen
+	// and does not make it free.
+	//
+	// So: the four gates in serveSpeech have already run, and answering here
+	// still tells a caller everything HEAD is for — the endpoint exists, they
+	// are allowed, the item is real, the reply will be an MP3. What it does not
+	// carry is Content-Length, because the only way to know it is to buy the
+	// audio. HTTP permits omitting it, and a length nobody asked for is a poor
+	// reason to bill somebody.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Header().Set("Accept-Ranges", "none")
+		return
+	}
+
 	voice := strings.TrimSpace(prefs["tts.voice"])
 	audio, err := a.speak.Speak(r.Context(), cacheKey, text, prefs["tts.model"], voice)
 	// Recorded either way, which is the whole cleared-by-success rule: a stale
@@ -1070,9 +1116,6 @@ func (a *App) serveSpoken(w http.ResponseWriter, r *http.Request,
 	// cache holding it would serve it to whoever asked next.
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("Accept-Ranges", "none")
-	if r.Method == http.MethodHead {
-		return
-	}
 	_, _ = w.Write(audio)
 }
 

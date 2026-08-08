@@ -69,8 +69,19 @@ func (a *App) rateLimitUnary() grpc.UnaryServerInterceptor {
 // second, which no human interaction approaches and which a runaway client
 // reaches immediately. Two of those buckets is still two orders of magnitude
 // below what the endpoints behind them can afford, and the surfaces where the
-// distinction would matter (login, recovery) have their own per-username rules
-// that are keyed on the name and cost nothing to look up.
+// distinction would matter (login, recovery) have their own per-username
+// controls.
+//
+// Those controls are NAMED here rather than gestured at, because they are not
+// in `internal/ratelimit` and a reader who goes looking finds `LoginPerUser`
+// and `RecoveryPerUser` sitting in that file with no caller, which reads as
+// this sentence being false:
+//
+//   - Login: `authn.DefaultLockout`, a per-failure curve rather than a rate —
+//     three free attempts, then a doubling delay from five seconds to a
+//     fifteen-minute cap, plus a 20-per-minute address limit.
+//   - Recovery: the limiter in `internal/transport/grpcsrv/recovery.go`, keyed
+//     on the username and the client address together.
 //
 // Hashed rather than raw so the key can appear in a log line. The session token
 // is a bearer credential; a limiter that writes it to disk hands out sessions

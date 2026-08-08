@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
@@ -143,6 +144,10 @@ type Pool struct {
 	wg   sync.WaitGroup
 	stop chan struct{}
 	once sync.Once
+
+	// started is what makes "register before Start" an enforced rule rather
+	// than a comment. See Handle.
+	started atomic.Bool
 }
 
 // New builds a pool. Handlers are registered before Start and never after,
@@ -175,11 +180,40 @@ func New(repo *store.ReaderRepo, opt Options) *Pool {
 	}
 }
 
-// Handle registers a handler. Not safe to call after Start.
-func (p *Pool) Handle(kind store.JobKind, h Handler) { p.handlers[kind] = h }
+// Handle registers a handler. Not safe to call after Start, and now says so.
+//
+// # Why this panics rather than documenting the rule
+//
+// The rule was already written down, here and on New: handlers go in before
+// Start, which is what lets every worker read the map with no lock. Nothing
+// checked it. The four call sites in internal/app happen to sit six hundred
+// lines above `a.pool.Start(ctx)`, and that distance is the entire enforcement.
+//
+// Breaking it does not produce a bug report. `p.handlers[kind] = h` against a
+// map that running workers are reading is a concurrent map write, which the Go
+// runtime answers with an unrecoverable throw — not a panic a deferred recover
+// can catch, not an error, and not necessarily on the request that caused it.
+// The one thing it never does is point at the line that was wrong.
+//
+// A registration after Start is a WIRING mistake: the code is the same on every
+// run, so it either always happens or never does, and it surfaces the first
+// time the process starts. Panicking makes that deterministic and immediate,
+// with the kind named, which is the same trade http.ServeMux makes for a
+// duplicate pattern.
+func (p *Pool) Handle(kind store.JobKind, h Handler) {
+	if p.started.Load() {
+		panic(fmt.Sprintf("jobs: Handle(%q) called after Start; handlers must be "+
+			"registered before the workers run, because they read the map without a lock",
+			kind))
+	}
+	p.handlers[kind] = h
+}
 
 // Start launches the workers and the reclaim sweep.
 func (p *Pool) Start(ctx context.Context) {
+	// Set BEFORE the first worker exists, so there is no window in which a
+	// worker is reading the map and Handle still thinks registration is open.
+	p.started.Store(true)
 	for i := 0; i < p.opt.Workers; i++ {
 		p.wg.Add(1)
 		go p.worker(ctx, fmt.Sprintf("w%d", i))

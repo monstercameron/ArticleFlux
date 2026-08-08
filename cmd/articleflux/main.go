@@ -30,6 +30,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/clientaddr"
 	"github.com/monstercameron/ArticleFlux/internal/envfile"
 	"github.com/monstercameron/ArticleFlux/internal/fluxcast/produce"
+	"github.com/monstercameron/ArticleFlux/internal/rundown"
 	"github.com/monstercameron/ArticleFlux/internal/seedread"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -140,6 +141,8 @@ func main() {
 		err = backup(log, args)
 	case "vacuum":
 		err = vacuumCmd(log, args)
+	case "rotate-key":
+		err = rotateKeyCmd(log, args)
 	case "seed":
 		err = seed(log, args)
 	case "seed-reading":
@@ -185,6 +188,7 @@ func usage() {
   articleflux migrate [-db path]
   articleflux backup  -out path [-db path] [-keep n]
   articleflux vacuum  [-db path] [-incremental] [-n]
+  articleflux rotate-key [-db path] [-yes] [-n]
   articleflux seed    [-db path] [-feeds url,url,...]
   articleflux seed-reading [-db path] [-focus word,word] [-read 0.6] [-seed 1]
   articleflux poll    [-db path]
@@ -504,7 +508,13 @@ func serve(log *slog.Logger, args []string) error {
 		// server set for reading a request would still be armed on the tunnel's
 		// connection and would kill it at exactly that interval. The per-request
 		// deadline in boundRequestReads is the ReadTimeout this cannot have: it
-		// bounds the same thing and knows which request not to bound.
+		// bounds the same thing and knows which requests not to bound.
+		//
+		// PLURAL, and that was the bug: the tunnel is not the only response here
+		// that outlives a read deadline. `/stream` is an MJPEG live view, and a
+		// read deadline expiring mid-response cancels the request context —
+		// so it was being cut off at sixty seconds, silently. See
+		// longLivedPaths.
 		//
 		// IdleTimeout, though, is safe and was missing. Without it a keep-alive
 		// connection that finishes a request and says nothing more is held until
@@ -885,7 +895,15 @@ func printRundown(w io.Writer, p produce.Produced, rate float64) {
 			if headline == "" {
 				headline = st.ItemID
 			}
-			mins := float64(st.Words) / (150.0 * rateOrOne(rate)) // 11.3's own arithmetic
+			// 11.3's own arithmetic, taken from the package that owns it. The
+			// literal 150.0 that stood here was a second copy of
+			// rundown.WordsPerMinute, which made this table print its
+			// per-story minutes by one implementation and its total, two
+			// lines below, by another. They agreed only because both said
+			// 150 — and WordsPerMinute's own comment describes it as a figure
+			// calibrated against 140–160 broadcast norms, which is an
+			// invitation to tune it.
+			mins := float64(st.Words) / (rundown.WordsPerMinute * rundown.SafeRate(rate))
 			source := "(no source on record)"
 			if len(st.Sources) > 0 {
 				source = strings.Join(st.Sources, ", ")
@@ -898,13 +916,6 @@ func printRundown(w io.Writer, p produce.Produced, rate float64) {
 	fmt.Fprintln(w, strings.Repeat("=", 72))
 	fmt.Fprintf(w, "%d stories, %d words, ~%s of a %s target\n",
 		totalStories, p.Rundown.Words(), p.Rundown.Duration(rate).Round(time.Second), p.Rundown.Target)
-}
-
-func rateOrOne(rate float64) float64 {
-	if rate <= 0 {
-		return 1
-	}
-	return rate
 }
 
 // truncateFor keeps a headline inside a fixed-width column without cutting a
@@ -1182,9 +1193,40 @@ const requestReadTimeout = 60 * time.Second
 // protect against a condition that cannot arise on a real socket. So a
 // ResponseController that cannot set the deadline is ignored and the request
 // proceeds — under a real server it always can.
+// longLivedPaths are the responses a read deadline must not be armed against.
+//
+// `/grpc` was here from the start and the reasoning above explains it. `/stream`
+// belongs for the same reason and was missed, which is worth writing down
+// because the two do not look alike: one is a hijacked WebSocket and the other
+// is an ordinary HTTP response that simply never ends.
+//
+// # What the deadline does to a response that is still being written
+//
+// It is not inert. Once the handler starts writing, net/http runs a background
+// read on the connection to notice the client going away — that is what powers
+// request-context cancellation. An expired read deadline makes that read fail,
+// and net/http answers a failed background read by CANCELLING THE REQUEST
+// CONTEXT. Measured against a streaming handler: the context is cancelled about
+// eighty milliseconds after the deadline, mid-response, and the client receives
+// a cleanly truncated body with NO error.
+//
+// So `/stream` — the live view, `multipart/x-mixed-replace`, which selects on
+// `r.Context().Done()` frame by frame — stopped dead at sixty seconds. Silently:
+// no log line, no client error, an <img> that simply stops updating. The
+// renderer's own IdleTimeout is three minutes, so a session the renderer
+// intended to keep alive was being ended at a third of that by a middleware
+// that never mentions it.
+//
+// A named set rather than a longer boolean, so the next endpoint that streams
+// is added by someone who reads this comment.
+var longLivedPaths = map[string]bool{
+	"/grpc":   true, // the gRPC tunnel: hijacked, and the deadline survives Hijack
+	"/stream": true, // the live view: MJPEG, ends only when the viewer leaves
+}
+
 func boundRequestReads(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/grpc" {
+		if !longLivedPaths[r.URL.Path] {
 			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(requestReadTimeout))
 		}
 		next.ServeHTTP(w, r)
@@ -1358,21 +1400,46 @@ func exportOPML(log *slog.Logger, args []string) error {
 		return err
 	}
 
-	out := io.Writer(os.Stdout)
-	if *file != "" {
-		fh, err := os.Create(*file)
-		if err != nil {
-			return err
-		}
-		defer fh.Close()
-		out = fh
-	}
-	if _, err := out.Write(data); err != nil {
+	if *file == "" {
+		_, err := os.Stdout.Write(data)
 		return err
 	}
-	if *file != "" {
-		log.Info("exported", "feeds", n, "file", *file)
+
+	// The close is CHECKED, and its error is the export's error.
+	//
+	// `defer fh.Close()` is what this was, and for a file being WRITTEN that
+	// discards the one error that reports the write did not land. A successful
+	// Write is not a successful save: on a filesystem with delayed allocation,
+	// on a network mount, and on Windows, the failure that matters — out of
+	// space, over quota, I/O error on writeback — is delivered at close. The
+	// old shape logged "exported" and exited zero over a file that had been
+	// truncated to nothing.
+	//
+	// That is the wrong way round for THIS command in particular. `export` is
+	// how somebody keeps a copy of their subscriptions; a silent truncation is
+	// discovered the day they try to restore it. The sibling write paths in this
+	// repository already do it properly — internal/obs/spill.go checks Flush and
+	// Close before renaming, cmd/precompress checks both of its closers — and
+	// this was the one that did not.
+	fh, err := os.Create(*file)
+	if err != nil {
+		return err
 	}
+	if _, werr := fh.Write(data); werr != nil {
+		// Closed but not reported: the write error is the more specific one, and
+		// returning the close error instead would name the symptom over the
+		// cause.
+		_ = fh.Close()
+		return werr
+	}
+	if cerr := fh.Close(); cerr != nil {
+		return fmt.Errorf("export: %s was written but did not close cleanly, so it "+
+			"may be incomplete — do not rely on it as a backup: %w", *file, cerr)
+	}
+
+	// Only now. Anything above this line means the file on disk is not what was
+	// asked for.
+	log.Info("exported", "feeds", n, "file", *file)
 	return nil
 }
 
@@ -1384,10 +1451,20 @@ func exportOPML(log *slog.Logger, args []string) error {
 // typo that silently resolved to 0 would turn tracing off for somebody who had
 // just gone to the trouble of configuring a collector — a failure they would
 // diagnose as a broken exporter.
+// The range is written as an ACCEPT rather than a reject, and that is what
+// keeps NaN out.
+//
+// `ParseFloat` returns NaN with a nil error for the literal "NaN", and NaN
+// compares false against everything — `NaN < 0` is false and `NaN > 1` is false
+// — so the reject-form condition this used to have admitted the one value that
+// is not a ratio. It then went to the trace sampler as a sampling probability.
+//
+// `f >= 0 && f <= 1` rejects it without naming it, and keeps doing so if
+// somebody adds another bound later.
 func envFloatDefault(key string, def float64) float64 {
-	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(key)), 64)
-	if err != nil || v < 0 || v > 1 {
-		return def
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(key)), 64); err == nil &&
+		v >= 0 && v <= 1 {
+		return v
 	}
-	return v
+	return def
 }

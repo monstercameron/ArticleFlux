@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -398,14 +399,23 @@ func isValidUTF8(s string) bool {
 
 // A rate of zero would divide by zero downstream; the guard is what keeps a
 // rundown from crashing on an empty run.
-func TestRateOrOneNeverReturnsZero(t *testing.T) {
-	for _, in := range []float64{0, -1, -0.0001} {
-		if got := rateOrOne(in); got <= 0 {
-			t.Errorf("rateOrOne(%v) = %v, which would divide by zero", in, got)
+//
+// The local rateOrOne this used to call was replaced by rundown.SafeRate — the
+// package that owns the arithmetic now owns the guard on its one input, so the
+// printed per-story minutes and the rundown they describe cannot disagree
+// about what `-rate 0` means. NaN and +Inf are in the table because
+// strconv.ParseFloat, which is what the flag package parses `-rate` with,
+// accepts both spellings and neither is caught by a `<= 0` test.
+func TestRateGuardNeverReturnsAnUnusableRate(t *testing.T) {
+	for _, in := range []float64{0, -1, -0.0001, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		got := rundown.SafeRate(in)
+		if !(got > 0) || math.IsInf(got, 0) {
+			t.Errorf("SafeRate(%v) = %v, which would divide by zero or make the "+
+				"target meaningless", in, got)
 		}
 	}
-	if got := rateOrOne(1.5); got != 1.5 {
-		t.Errorf("rateOrOne(1.5) = %v, want it unchanged", got)
+	if got := rundown.SafeRate(1.5); got != 1.5 {
+		t.Errorf("SafeRate(1.5) = %v, want it unchanged", got)
 	}
 }
 

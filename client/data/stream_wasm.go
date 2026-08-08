@@ -60,8 +60,16 @@ const (
 // onEffect is called on the frame loop with what a batch invalidated — after the
 // cache has already been cleared of it, so a caller that refetches immediately
 // cannot be served the entry the event was about. It is called only when there
-// is something to say: an idle instance publishes `poll_finished` on every cycle
-// and a pump that repainted for it would flicker an untouched screen on a timer.
+// is something to say, because a batch can invalidate nothing: `poll_finished`
+// is handled and sets no flag, and a pump that repainted for it would flicker an
+// untouched screen on a timer.
+//
+// That last sentence used to claim "an idle instance publishes `poll_finished`
+// on every cycle". It does not — `items_added` is the only kind anything
+// publishes today (TODO 8.7 scoped it that way; see Effect.Empty). The guard is
+// kept because it is correct regardless and becomes load-bearing the moment
+// another kind is wired, but the heartbeat it described is not one this server
+// sends.
 //
 // Returns when ctx ends, and only then. Every other outcome — a dropped tunnel,
 // a server restart, a stream that ends — is a reconnect, because a live-update
