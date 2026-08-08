@@ -2289,6 +2289,32 @@ func (a *App) StartPoller(ctx context.Context) {
 				// unbounded cache is a slow leak pointed at SQLite's ability to
 				// write — see diskhealth.go for the whole path.
 				a.sweepCaches(ctx)
+				// Spent idempotency keys, which is the same shape as the
+				// sessions above: rows that carry an `expires_at`, an index
+				// built for exactly this delete, and — until now — no caller.
+				// `idempotency_keys` grew forever on a table whose whole
+				// purpose is to be transient.
+				if n, err := a.repo.PurgeIdempotency(ctx); err != nil {
+					a.log.WarnContext(ctx, "purging idempotency keys", "err", err)
+				} else if n > 0 {
+					a.log.Info("purged idempotency keys", "count", n)
+				}
+				// And hand the freed pages back, a bounded slice at a time.
+				//
+				// Everything above this line DELETES, and SQLite keeps freed
+				// pages on a free list rather than returning them — so without
+				// this the file stops growing and never shrinks, while
+				// `articleflux backup` produces a compact copy that makes the
+				// live file look wrong rather than explaining it.
+				//
+				// A no-op on a database created before `auto_vacuum` was set in
+				// the DSN, which is most of them. That is why `articleflux
+				// vacuum -incremental` exists: this is the maintenance, and
+				// that is the one-off conversion an operator asks for, because
+				// it needs room for a second copy of the file.
+				if err := a.db.IncrementalVacuum(ctx, incrementalVacuumPages); err != nil {
+					a.log.WarnContext(ctx, "incremental vacuum", "err", err)
+				}
 				// A span per cycle. The poll is the app's heartbeat — if it
 				// stops, the reader goes quiet and looks like a slow news day,
 				// which is the failure mode §22.11 exists to make visible.

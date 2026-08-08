@@ -60,6 +60,19 @@ const diskFloor = 256 << 20
 // diskProbeTTL is how long a disk verdict is reused. See the note above.
 const diskProbeTTL = 15 * time.Second
 
+// incrementalVacuumPages bounds how much the poll cycle hands back per pass.
+//
+// A thousand pages is about four megabytes at SQLite's 4 KiB default, and a few
+// milliseconds — because `PRAGMA incremental_vacuum(n)` moves pages and
+// truncates rather than rewriting the file. The bound exists because this runs
+// while somebody is reading: unbounded, the first pass after a large retention
+// sweep would return hundreds of megabytes in one write-locked burst, which is
+// a pause a reader notices for the sake of disk space nobody was waiting on.
+//
+// Four megabytes a cycle against a fifteen-minute poll is a gigabyte a week,
+// which comfortably outruns anything retention can free.
+const incrementalVacuumPages = 1000
+
 // diskHealth caches the last verdict.
 type diskHealth struct {
 	mu       sync.Mutex
