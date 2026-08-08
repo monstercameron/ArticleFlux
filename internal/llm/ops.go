@@ -265,8 +265,14 @@ func (c *Client) WithModel(m ModelFunc) *Client {
 //     `tools: [{"type":"web_search"}]`. `schemaflux.CompletionRequest` has no
 //     field for it (G4, still open upstream as P2.3), so an operation cannot
 //     express the one thing this feature is.
+//   - **A14, article classification.** `registry.Build` composes the request's
+//     schema at RUNTIME from the reader's own contributor set, so the shape is
+//     not known until the call is assembled. `Extracting[T]` derives its schema
+//     from a Go type, and there is no Go type here to derive one from — which
+//     is a fact about this feature rather than a gap in the library.
 //   - **A15, speech.** A different endpoint and a different API
 //     (`/v1/audio/speech`). SchemaFlux has no speech surface at all.
 //   - **`Client.Models`.** `GET /v1/models`, which carries no prompt and no
 //     reader content. There is nothing for an operation to shape.
-const Manual = "A10 web search (hosted tools), A15 speech (different API), Models (no prompt)"
+const Manual = "A10 web search (hosted tools), A14 classification (runtime schema), " +
+	"A15 speech (different API), Models (no prompt)"
