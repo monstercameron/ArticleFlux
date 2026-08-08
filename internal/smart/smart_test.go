@@ -80,14 +80,20 @@ func TestTheSameInstanceComesBackEveryTime(t *testing.T) {
 	// Accessors, not constructors. A caller that got a fresh Digest per call
 	// would get a fresh on-disk cache handle per call, and the cache would
 	// stop being one.
+	//
+	// Each pair is bound to variables rather than compared call-against-call:
+	// staticcheck reads `s.Digest() != s.Digest()` as a mistake (SA4000,
+	// identical expressions either side of the operator), and it is right to in
+	// general — the only reason it is not one here is the memoisation this test
+	// exists to assert, which is exactly what the checker cannot see.
 	s, _ := newTestSmart(t)
-	if s.Digest() != s.Digest() {
+	if a, b := s.Digest(), s.Digest(); a != b {
 		t.Error("Digest() built a second instance")
 	}
-	if s.Podcast() != s.Podcast() {
+	if a, b := s.Podcast(), s.Podcast(); a != b {
 		t.Error("Podcast() built a second instance")
 	}
-	if s.Interest() != s.Interest() {
+	if a, b := s.Interest(), s.Interest(); a != b {
 		t.Error("Interest() built a second instance")
 	}
 }

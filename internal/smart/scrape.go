@@ -79,13 +79,6 @@ const maxSamples = 6
 // generous and the reason is written down.
 const analyzeMaxTokens = 6000
 
-// analyzeEffort keeps the reasoning short.
-//
-// The question is structural — which container repeats, which key holds the
-// title — and the evidence is in front of the model. Deliberation buys nothing
-// here and is charged for by the token.
-const analyzeEffort = "low"
-
 // SiteAnalyzer proposes scrape rules.
 type SiteAnalyzer struct {
 	llm      llmClient
@@ -327,34 +320,6 @@ func (p *Proposal) Age() time.Duration {
 		return 0
 	}
 	return timeutil.Now().Sub(newest)
-}
-
-func scrapeSchema() map[string]any {
-	str := map[string]any{"type": "string"}
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"item_selector":    str,
-			"title_selector":   str,
-			"link_selector":    str,
-			"date_selector":    str,
-			"date_layout":      str,
-			"summary_selector": str,
-			"image_selector":   str,
-			"author_selector":  str,
-			"notes":            str,
-		},
-		// Strict mode requires every property in `required` and
-		// additionalProperties:false, so the optional selectors are "required to
-		// be present" and carry "" when the site does not have one. That is also
-		// the honest encoding: "this page has no author on its index" is an
-		// answer, and a missing key would be indistinguishable from a lapse.
-		"required": []string{
-			"item_selector", "title_selector", "link_selector", "date_selector",
-			"date_layout", "summary_selector", "image_selector", "author_selector", "notes",
-		},
-		"additionalProperties": false,
-	}
 }
 
 const scrapeInstructions = `You are writing a scraping rule for ArticleFlux, a feed reader, so that a page WITHOUT an RSS or Atom feed can be followed like one.

@@ -162,11 +162,6 @@ should describe the ROOM, not the subjects — it appears in a theme picker.
 
 Match the tone you are given, exactly.`
 
-var hexProp = map[string]any{
-	"type":    "string",
-	"pattern": "^#[0-9A-Fa-f]{6}$",
-}
-
 // paletteReply is the wire shape of an answer.
 type paletteReply struct {
 	Label  string `json:"label"`

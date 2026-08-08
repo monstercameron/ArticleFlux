@@ -180,30 +180,6 @@ func allSameJSON(items []jsonsel.Item) bool {
 	return true
 }
 
-func jsonSchema() map[string]any {
-	str := map[string]any{"type": "string"}
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"items_path":    str,
-			"title_path":    str,
-			"link_path":     str,
-			"link_template": str,
-			"id_path":       str,
-			"date_path":     str,
-			"summary_path":  str,
-			"image_path":    str,
-			"author_path":   str,
-			"notes":         str,
-		},
-		"required": []string{
-			"items_path", "title_path", "link_path", "link_template", "id_path",
-			"date_path", "summary_path", "image_path", "author_path", "notes",
-		},
-		"additionalProperties": false,
-	}
-}
-
 const jsonInstructions = `You are writing a rule for ArticleFlux, a feed reader, so that a site with no RSS feed — one that renders itself in the browser and fetches its entries as JSON — can be followed like one.
 
 You get the page's URL, the API URL its JavaScript calls, and a SHAPE of the response: every key, the type of its value, one truncated sample, and for arrays their length plus one representative entry. The values are samples, not the data; there may be hundreds more entries than the one shown.

@@ -325,8 +325,6 @@ func (f *fakePaletteClient) Do(context.Context, llm.Request) (string, error) {
 	return f.reply, f.err
 }
 
-func (f *fakePaletteClient) calls() int { return f.n }
-
 // goodPaletteJSON is client/design's own known-good fixture (palette_test.go,
 // TestNewGeneratedDerivesWhatAModelMayNotAuthor) — a dark theme that survives
 // design.NewGenerated and design.Sanitize unchanged, so it exercises the wire

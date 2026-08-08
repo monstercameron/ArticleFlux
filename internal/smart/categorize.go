@@ -68,36 +68,6 @@ const (
 // uses are the ones near the front.
 const maxCategorizeExisting = 40
 
-// categorizeInstructions is the system prompt for filing one feed.
-const categorizeInstructions = `You are filing a newly-added RSS/Atom feed into a reader's existing
-categories.
-
-You will be given the feed's title, its own description if it has one, and the
-reader's existing category names (may be empty).
-
-Prefer an existing category: if one of them is a reasonable home for this
-feed's subject matter, return that category's EXACT name, character for
-character, and set isNew to false. Only if none of the existing categories
-reasonably fits should you propose a new one — a short name, one to three
-words, in Title Case, with isNew set to true. If the existing list is empty,
-always propose a new one.
-
-Do not invent an existing name that was not given to you. Do not explain your
-choice.`
-
-// categorizePayload is what leaves for one feed.
-type categorizePayload struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Existing    []string `json:"existing,omitempty"`
-}
-
-// categorizeReply is the wire shape of an answer.
-type categorizeReply struct {
-	Category string `json:"category"`
-	IsNew    bool   `json:"isNew"`
-}
-
 // Suggest proposes where a feed belongs.
 //
 // existing is the reader's own category names, largest/most-used first if the

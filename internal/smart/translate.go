@@ -260,33 +260,6 @@ func (t *Translator) CachedLocales(ctx context.Context) map[string]bool {
 	return out
 }
 
-// translationSchema is the strict json_schema the model must answer in.
-//
-// `additionalProperties: false` and every property listed in `required` are not
-// optional for OpenAI strict mode — a schema missing either is rejected at
-// request time, which is a better place to find out than at parse time.
-func translationSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"entries": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"key":  map[string]any{"type": "string"},
-						"text": map[string]any{"type": "string"},
-					},
-					"required":             []string{"key", "text"},
-					"additionalProperties": false,
-				},
-			},
-		},
-		"required":             []string{"entries"},
-		"additionalProperties": false,
-	}
-}
-
 const instructions = `You are localising the user interface of ArticleFlux, a self-hosted feed reader.
 
 You will be given a JSON object of UI messages: each key identifies a message and each value is the English text. Return every key you were given, with the value translated into the target language.
