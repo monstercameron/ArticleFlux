@@ -173,6 +173,71 @@ func TestARenumberedMigrationIsNamedRatherThanReapplied(t *testing.T) {
 	}
 }
 
+// A database migrated by a NEWER binary must refuse to open, and this is the
+// case every other guard in Migrate is structurally blind to.
+//
+// The loop iterates the migrations THIS binary embeds and asks the ledger about
+// each. A row the binary has no file for is never looked at, so before this
+// check the whole function returned `0, nil` and the server started — against a
+// schema written for code it does not contain.
+//
+// It is the exact state `deploy/rollback.sh` creates on purpose: the binary goes
+// back, the database stays. What made it dangerous was that it started cleanly.
+func TestASchemaNewerThanTheBinaryIsRefused(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+
+	// A row this build has no file for: a version above everything on disk AND
+	// a checksum it does not recognise. Both halves matter — with a known
+	// checksum this is a renumbering, which has its own message.
+	if _, err := db.Write.ExecContext(ctx, `
+		INSERT INTO schema_migrations (version, name, checksum, applied_at)
+		VALUES (9999, 'from_the_future', 'ffffffffffffffff', '2030-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := db.Migrate(ctx)
+	if err == nil {
+		t.Fatal("a forward schema started cleanly; this build cannot read it safely")
+	}
+	if applied != 0 {
+		t.Errorf("applied = %d; the refusal must come before any statement runs", applied)
+	}
+	// What somebody staring at a box that will not come up needs to be told:
+	// the BINARY is old, and there is a way forward that is not a repair.
+	for _, want := range []string{"9999", "newer version", "restore"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v\nwant it to mention %q", err, want)
+		}
+	}
+}
+
+// And the guard above must not swallow the renumbering case, which also files a
+// row above everything on disk. The two are told apart by the checksum, and a
+// version-only comparison would replace the precise diagnosis with a vague one.
+func TestAForwardVersionWithAKnownChecksumIsStillCalledARenumbering(t *testing.T) {
+	db := openTest(t)
+	ctx := context.Background()
+
+	all, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := all[len(all)-1]
+	if _, err := db.Write.ExecContext(ctx,
+		`UPDATE schema_migrations SET version = ? WHERE version = ?`,
+		m.version+1000, m.version); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Migrate(ctx)
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "renumbered") {
+		t.Errorf("err = %v\nwant the renumbering message, not the forward-schema one", err)
+	}
+}
+
 // A24's bar: concurrent writers produce zero SQLITE_BUSY, because the single
 // write connection serialises them in Go instead of in the database.
 func TestConcurrentWritersDoNotGetBusy(t *testing.T) {

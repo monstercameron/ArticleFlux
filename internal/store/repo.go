@@ -29,6 +29,19 @@ type Scope struct {
 	// Role decides capability, resolved once at the interceptor. Repositories do
 	// not re-derive permissions; they scope data.
 	Role string
+	// TokenScope narrows Role when the credential is an API token rather than a
+	// browser session (§15.2). Empty means a session, which carries the full role.
+	//
+	// It rides on the Scope because the Scope is what the credential resolves to,
+	// and the alternative — a second value threaded alongside it — is how the
+	// authorisation layer ends up asking one question of two sources. The
+	// narrowing itself is `authz.Caller.Caps`, an INTERSECTION: a token can only
+	// ever remove capability, never add it, or minting one would be a privilege
+	// escalation.
+	//
+	// Repositories ignore this. It decides capability, and capability is decided
+	// at the interceptor — see the comment on Role.
+	TokenScope string
 }
 
 // Valid reports whether the scope identifies someone. A zero Scope reaching a

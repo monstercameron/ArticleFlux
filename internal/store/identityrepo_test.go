@@ -340,7 +340,7 @@ func TestRegisterDeviceRefusesACollidingRecordFromAnotherAccount(t *testing.T) {
 	// exercised by TestAReplayedRefreshTokenRevokesTheFamily), which would
 	// make this assertion fail for an unrelated reason if it ran second.
 	if err := repo.RotateRefresh(ctx, sharedRecordID, "victims-refresh-secret",
-		"victims-next-secret"); err != nil {
+		"victims-next-secret", 0); err != nil {
 		t.Fatalf("the victim's own refresh secret stopped working after the refused "+
 			"cross-account write: %v", err)
 	}

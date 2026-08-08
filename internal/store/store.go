@@ -15,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ncruces/go-sqlite3/driver"
 	"github.com/ncruces/go-sqlite3/ext/fts5"
 
@@ -97,7 +101,35 @@ func Open(opt Options) (*DB, error) {
 		"&_pragma=synchronous(NORMAL)" +
 		// SQLite defaults foreign_keys OFF, which would make every REFERENCES in
 		// 0001_init.sql decorative.
-		"&_pragma=foreign_keys(ON)"
+		"&_pragma=foreign_keys(ON)" +
+		// INCREMENTAL rather than the NONE default, and it takes effect only on
+		// a database this call is CREATING.
+		//
+		// # Why it matters now and did not before
+		//
+		// Nothing used to delete from this database at scale. Retention does:
+		// items on the operator's window, and `login_attempts` and `audit_log`
+		// on windows that default to deleting (internal/retention). SQLite does
+		// not return freed pages to the filesystem — it keeps them on a free
+		// list and reuses them — so a sweep that removes a year of rows makes
+		// the file stop growing and never makes it smaller. `articleflux
+		// backup` VACUUMs the COPY, which is why the backups look reasonable
+		// while the live file does not.
+		//
+		// # Why this line alone is not the whole fix
+		//
+		// `auto_vacuum` can only be changed on an existing database by a full
+		// VACUUM, which rewrites the file and needs room for a second copy of
+		// it — precisely what a box in this state is short of. So it is
+		// silently ignored on every database that already exists, and that is
+		// the correct behaviour for a pragma applied on every connection open:
+		// the alternative is a boot path that rewrites somebody's database
+		// without being asked, on the disk that is filling up.
+		//
+		// The other half is `articleflux vacuum`, which an operator runs
+		// deliberately and which checks the free space first. This line means
+		// nobody who installs from here has to.
+		"&_pragma=auto_vacuum(INCREMENTAL)"
 	if opt.ReadOnly {
 		dsn += "&mode=ro&_pragma=query_only(1)"
 	}
@@ -204,8 +236,30 @@ func (db *DB) Path() string { return db.path }
 // Tx runs fn in an immediate transaction on the write pool, committing on nil
 // and rolling back on error or panic.
 func (db *DB) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	// A span around every write transaction.
+	//
+	// This is the one database span worth having and the only one that is cheap
+	// to add in a single place. The write pool holds exactly ONE connection, so
+	// `BeginTx` is where a mutation waits for every other mutation in the
+	// process — the span therefore measures queue time plus work, which is
+	// precisely the interval that made an RPC look slow for no visible reason.
+	//
+	// READ queries are deliberately not spanned. They are issued from about a
+	// hundred and fifty call sites, they run against an eight-connection pool
+	// that does not serialise, and instrumenting them would mean a wrapper at
+	// every one of those sites for the least contended path in the system. The
+	// pool gauges cover the case where reads do back up.
+	//
+	// No SQL text on the span: statements here interpolate nothing, but they do
+	// name tables and columns, and a query is one join away from describing
+	// what somebody reads.
+	ctx, span := tracer.Start(ctx, "db.tx", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
 	tx, err := db.Write.BeginTx(ctx, nil)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "begin failed")
 		return err
 	}
 	defer func() {
@@ -266,6 +320,85 @@ func (db *DB) Migrate(ctx context.Context) (applied int, err error) {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+
+	// A ledger row ABOVE anything this binary knows about means the database has
+	// been migrated by a NEWER build. Refused before a single statement runs.
+	//
+	// # Why the loop below cannot see this
+	//
+	// Every check in this function iterates `all` — the migrations embedded in
+	// THIS binary — and asks what the ledger says about each. A row the binary
+	// has no file for is never looked at, so the whole function completes,
+	// returns `0, nil`, and the server starts. Both existing guards are about a
+	// migration whose file changed; this is the case where the file does not
+	// exist at all, and it is the one the loop is structurally blind to.
+	//
+	// # The state this is actually for
+	//
+	// `deploy/rollback.sh` swaps the binary back to a previous build and leaves
+	// the database alone, which is the correct thing for it to do — a
+	// down-migration is the untested code path A23 refuses to own. So a rollback
+	// past a schema change produces exactly this shape on purpose, and until now
+	// it produced it silently: the old binary starts clean, reports healthy, and
+	// then meets columns it does not know, tables whose shape moved, and
+	// constraints written for code it does not contain. What that looks like
+	// from the outside is a reader that mostly works, which is the worst
+	// available outcome — a failure that starts is one nobody investigates until
+	// it has written something.
+	//
+	// Refusing costs an outage that is already happening and makes it legible.
+	// The remedy is named in the message because at that moment somebody is
+	// looking at a box that will not come up and needs to be told the binary is
+	// old, not the data broken: roll the binary FORWARD, or restore the backup
+	// taken before the migration ran.
+	//
+	// # Why the CHECKSUM has to be consulted and not just the version
+	//
+	// A renumbered migration also produces a ledger row above everything on
+	// disk — that is precisely what a rename leaves behind — and it has a much
+	// more useful diagnosis waiting for it below. The two are told apart by
+	// whether this binary recognises the row's CONTENTS: a renumbering is work
+	// this build still has a file for, filed under the wrong number, and a
+	// forward schema is work this build has never seen. Only the second is a
+	// binary that is too old.
+	if len(done) > 0 {
+		highestKnown := 0
+		known := make(map[string]struct{}, len(all))
+		for _, m := range all {
+			known[m.checksum] = struct{}{}
+			if m.version > highestKnown {
+				highestKnown = m.version
+			}
+		}
+		highestApplied, appliedName := 0, ""
+		for v, sum := range done {
+			if _, mine := known[sum]; mine {
+				// This build has the file; the number is the only thing wrong.
+				// Leave it to the renumbering check, which can say so.
+				continue
+			}
+			if v > highestApplied {
+				highestApplied = v
+			}
+		}
+		if highestApplied > highestKnown {
+			// The name is read back out of the ledger rather than guessed:
+			// "0037_something" is what somebody greps for in the newer checkout
+			// to find out what they are missing.
+			_ = db.Read.QueryRowContext(ctx,
+				`SELECT name FROM schema_migrations WHERE version = ?`,
+				highestApplied).Scan(&appliedName)
+			if appliedName == "" {
+				appliedName = "unknown"
+			}
+			return 0, fmt.Errorf(
+				"store: this database is at schema %04d (%s) and this build only knows up to "+
+					"%04d — it was migrated by a newer version of articleflux. This build cannot "+
+					"read it safely and will not try. Run a build at or above %04d, or restore the "+
+					"backup taken before that migration; there are no down-migrations by design (A23)",
+				highestApplied, appliedName, highestKnown, highestApplied)
+		}
 	}
 
 	for _, m := range all {
@@ -373,3 +506,10 @@ func loadMigrations() ([]migration, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
 	return out, nil
 }
+
+// tracer resolves through OTel's global provider, which is a no-op until one is
+// installed. See internal/netguard for why the global rather than a threaded
+// dependency: this package is imported by nearly everything, and a tracer
+// parameter on Open would propagate to every caller for a span that most
+// instances never record.
+var tracer = otel.Tracer("github.com/monstercameron/ArticleFlux/internal/store")

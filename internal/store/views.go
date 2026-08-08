@@ -178,6 +178,49 @@ func (r *ReaderRepo) Audit(ctx context.Context, e AuditEntry) error {
 	})
 }
 
+// AuditTrailInstance reads EVERY audit entry, newest first, including the ones
+// that belong to no tenant.
+//
+// # Why instance-level rows exist, and why they need their own reader
+//
+// Some security events happen before there is a tenant to attribute them to. A
+// login lockout is the clearest case: the threshold is crossed before the
+// account is resolved, and the username may not name an account at all — which
+// is exactly the attempt worth recording. Those rows carry a NULL `tenant_id`,
+// which is why the column has no NOT NULL and no foreign key.
+//
+// `AuditTrail` cannot return them. It filters by tenant because an admin of one
+// tenant must not read another's, and relaxing that to include NULLs would hand
+// tenant A's admin the failed-login usernames of tenant B — enumeration through
+// the audit screen.
+//
+// So the instance-level view is a separate method with a narrower audience: the
+// operator, from a shell, who already has the database file in their hands. The
+// distinction is not decoration — the moment a second tenant exists (D12), the
+// two readers have to answer differently, and having one function try to serve
+// both is how it would end up answering the wrong one.
+//
+// Unscoped by design: it is the INSTANCE view, and a Scope here would be a
+// Scope for rows that deliberately have no tenant.
+func (r *ReaderRepo) AuditTrailInstance(ctx context.Context, limit int) ([]AuditEntry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT at, ifnull(actor_user_id,''), ifnull(acting_as_user_id,''),
+		       ifnull(tenant_id,''), action, ifnull(object_kind,''),
+		       ifnull(object_id,''), ifnull(detail_json,'')
+		  FROM audit_log
+		 ORDER BY at DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanAuditRows(rows)
+}
+
 // AuditTrail reads a tenant's audit entries, newest first.
 //
 // Takes a Scope even though Audit does not: writing the log must survive the
@@ -203,6 +246,15 @@ func (r *ReaderRepo) AuditTrail(ctx context.Context, s Scope, limit int) ([]Audi
 	}
 	defer func() { _ = rows.Close() }()
 
+	return scanAuditRows(rows)
+}
+
+// scanAuditRows is the shared decode for both trail readers.
+//
+// One function, because the two queries differ only in their WHERE clause and a
+// second hand-written scan loop is a second place for the column order to drift
+// out of step with the SELECT above it.
+func scanAuditRows(rows *sql.Rows) ([]AuditEntry, error) {
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry

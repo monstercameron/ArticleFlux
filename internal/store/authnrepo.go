@@ -74,6 +74,17 @@ func (r *ReaderRepo) RecordLoginAttempt(ctx context.Context, a LoginAttempt) err
 // The address count keeps its window, because there is no "success" that should
 // forgive an address: an attacker who guesses one account correctly has not
 // earned a clean slate for the others.
+//
+// It counts GUESSES and not their consequences. `locked` rows are written by the
+// lockout path itself, so counting them made a refused attempt feed the counter
+// that refused it: the account owner, retrying their own locked account, drove
+// their own address to AddressLimit and — behind nginx or carrier NAT, where one
+// address is a household — took everybody there down with them for the window.
+// The per-account curve is capped at fifteen minutes precisely so that a stranger
+// cannot deny service to an owner; an address bucket fed by its own refusals
+// handed that back in a shape with a wider blast radius. An attacker spraying
+// still registers here, because guessing writes `bad_password` and
+// `unknown_user` whatever it collides with.
 func (r *ReaderRepo) FailureCounts(ctx context.Context, username, ip string, window time.Duration) (userFails, ipFails int, err error) {
 	now := time.Now().UTC()
 	since := now.Add(-window).Format(time.RFC3339Nano)
@@ -95,7 +106,7 @@ func (r *ReaderRepo) FailureCounts(ctx context.Context, username, ip string, win
 		err = r.db.Read.QueryRowContext(ctx, `
 			SELECT count(*) FROM login_attempts
 			 WHERE ip = ? AND at >= ?
-			   AND outcome IN ('bad_password','unknown_user','locked')`,
+			   AND outcome IN ('bad_password','unknown_user')`,
 			ip, since).Scan(&ipFails)
 		if err != nil {
 			return 0, 0, err
@@ -133,6 +144,37 @@ func (r *ReaderRepo) LastFailureAt(ctx context.Context, username string) (time.T
 func (r *ReaderRepo) PurgeLoginAttempts(ctx context.Context, cut time.Time) (int64, error) {
 	res, err := r.db.Write.ExecContext(ctx,
 		`DELETE FROM login_attempts WHERE at < ?`, cut.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PurgeAuditLog drops audit entries older than cut.
+//
+// # Why the audit log needs one at all
+//
+// `audit_log` takes a row on every login and every logout, and 0009's comment
+// on it explains why nothing ever deletes from it: the value of an audit trail
+// is that it survives the thing it describes. That is an argument against
+// deleting a row BECAUSE of what it names — a tombstoned user, a revoked
+// device — and it is not an argument against an age window. A table that grows
+// forever is one that eventually cannot be read at all, which is a worse
+// outcome for an incident report than a table that stops at a year.
+//
+// # The default window is FOREVER, like retention's
+//
+// This function is what a policy calls; it is not itself the policy. An
+// instance that sets no window keeps every row, because deleting evidence on a
+// schedule nobody chose is exactly the failure `internal/retention`'s package
+// comment describes for articles, and it is worse here.
+//
+// Unscoped for the same reason `AuditTrailInstance` is: instance-level rows
+// carry no tenant — a login lockout is recorded before the account is resolved
+// — and a scoped purge would leave precisely those rows behind forever.
+func (r *ReaderRepo) PurgeAuditLog(ctx context.Context, cut time.Time) (int64, error) {
+	res, err := r.db.Write.ExecContext(ctx,
+		`DELETE FROM audit_log WHERE at < ?`, cut.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return 0, err
 	}

@@ -47,6 +47,33 @@ func (r *ReaderRepo) CreateTenantAndUser(ctx context.Context, t NewTenant) error
 	})
 }
 
+// sessionUnexpired is the one expression that decides whether a session is
+// still live, so the two places that ask cannot drift apart.
+//
+// # Why it truncates instead of comparing the strings it is given
+//
+// `expires_at` is written with `time.RFC3339Nano`, which TRIMS TRAILING ZEROS
+// from the fraction. That makes the format lexicographically unsortable against
+// itself, which is the property a string comparison in SQL depends on:
+// ".5Z" > ".500Z" (because 'Z' > '0'), while ".5Z" < "Z" (because '.' < 'Z').
+// So no fixed-precision "now" — not seconds, not the milliseconds `%f` would
+// give — orders correctly against every value the column can hold.
+//
+// Comparing the first nineteen characters sidesteps it entirely: that prefix is
+// `YYYY-MM-DDTHH:MM:SS`, fixed width for every row ever written here, and it
+// sorts correctly by construction. The cost is that expiry is decided at
+// one-second granularity, which against a thirty-day TTL is not a quantity.
+//
+// The bug this replaces was benign and the reason to fix it is not: the previous
+// comparison put a fractional stamp BELOW the whole second, so sessions expired
+// up to a second early — harmless, and the identical mistake on a `created_at`
+// lower bound would have failed open instead. A rule that is only accidentally
+// safe is one nobody can reuse.
+//
+// Not indexed around: both callers seek by `token_hash`, which is unique, so
+// this is a filter on one row rather than a scan.
+const sessionUnexpired = `substr(expires_at,1,19) > strftime('%Y-%m-%dT%H:%M:%S','now')`
+
 // ScopeForSession resolves a session token hash into a Scope.
 //
 // Expiry and revocation are checked in SQL rather than in Go so there is exactly
@@ -62,7 +89,7 @@ func (r *ReaderRepo) ScopeForSession(ctx context.Context, tokenHash string) (Sco
 		  JOIN users u ON u.id = ses.user_id
 		 WHERE ses.token_hash = ?
 		   AND ses.revoked_at IS NULL
-		   AND ses.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		   AND `+sessionUnexpired+`
 		   AND u.deactivated_at IS NULL`,
 		tokenHash).Scan(&s.TenantID, &s.UserID, &s.Role)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -130,6 +157,38 @@ func (r *ReaderRepo) UserForLogin(ctx context.Context, username string) (LoginUs
 		// wrong thing silently forever.
 		return LoginUser{}, ErrAmbiguousUser
 	}
+}
+
+// UserForRecovery resolves an account by id, for a credential that names the
+// user rather than being presented by them.
+//
+// A reset token carries a user id and nothing else — `ConsumeResetToken` returns
+// one — so completing a reset needs the tenant and role that the login path gets
+// from `UserForLogin`. Going back through a username would mean trusting a
+// second, caller-supplied value to agree with the token, and a mismatch between
+// them is a question nobody should have to answer.
+//
+// Hash is deliberately NOT returned. Nothing on this path verifies a password:
+// the token already stood in for one, and a hash fetched where it cannot be
+// checked is a hash that gets logged eventually.
+//
+// A DEACTIVATED account resolves to nothing, matching `UserForLogin`. A reset
+// token outliving the account it resets — minted before an offboarding, redeemed
+// after — must not be a way back in.
+//
+// Unscoped by design: like `UserForLogin`, it *produces* the identity a Scope is
+// built from.
+func (r *ReaderRepo) UserForRecovery(ctx context.Context, userID string) (LoginUser, error) {
+	var u LoginUser
+	err := r.db.Read.QueryRowContext(ctx, `
+		SELECT id, tenant_id, username, role
+		  FROM users
+		 WHERE id = ? AND deactivated_at IS NULL`, userID).
+		Scan(&u.UserID, &u.TenantID, &u.Username, &u.Role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LoginUser{}, ErrNotFound
+	}
+	return u, err
 }
 
 // NewSession is a session about to be written.
@@ -510,7 +569,7 @@ func (r *ReaderRepo) SessionAuthenticatedAt(ctx context.Context, tokenHash strin
 		  FROM sessions
 		 WHERE token_hash = ?
 		   AND revoked_at IS NULL
-		   AND expires_at > strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
+		   AND `+sessionUnexpired,
 		tokenHash).Scan(&at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, ErrNotFound

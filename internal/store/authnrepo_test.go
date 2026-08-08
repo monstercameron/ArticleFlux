@@ -426,12 +426,12 @@ func TestReuseDetectionActuallyRevokesTheFamily(t *testing.T) {
 	}
 
 	// An honest rotation.
-	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-b"); err != nil {
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-b", 0); err != nil {
 		t.Fatalf("an honest rotation failed: %v", err)
 	}
 
 	// The replay of the spent token.
-	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-c"); !errors.Is(err, ErrRefreshReuse) {
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-c", 0); !errors.Is(err, ErrRefreshReuse) {
 		t.Fatalf("= %v, want ErrRefreshReuse", err)
 	}
 
@@ -451,7 +451,7 @@ func TestReuseDetectionActuallyRevokesTheFamily(t *testing.T) {
 	}
 
 	// And the token that WAS valid is dead too: the whole family goes.
-	if err := f.repo.RotateRefresh(f.ctx, device, "token-b", "token-d"); err == nil {
+	if err := f.repo.RotateRefresh(f.ctx, device, "token-b", "token-d", 0); err == nil {
 		t.Error("the current token still works after the family was revoked")
 	}
 }
@@ -466,10 +466,10 @@ func TestReuseRevokesEveryDeviceInTheFamily(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a2"); err != nil {
+	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a2", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a3"); !errors.Is(err, ErrRefreshReuse) {
+	if err := f.repo.RotateRefresh(f.ctx, "dev-a", "tok-dev-a", "tok-a3", 0); !errors.Is(err, ErrRefreshReuse) {
 		t.Fatalf("= %v, want ErrRefreshReuse", err)
 	}
 
@@ -482,5 +482,69 @@ func TestReuseRevokesEveryDeviceInTheFamily(t *testing.T) {
 	if live != 0 {
 		t.Errorf("%d devices in the family are still live; a thief with any of "+
 			"them keeps working", live)
+	}
+}
+
+// An abandoned device family stops working, which is §7.3a SEC4's "no idle
+// timeout" closed.
+//
+// Rotation bounds what a stolen ACCESS token is worth. Nothing bounded what a
+// stolen REFRESH token was worth: this function only ever asked whether the
+// presented secret matched, so a family registered on a laptop that has since
+// been sold would still mint sessions eighteen months later.
+func TestAnIdleRefreshFamilyStopsWorking(t *testing.T) {
+	f := newAuthnFixture(t)
+
+	const device, family = "dev-idle", "fam-idle"
+	if err := f.repo.RegisterDevice(f.ctx, f.sc, device, family, "token-a", "old laptop", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	// Age the row rather than the clock. `last_seen_at` is what rotation reads
+	// and what it updates, so backdating it is exactly the state a family
+	// nobody has used produces — and it does not make the test wait.
+	old := time.Now().UTC().Add(-90 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := f.db.Write.ExecContext(f.ctx,
+		`UPDATE devices SET last_seen_at = ? WHERE id = ?`, old, device); err != nil {
+		t.Fatal(err)
+	}
+
+	err := f.repo.RotateRefresh(f.ctx, device, "token-a", "token-b", 60*24*time.Hour)
+	if err == nil {
+		t.Fatal("a family idle for ninety days still minted a session")
+	}
+	// ErrNotFound, and deliberately NOT ErrRefreshReuse: an abandoned family is
+	// not evidence of theft, and revoking its siblings would log out devices
+	// that are still in use.
+	if errors.Is(err, ErrRefreshReuse) {
+		t.Errorf("an aged-out family was reported as reuse: %v", err)
+	}
+
+	// A family used within the window is untouched by the same call.
+	const fresh = "dev-fresh"
+	if err := f.repo.RegisterDevice(f.ctx, f.sc, fresh, "fam-fresh", "tok-f", "phone", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.RotateRefresh(f.ctx, fresh, "tok-f", "tok-f2", 60*24*time.Hour); err != nil {
+		t.Errorf("a family used today was refused as idle: %v", err)
+	}
+}
+
+// A window of zero is "no idle timeout", which is what every caller that does
+// not care passes and what the store's own tests rely on. It must not be read
+// as "expire everything immediately".
+func TestAZeroIdleWindowDisablesTheCheck(t *testing.T) {
+	f := newAuthnFixture(t)
+
+	const device = "dev-zero"
+	if err := f.repo.RegisterDevice(f.ctx, f.sc, device, "fam-zero", "tok-z", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-5 * 365 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := f.db.Write.ExecContext(f.ctx,
+		`UPDATE devices SET last_seen_at = ? WHERE id = ?`, old, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.RotateRefresh(f.ctx, device, "tok-z", "tok-z2", 0); err != nil {
+		t.Errorf("a zero window expired a five-year-old family: %v", err)
 	}
 }

@@ -57,6 +57,22 @@ const (
 	// tenant, and offering it per-user would be offering to delete somebody
 	// else's reading.
 	KeyRetentionItemDays SystemKey = "retention.items.days"
+	// KeyRetentionAttemptDays and KeyRetentionAuditDays are the windows over
+	// `login_attempts` and `audit_log`.
+	//
+	// Unlike the item window above, an ABSENT row does not mean forever here:
+	// these default to 90 and 365 days respectively, and "0" is how an operator
+	// asks for forever. The inversion is deliberate and argued in
+	// `internal/retention/security.go` — an article is somebody's reading and a
+	// login attempt is a row nobody will ever open, written on every login of
+	// every account for the life of the instance.
+	//
+	// SystemKeys for a structural reason rather than a stylistic one: a
+	// `login_attempts` row is written before the account is resolved and an
+	// `audit_log` row may carry no tenant at all, so neither table has a
+	// per-user slice that a per-user setting could govern.
+	KeyRetentionAttemptDays SystemKey = "retention.security.attempts.days"
+	KeyRetentionAuditDays   SystemKey = "retention.security.audit.days"
 	// KeySmartBudgetUSD is the ceiling on Smart+ spending for this instance, in
 	// US dollars, as a decimal string. Absent — and "0" — mean no ceiling,
 	// which is the default and has to be: a cap nobody set must not stop an

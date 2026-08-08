@@ -331,6 +331,17 @@ func (r *ReaderRepo) MintAPIToken(ctx context.Context, s Scope, label, scope str
 
 // ScopeForAPIToken resolves a token into a Scope and its capability scope.
 //
+// The scope is returned AND set on the Scope. Both, because the second return
+// value is what the existing callers read and the field is what survives being
+// passed around: a capability narrowing that has to be carried separately from
+// the identity it narrows is one a caller can drop by writing `sc, _, err`.
+//
+// A DEACTIVATED owner's token is dead, exactly as their session is
+// (ScopeForSession has always checked this). Without it, deactivating an account
+// would end the person's ability to log in while leaving every token they had
+// minted working — the account is closed and the API keeps answering, which is
+// the failure that makes an offboarding checklist a fiction.
+//
 // Unscoped for the same reason ScopeForSession is: it PRODUCES a Scope, so
 // requiring one would be circular.
 func (r *ReaderRepo) ScopeForAPIToken(ctx context.Context, token string) (Scope, string, error) {
@@ -342,7 +353,8 @@ func (r *ReaderRepo) ScopeForAPIToken(ctx context.Context, token string) (Scope,
 		SELECT t.user_id, t.tenant_id, t.scope, t.revoked_at, t.expires_at, u.role
 		  FROM api_tokens t
 		  JOIN users u ON u.id = t.user_id
-		 WHERE t.token_hash = ?`, secret.HashToken(token)).
+		 WHERE t.token_hash = ?
+		   AND u.deactivated_at IS NULL`, secret.HashToken(token)).
 		Scan(&sc.UserID, &sc.TenantID, &scope, &revoked, &expires, &sc.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Scope{}, "", ErrNotFound
@@ -365,6 +377,7 @@ func (r *ReaderRepo) ScopeForAPIToken(ctx context.Context, token string) (Scope,
 			stamp(time.Now().UTC()), secret.HashToken(token))
 		return err
 	})
+	sc.TokenScope = scope
 	return sc, scope, nil
 }
 
@@ -484,7 +497,25 @@ func (r *ReaderRepo) RegisterDevice(ctx context.Context, s Scope, recordID, fami
 // the two holders is the thief is unknowable, so both are logged out. That is
 // the correct outcome — an inconvenience for the owner, and the end of the
 // session for whoever stole it.
-func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, replacement string) error {
+//
+// # The idle window, and why it is enforced here
+//
+// §7.3a SEC4's other half: rotation bounds what a stolen ACCESS token is worth,
+// and until this check existed nothing bounded what a stolen REFRESH token was
+// worth. This function only ever asked whether the presented secret matched, so
+// a family registered on a laptop eighteen months ago and never revoked would
+// still mint sessions today.
+//
+// Enforced at the rotation rather than by a sweep, because the two answer
+// different questions and only this one is safe: a sweep deletes rows on a
+// timer and can be behind, and "the row is still there" would then mean "nobody
+// has got round to it" rather than "this is live". Reading `last_seen_at` at
+// the moment of use cannot be stale by construction.
+//
+// A refusal here is `ErrNotFound`, which `RefreshSession` reports as
+// indistinguishable from an unknown record — the same one answer it gives for
+// reuse and revocation, so a caller learns nothing about WHY.
+func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, replacement string, idle time.Duration) error {
 	now := stamp(time.Now().UTC())
 
 	// `reuse` is carried OUT of the transaction rather than returned from it,
@@ -499,10 +530,10 @@ func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, rep
 	var reuse bool
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var familyID, storedHash string
-		var revoked sql.NullString
+		var revoked, lastSeen sql.NullString
 		err := tx.QueryRowContext(ctx,
-			`SELECT family_id, refresh_hash, revoked_at FROM devices WHERE id = ?`,
-			deviceID).Scan(&familyID, &storedHash, &revoked)
+			`SELECT family_id, refresh_hash, revoked_at, last_seen_at FROM devices WHERE id = ?`,
+			deviceID).Scan(&familyID, &storedHash, &revoked, &lastSeen)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -511,6 +542,23 @@ func (r *ReaderRepo) RotateRefresh(ctx context.Context, deviceID, presented, rep
 		}
 		if revoked.Valid {
 			return ErrNotFound
+		}
+		// Idle for too long. Refused BEFORE the hash is compared, so a family
+		// that has aged out is dead whether or not the presented secret was the
+		// right one — and refused rather than treated as reuse, because an
+		// abandoned family is not evidence of theft and revoking siblings over
+		// it would log out devices that are still being used.
+		//
+		// An unparseable or absent timestamp is NOT treated as expired. It means
+		// a row written before this column was reliable, and logging somebody
+		// out over a parse failure is a worse error than honouring a family a
+		// few days past its window.
+		if idle > 0 && lastSeen.Valid {
+			if seen, perr := time.Parse(time.RFC3339Nano, lastSeen.String); perr == nil {
+				if time.Since(seen) > idle {
+					return ErrNotFound
+				}
+			}
 		}
 
 		if storedHash != secret.HashToken(presented) {
