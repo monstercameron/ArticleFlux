@@ -428,12 +428,26 @@ jobs:
   # gate on, the honest change is to name the excluded specs the way the `test`
   # job names its known-red pins, not to make the whole suite advisory.
   #
-  # 45 minutes because the wasm bundle is ~25 MB, compiles on first load, and
-  # the suite runs `workers: 1` against one server and one database on purpose.
+  # The budget is generous because the wasm bundle is ~25 MB, compiles on first
+  # load, and the suite runs `workers: 1` against one server and one database on
+  # purpose.
+  #
+  # 90 rather than the original 45, because 45 stopped being a ceiling and
+  # started being the answer. On 2026-08-08 the first promotion that ever got
+  # this far was killed at exactly 45m15s, and the log two seconds earlier reads
+  # `✓ 240 [mobile] › discover.spec.mjs … (4.0s)` — passing, mid-stride, nothing
+  # hung. 376 tests, one worker, 240 of them in 43.5 minutes: the suite needs
+  # about seventy and had simply outgrown the number. A timeout is a deadlock
+  # detector, and it can only do that job if finishing normally fits inside it.
+  #
+  # The real fix is to stop paying for this serially — `--shard=i/N` across a
+  # matrix, each shard with its own server and database, which is compatible
+  # with `workers: 1` because the constraint is per-server. That is a change to
+  # the release gate's shape and wants its own commit, not a deploy's.
   e2e:
     name: e2e (Playwright, real server + real database)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -488,8 +502,13 @@ jobs:
       # without this step they are written into a container that is then thrown
       # away — which is how a red e2e job becomes "it failed, look at the log"
       # for a suite whose whole value is being able to see the page.
+      #
+      # `failure() || cancelled()` rather than `failure()`: a job killed by
+      # `timeout-minutes` concludes CANCELLED, so the one run that most needed
+      # its traces — the 45-minute kill above — skipped this step and threw them
+      # away. The case where you cannot see the page is the case this exists for.
       - name: Upload traces and screenshots
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-artifacts
