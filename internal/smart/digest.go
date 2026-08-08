@@ -37,6 +37,8 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // promptVersion is part of the cache key.
@@ -182,19 +184,46 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 	in.WriteByte('\n')
 	in.WriteString(body)
 
-	out, err := d.llm.Do(ctx, llm.Request{
-		Model:        model,
-		Instructions: digestInstructions,
-		Input:        in.String(),
-		// Bounded because the budget covers reasoning too, and a truncated
-		// digest ends mid-sentence — which is far more obvious spoken than read.
-		MaxOutputTokens: digestMaxTokens,
-		// Low rather than empty: condensing an argument that is already on the
-		// page is not a reasoning problem, and deliberation here buys tokens
-		// rather than accuracy.
-		Effort: "low",
-	})
+	// Rebuilt on `Summarizing` (plan P3.4), which is what this operation is:
+	// the same article in fewer words, not a retelling.
+	//
+	// The whole brief stays — every rule in `digestInstructions` is about
+	// SPOKEN output (no markdown, no headings, spell out "40 percent") and none
+	// of it is something a general-purpose summariser would know. It goes in
+	// through Steer, which reaches the provider now that SchemaFlux ST-010 is
+	// fixed; before that it would have been silently dropped and every digest
+	// would have come back full of bullet points for the synthesiser to read out
+	// as noise.
+	//
+	// The model is applied by the bridge from this instance's setting — see
+	// llm.Client.OpsContext — so the `model` resolved above is no longer named
+	// here. Fast for the same reason the request said Effort low: condensing an
+	// argument already on the page is not a reasoning problem.
+	// `Context(ctx)` rather than `Run(ctx)`: the text operations take their
+	// context on the builder because `Run` has no parameter. Either way it has
+	// to be the ops context — a bare one resolves the provider from a package
+	// global, which on a fresh process is a mock.
+	out, err := schemaflux.Summarizing(in.String()).
+		Steer(digestInstructions).
+		MaxLength(digestMaxTokens).
+		Fast().
+		Context(d.llm.OpsContext(ctx)).
+		Run()
 	if err != nil {
+		// An answer with no content is not a provider fault, it is nothing to
+		// summarise — which is a state three callers key on to fall back to
+		// reading the article (app/speech.go, app/refusal.go, app/doctor.go).
+		// SchemaFlux refuses an empty completion before this code sees it, so
+		// the sentinel has to be restored here or that fallback silently
+		// becomes an error banner.
+		//
+		// Matched on the message because the library exposes no sentinel for
+		// it. Fragile, and deliberately narrow: anything else is passed through
+		// as the provider failure it is. If this ever stops matching, the test
+		// beside it fails rather than the behaviour drifting quietly.
+		if strings.Contains(err.Error(), "empty completion content") {
+			return "", ErrNothingToSummarise
+		}
 		return "", err
 	}
 	out = cleanForSpeech(out)

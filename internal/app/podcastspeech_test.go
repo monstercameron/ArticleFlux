@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // The broadcast path, end to end (§19).
@@ -529,34 +532,51 @@ func TestTheSplitOpeningNeverBreaksPlayback(t *testing.T) {
 // Possible because both methods on that unexported interface are exported names,
 // which is what lets this test drive the real Podcast writer — the prompt, the
 // cache key, the cleanup — instead of asserting against a stub of it.
+// The writer runs on typed operations now (plan P3.9), so the ANSWER and the
+// record of what was asked both live on a schemafluxtest provider rather than
+// on Do. What is left on this seam is Configured(), which is still the gate the
+// call passes through, and which is still worth satisfying from here so these
+// tests drive the real Podcast writer end to end.
 type fakeWriter struct {
-	mu   sync.Mutex
-	last llm.Request
-	n    int
+	prov *schemafluxtest.Provider
 }
 
 func (f *fakeWriter) Configured(context.Context) bool { return true }
 
-func (f *fakeWriter) Do(_ context.Context, r llm.Request) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.last, f.n = r, f.n+1
-	// Whatever it is asked for, it says goodbye. The point of these tests is
-	// which prompt arrives and what the handler does with the answer, not
-	// whether a model can write.
-	return "That's the lot. Back when there's more.", nil
+// OpsContext returns the context untouched, for the reason the fake in
+// internal/smart does: the real client puts ArticleFlux's own provider on the
+// context and SchemaFlux prefers that over anything registered globally, which
+// would defeat a test-installed provider.
+func (f *fakeWriter) OpsContext(ctx context.Context) context.Context { return ctx }
+
+// Do is unreachable on the paths these tests exercise and says so, rather than
+// answering plausibly: a silent fallback here would let a feature that stopped
+// using its operation keep passing.
+func (f *fakeWriter) Do(context.Context, llm.Request) (string, error) {
+	return "", errors.New("app: the podcast writer must run through its typed operation, not Do")
 }
 
-func (f *fakeWriter) seen() (llm.Request, int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.last, f.n
+// seen returns the last request the provider was actually sent and how many
+// there have been. The prompt halves are joined because SchemaFlux decides
+// which one carries the brief — see internal/smart's requestSent.
+func (f *fakeWriter) seen() (string, int) {
+	reqs := f.prov.Requests()
+	if len(reqs) == 0 {
+		return "", 0
+	}
+	last := reqs[len(reqs)-1]
+	return last.SystemPrompt + last.UserPrompt, len(reqs)
 }
 
 // withWriter swaps in a podcast writer that always succeeds.
 func withWriter(t *testing.T, a *App) *fakeWriter {
 	t.Helper()
-	w := &fakeWriter{}
+	// Whatever it is asked for, it says goodbye. The point of these tests is
+	// which prompt arrives and what the handler does with the answer, not
+	// whether a model can write.
+	prov := schemafluxtest.New().Shaped().Reply("That's the lot. Back when there's more.")
+	schemafluxtest.Install(t, prov)
+	w := &fakeWriter{prov: prov}
 	a.podcast = smart.NewPodcast(w, a.settings, t.TempDir())
 	return w
 }
@@ -574,8 +594,8 @@ func TestSignOffIsItsOwnRecordingAndNotTheStoryAgain(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("the writer was called %d times, want 1", n)
 	}
-	if !strings.Contains(req.Instructions, "THE SIGN-OFF ONLY") {
-		t.Errorf("the sign-off did not get its own instructions:\n%s", req.Instructions)
+	if !strings.Contains(req, "THE SIGN-OFF ONLY") {
+		t.Errorf("the sign-off did not get its own instructions:\n%s", req)
 	}
 	// THE regression. The article body must not reach the model, because a model
 	// handed an article covers it — and the listener would hear the story they
@@ -585,8 +605,8 @@ func TestSignOffIsItsOwnRecordingAndNotTheStoryAgain(t *testing.T) {
 	// item's text: itemIDs returns newest-first, so naming a particular body here
 	// asserts against whichever story the ordering happens to put at ids[0] and
 	// passes for free when that is not the one being requested.
-	if strings.Contains(req.Input, "story body") {
-		t.Errorf("the sign-off was given the article body:\n%s", req.Input)
+	if strings.Contains(req, "story body") {
+		t.Errorf("the sign-off was given the article body:\n%s", req)
 	}
 	// And what was actually synthesised is the goodbye, not the article.
 	spoken := voice.last()
@@ -667,10 +687,10 @@ func TestTheOpeningAndTheSignOffAreNotConfused(t *testing.T) {
 	closeReq, _ := w.seen()
 	closeKey := voice.last().key
 
-	if strings.Contains(openReq.Instructions, "SIGN-OFF") {
+	if strings.Contains(openReq, "SIGN-OFF") {
 		t.Error("the opening was given the sign-off's instructions")
 	}
-	if strings.Contains(closeReq.Instructions, "THE OPENING ONLY") {
+	if strings.Contains(closeReq, "THE OPENING ONLY") {
 		t.Error("the sign-off was given the opening's instructions")
 	}
 	if openKey == closeKey {

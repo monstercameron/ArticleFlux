@@ -701,3 +701,244 @@ func TestRelSlashFallsBackToThePathWhenItCannotRelativise(t *testing.T) {
 		t.Error("relSlash returned nothing; a finding would name no file at all")
 	}
 }
+
+// --- 6. no global SchemaFlux provider -----------------------------------------
+
+// This guard protects the one thing in the migration that can leak a
+// credential BETWEEN TENANTS, so its own failure mode matters more than most:
+// a rule that silently stopped matching would leave the hazard in place and the
+// lint output still saying `ok`.
+
+func TestGlobalProviderGuardCatchesEveryRegistrationCall(t *testing.T) {
+	// Every name in forbiddenGlobalProvider, each in its own file, so a rule
+	// that matched only the first is visible as seven passes and one failure
+	// rather than as one pass.
+	files := map[string]string{}
+	for name := range forbiddenGlobalProvider {
+		files["internal/app/"+strings.ToLower(name)+".go"] = `package app
+
+import schemaflux "github.com/monstercameron/schemaflux"
+
+func wire(c *schemaflux.Client) { c.` + name + `() }
+`
+	}
+	root := fixture(t, files)
+	g := guardNoGlobalLLMProvider(root)
+
+	for name := range forbiddenGlobalProvider {
+		want := "internal/app/" + strings.ToLower(name) + ".go"
+		if !flagged(g, want) {
+			t.Errorf("%s was not caught", name)
+		}
+	}
+}
+
+func TestGlobalProviderGuardIgnoresFilesThatCannotReachTheLibrary(t *testing.T) {
+	// The rule is greppable only because the call has to come from a file that
+	// imports SchemaFlux. A method called `Init` on somebody else's type is an
+	// ordinary name and must not be flagged — otherwise the guard becomes noise
+	// and the next person exempts it.
+	root := fixture(t, map[string]string{
+		"internal/other/thing.go": `package other
+
+type engine struct{}
+
+func (e engine) Init() {}
+
+func start() { engine{}.Init() }
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if len(g.findings) != 0 {
+		t.Errorf("flagged a file that cannot reach SchemaFlux: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardAllowsThePerCallShape(t *testing.T) {
+	// The shape internal/llm actually uses, and the whole point of the rule:
+	// build a provider per call, chain middleware around it, register nothing.
+	// If this were flagged, the guard would be forbidding the fix.
+	root := fixture(t, map[string]string{
+		"internal/llm/llm.go": `package llm
+
+import (
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/mw"
+)
+
+func do(base schemaflux.Provider, chain []mw.Middleware) {
+	_ = mw.Chain(base, chain...)
+}
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if len(g.findings) != 0 {
+		t.Errorf("the per-call shape was flagged: %v", findingsOn(g))
+	}
+	if g.checked == 0 {
+		t.Error("the file was not inspected at all, so the pass is vacuous")
+	}
+}
+
+func TestGlobalProviderGuardExemptsTheSmartTestSeamByName(t *testing.T) {
+	// The one test file allowed to register, and the reason it is named rather
+	// than matched by suffix: it captures the previous client and restores it in
+	// t.Cleanup, so the window in which a global is set is one test long. Every
+	// other test file goes through it — see the test above, which proves an
+	// arbitrary _test.go is still flagged.
+	root := fixture(t, map[string]string{
+		"internal/smart/fake_llm_test.go": `package smart
+
+import "github.com/monstercameron/schemaflux"
+
+func install(p schemaflux.Provider) {
+	schemaflux.SetDefaultClient(schemaflux.NewClient("k").WithProviderInstance(p))
+}
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if len(g.findings) != 0 {
+		t.Errorf("the audited test seam was flagged: %v", findingsOn(g))
+	}
+}
+
+// The exemption is a whole path, not a basename: a `fake_llm_test.go` in some
+// other package has none of the restore discipline that earned the one in
+// internal/smart its exemption.
+func TestGlobalProviderGuardExemptionIsPathSpecific(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"internal/app/fake_llm_test.go": `package app
+
+import "github.com/monstercameron/schemaflux"
+
+func install(p schemaflux.Provider) {
+	schemaflux.SetDefaultClient(schemaflux.NewClient("k").WithProviderInstance(p))
+}
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if !flagged(g, "internal/app/fake_llm_test.go") {
+		t.Errorf("the same basename in another package was exempted: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardSeesASubpackageImport(t *testing.T) {
+	// `mw`, `pricing` and `telemetry` are separate import paths under the same
+	// module. A file importing only one of those can still name the client, so
+	// matching on the root path alone would miss it.
+	root := fixture(t, map[string]string{
+		"internal/app/wire.go": `package app
+
+import "github.com/monstercameron/schemaflux/mw"
+
+type client struct{}
+
+func (c client) WithProviderInstance() {}
+
+func wire(_ mw.Middleware, c client) { c.WithProviderInstance() }
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if !flagged(g, "internal/app/wire.go") {
+		t.Errorf("a subpackage import did not bring the file into scope: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardSeesARenamedImport(t *testing.T) {
+	// This repository imports the root under an explicit alias. Matching on the
+	// package NAME rather than the path would miss every one of its files.
+	root := fixture(t, map[string]string{
+		"internal/app/aliased.go": `package app
+
+import sf "github.com/monstercameron/schemaflux"
+
+func wire() { sf.Init("k") }
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if !flagged(g, "internal/app/aliased.go") {
+		t.Errorf("a renamed import was missed: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardDoesNotExemptTests(t *testing.T) {
+	// Deliberate, and the opposite of the SQL guard's rule. A test that sets the
+	// global sets it for every other test in the same binary — which is the
+	// exact cross-contamination this guard exists to prevent, arriving through
+	// the one door nobody audits.
+	root := fixture(t, map[string]string{
+		"internal/app/wire_test.go": `package app
+
+import schemaflux "github.com/monstercameron/schemaflux"
+
+func wire() { schemaflux.Init("k") }
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if !flagged(g, "internal/app/wire_test.go") {
+		t.Errorf("a test was exempted: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardExemptsItsOwnSource(t *testing.T) {
+	// main.go names every forbidden identifier in a map literal. A guard that
+	// flagged itself would be permanently red.
+	root := fixture(t, map[string]string{
+		"internal/tools/guards/main.go": `package main
+
+import schemaflux "github.com/monstercameron/schemaflux"
+
+func wire() { schemaflux.Init("k") }
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if len(g.findings) != 0 {
+		t.Errorf("the guard flagged its own source: %v", findingsOn(g))
+	}
+}
+
+func TestGlobalProviderGuardReportsFileAndLine(t *testing.T) {
+	// A finding somebody cannot navigate to is a finding they will route around.
+	root := fixture(t, map[string]string{
+		"internal/app/wire.go": `package app
+
+import schemaflux "github.com/monstercameron/schemaflux"
+
+func wire() {
+	schemaflux.Init("k")
+}
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if len(g.findings) != 1 {
+		t.Fatalf("findings = %v, want exactly one", findingsOn(g))
+	}
+	if got := g.findings[0].file; got != "internal/app/wire.go:6" {
+		t.Errorf("file = %q, want internal/app/wire.go:6", got)
+	}
+	if !strings.Contains(g.findings[0].detail, "package-level") {
+		t.Errorf("detail = %q, want it to say why", g.findings[0].detail)
+	}
+}
+
+func TestGlobalProviderGuardCountsWhatItInspected(t *testing.T) {
+	// "0 findings" and "0 inspected" are different answers and the runner prints
+	// them differently. A guard reporting a vacuous pass is the failure mode
+	// this whole file exists to catch.
+	root := fixture(t, map[string]string{
+		"internal/a/a.go": `package a
+
+import schemaflux "github.com/monstercameron/schemaflux"
+
+var _ schemaflux.Provider
+`,
+		"internal/b/b.go": `package b
+
+func nothing() {}
+`,
+	})
+	g := guardNoGlobalLLMProvider(root)
+	if g.checked != 1 {
+		t.Errorf("checked = %d, want 1 — only the file that can reach the library", g.checked)
+	}
+}

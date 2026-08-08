@@ -2,14 +2,16 @@ package smart
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Categorizer is the Smart+ suggestion for where a newly-added feed belongs.
@@ -141,70 +143,114 @@ func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription st
 		trimmedExisting = append(trimmedExisting, e)
 	}
 
-	payload := categorizePayload{
-		Title:       trimRunes(feedTitle, maxCategorizeTitleRunes),
-		Description: trimRunes(strings.TrimSpace(feedDescription), maxCategorizeDescriptionRunes),
-		Existing:    trimmedExisting,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", false, err
-	}
+	// --- the operation ---------------------------------------------------
+	//
+	// Rebuilt on SchemaFlux's typed operations (plan P3.1). What was a
+	// hand-written instruction string, a hand-written JSON schema and a
+	// hand-unmarshalled reply is now two operations that carry their own, and
+	// the difference is not only fewer lines:
+	//
+	//   - **`Choosing` cannot answer with a category that was not offered.** The
+	//     old path asked the model to echo an existing name character for
+	//     character and then checked whether it had, because a name that matches
+	//     nothing is one the caller cannot resolve to a folder id. That check is
+	//     gone because the failure it caught is now unrepresentable.
+	//   - **The schema is derived from the Go type**, so a field renamed here
+	//     cannot drift from a schema written out by hand somewhere else.
+	//
+	// The trims above still happen here, and still on this side: one place
+	// decides what a request is allowed to contain, and that is not a decision
+	// to hand to a library.
+	desc := trimRunes(strings.TrimSpace(feedDescription), maxCategorizeDescriptionRunes)
+	title := trimRunes(feedTitle, maxCategorizeTitleRunes)
 
-	call, cancel := context.WithTimeout(ctx, categorizeTimeout)
+	call, cancel := context.WithTimeout(c.llm.OpsContext(ctx), categorizeTimeout)
 	defer cancel()
 
-	// Model deliberately left unset rather than resolved from
-	// store.KeySmartModel the way Palettes.model and Interest.model do: this is
-	// pure text classification — pick or name a category from a handful of
-	// words — and does not benefit from whatever pricier model the instance may
-	// have configured for translation or theme composition. Leaving Model empty
-	// makes llm.Client.Do fall back to llm.DefaultModel (the small, cheap one)
-	// unconditionally, on every instance, regardless of what else is configured.
-	out, err := c.llm.Do(call, llm.Request{
-		Instructions:    categorizeInstructions,
-		Input:           string(body),
-		SchemaName:      "feed_category",
-		Schema:          categorizeSchema,
-		MaxOutputTokens: 150,
-		// Low. This is a pick from a short list already in front of the model,
-		// not a judgement call — the same reasoning classify.go gives for its
-		// own extraction-shaped request.
-		Effort: "low",
-	})
+	about := "A feed titled " + strconv.Quote(title)
+	if desc != "" {
+		about += ", described as " + strconv.Quote(desc)
+	}
+
+	// With nothing to choose from there is nothing to choose, and asking would
+	// be a call whose only possible answer is "make one up".
+	if len(trimmedExisting) == 0 {
+		name, gerr := c.invent(call, about)
+		return name, true, gerr
+	}
+
+	// The sentinel is an option like any other, which is what lets a pick and a
+	// refusal come back through the same operation. Written as prose rather than
+	// as a symbol because the model is reading it as one of the choices, and a
+	// row of punctuation is not a choice anybody can weigh against "Technology".
+	const noneFit = "None of these fit"
+	options := append(append(make([]string, 0, len(trimmedExisting)+1), trimmedExisting...), noneFit)
+
+	// The feed goes in through `Steer` and the rule through `By`, which is what
+	// each is for: one describes the thing being judged, the other the standard
+	// to judge it against.
+	//
+	// It was written the other way round for a while, with the description
+	// folded into the criteria, because `.Steer(...)` was being silently dropped
+	// — every options type in SchemaFlux embeds two `Steering` fields and the
+	// operations were reading the one the fluent builders do not write. The
+	// model was picking folders knowing nothing about the feed, confidently.
+	// Fixed upstream (SchemaFlux TODOS.md **ST-010**); this is the shape that
+	// reads correctly now that it works.
+	picked, err := schemaflux.Choosing[string](options).
+		By("which of these folders this feed most obviously belongs in",
+			"pick "+strconv.Quote(noneFit)+" only when none of them is a reasonable home for it").
+		Steer(about).
+		// Fast: this is a pick from a short list already in front of the model,
+		// not a judgement call. The old request said the same thing by setting
+		// Effort low, and for the same reason.
+		Fast().
+		Run(call)
 	if err != nil {
 		return "", false, err
 	}
 
-	var reply categorizeReply
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return "", false, fmt.Errorf("smart: category reply was not the schema: %w", err)
+	picked = strings.TrimSpace(picked)
+	if picked == "" {
+		return "", false, fmt.Errorf("smart: the category operation answered with nothing")
 	}
-	name := strings.TrimSpace(reply.Category)
-	if name == "" {
-		return "", false, fmt.Errorf("smart: category reply was empty")
+	if picked == noneFit {
+		name, gerr := c.invent(call, about)
+		return name, true, gerr
 	}
-
-	if !reply.IsNew {
-		// The model was told to return an existing name character for character.
-		// One that does not match anything in the list it was given is not a
-		// name this caller can resolve to a folder id (the client looks it up by
-		// exact name — see reader.go's Subscribe handler), so it is treated the
-		// same as any other malformed reply rather than filed anyway.
-		matched := false
-		for _, e := range trimmedExisting {
-			if strings.EqualFold(e, name) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return "", false, fmt.Errorf("smart: suggested category %q matches none of the existing categories", name)
-		}
-	}
-
-	return name, reply.IsNew, nil
+	return picked, false, nil
 }
+
+// invent names a category when none of the reader's own is a home for the feed.
+//
+// A second operation rather than a branch inside the first, because they are
+// different questions: one is a pick from a closed set and the other is an act
+// of naming. Merging them is what the old single-schema reply did, and it is why
+// that reply needed an `isNew` flag the model could get wrong independently of
+// the name it returned.
+func (c *Categorizer) invent(ctx context.Context, about string) (string, error) {
+	name, err := schemaflux.Generating[string](
+		"Name one folder this feed belongs in. Two words at most, title case, " +
+			"the kind of name somebody would give a folder in a reader — a subject, " +
+			"not a description of the feed. " + about).
+		Fast().
+		Run(ctx)
+	if err != nil {
+		return "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("smart: the category operation named nothing")
+	}
+	// Bounded here rather than trusted: a name is going into the reader's own
+	// rail, and a model that answered with a sentence would put a sentence there.
+	return trimRunes(name, maxCategoryNameRunes), nil
+}
+
+// maxCategoryNameRunes bounds an invented folder name. Forty is generous for
+// "Home Automation" and short enough that nothing resembling a sentence
+// survives it.
+const maxCategoryNameRunes = 40
 
 // trimRunes cuts s to at most n runes without splitting one. No "no silent
 // caps" reporting here, unlike ThemePayload.Trim — a description cut for a

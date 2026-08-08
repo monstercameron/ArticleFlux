@@ -17,6 +17,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/themewire"
 	"github.com/monstercameron/ArticleFlux/internal/topics"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // The gaps theme_test.go's own fixtures cannot reach: a caller who never
@@ -108,7 +110,8 @@ func TestComposeThemeWithNoGeneratorNeedsAKey(t *testing.T) {
 func TestComposeThemeSucceedsOverAFakeGenerator(t *testing.T) {
 	sc := scopeForTheme()
 	s, _ := themingFor(t, sc)
-	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true, reply: goodPaletteJSON}, nil)
+	schemafluxtest.Install(t, schemafluxtest.New().Reply(goodPaletteJSON))
+	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true}, nil)
 
 	res, err := s.ComposeTheme(context.Background(), &pb.ComposeThemeRequest{
 		Prompt: "a cold library at 2am", Tone: "dark",
@@ -178,7 +181,8 @@ func TestSuggestThemeUsesTheSmartPaletteWhenConsentedAndConfigured(t *testing.T)
 	if err := repo.SetPrefs(ctx, sc, store.Prefs{AttunePrefKey: "true"}); err != nil {
 		t.Fatalf("prefs: %v", err)
 	}
-	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true, reply: goodPaletteJSON}, nil)
+	schemafluxtest.Install(t, schemafluxtest.New().Reply(goodPaletteJSON))
+	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true}, nil)
 
 	res, err := s.SuggestTheme(ctx, &pb.SuggestThemeRequest{Base: themewire.Tokens(design.Ink)})
 	if err != nil {
@@ -306,6 +310,11 @@ type fakePaletteClient struct {
 }
 
 func (f *fakePaletteClient) Configured(context.Context) bool { return f.configured }
+
+// OpsContext leaves the context alone, which is what a fake must do: the real
+// client's version installs ArticleFlux's provider on it, and SchemaFlux prefers
+// a context provider over anything a test registered. See smart's own fake.
+func (f *fakePaletteClient) OpsContext(ctx context.Context) context.Context { return ctx }
 
 func (f *fakePaletteClient) Do(context.Context, llm.Request) (string, error) {
 	f.n++

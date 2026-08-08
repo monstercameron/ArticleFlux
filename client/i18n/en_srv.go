@@ -24,8 +24,36 @@ func init() {
 		"notSignedIn":      "not signed in",
 		"adminOnly":        "only an administrator can change Smart+ settings",
 
+		// --- account recovery (§7.2)
+		//
+		// One message for an unknown username, a wrong code, a spent code, an
+		// expired token and a deactivated account alike. Same discipline as
+		// badCredentials and a sharper reason: telling these apart would report
+		// which accounts exist AND which have recovery configured, which is a map
+		// of where an attacker should spend their time.
+		//
+		// It names both kinds of credential because one screen accepts either,
+		// and a reader who pasted a reset link should not be told about codes.
+		"badRecovery": "that recovery code or reset link is not valid",
+		// The password IS changed and every session IS revoked; only the sign-in
+		// afterwards failed. Saying so is the difference between a reader
+		// retrying the recovery — which will now fail, because the code is spent
+		// — and simply logging in with the password they just chose.
+		"recoveredNoSession": "your password was reset, but signing you in failed; sign in with the new password",
+
 		// --- generic
 		"internal":   "internal error",
+		// The request id, appended to whatever the refusal said (§22.11).
+		//
+		// This is the one string here the SERVER never sends, because it is not
+		// a refusal — it is the reference that makes a refusal reportable. A
+		// reader who can quote it turns "it said internal error", which is
+		// unactionable, into one grep of the log.
+		//
+		// Shown for server-side failures only. A permission error or a stale
+		// cursor is a thing the reader can act on themselves, and a hex string
+		// after it is noise.
+		"reference":  "{message} (reference {id})",
 		"notFound":   "not found",
 		"saveFailed": "couldn't save that",
 		// The paging cursor no longer matches the list. Never an empty page:
@@ -86,8 +114,14 @@ func init() {
 		"opmlNotOPML": "that file is not an OPML subscription list — export one from your old reader and pick that",
 
 		// --- Smart+
-		"badApiKeyShape":       "that does not look like an OpenAI API key — they begin with sk-",
-		"saveModelFailed":      "couldn't save the model",
+		"badApiKeyShape":     "that does not look like an OpenAI API key — they begin with sk-",
+		"saveModelFailed":    "couldn't save the model",
+		"saveClassifyFailed": "couldn't save that setting",
+		// A limit, not a balance: 0 is how you say "no limit", and the message
+		// says so because the alternative reading — that 0 forbids everything —
+		// is the one somebody reaches for when a negative number is refused.
+		"badBudget":            "a spend limit cannot be negative — use 0 for no limit",
+		"saveBudgetFailed":     "couldn't save the spend limit",
 		"cannotStoreSecret":    "this server has no encryption key, so it will not store a credential — set OPENAI_API_KEY in the environment instead",
 		"smartNoKey":           "Smart+ needs an OpenAI API key — add one in Settings › Smart+",
 		"translateFailed":      "couldn't translate the interface just now",

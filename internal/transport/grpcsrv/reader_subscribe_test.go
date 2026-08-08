@@ -1,4 +1,4 @@
-﻿package grpcsrv
+package grpcsrv
 
 import (
 	"context"
@@ -20,6 +20,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // subscribeFixture is a plain, network-free server: nil fetcher, no site
@@ -366,8 +368,13 @@ func TestSubscribeHappyPath(t *testing.T) {
 // answer is discarded.
 func TestSubscribeSmartCategorizePrefOffAttemptsNoSuggestion(t *testing.T) {
 	srv, _, _, base := subscribeNetFixture(t)
-	fake := &fakePaletteClient{configured: true, reply: `{"category":"Tech","isNew":true}`}
-	srv.categorizer = smart.NewCategorizer(fake, nil)
+	// The count that matters is the PROVIDER's, not the seam's: A7 runs on a
+	// typed operation, so a categorizer that ran despite the gate would reach
+	// the provider without ever touching Do — and an assertion on Do would pass
+	// while the gate was broken.
+	prov := schemafluxtest.New().Shaped()
+	schemafluxtest.Install(t, prov)
+	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{
 		Url: base + "/source-feed", Title: "My Feed",
@@ -378,8 +385,8 @@ func TestSubscribeSmartCategorizePrefOffAttemptsNoSuggestion(t *testing.T) {
 	if resp.GetSuggestedCategory() != "" {
 		t.Errorf("SuggestedCategory = %q, want empty with the pref off", resp.GetSuggestedCategory())
 	}
-	if fake.calls() != 0 {
-		t.Errorf("categorizer was asked %d times with the pref off, want 0", fake.calls())
+	if prov.CallCount() != 0 {
+		t.Errorf("categorizer was asked %d times with the pref off, want 0", prov.CallCount())
 	}
 }
 
@@ -417,8 +424,14 @@ func TestSubscribeSmartCategorizeSuggestsAnExistingCategory(t *testing.T) {
 	if _, err := repo.CreateFolder(context.Background(), sc, "Tech"); err != nil {
 		t.Fatalf("CreateFolder: %v", err)
 	}
-	fake := &fakePaletteClient{configured: true, reply: `{"category":"Tech","isNew":false}`}
-	srv.categorizer = smart.NewCategorizer(fake, nil)
+	// The categoriser runs a SchemaFlux operation now (plan P3.1), so what a
+	// test scripts is the provider's body rather than a fake `Do`'s reply.
+	// `Choose` tags its options `i-000001`, `i-000002`, … in the order given
+	// and answers with the id — here the reader has one folder, "Tech", so it
+	// is the first option and the sentinel "None of these fit" is the second.
+	provider := schemafluxtest.New().Shaped().Reply(`{"id":"i-000001"}`)
+	schemafluxtest.Install(t, provider)
+	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{
 		Url: base + "/source-feed", Title: "My Feed",
@@ -446,8 +459,9 @@ func TestSubscribeSmartCategorizeSkippedWhenReaderAlreadyChoseAFolder(t *testing
 	if err != nil {
 		t.Fatalf("CreateFolder: %v", err)
 	}
-	fake := &fakePaletteClient{configured: true, reply: `{"category":"Tech","isNew":false}`}
-	srv.categorizer = smart.NewCategorizer(fake, nil)
+	prov := schemafluxtest.New().Shaped()
+	schemafluxtest.Install(t, prov)
+	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{
 		Url: base + "/source-feed", Title: "My Feed", FolderId: f.ID,
@@ -458,8 +472,8 @@ func TestSubscribeSmartCategorizeSkippedWhenReaderAlreadyChoseAFolder(t *testing
 	if resp.GetSuggestedCategory() != "" {
 		t.Errorf("SuggestedCategory = %q, want empty when the reader already chose a category", resp.GetSuggestedCategory())
 	}
-	if fake.calls() != 0 {
-		t.Errorf("categorizer was asked %d times when the reader already chose, want 0", fake.calls())
+	if prov.CallCount() != 0 {
+		t.Errorf("categorizer was asked %d times when the reader already chose, want 0", prov.CallCount())
 	}
 }
 

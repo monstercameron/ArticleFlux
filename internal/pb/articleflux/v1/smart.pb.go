@@ -585,6 +585,28 @@ type GetSmartConfigResponse struct {
 	// The model every Smart+ feature uses, and the built-in default when unset.
 	Model        string `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
 	DefaultModel string `protobuf:"bytes,5,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	// Whether this instance consents to sending ARTICLE TEXT to the model for
+	// classification (§27.4e, `smart.classify`). Default off, and off is not a
+	// formality: it spends money and egresses the publisher's words.
+	//
+	// A field on the instance's config rather than a per-reader preference
+	// because the decision is about the instance — the text is the publisher's
+	// and the bill is the owner's, and a per-reader toggle would imply the
+	// reader controls something they do not.
+	ClassifyEnabled bool `protobuf:"varint,6,opt,name=classify_enabled,json=classifyEnabled,proto3" json:"classify_enabled,omitempty"`
+	// What the model has cost this instance since the process started, in USD,
+	// for the calls the rate tables could price.
+	//
+	// `priced_calls` and `unpriced_calls` are counts, not money, and they are
+	// here because the number above is meaningless without them: a model with no
+	// published rate contributes an unknown amount, and reporting it as $0.00
+	// would say it was free. "We do not know" and "it was free" are different
+	// claims and only one of them is true.
+	CostUsd       float64 `protobuf:"fixed64,30,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	PricedCalls   int64   `protobuf:"varint,31,opt,name=priced_calls,json=pricedCalls,proto3" json:"priced_calls,omitempty"`
+	UnpricedCalls int64   `protobuf:"varint,32,opt,name=unpriced_calls,json=unpricedCalls,proto3" json:"unpriced_calls,omitempty"`
+	// The ceiling on that spend, in USD, or 0 for none — which is the default.
+	BudgetUsd float64 `protobuf:"fixed64,33,opt,name=budget_usd,json=budgetUsd,proto3" json:"budget_usd,omitempty"`
 	// Tokens spent since this server process started. Not a bill — a signal.
 	// Restart-scoped on purpose: a persisted counter that nobody resets becomes a
 	// number people stop reading.
@@ -700,6 +722,41 @@ func (x *GetSmartConfigResponse) GetDefaultModel() string {
 	return ""
 }
 
+func (x *GetSmartConfigResponse) GetClassifyEnabled() bool {
+	if x != nil {
+		return x.ClassifyEnabled
+	}
+	return false
+}
+
+func (x *GetSmartConfigResponse) GetCostUsd() float64 {
+	if x != nil {
+		return x.CostUsd
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetPricedCalls() int64 {
+	if x != nil {
+		return x.PricedCalls
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetUnpricedCalls() int64 {
+	if x != nil {
+		return x.UnpricedCalls
+	}
+	return 0
+}
+
+func (x *GetSmartConfigResponse) GetBudgetUsd() float64 {
+	if x != nil {
+		return x.BudgetUsd
+	}
+	return 0
+}
+
 func (x *GetSmartConfigResponse) GetInputTokens() int64 {
 	if x != nil {
 		return x.InputTokens
@@ -773,7 +830,17 @@ type SetSmartConfigRequest struct {
 	// form that confuses them deletes credentials by accident.
 	ClearApiKey bool `protobuf:"varint,2,opt,name=clear_api_key,json=clearApiKey,proto3" json:"clear_api_key,omitempty"`
 	// Empty leaves the model untouched.
-	Model         string `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	Model string `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	// The consent for sending article text (§27.4e). Optional so that "leave it
+	// as it is" is expressible: a form that could only send true or false would
+	// turn every unrelated save — a model change, a new key — into a decision
+	// about egress that nobody made.
+	ClassifyEnabled *bool `protobuf:"varint,4,opt,name=classify_enabled,json=classifyEnabled,proto3,oneof" json:"classify_enabled,omitempty"`
+	// The spend ceiling in USD. Optional for the same reason, and 0 means no
+	// ceiling rather than "refuse everything": a cap is something somebody opts
+	// into, and the strictest possible reading of an empty field would silently
+	// disable every paid feature on the instance.
+	BudgetUsd     *float64 `protobuf:"fixed64,5,opt,name=budget_usd,json=budgetUsd,proto3,oneof" json:"budget_usd,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -827,6 +894,20 @@ func (x *SetSmartConfigRequest) GetModel() string {
 		return x.Model
 	}
 	return ""
+}
+
+func (x *SetSmartConfigRequest) GetClassifyEnabled() bool {
+	if x != nil && x.ClassifyEnabled != nil {
+		return *x.ClassifyEnabled
+	}
+	return false
+}
+
+func (x *SetSmartConfigRequest) GetBudgetUsd() float64 {
+	if x != nil && x.BudgetUsd != nil {
+		return *x.BudgetUsd
+	}
+	return 0
 }
 
 type SetSmartConfigResponse struct {
@@ -1358,7 +1439,7 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\tsignature\x18\x03 \x01(\tR\tsignature\x12\x14\n" +
 	"\x05smart\x18\x04 \x01(\bR\x05smart\x125\n" +
 	"\arepairs\x18\x05 \x03(\v2\x1b.articleflux.v1.ThemeRepairR\arepairs\"\x17\n" +
-	"\x15GetSmartConfigRequest\"\x87\x04\n" +
+	"\x15GetSmartConfigRequest\"\xb6\x05\n" +
 	"\x16GetSmartConfigResponse\x12\x1e\n" +
 	"\n" +
 	"configured\x18\x01 \x01(\bR\n" +
@@ -1366,7 +1447,13 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\bkey_hint\x18\x02 \x01(\tR\akeyHint\x12*\n" +
 	"\x11can_store_secrets\x18\x03 \x01(\bR\x0fcanStoreSecrets\x12\x14\n" +
 	"\x05model\x18\x04 \x01(\tR\x05model\x12#\n" +
-	"\rdefault_model\x18\x05 \x01(\tR\fdefaultModel\x12!\n" +
+	"\rdefault_model\x18\x05 \x01(\tR\fdefaultModel\x12)\n" +
+	"\x10classify_enabled\x18\x06 \x01(\bR\x0fclassifyEnabled\x12\x19\n" +
+	"\bcost_usd\x18\x1e \x01(\x01R\acostUsd\x12!\n" +
+	"\fpriced_calls\x18\x1f \x01(\x03R\vpricedCalls\x12%\n" +
+	"\x0eunpriced_calls\x18  \x01(\x03R\runpricedCalls\x12\x1d\n" +
+	"\n" +
+	"budget_usd\x18! \x01(\x01R\tbudgetUsd\x12!\n" +
 	"\finput_tokens\x18\n" +
 	" \x01(\x03R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\v \x01(\x03R\foutputTokens\x12\x1a\n" +
@@ -1377,11 +1464,16 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\x10from_environment\x18\x14 \x01(\bR\x0ffromEnvironment\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\x15 \x01(\tR\tlastError\x12\"\n" +
-	"\rlast_error_at\x18\x16 \x01(\tR\vlastErrorAt\"w\n" +
+	"\rlast_error_at\x18\x16 \x01(\tR\vlastErrorAt\"\xef\x01\n" +
 	"\x15SetSmartConfigRequest\x12$\n" +
 	"\x0eopenai_api_key\x18\x01 \x01(\tR\fopenaiApiKey\x12\"\n" +
 	"\rclear_api_key\x18\x02 \x01(\bR\vclearApiKey\x12\x14\n" +
-	"\x05model\x18\x03 \x01(\tR\x05model\"X\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12.\n" +
+	"\x10classify_enabled\x18\x04 \x01(\bH\x00R\x0fclassifyEnabled\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"budget_usd\x18\x05 \x01(\x01H\x01R\tbudgetUsd\x88\x01\x01B\x13\n" +
+	"\x11_classify_enabledB\r\n" +
+	"\v_budget_usd\"X\n" +
 	"\x16SetSmartConfigResponse\x12>\n" +
 	"\x06config\x18\x01 \x01(\v2&.articleflux.v1.GetSmartConfigResponseR\x06config\"\x13\n" +
 	"\x11ListModelsRequest\"k\n" +
@@ -1494,6 +1586,7 @@ func file_articleflux_v1_smart_proto_init() {
 	if File_articleflux_v1_smart_proto != nil {
 		return
 	}
+	file_articleflux_v1_smart_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

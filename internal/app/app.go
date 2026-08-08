@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +26,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 
 	"github.com/monstercameron/ArticleFlux/internal/analyze"
+	"github.com/monstercameron/ArticleFlux/internal/apierr"
 	"github.com/monstercameron/ArticleFlux/internal/assetproxy"
 	"github.com/monstercameron/ArticleFlux/internal/authz"
 	"github.com/monstercameron/ArticleFlux/internal/buildver"
@@ -158,6 +162,9 @@ type Config struct {
 	// OTLPInsecure sends to that endpoint over plain HTTP, for a collector on the
 	// same host.
 	OTLPInsecure bool
+	// OTLPSampleRatio is the fraction of traces started here that are
+	// exported, 0-1. Zero means unset and is read as 1.0.
+	OTLPSampleRatio float64
 
 	// BehindProxy states that something terminates TLS and forwards to this
 	// process.
@@ -259,6 +266,9 @@ type App struct {
 	streamCap *ratelimit.Concurrent
 	ring      *obs.Ring
 	lat       *obs.Latency
+	// logSpill is the ring's on-disk copy, closed on shutdown. Nil when the
+	// file could not be opened, which is a degraded but working instance.
+	logSpill *obs.Spill
 	// tunnels counts WebSocket lifetimes, which is the only way anyone can tell
 	// a reader on bad Wi-Fi from a keepalive tuned wrong (§20.19.10).
 	tunnels *obs.Tunnels
@@ -288,9 +298,15 @@ type App struct {
 	// settings also holds the encryption key for secrets at rest; secretKey is
 	// nil when the server could not open one, in which case SetSecret refuses
 	// rather than writing a credential in the clear.
-	settings   *store.SettingsRepo
-	secretKey  []byte
-	llm        *llm.Client
+	settings  *store.SettingsRepo
+	secretKey []byte
+	llm       *llm.Client
+	// smart owns every Smart+ feature and is the one answer to "what can this
+	// instance send" (§18.8). The named fields below are accessors onto it,
+	// kept because callers take the narrow type they actually use rather than
+	// the whole set — see internal/smart/smart.go for why it is construction
+	// only and not a facade.
+	smart      *smart.Smart
 	translator *smart.Translator
 	// palettes writes themes: from a phrase the reader typed, and from what they
 	// actually read (§20.16.3). Non-nil on every instance, like the translator —
@@ -417,30 +433,95 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 			"memory_kib", p.Memory, "iterations", p.Time)
 	}
 
-	// The ring wraps whatever handler the caller configured rather than replacing
-	// it: terminal output is what someone watching the process sees, and losing
-	// it to gain a settings screen is a bad trade.
-	ring := obs.NewRing(cfg.Log.Handler(), obs.DefaultSize)
-	// And the request-id handler outside the ring, so an id reaches BOTH the
-	// terminal and the settings screen's log view. Inside the ring it would
-	// stamp only what the ring re-emitted, and the two views of the same event
-	// would carry different fields — which is worse than neither having it,
-	// because it makes the terminal look authoritative when it is not.
-	cfg.Log = slog.New(reqid.NewHandler(ring))
-
-	// Telemetry before anything that might want to record. New never fails for a
-	// telemetry-only reason — a bad collector address costs traces, not the
-	// reader — so an error here means the instruments themselves could not be
-	// created, which is a programming error rather than a runtime condition.
+	// Telemetry BEFORE the logger chain, because the chain may include its log
+	// exporter. It is given the caller's plain logger for its own boot warnings:
+	// those are about telemetry failing to start, so routing them through a
+	// pipeline telemetry has not finished building would be circular.
+	//
+	// New never fails for a telemetry-only reason — a bad collector address
+	// costs traces, not the reader — so an error here means the instruments
+	// themselves could not be created, which is a programming error rather than
+	// a runtime condition.
 	tel, err := telemetry.New(ctx, telemetry.Config{
 		ServiceName:  "articleflux",
 		Version:      cfg.Version,
 		OTLPEndpoint: cfg.OTLPEndpoint,
 		Insecure:     cfg.OTLPInsecure,
+		SampleRatio:  cfg.OTLPSampleRatio,
 		Log:          cfg.Log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: telemetry: %w", err)
+	}
+
+	// The three destinations a log line has, composed innermost-first.
+	//
+	// The terminal is what someone watching the process sees; the collector is
+	// where it survives a restart; and the ring is what the settings screen
+	// reads. The ring WRAPS the other two rather than replacing them, because
+	// losing the terminal to gain a settings screen is a bad trade.
+	//
+	// The exporter is nil unless an endpoint is configured, which is the
+	// default — Fanout of one handler behaves exactly as that handler did.
+	sinks := telemetry.Fanout{cfg.Log.Handler()}
+	if tel.LogExport != nil {
+		sinks = append(sinks, tel.LogExport)
+	}
+	ring := obs.NewRing(sinks, obs.DefaultSize)
+
+	var logSpill *obs.Spill
+
+	// The ring's copy on disk, beside the database (internal/obs/spill.go).
+	//
+	// Without it a crash loop erases the evidence of each crash: the ring is in
+	// memory, so every restart clears the record of why the last one ended, and
+	// the log level control does not help because raising it needs a restart
+	// too. With it, the settings screen opens on the failure that happened
+	// before this process existed.
+	//
+	// Beside the database rather than in it, because what is being diagnosed is
+	// frequently the database. A failure to open one is logged and otherwise
+	// ignored — a read-only directory should cost the history, not the reader.
+	if cfg.DBPath != "" {
+		spillPath := cfg.DBPath + ".log.jsonl"
+		if s, err := obs.OpenSpill(spillPath, obs.DefaultSpillBytes, func(err error) {
+			cfg.Log.Warn("the log spill file stopped accepting writes; "+
+				"history will not survive a restart", "path", spillPath, "err", err)
+		}); err != nil {
+			cfg.Log.Warn("no durable log history: could not open the spill file",
+				"path", spillPath, "err", err)
+		} else {
+			ring.WithSpill(s)
+			logSpill = s
+		}
+	}
+
+	// The request-id handler OUTSIDE the ring, so an id reaches all three.
+	// Inside, it would stamp only what the ring re-emitted, and the views of
+	// the same event would carry different fields — worse than none of them
+	// having it, because it makes the terminal look authoritative when it is
+	// not.
+	//
+	// The trace stamp sits between them (internal/telemetry/loghandler.go), so
+	// a line carries the request id a reader can quote AND the trace id a
+	// backend can join on. It adds nothing on an instance with no collector
+	// configured: outside a recording span there is no valid span context.
+	cfg.Log = slog.New(reqid.NewHandler(telemetry.NewLogHandler(ring)))
+
+	// Pool statistics for both databases (internal/telemetry/dbpool.go).
+	//
+	// The write pool is the one that matters: it holds a single connection by
+	// design, so every mutation in the program serialises through it, and until
+	// this existed a queue behind that connection looked identical to the
+	// server simply being slow.
+	//
+	// Logged rather than fatal, on the same principle as the rest of this
+	// package: a missing gauge is worse observability, not a reason to refuse
+	// to serve.
+	for name, pool := range map[string]*sql.DB{"read": db.Read, "write": db.Write} {
+		if err := telemetry.ObserveDBPool(tel.Meter, name, pool); err != nil {
+			cfg.Log.Warn("telemetry: no database pool metrics", "pool", name, "err", err)
+		}
 	}
 
 	// Every outbound fetch, from all seven callers, through the one guard they
@@ -464,9 +545,10 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	a := &App{cfg: cfg, db: db, repo: repo, svc: svc, log: cfg.Log, bus: bus,
 		streamCap: ratelimit.NewConcurrent(maxStreamsPerCaller),
 		ring:      ring, lat: obs.NewLatency(), tunnels: &obs.Tunnels{}, tel: tel,
-		policy: grpcsrv.DefaultPolicy(),
-		icons:  favicon.New(cfg.AllowPrivateFeeds),
-		stopPo: make(chan struct{})}
+		logSpill: logSpill,
+		policy:   grpcsrv.DefaultPolicy(),
+		icons:    favicon.New(cfg.AllowPrivateFeeds),
+		stopPo:   make(chan struct{})}
 
 	// Smart+ (§10.5, §18).
 	//
@@ -500,14 +582,85 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		return strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
 	a.llm = llm.New(smartKey)
+	// Which model the TYPED operations ask for.
+	//
+	// SchemaFlux resolves a model from the speed tier an operation chose and
+	// gives a caller no way to name one (G5), so this instance's `smart.model`
+	// would be silently ignored on every rebuilt Smart+ feature without this —
+	// the hand-built path would honour the operator's choice and the typed path
+	// would not, which is the kind of split nobody thinks to look for.
+	//
+	// Read per call, like the key, so changing it on the Smart+ tab takes effect
+	// without a restart.
+	a.llm.WithModel(func(ctx context.Context) string {
+		m, err := a.settings.SystemValue(ctx, store.KeySmartModel)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(m)
+	})
+	// The spend ceiling (T4), read per call so raising it while a backfill is
+	// hitting it takes effect without a restart — which is exactly when nobody
+	// wants one. Absent, unparseable and "0" all mean no ceiling: a cap is
+	// something somebody opts into, and a malformed row must not silently
+	// become the strictest possible limit.
+	//
+	// Installed as SchemaFlux middleware rather than as a check inside the
+	// client, so it composes with whatever else the chain grows — see
+	// internal/llm/cost.go.
+	a.llm.Use(a.llm.Budget(func(ctx context.Context) float64 {
+		v, err := a.settings.SystemValue(ctx, store.KeySmartBudgetUSD)
+		if err != nil {
+			return 0
+		}
+		usd, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		return usd
+	}))
+	// Where the ceiling's other half lives: what has already been spent.
+	//
+	// Without it the total is process state, and a cap enforced against process
+	// state is $5 per restart rather than $5 — with a redeploy loop or a crash
+	// loop meaning no cap at all. See internal/llm/cost.go → SpendStore.
+	a.llm.WithSpendStore(settingsSpend{settings: a.settings, log: cfg.Log})
+	// Read once, here, rather than lazily on the first call: the Smart+ tab
+	// shows this number, and a screen opened before any call would otherwise
+	// report zero on an instance that has spent for months.
+	a.llm.Hydrate(ctx)
+	// The breaker and the in-flight bound (§22.8, TODO 6.11 / 11.15).
+	//
+	// They were built, tested and never installed, so `c.guard` was nil in every
+	// deployment — which meant no failure breaker and no concurrency cap on the
+	// one thing here that both costs money and blocks for two minutes. The
+	// failure that argues for it is the shared-server one §22.8 names: a wedged
+	// provider ties up goroutines for EVERY tenant, and the UI-translation path
+	// alone is ~10 batched calls, so one outage cost ten full timeouts.
+	//
+	// Defaults for both bounds. They are constants in internal/llm rather than
+	// settings because neither is a product decision an operator has an opinion
+	// about — see FailuresToOpen and MaxInFlight.
+	a.llm.WithGuard(llm.NewGuard(llm.GuardOptions{}))
 	// Kept so the doctor asks the SAME question this does. Two implementations
 	// of "is there a key" is how a screen comes to say ready while the request
 	// answers 501 — which is the shape of every confusion this whole area has
 	// produced, and it is not worth repeating in the tool built to explain it.
 	a.smartKey = smartKey
-	a.translator = smart.NewTranslator(a.llm, a.settings)
-	a.palettes = smart.NewPalettes(a.llm, a.settings)
-	a.categorizer = smart.NewCategorizer(a.llm, a.settings)
+	// Every Smart+ feature, built once. The ten constructors this replaced were
+	// spread over two hundred lines of wiring with the same two arguments each,
+	// which made an eleventh egress-capable feature an eleventh call site
+	// nobody would review as one. See internal/smart/smart.go.
+	//
+	// The cache directory is the database's, because these caches are instance
+	// state rather than user data and belong beside the file they are derived
+	// from. The lexicon is attached below, once the classifier's own set is
+	// loaded.
+	a.smart = smart.New(a.llm, a.settings,
+		smart.WithCacheDir(filepath.Dir(cfg.DBPath)))
+	a.translator = a.smart.Translator()
+	a.palettes = a.smart.Palettes()
+	a.categorizer = a.smart.Categorizer()
 
 	// The interest layer (§18) and the pool that runs it (§22.7).
 	//
@@ -534,7 +687,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// into the Settings screen did nothing until the next restart — the same mistake the
 	// smartKey closure above exists to avoid.
 	a.deriver = derive.New(repo, cfg.Log).
-		WithSmartPlus(smart.NewInterest(a.llm, a.settings))
+		WithSmartPlus(a.smart.Interest())
 	a.pool = jobs.New(repo, jobs.Options{
 		Log: cfg.Log,
 		// The job queue is where a self-hosted instance actually breaks: a
@@ -570,6 +723,11 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// boot puts that in front of whoever broke it instead of in front of a reader
 	// whose chips stopped appearing.
 	lexiconSet := classify.MustCompile(lexicon.Categories())
+	// The classifier is the one Smart+ feature with a dependency the other nine
+	// do not share, and it is compiled here rather than at Smart's construction
+	// because this is where the category set is loaded. Attached rather than
+	// passed to smart.New for that reason alone — see smart.WithLexicon.
+	a.smart.AttachLexicon(lexiconSet)
 	a.analyzer = analyze.New(repo, pipeline.New(lexiconSet, classify.DefaultStrategy(), cfg.Log), cfg.Log).
 		// Wired unconditionally, exactly as the deriver's Smart+ half is, and for
 		// the same reason: the key is a SETTING that can be pasted into the
@@ -578,7 +736,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 		// **Being wired is not consent** — smart.Classifier.Available checks the
 		// owner's `smart.classify` setting on every batch and defaults to off.
 		WithSmartPlus(
-			smart.NewClassifier(a.llm, a.settings, lexiconSet),
+			a.smart.Classifier(),
 			pipeline.DefaultPolicy,
 		)
 	a.pool.Handle(store.JobAnalyze, a.analyzer.Handle)
@@ -603,11 +761,11 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// run — see recommendjob.Service.relFor.
 	a.recommender = recommendjob.New(repo,
 		discover.New(discover.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
-		smart.NewRelevanceChecker(a.llm, a.settings),
+		a.smart.Relevance(),
 		// Rung 5 (Cam, 2026-08-01): wired unconditionally, same reasoning as
 		// the RelevanceChecker above — harmless without a key, and gated for
 		// real by the SAME discover.smartPlus opt-in (recommendjob.wsFor).
-		smart.NewWebSearchFinder(a.llm, a.settings),
+		a.smart.WebSearch(),
 		func(ctx context.Context, sc store.Scope) (string, error) {
 			return smart.TopicTerms(ctx, repo, sc)
 		},
@@ -656,7 +814,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	svc.WithSiteAnalysis(
 		discover.New(discover.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
 		extract.New(extract.Config{AllowPrivateAddresses: cfg.AllowPrivateFeeds}),
-		smart.NewSiteAnalyzer(a.llm, a.settings),
+		a.smart.SiteAnalyzer(),
 	)
 	// The voice reads the SAME key function, which is the point: one credential
 	// drives every Smart+ feature. An instance where the voice works and
@@ -674,14 +832,12 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// Beside the audio it feeds, and cached for the same reason: the digest is
 	// the expensive half of listening to a long article, and re-summarising a
 	// paragraph that cannot have changed is money spent on an identical answer.
-	a.digest = smart.NewDigest(a.llm, a.settings,
-		filepath.Join(filepath.Dir(cfg.DBPath), "digest-cache"))
+	a.digest = a.smart.Digest()
 	// Its own directory rather than the digest's, because the two are keyed
 	// differently — a digest is per article, a broadcast segment is per ORDERED
 	// PAIR of them — and one cache holding two key shapes is one nobody can
 	// reason about the size of.
-	a.podcast = smart.NewPodcast(a.llm, a.settings,
-		filepath.Join(filepath.Dir(cfg.DBPath), "podcast-cache"))
+	a.podcast = a.smart.Podcast()
 	// The same object, through the seam the beat-addressed path uses. One line,
 	// so there is one place to look when asking whether the two can disagree.
 	a.write = a.podcast
@@ -910,6 +1066,12 @@ func (a *App) Close() error {
 		}
 		cancel()
 	}
+	// The spill file last, after everything above has had its chance to log why
+	// it was unhappy — closing it earlier would lose exactly the shutdown
+	// errors an operator restarts to investigate.
+	if err := a.logSpill.Close(); err != nil {
+		a.log.Warn("closing the log spill file", "err", err)
+	}
 	return a.db.Close()
 }
 
@@ -948,7 +1110,7 @@ func (a *App) ready(parent context.Context) error {
 func (a *App) whenReady(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := a.ready(r.Context()); err != nil {
-			a.log.Warn("refusing a tunnel upgrade: not ready", "err", err)
+			a.log.WarnContext(r.Context(), "refusing a tunnel upgrade: not ready", "err", err)
 			w.Header().Set("Retry-After", "5")
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
@@ -1005,6 +1167,15 @@ func (a *App) buildHandler() {
 				// to ask the log about somebody else.
 				return handler(reqid.With(ctx, ""), req)
 			},
+			// The panic boundary (internal/app/recover.go), immediately after the
+			// id is minted so a recovered panic has one to report, and before
+			// everything else so a panic in the version check, the limiter,
+			// authorization or idempotency is caught too.
+			//
+			// grpc-go does not recover handler panics: without this, one nil
+			// dereference on any RPC takes the whole process down and every
+			// other reader with it.
+			a.recoverUnary(),
 			// Version skew (§22.10, TODO 7.8/8c.16), ahead of everything that
 			// does work. A client below the minimum is refused before its
 			// request touches the database, which is the point: the reason to
@@ -1055,11 +1226,10 @@ func (a *App) buildHandler() {
 			func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 				handler grpc.UnaryHandler) (any, error) {
 				// The full method is `/articleflux.v1.ReaderService/ListItems`; the last
-				// segment is what a person reads.
-				name := info.FullMethod
-				if i := strings.LastIndexByte(name, '/'); i >= 0 {
-					name = name[i+1:]
-				}
+				// segment is what a person reads. Through the shared helper, because
+				// the stream chain having its own copy of this is how the two came to
+				// label the same counter differently.
+				name := shortMethod(info.FullMethod)
 
 				// A span around the handler, so a slow call can be opened up
 				// rather than merely counted. The method name is bounded — it
@@ -1089,6 +1259,25 @@ func (a *App) buildHandler() {
 				if err != nil {
 					span.RecordError(err)
 					span.SetStatus(otelcodes.Error, status.Code(err).String())
+					// The line that says WHY. Until this existed a failed call
+					// was counted, timed and traced, and never explained.
+					a.logRPCError(ctx, name, err)
+				}
+
+				// The id goes back to the caller, which is the half of §22.11
+				// that was missing: an id only the server ever sees lets an
+				// operator group log lines and lets a reader report nothing.
+				//
+				// On the trailer unconditionally, because a SUCCESSFUL call is
+				// worth correlating too — "the page loaded but the wrong items
+				// were on it" is a bug report about a call that returned OK.
+				// On the error as well, because a trailer is not something a
+				// person can read off their screen and quote back.
+				if id := reqid.From(ctx); id != "" {
+					_ = grpc.SetTrailer(ctx, metadata.Pairs(reqid.MetadataKey, id))
+					if err != nil {
+						err = apierr.WithRequestID(err, id)
+					}
 				}
 				return res, err
 			}),
@@ -1192,8 +1381,27 @@ func (a *App) buildHandler() {
 		// has no dashboard behind it — the Settings screen is where the person
 		// running it finds out anything at all. One reconnect an hour is a
 		// network; forty is a bug, and neither was visible.
-		grpctunnel.WithConnectHook(func(*http.Request) { a.tunnels.Connected() }),
-		grpctunnel.WithDisconnectHook(func(*http.Request) { a.tunnels.Disconnected() }),
+		// Counted AND logged, at Debug.
+		//
+		// The counters answer "is one an hour normal here?", which is the
+		// question a rate cannot be read off individual lines. They cannot
+		// answer "when exactly did it drop, and what else was happening at that
+		// moment" — and "the connection keeps dropping" is the most common
+		// complaint this application gets, so the timeline is worth having.
+		//
+		// Debug because a healthy instance opens one of these per tab and a
+		// line per connect at Info would drown the ring. Reachable now that the
+		// level can be raised without a restart.
+		grpctunnel.WithConnectHook(func(r *http.Request) {
+			a.tunnels.Connected()
+			a.log.DebugContext(r.Context(), "tunnel connected",
+				"live", a.tunnels.Stats().Live)
+		}),
+		grpctunnel.WithDisconnectHook(func(r *http.Request) {
+			a.tunnels.Disconnected()
+			a.log.DebugContext(r.Context(), "tunnel disconnected",
+				"live", a.tunnels.Stats().Live)
+		}),
 	}
 	// TODO 7.4's remaining half. Only applied when configured, because an empty
 	// allowlist would reject every browser rather than fall back to same-origin.
@@ -1289,7 +1497,7 @@ func (a *App) buildHandler() {
 			w.Header().Set("X-ArticleFlux-Commit", buildver.Commit)
 		}
 		if err := a.ready(r.Context()); err != nil {
-			a.log.Warn("readiness check failed", "err", err)
+			a.log.WarnContext(r.Context(), "readiness check failed", "err", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("unready\n"))
 			return
@@ -1821,12 +2029,12 @@ func (a *App) DeriveDue(ctx context.Context) {
 
 	scopes, err := a.repo.ScopesToDerive(ctx, a.lastDerive)
 	if err != nil {
-		a.log.Warn("finding users to derive", "err", err)
+		a.log.WarnContext(ctx, "finding users to derive", "err", err)
 		return
 	}
 	for _, sc := range scopes {
 		if err := a.deriver.Enqueue(ctx, sc); err != nil {
-			a.log.Warn("enqueueing derive", "user", sc.UserID, "err", err)
+			a.log.WarnContext(ctx, "enqueueing derive", "user", sc.UserID, "err", err)
 			return
 		}
 	}
@@ -1916,7 +2124,7 @@ func (a *App) enqueueDerive(sc store.Scope, force bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := a.deriver.Enqueue(ctx, sc); err != nil {
-			a.log.Warn("nudging derive", "user", sc.UserID, "err", err)
+			a.log.WarnContext(ctx, "nudging derive", "user", sc.UserID, "err", err)
 		}
 	}()
 }
@@ -1933,7 +2141,7 @@ func (a *App) enqueueDerive(sc store.Scope, force bool) {
 func (a *App) DeriveNow(ctx context.Context, sc store.Scope) {
 	res, err := a.deriver.RunReporting(ctx, sc, time.Now().UTC())
 	if err != nil {
-		a.log.Error("deriving", "err", err)
+		a.log.ErrorContext(ctx, "deriving", "err", err)
 		return
 	}
 	a.log.Info("derived the interest layer",
@@ -1971,7 +2179,7 @@ func (a *App) StartPoller(ctx context.Context) {
 				// device did I sign out, and when" is still answerable.
 				if n, err := a.repo.PurgeExpiredSessions(ctx,
 					time.Now().UTC().Add(-7*24*time.Hour).Format(time.RFC3339Nano)); err != nil {
-					a.log.Warn("purging sessions", "err", err)
+					a.log.WarnContext(ctx, "purging sessions", "err", err)
 				} else if n > 0 {
 					a.log.Info("purged sessions", "count", n)
 				}
@@ -1999,16 +2207,22 @@ func (a *App) StartPoller(ctx context.Context) {
 				res, err := a.svc.PollDue(pollCtx, 25)
 				elapsed := time.Since(start)
 
-				a.tel.Instruments.PollDuration.Record(pollCtx, elapsed.Seconds(),
+				a.tel.Instruments.PollCycleDuration.Record(pollCtx, elapsed.Seconds(),
+					metric.WithAttributes(telemetry.Outcome(err)))
+				// One per cycle, always, so the per-source counter below stays a
+				// count of sources. This is the number that answers "is the
+				// heartbeat still beating", which is a different question from
+				// "are the publishers healthy" and was previously mixed into
+				// the same series as it.
+				a.tel.Instruments.PollCycles.Add(pollCtx, 1,
 					metric.WithAttributes(telemetry.Outcome(err)))
 				span.End()
 
 				if err != nil {
 					// The whole cycle failed, which is different from some feeds
-					// failing and is worth its own counter: one means the
-					// database or the scheduler, the other means a publisher.
-					a.tel.Instruments.PollRuns.Add(ctx, 1,
-						metric.WithAttributes(attribute.String("outcome", "cycle_error")))
+					// failing: one means the database or the scheduler, the
+					// other means a publisher. Counted on PollCycles above
+					// rather than as a fake source outcome here.
 					a.tel.RecordError(ctx, a.log, "poll", "cycle_failed", err)
 					continue
 				}

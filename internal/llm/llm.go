@@ -15,13 +15,12 @@
 // because there is nothing being sent. It exists to answer one question —
 // which model ids can this key use — for the model picker on the Smart tab.
 //
-// **The breaker and the in-flight bound are built (see Guard, breaker.go) and
-// have no caller outside their own tests** (TODO 11.15). What every feature
-// gets today is a shared request timeout and a running token count; Guard sits
-// beside Client rather than inside it, unused, for the same reason a UI
-// translation is worth naming: it is ~10 batched calls, so a provider outage
-// during one costs ten failures and ten full timeouts instead of one — which
-// is exactly the case Guard exists for and is not yet wrapped around.
+// **The breaker and the in-flight bound (see Guard, breaker.go) are installed
+// by internal/app at construction and wrap every call**, hand-built and typed
+// alike, because both go through run. They were built and left unwired for a
+// while, and the case that argued them into service is a UI translation: it is
+// ~10 batched calls, so a provider outage during one cost ten failures and ten
+// full 120-second timeouts instead of one.
 //
 // Responses rather than chat completions specifically because:
 //
@@ -58,6 +57,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/mw"
+
+	"github.com/monstercameron/ArticleFlux/internal/llm/sfprovider"
 )
 
 // Endpoint is the only address this package will ever call.
@@ -109,12 +118,75 @@ type KeyFunc func(context.Context) string
 // Client talks to the Responses API.
 type Client struct {
 	keyOf KeyFunc
-	http  *http.Client
+	// modelOf answers which model the TYPED operations should ask for when they
+	// do not name one. Nil means DefaultModel — see WithModel.
+	modelOf ModelFunc
+	http    *http.Client
 
 	// mu guards spend. Requests are concurrent (a translation and a summary can
 	// overlap), and the budget is the one number that must not race.
 	mu    sync.Mutex
 	spend Usage
+	// cost is the same calls priced in USD, which is the number a reader can
+	// act on — see cost.go for why a token count could never be one.
+	//
+	// Unlike spend, it is the INSTANCE's total rather than the process's:
+	// spendStore carries it across restarts, because a ceiling that resets when
+	// the server does is not a ceiling. spendOnce guards the one read of it.
+	cost       Cost
+	spendStore SpendStore
+	spendOnce  sync.Once
+
+	// chain is the SchemaFlux middleware every call travels through, built once
+	// and reused — which is the whole reason it lives on the Client rather than
+	// being assembled per request.
+	//
+	// **The middleware is stateful and the state is the point.** A budget that
+	// was rebuilt per call would have a fresh allowance every time and would
+	// never refuse anything; a rate limiter rebuilt per call would never limit.
+	// Only the BASE provider is per-call, because it closes over the request
+	// being sent (see Do) — SchemaFlux's `mw.Chain(base, …)` takes the base as
+	// an argument, so this composes exactly as it is meant to.
+	//
+	// Empty by default. Phase 1 of the migration is "SchemaFlux is in the tree
+	// and carrying every request, and no feature behaves differently", so
+	// nothing is enabled here until a caller asks for it — see Use.
+	chain []mw.Middleware
+
+	// opsOnce and opsClient build the SchemaFlux client this one is asked for
+	// operation contexts through — once per Client, lazily. See ops.go.
+	opsOnce   sync.Once
+	opsClient *schemaflux.Client
+
+	// guard is the circuit breaker (breaker.go), nil unless one was installed.
+	// Applied in run, so it covers the typed operations as well as Do.
+	//
+	// It sits OUTSIDE the SchemaFlux chain rather than inside it: a breaker's
+	// job is to stop calling a provider that is failing, and retries are
+	// exactly the thing it must be able to see as one failure rather than
+	// three. Retry inside, breaker outside.
+	guard *Guard
+}
+
+// Use installs SchemaFlux middleware, in the order given: the first wraps every
+// other, so it sees a request first and a response or error last.
+//
+// Returns the Client so it can be chained onto New at the construction site,
+// which is the only place that should be deciding this. Middleware is a
+// property of the instance, not of a request.
+func (c *Client) Use(m ...mw.Middleware) *Client {
+	c.chain = append(c.chain, m...)
+	return c
+}
+
+// WithGuard installs the circuit breaker around every call.
+//
+// Separate from Use because it is not SchemaFlux middleware and does not
+// compose with it — see the guard field for why it is deliberately on the
+// outside of the chain rather than in it.
+func (c *Client) WithGuard(g *Guard) *Client {
+	c.guard = g
+	return c
 }
 
 // Usage is the running token count, which is the only cost signal available
@@ -267,6 +339,25 @@ type responsesReply struct {
 //
 // With a Schema set, the text is a JSON object matching it — unmarshal it into
 // whatever the caller expects. Without one, it is prose.
+//
+// # What SchemaFlux does and does not do here
+//
+// The call travels through `mw.Chain(base, c.chain…)`, where `base` is this
+// package's own audited request (see send). That ordering is the migration's
+// whole design and it is worth stating plainly: **SchemaFlux runs around the
+// call, not inside it.** The host allowlist, `store: false`, the strict schema,
+// the hosted tools and the truncation check are all still enforced by code in
+// this repository, on the request that actually goes out — because they are
+// §18.8 promises to a reader, and a promise kept by a dependency has to be
+// re-audited every time the dependency moves.
+//
+// What the chain buys is everything that is not the call: retries with one
+// opinion about what is retryable, a budget that can refuse before spending,
+// rate limiting, and usage reported in a shape `pricing` can turn into dollars.
+//
+// The base provider is built per call because it closes over `r` — the fields
+// SchemaFlux's request type has no room for (Tools, Effort, Schema) would
+// otherwise be lost in translation. The middleware is not; see the chain field.
 func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 	key := strings.TrimSpace(c.keyOf(ctx))
 	if key == "" {
@@ -279,6 +370,148 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 	if model == "" {
 		model = DefaultModel
 	}
+
+	// The base provider: one closure over this request, performing the audited
+	// call below. Named for the client rather than for the vendor so a cost
+	// record or a metric says which client made the call — an instance that
+	// later runs a second provider needs the two to be distinguishable.
+	base := sfprovider.New("articleflux-openai",
+		func(ctx context.Context, _ schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+			text, usage, err := c.send(ctx, key, model, r)
+			if err != nil {
+				return schemaflux.CompletionResponse{}, err
+			}
+			return schemaflux.CompletionResponse{
+				Content:  text,
+				Model:    model,
+				Provider: "articleflux-openai",
+				// Reported so SchemaFlux's pricing layer has something real to
+				// price. Input/Output are what the Responses API returns; the
+				// Prompt/Completion pair carries the same numbers under the
+				// names the cost tables read.
+				Usage: schemaflux.TokenUsage{
+					PromptTokens:     int(usage.InputTokens),
+					CompletionTokens: int(usage.OutputTokens),
+					TotalTokens:      int(usage.InputTokens + usage.OutputTokens),
+					InputTokens:      int(usage.InputTokens),
+					OutputTokens:     int(usage.OutputTokens),
+				},
+			}, nil
+		})
+
+	// The SchemaFlux request is what the MIDDLEWARE reads — the model it prices
+	// against, the prompt a redactor would inspect, the ceiling a budget
+	// estimates from. The base provider above ignores it and uses `r`, which is
+	// the authority, because this type cannot carry tools or reasoning effort
+	// (§6, G4 and G6).
+	sfreq := schemaflux.CompletionRequest{
+		Model:        model,
+		SystemPrompt: r.Instructions,
+		UserPrompt:   r.Input,
+		MaxTokens:    r.MaxOutputTokens,
+	}
+	if len(r.Schema) > 0 {
+		sfreq.ResponseFormat = "json"
+		sfreq.JSONSchema = r.Schema
+		sfreq.SchemaName = r.SchemaName
+	}
+
+	res, err := c.run(ctx, base, sfreq)
+	if err != nil {
+		return "", err
+	}
+	return res.Content, nil
+}
+
+// run carries one completion through the span, the breaker and the middleware
+// chain, and it is the ONLY way out of this package.
+//
+// # Why this is a method rather than four lines inside Do
+//
+// There are two paths into this client — `Do`'s hand-built request, and the
+// typed SchemaFlux operations through the provider in ops.go — and for a while
+// only one of them went through the chain. The chain is where the spend ceiling
+// lives (cost.go), so the typed path spent with no limit: ten of the twelve
+// Smart+ features, including every scheduled one, which are exactly the calls a
+// cap exists to bound. The breaker was in the same shape, installed by Do and
+// invisible to everything else.
+//
+// A single funnel is the fix, not two careful call sites. Anything that reaches
+// the provider from here reaches it through this function, so a third path
+// added later cannot quietly get a different set of guarantees.
+//
+// # The ordering, outermost first
+//
+// span → breaker → chain → the audited call in send.
+//
+// The breaker is outside the chain because the chain RETRIES: a breaker inside
+// it would count one bad call three times and open on a single hiccup, which is
+// the note the guard field carries.
+//
+// The span wraps everything for the same reason it always did. This is the
+// slowest thing the application does by an order of magnitude — seconds where a
+// feed poll is milliseconds — and netguard's egress span covers one HTTP hop.
+// This covers the operation, so a call that was retried twice and then refused
+// by the breaker reads as one unit with its attempts nested inside rather than
+// as three unrelated requests.
+//
+// The model is a bounded label chosen from configuration. The PROMPT is not
+// recorded and never should be: it contains the reader's articles, and a span
+// carrying it would ship reading material to a collector.
+func (c *Client) run(ctx context.Context, base mw.Handler, req schemaflux.CompletionRequest) (
+	schemaflux.CompletionResponse, error) {
+
+	ctx, span := tracer.Start(ctx, "llm.request",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("llm.model", req.Model),
+			attribute.Bool("llm.structured", len(req.JSONSchema) > 0),
+		))
+	defer span.End()
+
+	var res schemaflux.CompletionResponse
+	call := func(ctx context.Context) error {
+		var err error
+		res, err = mw.Chain(base, c.chain...).Complete(ctx, req)
+		return err
+	}
+
+	var err error
+	if c.guard != nil {
+		err = c.guard.Do(ctx, call)
+	} else {
+		err = call(ctx)
+	}
+
+	// Token counts on the span rather than only in the usage ledger: "this call
+	// was slow because it generated four thousand tokens" is a different
+	// problem from "the provider was slow", and the two are indistinguishable
+	// from a duration alone.
+	span.SetAttributes(
+		attribute.Int64("llm.tokens.input", int64(res.Usage.InputTokens)),
+		attribute.Int64("llm.tokens.output", int64(res.Usage.OutputTokens)),
+	)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "llm request failed")
+		return schemaflux.CompletionResponse{}, err
+	}
+	return res, nil
+}
+
+// tracer resolves through OTel's global provider, which is a no-op until one is
+// installed — see the note in internal/netguard for why the global rather than
+// a threaded dependency.
+var tracer = otel.Tracer("github.com/monstercameron/ArticleFlux/internal/llm")
+
+// send is the audited call: everything this package promises about egress
+// happens here, on the request that actually goes out.
+//
+// Split out of Do so the provider seam has something to wrap. It returns the
+// usage alongside the text because the caller reports it onward to SchemaFlux,
+// which is what makes `pricing` able to say anything in dollars.
+func (c *Client) send(ctx context.Context, key, model string, r Request) (string, Usage, error) {
+	var used Usage
 
 	wire := responsesRequest{
 		Model:           model,
@@ -313,24 +546,24 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 
 	body, err := json.Marshal(wire)
 	if err != nil {
-		return "", err
+		return "", used, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", used, err
 	}
 	// Checked against the request that is about to go out, rather than against
 	// the constant above: a check that cannot see the value being used is a
 	// comment.
 	if req.URL.Hostname() != allowedHost {
-		return "", fmt.Errorf("llm: refusing to send content to %q", req.URL.Hostname())
+		return "", used, fmt.Errorf("llm: refusing to send content to %q", req.URL.Hostname())
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 
 	res, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", used, err
 	}
 	defer res.Body.Close()
 
@@ -339,7 +572,7 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 	// buffer into memory.
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {
-		return "", err
+		return "", used, err
 	}
 
 	if res.StatusCode != http.StatusOK {
@@ -355,19 +588,26 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return "", fmt.Errorf("llm: provider returned %d: %s", res.StatusCode, msg)
+		return "", used, fmt.Errorf("llm: provider returned %d: %s", res.StatusCode, msg)
 	}
 
 	var reply responsesReply
 	if err := json.Unmarshal(raw, &reply); err != nil {
-		return "", fmt.Errorf("llm: cannot read provider response: %w", err)
+		return "", used, fmt.Errorf("llm: cannot read provider response: %w", err)
 	}
 
+	// Counted here rather than by the caller: this is the only place that has
+	// seen the provider's own numbers, and a retry that reached the provider
+	// twice really did spend twice.
+	used = Usage{InputTokens: reply.Usage.InputTokens, OutputTokens: reply.Usage.OutputTokens, Requests: 1}
 	c.mu.Lock()
-	c.spend.InputTokens += reply.Usage.InputTokens
-	c.spend.OutputTokens += reply.Usage.OutputTokens
+	c.spend.InputTokens += used.InputTokens
+	c.spend.OutputTokens += used.OutputTokens
 	c.spend.Requests++
 	c.mu.Unlock()
+	// Priced against the model that actually answered, not the one requested —
+	// they are the same today, and a fallback provider would make them differ.
+	c.track(ctx, model, used)
 
 	// Truncation is checked BEFORE the text is read. A truncated response still
 	// carries text, and returning it is how a catalog silently loses its last
@@ -377,17 +617,17 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 		if reply.IncompleteDetails != nil && reply.IncompleteDetails.Reason != "" {
 			reason = reply.IncompleteDetails.Reason
 		}
-		return "", fmt.Errorf("%w (%s)", ErrTruncated, reason)
+		return "", used, fmt.Errorf("%w (%s)", ErrTruncated, reason)
 	}
 
 	if reply.OutputText != "" {
-		return reply.OutputText, nil
+		return reply.OutputText, used, nil
 	}
 	var b strings.Builder
 	for _, out := range reply.Output {
 		for _, part := range out.Content {
 			if part.Refusal != "" {
-				return "", fmt.Errorf("%w: %s", ErrRefused, part.Refusal)
+				return "", used, fmt.Errorf("%w: %s", ErrRefused, part.Refusal)
 			}
 			if part.Type == "output_text" {
 				b.WriteString(part.Text)
@@ -395,9 +635,9 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 		}
 	}
 	if b.Len() == 0 {
-		return "", errors.New("llm: provider returned no text")
+		return "", used, errors.New("llm: provider returned no text")
 	}
-	return b.String(), nil
+	return b.String(), used, nil
 }
 
 // ModelsEndpoint is the provider's model-listing address — see the package

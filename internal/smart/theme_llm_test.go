@@ -10,6 +10,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // The guards for the theming generator (§20.16.3), over the llmClient seam so none
@@ -43,22 +45,52 @@ func paletteJSON(t *testing.T, over map[string]any) string {
 
 func palettesWith(f *fakeLLM) *Palettes { return NewPalettes(f, nil) }
 
+// A4/A5 run on `Generating` now (plan P3.7): the schema is derived from
+// `paletteReply` and the library writes the request, so a test scripts the
+// PROVIDER rather than a fake `Do`.
+
+// palettesScripted installs a provider answering with the given body and
+// returns Palettes wired to it.
+func palettesScripted(t *testing.T, body string) (*Palettes, *schemafluxtest.Provider) {
+	t.Helper()
+	prov := schemafluxtest.New().Shaped().Reply(body)
+	schemafluxtest.Install(t, prov)
+	return NewPalettes(&fakeLLM{configured: true}, nil), prov
+}
+
+// themeBodySent digs the marshalled ThemePayload back out of what was sent.
+//
+// The payload is still exactly what leaves — `ThemePayload` remains the only
+// thing that decides what may go, and the audit below still runs against it —
+// but it now travels inside the prompt the library composed, so the assertions
+// that unmarshal it have to find it there. First brace to last brace: the
+// payload is the only JSON object in the request.
+func themeBodySent(t *testing.T, prov *schemafluxtest.Provider) string {
+	t.Helper()
+	sent := prov.LastRequest().UserPrompt
+	i, j := strings.Index(sent, "{"), strings.LastIndex(sent, "}")
+	if i < 0 || j <= i {
+		t.Fatalf("no JSON payload in the request:\n%s", sent)
+	}
+	return sent[i : j+1]
+}
+
 // TestAComposeRequestSendsOnlyThePromptAndTheTone.
 //
 // Audited against llm.ThemeKeys rather than eyeballed, which is the point of that
 // list existing: a field added to ThemePayload for a good reason would otherwise
 // start leaving the instance with nobody deciding that it should.
 func TestAComposeRequestSendsOnlyThePromptAndTheTone(t *testing.T) {
-	f := &fakeLLM{configured: true, text: paletteJSON(t, nil)}
-	if _, _, err := palettesWith(f).Compose(context.Background(),
+	pal, prov := palettesScripted(t, paletteJSON(t, nil))
+	if _, _, err := pal.Compose(context.Background(),
 		"a cold library at 2am", design.ToneDark); err != nil {
 		t.Fatal(err)
 	}
-	if f.callCount() != 1 {
-		t.Fatalf("%d calls for one composition", f.callCount())
+	if prov.CallCount() != 1 {
+		t.Fatalf("%d calls for one composition", prov.CallCount())
 	}
 
-	body := f.callN(0).Input
+	body := themeBodySent(t, prov)
 	bad, err := llm.AuditThemeEgress([]byte(body))
 	if err != nil {
 		t.Fatalf("the outbound body is not JSON: %v", err)
@@ -82,14 +114,14 @@ func TestAComposeRequestSendsOnlyThePromptAndTheTone(t *testing.T) {
 // reading, for no gain at all when the question is what colour a subject feels
 // like.
 func TestAnAttuneRequestSendsLabelsAndNotTheTermsBehindThem(t *testing.T) {
-	f := &fakeLLM{configured: true, text: paletteJSON(t, nil)}
-	_, _, err := palettesWith(f).Attune(context.Background(),
+	pal, prov := palettesScripted(t, paletteJSON(t, nil))
+	_, _, err := pal.Attune(context.Background(),
 		[]string{"NPU inference", "SQLite internals"}, design.ToneDark)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	body := f.callN(0).Input
+	body := themeBodySent(t, prov)
 	if bad, _ := llm.AuditThemeEgress([]byte(body)); len(bad) > 0 {
 		t.Errorf("the request carries %v", bad)
 	}
@@ -109,13 +141,13 @@ func TestAnAttuneRequestSendsLabelsAndNotTheTermsBehindThem(t *testing.T) {
 // TestTheInterestCapIsAppliedAtTheBoundary. Five, and the reason is quality as much
 // as cost: asked to find one room for twelve subjects a model returns beige.
 func TestTheInterestCapIsAppliedAtTheBoundary(t *testing.T) {
-	f := &fakeLLM{configured: true, text: paletteJSON(t, nil)}
+	pal, prov := palettesScripted(t, paletteJSON(t, nil))
 	many := []string{"one", "two", "three", "four", "five", "six", "seven", "eight"}
-	if _, _, err := palettesWith(f).Attune(context.Background(), many, design.ToneDark); err != nil {
+	if _, _, err := pal.Attune(context.Background(), many, design.ToneDark); err != nil {
 		t.Fatal(err)
 	}
 	var sent llm.ThemePayload
-	if err := json.Unmarshal([]byte(f.callN(0).Input), &sent); err != nil {
+	if err := json.Unmarshal([]byte(themeBodySent(t, prov)), &sent); err != nil {
 		t.Fatal(err)
 	}
 	if len(sent.Interests) != llm.MaxThemeInterests {
@@ -170,8 +202,8 @@ func TestAWrongToneIsRefusedRatherThanApplied(t *testing.T) {
 		"cream": "#241C30", "soft": "#544A63", "dim": "#685D73", "read": "#2E2640",
 		"accent": "#6B47B8", "pos": "#1B6B4A", "neg": "#A3381D",
 	})
-	f := &fakeLLM{configured: true, text: paper}
-	_, _, err := palettesWith(f).Compose(context.Background(), "midnight", design.ToneDark)
+	pal, _ := palettesScripted(t, paper)
+	_, _, err := pal.Compose(context.Background(), "midnight", design.ToneDark)
 	if err == nil {
 		t.Fatal("a paper palette was accepted as an answer to a dark request")
 	}
@@ -191,8 +223,8 @@ func TestAModelAnsweringInProseIsAnErrorRatherThanAThemeOfNothing(t *testing.T) 
 		`{"label":"x"}`,
 		`{"label":"x","blurb":"y","ground":"midnight blue"}`,
 	} {
-		f := &fakeLLM{configured: true, text: reply}
-		got, _, err := palettesWith(f).Compose(context.Background(), "x", design.ToneDark)
+		pal, _ := palettesScripted(t, reply)
+		got, _, err := pal.Compose(context.Background(), "x", design.ToneDark)
 		if err == nil {
 			t.Errorf("accepted %q as a palette", reply)
 		}
@@ -208,11 +240,11 @@ func TestAModelAnsweringInProseIsAnErrorRatherThanAThemeOfNothing(t *testing.T) 
 // reader should be told, not left to suspect (design.Repair). The reply below is
 // what a model returns when it takes "faint" literally.
 func TestTheRepairsAreReportedRatherThanSwallowed(t *testing.T) {
-	f := &fakeLLM{configured: true, text: paletteJSON(t, map[string]any{
+	pal, _ := palettesScripted(t, paletteJSON(t, map[string]any{
 		"dim":  "#1E2229", // barely off the ground
 		"wash": 90,        // over the ceiling
-	})}
-	got, reps, err := palettesWith(f).Compose(context.Background(), "faint", design.ToneDark)
+	}))
+	got, reps, err := pal.Compose(context.Background(), "faint", design.ToneDark)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,22 +278,25 @@ func TestTheRepairsAreReportedRatherThanSwallowed(t *testing.T) {
 // at all, not a partial one), and medium effort, because "which of these greys share
 // a temperature" is the product being bought.
 func TestTheRequestIsBoundedAndDeliberate(t *testing.T) {
-	f := &fakeLLM{configured: true, text: paletteJSON(t, nil)}
-	if _, _, err := palettesWith(f).Compose(context.Background(), "x", design.ToneDark); err != nil {
+	pal, prov := palettesScripted(t, paletteJSON(t, nil))
+	if _, _, err := pal.Compose(context.Background(), "x", design.ToneDark); err != nil {
 		t.Fatal(err)
 	}
-	r := f.callN(0)
-	if r.MaxOutputTokens < 2000 {
-		t.Errorf("MaxOutputTokens is %d; a reasoning model spends most of a small "+
-			"budget thinking and emits nothing", r.MaxOutputTokens)
+	r := prov.LastRequest()
+	if r.MaxTokens < 2000 {
+		t.Errorf("MaxTokens is %d; a reasoning model spends most of a small "+
+			"budget thinking and emits nothing", r.MaxTokens)
 	}
-	if r.Effort != "medium" {
-		t.Errorf("Effort is %q", r.Effort)
-	}
-	if r.Schema == nil || r.SchemaName == "" {
+	if r.JSONSchema == nil || r.SchemaName == "" {
 		t.Error("the reply is not schema-constrained; “return a palette” is answered " +
 			"with an object, an object in prose, or a CSS block")
 	}
+	// EFFORT is deliberately not asserted, and its absence is the point rather
+	// than an omission: the hand-built request set it as a field, and the call
+	// site now says the same thing with `.Smart()`. The library resolves that to
+	// whatever the provider's knob happens to be, and it does not travel as a
+	// field on the request — so there is nothing on the wire left to check. The
+	// deliberation choice lives in theme.go and is reviewed there.
 }
 
 // --- provider errors and cancellation ----------------------------------------
@@ -270,7 +305,8 @@ func TestTheRequestIsBoundedAndDeliberate(t *testing.T) {
 // ask() past a successful Do() with a real transport failure before this.
 
 func TestComposeProviderErrorSurfaces(t *testing.T) {
-	f := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(errors.New("upstream on fire")))
+	f := &fakeLLM{configured: true}
 	_, _, err := palettesWith(f).Compose(context.Background(), "slate and rain", design.ToneDark)
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's error surfaced", err)
@@ -278,6 +314,7 @@ func TestComposeProviderErrorSurfaces(t *testing.T) {
 }
 
 func TestComposeContextCancellationPropagates(t *testing.T) {
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
 	f := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
 		return "", context.Canceled
 	}}

@@ -15,6 +15,7 @@
 //  3. No .css files anywhere              — A26; CSS is authored in Go
 //  4. Every repository method takes Scope — tenant isolation is structural, not remembered (T1)
 //  5. No hardcoded UI copy in client/view — the i18n catalog stays complete (8.4a, §22.16)
+//  6. No global SchemaFlux provider      — one tenant's key must not become everyone's (G1, P1.6)
 //
 // A guard with nothing to check yet reports "n/a" rather than "pass". Passing
 // vacuously is how a guard quietly stops being a guard.
@@ -58,6 +59,7 @@ func main() {
 		guardNoCSSFiles(root),
 		guardRepoScope(root),
 		guardNoInlineCopy(root),
+		guardNoGlobalLLMProvider(root),
 	}
 
 	failed := false
@@ -271,6 +273,8 @@ var unscopedByDesign = map[string]string{
 	// "who am I" is a question about an authenticated caller and answering it
 	// unscoped would let any session read any user's row.
 	"UserForLogin":            "produces the identity a Scope is built from; there is none yet",
+	"AuditTrailInstance":      "the INSTANCE view of the audit log, for the operator CLI. Some security events — a login lockout above all — are recorded before the account is resolved and may name a username that does not exist, so those rows carry no tenant and the tenant-scoped AuditTrail cannot return them. The audience is somebody with the database file in their hands",
+	"UserForRecovery":         "the same, for a credential that NAMES its user instead of being presented by one: a reset token carries a user id and nothing else, so the account has to be resolved before a Scope can exist. Returns no password hash — nothing on that path verifies one — and refuses a deactivated account, exactly as UserForLogin does",
 	"CreateSession":           "creates the credential a Scope is resolved from",
 	"RevokeSession":           "the token hash IS the authorisation to revoke it",
 	"SweepItems":              "retention over GLOBAL items (A14) — an item belongs to no tenant, so a window is instance-wide by construction; it deletes nothing anybody starred, annotated, tagged, archived, shared or corrected",
@@ -545,4 +549,152 @@ func condense(s string) string {
 		return s[:57] + "..."
 	}
 	return s
+}
+
+// --- 6. no global SchemaFlux provider -----------------------------------------
+
+// forbiddenGlobalProvider is every way SchemaFlux can be told to remember a
+// provider — or a client holding one — in package-level state.
+//
+// **This is the migration's one blocker that can leak a credential across
+// tenants** (G1 in docs/AI_SCHEMAFLOW_MIGRATION.md, and P1.6 is this guard).
+// SchemaFlux's fluent builders resolve their provider from a package-level
+// default: `Init` sets it, the `WithProvider*` methods set it, and every call
+// made anywhere in the process then uses whatever was registered last.
+//
+// ArticleFlux is multi-tenant and its OpenAI key is a per-instance encrypted
+// setting, resolved from the tenant scope on `ctx` at the moment of the call.
+// Registering one instance's provider globally would therefore hand that
+// instance's key to every other instance's request — silently, with no error
+// and nothing in a log to notice, because from the library's side it is
+// working exactly as documented.
+//
+// The shape that avoids it is the one internal/llm uses: build the provider per
+// call, chain SchemaFlux's middleware around it with `mw.Chain`, and never
+// register anything. That path never touches any of the names below, which is
+// what makes this greppable rule sufficient rather than merely indicative.
+//
+// Tests are NOT exempt. There is no legitimate use in this repository, and a
+// test that set the global would set it for every other test in the same
+// binary — which is the failure this exists to prevent, arriving through the
+// one door nobody audits.
+var forbiddenGlobalProvider = map[string]string{
+	"Init":                 "registers a package-level provider for the whole process",
+	"SetDefaultClient":     "registers a package-level client for the whole process",
+	"GetDefaultClient":     "reads the package-level client, whose provider belongs to whoever registered last",
+	"InitWithEnv":          "registers a package-level provider from the environment",
+	"SetDefaultProvider":   "registers a package-level provider for the whole process",
+	"WithProvider":         "sets the client's provider from the package-level registry",
+	"WithProviderConfig":   "builds and registers a provider from static config, not from the tenant's key",
+	"WithProviderInstance": "registers a provider on the package-level client",
+	"WithMockProvider":     "registers a mock on the package-level client",
+	// P1.1b / OTEL-15. Not a credential leak — a telemetry one, and it is the
+	// same shape of mistake: SchemaFlux's InitTracing calls
+	// otel.SetTracerProvider and otel.SetTextMapPropagator, which would replace
+	// the providers internal/telemetry built, along with their resource
+	// attributes and their exporters. ArticleFlux's OTel stack would keep
+	// reporting and nothing would arrive where it was configured to go.
+	//
+	// It is opt-in upstream, so the rule is simply never to call it — which is
+	// exactly the kind of rule that survives as a comment for about a month.
+	"InitTracing": "replaces ArticleFlux's global tracer provider and propagator (OTEL-15)",
+}
+
+func guardNoGlobalLLMProvider(root string) *guard {
+	g := &guard{
+		name: "no global SchemaFlux provider",
+		note: "no Go files inspected",
+	}
+	walkGo(root, func(path string, f *ast.File, fset *token.FileSet) {
+		rel := relSlash(root, path)
+		// This file names every forbidden identifier, in the map above.
+		if strings.HasPrefix(rel, "internal/tools/guards/") {
+			return
+		}
+		// The one exemption, and the distinction it rests on.
+		//
+		// `internal/llm/ops.go` registers a provider globally, which is what
+		// every other line of this rule forbids. It is safe there, and only
+		// there, because the provider it registers holds NO TENANT STATE: it
+		// resolves the API key by calling KeyFunc(ctx) at the moment of the
+		// call, so the same object is correct for every instance and "which
+		// tenant's provider is the global one" stops being a question that has
+		// a wrong answer.
+		//
+		// That is the whole rule, stated properly: a tenant-AGNOSTIC provider
+		// may be registered once; a tenant-specific one may never be. A
+		// filename is a crude way to express it, and it is the honest one —
+		// the alternative is a check that tries to infer from the call site
+		// whether a provider closes over a key, which it cannot.
+		//
+		// If a second file ever needs this, that is the moment to ask whether
+		// the provider it registers is really tenant-agnostic, rather than to
+		// add a second entry here.
+		if rel == "internal/llm/ops.go" {
+			return
+		}
+		// The second exemption, and it is one FILE rather than one kind of file.
+		//
+		// Tests are not exempt as a class — see the guard's own test for why:
+		// a test that sets the global sets it for every other test in the same
+		// binary, which is this rule's hazard arriving through the door nobody
+		// audits. What `internal/smart/fake_llm_test.go` does is narrower: it
+		// owns the install seam for that package, and every install it performs
+		// captures the previous client and restores it in `t.Cleanup`, exactly
+		// as `schemafluxtest.Install` does. The contamination window is one
+		// test, and `t.Setenv` inside it makes `t.Parallel` a compile-time
+		// impossibility, so the window cannot overlap another test.
+		//
+		// A second test file wanting this is the moment to ask why it is not
+		// calling the seam that already exists, rather than to add an entry.
+		if rel == "internal/smart/fake_llm_test.go" {
+			return
+		}
+		// Only files that can actually reach SchemaFlux are inspected, so the
+		// count reported is the number of files where this rule could have been
+		// broken rather than the number of Go files in the repository.
+		if !importsSchemaFlux(f) {
+			return
+		}
+		g.checked++
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			why, bad := forbiddenGlobalProvider[sel.Sel.Name]
+			if !bad {
+				return true
+			}
+			g.findings = append(g.findings, finding{
+				file:   fmt.Sprintf("%s:%d", rel, fset.Position(sel.Pos()).Line),
+				detail: sel.Sel.Name + " " + why,
+			})
+			return true
+		})
+	})
+	return g
+}
+
+// importsSchemaFlux reports whether a file can reach the library at all.
+//
+// Matched on the import path rather than on a package name, because the root
+// package is imported under an explicit `schemaflux` alias in this repository
+// and an unaliased import elsewhere would still be the same package.
+func importsSchemaFlux(f *ast.File) bool {
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if p == "github.com/monstercameron/schemaflux" ||
+			strings.HasPrefix(p, "github.com/monstercameron/schemaflux/") {
+			return true
+		}
+	}
+	return false
 }

@@ -27,6 +27,18 @@ import (
 type llmClient interface {
 	Do(ctx context.Context, r llm.Request) (string, error)
 	Configured(ctx context.Context) bool
+	// OpsContext hands back a context that runs SchemaFlux's typed operations
+	// through this instance's provider.
+	//
+	// The features in this package are built on those operations now — the
+	// library writes the prompt and derives the schema from a Go type — and an
+	// operation given a bare context resolves its provider from a package
+	// global instead. On a fresh process that global is a MOCK, whose answers
+	// parse into zero-valued structs and are indistinguishable from a working
+	// deployment until somebody reads the output. So every operation in this
+	// package is given one of these, and the fake in the tests returns the
+	// context untouched so `schemafluxtest.Install` is what answers there.
+	OpsContext(ctx context.Context) context.Context
 }
 
 // Compile-time proof that the real client still satisfies the seam. Without

@@ -2,13 +2,14 @@ package smart
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/monstercameron/ArticleFlux/internal/jsonsel"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Rung 5b: the model picks field paths out of an API response (§11.2b).
@@ -44,6 +45,21 @@ func (p *JSONProposal) Samples() []jsonsel.Item {
 // wrong on the ones that carry a bigger array of something else — comments,
 // pages, related titles — and the model has the field names in front of it,
 // which the heuristic does not.
+// jsonAnswer is the shape a JSON-feed proposal comes back in; the schema is
+// derived from it. See scrapeAnswer for why this is a named type now.
+type jsonAnswer struct {
+	ItemsPath    string `json:"items_path"`
+	TitlePath    string `json:"title_path"`
+	LinkPath     string `json:"link_path"`
+	LinkTemplate string `json:"link_template"`
+	IDPath       string `json:"id_path"`
+	DatePath     string `json:"date_path"`
+	SummaryPath  string `json:"summary_path"`
+	ImagePath    string `json:"image_path"`
+	AuthorPath   string `json:"author_path"`
+	Notes        string `json:"notes"`
+}
+
 func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint string,
 	body []byte) (*JSONProposal, error) {
 
@@ -54,7 +70,7 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 	if strings.TrimSpace(shape) == "" {
 		return nil, ErrNoRule
 	}
-	model := a.model(ctx)
+	// The model comes from the bridge now — see llm.Client.OpsContext.
 
 	input := "Page URL: " + indexURL + "\nAPI URL: " + dataURL +
 		"\nLongest array of objects: " + hint + "\n\nResponse shape:\n" + shape
@@ -66,33 +82,16 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 			in = input + "\n\nYour previous answer did not work: " + lastProblem +
 				"\nPropose different paths."
 		}
-		raw, err := a.llm.Do(ctx, llm.Request{
-			Model:           model,
-			Instructions:    jsonInstructions,
-			Input:           in,
-			SchemaName:      "json_feed_rule",
-			Schema:          jsonSchema(),
-			MaxOutputTokens: analyzeMaxTokens,
-			Effort:          analyzeEffort,
-		})
+		// Rebuilt on `Extracting` (plan P3.6), the same shape as scrape.go's
+		// selector proposal and for the same reason: the answer is a fixed Go
+		// type, so the schema comes from it rather than from a `jsonSchema()`
+		// kept alongside that nothing checked agreed with it.
+		answer, err := schemaflux.Extracting[jsonAnswer](in).
+			Steer(jsonInstructions).
+			Fast().
+			Run(a.llm.OpsContext(ctx))
 		if err != nil {
 			return nil, err
-		}
-
-		var answer struct {
-			ItemsPath    string `json:"items_path"`
-			TitlePath    string `json:"title_path"`
-			LinkPath     string `json:"link_path"`
-			LinkTemplate string `json:"link_template"`
-			IDPath       string `json:"id_path"`
-			DatePath     string `json:"date_path"`
-			SummaryPath  string `json:"summary_path"`
-			ImagePath    string `json:"image_path"`
-			AuthorPath   string `json:"author_path"`
-			Notes        string `json:"notes"`
-		}
-		if err := json.Unmarshal([]byte(raw), &answer); err != nil {
-			return nil, fmt.Errorf("smart: the proposed rule was not readable: %w", err)
 		}
 		if strings.TrimSpace(answer.ItemsPath) == "" {
 			if n := strings.TrimSpace(answer.Notes); n != "" {

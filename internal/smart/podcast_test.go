@@ -593,8 +593,14 @@ func TestTheThreeFirstSegmentModesAreDistinct(t *testing.T) {
 // per story, the blocks after the first carry no greeting, and a group's
 // cache never collides with a lone segment's.
 
-func newFakeGroupLLM(reply string) *fakeLLM {
-	return &fakeLLM{configured: true, text: reply}
+// newFakeGroupLLM answers Configured() and nothing else.
+//
+// The grouped write runs on a typed operation now, so the REPLY is scripted on
+// the provider (see podReply in podcast_llm_test.go) rather than on this fake;
+// what is left here is the gate the call passes through before a request is
+// written, which is still worth having a double for.
+func newFakeGroupLLM() *fakeLLM {
+	return &fakeLLM{configured: true}
 }
 
 // **The load-bearing test in this file's group half.** A three-story segment
@@ -603,12 +609,12 @@ func newFakeGroupLLM(reply string) *fakeLLM {
 // call must not get wrong, because there is no way to recover a split from a
 // paragraph of prose after the fact.
 func TestSegmentGroupProducesOneBlockPerStory(t *testing.T) {
-	fake := newFakeGroupLLM(`{"blocks":[
+	prov := replying(t, `{"blocks":[
 		{"story":1,"text":"Handing over from the last segment, the first story here is this."},
 		{"story":2,"text":"Moving from that story to this one, here is the second."},
 		{"story":3,"text":"And from the second to the third, here is the last of them."}
 	]}`)
-	p := NewPodcast(fake, nil, t.TempDir())
+	p := NewPodcast(newFakeGroupLLM(), nil, t.TempDir())
 	g := SegmentGroup{
 		Vibe:      VibeCalm,
 		PrevTheme: "the transit budget fight",
@@ -642,8 +648,8 @@ func TestSegmentGroupProducesOneBlockPerStory(t *testing.T) {
 			}
 		}
 	}
-	if fake.callCount() != 1 {
-		t.Errorf("wrote a 3-story segment in %d model calls, want exactly 1", fake.callCount())
+	if prov.CallCount() != 1 {
+		t.Errorf("wrote a 3-story segment in %d model calls, want exactly 1", prov.CallCount())
 	}
 }
 

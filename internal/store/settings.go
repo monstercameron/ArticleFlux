@@ -57,6 +57,33 @@ const (
 	// tenant, and offering it per-user would be offering to delete somebody
 	// else's reading.
 	KeyRetentionItemDays SystemKey = "retention.items.days"
+	// KeySmartBudgetUSD is the ceiling on Smart+ spending for this instance, in
+	// US dollars, as a decimal string. Absent — and "0" — mean no ceiling,
+	// which is the default and has to be: a cap nobody set must not stop an
+	// instance that has been working for months (T4, plan Phase 4 / P4.2).
+	//
+	// A SystemKey rather than a per-reader preference for the reason
+	// KeyOpenAIAPIKey is one: the bill belongs to whoever supplied the
+	// credential, and a per-reader cap would let one reader spend another
+	// reader's allowance by having none of their own.
+	//
+	// Read per call rather than at boot, so raising it while a job is hitting
+	// it takes effect without a restart — see llm.CapFunc.
+	KeySmartBudgetUSD SystemKey = "smart.budget.usd"
+	// KeySmartSpendTotal is what this instance has ALREADY spent, as the JSON
+	// form of llm.Cost. It is the other half of KeySmartBudgetUSD and exists
+	// for one reason: a total kept in memory resets on every start, so a $5 cap
+	// was $5 per restart and a crash loop had no cap at all.
+	//
+	// Written after every priced call and read once at boot. Deleting the row
+	// resets the meter, which is the only way to do it and is deliberate — a
+	// "reset" button would need a story about who is allowed to press it, and
+	// this is an operator action on a self-hosted box.
+	//
+	// Not a secret: it is a number about this instance's own spending, and
+	// encrypting it would mean an instance that lost secrets.key also lost its
+	// ceiling.
+	KeySmartSpendTotal SystemKey = "smart.spend.total"
 	// KeyUITranslationPrefix is joined with a locale to hold that language's
 	// translated catalog: "smart.ui_translation.fr".
 	KeyUITranslationPrefix SystemKey = "smart.ui_translation."

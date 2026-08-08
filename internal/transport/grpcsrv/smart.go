@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,6 +160,44 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		}
 	}
 
+	// T2. The key was read on every classification batch and written by nothing,
+	// which is why the Classification tab's switch has been rendering disabled:
+	// there was no honest way to offer a control that could not take.
+	//
+	// Optional in the request so that "leave it as it is" stays expressible —
+	// otherwise every unrelated save, a model change or a new key, would carry a
+	// decision about egress that nobody made.
+	if req.ClassifyEnabled != nil {
+		v := "false"
+		if req.GetClassifyEnabled() {
+			v = "true"
+		}
+		if err := s.settings.SetSystemValue(ctx, smart.KeyClassifyEnabled, v, sc.UserID); err != nil {
+			return nil, errKey(codes.Internal, "srv.saveClassifyFailed",
+				"couldn't save that setting", nil)
+		}
+		// Logged at the same level as the key, because it is the same kind of
+		// decision: it is what makes article text leave this machine.
+		s.log.Info("smart+ classification consent changed", "enabled", req.GetClassifyEnabled(), "by", sc.UserID)
+	}
+
+	// T4. Negative is refused rather than clamped: somebody typing -5 meant
+	// something, and silently reading it as "no ceiling" is the opposite of what
+	// they were reaching for.
+	if req.BudgetUsd != nil {
+		usd := req.GetBudgetUsd()
+		if usd < 0 {
+			return nil, errKey(codes.InvalidArgument, "srv.badBudget",
+				"a spend limit cannot be negative — use 0 for no limit", nil)
+		}
+		if err := s.settings.SetSystemValue(ctx, store.KeySmartBudgetUSD,
+			strconv.FormatFloat(usd, 'f', -1, 64), sc.UserID); err != nil {
+			return nil, errKey(codes.Internal, "srv.saveBudgetFailed",
+				"couldn't save the spend limit", nil)
+		}
+		s.log.Info("smart+ spend limit changed", "usd", usd, "by", sc.UserID)
+	}
+
 	return &pb.SetSmartConfigResponse{Config: s.config(ctx)}, nil
 }
 
@@ -263,6 +302,29 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 	}
 	if m, err := s.settings.SystemValue(ctx, store.KeySmartModel); err == nil {
 		out.Model = m
+	}
+	// Anything but "true" is off, which is how the classifier itself reads it —
+	// two implementations of "is this on" is how a screen comes to disagree with
+	// the job.
+	if v, err := s.settings.SystemValue(ctx, smart.KeyClassifyEnabled); err == nil {
+		out.ClassifyEnabled = strings.TrimSpace(v) == "true"
+	}
+	if v, err := s.settings.SystemValue(ctx, store.KeySmartBudgetUSD); err == nil {
+		// An unparseable row reads as no ceiling, matching what the middleware
+		// does with it. A screen that showed a limit the enforcement does not
+		// apply would be worse than one that shows none.
+		if usd, perr := strconv.ParseFloat(strings.TrimSpace(v), 64); perr == nil && usd > 0 {
+			out.BudgetUsd = usd
+		}
+	}
+	// Money, beside the tokens. See llm.Cost for why the two counts travel with
+	// it: an unpriced call is not a free one, and the screen has to be able to
+	// say which it saw.
+	if s.llm != nil {
+		cost := s.llm.Cost()
+		out.CostUsd = cost.USD
+		out.PricedCalls = int64(cost.Priced)
+		out.UnpricedCalls = int64(cost.Unpriced)
 	}
 
 	stored, err := s.settings.SystemSecret(ctx, store.KeyOpenAIAPIKey)

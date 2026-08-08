@@ -11,6 +11,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/recommend"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/topics"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 var relnow = time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
@@ -42,9 +44,22 @@ func TestRelevanceCheckerRefusesWithNoSamples(t *testing.T) {
 // The happy path: the model's verdict and reason are forwarded, and — this is
 // the point of the fake — the ACTUAL request sent is inspected to prove the
 // egress boundary held (topic + samples only).
+// checking installs a provider answering with the given body and returns a
+// checker wired to it.
+//
+// A11 runs on `Extracting[relevanceVerdict]` now (plan P3.3), so these script
+// the PROVIDER rather than a fake `Do`: the library derives the schema from the
+// verdict type and writes the prompt, and there is no hand-written reply shape
+// left for a fake to return.
+func checking(t *testing.T, body string) (*RelevanceChecker, *schemafluxtest.Provider) {
+	t.Helper()
+	p := schemafluxtest.New().Shaped().Reply(body)
+	schemafluxtest.Install(t, p)
+	return NewRelevanceChecker(&fakeLLM{configured: true}, nil), p
+}
+
 func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"relevant": true, "reason": "covers the same distributed-systems topics you read"}`}
-	c := NewRelevanceChecker(fake, nil)
+	c, p := checking(t, `{"relevant": true, "reason": "covers the same distributed-systems topics you read"}`)
 
 	ok, reason, err := c.Check(context.Background(), "distributed systems", twoSamples, nil, nil)
 	if err != nil {
@@ -56,33 +71,33 @@ func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
 	if reason == "" {
 		t.Error("reason is empty, want the model's explanation")
 	}
-	if fake.callCount() != 1 {
-		t.Fatalf("callCount = %d, want 1", fake.callCount())
+	if p.CallCount() != 1 {
+		t.Fatalf("callCount = %d, want 1", p.CallCount())
 	}
 
-	// The request now goes out as prose rather than as the marshalled struct
-	// (llm.RelevancePayload.Prompt — the configured model could not read the
-	// JSON form), so the boundary is asserted the way it now holds: the
-	// outbound text must be EXACTLY what rendering the allowlisted payload
-	// produces. That is the same guarantee the key audit gave — nothing can
-	// reach the wire that is not a field on the payload type — expressed
-	// against the shape actually sent. The key allowlist itself is still
-	// exercised, on the marshalled struct, in internal/llm/relevance_test.go.
-	req := fake.callN(0)
+	// The egress boundary, asserted the way it now holds: what leaves must be
+	// EXACTLY what rendering the allowlisted payload produces. `RelevancePayload`
+	// is still the only thing that decides what may go — only who writes the
+	// prompt around it changed — so nothing can reach the wire that is not a
+	// field on that type. The key allowlist itself is exercised on the
+	// marshalled struct in internal/llm/relevance_test.go.
 	want := llm.RelevancePayload{Topic: "distributed systems"}
 	for _, s := range twoSamples {
 		want.Samples = append(want.Samples, llm.RelevanceSample{Title: s.Title, Summary: s.Summary})
 	}
 	want, _ = want.Trim()
-	if req.Input != want.Prompt() {
-		t.Errorf("the outbound relevance request is not a pure rendering of the "+
-			"allowlisted payload:\n got: %q\nwant: %q", req.Input, want.Prompt())
+	// TrimSpace on the expectation, not on what was sent: the operation trims
+	// the input it is given, so a trailing newline is the only difference and
+	// asserting on it would be asserting on the library's formatting rather
+	// than on the boundary.
+	if !strings.Contains(p.LastRequest().UserPrompt, strings.TrimSpace(want.Prompt())) {
+		t.Errorf("the outbound request does not carry the allowlisted payload verbatim:\n got: %q\nwant it to contain: %q",
+			p.LastRequest().UserPrompt, want.Prompt())
 	}
 }
 
 func TestRelevanceCheckerReturnsFalseOnAMismatch(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"relevant": false, "reason": "writes about cooking, not the reader's topics"}`}
-	c := NewRelevanceChecker(fake, nil)
+	c, _ := checking(t, `{"relevant": false, "reason": "writes about cooking, not the reader's topics"}`)
 
 	ok, reason, err := c.Check(context.Background(), "npu inference", twoSamples, nil, nil)
 	if err != nil {
@@ -96,18 +111,38 @@ func TestRelevanceCheckerReturnsFalseOnAMismatch(t *testing.T) {
 	}
 }
 
-// A malformed reply must be a hard error, not a silent "not relevant" — see
-// the doc comment on Check: a false here must never be misread as a verdict.
+// A malformed reply must be a hard error, not a silent "not relevant" — see the
+// doc comment on Check: a false here must never be misread as a verdict.
+//
+// `Strict()` is what makes this true now. Without it a reply missing `relevant`
+// would decode to the zero value, which is exactly the "not relevant" that must
+// never be inferred from a failure.
 func TestRelevanceCheckerErrorsOnMalformedReply(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: true, text: `not json`}, nil)
+	c, _ := checking(t, `not json`)
 	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded on a non-JSON reply")
 	}
 }
 
+func TestRelevanceCheckerErrorsOnAnEmptyObjectRatherThanReadingItAsNotRelevant(t *testing.T) {
+	// The specific shape the doc comment warns about, and the one a schema
+	// without Strict would wave through.
+	c, _ := checking(t, `{}`)
+	relevant, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
+	if err == nil {
+		t.Fatal("an empty object was accepted as a verdict")
+	}
+	if relevant {
+		t.Error("a failed call reported relevant = true")
+	}
+}
+
 func TestRelevanceCheckerPropagatesAProviderError(t *testing.T) {
-	c := NewRelevanceChecker(&fakeLLM{configured: true, err: context.DeadlineExceeded}, nil)
+	p := schemafluxtest.New().Fail(context.DeadlineExceeded)
+	schemafluxtest.Install(t, p)
+	c := NewRelevanceChecker(&fakeLLM{configured: true}, nil)
+
 	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)
 	if err == nil {
 		t.Fatal("Check succeeded despite the provider call failing")
@@ -201,24 +236,18 @@ func TestTopicTermsExcludesSuppressedTopics(t *testing.T) {
 // The model picker on the Smart+ settings tab was being ignored entirely —
 // this call hardcoded the provider default (Cam, 2026-08-01). Mirrors
 // TestClassifierModelReadsTheConfiguredSetting exactly.
-func TestRelevanceCheckerModelReadsTheConfiguredSetting(t *testing.T) {
-	settings := newSettings(t)
-	if err := settings.SetSystemValue(context.Background(), store.KeySmartModel, "gpt-5.6-luna", ""); err != nil {
-		t.Fatalf("seeding the model setting: %v", err)
-	}
-	fake := &fakeLLM{configured: true, text: `{"relevant":true,"reason":"ok"}`}
-	c := NewRelevanceChecker(fake, settings)
-	_, _, err := c.Check(context.Background(), "topic", []recommend.Sample{{Title: "a"}, {Title: "b"}}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(fake.calls))
-	}
-	if got := fake.calls[0].Model; got != "gpt-5.6-luna" {
-		t.Errorf("Request.Model = %q, want the configured model to be forwarded verbatim", got)
-	}
-}
+// The model is no longer this feature's to choose.
+//
+// It used to read store.KeySmartModel and put it on the request. A typed
+// operation has no field for a model (SchemaFlux resolves one from the speed
+// tier it chose — G5), so the instance's setting is applied by the bridge
+// instead: llm.Client.OpsContext discards whatever the library resolved and
+// sends what this instance configured. That is asserted where it now happens,
+// in internal/llm's TestTheInstancesConfiguredModelWinsOverTheOperationsTier,
+// against a real operation and a captured wire body.
+//
+// Asserting it here as well would be a second answer to the same question, and
+// the whole reason the resolution moved to one place is that there were two.
 
 // nil settings (an instance with no override, or a test) falls back to the
 // provider default — same as every other Smart+ feature's model().

@@ -18,6 +18,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Why this imports client/i18n
@@ -128,6 +130,27 @@ type cached struct {
 // force skips the cache, which is the only way to recover from a translation
 // that came back wrong — a reader who can see that a button says the wrong
 // thing has no other lever.
+// translationBatch is one batch of translated entries, and the schema is derived
+// from it.
+//
+// Keyed rather than positional — see the note at the call site.
+type translationBatch struct {
+	Entries []translationEntry `json:"entries"`
+}
+
+// translationEntry is one catalog string, with the key it belongs to.
+//
+// `text` is a POINTER because an empty translation is a real answer this code
+// handles rather than an error: the caller drops it and the Bundle falls back
+// to English, which is strictly better than an empty catalog entry. A derived
+// schema makes every field required and reads an empty string as an unanswered
+// one, so without the pointer a model that could not translate ONE string
+// would fail the whole sixty-string batch.
+type translationEntry struct {
+	Key  string  `json:"key"`
+	Text *string `json:"text"`
+}
+
 func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]i18n.Entry, error) {
 	// Checked before the Languages lookup, and deliberately not folded into it:
 	// i18n.Languages is the OFFERED TARGETS and by design excludes "en" (see
@@ -276,30 +299,32 @@ func (t *Translator) translateBatch(ctx context.Context, lang Language, model st
 	input := "Target language: " + lang.English + " (" + lang.Native + "), BCP-47 code " +
 		lang.Code + ".\n\nMessages:\n" + string(payload)
 
-	raw, err := t.llm.Do(ctx, llm.Request{
-		Model:           model,
-		Instructions:    instructions,
-		Input:           input,
-		SchemaName:      "ui_translation",
-		Schema:          translationSchema(),
-		MaxOutputTokens: maxOutputTokens,
-	})
+	// Rebuilt on `Extracting` (plan P3.8). The answer is keyed BY ENTRY ID, and
+	// that is the property the whole feature rests on: a catalog translated
+	// positionally would silently re-map every string the moment one entry was
+	// added, so the model returns the key beside the text and the caller matches
+	// on it. `translationBatch` carries that shape and the schema comes from it.
+	//
+	// `Translating` is deliberately not used, despite the name. It translates a
+	// STRING; this translates a keyed set in one call, and doing them one at a
+	// time would be several hundred requests for one language.
+	//
+	// Not `Strict()`, for the reason given at interest.go's rerank: rejecting a
+	// field the schema does not name is wrong for a contract that tolerates one,
+	// and a batch is sixty strings — the most expensive thing to redo over a
+	// `model_confidence` nobody asked for. Every entry is checked below.
+	parsed, err := schemaflux.Extracting[translationBatch](input).
+		Steer(instructions).
+		Run(t.llm.OpsContext(ctx))
 	if err != nil {
 		return nil, err
 	}
-
-	var parsed struct {
-		Entries []struct {
-			Key  string `json:"key"`
-			Text string `json:"text"`
-		} `json:"entries"`
-	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, fmt.Errorf("smart: the translation was not readable: %w", err)
-	}
 	out := make(map[string]string, len(parsed.Entries))
 	for _, e := range parsed.Entries {
-		out[e.Key] = e.Text
+		if e.Text == nil {
+			continue
+		}
+		out[e.Key] = *e.Text
 	}
 	return out, nil
 }

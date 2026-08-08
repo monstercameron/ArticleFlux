@@ -8,21 +8,47 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
-// This file is the coverage the llmClient seam (llmclient.go) exists to unlock:
-// Digest.Speakable's only untested leg used to be everything past the
-// Configured() gate, because there was no way to answer llm.Client.Do() without
-// a real network call. fakeLLM (fake_llm_test.go) answers it in-process.
+// Everything past Digest.Speakable's Configured() gate.
+//
+// A12 runs on `Summarizing` now (plan P3.4), so what a test scripts is the
+// PROVIDER's body rather than a fake `Do`'s reply: the library writes the
+// request, and the digest's own brief — every rule in it about SPOKEN output —
+// rides in through Steer. A summarise answers with the bare text, no wrapper.
+//
+// `schemafluxtest.Install` swaps the provider in for the test's duration and
+// restores the previous one. It calls `t.Setenv`, so none of these may call
+// `t.Parallel`.
+
+// digesting installs a provider answering with the given bodies, in order, and
+// returns a Digest caching into dir.
+func digesting(t *testing.T, dir string, bodies ...string) (*Digest, *schemafluxtest.Provider) {
+	t.Helper()
+	p := schemafluxtest.New().Shaped().Reply(bodies...)
+	schemafluxtest.Install(t, p)
+	return NewDigest(&fakeLLM{configured: true}, nil, dir), p
+}
+
+// sentTo returns everything the provider was asked on call n, system and user
+// prompt together — the brief goes in through Steer and the article through the
+// input, and which of the two carries which is the library's business.
+func sentTo(p *schemafluxtest.Provider, n int) string {
+	reqs := p.Requests()
+	if n >= len(reqs) {
+		return ""
+	}
+	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+}
 
 // --- success path --------------------------------------------------------------
 
-// The success path: one call, the model's markdown-tainted answer is cleaned
-// before being handed back AND before being cached, and a second read comes
-// from disk rather than the provider.
+// One call, the model's markdown-tainted answer is cleaned before being handed
+// back AND before being cached, and a second read comes from disk rather than
+// the provider.
 func TestSpeakableSuccessCleansCachesAndCallsOnce(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: "## Not a heading\n- not a bullet\n\nThe actual sentence."}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, p := digesting(t, t.TempDir(), "## Not a heading\n- not a bullet\n\nThe actual sentence.")
 	ctx := context.Background()
 
 	got, err := d.Speakable(ctx, "item-1", "LWN", "Fsyncgate", "the article body")
@@ -35,7 +61,7 @@ func TestSpeakableSuccessCleansCachesAndCallsOnce(t *testing.T) {
 	if !strings.Contains(got, "The actual sentence.") {
 		t.Errorf("content lost: %q", got)
 	}
-	if n := fake.callCount(); n != 1 {
+	if n := p.CallCount(); n != 1 {
 		t.Fatalf("provider called %d times, want 1", n)
 	}
 
@@ -51,9 +77,9 @@ func TestSpeakableSuccessCleansCachesAndCallsOnce(t *testing.T) {
 		t.Errorf("cached text = %q, want it to match the cleaned return value %q", raw, got)
 	}
 
-	// A second call must be answered from disk. Proven by breaking the provider
-	// and confirming the call count does not move.
-	fake.err = errors.New("must not be reached: cache should have answered")
+	// A second call must be answered from disk, proven by the call count not
+	// moving. (The provider cannot be "broken" mid-test the way a fake `Do`
+	// could be, so the count is the whole assertion — which is the same claim.)
 	got2, err := d.Speakable(ctx, "item-1", "LWN", "Fsyncgate", "the article body")
 	if err != nil {
 		t.Fatalf("warm-cache read: %v", err)
@@ -61,26 +87,23 @@ func TestSpeakableSuccessCleansCachesAndCallsOnce(t *testing.T) {
 	if got2 != got {
 		t.Errorf("warm-cache read = %q, want %q", got2, got)
 	}
-	if n := fake.callCount(); n != 1 {
+	if n := p.CallCount(); n != 1 {
 		t.Fatalf("provider called again on a warm cache: %d calls, want 1", n)
 	}
 }
 
 // --- provider errors -------------------------------------------------------
 
-// A provider error (a capped, trimmed string in real life — see
-// internal/llm.Do) must reach the caller and must NOT be cached — caching an
+// A provider error must reach the caller and must NOT be cached — caching an
 // error would make one bad request or outage permanent for that item.
 func TestSpeakableProviderErrorSurfacesAndIsNotCached(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
-	d := NewDigest(fake, nil, t.TempDir())
+	p := schemafluxtest.New().Fail(errors.New("upstream on fire"))
+	schemafluxtest.Install(t, p)
+	d := NewDigest(&fakeLLM{configured: true}, nil, t.TempDir())
 
 	_, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "body")
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's message surfaced", err)
-	}
-	if n := fake.callCount(); n != 1 {
-		t.Fatalf("provider called %d times on failure, want 1 (Digest does not retry)", n)
 	}
 	if _, statErr := os.Stat(d.cachePath("item-1", llm.DefaultModel)); statErr == nil {
 		t.Error("a failed call left a cache file on disk")
@@ -89,39 +112,31 @@ func TestSpeakableProviderErrorSurfacesAndIsNotCached(t *testing.T) {
 
 // --- context cancellation ---------------------------------------------------
 
-// A caller's cancellation must reach the provider call verbatim and the
-// resulting error must be recognisable as a cancellation to the CALLER — not
+// A caller's cancellation must be recognisable as one to the CALLER — not
 // swallowed, not rewritten as an opaque "smart:" error.
 func TestSpeakableContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, _ := digesting(t, t.TempDir(), "a digest")
 
 	_, err := d.Speakable(ctx, "item-1", "LWN", "Fsyncgate", "body")
+	if err == nil {
+		t.Fatal("a cancelled call succeeded")
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
-	}
-	if fake.callCount() != 1 {
-		t.Fatalf("provider called %d times, want 1", fake.callCount())
-	}
-	if fake.ctxN(0).Err() == nil {
-		t.Error("the context handed to the provider was not the caller's cancelled one")
 	}
 }
 
 // --- malformed / empty model output -----------------------------------------
 
-// A model answer that is ALL markdown noise cleans to nothing. That must be
-// reported as ErrNothingToSummarise (the caller falls back to reading the
-// article) and must not cache an empty file that would masquerade as a real,
-// if terse, digest forever.
+// An answer that is ALL markdown noise cleans to nothing. That must be reported
+// as ErrNothingToSummarise (the caller falls back to reading the article) and
+// must not cache an empty file that would masquerade as a real, if terse,
+// digest forever.
 func TestSpeakableAllNoiseOutputIsNothingToSummarise(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: "- \n* \n##\n\n"}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, _ := digesting(t, t.TempDir(), "- \n* \n##\n\n")
 
 	_, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "body")
 	if !errors.Is(err, ErrNothingToSummarise) {
@@ -132,12 +147,11 @@ func TestSpeakableAllNoiseOutputIsNothingToSummarise(t *testing.T) {
 	}
 }
 
-// A completely empty string from the provider (no error, no text — a
-// pathological but real shape a provider bug could produce) must be treated
-// the same way, not as a successful empty digest.
+// A completely empty string from the provider — pathological but a shape a
+// provider bug could produce — must be treated the same way, not as a
+// successful empty digest.
 func TestSpeakableEmptyStringOutputIsNothingToSummarise(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: ""}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, _ := digesting(t, t.TempDir(), "")
 
 	_, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "body")
 	if !errors.Is(err, ErrNothingToSummarise) {
@@ -147,18 +161,16 @@ func TestSpeakableEmptyStringOutputIsNothingToSummarise(t *testing.T) {
 
 // --- what is actually sent --------------------------------------------------
 
-// This is new coverage in its own right: the input assembly (Publication:/
-// Headline: prefix lines, the body) was never exercised because it never
-// reached Do(). A regression that dropped the title or swapped the two labels
-// would previously have shipped invisibly.
+// The input assembly: the Publication:/Headline: prefix lines and the body. A
+// regression that dropped the title or swapped the two labels would ship
+// invisibly otherwise.
 func TestSpeakableInputCarriesSourceAndTitle(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: "a fine digest of the piece"}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, p := digesting(t, t.TempDir(), "a fine digest of the piece")
 
 	if _, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "the body text"); err != nil {
 		t.Fatalf("Speakable: %v", err)
 	}
-	in := fake.callN(0).Input
+	in := sentTo(p, 0)
 	if !strings.Contains(in, "Publication: LWN") {
 		t.Errorf("input missing publication:\n%s", in)
 	}
@@ -168,17 +180,38 @@ func TestSpeakableInputCarriesSourceAndTitle(t *testing.T) {
 	if !strings.Contains(in, "the body text") {
 		t.Errorf("input missing the article body:\n%s", in)
 	}
-	if fake.callN(0).Instructions != digestInstructions {
-		t.Error("the digest instructions were not sent")
+}
+
+// The brief has to reach the model, and this is the assertion that matters most
+// on this path.
+//
+// Every rule in it is about SPOKEN output — no markdown, no headings, spell out
+// "40 percent" — and none of it is something a general-purpose summariser would
+// know. It travels through Steer, which was silently dropped by SchemaFlux
+// until ST-010: every digest would have come back full of bullet points for the
+// speech synthesiser to read out as noise, and the only symptom would have been
+// audio that sounded wrong.
+func TestSpeakableSendsTheSpokenBrief(t *testing.T) {
+	d, p := digesting(t, t.TempDir(), "a digest")
+
+	if _, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "body"); err != nil {
+		t.Fatalf("Speakable: %v", err)
+	}
+	in := sentTo(p, 0)
+	for _, want := range []string{
+		"NO bullet points",
+		"speech synthesiser",
+		"NO INTRODUCTION OF ANY KIND",
+	} {
+		if !strings.Contains(in, want) {
+			t.Errorf("the spoken brief did not reach the model — missing %q", want)
+		}
 	}
 }
 
-// A body longer than maxInputChars is cut on a WORD boundary, not mid-word —
-// this was previously provable only by reading the source, since the cut body
-// never reached anywhere observable.
+// A body longer than maxInputChars is cut on a WORD boundary, not mid-word.
 func TestSpeakableTruncatesOversizedBodyOnAWordBoundary(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: "a digest"}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, p := digesting(t, t.TempDir(), "a digest")
 
 	// A run of "word " repeated well past maxInputChars, offset by two leading
 	// characters so a NAIVE hard cut at exactly maxInputChars lands mid-word
@@ -190,29 +223,29 @@ func TestSpeakableTruncatesOversizedBodyOnAWordBoundary(t *testing.T) {
 	if _, err := d.Speakable(context.Background(), "item-1", "src", "title", body); err != nil {
 		t.Fatalf("Speakable: %v", err)
 	}
-	in := fake.callN(0).Input
-	// The input carries "Publication:"/"Headline:" lines too when set, so send
-	// them empty here by using non-empty source/title above; instead check the
-	// tail of what was sent for the article body specifically.
-	if len(in) >= len("Publication: src\nHeadline: title\n\n")+len(body) {
-		t.Errorf("the oversized body was not truncated: sent %d bytes", len(in))
+	in := sentTo(p, 0)
+	if strings.Contains(in, body) {
+		t.Error("the oversized body was sent whole")
 	}
-	trimmed := strings.TrimRight(in, "\n")
-	if strings.HasSuffix(trimmed, "wor") || strings.HasSuffix(trimmed, "wo") || strings.HasSuffix(trimmed, "w") {
-		t.Errorf("the body was cut mid-word: %q", trimmed[len(trimmed)-20:])
+	// The body's tail, wherever the brief ends. Cutting mid-word would leave a
+	// fragment of "word" immediately before the input ends.
+	for _, bad := range []string{"wor\n", "wo\n", "w\n"} {
+		if strings.HasSuffix(strings.TrimRight(in, " \n")+"\n", bad) {
+			t.Errorf("the body was cut mid-word, ending %q", bad)
+		}
 	}
 }
 
 // The word-boundary cut falls back to a hard cut when the run up to
 // maxInputChars has no space at all.
 func TestSpeakableHardCutsWhenNoWordBoundaryExists(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: "a digest"}
-	d := NewDigest(fake, nil, t.TempDir())
+	d, p := digesting(t, t.TempDir(), "a digest")
 	body := strings.Repeat("x", maxInputChars+1000) // one giant "word", no spaces
+
 	if _, err := d.Speakable(context.Background(), "item-1", "", "", body); err != nil {
 		t.Fatalf("Speakable: %v", err)
 	}
-	if len(fake.callN(0).Input) >= len(body) {
+	if strings.Contains(sentTo(p, 0), body) {
 		t.Error("a spaceless oversized body was not truncated")
 	}
 }

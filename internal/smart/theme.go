@@ -11,6 +11,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // The Smart+ half of the theming engine (§20.16.3).
@@ -265,37 +267,30 @@ func (p *Palettes) ask(ctx context.Context, instructions string, payload llm.The
 		return design.Theme{}, nil, err
 	}
 
-	model, err := p.model(ctx)
-	if err != nil {
-		return design.Theme{}, nil, err
-	}
-	call, cancel := context.WithTimeout(ctx, themeTimeout)
+	call, cancel := context.WithTimeout(p.llm.OpsContext(ctx), themeTimeout)
 	defer cancel()
 
-	out, err := p.llm.Do(call, llm.Request{
-		Model:        model,
-		Instructions: instructions,
-		Input:        string(body),
-		SchemaName:   schemaName,
-		Schema:       paletteSchema,
-		// Generous, because on a reasoning model the budget covers the THINKING
-		// and this is a judgement over thirteen interdependent values — a palette
-		// is not thirteen independent choices. A truncated reply here is not a
-		// partial palette, it is no palette at all (llm.ErrTruncated).
-		MaxOutputTokens: 3000,
-		// Medium, like the re-rank and unlike the extractors. "Which of these
-		// greys share a temperature" is deliberation, and it is the product being
-		// bought — a low-effort answer to this is twelve colours that individually
-		// satisfy the brief and together look like a spreadsheet.
-		Effort: "medium",
-	})
+	// Rebuilt on `Generating` (plan P3.7). The schema comes from `paletteReply`
+	// now rather than from `paletteSchema` beside it — thirteen colour fields
+	// that had to agree across two declarations and nothing checked they did.
+	//
+	// **The AA repair stays server-side**, below: `design.NewGenerated` is what
+	// enforces the readability floor and reports what it had to move. A palette
+	// the model swears is legible is a claim; the contrast ratio is a
+	// measurement, and this repo does the measuring.
+	//
+	// `Smart()` rather than `Fast()`, which is this operation's version of the
+	// Effort medium the hand-built request set: "which of these greys share a
+	// temperature" is deliberation, and it is the product being bought. A cheap
+	// answer here is twelve colours that individually satisfy the brief and
+	// together look like a spreadsheet.
+	reply, err := schemaflux.Generating[paletteReply](string(body)).
+		Steer(instructions).
+		Smart().
+		Strict().
+		Run(call)
 	if err != nil {
 		return design.Theme{}, nil, err
-	}
-
-	var reply paletteReply
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return design.Theme{}, nil, fmt.Errorf("smart: palette reply was not the schema: %w", err)
 	}
 
 	theme, reps, err := design.NewGenerated(reply.Label, reply.Blurb, design.GeneratedTokens{

@@ -2,7 +2,6 @@ package smart
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +11,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/scrapesel"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Following a page that has no feed — plan.md §11 rung 5, §14.2.
@@ -147,7 +148,8 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 	if strings.TrimSpace(outline) == "" {
 		return nil, ErrNoRule
 	}
-	model := a.model(ctx)
+	// The model is resolved by the bridge from this instance's setting now — a
+	// typed operation has no field for one. See llm.Client.OpsContext.
 
 	input := "Index URL: " + indexURL + "\n\nPage outline:\n" + outline
 	var lastProblem string
@@ -158,32 +160,23 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 			in = input + "\n\nYour previous answer did not work on this page: " +
 				lastProblem + "\nPropose different selectors."
 		}
-		raw, err := a.llm.Do(ctx, llm.Request{
-			Model:           model,
-			Instructions:    scrapeInstructions,
-			Input:           in,
-			SchemaName:      "scrape_rule",
-			Schema:          scrapeSchema(),
-			MaxOutputTokens: analyzeMaxTokens,
-			Effort:          analyzeEffort,
-		})
+		// Rebuilt on `Extracting` (plan P3.6). The answer shape is a fixed Go
+		// type, so the schema is derived from it rather than kept in
+		// `scrapeSchema()` beside it — one fewer thing that can drift from the
+		// struct it describes.
+		//
+		// Still fed the DISTILLED outline, never raw HTML: `input` is assembled
+		// upstream and that boundary is unchanged. The retry loop is also
+		// unchanged, and it is this repo's own — it re-asks with the reason the
+		// previous selectors failed against the real page, which is a different
+		// thing from the library's repair loop (that re-asks for a well-SHAPED
+		// answer; this re-asks for a WORKING one).
+		answer, err := schemaflux.Extracting[scrapeAnswer](in).
+			Steer(scrapeInstructions).
+			Fast().
+			Run(a.llm.OpsContext(ctx))
 		if err != nil {
 			return nil, err
-		}
-
-		var answer struct {
-			ItemSelector    string `json:"item_selector"`
-			TitleSelector   string `json:"title_selector"`
-			LinkSelector    string `json:"link_selector"`
-			DateSelector    string `json:"date_selector"`
-			DateLayout      string `json:"date_layout"`
-			SummarySelector string `json:"summary_selector"`
-			ImageSelector   string `json:"image_selector"`
-			AuthorSelector  string `json:"author_selector"`
-			Notes           string `json:"notes"`
-		}
-		if err := json.Unmarshal([]byte(raw), &answer); err != nil {
-			return nil, fmt.Errorf("smart: the proposed rule was not readable: %w", err)
 		}
 
 		// "There is no list here" — taken at its word, and NOT retried. The
@@ -229,6 +222,25 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 // fed back to the model, which is why the failures are specific: "0 of 14
 // containers had a link" tells it what to change, where "it did not work" tells
 // it to guess again.
+// scrapeAnswer is the shape a proposal comes back in, and the schema is derived
+// from it.
+//
+// It was an anonymous struct inside the loop with a hand-written
+// `scrapeSchema()` beside it; the two had to agree and nothing checked that
+// they did. The json tags are what the model reads, so they are the prompt as
+// much as the type.
+type scrapeAnswer struct {
+	ItemSelector    string `json:"item_selector"`
+	TitleSelector   string `json:"title_selector"`
+	LinkSelector    string `json:"link_selector"`
+	DateSelector    string `json:"date_selector"`
+	DateLayout      string `json:"date_layout"`
+	SummarySelector string `json:"summary_selector"`
+	ImageSelector   string `json:"image_selector"`
+	AuthorSelector  string `json:"author_selector"`
+	Notes           string `json:"notes"`
+}
+
 func tryRule(r scrapesel.Rule, pageHTML string) (scrapesel.Result, string) {
 	c, err := scrapesel.Compile(r)
 	if err != nil {

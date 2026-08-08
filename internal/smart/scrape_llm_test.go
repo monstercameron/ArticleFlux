@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // SiteAnalyzer.Propose's model call was entirely unreachable from a test before
@@ -22,11 +24,33 @@ func goodScrapeAnswer() string {
 		`"image_selector":"","author_selector":"","notes":"keyed on the repeated article.post block"}`
 }
 
+// scraping installs a provider answering with the given bodies, in order, and
+// returns an analyser wired to it.
+//
+// A8/A9 run on `Extracting` now (plan P3.6), so a test scripts the PROVIDER's
+// body rather than a fake `Do`'s reply. The bodies themselves are unchanged —
+// the same JSON the hand-written schema described, now derived from
+// `scrapeAnswer` instead.
+func scraping(t *testing.T, bodies ...string) (*SiteAnalyzer, *schemafluxtest.Provider) {
+	t.Helper()
+	p := schemafluxtest.New().Shaped().Reply(bodies...)
+	schemafluxtest.Install(t, p)
+	return NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t)), p
+}
+
+// scrapeSent is everything the provider was asked on call n.
+func scrapeSent(p *schemafluxtest.Provider, n int) string {
+	reqs := p.Requests()
+	if n >= len(reqs) {
+		return ""
+	}
+	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+}
+
 // --- success path --------------------------------------------------------------
 
 func TestProposeAcceptsAGoodRuleOnTheFirstAttempt(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: goodScrapeAnswer()}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, p := scraping(t, goodScrapeAnswer())
 
 	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if err != nil {
@@ -38,7 +62,7 @@ func TestProposeAcceptsAGoodRuleOnTheFirstAttempt(t *testing.T) {
 	if prop.Notes != "keyed on the repeated article.post block" {
 		t.Errorf("notes = %q", prop.Notes)
 	}
-	if n := fake.callCount(); n != 1 {
+	if n := p.CallCount(); n != 1 {
 		t.Fatalf("provider called %d times for a rule that worked first try, want 1", n)
 	}
 }
@@ -52,17 +76,14 @@ func TestProposeAcceptsAGoodRuleOnTheFirstAttempt(t *testing.T) {
 // not distinguishable from the first — so the two replies here are different
 // answers, and success is only reached by taking the second one.
 func TestProposeRetriesOnceWithTheFailureThenSucceeds(t *testing.T) {
-	fake := &fakeLLM{configured: true}
-	fake.reply = func(call int, r llm.Request) (string, error) {
-		if call == 0 {
-			// A selector that compiles but matches nothing on `index`.
-			return `{"item_selector":"div.nonexistent","title_selector":"h2","link_selector":"a@href",` +
-				`"date_selector":"","date_layout":"","summary_selector":"","image_selector":"",` +
-				`"author_selector":"","notes":""}`, nil
-		}
-		return goodScrapeAnswer(), nil
-	}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	// Two DIFFERENT answers: success is only reachable by taking the second, so
+	// a bug that retried blindly or gave up immediately is distinguishable.
+	a, p := scraping(t,
+		// A selector that compiles but matches nothing on `index`.
+		`{"item_selector":"div.nonexistent","title_selector":"h2","link_selector":"a@href",`+
+			`"date_selector":"","date_layout":"","summary_selector":"","image_selector":"",`+
+			`"author_selector":"","notes":""}`,
+		goodScrapeAnswer())
 
 	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if err != nil {
@@ -71,13 +92,13 @@ func TestProposeRetriesOnceWithTheFailureThenSucceeds(t *testing.T) {
 	if len(prop.Items) != 3 {
 		t.Fatalf("%d items, want 3", len(prop.Items))
 	}
-	if n := fake.callCount(); n != 2 {
+	if n := p.CallCount(); n != 2 {
 		t.Fatalf("provider called %d times, want exactly 2 (one retry)", n)
 	}
 	// The second call must carry the FIRST attempt's specific failure, not a
 	// generic "try again" — that is what makes the retry a real correction
 	// rather than a second roll of the dice.
-	secondInput := fake.callN(1).Input
+	secondInput := scrapeSent(p, 1)
 	if !strings.Contains(secondInput, "did not work on this page") {
 		t.Errorf("the retry did not reference the earlier failure:\n%s", secondInput)
 	}
@@ -90,16 +111,15 @@ func TestProposeRetriesOnceWithTheFailureThenSucceeds(t *testing.T) {
 // number a naive retry-forever bug would get wrong — exactly two calls, not
 // three, not one.
 func TestProposeGivesUpAfterTwoBadAttempts(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"item_selector":"div.nonexistent",` +
-		`"title_selector":"h2","link_selector":"a@href","date_selector":"","date_layout":"",` +
-		`"summary_selector":"","image_selector":"","author_selector":"","notes":""}`}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, p := scraping(t, `{"item_selector":"div.nonexistent",`+
+		`"title_selector":"h2","link_selector":"a@href","date_selector":"","date_layout":"",`+
+		`"summary_selector":"","image_selector":"","author_selector":"","notes":""}`)
 
 	_, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if !errors.Is(err, ErrNoRule) {
 		t.Fatalf("err = %v, want ErrNoRule", err)
 	}
-	if n := fake.callCount(); n != 2 {
+	if n := p.CallCount(); n != 2 {
 		t.Fatalf("provider called %d times, want exactly 2", n)
 	}
 }
@@ -107,11 +127,9 @@ func TestProposeGivesUpAfterTwoBadAttempts(t *testing.T) {
 // --- "no list here" is taken at its word, not retried ------------------------
 
 func TestProposeEmptyItemSelectorIsErrNoListAndIsNotRetried(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"item_selector":"","title_selector":"","link_selector":"","date_selector":"",` +
-			`"date_layout":"","summary_selector":"","image_selector":"","author_selector":"",` +
-			`"notes":"this is an app shell, nothing to select"}`}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, p := scraping(t, `{"item_selector":"","title_selector":"","link_selector":"","date_selector":"",`+
+		`"date_layout":"","summary_selector":"","image_selector":"","author_selector":"",`+
+		`"notes":"this is an app shell, nothing to select"}`)
 
 	_, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if !errors.Is(err, ErrNoList) {
@@ -120,48 +138,71 @@ func TestProposeEmptyItemSelectorIsErrNoListAndIsNotRetried(t *testing.T) {
 	if !strings.Contains(err.Error(), "app shell") {
 		t.Errorf("err = %v, want the model's notes carried through", err)
 	}
-	if n := fake.callCount(); n != 1 {
+	if n := p.CallCount(); n != 1 {
 		t.Fatalf("a considered 'no list' answer was retried: %d calls, want 1", n)
 	}
 }
 
 // --- malformed model output ---------------------------------------------------
+//
+// The intent is unchanged: an unreadable reply is a hard error and must never
+// become a plausible-looking rule with zero-valued fields. What changed with
+// P3.6 is who says so and how much it costs.
+//
+// **The library repairs before it gives up, and that is real spend.** A
+// malformed answer is now re-asked twice by SchemaFlux ("repair exhausted after
+// 2 attempts") INSIDE each of this feature's own two attempts, so a
+// consistently unparsable model can cost four calls where it used to cost one.
+// That is a worthwhile trade for answers that are nearly right, and it is a bad
+// one for a model that cannot produce the shape at all — worth knowing before
+// somebody wonders why a broken instance's bill moved.
+//
+// The assertions below are therefore about BEHAVIOUR (an error, no rule) rather
+// than about the wording, which is the library's now.
 
-func TestProposeTruncatedJSONIsARetryImmuneReadError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"item_selector":"article.post","title_selector":"h2 a"`} // no closing brace
-	a := NewSiteAnalyzer(fake, newSettings(t))
+func TestProposeTruncatedJSONIsAReadError(t *testing.T) {
+	a, p := scraping(t, `{"item_selector":"article.post","title_selector":"h2 a"`) // no closing brace
 
-	_, err := a.Propose(context.Background(), "https://notes.example/", index)
-	if err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("err = %v, want a 'not readable' error", err)
+	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if err == nil {
+		t.Fatal("unparsable JSON produced a rule")
 	}
-	if n := fake.callCount(); n != 1 {
-		t.Fatalf("provider called %d times on unparsable JSON, want exactly 1 (Propose does not "+
-			"retry a parse failure — only tryRule failures get fed back)", n)
+	if prop != nil {
+		t.Errorf("a proposal came back from an unreadable reply: %+v", prop)
+	}
+	// Bounded, which is the property that matters: a repair loop inside a retry
+	// loop must not multiply without limit.
+	if n := p.CallCount(); n > 4 {
+		t.Errorf("provider called %d times on unparsable JSON — the repair and retry "+
+			"loops are compounding beyond their two-by-two bound", n)
 	}
 }
 
 func TestProposeEmptyStringOutputIsAReadError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: ""}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, _ := scraping(t, "")
 
-	_, err := a.Propose(context.Background(), "https://notes.example/", index)
-	if err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("err = %v, want a 'not readable' error", err)
+	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if err == nil {
+		t.Fatal("an empty answer produced a rule")
+	}
+	if prop != nil {
+		t.Errorf("a proposal came back from an empty reply: %+v", prop)
 	}
 }
 
-// A top-level JSON array instead of an object: valid JSON, wrong SHAPE.
-// json.Unmarshal into the expected struct fails the same way a truncated
-// object does, and the code must treat it identically rather than panicking or
-// silently proceeding with zero-valued fields.
+// A top-level JSON array instead of an object: valid JSON, wrong SHAPE. It must
+// be treated identically to a truncated object rather than silently proceeding
+// with zero-valued fields — a rule whose every selector is "" would "work" and
+// scrape nothing forever.
 func TestProposeWrongTopLevelShapeIsAReadError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `["item_selector", "article.post"]`}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, _ := scraping(t, `["item_selector", "article.post"]`)
 
-	_, err := a.Propose(context.Background(), "https://notes.example/", index)
-	if err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("err = %v, want a 'not readable' error for a JSON array reply", err)
+	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
+	if err == nil {
+		t.Fatal("a JSON array produced a rule")
+	}
+	if prop != nil {
+		t.Errorf("a proposal came back from an array reply: %+v", prop)
 	}
 }
 
@@ -171,11 +212,10 @@ func TestProposeWrongTopLevelShapeIsAReadError(t *testing.T) {
 // future switch to a strict decoder (DisallowUnknownFields) would be caught
 // here rather than surfacing as a mysterious rejection of good answers.
 func TestProposeIgnoresAnUnexpectedExtraField(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"item_selector":"article.post","title_selector":"h2 a",` +
-		`"link_selector":"h2 a@href","date_selector":"time@datetime","date_layout":"",` +
-		`"summary_selector":"p.excerpt","image_selector":"","author_selector":"",` +
-		`"notes":"fine","confidence":0.97,"reasoning_trace":["step one","step two"]}`}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, _ := scraping(t, `{"item_selector":"article.post","title_selector":"h2 a",`+
+		`"link_selector":"h2 a@href","date_selector":"time@datetime","date_layout":"",`+
+		`"summary_selector":"p.excerpt","image_selector":"","author_selector":"",`+
+		`"notes":"fine","confidence":0.97,"reasoning_trace":["step one","step two"]}`)
 
 	prop, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if err != nil {
@@ -189,14 +229,15 @@ func TestProposeIgnoresAnUnexpectedExtraField(t *testing.T) {
 // --- provider errors and cancellation ----------------------------------------
 
 func TestProposeProviderErrorSurfacesWithoutRetry(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	p := schemafluxtest.New().Fail(errors.New("upstream on fire"))
+	schemafluxtest.Install(t, p)
+	a := NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t))
 
 	_, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's error surfaced", err)
 	}
-	if n := fake.callCount(); n != 1 {
+	if n := p.CallCount(); n != 1 {
 		t.Fatalf("provider called %d times on a transport failure, want 1 (not retried)", n)
 	}
 }
@@ -204,10 +245,8 @@ func TestProposeProviderErrorSurfacesWithoutRetry(t *testing.T) {
 func TestProposeContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	a := NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t))
 
 	_, err := a.Propose(ctx, "https://notes.example/", index)
 	if !errors.Is(err, context.Canceled) {
@@ -237,13 +276,12 @@ func TestProposeWithAnUnconfiguredClientIsErrNotConfigured(t *testing.T) {
 // before ever spending a request — there is nothing for the model to look
 // at.
 func TestProposeEmptyOutlineIsErrNoRuleWithoutCallingTheProvider(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: goodScrapeAnswer()}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, p := scraping(t, goodScrapeAnswer())
 	_, err := a.Propose(context.Background(), "https://notes.example/", "")
 	if !errors.Is(err, ErrNoRule) {
 		t.Fatalf("err = %v, want ErrNoRule", err)
 	}
-	if n := fake.callCount(); n != 0 {
+	if n := p.CallCount(); n != 0 {
 		t.Fatalf("provider called %d times on an empty page, want 0", n)
 	}
 }
@@ -252,10 +290,8 @@ func TestProposeEmptyOutlineIsErrNoRuleWithoutCallingTheProvider(t *testing.T) {
 // must still be plain ErrNoList, not a formatted %w wrapping an empty
 // string.
 func TestProposeEmptyItemSelectorWithNoNotesIsPlainErrNoList(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"item_selector":"","title_selector":"","link_selector":"","date_selector":"",` +
-			`"date_layout":"","summary_selector":"","image_selector":"","author_selector":"","notes":""}`}
-	a := NewSiteAnalyzer(fake, newSettings(t))
+	a, _ := scraping(t, `{"item_selector":"","title_selector":"","link_selector":"","date_selector":"",`+
+		`"date_layout":"","summary_selector":"","image_selector":"","author_selector":"","notes":""}`)
 	_, err := a.Propose(context.Background(), "https://notes.example/", index)
 	if !errors.Is(err, ErrNoList) {
 		t.Fatalf("err = %v, want ErrNoList", err)

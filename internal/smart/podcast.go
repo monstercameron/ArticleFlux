@@ -37,7 +37,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -48,6 +47,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/fluxcast"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // PromptVersion is part of the cache key, for the reason promptVersion is:
@@ -688,19 +689,20 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 		}
 	}
 
-	out, err := p.llm.Do(ctx, llm.Request{
-		Model:        model,
-		Instructions: podcastInstructionsOf(seg),
-		Input:        podcastInput(seg, body),
-		// Bounded because the budget covers reasoning too, and a truncated
-		// segment ends mid-sentence — far more obvious spoken than read, and
-		// worse still when the next segment hands over from it.
-		MaxOutputTokens: podcastMaxTokens,
-		// Low, like the digest. Finding the relation between two headlines is a
-		// small act of reading rather than a reasoning problem, and deliberation
-		// here buys tokens rather than a better link.
-		Effort: "low",
-	})
+	// Rebuilt on `Summarizing` (plan P3.9). A segment is spoken prose, not a
+	// structured answer, so there is no schema — the whole brief is in
+	// `podcastInstructionsOf(seg)` and it goes in through Steer.
+	//
+	// **The cache key and the prompt version are unchanged, deliberately.**
+	// Segments are cached forever, keyed by prompt version; any change to the
+	// prose would re-bill every reader's back catalogue. So the instructions are
+	// passed through byte for byte rather than reworded to suit the operation.
+	out, err := schemaflux.Summarizing(podcastInput(seg, body)).
+		Steer(podcastInstructionsOf(seg)).
+		MaxLength(podcastMaxTokens).
+		Fast().
+		Context(p.llm.OpsContext(ctx)).
+		Run()
 	if err != nil {
 		return "", err
 	}
@@ -1136,6 +1138,22 @@ type SegmentBlock struct {
 // two audio files. The schema makes the split a GUARANTEE from the provider
 // instead — the same reasoning `rerankSchema` and `entitySchema` (interest.go)
 // are built on.
+// podcastGroupReply is the shape a grouped write comes back in; the schema is
+// derived from it.
+type podcastGroupReply struct {
+	Blocks []podcastBlock `json:"blocks"`
+}
+
+// podcastBlock is one story's spoken block.
+//
+// `story` is a one-based ordinal into the STORY list this request carried,
+// exactly as a rerank's `id` is an ordinal into its candidates — never anything
+// the model invents on its own. The caller re-validates it either way.
+type podcastBlock struct {
+	Story *int   `json:"story"`
+	Text  string `json:"text"`
+}
+
 var podcastGroupSchema = map[string]any{
 	"type":                 "object",
 	"additionalProperties": false,
@@ -1325,33 +1343,23 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 		return nil, llm.ErrNotConfigured
 	}
 
-	out, err := p.llm.Do(ctx, llm.Request{
-		Model:        model,
-		Instructions: podcastGroupInstructionsFor(g.Vibe),
-		Input:        segmentGroupInput(g, bodies),
-		SchemaName:   "podcast_segment",
-		Schema:       podcastGroupSchema,
-		// Bounded because the budget covers reasoning too, and a group cut off
-		// mid-reply is worse than a single truncated segment: it can lose the
-		// LAST story's block entirely rather than just ending one sentence early.
-		MaxOutputTokens: podcastGroupMaxTokens,
-		// Low, like Segment: writing a handover between stories that are already
-		// in front of the model is a small act of composition, not a reasoning
-		// problem, and deliberation here buys tokens rather than a better link.
-		Effort: "low",
-	})
+	// The GROUPED write keeps its schema — one block per story, and the caller
+	// splits the reply by story — so it is `Extracting` rather than
+	// `Summarizing`. Same cache-key reasoning as Segment above: the instructions
+	// are passed through unchanged.
+	//
+	// Not `Strict()`, for the reason given at interest.go's rerank: rejecting a
+	// field the schema does not name is exactly wrong for a contract that
+	// tolerates one, and this is the most expensive call in the feature — a
+	// whole broadcast's worth of stories written in one request. Failing it
+	// because the model volunteered an extra key would re-bill all of them.
+	// Every block is re-validated below regardless.
+	reply, err := schemaflux.Extracting[podcastGroupReply](segmentGroupInput(g, bodies)).
+		Steer(podcastGroupInstructionsFor(g.Vibe)).
+		Fast().
+		Run(p.llm.OpsContext(ctx))
 	if err != nil {
 		return nil, err
-	}
-
-	var reply struct {
-		Blocks []struct {
-			Story int    `json:"story"`
-			Text  string `json:"text"`
-		} `json:"blocks"`
-	}
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return nil, fmt.Errorf("smart: segment reply was not the schema: %w", err)
 	}
 
 	// Re-validated field by field, exactly as interest.go's rerank reply is:
@@ -1360,11 +1368,15 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 	// g.Stories and nothing else may address a block.
 	byStory := make(map[int]string, len(reply.Blocks))
 	for _, b := range reply.Blocks {
-		if b.Story < 1 || b.Story > len(g.Stories) {
+		// A pointer because a derived schema makes every field required and
+		// reads a zero int as an unanswered one. Story 0 is a real thing a model
+		// sends and a real thing this loop must DROP rather than fail the whole
+		// group over, so it has to arrive to be dropped.
+		if b.Story == nil || *b.Story < 1 || *b.Story > len(g.Stories) {
 			continue
 		}
 		if text := cleanForSpeech(b.Text); text != "" {
-			byStory[b.Story] = text
+			byStory[*b.Story] = text
 		}
 	}
 	if len(byStory) != len(g.Stories) {

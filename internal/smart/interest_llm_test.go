@@ -8,16 +8,29 @@ import (
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/derive"
-	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/schemaflux/schemafluxtest"
 )
 
 // interest_test.go explains the gap this closes: every RerankCandidates,
-// ExtractEntities and LabelTopic case there stops BEFORE Do() is called,
+// ExtractEntities and LabelTopic case there stops BEFORE the model is asked,
 // because there was no seam to answer it safely. This file is everything past
 // that gate.
+//
+// A1/A2/A3 run on typed operations now (plan P3.3), so what a test scripts is
+// the PROVIDER's body rather than a fake `Do`'s reply. `schemafluxtest.Install`
+// calls `t.Setenv`, so nothing in this file may call `t.Parallel`.
 
 func configuredInterest(fake *fakeLLM) *Interest {
 	return NewInterest(fake, nil)
+}
+
+// interesting installs a provider answering with the given bodies, in order,
+// and returns an Interest wired to it.
+func interesting(t *testing.T, bodies ...string) (*Interest, *schemafluxtest.Provider) {
+	t.Helper()
+	p := schemafluxtest.New().Shaped().Reply(bodies...)
+	schemafluxtest.Install(t, p)
+	return configuredInterest(&fakeLLM{configured: true}), p
 }
 
 // --- RerankCandidates ---------------------------------------------------------
@@ -27,9 +40,7 @@ func configuredInterest(fake *fakeLLM) *Interest {
 // (off-by-one either direction) would show up here as the wrong article being
 // promoted, not merely a wrong number.
 func TestRerankCandidatesMapsIdsBackToZeroBasedAndCleansWhy(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"picks":[{"id":3,"why":"explains the mechanism."},{"id":1,"why":"  padded  "}]}`}
-	in := configuredInterest(fake)
+	in, p := interesting(t, `{"picks":[{"id":3,"why":"explains the mechanism."},{"id":1,"why":"  padded  "}]}`)
 	cands := []derive.Candidate{{Title: "A"}, {Title: "B"}, {Title: "C"}}
 
 	got, err := in.RerankCandidates(context.Background(), cands, derive.ProfileHint{}, 2)
@@ -40,8 +51,8 @@ func TestRerankCandidatesMapsIdsBackToZeroBasedAndCleansWhy(t *testing.T) {
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	if fake.callCount() != 1 {
-		t.Fatalf("provider called %d times, want 1", fake.callCount())
+	if p.CallCount() != 1 {
+		t.Fatalf("provider called %d times, want 1", p.CallCount())
 	}
 }
 
@@ -51,8 +62,7 @@ func TestRerankCandidatesMapsIdsBackToZeroBasedAndCleansWhy(t *testing.T) {
 // in RerankCandidates), but this package must not hand a caller an
 // out-of-bounds index to re-check against.
 func TestRerankCandidatesDropsOutOfRangeIdsButKeepsValidOnes(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":99,"why":"bogus"},{"id":2,"why":"real"}]}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"picks":[{"id":99,"why":"bogus"},{"id":2,"why":"real"}]}`)
 	cands := []derive.Candidate{{Title: "A"}, {Title: "B"}}
 
 	got, err := in.RerankCandidates(context.Background(), cands, derive.ProfileHint{}, 1)
@@ -69,8 +79,7 @@ func TestRerankCandidatesDropsOutOfRangeIdsButKeepsValidOnes(t *testing.T) {
 // caller's fallback (the deterministic order) is the correct outcome, driven
 // by an explicit error rather than a silently empty success.
 func TestRerankCandidatesAllOutOfRangeIdsIsAnError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":99,"why":"bogus"}]}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"picks":[{"id":99,"why":"bogus"}]}`)
 	cands := []derive.Candidate{{Title: "A"}, {Title: "B"}}
 
 	_, err := in.RerankCandidates(context.Background(), cands, derive.ProfileHint{}, 1)
@@ -84,8 +93,7 @@ func TestRerankCandidatesAllOutOfRangeIdsIsAnError(t *testing.T) {
 // pick instead of just its reason would silently shrink the re-rank.
 func TestRerankCandidatesOverlongWhyIsDroppedButThePickSurvives(t *testing.T) {
 	long := strings.Repeat("x", MaxWhyRunes+1)
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":1,"why":"` + long + `"}]}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"picks":[{"id":1,"why":"`+long+`"}]}`)
 	cands := []derive.Candidate{{Title: "A"}}
 
 	got, err := in.RerankCandidates(context.Background(), cands, derive.ProfileHint{}, 1)
@@ -103,29 +111,31 @@ func TestRerankCandidatesOverlongWhyIsDroppedButThePickSurvives(t *testing.T) {
 // --- malformed model output --------------------------------------------------
 
 func TestRerankCandidatesTruncatedJSONIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":1,"why":"x"`} // truncated
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"picks":[{"id":1,"why":"x"`)
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "not the schema") {
-		t.Fatalf("err = %v, want a schema-mismatch error", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
 func TestRerankCandidatesWrongTopLevelShapeIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `[1, 2, 3]`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `[1, 2, 3]`)
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "not the schema") {
-		t.Fatalf("err = %v, want a schema-mismatch error", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
-// An extra field the schema does not name is ignored, same guarantee as the
-// scrape/translate paths.
+// An extra field the schema does not name is ignored.
+//
+// This is a real choice, not a default: SchemaFlux's `Strict()` mode rejects an
+// unrecognised property on the grounds that it is the model producing something
+// nobody asked for. That reasoning is sound in general and wrong here — the
+// picks are usable whether or not the model also volunteered a confidence, and
+// the ids are re-validated regardless. The call site deliberately does not ask
+// for Strict, and this is the test that would fail if someone added it.
 func TestRerankCandidatesIgnoresAnUnexpectedExtraField(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"picks":[{"id":1,"why":"fine"}],"confidence":0.5}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"picks":[{"id":1,"why":"fine"}],"confidence":0.5}`)
 	got, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
 	if err != nil {
 		t.Fatalf("an unexpected extra field caused a rejection: %v", err)
@@ -138,8 +148,9 @@ func TestRerankCandidatesIgnoresAnUnexpectedExtraField(t *testing.T) {
 // --- provider errors and cancellation ----------------------------------------
 
 func TestRerankCandidatesProviderErrorSurfaces(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 503: upstream on fire")}
-	in := configuredInterest(fake)
+	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 503: upstream on fire"))
+	schemafluxtest.Install(t, p)
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's error surfaced", err)
@@ -149,10 +160,8 @@ func TestRerankCandidatesProviderErrorSurfaces(t *testing.T) {
 func TestRerankCandidatesContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	in := configuredInterest(fake)
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.RerankCandidates(ctx, []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
@@ -165,14 +174,14 @@ func TestRerankCandidatesContextCancellationPropagates(t *testing.T) {
 // forwarding, and it was unreachable without a way to inspect the context
 // actually handed to Do().
 func TestRerankCandidatesWrapsTheContextWithInterestTimeout(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":1,"why":""}]}`}
-	in := configuredInterest(fake)
+	spy := spyOn(t, `{"picks":[{"id":1,"why":""}]}`)
+	in := configuredInterest(&fakeLLM{configured: true})
 
 	if _, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}},
 		derive.ProfileHint{}, 1); err != nil {
 		t.Fatalf("RerankCandidates: %v", err)
 	}
-	deadline, ok := fake.ctxN(0).Deadline()
+	deadline, ok := spy.ctxN(0).Deadline()
 	if !ok {
 		t.Fatal("the context handed to the provider has no deadline; interestTimeout is not being applied")
 	}
@@ -186,8 +195,7 @@ func TestRerankCandidatesWrapsTheContextWithInterestTimeout(t *testing.T) {
 // profile half of the payload. A profile with real topics must reach the
 // request the same way the candidates do.
 func TestRerankCandidatesSendsTheProfilesTopicsAndSources(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"picks":[{"id":1,"why":""}]}`}
-	in := configuredInterest(fake)
+	in, p := interesting(t, `{"picks":[{"id":1,"why":""}]}`)
 	prof := derive.ProfileHint{
 		Topics:  []derive.TopicHint{{Label: "Databases", Terms: []string{"sqlite", "btree"}}},
 		Sources: []string{"LWN"},
@@ -195,7 +203,7 @@ func TestRerankCandidatesSendsTheProfilesTopicsAndSources(t *testing.T) {
 	if _, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, prof, 1); err != nil {
 		t.Fatalf("RerankCandidates: %v", err)
 	}
-	req := fake.callN(0).Input
+	req := requestSent(p, 0)
 	for _, want := range []string{"Databases", "sqlite", "btree", "LWN"} {
 		if !strings.Contains(req, want) {
 			t.Errorf("the profile is missing %q from the request:\n%s", want, req)
@@ -208,9 +216,7 @@ func TestRerankCandidatesSendsTheProfilesTopicsAndSources(t *testing.T) {
 // Case-insensitive dedup was previously provable only by reading the source: a
 // duplicate differing only in case must collapse to one entry.
 func TestExtractEntitiesDedupesCaseInsensitively(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"entities":[{"name":"npm","label":"npm"},{"name":"NPM","label":"NPM"}]}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"entities":[{"name":"npm","label":"npm"},{"name":"NPM","label":"NPM"}]}`)
 
 	got, err := in.ExtractEntities(context.Background(), []string{"npm ships a fix", "NPM has a bug"})
 	if err != nil {
@@ -230,8 +236,7 @@ func TestExtractEntitiesDedupesCaseInsensitively(t *testing.T) {
 // A blank label falls back to the normalised name rather than shipping an
 // empty display string.
 func TestExtractEntitiesEmptyLabelFallsBackToName(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"entities":[{"name":"ffmpeg","label":""}]}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"entities":[{"name":"ffmpeg","label":""}]}`)
 
 	got, err := in.ExtractEntities(context.Background(), []string{"ffmpeg 7 released"})
 	if err != nil {
@@ -246,8 +251,7 @@ func TestExtractEntitiesEmptyLabelFallsBackToName(t *testing.T) {
 // that keeps the extraction call bounded, and it was previously unverifiable
 // because the assembled payload never reached anywhere observable.
 func TestExtractEntitiesTruncatesTitlesAtTheCap(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"entities":[]}`}
-	in := configuredInterest(fake)
+	in, p := interesting(t, `{"entities":[]}`)
 
 	titles := make([]string, MaxEntityTitles+10)
 	for i := range titles {
@@ -258,23 +262,23 @@ func TestExtractEntitiesTruncatesTitlesAtTheCap(t *testing.T) {
 	if _, err := in.ExtractEntities(context.Background(), titles); err != nil {
 		t.Fatalf("ExtractEntities: %v", err)
 	}
-	if strings.Contains(fake.callN(0).Input, "UNIQUE_OVER_THE_CAP_MARKER") {
+	if strings.Contains(requestSent(p, 0), "UNIQUE_OVER_THE_CAP_MARKER") {
 		t.Error("a title beyond MaxEntityTitles reached the request payload")
 	}
 }
 
 func TestExtractEntitiesMalformedJSONIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"entities":[{"name":"x"`} // truncated
-	in := configuredInterest(fake)
+	in, _ := interesting(t, `{"entities":[{"name":"x"`)
 	_, err := in.ExtractEntities(context.Background(), []string{"a headline"})
-	if err == nil || !strings.Contains(err.Error(), "not the schema") {
-		t.Fatalf("err = %v, want a schema-mismatch error", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
 func TestExtractEntitiesProviderErrorSurfaces(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 500: upstream on fire")}
-	in := configuredInterest(fake)
+	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
+	schemafluxtest.Install(t, p)
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.ExtractEntities(context.Background(), []string{"a headline"})
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's error surfaced", err)
@@ -284,10 +288,8 @@ func TestExtractEntitiesProviderErrorSurfaces(t *testing.T) {
 func TestExtractEntitiesContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	in := configuredInterest(fake)
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.ExtractEntities(ctx, []string{"a headline"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
@@ -297,8 +299,7 @@ func TestExtractEntitiesContextCancellationPropagates(t *testing.T) {
 // --- LabelTopic -----------------------------------------------------------------
 
 func TestLabelTopicReturnsTheModelsLabel(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"label":"NPU inference"}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, "NPU inference")
 
 	got, err := in.LabelTopic(context.Background(), []string{"npu", "inference", "quantised"}, "Fallback")
 	if err != nil {
@@ -311,8 +312,7 @@ func TestLabelTopicReturnsTheModelsLabel(t *testing.T) {
 
 // An empty label is refused rather than shipped as a blank chip.
 func TestLabelTopicEmptyLabelIsRefused(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"label":""}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, "")
 	_, err := in.LabelTopic(context.Background(), []string{"a", "b"}, "Fallback")
 	if err == nil || !strings.Contains(err.Error(), "unusable label") {
 		t.Fatalf("err = %v, want an unusable-label error", err)
@@ -324,26 +324,29 @@ func TestLabelTopicEmptyLabelIsRefused(t *testing.T) {
 // as a bug, and the caller's deterministic fallback is the honest choice.
 func TestLabelTopicOverlongLabelIsRefused(t *testing.T) {
 	long := strings.Repeat("word ", MaxTopicLabelRunes) // way over 40 runes
-	fake := &fakeLLM{configured: true, text: `{"label":"` + long + `"}`}
-	in := configuredInterest(fake)
+	in, _ := interesting(t, long)
 	_, err := in.LabelTopic(context.Background(), []string{"a", "b"}, "Fallback")
 	if err == nil || !strings.Contains(err.Error(), "unusable label") {
 		t.Fatalf("err = %v, want an unusable-label error", err)
 	}
 }
 
-func TestLabelTopicMalformedJSONIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"label":`} // truncated
-	in := configuredInterest(fake)
+// A3 answers with the bare label now, not a one-field object, so there is no
+// longer such a thing as malformed JSON on this path. The shape that replaced
+// it is an answer that is all whitespace, which must be refused for the same
+// reason an empty one is rather than trimmed into a blank chip.
+func TestLabelTopicWhitespaceOnlyLabelIsRefused(t *testing.T) {
+	in, _ := interesting(t, "   \n\t ")
 	_, err := in.LabelTopic(context.Background(), []string{"a", "b"}, "Fallback")
-	if err == nil || !strings.Contains(err.Error(), "not the schema") {
-		t.Fatalf("err = %v, want a schema-mismatch error", err)
+	if err == nil || !strings.Contains(err.Error(), "unusable label") {
+		t.Fatalf("err = %v, want an unusable-label error", err)
 	}
 }
 
 func TestLabelTopicProviderErrorSurfaces(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 500: upstream on fire")}
-	in := configuredInterest(fake)
+	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
+	schemafluxtest.Install(t, p)
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.LabelTopic(context.Background(), []string{"a", "b"}, "Fallback")
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
 		t.Fatalf("err = %v, want the provider's error surfaced", err)
@@ -353,10 +356,8 @@ func TestLabelTopicProviderErrorSurfaces(t *testing.T) {
 func TestLabelTopicContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	in := configuredInterest(fake)
+	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.LabelTopic(ctx, []string{"a", "b"}, "Fallback")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
@@ -367,19 +368,18 @@ func TestLabelTopicContextCancellationPropagates(t *testing.T) {
 // by construction (DiscoverPayload is terms-only), but was never checked
 // against what actually reaches Do().
 func TestLabelTopicSendsOnlyTermsAndTheFallback(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"label":"Databases"}`}
-	in := configuredInterest(fake)
+	in, p := interesting(t, "Databases")
 	if _, err := in.LabelTopic(context.Background(), []string{"sqlite", "btree"}, "Databases"); err != nil {
 		t.Fatalf("LabelTopic: %v", err)
 	}
-	req := fake.callN(0)
-	if !strings.Contains(req.Input, "sqlite") || !strings.Contains(req.Input, "btree") {
-		t.Errorf("input missing the terms:\n%s", req.Input)
+	sent := requestSent(p, 0)
+	if !strings.Contains(sent, "sqlite") || !strings.Contains(sent, "btree") {
+		t.Errorf("input missing the terms:\n%s", sent)
 	}
-	if !strings.Contains(req.Input, "fallback: Databases") {
-		t.Errorf("input missing the fallback:\n%s", req.Input)
+	if !strings.Contains(sent, "return unchanged if the terms") || !strings.Contains(sent, "Databases") {
+		t.Errorf("input missing the fallback:\n%s", sent)
 	}
-	if req.Instructions != topicLabelInstructions {
-		t.Error("the topic-label instructions were not sent")
+	if !strings.Contains(sent, "two to four words") {
+		t.Error("the topic-label brief was not sent")
 	}
 }

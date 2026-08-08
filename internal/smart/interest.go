@@ -10,6 +10,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/derive"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Interest is the Smart+ half of the interest layer (§18.8b): it implements
@@ -184,39 +186,36 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 		return nil, err
 	}
 
-	model, err := in.model(ctx)
-	if err != nil {
-		return nil, err
-	}
-	call, cancel := context.WithTimeout(ctx, interestTimeout)
+	// The model is the bridge's now — see llm.Client.OpsContext.
+	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
 
-	out, err := in.llm.Do(call, llm.Request{
-		Model:        model,
-		Instructions: rerankInstructions,
-		Input:        string(body),
-		SchemaName:   "rerank",
-		Schema:       rerankSchema,
-		// Generous, because the budget covers REASONING on a reasoning model and this is
-		// a judgement over forty items. A truncated reply here is not a short list, it is
-		// no list at all — see llm.ErrTruncated.
-		MaxOutputTokens: 4000,
-		// Medium rather than low: unlike "which JSON key holds the title", this is the
-		// one call in the application where deliberation is the product being bought.
-		Effort: "medium",
-	})
+	// Rebuilt on `Extracting` (plan P3.10) rather than on `Ranking`.
+	//
+	// `Ranking[T]` reorders the items it was given and hands them back. This
+	// call does something different: it picks a SUBSET and returns a reason for
+	// each pick, and the reason is the product — §18.9's rule is that
+	// explainability IS the feature, because an unexplained ranker feels
+	// arbitrary and readers stop trusting it. A reordering with no `why` would
+	// be a cheaper call that does not do the job.
+	//
+	// `Smart()` is this operation's version of the Effort medium the hand-built
+	// request set: this is the one call in the application where deliberation is
+	// the product being bought.
+	//
+	// NOT `Strict()`, deliberately. Strict mode rejects a field the schema does
+	// not name, and SchemaFlux's own note on it says that is "exactly wrong for
+	// an operation whose contract permits one" — this operation's contract does.
+	// A model that answers with the picks AND a `confidence` it was never asked
+	// for has still answered the question; failing the whole re-rank over the
+	// extra field would drop the reader to deterministic order for no gain. The
+	// ids are re-validated below either way, which is the check that matters.
+	reply, err := schemaflux.Extracting[rerankReply](string(body)).
+		Steer(rerankInstructions).
+		Smart().
+		Run(call)
 	if err != nil {
 		return nil, err
-	}
-
-	var reply struct {
-		Picks []struct {
-			ID  int    `json:"id"`
-			Why string `json:"why"`
-		} `json:"picks"`
-	}
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return nil, fmt.Errorf("smart: rerank reply was not the schema: %w", err)
 	}
 	picks := make([]derive.Pick, 0, len(reply.Picks))
 	for _, p := range reply.Picks {
@@ -226,7 +225,7 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 		if p.ID < 1 || p.ID > len(cands) {
 			continue
 		}
-		picks = append(picks, derive.Pick{Index: p.ID - 1, Why: cleanWhy(p.Why)})
+		picks = append(picks, derive.Pick{Index: p.ID - 1, Why: cleanWhy(deref(p.Why))})
 	}
 	if len(picks) == 0 {
 		return nil, fmt.Errorf("smart: rerank returned no usable ids")
@@ -329,36 +328,23 @@ func (in *Interest) ExtractEntities(ctx context.Context, titles []string) ([]der
 		return nil, err
 	}
 
-	model, err := in.model(ctx)
-	if err != nil {
-		return nil, err
-	}
-	call, cancel := context.WithTimeout(ctx, interestTimeout)
+	// The model is the bridge's now — see llm.Client.OpsContext.
+	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
 
-	out, err := in.llm.Do(call, llm.Request{
-		Model:           model,
-		Instructions:    entityInstructions,
-		Input:           string(body),
-		SchemaName:      "entities",
-		Schema:          entitySchema,
-		MaxOutputTokens: 4000,
-		// Low: this is extraction, not judgement. The names are in front of the model and
-		// deliberation buys tokens rather than accuracy.
-		Effort: "low",
-	})
+	// Rebuilt on `Extracting` (plan P3.10), which is exactly what this is: named
+	// entities out of a list of headlines. `Fast` for the same reason the
+	// hand-built request set Effort low — the names are in front of the model
+	// and deliberation buys tokens rather than accuracy.
+	// Not `Strict()`, for the reason given at the re-rank above: an extra field
+	// costs nothing here, and every name is normalised and de-duplicated below
+	// before it becomes a row.
+	reply, err := schemaflux.Extracting[entityReply](string(body)).
+		Steer(entityInstructions).
+		Fast().
+		Run(call)
 	if err != nil {
 		return nil, err
-	}
-
-	var reply struct {
-		Entities []struct {
-			Name  string `json:"name"`
-			Label string `json:"label"`
-		} `json:"entities"`
-	}
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return nil, fmt.Errorf("smart: entity reply was not the schema: %w", err)
 	}
 
 	seen := map[string]bool{}
@@ -368,7 +354,7 @@ func (in *Interest) ExtractEntities(ctx context.Context, titles []string) ([]der
 		// for a lowercase key, which is not the same as having produced one, and a
 		// duplicate differing only in case would become two rows for one thing.
 		name := strings.ToLower(strings.Join(strings.Fields(e.Name), " "))
-		label := strings.TrimSpace(e.Label)
+		label := strings.TrimSpace(deref(e.Label))
 		if name == "" || seen[name] {
 			continue
 		}
@@ -400,6 +386,54 @@ var topicLabelSchema = map[string]any{
 	},
 }
 
+// entityReply is the shape an entity pass comes back in; the schema is derived
+// from it rather than kept in `entitySchema` beside it.
+type entityReply struct {
+	Entities []entityMention `json:"entities"`
+}
+
+// deref reads an optional string field: absent and empty are the same to every
+// caller in this file, both meaning "the model did not answer this part".
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// entityMention is one named entity and the kind of thing it is.
+//
+// `label` is a POINTER because it is optional and the loop below has a
+// fallback for it (the name itself). SchemaFlux derives a schema in which every
+// field is required, and an empty string in a required field is a validation
+// failure, not an empty answer — so a model that knows a name but not what kind
+// of thing it is would fail the whole extraction rather than lose one label.
+// A pointer is the library's documented way to say a field may be absent, and
+// it is also the more honest shape: absent and empty are different answers.
+type entityMention struct {
+	Name  string  `json:"name"`
+	Label *string `json:"label"`
+}
+
+// rerankReply is the shape a re-rank comes back in; the schema is derived from
+// it rather than kept in `rerankSchema` beside it.
+type rerankReply struct {
+	Picks []rerankPick `json:"picks"`
+}
+
+// rerankPick is one chosen candidate and the reason it was chosen. The `why` is
+// not decoration — see the call site.
+//
+// It is a POINTER for the reason entityMention.Label is: a derived schema makes
+// every field required, and cleanWhy already treats a missing reason as an
+// acceptable answer (the PROMOTION is the point, the reason is a bonus). Without
+// the pointer a model that promoted an article without explaining itself would
+// fail the entire re-rank and drop the reader back to deterministic order.
+type rerankPick struct {
+	ID  int     `json:"id"`
+	Why *string `json:"why"`
+}
+
 // MaxTopicLabelRunes caps what is accepted back.
 //
 // A label sits in a reason chip and in the Trends list, and a model asked for four words
@@ -421,38 +455,50 @@ func (in *Interest) LabelTopic(ctx context.Context, terms []string, fallback str
 		return "", fmt.Errorf("smart: no API key")
 	}
 
-	// DiscoverPayload is terms-only and is exactly the right shape: this is the one call
-	// here that must not carry titles at all.
-	body, err := json.Marshal(llm.DiscoverPayload{Terms: terms, Want: 1})
-	if err != nil {
-		return "", err
-	}
-	model, err := in.model(ctx)
-	if err != nil {
-		return "", err
-	}
-	call, cancel := context.WithTimeout(ctx, interestTimeout)
+	// Rebuilt on a typed operation (plan P3.2). `Generating[string]` carries the
+	// brief and derives the schema, so the hand-written `topic_label` object and
+	// its one-field unmarshal are gone — but the two things that made this call
+	// safe are not, and both are still enforced HERE:
+	//
+	//   - **Terms only, never titles.** This is the one call in this file that
+	//     must not carry what the reader actually read. The prompt is assembled
+	//     from `terms` and nothing else, which is what `llm.DiscoverPayload`'s
+	//     terms-only shape used to enforce by construction.
+	//   - **The length bound.** A label is going into the reader's own rail, and
+	//     a model that answered with a sentence would put a sentence there.
+	// The model is NOT named here, and that is a change worth stating: an
+	// operation has no way to carry one (G5), so the instance's configured model
+	// is applied by the bridge instead — see llm.Client.OpsContext, which
+	// discards whatever model the library resolved from its speed tier and sends
+	// this instance's. The settings read that used to happen here would be a
+	// second answer to the same question.
+	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
 
-	out, err := in.llm.Do(call, llm.Request{
-		Model:           model,
-		Instructions:    topicLabelInstructions,
-		Input:           string(body) + "\nfallback: " + fallback,
-		SchemaName:      "topic_label",
-		Schema:          topicLabelSchema,
-		MaxOutputTokens: 1200,
-		Effort:          "low",
-	})
+	label, err := schemaflux.Generating[string](
+		topicLabelInstructions +
+			"\n\nThe cluster's most distinctive terms: " + strings.Join(terms, ", ") +
+			"\nThe deterministic label to beat, and to return unchanged if the terms " +
+			"do not describe a coherent subject: " + fallback).
+		// Low deliberation, as the hand-built request said with Effort: the
+		// terms are in front of the model and more thinking buys tokens.
+		Fast().
+		Run(call)
 	if err != nil {
+		// An answer that is empty or all whitespace does not reach here as an
+		// empty string — the library refuses it at the provider boundary as
+		// "empty completion content", because for most callers that IS a
+		// failure. For this one it is the unusable-label case the check below
+		// exists for, and it must read the same way to a caller so the
+		// deterministic fallback is chosen for the reason it actually happened
+		// rather than logged as a provider fault.
+		if strings.Contains(err.Error(), "empty completion content") {
+			return "", fmt.Errorf("smart: unusable label %q", "")
+		}
 		return "", err
 	}
-	var reply struct {
-		Label string `json:"label"`
-	}
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return "", fmt.Errorf("smart: label reply was not the schema: %w", err)
-	}
-	label := strings.TrimSpace(reply.Label)
+
+	label = strings.TrimSpace(label)
 	if label == "" || len([]rune(label)) > MaxTopicLabelRunes {
 		return "", fmt.Errorf("smart: unusable label %q", label)
 	}

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
-	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/schemaflux"
 )
 
 // translate_test.go documents exactly why this file exists: everything past
@@ -32,8 +32,12 @@ func batchFromInput(t *testing.T, input string) map[string]string {
 	if i < 0 {
 		t.Fatalf("no %q marker in translateBatch input: %q", marker, input)
 	}
+	// A DECODER rather than Unmarshal, because the payload is no longer the tail
+	// of the request: SchemaFlux frames what this package assembles, and the
+	// steering it appends lands after the JSON. Decoding the first value and
+	// stopping is what "the batch that was asked about" means now.
 	var batch map[string]string
-	if err := json.Unmarshal([]byte(input[i+len(marker):]), &batch); err != nil {
+	if err := json.NewDecoder(strings.NewReader(input[i+len(marker):])).Decode(&batch); err != nil {
 		t.Fatalf("batch payload did not parse as JSON: %v\n%s", err, input)
 	}
 	return batch
@@ -74,9 +78,9 @@ func TestCatalogBatchesAllKeysAndAssemblesTheFullResult(t *testing.T) {
 	tr := NewTranslator(fake, settings)
 
 	source := flatten(i18n.Export(i18n.DefaultLocale))
-	fake.reply = func(_ int, r llm.Request) (string, error) {
-		return echoEntriesJSON(batchFromInput(t, r.Input)), nil
-	}
+	prov := answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
+		return echoEntriesJSON(batchFromInput(t, r.SystemPrompt+r.UserPrompt)), nil
+	})
 
 	got, err := tr.Catalog(context.Background(), "fr", false)
 	if err != nil {
@@ -92,7 +96,7 @@ func TestCatalogBatchesAllKeysAndAssemblesTheFullResult(t *testing.T) {
 		}
 	}
 	wantBatches := (len(source) + batchSize - 1) / batchSize
-	if n := fake.callCount(); n != wantBatches {
+	if n := prov.CallCount(); n != wantBatches {
 		t.Errorf("provider called %d times, want %d (ceil(%d source keys / %d batchSize))",
 			n, wantBatches, len(source), batchSize)
 	}
@@ -108,12 +112,12 @@ func TestCatalogStopsAtTheFirstBatchFailure(t *testing.T) {
 	fake := &fakeLLM{configured: true}
 	tr := NewTranslator(fake, settings)
 
-	fake.reply = func(call int, r llm.Request) (string, error) {
+	prov := answering(t, func(call int, r schemaflux.CompletionRequest) (string, error) {
 		if call == 1 {
 			return "", errors.New("llm: provider returned 500: overloaded")
 		}
-		return echoEntriesJSON(batchFromInput(t, r.Input)), nil
-	}
+		return echoEntriesJSON(batchFromInput(t, r.SystemPrompt+r.UserPrompt)), nil
+	})
 
 	_, err := tr.Catalog(context.Background(), "fr", false)
 	if err == nil || !strings.Contains(err.Error(), "overloaded") {
@@ -122,7 +126,7 @@ func TestCatalogStopsAtTheFirstBatchFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "messages 61-120") {
 		t.Errorf("err = %v, want it to name the failing batch's message range", err)
 	}
-	if n := fake.callCount(); n != 2 {
+	if n := prov.CallCount(); n != 2 {
 		t.Fatalf("provider called %d times, want exactly 2 (stop at the first failed batch, "+
 			"not all ~14)", n)
 	}
@@ -144,14 +148,14 @@ func TestCatalogDropsAKeyTheModelInventedThatWasNotAsked(t *testing.T) {
 		break
 	}
 
-	fake.reply = func(_ int, r llm.Request) (string, error) {
-		batch := batchFromInput(t, r.Input)
+	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
+		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
 		if _, ok := batch[real]; ok {
 			return fmt.Sprintf(`{"entries":[{"key":%s,"text":"translated"},`+
 				`{"key":"totally.invented.key","text":"hacked"}]}`, jsonStr(real)), nil
 		}
 		return echoEntriesJSON(batch), nil
-	}
+	})
 
 	got, err := tr.Catalog(context.Background(), "fr", false)
 	if err != nil {
@@ -182,8 +186,8 @@ func TestCatalogDropsAnEmptyTranslationForAnAskedKey(t *testing.T) {
 		break
 	}
 
-	fake.reply = func(_ int, r llm.Request) (string, error) {
-		batch := batchFromInput(t, r.Input)
+	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
+		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
 		if _, ok := batch[real]; !ok {
 			return echoEntriesJSON(batch), nil
 		}
@@ -204,7 +208,7 @@ func TestCatalogDropsAnEmptyTranslationForAnAskedKey(t *testing.T) {
 		}
 		b.WriteString(`]}`)
 		return b.String(), nil
-	}
+	})
 
 	got, err := tr.Catalog(context.Background(), "fr", false)
 	if err != nil {
@@ -228,8 +232,8 @@ func TestCatalogAllBatchesEmptyIsAnError(t *testing.T) {
 	fake := &fakeLLM{configured: true}
 	tr := NewTranslator(fake, settings)
 
-	fake.reply = func(_ int, r llm.Request) (string, error) {
-		batch := batchFromInput(t, r.Input)
+	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
+		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
 		var b strings.Builder
 		b.WriteString(`{"entries":[`)
 		first := true
@@ -242,7 +246,7 @@ func TestCatalogAllBatchesEmptyIsAnError(t *testing.T) {
 		}
 		b.WriteString(`]}`)
 		return b.String(), nil
-	}
+	})
 
 	_, err := tr.Catalog(context.Background(), "fr", false)
 	if err == nil || !strings.Contains(err.Error(), "came back empty") {
@@ -253,15 +257,15 @@ func TestCatalogAllBatchesEmptyIsAnError(t *testing.T) {
 // --- translateBatch: malformed output, provider errors, cancellation --------
 
 func TestTranslateBatchMalformedJSONIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"entries":[{"key":"a.b","text":"Bonjour"`} // truncated
-	tr := NewTranslator(fake, nil)
+	replying(t, `{"entries":[{"key":"a.b","text":"Bonjour"`) // truncated
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, ok := LanguageByCode("fr")
 	if !ok {
 		t.Fatal("fr is not an offered language")
 	}
 	_, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
-	if err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("err = %v, want a 'not readable' error", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
@@ -269,22 +273,24 @@ func TestTranslateBatchMalformedJSONIsAReadableError(t *testing.T) {
 // object) must fail the same readable way, not panic or silently produce zero
 // entries that get mistaken for "the model translated nothing this batch".
 func TestTranslateBatchWrongTopLevelShapeIsAReadableError(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `["a.b", "Bonjour"]`}
-	tr := NewTranslator(fake, nil)
+	replying(t, `["a.b", "Bonjour"]`)
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 	_, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
-	if err == nil || !strings.Contains(err.Error(), "not readable") {
-		t.Fatalf("err = %v, want a 'not readable' error", err)
+	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
-// An extra field beyond the {entries:[{key,text}]} schema is silently ignored
-// by json.Unmarshal into the target struct — pinned down explicitly so a
-// future switch to a stricter decoder would be caught here.
+// An extra field beyond the {entries:[{key,text}]} schema is ignored.
+//
+// This is a choice the call site makes, not a default: SchemaFlux's `Strict()`
+// mode would reject it. Sixty strings is the most expensive batch in the
+// application to redo, and a `model_confidence` nobody asked for does not make
+// the translations wrong. This is the test that would fail if Strict were added.
 func TestTranslateBatchIgnoresAnUnexpectedExtraField(t *testing.T) {
-	fake := &fakeLLM{configured: true,
-		text: `{"entries":[{"key":"a.b","text":"Bonjour"}],"model_confidence":0.91}`}
-	tr := NewTranslator(fake, nil)
+	replying(t, `{"entries":[{"key":"a.b","text":"Bonjour"}],"model_confidence":0.91}`)
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 	got, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
 	if err != nil {
@@ -296,8 +302,8 @@ func TestTranslateBatchIgnoresAnUnexpectedExtraField(t *testing.T) {
 }
 
 func TestTranslateBatchProviderErrorPassesThrough(t *testing.T) {
-	fake := &fakeLLM{configured: true, err: errors.New("llm: provider returned 500: upstream on fire")}
-	tr := NewTranslator(fake, nil)
+	failing(t, errors.New("llm: provider returned 500: upstream on fire"))
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 	_, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
@@ -308,10 +314,8 @@ func TestTranslateBatchProviderErrorPassesThrough(t *testing.T) {
 func TestTranslateBatchContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fake := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
-		return "", context.Canceled
-	}}
-	tr := NewTranslator(fake, nil)
+	failing(t, context.Canceled)
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 	_, err := tr.translateBatch(ctx, lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
 	if !errors.Is(err, context.Canceled) {
@@ -321,28 +325,46 @@ func TestTranslateBatchContextCancellationPropagates(t *testing.T) {
 
 // What is actually sent: the language and the payload, previously unreachable.
 func TestTranslateBatchSendsLanguageAndPayload(t *testing.T) {
-	fake := &fakeLLM{configured: true, text: `{"entries":[{"key":"a.b","text":"Bonjour"}]}`}
-	tr := NewTranslator(fake, nil)
+	prov := replying(t, `{"entries":[{"key":"a.b","text":"Bonjour"}]}`)
+	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 
 	if _, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini",
 		map[string]string{"a.b": "Hello"}); err != nil {
 		t.Fatalf("translateBatch: %v", err)
 	}
-	req := fake.callN(0)
-	if req.Instructions != instructions {
+	// Containment rather than equality, and the whole request rather than the
+	// system half: SchemaFlux routes caller steering into the USER prompt on
+	// purpose (see podBrief), so "the brief reached the model" is the only claim
+	// available — and it is the one worth making.
+	req := requestSent(prov, 0)
+	if !strings.Contains(req, instructions) {
 		t.Error("the localisation instructions were not sent")
 	}
-	if !strings.Contains(req.Input, lang.Code) {
-		t.Errorf("input does not carry the target language code:\n%s", req.Input)
+	if !strings.Contains(req, lang.Code) {
+		t.Errorf("input does not carry the target language code:\n%s", req)
 	}
-	if !strings.Contains(req.Input, "Hello") {
-		t.Errorf("input does not carry the batch payload:\n%s", req.Input)
+	if !strings.Contains(req, "Hello") {
+		t.Errorf("input does not carry the batch payload:\n%s", req)
 	}
-	if req.SchemaName != "ui_translation" {
-		t.Errorf("schema name = %q, want ui_translation", req.SchemaName)
+	// The schema is DERIVED from translationBatch now rather than hand-written
+	// beside it, so its name is the library's to choose — what this package can
+	// still insist on is that a schema was sent at all, and that it is the batch
+	// shape. A request with no schema is the regression that matters: it is how
+	// a translation call turns into free prose that parses as nothing.
+	sent := prov.Requests()[0]
+	if sent.JSONSchema == nil {
+		t.Error("the request carried no schema; the reply would be unconstrained prose")
+	} else if props, ok := sent.JSONSchema["properties"].(map[string]any); ok {
+		if _, hasEntries := props["entries"]; !hasEntries {
+			t.Errorf("the schema is not the batch shape: %v", props)
+		}
 	}
-	if req.Model != "gpt-5-mini" {
-		t.Errorf("model = %q", req.Model)
-	}
+	// The MODEL is deliberately not asserted here. Applying the instance's
+	// configured model is llm.Client.OpsContext's job (G5), and the fake seam
+	// this test uses returns the context untouched precisely so the installed
+	// provider is the one that answers — so what arrives is whatever the library
+	// resolved, not what a real client would have overridden it with. That
+	// override has its own tests in internal/llm; asserting it here would be
+	// asserting the fake.
 }

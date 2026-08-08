@@ -191,6 +191,28 @@ message GetSmartConfigResponse {
   // The model every Smart+ feature uses, and the built-in default when unset.
   string model = 4;
   string default_model = 5;
+  // Whether this instance consents to sending ARTICLE TEXT to the model for
+  // classification (§27.4e, `smart.classify`). Default off, and off is not a
+  // formality: it spends money and egresses the publisher's words.
+  //
+  // A field on the instance's config rather than a per-reader preference
+  // because the decision is about the instance — the text is the publisher's
+  // and the bill is the owner's, and a per-reader toggle would imply the
+  // reader controls something they do not.
+  bool classify_enabled = 6;
+  // What the model has cost this instance since the process started, in USD,
+  // for the calls the rate tables could price.
+  //
+  // `priced_calls` and `unpriced_calls` are counts, not money, and they are
+  // here because the number above is meaningless without them: a model with no
+  // published rate contributes an unknown amount, and reporting it as $0.00
+  // would say it was free. "We do not know" and "it was free" are different
+  // claims and only one of them is true.
+  double cost_usd = 30;
+  int64 priced_calls = 31;
+  int64 unpriced_calls = 32;
+  // The ceiling on that spend, in USD, or 0 for none — which is the default.
+  double budget_usd = 33;
   // Tokens spent since this server process started. Not a bill — a signal.
   // Restart-scoped on purpose: a persisted counter that nobody resets becomes a
   // number people stop reading.
@@ -250,6 +272,16 @@ message SetSmartConfigRequest {
   bool clear_api_key = 2;
   // Empty leaves the model untouched.
   string model = 3;
+  // The consent for sending article text (§27.4e). Optional so that "leave it
+  // as it is" is expressible: a form that could only send true or false would
+  // turn every unrelated save — a model change, a new key — into a decision
+  // about egress that nobody made.
+  optional bool classify_enabled = 4;
+  // The spend ceiling in USD. Optional for the same reason, and 0 means no
+  // ceiling rather than "refuse everything": a cap is something somebody opts
+  // into, and the strictest possible reading of an empty field would silently
+  // disable every paid feature on the instance.
+  optional double budget_usd = 5;
 }
 
 message SetSmartConfigResponse { GetSmartConfigResponse config = 1; }

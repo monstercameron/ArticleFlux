@@ -167,6 +167,21 @@ func (c *Classifier) Enrich(ctx context.Context, item pipeline.Item, out *pipeli
 	call, cancel := context.WithTimeout(ctx, classifyTimeout)
 	defer cancel()
 
+	// A14 stays on the hand-built path, and this is the one place in this
+	// package where that is a conclusion rather than a leftover (plan P3.5).
+	//
+	// SchemaFlux's typed operations derive their schema from a Go TYPE, at
+	// compile time. This request has no Go type: `registry.Build` composes
+	// `req.Schema` at runtime from whichever contributors are enabled for this
+	// reader, and the reply is dispatched back to those same contributors slice
+	// by slice. Two instances with different contributor sets ask genuinely
+	// different questions and get genuinely different shapes back.
+	//
+	// `Classifying[T, C]` cannot express that, and forcing it would mean
+	// collapsing the contributor system into one fixed struct — which is the
+	// feature, not an implementation detail of it. So the schema stays
+	// hand-assembled, the audit above still runs against the ASSEMBLED body
+	// rather than the template, and this call keeps `llm.Request`.
 	reply, err := c.llm.Do(call, llm.Request{
 		Model:           model,
 		Instructions:    req.Instructions,

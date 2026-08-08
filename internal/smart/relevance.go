@@ -2,13 +2,14 @@ package smart
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/recommend"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // maxRecommendTopics is how many of the reader's largest topics contribute
@@ -175,31 +176,68 @@ func (c *RelevanceChecker) Check(
 	}
 	payload, _ = payload.Trim()
 
-	call, cancel := context.WithTimeout(ctx, interestTimeout)
+	call, cancel := context.WithTimeout(c.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
 
-	out, err := c.llm.Do(call, llm.Request{
-		Model:        c.model(ctx),
-		Instructions: llm.RelevanceInstructions,
-		// Prose, not the marshalled struct — see RelevancePayload.Prompt for
-		// the measurement. The payload type is still what decides what may
-		// leave; only its rendering changed.
-		Input:      payload.Prompt(),
-		SchemaName: "recommendation_relevance",
-		Schema:     llm.RelevanceSchema,
-		// Short: this is a two-post read against a topic string, not a
-		// judgement over forty candidates — the rerank call's budget would be
-		// paying for headroom this task cannot use.
-		MaxOutputTokens: 600,
-		Effort:          "low",
-	})
+	// Rebuilt on a typed operation (plan P3.3), but NOT on `Scoring`, which is
+	// what the plan suggested — and the difference is worth stating because it
+	// is about honesty rather than ergonomics.
+	//
+	// `ScoreResult` is a number with reasoning attached, and SchemaFlux's own
+	// rule is that a model's self-reported score is a CLAIM, not a measurement.
+	// Turning that claim into "relevant" by comparing it to a threshold we chose
+	// would invent a precision nobody has: the feature's actual question is a
+	// judgement with an explanation the reader is shown, and it is better asked
+	// as the judgement it is.
+	//
+	// `payload.Trim` still decides what may leave, and still runs above. The
+	// schema is derived from the verdict type below rather than written out by
+	// hand, so a field renamed here cannot drift from a schema kept elsewhere.
+	verdict, err := schemaflux.Extracting[relevanceVerdict](payload.Prompt()).
+		Steer(llm.RelevanceInstructions).
+		// The answer must satisfy the shape; a missing field is a failure rather
+		// than a zero value that reads as "not relevant".
+		Strict().
+		// Short: a two-post read against a topic string, not a judgement over
+		// forty candidates.
+		Fast().
+		Run(call)
 	if err != nil {
 		return false, "", err
 	}
-
-	var reply llm.RelevanceReply
-	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return false, "", fmt.Errorf("smart: relevance reply was not the schema: %w", err)
+	if verdict.Relevant == nil {
+		// Strict should have caught this, and this is the belt to its braces:
+		// the one thing that must never happen here is an unanswered call
+		// reading as a rejection.
+		return false, "", fmt.Errorf("smart: the relevance verdict carried no answer")
 	}
-	return reply.Relevant, cleanRelevanceReason(reply.Reason), nil
+	return *verdict.Relevant, cleanRelevanceReason(verdict.Reason), nil
+}
+
+// relevanceVerdict is the answer's shape, and the schema is derived from it.
+//
+// The field names carry the same words the hand-written schema used, because
+// they are what the model reads: a struct tag is the prompt here.
+type relevanceVerdict struct {
+	// Relevant is whether this site is worth offering to a reader who follows
+	// the topic.
+	//
+	// A POINTER, and that is load-bearing rather than stylistic. SchemaFlux
+	// decides a required field was "populated" by asking whether it is the zero
+	// value of its type — a blunt rule its own doc calls the honest one
+	// available, since a model returning 0 for an int it could not determine is
+	// indistinguishable from one that determined 0. For a plain `bool` that
+	// makes `false` unrepresentable: a correct "not relevant" verdict is
+	// rejected as an empty field, and the repair loop spends two more calls
+	// discovering it again.
+	//
+	// The remedy the library documents is a pointer, and it happens to be
+	// exactly what this feature needs anyway. Check's own contract is that a
+	// false must never be inferred from a failure — so "the model did not
+	// answer" has to be a different value from "the model said no", and nil is
+	// the only way to spell that.
+	Relevant *bool `json:"relevant"`
+	// Reason is one short sentence a reader can act on, shown beside the
+	// suggestion. Never the model's private deliberation.
+	Reason string `json:"reason"`
 }
