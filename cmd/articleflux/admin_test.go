@@ -122,7 +122,7 @@ func TestPasswdRevokesSessionsAndFamiliesTransactionally(t *testing.T) {
 	if _, err := repo2.ScopeForSession(ctx, secret.HashToken(sessionToken)); err == nil {
 		t.Error("the session survived a break-glass password reset")
 	}
-	if err := repo2.RotateRefresh(ctx, "rec1", "refresh-secret", idgen.Token()); err == nil {
+	if err := repo2.RotateRefresh(ctx, "rec1", "refresh-secret", idgen.Token(), 0); err == nil {
 		t.Error("the refresh family survived a break-glass password reset — a device that " +
 			"still holds it could renew itself past the reset")
 	}

@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,8 +38,78 @@ import (
 // disagree about what version they are (§22.10). See internal/buildver.
 const version = buildver.Version
 
+// logLevel is the process's verbosity, held in a LevelVar rather than baked
+// into the handler at construction.
+//
+// A slog.HandlerOptions.Level that is a plain Level is read once and fixed for
+// the life of the process, so raising verbosity meant editing this file and
+// restarting — and a restart discards `internal/obs`'s log ring, which is the
+// thing you were trying to read. The one moment you want debug output is the
+// one moment the old arrangement made you destroy the evidence to get it.
+//
+// A LevelVar is read on every record and is safe to set concurrently, so the
+// level can move while the process runs.
+var logLevel = new(slog.LevelVar)
+
+// setLogLevel parses a level name and applies it.
+//
+// The four names slog itself uses, matched case-insensitively because
+// ARTICLEFLUX_LOG_LEVEL=DEBUG in a systemd unit is the same request as -log-level
+// debug on a command line, and refusing one of them teaches nothing.
+func setLogLevel(name string) error {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "debug":
+		logLevel.Set(slog.LevelDebug)
+	case "", "info":
+		logLevel.Set(slog.LevelInfo)
+	case "warn", "warning":
+		logLevel.Set(slog.LevelWarn)
+	case "error":
+		logLevel.Set(slog.LevelError)
+	default:
+		return fmt.Errorf("log level %q is not one of debug, info, warn, error", name)
+	}
+	return nil
+}
+
+// newLogHandler builds the stderr handler in the requested format.
+//
+// Text is the default because the person most likely to be reading this output
+// is the one who just started the process, and `key=value` is what a human
+// reads. JSON exists for the other case: once these lines are going into Loki,
+// journald's structured fields, or anything that indexes rather than displays,
+// a text handler means every consumer re-parses `key=value` — badly, because
+// the values are quoted only when they need to be.
+//
+// The choice is at the OUTER handler, so the ring, the request-id stamp and the
+// trace stamp are unaffected: format is a rendering decision and those three
+// are about content.
+func newLogHandler(format string) (slog.Handler, error) {
+	opts := &slog.HandlerOptions{Level: logLevel}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "text":
+		return slog.NewTextHandler(os.Stderr, opts), nil
+	case "json":
+		return slog.NewJSONHandler(os.Stderr, opts), nil
+	default:
+		return nil, fmt.Errorf("log format %q is not one of text, json", format)
+	}
+}
+
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// The format is read from the environment here rather than from a flag,
+	// because this logger has to exist before any subcommand parses anything —
+	// and the errors it reports before that point are exactly the ones somebody
+	// running under a log collector wants structured. `serve` re-reads it as a
+	// flag below, which is what makes -log-format work on the command line.
+	handler, herr := newLogHandler(os.Getenv("ARTICLEFLUX_LOG_FORMAT"))
+	if herr != nil {
+		// Reported through the format we could not build, which is the one
+		// thing certain to work.
+		fmt.Fprintf(os.Stderr, "articleflux: %v\n", herr)
+		os.Exit(2)
+	}
+	log := slog.New(handler)
 
 	args := os.Args[1:]
 	cmd := "serve"
@@ -59,10 +130,16 @@ func main() {
 		err = addUser(log, args)
 	case "passwd":
 		err = passwd(log, args)
+	case "reset":
+		err = reset(log, args)
+	case "audit":
+		err = auditCmd(log, args)
 	case "migrate":
 		err = migrate(log, args)
 	case "backup":
 		err = backup(log, args)
+	case "vacuum":
+		err = vacuumCmd(log, args)
 	case "seed":
 		err = seed(log, args)
 	case "seed-reading":
@@ -103,8 +180,11 @@ func usage() {
   articleflux init    -user name [-db path]
   articleflux adduser -user name [-role member] [-db path]
   articleflux passwd  -user name [-db path]
+  articleflux reset   -user name [-origin url] [-db path]
+  articleflux audit   [-n 50] [-since 24h] [-action a,b] [-alerts] [-json] [-db path]
   articleflux migrate [-db path]
   articleflux backup  -out path [-db path] [-keep n]
+  articleflux vacuum  [-db path] [-incremental] [-n]
   articleflux seed    [-db path] [-feeds url,url,...]
   articleflux seed-reading [-db path] [-focus word,word] [-read 0.6] [-seed 1]
   articleflux poll    [-db path]
@@ -123,6 +203,17 @@ nothing to log in as, and serve says so at boot rather than at the login screen.
 init/adduser/passwd ask for a password on a hidden terminal prompt, or read
 ARTICLEFLUX_PASSWORD for scripted use — never as a command-line flag, which
 would sit in shell history and process listings.
+
+"audit" is the security trail (§7.9): sign-ins, password changes, recoveries,
+lockouts and admin actions. "-alerts" drops routine sign-in/sign-out and leaves
+the events worth looking at. Every entry is also logged live under the
+"security_event" key, which is what to point an alerting rule at.
+
+"passwd" sets a password here, on the box. "reset" instead prints a single-use
+link the reader opens to choose their own, which is the one to use when the
+person locked out is not the person with the shell — it avoids an operator
+reading a password down a phone line. It lasts an hour and minting another
+invalidates the first.
 `)
 }
 
@@ -165,6 +256,27 @@ func serve(log *slog.Logger, args []string) error {
 	// See clientAddr for why trusting it unconditionally is worse than useless.
 	behindProxy := fs.Bool("behind-proxy", envBool("ARTICLEFLUX_BEHIND_PROXY"),
 		"trust X-Forwarded-For / X-Real-IP for client addresses; ONLY behind a proxy you control")
+	// How MANY proxies, which is a separate question from whether there are any.
+	//
+	// X-Forwarded-For is a list the client writes the left-hand end of, and
+	// nginx appends rather than replaces (`$proxy_add_x_forwarded_for`). So the
+	// believable entries are the last N, and N is this. One is what
+	// deploy/nginx.conf describes; a box behind a CDN as well has two.
+	//
+	// Too HIGH is the dangerous direction and it is silent: each extra hop moves
+	// the trusted position one place left, and one place past the real edge is
+	// whatever the caller typed into the header.
+	proxyHops := fs.Int("proxy-hops", envIntDefault("ARTICLEFLUX_PROXY_HOPS", clientaddr.DefaultHops),
+		"how many trusted proxies are in front, for reading X-Forwarded-For; only meaningful with -behind-proxy")
+	// The five on-disk caches, as one number.
+	//
+	// They share the volume the database is on, and until this existed nothing
+	// bounded their total — per-item ceilings only. A cache with no ceiling
+	// beside a SQLite file is a slow leak pointed at every write the reader
+	// makes; see internal/app/diskhealth.go for the whole path and for how the
+	// budget is divided between them.
+	cacheBudget := fs.Int("cache-budget-mb", envIntSigned("ARTICLEFLUX_CACHE_BUDGET_MB", app.DefaultCacheBudgetMB),
+		"total megabytes the on-disk caches may occupy; negative disables eviction")
 	// Metrics are always readable at /metrics with no configuration. This flag is
 	// only about SENDING them somewhere, which is a network decision and so is
 	// opt-in — the same position §18 takes about the model egress boundary.
@@ -174,6 +286,11 @@ func serve(log *slog.Logger, args []string) error {
 	// box needs nothing said twice.
 	otlpEndpoint := fs.String("otlp-endpoint", envOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		"OpenTelemetry collector base URL, e.g. http://localhost:4318; empty keeps metrics local to /metrics")
+	// The fraction of traces started here that are exported. 1.0 keeps the
+	// behaviour an operator already has; lowering it is the only way to turn
+	// down trace volume short of turning tracing off.
+	otlpRatio := fs.Float64("otlp-sample-ratio", envFloatDefault("ARTICLEFLUX_OTLP_SAMPLE_RATIO", 1.0),
+		"fraction of traces to export, 0-1; ignored without -otlp-endpoint")
 	otlpInsecure := fs.Bool("otlp-insecure", envBool("ARTICLEFLUX_OTLP_INSECURE"),
 		"send OTLP over plain HTTP; only sane for a collector on this host")
 	// On by default, which is the odd one out among these flags and is
@@ -213,8 +330,31 @@ func serve(log *slog.Logger, args []string) error {
 		"browser binary for -proxy-stream; empty auto-detects Edge/Chrome/Chromium")
 	proxyOrigin := fs.String("proxy-origin", envOr("ARTICLEFLUX_PROXY_ORIGIN", ""),
 		"absolute origin for proxied content, e.g. https://proxy.example.com; empty means same-origin")
+	logLevelFlag := fs.String("log-level", envOr("ARTICLEFLUX_LOG_LEVEL", "info"),
+		"debug, info, warn or error")
+	logFormatFlag := fs.String("log-format", envOr("ARTICLEFLUX_LOG_FORMAT", "text"),
+		"text for a person reading the terminal, json for a log collector")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// Applied before anything else logs, so a debug run captures the boot.
+	//
+	// Rejected rather than defaulted on a bad value: an operator who has just
+	// asked for debug output and quietly received info would conclude the
+	// problem they are chasing does not log, which is a worse place to be than
+	// a startup error naming the four words that work.
+	if err := setLogLevel(*logLevelFlag); err != nil {
+		return err
+	}
+	// Rebuilt rather than mutated, because a handler's format is fixed at
+	// construction. The caller's logger is replaced for the rest of serve, and
+	// everything downstream — the ring, the request-id stamp, the trace stamp —
+	// is layered onto this one inside app.Open.
+	if h, err := newLogHandler(*logFormatFlag); err != nil {
+		return err
+	} else if *logFormatFlag != "text" {
+		log = slog.New(h)
 	}
 
 	// DevMode used to be `isLoopback(*addr)`, and that was the single most
@@ -301,8 +441,11 @@ func serve(log *slog.Logger, args []string) error {
 		PollInterval:      *poll,
 		AllowedOrigins:    splitList(*origin),
 		BehindProxy:       *behindProxy,
+		TrustedProxyHops:  *proxyHops,
+		CacheBudgetMB:     *cacheBudget,
 		OTLPEndpoint:      *otlpEndpoint,
 		OTLPInsecure:      *otlpInsecure,
+		OTLPSampleRatio:   *otlpRatio,
 		ProxyImages:       *proxyImages,
 		ProxyPages:        *proxyPages,
 		ProxyStream:       *proxyStream,
@@ -350,13 +493,47 @@ func serve(log *slog.Logger, args []string) error {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logging(log, *behindProxy, a.Handler()),
+		Handler:           boundRequestReads(logging(log, *behindProxy, *proxyHops, a.Handler())),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: the gRPC tunnel is a long-lived WebSocket, and a write
 		// deadline would sever it on a timer.
+		//
+		// No ReadTimeout either, for a less obvious version of the same reason.
+		// A ReadTimeout is applied as a read deadline on the socket before the
+		// handler runs, and `Hijack` does not clear it — so the deadline the
+		// server set for reading a request would still be armed on the tunnel's
+		// connection and would kill it at exactly that interval. The per-request
+		// deadline in boundRequestReads is the ReadTimeout this cannot have: it
+		// bounds the same thing and knows which request not to bound.
+		//
+		// IdleTimeout, though, is safe and was missing. Without it a keep-alive
+		// connection that finishes a request and says nothing more is held until
+		// the client goes away, which on the standard topology nginx bounds for
+		// us — and on the pre-DNS `-addr 0.0.0.0:9000` deployment
+		// articleflux.service documents, nothing does. Two minutes is longer
+		// than any browser's keep-alive and shorter than an afternoon.
+		//
+		// It does not touch the tunnel: a hijacked connection has left the
+		// server's idle tracking entirely.
+		IdleTimeout: 2 * time.Minute,
+
+		// net/http's own errors, routed into this program's logger.
+		//
+		// A nil ErrorLog does not mean net/http is silent — it means net/http
+		// writes to the standard `log` package, which goes to stderr as
+		// unstructured text. So the one class of failure the application cannot
+		// see for itself, RECOVERED HANDLER PANICS, was landing outside the
+		// only log the settings screen can read: net/http recovers a panic in a
+		// handler, logs it with its stack HERE, and closes the connection. From
+		// inside the app that is indistinguishable from the reader's network
+		// dropping.
+		//
+		// TLS handshake failures and malformed requests come through the same
+		// channel and are worth the same treatment.
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
 
-	logPosture(log, dev, *addr, splitList(*origin), *behindProxy)
+	logPosture(log, dev, *addr, splitList(*origin), *behindProxy, *proxyHops)
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -847,6 +1024,39 @@ func envBoolDefault(key string, def bool) bool {
 	}
 }
 
+// envIntDefault reads a positive integer environment variable.
+//
+// Unset, unparseable, or non-positive all fall back to def, and that is the
+// safe direction for its one caller: ARTICLEFLUX_PROXY_HOPS decides how far
+// left in X-Forwarded-For the trusted entry is, and reading a typo as zero
+// would move it. The default is the topology this repository ships, so a
+// mistyped value behaves like a value nobody set.
+func envIntDefault(key string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || n < 1 {
+		return def
+	}
+	return n
+}
+
+// envIntSigned is envIntDefault for a setting where a negative value MEANS
+// something.
+//
+// ARTICLEFLUX_CACHE_BUDGET_MB reads negative as "do not evict", which is a
+// legitimate choice on a large volume with its own housekeeping — so unlike the
+// hop count, this one cannot clamp at 1. Only an unparseable value falls back.
+func envIntSigned(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 // logPosture states, in one line at boot, which of the two ways this instance
 // can run it is actually running in.
 //
@@ -860,7 +1070,7 @@ func envBoolDefault(key string, def bool) bool {
 // the listening line is technically the answer and is easy to read past, so the
 // posture is said out loud in the terms that matter: whether a password is
 // required, and what is standing between this socket and the internet.
-func logPosture(log *slog.Logger, dev bool, addr string, origins []string, behindProxy bool) {
+func logPosture(log *slog.Logger, dev bool, addr string, origins []string, behindProxy bool, hops int) {
 	if dev {
 		// Warn, not Info. This line describes a server anyone who can reach the
 		// port owns, and it should not read like routine startup chatter.
@@ -874,7 +1084,11 @@ func logPosture(log *slog.Logger, dev bool, addr string, origins []string, behin
 	log.Info("MODE=production — login required",
 		"addr", addr,
 		"origin_allowlist", originSummary(origins),
-		"trusts_forwarded_for", behindProxy)
+		"trusts_forwarded_for", behindProxy,
+		// The hop count is on the line because it is the one setting here whose
+		// wrong value is silent AND exploitable: too high, and the trusted
+		// position lands on an entry the caller wrote. See clientaddr.
+		"trusted_proxy_hops", hops)
 
 	// Production-only checks. These are warnings rather than refusals: each one
 	// describes an instance that works and is weaker than it looks, and refusing
@@ -927,20 +1141,64 @@ func splitList(s string) []string {
 // than no log, because it is read as corroboration.
 //
 // internal/clientaddr holds the single rule, including why the header is
-// believed only behind `-behind-proxy` and why the leftmost entry is the one
-// taken.
-func clientAddr(r *http.Request, trustProxy bool) string {
-	return clientaddr.Of(r, trustProxy)
+// believed only behind `-behind-proxy` and why the entry is counted from the
+// RIGHT — the leftmost one is written by the caller, not by a proxy.
+func clientAddr(r *http.Request, trustProxy bool, hops int) string {
+	return clientaddr.Of(r, trustProxy, hops)
 }
 
-func logging(log *slog.Logger, trustProxy bool, next http.Handler) http.Handler {
+// requestReadTimeout is how long a request has to finish arriving.
+//
+// Sixty seconds, which is enormous for anything this server accepts — every
+// HTTP body here is a form-sized POST or nothing at all; the large transfers
+// are RPCs inside the tunnel, which this deliberately does not touch. It is set
+// where it is because the number that matters is "not indefinite", and a
+// generous bound nobody legitimate can hit is easier to leave alone than a
+// tight one somebody has to keep tuning.
+const requestReadTimeout = 60 * time.Second
+
+// boundRequestReads gives every request but the tunnel a deadline for arriving.
+//
+// # Why this is not http.Server.ReadTimeout
+//
+// It would be, if the tunnel did not exist. `ReadTimeout` arms a read deadline
+// on the socket before the handler runs, and `Hijack` hands that socket over
+// with the deadline still armed — so a ReadTimeout of any value is also a
+// hard limit on how long the WebSocket carrying every RPC in the application
+// may live. That is the same trap `WriteTimeout` sets, one field over, and it
+// is why the server has neither.
+//
+// The deadline therefore has to be applied per request, by something that knows
+// which request is the tunnel. `/grpc` is skipped entirely; everything else gets
+// bounded, which closes the slow-body half of slowloris that
+// `ReadHeaderTimeout` leaves open — it bounds the headers and then stops
+// caring.
+//
+// # Why the failure is soft
+//
+// `SetReadDeadline` is unavailable on a ResponseWriter that does not support it
+// (an httptest recorder, most obviously). A middleware that refused the request
+// in that case would break every test that exercises a handler directly, to
+// protect against a condition that cannot arise on a real socket. So a
+// ResponseController that cannot set the deadline is ignored and the request
+// proceeds — under a real server it always can.
+func boundRequestReads(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/grpc" {
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(requestReadTimeout))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func logging(log *slog.Logger, trustProxy bool, hops int, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The tunnel is one long-lived request; logging its duration would emit a
 		// single line hours later and nothing in between.
 		if r.URL.Path == "/grpc" {
-			log.Info("tunnel open", "remote", clientAddr(r, trustProxy))
+			log.Info("tunnel open", "remote", clientAddr(r, trustProxy, hops))
 			next.ServeHTTP(w, r)
-			log.Info("tunnel closed", "remote", clientAddr(r, trustProxy))
+			log.Info("tunnel closed", "remote", clientAddr(r, trustProxy, hops))
 			return
 		}
 		start := time.Now()
@@ -948,7 +1206,7 @@ func logging(log *slog.Logger, trustProxy bool, next http.Handler) http.Handler 
 		next.ServeHTTP(rec, r)
 		log.Info("req", "method", r.Method, "path", r.URL.Path,
 			"status", rec.status, "ms", time.Since(start).Milliseconds(),
-			"remote", clientAddr(r, trustProxy))
+			"remote", clientAddr(r, trustProxy, hops))
 	})
 }
 
@@ -1116,4 +1374,20 @@ func exportOPML(log *slog.Logger, args []string) error {
 		log.Info("exported", "feeds", n, "file", *file)
 	}
 	return nil
+}
+
+// envFloatDefault reads a fractional setting, keeping the default for anything
+// it cannot parse.
+//
+// Same polarity as envBoolDefault and for the same reason: the one setting this
+// reads is a trace sample ratio whose default is "export everything", and a
+// typo that silently resolved to 0 would turn tracing off for somebody who had
+// just gone to the trouble of configuring a collector — a failure they would
+// diagnose as a broken exporter.
+func envFloatDefault(key string, def float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(key)), 64)
+	if err != nil || v < 0 || v > 1 {
+		return def
+	}
+	return v
 }

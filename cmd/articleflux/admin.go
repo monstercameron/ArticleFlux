@@ -18,12 +18,16 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/monstercameron/ArticleFlux/internal/app"
+	"github.com/monstercameron/ArticleFlux/internal/audit"
+	"github.com/monstercameron/ArticleFlux/internal/authn"
+	"github.com/monstercameron/ArticleFlux/internal/diskspace"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -112,10 +116,11 @@ func initInstance(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	tenantID, userID := idgen.New(), idgen.New()
 	if err := a.Repo().CreateTenantAndUser(ctx, store.NewTenant{
-		TenantID: idgen.New(),
+		TenantID: tenantID,
 		Name:     *tenant,
-		UserID:   idgen.New(),
+		UserID:   userID,
 		Username: *user,
 		Hash:     hash,
 		Role:     "superadmin",
@@ -124,6 +129,15 @@ func initInstance(log *slog.Logger, args []string) error {
 		return err
 	}
 	log.Info("initialised", "tenant", *tenant, "user", *user, "role", "superadmin")
+	// The trail's first row when an instance is claimed from the shell rather
+	// than through the setup screen. Both routes create a superadmin out of
+	// nothing, so both have to leave the same evidence.
+	audit.New(a.Repo(), log).Record(ctx, audit.Event{
+		Action: audit.ActionInstanceClaim, Subject: userID, Tenant: tenantID,
+		Detail: map[string]string{
+			"username": *user, "role": "superadmin", "tenant": *tenant, "via": "cli",
+		},
+	})
 	fmt.Fprintf(os.Stderr, "\nCreated superadmin %q. Start the server and log in.\n", *user)
 	return nil
 }
@@ -167,9 +181,10 @@ func addUser(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	userID := idgen.New()
 	if err := a.Repo().AddUser(ctx, store.NewTenant{
 		TenantID: tenantID,
-		UserID:   idgen.New(),
+		UserID:   userID,
 		Username: *user,
 		Hash:     hash,
 		Role:     *role,
@@ -183,6 +198,13 @@ func addUser(log *slog.Logger, args []string) error {
 		return err
 	}
 	log.Info("account created", "user", *user, "role", *role)
+	// An operator creating an account from the shell is invisible from inside the
+	// app. That is the case §7.9 exists for: legitimate, routine, and
+	// indistinguishable from somebody with filesystem access helping themselves.
+	audit.New(a.Repo(), log).Record(ctx, audit.Event{
+		Action: audit.ActionAccountCreated, Subject: userID, Tenant: tenantID,
+		Detail: map[string]string{"username": *user, "role": *role, "via": "cli"},
+	})
 	return nil
 }
 
@@ -236,6 +258,126 @@ func passwd(log *slog.Logger, args []string) error {
 	}
 	log.Info("password reset", "user", u.Username, "sessions_revoked", sessions,
 		"families_revoked", families)
+	// No Actor: whoever ran this had a shell, not a session, so there is no user
+	// id to name. Subject is the account it happened TO, which is the question
+	// somebody reading this row six months later is asking.
+	audit.New(a.Repo(), log).Record(ctx, audit.Event{
+		Action: audit.ActionPasswordReset, Subject: u.UserID, Tenant: u.TenantID,
+		Detail: map[string]string{
+			"username": u.Username, "via": "cli",
+			"sessions_revoked": strconv.FormatInt(sessions, 10),
+			"families_revoked": strconv.FormatInt(families, 10),
+		},
+	})
+	return nil
+}
+
+// reset mints a single-use reset token for an account and prints it (§7.2).
+//
+// # Why this exists next to passwd, which already resets a password
+//
+// `passwd` sets the new password ON THE BOX. That is the right tool when the
+// person locked out is the person with the shell — and the wrong one for every
+// other case, because the operator ends up choosing a password and then reading
+// it down a phone line to the reader, who now shares their credential with
+// whoever else was listening and usually never changes it.
+//
+// A reset token inverts that: the admin proves nothing about the password, the
+// reader chooses one nobody else has seen, and the thing that travels is a
+// value that stops working the moment it is used. It is also the only recovery
+// path for a reader who lost their sheet of codes, which — given people lose
+// them — is most of them.
+//
+// # The lifetime is doing security work the channel cannot
+//
+// D14 rules out SMTP, so this token travels by whatever the admin already has:
+// chat, SMS, a phone call. Those have no security properties at all. One hour
+// (authn.ResetTokenLifetime) is the compensation, and it is why the token is
+// printed rather than mailed — the operator can see exactly what they are
+// handing over and when it dies. Minting a second token kills the first, so
+// "issue a new one" replaces the attack surface rather than doubling it.
+func reset(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("reset", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	user := fs.String("user", "", "username (required)")
+	origin := fs.String("origin", "", "public origin, to print a full link (optional)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*user) == "" {
+		return errors.New("reset: -user is required")
+	}
+
+	ctx := context.Background()
+	a, err := openAdmin(ctx, log, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+
+	u, err := a.Repo().UserForLogin(ctx, *user)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("reset: no account named %q", *user)
+	}
+	if err != nil {
+		return err
+	}
+
+	token, err := authn.GenerateToken()
+	if err != nil {
+		return err
+	}
+	expires := time.Now().UTC().Add(authn.ResetTokenLifetime)
+	// Only the hash is stored, exactly as for a session token. A database dump
+	// must not hand out live resets, and the plaintext exists here and in
+	// whatever the operator pastes it into — nowhere else, ever.
+	if err := a.Repo().CreateResetToken(ctx, store.NewResetToken{
+		UserID:    u.UserID,
+		TokenHash: secret.HashToken(token),
+		Origin:    "cli",
+		ExpiresAt: expires,
+	}); err != nil {
+		return err
+	}
+
+	// Printed to stdout rather than logged. A log line goes to the journal, gets
+	// shipped, and outlives the token by however long the retention is — this is
+	// a credential, and it belongs on the operator's terminal and nowhere a
+	// pipeline will pick it up.
+	fmt.Printf("\nReset token for %s (valid for %s, single use):\n\n  %s\n",
+		u.Username, authn.ResetTokenLifetime, token)
+	// The link, and the client route that answers it.
+	//
+	// `/reset?token=…` is recognised by client/view/root.go (resetTokenFrom),
+	// which mounts the credential screen in recovery mode with the token already
+	// filled in and then strips it out of the address bar. That was NOT true for
+	// a while: this line printed a URL to a route that did not exist, so the link
+	// landed on the plain sign-in card and the only way through was to paste the
+	// token by hand out of the URL bar — the exact step the link exists to
+	// remove, asked of somebody already locked out.
+	//
+	// The two halves are one grammar in two files. If this format string
+	// changes, `resetPath` and `resetTokenParam` change with it.
+	if o := strings.TrimRight(strings.TrimSpace(*origin), "/"); o != "" {
+		fmt.Printf("\n  %s/reset?token=%s\n", o, token)
+	}
+	fmt.Printf("\nIt expires at %s. Minting another one invalidates this.\n\n",
+		expires.Format(time.RFC3339))
+
+	// The log records THAT a reset was issued and for whom — which is audit
+	// evidence somebody will want — and never the token itself.
+	log.Info("reset token issued", "user", u.Username, "expires_at", expires.Format(time.RFC3339))
+	// The ISSUE is recorded here and the REDEEM is recorded by the RPC, so the
+	// trail shows both halves and the gap between them. A token minted and never
+	// redeemed is worth seeing; so is one redeemed from an address nobody
+	// expected.
+	audit.New(a.Repo(), log).Record(ctx, audit.Event{
+		Action: audit.ActionResetIssued, Subject: u.UserID, Tenant: u.TenantID,
+		Detail: map[string]string{
+			"username": u.Username, "via": "cli",
+			"expires_at": expires.Format(time.RFC3339),
+		},
+	})
 	return nil
 }
 
@@ -425,4 +567,100 @@ func promptPassword(prompt string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// vacuumCmd compacts the live database, and can convert it to incremental
+// auto-vacuum on the way.
+//
+// # Why this is a command somebody runs rather than a timer
+//
+// SQLite never shrinks a file on DELETE — freed pages go on a free list and are
+// reused. That was invisible until retention started removing rows at scale
+// (items on the operator's window; `login_attempts` and `audit_log` on windows
+// that default to deleting), and it is hidden further by `articleflux backup`,
+// which VACUUMs the COPY: the backup is compact and the live file is not.
+//
+// VACUUM builds a complete second copy before replacing the original, so it
+// needs free space roughly equal to the database's size and holds a write lock
+// throughout. Both are worst on the instance that needs it most. So this
+// reports the numbers first and refuses when there is not obviously room,
+// rather than being a thing that happens to somebody at 03:30.
+func vacuumCmd(log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("vacuum", flag.ExitOnError)
+	dbPath := commonFlags(fs)
+	convert := fs.Bool("incremental", false,
+		"also switch this database to incremental auto-vacuum, so later deletions "+
+			"can be reclaimed without a full rewrite (only possible during a VACUUM)")
+	dryRun := fs.Bool("n", false, "report what would be reclaimed and do nothing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	db, err := store.Open(store.Options{Path: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	mode, err := db.AutoVacuum(ctx)
+	if err != nil {
+		return err
+	}
+	free, pageSize, err := db.FreePages(ctx)
+	if err != nil {
+		return err
+	}
+	size := int64(0)
+	if fi, serr := os.Stat(*dbPath); serr == nil {
+		size = fi.Size()
+	}
+	reclaimable := free * pageSize
+	log.Info("database",
+		"file", *dbPath,
+		"size_mb", size>>20,
+		"auto_vacuum", mode,
+		"free_pages", free,
+		"reclaimable_mb", reclaimable>>20)
+
+	if mode == "none" && !*convert {
+		// Said rather than left to be discovered. Without the conversion this
+		// compaction is a one-off: the next year of retention sweeps puts the
+		// pages straight back on a free list nothing can return.
+		log.Warn("this database has auto_vacuum=none, so nothing reclaims pages between " +
+			"full rewrites. Pass -incremental to convert it during this VACUUM — it is the " +
+			"only moment the mode can be changed")
+	}
+
+	if *dryRun {
+		log.Info("dry run; nothing was changed")
+		return nil
+	}
+
+	// The precheck. VACUUM needs room for a second copy, and finding that out
+	// halfway through is finding it out on a disk that is already the problem.
+	if free, ferr := diskspace.Free(filepath.Dir(*dbPath)); ferr == nil && size > 0 {
+		if int64(free) < size+(size/10) {
+			return fmt.Errorf("vacuum: this needs about %d MB free (a full copy of the database, "+
+				"plus a margin) and the volume has %d MB. Free some space first — "+
+				"`articleflux backup -out` elsewhere and prune, or clear the *-cache directories",
+				(size+size/10)>>20, free>>20)
+		}
+	}
+
+	start := time.Now()
+	if err := db.Vacuum(ctx, *convert); err != nil {
+		return err
+	}
+	after := int64(0)
+	if fi, serr := os.Stat(*dbPath); serr == nil {
+		after = fi.Size()
+	}
+	newMode, _ := db.AutoVacuum(ctx)
+	log.Info("vacuumed",
+		"before_mb", size>>20, "after_mb", after>>20,
+		"reclaimed_mb", (size-after)>>20,
+		"auto_vacuum", newMode,
+		"seconds", int(time.Since(start).Seconds()))
+	return nil
 }

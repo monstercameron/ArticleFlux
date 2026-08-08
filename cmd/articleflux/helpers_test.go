@@ -202,7 +202,7 @@ func logLines(t *testing.T, dev bool, addr string, origins []string, behindProxy
 	t.Helper()
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	logPosture(log, dev, addr, origins, behindProxy)
+	logPosture(log, dev, addr, origins, behindProxy, 1)
 	return buf.String()
 }
 
@@ -321,7 +321,7 @@ func TestStatusRecorderPassesHijackThrough(t *testing.T) {
 func TestLoggingRecordsTheRequestAndItsStatus(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	h := logging(log, false, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := logging(log, false, 1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
@@ -341,7 +341,7 @@ func TestLoggingRecordsTheRequestAndItsStatus(t *testing.T) {
 func TestLoggingTreatsTheTunnelAsASession(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	h := logging(log, false, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	h := logging(log, false, 1, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/grpc", nil))
 
@@ -361,10 +361,10 @@ func TestClientAddrBelievesTheProxyHeaderOnlyWhenToldTo(t *testing.T) {
 	req.RemoteAddr = "10.0.0.1:5555"
 	req.Header.Set("X-Forwarded-For", "203.0.113.7")
 
-	if got := clientAddr(req, false); strings.Contains(got, "203.0.113.7") {
+	if got := clientAddr(req, false, 1); strings.Contains(got, "203.0.113.7") {
 		t.Errorf("clientAddr = %q; the header was believed without -behind-proxy", got)
 	}
-	if got := clientAddr(req, true); !strings.Contains(got, "203.0.113.7") {
+	if got := clientAddr(req, true, 1); !strings.Contains(got, "203.0.113.7") {
 		t.Errorf("clientAddr = %q; the header was ignored behind a declared proxy", got)
 	}
 }
@@ -698,5 +698,66 @@ func TestPrintRundownOnAnEmptyRundown(t *testing.T) {
 	}
 	if strings.Contains(got, "NaN") {
 		t.Errorf("an empty rundown produced NaN:\n%s", got)
+	}
+}
+
+// The log format is the one setting whose effect is invisible until somebody
+// points a collector at this and finds `key=value` where JSON was expected.
+func TestLogFormatSelection(t *testing.T) {
+	for _, c := range []struct{ name, format, want string }{
+		{"default is text", "", "msg=hello"},
+		{"text explicitly", "text", "msg=hello"},
+		{"json", "json", `"msg":"hello"`},
+		{"case and space tolerated", "  JSON ", `"msg":"hello"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := newLogHandler(c.format)
+			if err != nil {
+				t.Fatalf("newLogHandler(%q): %v", c.format, err)
+			}
+			// The handler writes to os.Stderr by construction, so this checks the
+			// TYPE it chose rather than capturing output — replacing the writer
+			// would test a handler nobody builds.
+			switch c.format {
+			case "json", "  JSON ":
+				if _, ok := h.(*slog.JSONHandler); !ok {
+					t.Errorf("format %q gave %T, want *slog.JSONHandler", c.format, h)
+				}
+			default:
+				if _, ok := h.(*slog.TextHandler); !ok {
+					t.Errorf("format %q gave %T, want *slog.TextHandler", c.format, h)
+				}
+			}
+		})
+	}
+
+	// Rejected, not defaulted. An operator who asked for JSON and silently got
+	// text would debug their log pipeline instead of their typo.
+	if _, err := newLogHandler("xml"); err == nil {
+		t.Error("newLogHandler accepted an unknown format")
+	}
+}
+
+// The level control has the same property: a bad value must be refused rather
+// than resolved to something plausible.
+func TestLogLevelSelection(t *testing.T) {
+	t.Cleanup(func() { logLevel.Set(slog.LevelInfo) })
+
+	for name, want := range map[string]slog.Level{
+		"debug": slog.LevelDebug,
+		"DEBUG": slog.LevelDebug,
+		" warn": slog.LevelWarn,
+		"error": slog.LevelError,
+		"":      slog.LevelInfo,
+	} {
+		if err := setLogLevel(name); err != nil {
+			t.Fatalf("setLogLevel(%q): %v", name, err)
+		}
+		if got := logLevel.Level(); got != want {
+			t.Errorf("setLogLevel(%q) gave %v, want %v", name, got, want)
+		}
+	}
+	if err := setLogLevel("loud"); err == nil {
+		t.Error("setLogLevel accepted an unknown level")
 	}
 }

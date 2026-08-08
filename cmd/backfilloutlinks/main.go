@@ -15,7 +15,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"os"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/outlinks"
@@ -35,25 +36,68 @@ func main() {
 	ctx := context.Background()
 	db, err := store.Open(store.Options{Path: *dbPath})
 	if err != nil {
-		log.Fatalf("open %s: %v", *dbPath, err)
+		fmt.Fprintf(os.Stderr, "backfilloutlinks: open %s: %v\n", *dbPath, err)
+		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
 
-	repo := store.NewReaderRepo(db)
+	s, err := run(ctx, store.NewReaderRepo(db), *dryRun, os.Stdout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "backfilloutlinks:", err)
+		os.Exit(1)
+	}
+	fmt.Print(s.String())
+}
+
+// stats is what one pass did, which is the only thing a caller wants back.
+//
+// Returned rather than printed from inside run, for the reason precompress's
+// does: the counters are the evidence the backfill worked, and a function that
+// only prints them can be run but not checked.
+type stats struct {
+	Scanned     int
+	WithContent int
+	Skipped     int
+	Mined       int
+	LinkRows    int
+	DryRun      bool
+	Elapsed     time.Duration
+}
+
+func (s stats) String() string {
+	mode := "wrote"
+	if s.DryRun {
+		mode = "would have written"
+	}
+	return fmt.Sprintf("done in %s: scanned=%d withContent=%d skippedNoContent=%d itemsMined=%d %s linkRows=%d\n",
+		s.Elapsed.Round(time.Millisecond), s.Scanned, s.WithContent, s.Skipped, s.Mined, mode, s.LinkRows)
+}
+
+// run mines every item in the database once.
+//
+// Takes the repository rather than a path so a test can drive it against a
+// fixture, and reports progress to a writer rather than to stdout so that
+// writer can be discarded. A nil progress writer is fine.
+//
+// An error from the store ends the pass. A failure to RECORD one item's links
+// does not: the backfill is re-runnable by design, and stopping the whole walk
+// because one row would not write means the operator re-runs from the start for
+// a row that will fail again.
+func run(ctx context.Context, repo *store.ReaderRepo, dryRun bool, progress io.Writer) (stats, error) {
+	if progress == nil {
+		progress = io.Discard
+	}
+	s := stats{DryRun: dryRun}
+	start := time.Now()
 
 	// A limit far past any realistic local instance's item count — this is a
 	// one-shot backfill, not a paged sweep, and RecentItemIDs' own comment
 	// says 200 is its DEFAULT, not a ceiling.
 	ids, err := repo.RecentItemIDs(ctx, 1_000_000)
 	if err != nil {
-		log.Fatalf("RecentItemIDs: %v", err)
+		return s, fmt.Errorf("RecentItemIDs: %w", err)
 	}
-	fmt.Printf("found %d items\n", len(ids))
-
-	var (
-		scanned, withContent, mined, linkRows, skipped int
-	)
-	start := time.Now()
+	fmt.Fprintf(progress, "found %d items\n", len(ids))
 
 	for i := 0; i < len(ids); i += batchSize {
 		end := min(i+batchSize, len(ids))
@@ -61,41 +105,37 @@ func main() {
 
 		items, err := repo.ItemsByID(ctx, batch)
 		if err != nil {
-			log.Fatalf("ItemsByID: %v", err)
+			return s, fmt.Errorf("ItemsByID: %w", err)
 		}
 
-		// mustHaveSource associates each item with the source id RecordOutlinks
-		// needs. ItemsByID already carries SourceID (internal/store.Item), so no
-		// second query is required.
+		// Each item carries the source id RecordOutlinks needs. ItemsByID
+		// already returns SourceID (internal/store.Item), so no second query is
+		// required.
 		for _, it := range items {
-			scanned++
+			s.Scanned++
 			if it.URL == "" || it.ContentHTML == "" {
-				skipped++
+				s.Skipped++
 				continue
 			}
-			withContent++
+			s.WithContent++
 
 			links := outlinks.Extract(it.ContentHTML, it.URL, outlinks.Options{})
 			if len(links) == 0 {
 				continue
 			}
-			mined++
-			linkRows += len(links)
+			s.Mined++
+			s.LinkRows += len(links)
 
-			if *dryRun {
+			if dryRun {
 				continue
 			}
 			if err := repo.RecordOutlinks(ctx, it.ID, it.SourceID, links); err != nil {
-				log.Printf("RecordOutlinks(%s): %v", it.ID, err)
+				fmt.Fprintf(progress, "  !! RecordOutlinks(%s): %v\n", it.ID, err)
 			}
 		}
-		fmt.Printf("  ...%d/%d scanned\n", scanned, len(ids))
+		fmt.Fprintf(progress, "  ...%d/%d scanned\n", s.Scanned, len(ids))
 	}
 
-	mode := "wrote"
-	if *dryRun {
-		mode = "would have written"
-	}
-	fmt.Printf("done in %s: scanned=%d withContent=%d skippedNoContent=%d itemsMined=%d %s linkRows=%d\n",
-		time.Since(start).Round(time.Millisecond), scanned, withContent, skipped, mined, mode, linkRows)
+	s.Elapsed = time.Since(start)
+	return s, nil
 }
