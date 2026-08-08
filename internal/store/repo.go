@@ -747,6 +747,25 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, q MarkQuery, befo
 	}
 	if before == "" {
 		before = time.Now().UTC().Format(time.RFC3339Nano)
+	} else {
+		// Normalised, because the selection below is `published_at <= ?` and
+		// published_at is written as RFC3339Nano — so this is a comparison of
+		// BYTES that is only correct while the caller spells its timestamp the
+		// same way. `before` is not this UI's value to control: MarkAllRead
+		// exists so a sync client can say "up to the moment I looked", and a
+		// sync client formats a timestamp however its language does.
+		//
+		// Both mis-spellings failed silently and in opposite directions. One
+		// sorting above every timestamp marked the WHOLE feed read, past the
+		// cutoff that was asked for; one sorting below every timestamp — such
+		// as "2026-08-08 12:00:00", where a space (0x20) sits under T (0x54) —
+		// marked nothing and returned 0, which reads as "there was nothing to
+		// mark".
+		t, err := parseStamp(before)
+		if err != nil {
+			return 0, "", fmt.Errorf("%w: before = %q", ErrBadTimestamp, strings.TrimSpace(before))
+		}
+		before = stamp(t)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 

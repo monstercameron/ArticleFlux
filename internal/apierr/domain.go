@@ -48,7 +48,12 @@ func FromDomain(err error) error {
 	case errors.Is(err, store.ErrBadTimestamp):
 		// A caller's field, not a server fault: Internal here would tell the
 		// client to retry something that will fail identically forever.
-		return Invalid("muted_until", "srv.badTimestamp",
+		//
+		// No field is attached. More than one field reaches this — a mute
+		// expiry, a mark-all-read cutoff — and naming one of them would have a
+		// form highlight the wrong input on the other. The wrapped error names
+		// the field it was, which is what an operator reading the log needs.
+		return New(KindInvalidArgument, "srv.badTimestamp",
 			"that is not a time this server can store — send an RFC3339 timestamp").
 			WithCause(err)
 

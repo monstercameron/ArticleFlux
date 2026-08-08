@@ -388,3 +388,62 @@ func TestUndoMarkAllReadRestoresOnlyThatBatch(t *testing.T) {
 		t.Errorf("second undo: restored %d, err %v; want 0, nil", again, err)
 	}
 }
+
+// `before` has to be a time, for the same reason muted_until does.
+//
+// # Why this one is worse than a wrong answer
+//
+// MarkAllRead selects with `i.published_at <= ?` and the parameter is
+// req.GetBefore() copied straight off the wire — normalised only when it is
+// empty. published_at is written as RFC3339Nano, so the comparison is
+// byte-for-byte and correct only while the caller happens to spell its
+// timestamp the same way.
+//
+// The field is not decoration: MarkAllRead's own comment explains that without
+// it, an item arriving while the request is in flight gets marked read without
+// ever being seen. A sync client therefore sets it, and it is the sync client —
+// not this repository's UI — that is free to format a timestamp however its
+// language does.
+//
+// Both directions fail silently and in opposite ways. A value sorting above
+// every timestamp ("zzz", or anything not starting with a digit) marks the
+// WHOLE feed read, past the cutoff the caller asked for. A value sorting below
+// every timestamp — "2026-08-08 12:00:00", the spelling SQLite's own datetime()
+// emits, where a space (0x20) sits under T (0x54) — marks NOTHING, and returns
+// 0 with no error, which reads as "there was nothing to mark".
+func TestMarkAllReadRefusesABeforeThatIsNotATimestamp(t *testing.T) {
+	ctx := context.Background()
+
+	for _, bad := range []string{"zzz", "not-a-date", "2026-08-08 12:00:00", "9999"} {
+		t.Run(bad, func(t *testing.T) {
+			db := openTest(t)
+			repo, sc := seedReader(t, db)
+
+			n, _, err := repo.MarkAllRead(ctx, sc, MarkQuery{}, bad)
+			if err == nil {
+				t.Fatalf("%q was accepted as a cutoff and marked %d items", bad, n)
+			}
+			// Refused, so nothing moved: the reader's unread state is intact.
+			items, _, lerr := repo.ListItems(ctx, sc, ListQuery{UnreadOnly: true})
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if len(items) != 6 {
+				t.Errorf("%d of 6 items still unread after a refused mark-all", len(items))
+			}
+		})
+	}
+
+	// A legal RFC3339 in a non-canonical spelling still has to work, and has to
+	// mean the instant it names rather than the bytes it is written with.
+	db := openTest(t)
+	repo, sc := seedReader(t, db)
+	future := time.Now().UTC().Add(2 * time.Hour).In(time.FixedZone("UTC+5", 5*60*60)).Format(time.RFC3339)
+	n, _, err := repo.MarkAllRead(ctx, sc, MarkQuery{}, future)
+	if err != nil {
+		t.Fatalf("a valid RFC3339 cutoff was refused: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("marked %d of 6 with a cutoff two hours in the future", n)
+	}
+}
