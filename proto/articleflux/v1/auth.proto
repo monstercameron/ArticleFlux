@@ -115,6 +115,115 @@ service AuthService {
   // make it a no-op that looked like it worked.
   rpc RegenerateRecoveryCodes(RegenerateRecoveryCodesRequest)
       returns (RegenerateRecoveryCodesResponse);
+
+  // RedeemRecoveryCode is the door the recovery sheet opens (§7.2).
+  //
+  // Until it existed, the sheet was decorative: Setup minted ten codes, showed
+  // them once, stored their hashes, and nothing in the application ever checked
+  // one. A reader who lost their password was told they had recovery, and the
+  // only real route back in was a shell on the server — which is precisely the
+  // person this feature is for and precisely the thing they do not have.
+  //
+  // It takes the new password in the same call, deliberately. The alternative —
+  // redeem, receive a session, then change the password — leaves an account
+  // reachable by a code that has already been used once in the wild, during a
+  // window defined by whether the user finishes a second form. One call means
+  // the code is spent and the password is replaced together or not at all.
+  //
+  // UNAUTHENTICATED, and rate-limited and locked out exactly as Login is: it is
+  // reachable by anyone, it names an account, and it is the other way into one.
+  // Every session and refresh family on the account dies, with no exception for
+  // the caller's — the account is being recovered FROM a lost credential, so
+  // nothing that existed before is trusted.
+  rpc RedeemRecoveryCode(RedeemRecoveryCodeRequest)
+      returns (RedeemRecoveryCodeResponse);
+
+  // RedeemResetToken is the same door, opened by an admin instead of a sheet.
+  //
+  // `articleflux reset -user <name>` mints a single-use token with a one-hour
+  // life and prints it; the operator hands it over by whatever channel they
+  // already have. D14 rules out SMTP, so that channel has no security
+  // properties at all — which is why the lifetime is short, why the token is
+  // 256 bits, and why minting one invalidates every other live token for the
+  // account.
+  //
+  // It exists because recovery codes only help somebody who kept them. This is
+  // the path for the reader who did not, on an instance whose admin is a person
+  // rather than a support desk.
+  rpc RedeemResetToken(RedeemResetTokenRequest) returns (RedeemResetTokenResponse);
+}
+
+message RedeemRecoveryCodeRequest {
+  // username names the account. Recovery is by definition attempted by somebody
+  // who cannot present a session, so there is no other way to say whose account
+  // this is.
+  string username = 1;
+  // code is one entry from the printed sheet. Case, dashes and spaces are all
+  // normalised away server-side (authn.NormalizeRecoveryCode) — they carry no
+  // entropy, and the person typing this is already locked out and already
+  // annoyed.
+  string code = 2;
+  // new_password replaces the forgotten one, checked against the same policy as
+  // every other password on the instance.
+  string new_password = 3;
+
+  // There is deliberately no `label` here, unlike LoginRequest.
+  //
+  // A label names a DEVICE FAMILY on the account screen, and recovery does not
+  // start one: refresh-token issuance is gated off (§7.3a SEC4) and, more to the
+  // point, recovery has just revoked every family the account had. A field whose
+  // only job is to name something this call does not create would be a field
+  // that reads as configuration and does nothing.
+}
+
+message RedeemRecoveryCodeResponse {
+  // A session, so the reader lands in the app rather than at a login screen
+  // typing the password they just set.
+  string token = 1;
+  string expires_at = 2;
+  string username = 3;
+  string role = 4;
+  // codes_remaining is how many entries on the sheet are still unused. The
+  // number is the whole signal that it is time to regenerate — "codes are
+  // configured" tells nobody anything, and somebody on their last one should be
+  // told so on the screen where they just used the second to last.
+  int32 codes_remaining = 5;
+  // sessions_ended counts what this recovery revoked. A person recovering an
+  // account often suspects somebody else was in it, and "signed out of 4 other
+  // devices" is the confirmation that the thing they were afraid of is over.
+  int32 sessions_ended = 6;
+  // The refresh half, on exactly the same terms as LoginResponse's (§7.3a
+  // SEC4). Empty on an instance that does not issue refresh tokens.
+  //
+  // Added because the alternative was worse than it looked: once an access
+  // token lives twelve hours rather than thirty days, a session minted WITHOUT
+  // a way to renew it is one that ends before lunch. Recovery is the rarest
+  // path here and it is also the one where being logged out again would be
+  // cruellest — somebody has just proved possession of a recovery code and
+  // chosen a new password.
+  string refresh_record_id = 7;
+  string refresh_token = 8;
+}
+
+message RedeemResetTokenRequest {
+  // token is the value the admin minted and handed over. It names the account
+  // by itself — there is no username field, because the token IS the
+  // authorisation and asking for a username alongside it would add a field an
+  // attacker can vary while proving nothing.
+  string token = 1;
+  string new_password = 2;
+  // No `label`, for the reason given on RedeemRecoveryCodeRequest.
+}
+
+message RedeemResetTokenResponse {
+  string token = 1;
+  string expires_at = 2;
+  string username = 3;
+  string role = 4;
+  int32 sessions_ended = 5;
+  // The refresh half — see RedeemRecoveryCodeResponse's note.
+  string refresh_record_id = 6;
+  string refresh_token = 7;
 }
 
 message ReauthenticateRequest {

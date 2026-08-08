@@ -27,6 +27,8 @@ const (
 	AuthService_Reauthenticate_FullMethodName          = "/articleflux.v1.AuthService/Reauthenticate"
 	AuthService_ChangePassword_FullMethodName          = "/articleflux.v1.AuthService/ChangePassword"
 	AuthService_RegenerateRecoveryCodes_FullMethodName = "/articleflux.v1.AuthService/RegenerateRecoveryCodes"
+	AuthService_RedeemRecoveryCode_FullMethodName      = "/articleflux.v1.AuthService/RedeemRecoveryCode"
+	AuthService_RedeemResetToken_FullMethodName        = "/articleflux.v1.AuthService/RedeemResetToken"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -136,6 +138,39 @@ type AuthServiceClient interface {
 	// does when they believe the old sheet is compromised, and survivors would
 	// make it a no-op that looked like it worked.
 	RegenerateRecoveryCodes(ctx context.Context, in *RegenerateRecoveryCodesRequest, opts ...grpc.CallOption) (*RegenerateRecoveryCodesResponse, error)
+	// RedeemRecoveryCode is the door the recovery sheet opens (§7.2).
+	//
+	// Until it existed, the sheet was decorative: Setup minted ten codes, showed
+	// them once, stored their hashes, and nothing in the application ever checked
+	// one. A reader who lost their password was told they had recovery, and the
+	// only real route back in was a shell on the server — which is precisely the
+	// person this feature is for and precisely the thing they do not have.
+	//
+	// It takes the new password in the same call, deliberately. The alternative —
+	// redeem, receive a session, then change the password — leaves an account
+	// reachable by a code that has already been used once in the wild, during a
+	// window defined by whether the user finishes a second form. One call means
+	// the code is spent and the password is replaced together or not at all.
+	//
+	// UNAUTHENTICATED, and rate-limited and locked out exactly as Login is: it is
+	// reachable by anyone, it names an account, and it is the other way into one.
+	// Every session and refresh family on the account dies, with no exception for
+	// the caller's — the account is being recovered FROM a lost credential, so
+	// nothing that existed before is trusted.
+	RedeemRecoveryCode(ctx context.Context, in *RedeemRecoveryCodeRequest, opts ...grpc.CallOption) (*RedeemRecoveryCodeResponse, error)
+	// RedeemResetToken is the same door, opened by an admin instead of a sheet.
+	//
+	// `articleflux reset -user <name>` mints a single-use token with a one-hour
+	// life and prints it; the operator hands it over by whatever channel they
+	// already have. D14 rules out SMTP, so that channel has no security
+	// properties at all — which is why the lifetime is short, why the token is
+	// 256 bits, and why minting one invalidates every other live token for the
+	// account.
+	//
+	// It exists because recovery codes only help somebody who kept them. This is
+	// the path for the reader who did not, on an instance whose admin is a person
+	// rather than a support desk.
+	RedeemResetToken(ctx context.Context, in *RedeemResetTokenRequest, opts ...grpc.CallOption) (*RedeemResetTokenResponse, error)
 }
 
 type authServiceClient struct {
@@ -220,6 +255,26 @@ func (c *authServiceClient) RegenerateRecoveryCodes(ctx context.Context, in *Reg
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RegenerateRecoveryCodesResponse)
 	err := c.cc.Invoke(ctx, AuthService_RegenerateRecoveryCodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) RedeemRecoveryCode(ctx context.Context, in *RedeemRecoveryCodeRequest, opts ...grpc.CallOption) (*RedeemRecoveryCodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RedeemRecoveryCodeResponse)
+	err := c.cc.Invoke(ctx, AuthService_RedeemRecoveryCode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) RedeemResetToken(ctx context.Context, in *RedeemResetTokenRequest, opts ...grpc.CallOption) (*RedeemResetTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RedeemResetTokenResponse)
+	err := c.cc.Invoke(ctx, AuthService_RedeemResetToken_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +388,39 @@ type AuthServiceServer interface {
 	// does when they believe the old sheet is compromised, and survivors would
 	// make it a no-op that looked like it worked.
 	RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error)
+	// RedeemRecoveryCode is the door the recovery sheet opens (§7.2).
+	//
+	// Until it existed, the sheet was decorative: Setup minted ten codes, showed
+	// them once, stored their hashes, and nothing in the application ever checked
+	// one. A reader who lost their password was told they had recovery, and the
+	// only real route back in was a shell on the server — which is precisely the
+	// person this feature is for and precisely the thing they do not have.
+	//
+	// It takes the new password in the same call, deliberately. The alternative —
+	// redeem, receive a session, then change the password — leaves an account
+	// reachable by a code that has already been used once in the wild, during a
+	// window defined by whether the user finishes a second form. One call means
+	// the code is spent and the password is replaced together or not at all.
+	//
+	// UNAUTHENTICATED, and rate-limited and locked out exactly as Login is: it is
+	// reachable by anyone, it names an account, and it is the other way into one.
+	// Every session and refresh family on the account dies, with no exception for
+	// the caller's — the account is being recovered FROM a lost credential, so
+	// nothing that existed before is trusted.
+	RedeemRecoveryCode(context.Context, *RedeemRecoveryCodeRequest) (*RedeemRecoveryCodeResponse, error)
+	// RedeemResetToken is the same door, opened by an admin instead of a sheet.
+	//
+	// `articleflux reset -user <name>` mints a single-use token with a one-hour
+	// life and prints it; the operator hands it over by whatever channel they
+	// already have. D14 rules out SMTP, so that channel has no security
+	// properties at all — which is why the lifetime is short, why the token is
+	// 256 bits, and why minting one invalidates every other live token for the
+	// account.
+	//
+	// It exists because recovery codes only help somebody who kept them. This is
+	// the path for the reader who did not, on an instance whose admin is a person
+	// rather than a support desk.
+	RedeemResetToken(context.Context, *RedeemResetTokenRequest) (*RedeemResetTokenResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -366,6 +454,12 @@ func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePas
 }
 func (UnimplementedAuthServiceServer) RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegenerateRecoveryCodes not implemented")
+}
+func (UnimplementedAuthServiceServer) RedeemRecoveryCode(context.Context, *RedeemRecoveryCodeRequest) (*RedeemRecoveryCodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RedeemRecoveryCode not implemented")
+}
+func (UnimplementedAuthServiceServer) RedeemResetToken(context.Context, *RedeemResetTokenRequest) (*RedeemResetTokenResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RedeemResetToken not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -532,6 +626,42 @@ func _AuthService_RegenerateRecoveryCodes_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_RedeemRecoveryCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedeemRecoveryCodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).RedeemRecoveryCode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_RedeemRecoveryCode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).RedeemRecoveryCode(ctx, req.(*RedeemRecoveryCodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_RedeemResetToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedeemResetTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).RedeemResetToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_RedeemResetToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).RedeemResetToken(ctx, req.(*RedeemResetTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -570,6 +700,14 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegenerateRecoveryCodes",
 			Handler:    _AuthService_RegenerateRecoveryCodes_Handler,
+		},
+		{
+			MethodName: "RedeemRecoveryCode",
+			Handler:    _AuthService_RedeemRecoveryCode_Handler,
+		},
+		{
+			MethodName: "RedeemResetToken",
+			Handler:    _AuthService_RedeemResetToken_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
