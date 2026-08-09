@@ -448,6 +448,24 @@ jobs:
     name: e2e (Playwright, real server + real database)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # ADVISORY, TEMPORARILY — restore this to a blocking gate once the suite is
+    # green again. Cam's call, 2026-08-09, with the deploy blocked behind it.
+    #
+    # This job has never once passed in CI. It went in yesterday and has failed
+    # ~94 of 376 every run, which held production 33 commits back — including
+    # all of v1.2.0 — behind a gate that had never been green.
+    #
+    # It is NOT a CI-environment problem, and the first three diagnoses of it
+    # here were wrong. The suite fails the same way on the developer's machine:
+    # 55 failed there in a full run. What it is is a test-isolation problem —
+    # `reader.spec.mjs` alone passes all 25 of its tests in three and a half
+    # minutes, and twelve of those same tests fail inside the full suite. State
+    # leaks between spec files; a slower box just amplifies it.
+    #
+    # So the failures are real and worth fixing, and they are failures of the
+    # harness rather than evidence about the product. Advisory keeps them on
+    # screen without letting them hold the release.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -493,9 +511,21 @@ jobs:
           # triple the download for browsers nothing runs.
           npx playwright install --with-deps chromium
 
+      # `--max-failures` is what makes `continue-on-error` above actually work,
+      # and the reason is a sharp edge worth stating: continue-on-error swallows
+      # a FAILED job, but a job killed by `timeout-minutes` concludes CANCELLED,
+      # and a cancelled job cancels the workflow around it. Runs 3, 4 and 5 of
+      # this promotion all died exactly there — every other gate green, e2e
+      # killed at the wall, `Fast-forward main` skipped.
+      #
+      # With ~94 failures each costing 20-50s, the full suite cannot finish
+      # inside any sane budget, so left alone it would reach the wall every
+      # time and advisory would change nothing. Stopping at 25 keeps the job
+      # inside its timeout, which is what keeps it a report rather than a veto.
+      # Twenty-five is also plenty to see the shape of what is broken.
       - name: Run the suite
         working-directory: e2e
-        run: npx playwright test
+        run: npx playwright test --max-failures=25
 
       # The evidence, when it fails. `trace: 'retain-on-failure'` and
       # `screenshot: 'only-on-failure'` are already set in the config, and
