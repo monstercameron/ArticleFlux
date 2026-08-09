@@ -1656,6 +1656,35 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 	// So the delete clears what the reader DID, and this restores the delivery
 	// that made those items theirs in the first place. Same statement as
 	// ReconcileUnread's second half, for the same reason.
+	//
+	// Except for the articles the debug endpoints INVENTED, which is the
+	// `guid NOT LIKE 'debug-%'` below and the most expensive leak the e2e suite
+	// had. `/debug/ingest-one` and `/debug/ingest-cluster` exist so a test can
+	// prove an item arriving on the server reaches an open screen, and the item
+	// they write is a real row in `items` — which a reset of USER state has no
+	// reason to touch, and never did. So it stayed, and the corpus every later
+	// test counts against quietly grew for the rest of the run.
+	//
+	// None of that is visible in the test that caused it. It surfaces in every
+	// later test that counts: `.item-row` assertions expecting the seeded
+	// articles find one more, and it reads as the reader showing something it
+	// should not. Measured: `liveupdates.spec.mjs` immediately before
+	// `reader.spec.mjs` failed seven of reader's tests; reader alone passed all
+	// 25; with this line, the pair passes 26.
+	//
+	// Withheld from DELIVERY rather than deleted from `items`, which is the
+	// version of this fix that does not work: other rows reference an item
+	// (notes, podcast segments, the derive tables), so `DELETE FROM items`
+	// trips a foreign key as soon as any spec has made one — reset-state then
+	// 500s and EVERY later boot fails. It passed a two-file test and failed a
+	// twenty-file one, at 110 failures, which is worse than the leak it fixed.
+	// The row stays; the reader simply never receives it, and the counts go
+	// back to the seed.
+	//
+	// Matched on the `debug-` prefix both endpoints already stamp: it is what
+	// makes these rows recognisably fabricated, it survives the server restart
+	// `connection.spec.mjs` performs mid-run, and it cannot match an article
+	// from a feed, whose GUID is the feed's own.
 	_, err := r.db.Write.ExecContext(ctx, `
 		INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
 		                             published_at, rev, updated_at)
@@ -1664,6 +1693,7 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 		  JOIN items i ON i.source_id = sub.source_id
 		 WHERE sub.user_id = ? AND sub.tenant_id = ?
 		   AND i.deactivated_at IS NULL
+		   AND i.guid NOT LIKE 'debug-%'
 		   AND NOT EXISTS (
 		         SELECT 1 FROM user_item_state uis
 		          WHERE uis.user_id = sub.user_id AND uis.item_id = i.id)`,

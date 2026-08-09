@@ -65,6 +65,13 @@ test.describe('landing view', () => {
     await page.locator('.item-row').first().click();
     await expect(page.locator('.article[data-current="true"] h1')).toBeVisible();
 
+    // The trail itself, by id. This is what "the article last read" MEANS, and
+    // asserting against it is the difference between checking the feature and
+    // checking a side effect of the reading pane — see the assertion below.
+    const trail = new URL(page.url()).pathname;
+    const trailItem = trail.split('/read/')[1] ?? '';
+    expect(trailItem, 'the trail should have left a /read/<id> to forget').not.toBe('');
+
     await openReadingSettings(page);
     await landingSelect(page).selectOption({ label: 'Alpha Journal' });
     await page.waitForTimeout(500);
@@ -75,11 +82,23 @@ test.describe('landing view', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
 
     await expect(page.locator('.pane-list')).toContainText('Alpha Journal', { timeout: 30_000 });
-    // Opens fresh on the feed's own list, not mid-article — see
-    // effectiveResumeItem's doc comment on why a fixed landing view clears
-    // the resumed article rather than carrying it along.
+
+    // The landing feed, and NOT yesterday's article — which is what
+    // effectiveResumeItem's doc comment promises and what this test is named
+    // for.
+    //
+    // Asserted as "not the trail" rather than as "no /read/ segment at all",
+    // because the second is a claim about the reading pane rather than about
+    // this setting, and it is false: the pane renders the feed's articles
+    // continuously and marks whichever one is on screen as current, so a
+    // healthy landing acquires a /read/<id> of the LANDING feed's own first
+    // article within a frame of arriving. The old assertion failed on exactly
+    // that — the reader had correctly dropped the Beta article and opened
+    // Alpha's list, and was failed for having a current article at all.
     const u = new URL(page.url());
-    expect(u.pathname).toMatch(/^\/feed\/[^/]+$/);
+    expect(u.pathname).toMatch(/^\/feed\/[^/]+(\/read\/[^/]+)?$/);
+    expect(u.pathname, 'landed back on the article last read').not.toContain(trailItem);
+    expect(u.pathname, 'landed on the feed the trail was in').not.toBe(trail);
   });
 
   test('switching back to "Resume where I left off" clears the override', async ({ page }) => {
