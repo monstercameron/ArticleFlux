@@ -14,6 +14,9 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	// Aliased: this file has a local `username` on nearly every path, and a
+	// package sharing that name would be shadowed exactly where it is called.
+	usernamepolicy "github.com/monstercameron/ArticleFlux/internal/username"
 )
 
 // First-run setup (§7.11).
@@ -49,6 +52,17 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	email := strings.TrimSpace(req.GetEmail())
 	password := req.GetPassword()
 
+	// The username must be an email address, and this is one of the three
+	// places that rule is enforced (internal/username has the other two and the
+	// reasoning). It runs BEFORE the length floor because it is the stricter
+	// rule and the more useful message: "choose a username of at least two
+	// characters" is unhelpful advice to somebody who typed `cam`.
+	//
+	// Normalised first, since the normalised form is what gets stored.
+	username = usernamepolicy.Normalise(username)
+	if err := usernamepolicy.Check(username); err != nil {
+		return nil, errKey(codes.InvalidArgument, "srv.badUsername", err.Error(), nil)
+	}
 	if len([]rune(username)) < setupMinUsername {
 		return nil, errKey(codes.InvalidArgument, "srv.setupUsername",
 			"choose a username of at least two characters", nil)

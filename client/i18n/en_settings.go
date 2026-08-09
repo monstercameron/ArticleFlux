@@ -213,9 +213,68 @@ func init() {
 		"signOutStranded": "Signed out in this browser. The server did not answer, so the session there stays open until it expires on its own.",
 		"signOutGo":       "Back to sign-in",
 
+		// --- password
+		//
+		// The hint states the consequence before the fields, because it is the
+		// part a reader cannot undo and the part they will not expect: changing
+		// a password here signs out everything else. Saying it afterwards would
+		// be an apology.
+		"pwGroup": "Password",
+		"pwHint":  "Changing it signs out every other device. This one stays signed in.",
+
+		"pwNewLabel":       "New password",
+		"pwNewPlaceholder": "Three or four unrelated words",
+		"pwRepeatLabel":    "Repeat it",
+
+		// The rules, phrased as what a good password IS rather than as what is
+		// wrong with this one. The last is the server's to answer and says so —
+		// promising a verdict this screen cannot give is how a form ends up
+		// saying "strong" and then refusing.
+		"pwRuleLength": "At least {n} characters",
+		"pwRuleName":   "Doesn't contain your account name",
+		"pwRuleMatch":  "Both entries match",
+		"pwRuleKnown":  "Not a password attackers try first — checked when you save",
+
+		"pwChange":   "Change password",
+		"pwChanging": "Changing password…",
+
+		// The confirmation, which is now asked for every time rather than only
+		// when a window has closed. The hint says WHY, once, so it reads as a
+		// deliberate rule rather than an inconvenience.
+		"pwConfirmLabel": "Current password",
+		"pwConfirmHint":  "Confirms both changes below",
+
+		// The outcome, with the number that makes it evidence. The caller picks
+		// between these two.
+		"pwDone":      "Password changed. No other devices were signed in.",
+		"pwDoneEnded": "Password changed. Signed out of {n} other devices.",
+
+		// Local refusals, before the server is asked. Each names the field to
+		// fix rather than reporting that something is invalid.
+		"pwErrShort":     "That password is under {n} characters.",
+		"pwErrMatch":     "The two entries are different.",
+		"pwErrName":      "That password contains your account name, which is the first thing an attacker tries.",
+		"pwErrNoConfirm": "Enter your current password to confirm this change.",
+
+		// --- username
+		//
+		// The hint leads with what the reader gets, not with the rule: an
+		// address is how you get back in without a password, and the rule
+		// follows from that. Stated the other way round it reads as an
+		// arbitrary constraint on a name they already had.
+		"nameGroup":       "Username",
+		"nameHint":        "Your username is the address account recovery goes to, so it has to be one you can read.",
+		"nameLabel":       "Sign in with",
+		"namePlaceholder": "you@example.com",
+		"nameChange":      "Change username",
+		"nameChanging":    "Changing username…",
+		"nameDone":        "Username changed. Sign in as {name} from now on.",
+		"nameErrEmpty":    "Enter the address you want to sign in with.",
+		"nameErrEmail":    "A username has to be an email address.",
+
 		"notBuiltGroup": "Not on this screen yet",
 		"notBuiltHint":  "What the server can do that this tab cannot ask it to.",
-		"notBuiltNote":  "Changing your password and regenerating your recovery codes exist on the server and have no control here yet. Naming the devices you are signed in on, and ending all of them at once, are not built anywhere.",
+		"notBuiltNote":  "Regenerating your recovery codes exists on the server and has no control here yet. Naming the devices you are signed in on, and ending all of them at once, are not built anywhere.",
 
 		// --- server
 		"buildGroup":    "Build",

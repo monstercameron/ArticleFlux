@@ -360,6 +360,14 @@ type actions struct {
 	doSignOut    func()
 	leaveToLogin func()
 
+	// Changing the password, on the same tab. Two verbs for the same reason the
+	// three above are three: the press that asks for the change and the press
+	// that withdraws from the confirmation the server demanded are different
+	// decisions, and collapsing them into one taking a flag would hide which
+	// one a call site meant. See view.passwordGroup.
+	changePassword func()
+	changeUsername func()
+
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
 

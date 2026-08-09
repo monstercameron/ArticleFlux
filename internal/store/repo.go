@@ -1634,6 +1634,24 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 		// Everything in user_prefs is per-user presentation state, which is
 		// exactly what a reset is for.
 		`DELETE FROM user_prefs WHERE user_id = ? AND tenant_id = ?`,
+		// Filing, for the same reason tags are here: a folder left behind puts
+		// a row in the sidebar for every later test.
+		//
+		// The subscriptions are unfiled FIRST — `folder_id` points at the row
+		// about to go — and then the folders themselves. Together they restore
+		// "nothing is filed", which is a state several tests assert on directly
+		// (`uncategorised.spec.mjs`: "with nothing filed, the Unfiled row is not
+		// in the rail") and which any spec that creates a category silently
+		// ended. dialogs.spec and reader.spec each add one, data.spec's OPML
+		// import adds an "Imported" folder, and none of the three could clean up
+		// after itself because a reset of USER state did not consider filing to
+		// be user state. It is: it is presentation, exactly like the saved view.
+		//
+		// The subscription rows STAY. Which feeds a reader has is the fixture,
+		// not the reader's doing, and deleting them here would empty the seed
+		// the whole suite is written against.
+		`UPDATE subscriptions SET folder_id = NULL WHERE user_id = ? AND tenant_id = ?`,
+		`DELETE FROM folders WHERE user_id = ? AND tenant_id = ?`,
 	} {
 		if _, err := r.db.Write.ExecContext(ctx, q, s.UserID, s.TenantID); err != nil {
 			return err

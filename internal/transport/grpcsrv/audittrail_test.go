@@ -106,6 +106,7 @@ func TestChangePasswordLeavesAnAuditEntry(t *testing.T) {
 	tok := login(t, s)
 
 	if _, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{
+		CurrentPassword: testPassword,
 		NewPassword: "a-perfectly-good-passphrase",
 	}); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
@@ -202,7 +203,7 @@ func TestSetupLeavesAnAuditEntry(t *testing.T) {
 	s, repo := newAuthEmpty(t)
 
 	if _, err := s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "founder", Password: "a-perfectly-good-passphrase",
+		Username: "founder@example.com", Password: "a-perfectly-good-passphrase",
 	}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

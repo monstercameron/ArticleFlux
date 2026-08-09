@@ -2523,6 +2523,46 @@ func mobile(r func(string, string) css.Rule) {
 	// (Part XII, rule 3) — the sentence already says it did not land — so this
 	// is emphasis on a message that stands without it.
 	css.Global(".set-note-live[data-bad='true']", r("border-left-color", "var(--neg)"))
+	// And the same note when it landed. `--pos` rather than the accent: a
+	// password change is the one confirmation on this screen worth reading as
+	// good news rather than as activity.
+	css.Global(".set-note-live[data-good='true']", r("border-left-color", "var(--pos)"))
+
+	// --- the password rules (Account tab) ---
+	//
+	// A checklist rather than a strength bar, for the reason passwordGroup gives:
+	// these are the rules the server actually enforces, so they can be stated.
+	//
+	// Three states, and the marker is what carries them — never colour alone
+	// (Part XII, rule 3). `idle` is a field nobody has typed in yet and reads as
+	// a plain bullet, because a red cross against an empty box is the interface
+	// telling somebody off for not having started.
+	css.Global(".pw-rules",
+		r("list-style", "none"), r("margin", "10px 0 0"), r("padding", "0"),
+		r("display", "grid"), r("gap", "4px"), r("max-width", "62ch"),
+	)
+	css.Global(".pw-rule",
+		r("display", "grid"), r("grid-template-columns", "1.2em 1fr"),
+		r("align-items", "baseline"),
+		r("font-family", "var(--rd)"), r("font-size", "13px"),
+		r("line-height", "1.6"), r("color", "var(--mute)"),
+	)
+	// The marker is generated content so the text a screen reader announces is
+	// the rule itself, not a glyph it would have to spell out.
+	css.Global(".pw-rule::before", r("content", "'·'"), r("color", "var(--mute)"))
+	css.Global(".pw-rule[data-state='met']", r("color", "var(--soft)"))
+	css.Global(".pw-rule[data-state='met']::before",
+		r("content", "'✓'"), r("color", "var(--pos)"))
+	// A DIFFERENT mark for unmet, not the idle bullet in another colour.
+	//
+	// Both states rendered "·" and were told apart only by hue, which failed on
+	// contact with the screen: at 13px a --neg bullet and a --mute bullet are
+	// the same dot, so "you have not typed enough yet" and "this rule is failing"
+	// looked identical. Colour was carrying the whole distinction, which is the
+	// thing Part XII rule 3 says it must never do — and here it could not even
+	// manage that.
+	css.Global(".pw-rule[data-state='unmet']::before",
+		r("content", "'×'"), r("color", "var(--neg)"))
 
 	// --- the Data tab's skip list (F1) ---
 	//

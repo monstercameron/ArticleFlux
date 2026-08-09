@@ -32,6 +32,9 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	// Aliased for setup.go's reason: `username` is a local on several paths in
+	// this file, and a package by that name would be shadowed where it is used.
+	usernamepolicy "github.com/monstercameron/ArticleFlux/internal/username"
 )
 
 // roles are the values the users.role column is documented to hold.
@@ -153,6 +156,16 @@ func addUser(log *slog.Logger, args []string) error {
 	}
 	if strings.TrimSpace(*user) == "" {
 		return errors.New("adduser: -user is required")
+	}
+	// The third enforcement point for the email rule, beside Setup and the
+	// rename RPC (internal/username has the reasoning). The CLI is the one that
+	// would otherwise be the way around it: an operator adding accounts here
+	// could seed an instance full of names nothing can ever recover.
+	//
+	// Normalised into the flag itself, so what is validated is what is stored.
+	*user = usernamepolicy.Normalise(*user)
+	if err := usernamepolicy.Check(*user); err != nil {
+		return fmt.Errorf("adduser: %w", err)
 	}
 	if !roles[*role] {
 		return fmt.Errorf("adduser: unknown role %q (superadmin, admin, member, viewer)", *role)

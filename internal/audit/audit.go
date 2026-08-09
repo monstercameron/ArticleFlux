@@ -58,6 +58,10 @@ const (
 	ActionLogout          Action = "auth.logout"
 	ActionPasswordChanged Action = "auth.password.changed"
 	ActionReauthenticated Action = "auth.reauthenticated"
+	// A rename is half a credential change: the account now signs in under a
+	// different name, and somebody reading this file after a suspected takeover
+	// needs to see it beside the password events rather than deduce it.
+	ActionUsernameChanged Action = "auth.username.changed"
 
 	// --- recovery (§7.2). Every one of these is somebody getting into an
 	// account without its password, which is the highest-value line in the file.

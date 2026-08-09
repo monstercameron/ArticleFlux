@@ -32,6 +32,48 @@ import (
 // Never returns err.String(): gRPC wraps its own text as
 // `rpc error: code = PermissionDenied desc = …`, which turns a clear
 // instruction into something that reads like a crash.
+// serverKey returns the catalog key the server classified a refusal as, or "".
+//
+// serverText answers "what do I show the reader"; this answers "which refusal
+// is this", which is a different question and the one a caller asks when a
+// particular outcome is part of the FLOW rather than the end of it.
+// `srv.sudoRequired` is the case that motivated it: the password change asks
+// for it, expects to be refused the first time, and turns that refusal into a
+// prompt — so it has to recognise the refusal without reading prose that
+// changes with the reader's language.
+//
+// Deliberately the raw key, namespace included, matched against a constant at
+// the call site. Splitting it here would invite comparing bare "sudoRequired"
+// against a key some other namespace might one day also use.
+// keySudoRequired is grpcsrv's `srv.sudoRequired`, the refusal that means "the
+// session is fine, ask for the password again".
+//
+// Named here, once, because the alternative is the same string literal in every
+// caller that has to tell it apart from a real failure — and getting it wrong
+// is silent: the flow simply reports "this needs your password again" as an
+// error and offers no way to give one.
+//
+// A literal rather than an import from the server package: the client cannot
+// take a dependency on grpcsrv, and the string is the wire contract either way.
+// A test in this package pins it against the server's constant.
+const keySudoRequired = "srv.sudoRequired"
+
+func serverKey(err error) string {
+	if err == nil {
+		return ""
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return ""
+	}
+	for _, d := range st.Details() {
+		if detail, isDetail := d.(*pb.ErrorDetail); isDetail && detail.GetKey() != "" {
+			return detail.GetKey()
+		}
+	}
+	return ""
+}
+
 func serverText(tr i18n.Runtime, err error) string {
 	if err == nil {
 		return ""

@@ -435,6 +435,55 @@ func (r *ReaderRepo) Identity(ctx context.Context, sc Scope) (username, role str
 	return username, role, err
 }
 
+// ErrUsernameTaken is a rename onto a name this tenant already has.
+//
+// A distinct error rather than a generic constraint failure, because the caller
+// has something useful to say about it and nothing useful to say about
+// "UNIQUE constraint failed: users.tenant_id, lower(username)".
+var ErrUsernameTaken = errors.New("that username is already in use")
+
+// UpdateUsername renames an account.
+//
+// The name is stored EXACTLY as given after the caller has trimmed and
+// normalised it — this does not lowercase on its way in, because the unique
+// index is on `lower(username)` and the login lookup is already
+// case-insensitive, so storing the reader's own capitalisation costs nothing
+// and losing it would be a silent edit to something they typed.
+//
+// Sessions are deliberately untouched. Renaming is not a credential compromise
+// (the password is unchanged and the sessions were issued to this account, not
+// to this string), so signing somebody out of their phone for fixing a typo
+// would be a surprise out of proportion to what they did. ChangePassword is the
+// operation that revokes, and it revokes because the old credential may be in
+// somebody else's hands.
+func (r *ReaderRepo) UpdateUsername(ctx context.Context, s Scope, username string) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	res, err := r.db.Write.ExecContext(ctx, `
+		UPDATE users SET username = ?
+		 WHERE id = ? AND tenant_id = ?`,
+		username, s.UserID, s.TenantID)
+	if err != nil {
+		// The unique index is the race-free check: reading first and writing
+		// second leaves a window where two renames both see the name free. The
+		// index closes it, and this turns what it says into what the caller
+		// meant to ask.
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrUsernameTaken
+		}
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CreateFirstUser bootstraps the instance, and reports whether it was this call
 // that did it.
 //

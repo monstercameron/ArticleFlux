@@ -1671,6 +1671,30 @@ func (a *App) buildHandler() {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			// And the Smart+ credential, which is SYSTEM state and so outlives
+			// a reset of USER state — the one leak in this suite that crosses
+			// that boundary.
+			//
+			// `podcast.spec.mjs` saves `sk-e2e-not-a-real-credential` to prove
+			// the key round-trips, and nothing takes it away again. Every later
+			// spec then runs against an instance that HAS a key, and the three
+			// asserting the opposite fail: reader.spec's "a page with no feed
+			// offers Smart+, and says what it would send" (which expects the
+			// words "no OpenAI key"), slideshow.spec's "read to me without the
+			// Smart+ voice", and settings.spec's tab-content comparison. They
+			// run after `podcast` for no better reason than the alphabet.
+			//
+			// Cleared here rather than in that spec's own afterAll so the
+			// guarantee lives in ONE place: global-setup already starts the
+			// server with OPENAI_API_KEY empty so the suite cannot depend on
+			// whether the developer happens to have one, and this is the same
+			// decision holding for the rest of the run.
+			if a.settings != nil {
+				if err := a.settings.DeleteSystemValue(r.Context(), store.KeyOpenAIAPIKey); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "reset")
 		})

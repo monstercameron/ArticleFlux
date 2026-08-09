@@ -198,7 +198,7 @@ func TestChangePasswordEndsOtherSessionsAndKeepsTheCallers(t *testing.T) {
 	other := login(t, s)
 
 	res, err := s.ChangePassword(withToken(mine),
-		&pb.ChangePasswordRequest{NewPassword: "a-quite-different-passphrase"})
+		&pb.ChangePasswordRequest{NewPassword: "a-quite-different-passphrase", CurrentPassword: testPassword})
 	if err != nil {
 		t.Fatalf("change password: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestChangePasswordRevokesOtherRefreshFamiliesAndKeepsTheCallers(t *testing.
 	}
 
 	if _, err := s.ChangePassword(withToken(mineLogin.GetToken()),
-		&pb.ChangePasswordRequest{NewPassword: "a-quite-different-passphrase"}); err != nil {
+		&pb.ChangePasswordRequest{NewPassword: "a-quite-different-passphrase", CurrentPassword: testPassword}); err != nil {
 		t.Fatalf("change password: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestChangePasswordRefusesAWeakOne(t *testing.T) {
 	// exist. `internal/pwpolicy` covers that rule with a name long enough to
 	// trip it.
 	for _, pw := range []string{"short", "password123456", "aaaaaaaaaaaaaa"} {
-		if _, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{NewPassword: pw}); err == nil {
+		if _, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{NewPassword: pw, CurrentPassword: testPassword}); err == nil {
 			t.Errorf("%q was accepted as a new password", pw)
 		} else if got := codeOf(err); got != codes.InvalidArgument {
 			t.Errorf("%q refused with %v, want InvalidArgument so the client can show why", pw, got)
@@ -405,5 +405,109 @@ func TestNoSessionIsToldToSignInRatherThanToConfirm(t *testing.T) {
 	_, err = s.ChangePassword(context.Background(), &pb.ChangePasswordRequest{NewPassword: testPassword})
 	if got := codeOf(err); got != codes.Unauthenticated {
 		t.Errorf("code = %v, want Unauthenticated", got)
+	}
+}
+
+// --- proof of the current password (§7.3, Cam's call 2026-08-09) ---------------
+//
+// The hole these close: the sudo stamp is written AT LOGIN, so for fifteen
+// minutes afterwards the window is open without anybody having typed a password
+// since. A live but unattended session could therefore take the account over —
+// and because a password change revokes every other session, the real owner
+// would be locked out with their own credential.
+
+func TestChangePasswordRefusesWithoutTheCurrentPassword(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s) // fresh, so sudo is satisfied and only this check is left
+
+	_, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{
+		NewPassword: "a-quite-different-passphrase",
+	})
+	if got := codeOf(err); got != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated: a fresh login must not be enough "+
+			"to replace the credential", got)
+	}
+}
+
+func TestChangePasswordRefusesTheWRONGCurrentPassword(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	_, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{
+		NewPassword: "a-quite-different-passphrase", CurrentPassword: "not-the-password",
+	})
+	if got := codeOf(err); got != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", got)
+	}
+	// And the old password still works, which is the property that matters: a
+	// refused change must leave the account exactly as it was.
+	if _, err := s.Login(context.Background(), &pb.LoginRequest{
+		Username: "cam", Password: testPassword,
+	}); err != nil {
+		t.Fatalf("the original password stopped working after a REFUSED change: %v", err)
+	}
+}
+
+// --- renaming an account -------------------------------------------------------
+
+func TestChangeUsernameRequiresTheCurrentPassword(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	_, err := s.ChangeUsername(withToken(tok), &pb.ChangeUsernameRequest{
+		NewUsername: "renamed@example.com",
+	})
+	if got := codeOf(err); got != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated: the username is half the "+
+			"credential and must not be changeable on a session alone", got)
+	}
+}
+
+func TestChangeUsernameRequiresAnEmailAddress(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	for _, name := range []string{
+		"cam",                   // no address at all
+		"cam@laptop",            // parses, but nothing can reach it
+		"Cam <cam@example.com>", // a display name, which would have to be typed back
+		"cam @example.com",      // whitespace
+	} {
+		_, err := s.ChangeUsername(withToken(tok), &pb.ChangeUsernameRequest{
+			NewUsername: name, CurrentPassword: testPassword,
+		})
+		if got := codeOf(err); got != codes.InvalidArgument {
+			t.Errorf("%q refused with %v, want InvalidArgument", name, got)
+		}
+	}
+}
+
+func TestChangeUsernameRenamesAndKeepsTheSessionAndPassword(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	res, err := s.ChangeUsername(withToken(tok), &pb.ChangeUsernameRequest{
+		// Mixed case, to pin that the DOMAIN is lowercased and the local part is
+		// left exactly as typed — see username.Normalise on why that asymmetry.
+		NewUsername: "Cam.Reads@Example.COM", CurrentPassword: testPassword,
+	})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if res.GetUsername() != "Cam.Reads@example.com" {
+		t.Errorf("stored username = %q, want the domain lowercased and the local part kept",
+			res.GetUsername())
+	}
+	// The session survives: a rename is not a credential compromise, so signing
+	// somebody out of their phone for fixing a typo would be a surprise out of
+	// proportion to what they did.
+	if _, err := s.WhoAmI(withToken(tok), &pb.WhoAmIRequest{}); err != nil {
+		t.Errorf("the caller's own session died on a rename: %v", err)
+	}
+	// And the account answers to the new name with the SAME password.
+	if _, err := s.Login(context.Background(), &pb.LoginRequest{
+		Username: "cam.reads@example.com", Password: testPassword,
+	}); err != nil {
+		t.Errorf("signing in under the new name failed: %v", err)
 	}
 }

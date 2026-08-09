@@ -197,6 +197,11 @@ type settingsProps struct {
 	// confirmed. Grouped for `smart`'s reason — no other tab reads any of it.
 	session sessionProps
 
+	// password is the Account tab's change-password state, grouped for the same
+	// reason: two drafts, a confirm the server may or may not ask for, and the
+	// outcome. Nothing outside that group reads any of it.
+	password passwordProps
+
 	// smart is the Smart+ tab's entire state. One field rather than eight,
 	// because none of it is read by any other tab and settingsProps is already
 	// long enough to be scanned rather than read.
@@ -707,16 +712,251 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 			return setFact(tr.T("settings", "factReconnects"), p.connHealth)
 		}),
 	}
+	out = append(out, passwordGroup(tr, p.password)...)
 	out = append(out, signOutGroup(tr, p.session)...)
 	return append(out,
 		// Said plainly rather than shown as a disabled form. A greyed-out
-		// "Change password" that never works is worse than an honest sentence:
-		// the reader spends time working out whether they are doing it wrong.
+		// control that never works is worse than an honest sentence: the reader
+		// spends time working out whether they are doing it wrong.
 		fsGroup(glyphShared, tr.T("settings", "notBuiltGroup"),
 			tr.T("settings", "notBuiltHint")),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "notBuiltNote"))),
 	)
+}
+
+// --- the credentials group: current password, new password, username ------------
+//
+// # Why the current password is always asked for
+//
+// It was not, at first. `ChangePassword` is gated on a sudo window, and the
+// proto argued that asking again inside it "trains people to type their password
+// into whatever asks for it, which is the habit that makes phishing work" — a
+// real effect, and the reason this form originally had two fields.
+//
+// The hole in it is the window's origin: the sudo stamp is written AT LOGIN. For
+// fifteen minutes after somebody signs in it is open without anyone having typed
+// a password since, so a live but unattended session could change the password
+// — and because that call revokes every other session, lock the owner out with
+// the owner's own credential. Cam caught it, and the server now requires the
+// old password on both credential changes (grpcsrv/sudo.go, proveCurrentPassword).
+// The habituation argument holds for prompts people meet often; changing a
+// credential is rare and deliberate, and the habit it teaches is the right one.
+//
+// So there is one field, always, and the reader is never asked twice: when the
+// sudo window has also closed, the same value answers that too — see
+// changePassword in reader.go, which re-authenticates with it and retries rather
+// than raising a second prompt for something already on screen.
+//
+// # Why the rules are listed rather than scored
+//
+// A strength meter is a number this screen would be inventing. The server
+// refuses on `internal/pwpolicy`: a length floor, the account name, and a
+// bundled breached-password list matched after folding away leet substitutions
+// and trailing decoration. Two of those three can be checked honestly here as
+// the reader types. The third cannot — the list is not in this bundle and should
+// not be, both for size and because a client-side copy of it is a wordlist
+// shipped to anyone who asks — so it is shown as the server's to answer rather
+// than ticked optimistically and contradicted on submit.
+type passwordProps struct {
+	// draft and repeat are the two entries. Repeat exists because this control
+	// has no "show password" toggle and no undo: the account is the one thing
+	// here that cannot be recovered from the reader's side if it is set to
+	// something they did not mean to type.
+	draft  string
+	repeat string
+	// confirm is the CURRENT password. Always collected: it authorises both
+	// changes in this group, and it is what lets the sudo window be answered
+	// without a second prompt.
+	confirm string
+	busy    bool
+	// done is the sentence after a successful change, carrying the count of
+	// other sessions that ended — the only evidence the reader gets that the
+	// change did anything beyond the password.
+	done string
+	err  string
+	// username is the account's CURRENT name. It is both the value the rename
+	// field starts from and what the "not your account name" rule is checked
+	// against — the same string the server checks, since pwpolicy.Check takes
+	// the username precisely because no generic list can contain "cameron2026".
+	username string
+	// nameDraft is the rename field's mirror, and nameBusy/nameDone/nameErr are
+	// its own outcome. Separate from the password's, because the two are
+	// different writes with different consequences and a shared error line would
+	// report one against the other.
+	nameDraft string
+	nameBusy  bool
+	nameDone  string
+	nameErr   string
+
+	// The three fields are UNCONTROLLED — these handlers mirror what is typed
+	// into state so the checklist can react, and nothing writes `value` back.
+	//
+	// That asymmetry is deliberate and is the one GWC trap that would be
+	// unforgivable here: a bound `value` is rewritten on every render, so a
+	// render landing between two keystrokes replaces the field with the state as
+	// of the render that built the handler and the characters in between are
+	// gone. In a search box that is a nuisance you can see and retype. In a
+	// password field it is invisible — the reader sets a password one character
+	// short of what they meant and cannot sign in with either. Submit reads the
+	// DOM through platform.FieldValue, so what the reader typed is what is sent
+	// no matter what this mirror thinks.
+	onNewEdit     ui.Handler
+	onRepeatEdit  ui.Handler
+	onConfirmEdit ui.Handler
+	onNameEdit    ui.Handler
+}
+
+const (
+	actPwChange   = "pw-change"
+	actNameChange = "name-change"
+)
+
+// pwMinLength mirrors pwpolicy.MinLength.
+//
+// A literal rather than an import: pulling `internal/pwpolicy` into the wasm
+// bundle to read one integer would bring its wordlist with it. The number is
+// pinned by a test in this package, so the copy cannot drift silently.
+const pwMinLength = 12
+
+func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
+	// Counted in runes, exactly as the server counts it: bytes would tell
+	// somebody writing in Japanese that four characters is twelve.
+	longEnough := len([]rune(p.draft)) >= pwMinLength
+	matches := p.draft != "" && p.draft == p.repeat
+	notName := p.draft == "" || p.username == "" ||
+		!strings.Contains(strings.ToLower(p.draft), strings.ToLower(p.username))
+
+	return []ui.Node{
+		fsGroup(glyphShared, tr.T("settings", "pwGroup"), tr.T("settings", "pwHint")),
+
+		// The current password FIRST, because it authorises both changes below
+		// it and because that is the order the reader answers them in: prove who
+		// you are, then say what to change.
+		setRow(tr.T("settings", "pwConfirmLabel"), tr.T("settings", "pwConfirmHint"),
+			html.Input(html.Props{
+				Class: "field fs-field", Type: "password",
+				OnInput: p.onConfirmEdit,
+				Data:    map[string]string{"role": "pw-confirm"},
+				Aria:    map[string]string{"label": tr.T("settings", "pwConfirmLabel")},
+				// current-password, so a password manager offers the one it
+				// already has for this site rather than treating it as new.
+				Raw: map[string]any{"autocomplete": "current-password", "spellcheck": "false"},
+			})),
+
+		// --- the new password
+		setRow(tr.T("settings", "pwNewLabel"), "",
+			html.Input(html.Props{
+				Class: "field fs-field", Type: "password",
+				Placeholder: tr.T("settings", "pwNewPlaceholder"),
+				OnInput:     p.onNewEdit,
+				Data:        map[string]string{"role": "pw-new"},
+				Aria:        map[string]string{"label": tr.T("settings", "pwNewLabel")},
+				Raw:         map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
+			})),
+		setRow(tr.T("settings", "pwRepeatLabel"), "",
+			html.Input(html.Props{
+				Class: "field fs-field", Type: "password",
+				OnInput: p.onRepeatEdit,
+				Data:    map[string]string{"role": "pw-repeat"},
+				Aria:    map[string]string{"label": tr.T("settings", "pwRepeatLabel")},
+				Raw:     map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
+			})),
+
+		// The rules, as a list the reader can watch rather than a verdict they
+		// receive. `aria-live` is deliberately absent: a screen reader announcing
+		// three rules on every keystroke is worse than silence, and the submit
+		// error — which IS announced — is where the outcome belongs.
+		html.Ul(html.Props{Class: "pw-rules"},
+			pwRule(tr.T("settings", "pwRuleLength", i18n.Args{"n": strconv.Itoa(pwMinLength)}), longEnough, p.draft != ""),
+			pwRule(tr.T("settings", "pwRuleName"), notName, p.draft != ""),
+			pwRule(tr.T("settings", "pwRuleMatch"), matches, p.repeat != ""),
+			pwRule(tr.T("settings", "pwRuleKnown"), false, false),
+		),
+		html.Div(html.Props{Class: "set-actions"},
+			actionButton(actPwChange, "chip", pwButtonLabel(tr, p)),
+		),
+		ui.If(p.done != "", func() ui.Node {
+			return html.Div(html.Props{
+				Class: "set-note set-note-live", Role: "status",
+				Aria: map[string]string{"live": "polite"},
+				Data: map[string]string{"good": "true"},
+			}, html.Text(p.done))
+		}),
+		ui.If(p.err != "", func() ui.Node {
+			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.err))
+		}),
+
+		// --- the username
+		//
+		// Under the password and sharing its confirmation field, because they are
+		// the same decision from the reader's side: this is the credential, and
+		// this is what proves it is yours to change.
+		fsGroup(glyphShared, tr.T("settings", "nameGroup"), tr.T("settings", "nameHint")),
+		setRow(tr.T("settings", "nameLabel"), p.username,
+			html.Div(html.Props{Class: "fs-rename"},
+				html.Input(html.Props{
+					Class: "field fs-field", Type: "email",
+					Placeholder: tr.T("settings", "namePlaceholder"),
+					OnInput:     p.onNameEdit,
+					Data:        map[string]string{"role": "name-new"},
+					Aria:        map[string]string{"label": tr.T("settings", "nameLabel")},
+					Raw:         map[string]any{"autocomplete": "username", "spellcheck": "false"},
+				}),
+				actionButton(actNameChange, "chip", nameButtonLabel(tr, p)),
+			)),
+		ui.If(p.nameDone != "", func() ui.Node {
+			return html.Div(html.Props{
+				Class: "set-note set-note-live", Role: "status",
+				Aria: map[string]string{"live": "polite"},
+				Data: map[string]string{"good": "true"},
+			}, html.Text(p.nameDone))
+		}),
+		ui.If(p.nameErr != "", func() ui.Node {
+			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.nameErr))
+		}),
+	}
+}
+
+// pwButtonLabel keeps the verb the same through the flow.
+//
+// "Change password" is what the control promises and what the success sentence
+// reports, so the middle state says the same word in progress rather than
+// switching to "Saving" — a different verb at the moment of commitment reads as
+// a different action.
+func pwButtonLabel(tr i18n.Runtime, p passwordProps) string {
+	if p.busy {
+		return tr.T("settings", "pwChanging")
+	}
+	return tr.T("settings", "pwChange")
+}
+
+// nameButtonLabel, for pwButtonLabel's reason.
+func nameButtonLabel(tr i18n.Runtime, p passwordProps) string {
+	if p.nameBusy {
+		return tr.T("settings", "nameChanging")
+	}
+	return tr.T("settings", "nameChange")
+}
+
+// pwRule is one line of the checklist.
+//
+// `active` is whether the reader has typed enough for the rule to have an
+// opinion yet. Before that it renders as neither met nor failed, because a red
+// cross against an empty field is the interface telling somebody off for not
+// having started.
+func pwRule(label string, met, active bool) ui.Node {
+	state := "idle"
+	if active {
+		state = "unmet"
+		if met {
+			state = "met"
+		}
+	}
+	return html.Li(html.Props{
+		Class: "pw-rule",
+		Data:  map[string]string{"state": state},
+	}, html.Text(label))
 }
 
 // --- signing out ---------------------------------------------------------------

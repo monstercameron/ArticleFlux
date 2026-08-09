@@ -404,3 +404,74 @@ func (c *Client) SignOut(parent context.Context) error {
 	setToken("")
 	return err
 }
+
+// Reauthenticate re-proves the password on the session this browser already
+// holds, opening the sudo window the gated operations check.
+//
+// No username: the session already says who this is, and the server refuses to
+// accept one (auth.proto) because taking it would let a caller re-authenticate
+// as somebody else on a session that is not theirs.
+//
+// The same fifteen seconds Login allows, and for the same reason — Argon2id is
+// deliberately slow at the far end, so the timeout has to clear a password
+// check rather than a round trip.
+//
+// It does NOT mint a session, so nothing here touches stored credentials. That
+// is the server's decision, restated at this end because the obvious mistake
+// for a future caller is to treat this like Login and store what it returns.
+func (c *Client) Reauthenticate(parent context.Context, password string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+
+	res, err := c.auth.Reauthenticate(ctx, &pb.ReauthenticateRequest{Password: password})
+	if err != nil {
+		return "", err
+	}
+	return res.GetSudoExpiresAt(), nil
+}
+
+// ChangePassword replaces this account's password and ends every OTHER session.
+//
+// `current` is required by the server (auth.proto): the sudo window alone would
+// leave the fifteen minutes after a login open to anyone at an unattended
+// screen, and this call is the one that revokes everything else.
+//
+// Returns how many were ended, which is the number worth telling the reader:
+// ending a thief's sessions is most of what changing a password is for, and
+// "signed out of 3 other devices" is the only evidence that happened.
+//
+// This browser's own session survives, so there is nothing to store and nothing
+// to clear: the reader who just did the right thing stays where they were.
+func (c *Client) ChangePassword(parent context.Context, current, newPassword string) (int32, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+
+	res, err := c.auth.ChangePassword(ctx, &pb.ChangePasswordRequest{
+		NewPassword: newPassword, CurrentPassword: current,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return res.GetSessionsEnded(), nil
+}
+
+// ChangeUsername renames this account and returns the name as STORED.
+//
+// The stored value rather than the typed one, because the server normalises —
+// it lowercases the domain — and a screen that echoes what was typed would
+// disagree with what the reader must now sign in with.
+//
+// `current` for ChangePassword's reason: the username is half the credential.
+// Sessions are not revoked; a rename is not a compromise.
+func (c *Client) ChangeUsername(parent context.Context, current, newUsername string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+
+	res, err := c.auth.ChangeUsername(ctx, &pb.ChangeUsernameRequest{
+		NewUsername: newUsername, CurrentPassword: current,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.GetUsername(), nil
+}

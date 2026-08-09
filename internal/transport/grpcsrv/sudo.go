@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -15,6 +16,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+	"github.com/monstercameron/ArticleFlux/internal/username"
 )
 
 // Sudo mode, enforced (§7.3, TODO 6.1).
@@ -243,12 +245,102 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 	}, nil
 }
 
+// proveCurrentPassword refuses unless the caller can produce the password the
+// account currently has.
+//
+// # Why this exists alongside requireSudo
+//
+// The sudo stamp is written at LOGIN, so for fifteen minutes after somebody
+// signs in the window is open without anyone having typed a password since. For
+// most gated operations that is the intended trade — the point of a window is
+// not to ask four times. For the two operations that change the CREDENTIAL
+// ITSELF it is a hole: a live but unattended session could rename the account or
+// replace its password and, because the password change revokes every other
+// session, lock the owner out using the owner's own credential.
+//
+// So those two ask, every time, on top of sudo. That is deliberately the
+// opposite of what ChangePassword's proto comment argued before 2026-08-09, and
+// the older reasoning is worth keeping in view rather than deleting: asking for
+// a password twice in fifteen minutes really does train people to type it into
+// whatever asks, and that argument holds for prompts people meet often. Changing
+// your password is rare and deliberate, and the habit it builds — that changing
+// a credential requires the old one — is the one worth having.
+//
+// Everything Reauthenticate learned about being guessed at applies here and is
+// shared rather than re-derived: the session-keyed in-memory limiter, the
+// durable ledger under `sudo:<user id>`, the exponential lockout, and a row in
+// the audit trail when it locks. A caller guessing here already holds a session
+// and is guessing at the credential that owns the instance, which is the worst
+// place in the application to leave a counter with amnesia.
+//
+// DevMode skips it, for requireSudo's reason: there is no session, no stored
+// token and no password anybody typed, so there is nothing to prove against.
+func (s *AuthServer) proveCurrentPassword(ctx context.Context, sc store.Scope, password string) error {
+	if s.devMode {
+		return nil
+	}
+	token := bearerToken(ctx)
+	if token == "" {
+		return errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+	}
+	if password == "" {
+		return errKey(codes.Unauthenticated, "srv.badPassword", "that password is not right", nil)
+	}
+
+	key := "s:" + secret.HashToken(token)
+	if !s.limiter.allow(key) {
+		return errKey(codes.ResourceExhausted, "srv.tooManyAttempts",
+			"too many attempts; wait a minute and try again", nil)
+	}
+	ledgerKey, addr := sudoLedgerKey(sc.UserID), clientKey(ctx)
+	if d, ok := s.lockout(ctx, ledgerKey, addr); !ok {
+		s.log.Warn("credential change locked out", "user", sc.UserID, "client", addr,
+			"reason", d.Reason, "retry_after", d.RetryAfter)
+		s.record(ctx, ledgerKey, addr, store.LoginLocked)
+		s.trail.Record(ctx, audit.Event{
+			Action: audit.ActionLockout, Actor: sc.UserID, Tenant: sc.TenantID,
+			Detail: map[string]string{
+				"surface": "credential-change", "client": addr,
+				"retry_after": d.RetryAfter.String(),
+			},
+		})
+		return apierr.Status(apierr.RateLimited("credential-change", d.RetryAfter))
+	}
+
+	hash, err := s.repo.PasswordHashFor(ctx, sc)
+	if err != nil {
+		s.log.Error("reading the password hash to confirm a credential change", "err", err)
+		return errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	ok, _, verr := secret.VerifyPassword(password, hash, secret.Active())
+	if verr != nil || !ok {
+		s.limiter.fail(key)
+		s.record(ctx, ledgerKey, addr, store.LoginBadPassword)
+		s.log.Warn("credential change refused: wrong password",
+			"user", sc.UserID, "client", addr)
+		return errKey(codes.Unauthenticated, "srv.badPassword", "that password is not right", nil)
+	}
+	s.limiter.reset(key)
+	// Clears the durable count for the same reason Reauthenticate clears it:
+	// `FailureCounts` reads "since the last ok", so two fumbles would otherwise
+	// follow this person into every prompt they ever see again.
+	s.record(ctx, ledgerKey, addr, store.LoginOK)
+	return nil
+}
+
 // ChangePassword replaces the caller's password and ends every other session.
 func (s *AuthServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequest) (
 	*pb.ChangePasswordResponse, error) {
 
 	sc, err := s.requireSudo(ctx, authn.SudoChangePasswd)
 	if err != nil {
+		return nil, err
+	}
+
+	// The old password, before anything is written. Ordered ahead of the policy
+	// check on purpose: a caller who cannot prove who they are should learn
+	// nothing about which passwords this instance would have accepted.
+	if err := s.proveCurrentPassword(ctx, sc, req.GetCurrentPassword()); err != nil {
 		return nil, err
 	}
 
@@ -345,4 +437,74 @@ func (s *AuthServer) RegenerateRecoveryCodes(ctx context.Context, _ *pb.Regenera
 		},
 	})
 	return &pb.RegenerateRecoveryCodesResponse{Codes: sheet}, nil
+}
+
+// ChangeUsername renames the caller's account.
+//
+// # Why it is in this file
+//
+// A username is half a credential. An attacker who can change it silently has
+// changed what the owner must type to get in, and on an instance whose recovery
+// address IS the username (see internal/username) they have also changed where
+// "reset my password" arrives. So it takes the same two proofs the password
+// change takes — a sudo window and the current password — and lands in the same
+// audit trail.
+//
+// # What it does NOT do
+//
+// It does not revoke sessions. The password is unchanged and the sessions were
+// issued to an account rather than to a string, so ending them would sign
+// somebody out of their phone for correcting a typo. ChangePassword revokes
+// because the old credential may be in someone else's hands; this one has no
+// such implication and should not borrow its consequences.
+func (s *AuthServer) ChangeUsername(ctx context.Context, req *pb.ChangeUsernameRequest) (
+	*pb.ChangeUsernameResponse, error) {
+
+	sc, err := s.requireSudo(ctx, authn.SudoChangePasswd)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.proveCurrentPassword(ctx, sc, req.GetCurrentPassword()); err != nil {
+		return nil, err
+	}
+
+	// Normalised BEFORE it is checked, because the normalised form is what gets
+	// stored — validating one string and writing another is how a rule ends up
+	// guarding nothing.
+	name := username.Normalise(req.GetNewUsername())
+	if err := username.Check(name); err != nil {
+		return nil, errKey(codes.InvalidArgument, "srv.badUsername", err.Error(), nil)
+	}
+
+	current, _, ierr := s.repo.Identity(ctx, sc)
+	if ierr != nil {
+		s.log.Error("reading the identity for a rename", "err", ierr)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	// A rename to the name it already has is a no-op rather than an error. The
+	// reader asked for a state, and the state is already true; refusing would be
+	// the interface arguing about how they got there.
+	if strings.EqualFold(current, name) {
+		return &pb.ChangeUsernameResponse{Username: current}, nil
+	}
+
+	if err := s.repo.UpdateUsername(ctx, sc, name); err != nil {
+		if errors.Is(err, store.ErrUsernameTaken) {
+			return nil, errKey(codes.AlreadyExists, "srv.usernameTaken",
+				"that username is already in use", nil)
+		}
+		s.log.Error("renaming an account", "err", err, "user", sc.UserID)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	s.log.InfoContext(ctx, "username changed", "user", sc.UserID)
+	// The OLD name is recorded and the new one is not, which is the way round
+	// that helps: the row is filed under the account id, so what it is called now
+	// is a lookup away, and what it USED to be called is the thing that would
+	// otherwise be gone. An operator reading this file after a takeover is trying
+	// to work out what the account was when they last recognised it.
+	s.trail.Record(ctx, audit.Event{
+		Action: audit.ActionUsernameChanged, Actor: sc.UserID, Tenant: sc.TenantID,
+		Detail: map[string]string{"client": clientKey(ctx), "previous": current},
+	})
+	return &pb.ChangeUsernameResponse{Username: name}, nil
 }

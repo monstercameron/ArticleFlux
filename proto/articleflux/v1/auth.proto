@@ -103,6 +103,24 @@ service AuthService {
   // the screen where they were most likely mid-task.
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
 
+  // ChangeUsername replaces the name this account signs in with.
+  //
+  // Requires the current password for the same reason ChangePassword does: the
+  // username is half the credential, and an attacker who can change it silently
+  // has changed what the owner must type to get in. Sudo alone would leave the
+  // post-login window open, and this is the same window.
+  //
+  // The new name must be an EMAIL ADDRESS. Existing accounts keep whatever they
+  // were created with — a rule applied retroactively would lock out the owner
+  // of every instance already running — but every name set from here on is one
+  // the server can reach a human at, which is what makes account recovery
+  // possible at all.
+  //
+  // Sessions are NOT revoked. Renaming is not a credential compromise, and
+  // signing somebody out of their phone for correcting a typo would be a
+  // surprise out of proportion to what they did.
+  rpc ChangeUsername(ChangeUsernameRequest) returns (ChangeUsernameResponse);
+
   // RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
   //
   // Requires sudo, because it is the operation that decides who can get back
@@ -247,6 +265,29 @@ message ChangePasswordRequest {
   // change is the one moment someone is thinking about their password, which
   // makes it the best moment to refuse a bad one.
   string new_password = 1;
+
+  // current_password proves the caller knows the credential they are replacing.
+  //
+  // # Why this exists when a sudo window already gates the call
+  //
+  // The sudo stamp is set AT LOGIN, so for the fifteen minutes after somebody
+  // signs in, the window is open without anyone having typed a password since.
+  // A session that is live but unattended — a borrowed laptop, a shoulder, a
+  // stolen token — could therefore change the password and, because this call
+  // revokes every other session, lock the real owner out using the owner's own
+  // credential. Requiring the current password closes exactly that window, and
+  // it is the case the check exists for.
+  //
+  // The argument it overrides is the one two RPCs up: that asking twice inside
+  // fifteen minutes trains people to type their password into whatever asks.
+  // That is a real effect and it applies to FREQUENT prompts; a password change
+  // is rare and deliberate, and the habit it teaches — that changing a password
+  // requires the old one — is the correct one. Cam's call, 2026-08-09.
+  //
+  // Verified through the same limiter, durable ledger and lockout curve as
+  // Reauthenticate, because a caller guessing here already holds a session and
+  // is guessing at the credential that owns the instance.
+  string current_password = 2;
 }
 
 message ChangePasswordResponse {
@@ -254,6 +295,24 @@ message ChangePasswordResponse {
   // "signed out of 3 other devices" rather than leaving someone to wonder
   // whether the change did anything beyond the password.
   int32 sessions_ended = 1;
+}
+
+message ChangeUsernameRequest {
+  // new_username must be an email address. See the RPC's comment for why the
+  // rule is forward-only.
+  string new_username = 1;
+  // current_password, for the reason ChangePasswordRequest states: the username
+  // is half the credential, and the sudo window is open for fifteen minutes
+  // after a login without anybody having typed anything.
+  string current_password = 2;
+}
+
+message ChangeUsernameResponse {
+  // username is what the account is now called, as the server stored it —
+  // trimmed and lowercased. Returned rather than assumed so the client shows
+  // the stored value instead of the typed one, which is the difference between
+  // a screen that reports the truth and one that reports the request.
+  string username = 1;
 }
 
 message RegenerateRecoveryCodesRequest {}

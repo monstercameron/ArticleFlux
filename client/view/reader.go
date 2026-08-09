@@ -530,6 +530,26 @@ func Reader(p readerProps) ui.Node {
 	signOutArmed := ui.UseState(false)
 	signOutBusy := ui.UseState(false)
 	signOutStranded := ui.UseState(false)
+	// Changing the password, on the same tab. The three drafts mirror
+	// uncontrolled fields (see passwordProps) so the rule checklist can react;
+	// the submit reads the DOM rather than these.
+	//
+	// `pwNeedsConfirm` is the SERVER's answer, never a guess: ChangePassword is
+	// gated on a sudo window whose length the server owns, so this is set only
+	// after a refusal carrying `srv.sudoRequired` and cleared on success.
+	pwNew := ui.UseState("")
+	pwRepeat := ui.UseState("")
+	pwConfirm := ui.UseState("")
+	pwBusy := ui.UseState(false)
+	pwDone := ui.UseState("")
+	pwErr := ui.UseState("")
+	// The rename shares the confirmation field above and nothing else: its own
+	// draft, its own progress and its own outcome, so one write never reports
+	// itself against the other.
+	pwNameDraft := ui.UseState("")
+	pwNameBusy := ui.UseState(false)
+	pwNameDone := ui.UseState("")
+	pwNameErr := ui.UseState("")
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -965,6 +985,14 @@ func Reader(p readerProps) ui.Node {
 	// because a fresh pointer per render is the same bug wearing a Ref.
 	onFilterInputRef := ui.UseRef(onFilterInput)
 	onFilterInputRef.Set(onFilterInput)
+	// The password fields mirror into state so the rule checklist can react.
+	// Nothing writes `value` back — see passwordProps on why these three are the
+	// one place in the app where a controlled input would be a real hazard
+	// rather than a nuisance.
+	onPwNew := ui.UseEvent(func(v string) { pwNew.Set(v) })
+	onPwRepeat := ui.UseEvent(func(v string) { pwRepeat.Set(v) })
+	onPwConfirm := ui.UseEvent(func(v string) { pwConfirm.Set(v) })
+	onPwName := ui.UseEvent(func(v string) { pwNameDraft.Set(v) })
 	onSmartKeyInput := ui.UseEvent(func(v string) { smartKeyDraft.Set(v) })
 	onSmartModelInput := ui.UseEvent(func(v string) { smartModelDraft.Set(v) })
 	onThemePromptInput := ui.UseEvent(func(v string) { themePrompt.Set(v) })
@@ -6338,6 +6366,157 @@ func Reader(p readerProps) ui.Node {
 	// the success path takes for them.
 	act.Get().leaveToLogin = func() { platform.Reload() }
 
+	// --- changing the password, on the Account tab -----------------------------
+	//
+	// One press, two calls at most, and the second only when the server asks for
+	// it. The shape is dictated by grpcsrv/sudo.go: ChangePassword refuses with
+	// `srv.sudoRequired` when the fifteen-minute window has closed, and the cure
+	// is Reauthenticate followed by the same call again. Doing that here rather
+	// than making the reader press twice is the difference between a prompt and
+	// a dead end.
+	//
+	// The values are read from the DOM at the moment of the press, not from the
+	// mirrors the checklist watches. See passwordProps: the fields are
+	// uncontrolled precisely so a render cannot eat a keystroke, which means the
+	// mirror is a lagging copy and the DOM is the truth.
+	act.Get().changePassword = func() {
+		c := client.Get()
+		if c == nil || pwBusy.Get() {
+			return
+		}
+		next := platform.FieldValue("pw-new")
+		again := platform.FieldValue("pw-repeat")
+		current := platform.FieldValue("pw-confirm")
+
+		// Refused here, before the server is asked, only where this side can be
+		// certain. Length and equality are facts; whether a password is on the
+		// breached list is not something this bundle knows, so it is not guessed
+		// at — see passwordGroup's note on why there is no strength score.
+		pwDone.Set("")
+		switch {
+		case current == "":
+			pwErr.Set(tr.T("settings", "pwErrNoConfirm"))
+			return
+		case len([]rune(next)) < pwMinLength:
+			pwErr.Set(tr.T("settings", "pwErrShort", i18n.Args{"n": strconv.Itoa(pwMinLength)}))
+			return
+		case next != again:
+			pwErr.Set(tr.T("settings", "pwErrMatch"))
+			return
+		case p.whoami != "" &&
+			strings.Contains(strings.ToLower(next), strings.ToLower(p.whoami)):
+			pwErr.Set(tr.T("settings", "pwErrName"))
+			return
+		}
+		pwErr.Set("")
+		pwBusy.Set(true)
+
+		go func() {
+			ctx := context.Background()
+			ended, err := c.ChangePassword(ctx, current, next)
+			// The sudo window can be closed even though the password is right
+			// here — the stamp is written at login and expires on its own clock.
+			// The reader has already given the one thing that answers it, so
+			// answering it for them is the whole point: a second prompt for a
+			// value on screen would be the interface asking twice for the same
+			// fact.
+			if err != nil && serverKey(err) == keySudoRequired {
+				if _, rerr := c.Reauthenticate(ctx, current); rerr == nil {
+					ended, err = c.ChangePassword(ctx, current, next)
+				} else {
+					err = rerr
+				}
+			}
+			ui.PostAsync(func() {
+				pwBusy.Set(false)
+				if err != nil {
+					pwErr.Set(serverText(tr, err))
+					return
+				}
+				// Cleared on success. Leaving a password sitting in three fields
+				// on a screen somebody walks away from is the one part of this
+				// the reader cannot see.
+				platform.ClearField("pw-new")
+				platform.ClearField("pw-repeat")
+				platform.ClearField("pw-confirm")
+				pwNew.Set("")
+				pwRepeat.Set("")
+				pwConfirm.Set("")
+				pwErr.Set("")
+				if ended > 0 {
+					pwDone.Set(tr.T("settings", "pwDoneEnded",
+						i18n.Args{"n": strconv.Itoa(int(ended))}))
+					return
+				}
+				pwDone.Set(tr.T("settings", "pwDone"))
+			})
+		}()
+	}
+
+	// changeUsername renames the account, authorised by the same field.
+	//
+	// Kept separate from the password change rather than folded into one submit:
+	// they are different writes with different consequences — one revokes every
+	// other session and the other deliberately revokes nothing — and a single
+	// button doing whichever fields happened to be filled is a control nobody
+	// can predict.
+	act.Get().changeUsername = func() {
+		c := client.Get()
+		if c == nil || pwNameBusy.Get() {
+			return
+		}
+		name := strings.TrimSpace(platform.FieldValue("name-new"))
+		current := platform.FieldValue("pw-confirm")
+
+		pwNameDone.Set("")
+		// Ordered so the field the reader was just typing in is the one named
+		// first. Demanding a password from somebody whose real problem is that
+		// they typed "cam" sends them to the wrong field, and they come back to
+		// the same refusal. Authorisation is the LAST gate, not the first.
+		switch {
+		case name == "":
+			pwNameErr.Set(tr.T("settings", "nameErrEmpty"))
+			return
+		case !strings.Contains(name, "@"):
+			// The shape rule, stated here so a round trip is not spent on a
+			// refusal this side could see coming. The SERVER owns the real check
+			// (internal/username) — this is the obvious half of it, not a copy.
+			pwNameErr.Set(tr.T("settings", "nameErrEmail"))
+			return
+		case current == "":
+			pwNameErr.Set(tr.T("settings", "pwErrNoConfirm"))
+			return
+		}
+		pwNameErr.Set("")
+		pwNameBusy.Set(true)
+
+		go func() {
+			ctx := context.Background()
+			stored, err := c.ChangeUsername(ctx, current, name)
+			if err != nil && serverKey(err) == keySudoRequired {
+				if _, rerr := c.Reauthenticate(ctx, current); rerr == nil {
+					stored, err = c.ChangeUsername(ctx, current, name)
+				} else {
+					err = rerr
+				}
+			}
+			ui.PostAsync(func() {
+				pwNameBusy.Set(false)
+				if err != nil {
+					pwNameErr.Set(serverText(tr, err))
+					return
+				}
+				platform.ClearField("name-new")
+				pwNameDraft.Set("")
+				pwNameErr.Set("")
+				// The STORED name, not the typed one: the server lowercases the
+				// domain, and this is what has to be typed at the login screen
+				// from now on.
+				pwNameDone.Set(tr.T("settings", "nameDone", i18n.Args{"name": stored}))
+			})
+		}()
+	}
+
 	// --- migration, on the Data tab (F1) --------------------------------------
 
 	// importOPML opens the file chooser and imports whatever comes back.
@@ -8410,6 +8589,23 @@ func Reader(p readerProps) ui.Node {
 						armed:    signOutArmed.Get(),
 						busy:     signOutBusy.Get(),
 						stranded: signOutStranded.Get(),
+					},
+					password: passwordProps{
+						draft:         pwNew.Get(),
+						repeat:        pwRepeat.Get(),
+						confirm:       pwConfirm.Get(),
+						busy:          pwBusy.Get(),
+						done:          pwDone.Get(),
+						err:           pwErr.Get(),
+						username:      p.whoami,
+						nameDraft:     pwNameDraft.Get(),
+						nameBusy:      pwNameBusy.Get(),
+						nameDone:      pwNameDone.Get(),
+						nameErr:       pwNameErr.Get(),
+						onNewEdit:     onPwNew,
+						onRepeatEdit:  onPwRepeat,
+						onConfirmEdit: onPwConfirm,
+						onNameEdit:    onPwName,
 					},
 					smart: smartProps{
 						cfg:         smartCfg.Get(),

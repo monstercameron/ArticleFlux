@@ -57,7 +57,7 @@ func TestSetupHappyPathClaimsAFreshInstance(t *testing.T) {
 	s, repo := newAuthEmpty(t)
 
 	res, err := s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "cam", Email: "cam@example.com", Password: testPassword,
+		Username: "cam@example.com", Email: "cam@example.com", Password: testPassword,
 	})
 	if err != nil {
 		t.Fatalf("setup: %v", err)
@@ -84,7 +84,7 @@ func TestSetupHappyPathClaimsAFreshInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("whoami with the setup token: %v", err)
 	}
-	if who.GetUsername() != "cam" {
+	if who.GetUsername() != "cam@example.com" {
 		t.Errorf("username = %q, want cam", who.GetUsername())
 	}
 	if _, err := s.RegenerateRecoveryCodes(withToken(res.GetToken()),
@@ -101,7 +101,11 @@ func TestSetupHappyPathClaimsAFreshInstance(t *testing.T) {
 	}
 }
 
-func TestSetupRejectsAUsernameTooShort(t *testing.T) {
+// A username must be an email address (internal/username), which is what now
+// refuses "a" — the two-character floor beneath it has become unreachable,
+// since every address clears it. Renamed from TestSetupRejectsAUsernameTooShort
+// so the name says which rule is being pinned.
+func TestSetupRequiresAnEmailUsername(t *testing.T) {
 	s, _ := newAuthEmpty(t)
 	_, err := s.Setup(context.Background(), &pb.SetupRequest{
 		Username: "a", Password: testPassword,
@@ -114,7 +118,10 @@ func TestSetupRejectsAUsernameTooShort(t *testing.T) {
 func TestSetupRejectsAWeakPassword(t *testing.T) {
 	s, _ := newAuthEmpty(t)
 	_, err := s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "cam", Password: "short",
+		// An email username, so the refusal below is the PASSWORD rule firing
+		// rather than the username rule shadowing it. With "cam" here this test
+		// passed while proving nothing.
+		Username: "cam@example.com", Password: "short",
 	})
 	if got := codeOf(err); got != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument", got)
@@ -124,7 +131,7 @@ func TestSetupRejectsAWeakPassword(t *testing.T) {
 func TestSetupRejectsAnEmailThatDoesNotLookLikeOne(t *testing.T) {
 	s, _ := newAuthEmpty(t)
 	_, err := s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "cam", Email: "not-an-email", Password: testPassword,
+		Username: "cam@example.com", Email: "not-an-email", Password: testPassword,
 	})
 	if got := codeOf(err); got != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument", got)
@@ -139,14 +146,14 @@ func TestSetupRefusesASecondAccountAfterOneExists(t *testing.T) {
 	s, repo := newAuthEmpty(t)
 
 	first, err := s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "cam", Password: testPassword,
+		Username: "cam@example.com", Password: testPassword,
 	})
 	if err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
 
 	_, err = s.Setup(context.Background(), &pb.SetupRequest{
-		Username: "mallory", Password: "a-completely-different-passphrase",
+		Username: "mallory@example.com", Password: "a-completely-different-passphrase",
 	})
 	if err == nil {
 		t.Fatal("SECURITY: a second Setup call created a second superadmin account " +
@@ -169,7 +176,7 @@ func TestSetupRefusesASecondAccountAfterOneExists(t *testing.T) {
 	}
 	// The second username must not have been able to sign in either.
 	if _, err := s.Login(context.Background(), &pb.LoginRequest{
-		Username: "mallory", Password: "a-completely-different-passphrase",
+		Username: "mallory@example.com", Password: "a-completely-different-passphrase",
 	}); err == nil {
 		t.Error("SECURITY: the rejected second account can log in anyway")
 	}

@@ -1,0 +1,127 @@
+import { test, expect, boot } from './fixtures.mjs';
+
+/**
+ * Changing your password, on Settings → Account (§7.3).
+ *
+ * The RPC has been there since sudo mode was built and had no control anywhere:
+ * the tab carried a sentence headed "Not on this screen yet" and the documented
+ * way to change a password was a shell on the server. This is the browser half
+ * of that gap, so what is worth proving here is the wiring a Go test cannot
+ * reach — that the fields exist, that the rules react to typing, and that a
+ * refusal from the policy comes back as a sentence rather than as silence.
+ *
+ * # What this deliberately does NOT do
+ *
+ * It never completes a change. The suite shares one server and one account, and
+ * a spec that actually changed the password would invalidate the session every
+ * later spec is using — the exact class of cross-file leak that cost this suite
+ * fifty-five failures. So the success path is left to the unit tests and to the
+ * server's own coverage, and this drives the paths that end in a refusal.
+ */
+
+async function openAccount(page) {
+  await page.keyboard.press(',');
+  await expect(page.locator('.set-tabs')).toBeVisible();
+  await page.locator('[data-action="settings-tab"][data-value="account"]').click();
+  await expect(page.locator('[data-action="settings-tab"][data-value="account"]'))
+    .toHaveAttribute('aria-current', 'true');
+}
+
+test.describe('changing the password', () => {
+  test.afterEach(async ({ page }) => {
+    await page.keyboard.press('Escape').catch(() => {});
+  });
+
+  test('the Account tab asks for the current password, the new one, and offers a rename', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    // The current password is ALWAYS asked for. The sudo window alone would
+    // leave the fifteen minutes after a login open to anyone at an unattended
+    // screen, and this call revokes every other session — see
+    // grpcsrv.proveCurrentPassword.
+    await expect(page.locator('[data-role="pw-confirm"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-role="pw-new"]')).toBeVisible();
+    await expect(page.locator('[data-role="pw-repeat"]')).toBeVisible();
+    // One confirmation for both writes, not one each.
+    await expect(page.locator('[data-role="pw-confirm"]')).toHaveCount(1);
+    await expect(page.locator('[data-role="name-new"]')).toBeVisible();
+  });
+
+  test('a rename that is not an email address is refused', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="name-new"]').fill('cam');
+    await page.locator('[data-action="name-change"]').click();
+
+    await expect(page.locator('.fs-error')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.fs-error')).toContainText(/email address/i);
+  });
+
+  test('the rules answer as you type, and the breached-list one waits for the server', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    const rules = page.locator('.pw-rule');
+    await expect(rules).toHaveCount(4);
+
+    // Nothing typed: no rule is passing or failing yet. A red mark against an
+    // empty field is the interface telling somebody off for not having started.
+    await expect(page.locator('.pw-rule[data-state="met"]')).toHaveCount(0);
+    await expect(page.locator('.pw-rule[data-state="unmet"]')).toHaveCount(0);
+
+    // Too short, and the length rule says so without a round trip.
+    await page.locator('[data-role="pw-new"]').fill('short');
+    await expect(page.locator('.pw-rule[data-state="unmet"]').first()).toBeVisible();
+
+    // Long enough, and matching.
+    await page.locator('[data-role="pw-new"]').fill('harbour tin lantern');
+    await page.locator('[data-role="pw-repeat"]').fill('harbour tin lantern');
+    await expect(page.locator('.pw-rule[data-state="met"]')).toHaveCount(3);
+
+    // The fourth never turns green on its own: whether a password is on the
+    // bundled breached list is the server's answer, and claiming it here would
+    // be the screen promising something it cannot check.
+    await expect(page.locator('.pw-rule').nth(3)).not.toHaveAttribute('data-state', 'met');
+  });
+
+  test('two different entries are refused here, before the server is asked', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="pw-new"]').fill('harbour tin lantern');
+    await page.locator('[data-role="pw-repeat"]').fill('harbour tin lantorn');
+    await page.locator('[data-action="pw-change"]').click();
+
+    await expect(page.locator('.fs-error')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.fs-error')).toContainText(/different/i);
+  });
+
+  test('a password the policy refuses comes back as a sentence', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    // Long enough to pass the local length rule, and on the bundled list once
+    // folded — so the refusal can only have come from the server, which is the
+    // point of the assertion.
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="pw-new"]').fill('passwordpassword');
+    await page.locator('[data-role="pw-repeat"]').fill('passwordpassword');
+    await page.locator('[data-action="pw-change"]').click();
+
+    await expect(page.locator('.fs-error')).toBeVisible({ timeout: 30_000 });
+    // The catalog's own wording for `srv.weakPassword`, not pwpolicy's. The
+    // server sends a KEY plus an English fallback and the client resolves the
+    // key against its catalog, because the reader's language is a per-device
+    // choice the server never sees — so the sentence on screen is this build's,
+    // and asserting the server's string here would pass only in English.
+    //
+    // Worth knowing while reading this: the catalog line is generic across all
+    // three ways a password can be refused. The specific reason pwpolicy
+    // computed does not survive the translation, which is a real cost of the
+    // key-based scheme and is noted rather than asserted away.
+    await expect(page.locator('.fs-error')).toContainText(/known-password list|longer password/i);
+  });
+});

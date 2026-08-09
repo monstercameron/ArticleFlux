@@ -26,6 +26,7 @@ const (
 	AuthService_RefreshSession_FullMethodName          = "/articleflux.v1.AuthService/RefreshSession"
 	AuthService_Reauthenticate_FullMethodName          = "/articleflux.v1.AuthService/Reauthenticate"
 	AuthService_ChangePassword_FullMethodName          = "/articleflux.v1.AuthService/ChangePassword"
+	AuthService_ChangeUsername_FullMethodName          = "/articleflux.v1.AuthService/ChangeUsername"
 	AuthService_RegenerateRecoveryCodes_FullMethodName = "/articleflux.v1.AuthService/RegenerateRecoveryCodes"
 	AuthService_RedeemRecoveryCode_FullMethodName      = "/articleflux.v1.AuthService/RedeemRecoveryCode"
 	AuthService_RedeemResetToken_FullMethodName        = "/articleflux.v1.AuthService/RedeemResetToken"
@@ -127,6 +128,23 @@ type AuthServiceClient interface {
 	// caller's as well would log out the person who just did the right thing, on
 	// the screen where they were most likely mid-task.
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
+	// ChangeUsername replaces the name this account signs in with.
+	//
+	// Requires the current password for the same reason ChangePassword does: the
+	// username is half the credential, and an attacker who can change it silently
+	// has changed what the owner must type to get in. Sudo alone would leave the
+	// post-login window open, and this is the same window.
+	//
+	// The new name must be an EMAIL ADDRESS. Existing accounts keep whatever they
+	// were created with — a rule applied retroactively would lock out the owner
+	// of every instance already running — but every name set from here on is one
+	// the server can reach a human at, which is what makes account recovery
+	// possible at all.
+	//
+	// Sessions are NOT revoked. Renaming is not a credential compromise, and
+	// signing somebody out of their phone for correcting a typo would be a
+	// surprise out of proportion to what they did.
+	ChangeUsername(ctx context.Context, in *ChangeUsernameRequest, opts ...grpc.CallOption) (*ChangeUsernameResponse, error)
 	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
 	//
 	// Requires sudo, because it is the operation that decides who can get back
@@ -245,6 +263,16 @@ func (c *authServiceClient) ChangePassword(ctx context.Context, in *ChangePasswo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChangePasswordResponse)
 	err := c.cc.Invoke(ctx, AuthService_ChangePassword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) ChangeUsername(ctx context.Context, in *ChangeUsernameRequest, opts ...grpc.CallOption) (*ChangeUsernameResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChangeUsernameResponse)
+	err := c.cc.Invoke(ctx, AuthService_ChangeUsername_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -377,6 +405,23 @@ type AuthServiceServer interface {
 	// caller's as well would log out the person who just did the right thing, on
 	// the screen where they were most likely mid-task.
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	// ChangeUsername replaces the name this account signs in with.
+	//
+	// Requires the current password for the same reason ChangePassword does: the
+	// username is half the credential, and an attacker who can change it silently
+	// has changed what the owner must type to get in. Sudo alone would leave the
+	// post-login window open, and this is the same window.
+	//
+	// The new name must be an EMAIL ADDRESS. Existing accounts keep whatever they
+	// were created with — a rule applied retroactively would lock out the owner
+	// of every instance already running — but every name set from here on is one
+	// the server can reach a human at, which is what makes account recovery
+	// possible at all.
+	//
+	// Sessions are NOT revoked. Renaming is not a credential compromise, and
+	// signing somebody out of their phone for correcting a typo would be a
+	// surprise out of proportion to what they did.
+	ChangeUsername(context.Context, *ChangeUsernameRequest) (*ChangeUsernameResponse, error)
 	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
 	//
 	// Requires sudo, because it is the operation that decides who can get back
@@ -451,6 +496,9 @@ func (UnimplementedAuthServiceServer) Reauthenticate(context.Context, *Reauthent
 }
 func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChangePassword not implemented")
+}
+func (UnimplementedAuthServiceServer) ChangeUsername(context.Context, *ChangeUsernameRequest) (*ChangeUsernameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ChangeUsername not implemented")
 }
 func (UnimplementedAuthServiceServer) RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegenerateRecoveryCodes not implemented")
@@ -608,6 +656,24 @@ func _AuthService_ChangePassword_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_ChangeUsername_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChangeUsernameRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).ChangeUsername(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_ChangeUsername_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).ChangeUsername(ctx, req.(*ChangeUsernameRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AuthService_RegenerateRecoveryCodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RegenerateRecoveryCodesRequest)
 	if err := dec(in); err != nil {
@@ -696,6 +762,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChangePassword",
 			Handler:    _AuthService_ChangePassword_Handler,
+		},
+		{
+			MethodName: "ChangeUsername",
+			Handler:    _AuthService_ChangeUsername_Handler,
 		},
 		{
 			MethodName: "RegenerateRecoveryCodes",

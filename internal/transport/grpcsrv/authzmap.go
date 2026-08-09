@@ -104,6 +104,10 @@ func DefaultPolicy() *authz.Map {
 	// capability is what stops an API token minted for a phone from reaching them
 	// at all (CapSelfAccount is deliberately absent from every token scope).
 	m.Require(auth+"ChangePassword", authz.CapSelfAccount)
+	// Renaming yourself is the same capability as changing your own password:
+	// it acts on your account and nobody else's, and the server refuses it
+	// without the current password regardless of role.
+	m.Require(auth+"ChangeUsername", authz.CapSelfAccount)
 	m.Require(auth+"RegenerateRecoveryCodes", authz.CapSelfAccount)
 	m.Require(reader+"SetPrefs", authz.CapSelfAccount)
 

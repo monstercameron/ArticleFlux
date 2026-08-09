@@ -371,6 +371,10 @@ func (d delegatedClicks) wire() {
 					a.doSignOut()
 				case actSignOutBack:
 					a.leaveToLogin()
+				case actPwChange:
+					a.changePassword()
+				case actNameChange:
+					a.changeUsername()
 				case actDataImport:
 					a.importOPML()
 				case actDataExport:
