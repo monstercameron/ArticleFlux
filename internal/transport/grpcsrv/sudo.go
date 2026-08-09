@@ -508,3 +508,97 @@ func (s *AuthServer) ChangeUsername(ctx context.Context, req *pb.ChangeUsernameR
 	})
 	return &pb.ChangeUsernameResponse{Username: name}, nil
 }
+
+// passphraseMatches verifies a recovery passphrase against the stored hash.
+//
+// Argon2id, deliberately — see the migration and pwpolicy.CheckPassphrase. The
+// caller is responsible for the rate limiting, and RedeemRecoveryCode already
+// has it: the same ledger, the same curve and the same uniform refusal a wrong
+// code gets, so a passphrase attempt is indistinguishable from a code attempt
+// from outside.
+//
+// An account with no passphrase answers false rather than an error. "No
+// passphrase configured" and "wrong passphrase" must look identical from the
+// wire, or the refusal becomes a probe for which accounts have one.
+func (s *AuthServer) passphraseMatches(ctx context.Context, userID, candidate string) (bool, error) {
+	if candidate == "" {
+		return false, nil
+	}
+	hash, err := s.repo.RecoveryPassphraseHash(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	ok, _, verr := secret.VerifyPassword(candidate, hash, secret.Active())
+	if verr != nil {
+		return false, verr
+	}
+	return ok, nil
+}
+
+// SetRecoveryPassphrase stores, replaces or clears the caller's passphrase.
+//
+// Sudo AND the current password, like the other two credential changes: setting
+// one is cutting a new key to the account, and the post-login window would
+// otherwise let an unattended session cut itself one that outlives the session.
+//
+// An empty passphrase clears it, which is how the reader turns the feature off.
+// The alternative — a second RPC with the same guards and the same shape — is
+// two ways to be in the wrong state.
+func (s *AuthServer) SetRecoveryPassphrase(ctx context.Context, req *pb.SetRecoveryPassphraseRequest) (
+	*pb.SetRecoveryPassphraseResponse, error) {
+
+	sc, err := s.requireSudo(ctx, authn.SudoChangePasswd)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.proveCurrentPassword(ctx, sc, req.GetCurrentPassword()); err != nil {
+		return nil, err
+	}
+
+	phrase := req.GetPassphrase()
+	if strings.TrimSpace(phrase) == "" {
+		if cerr := s.repo.ClearRecoveryPassphrase(ctx, sc); cerr != nil {
+			s.log.Error("clearing a recovery passphrase", "err", cerr)
+			return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		}
+		s.trail.Record(ctx, audit.Event{
+			Action: audit.ActionRecoveryPassphrase, Actor: sc.UserID, Tenant: sc.TenantID,
+			Detail: map[string]string{"client": clientKey(ctx), "state": "cleared"},
+		})
+		return &pb.SetRecoveryPassphraseResponse{Configured: false}, nil
+	}
+
+	username, _, ierr := s.repo.Identity(ctx, sc)
+	if ierr != nil {
+		s.log.Error("reading the identity for a passphrase change", "err", ierr)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	// The current password goes in, so "the same as your password" can be
+	// refused — the two credentials exist so that losing one leaves the other,
+	// and a copy of the password survives nothing the password does not.
+	if err := pwpolicy.CheckPassphrase(phrase, username, req.GetCurrentPassword()); err != nil {
+		return nil, errKey(codes.InvalidArgument, "srv.weakPassphrase", err.Error(), nil)
+	}
+
+	hash, herr := secret.HashPassword(phrase, secret.Active())
+	if herr != nil {
+		s.log.Error("hashing a recovery passphrase", "err", herr)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	if serr := s.repo.SetRecoveryPassphrase(ctx, sc, hash); serr != nil {
+		s.log.Error("storing a recovery passphrase", "err", serr)
+		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+	}
+	s.log.InfoContext(ctx, "recovery passphrase set", "user", sc.UserID)
+	// The same weight as regenerating the sheet: this decides who can get back
+	// into the account WITHOUT a password, which is the highest-value line in
+	// the file.
+	s.trail.Record(ctx, audit.Event{
+		Action: audit.ActionRecoveryPassphrase, Actor: sc.UserID, Tenant: sc.TenantID,
+		Detail: map[string]string{"client": clientKey(ctx), "state": "set"},
+	})
+	return &pb.SetRecoveryPassphraseResponse{Configured: true}, nil
+}

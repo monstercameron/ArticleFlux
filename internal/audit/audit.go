@@ -68,7 +68,11 @@ const (
 	ActionRecoveryRedeemed    Action = "auth.recovery.redeemed"
 	ActionResetRedeemed       Action = "auth.reset.redeemed"
 	ActionRecoveryRegenerated Action = "auth.recovery.regenerated"
-	ActionResetIssued         Action = "auth.reset.issued"
+	// Setting or clearing a chosen passphrase, beside the generated sheet. Same
+	// weight as regenerating that sheet: it decides who can get in without a
+	// password.
+	ActionRecoveryPassphrase Action = "auth.recovery.passphrase"
+	ActionResetIssued        Action = "auth.reset.issued"
 
 	// --- refusals worth keeping. Individual failed passwords are NOT here: they
 	// live in `login_attempts`, which exists to count them and is purged on a

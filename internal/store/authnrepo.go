@@ -340,3 +340,87 @@ func (r *ReaderRepo) PurgeResetTokens(ctx context.Context, cut time.Time) (int64
 	}
 	return res.RowsAffected()
 }
+
+// --- the recovery passphrase (§7.2b) --------------------------------------------
+//
+// A second way back in that the reader chooses. It sits beside the sheet of
+// codes rather than replacing it: a sheet is stronger and is what somebody
+// prints and puts in a drawer, and a passphrase is what somebody actually has
+// with them when they are locked out on a phone in a different country.
+//
+// The hash is Argon2id, produced by the CALLER through internal/secret, exactly
+// like a password and deliberately unlike a recovery code. See the migration for
+// the argument; the short version is that a code is 80 bits of server entropy
+// and a phrase is whatever a person could remember, so only one of the two is
+// safe behind a fast digest.
+
+// SetRecoveryPassphrase stores or replaces the passphrase hash for an account.
+func (r *ReaderRepo) SetRecoveryPassphrase(ctx context.Context, s Scope, hash string) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	// Upsert on the primary key, so replacing cannot leave two.
+	_, err := r.db.Write.ExecContext(ctx, `
+		INSERT INTO recovery_passphrases (user_id, hash, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash,
+		                                   created_at = excluded.created_at,
+		                                   used_at = NULL`,
+		s.UserID, hash, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// ClearRecoveryPassphrase removes it. Not an error when there was none: the
+// caller asked for a state, and the state is already true.
+func (r *ReaderRepo) ClearRecoveryPassphrase(ctx context.Context, s Scope) error {
+	if !s.Valid() {
+		return ErrNoScope
+	}
+	_, err := r.db.Write.ExecContext(ctx,
+		`DELETE FROM recovery_passphrases WHERE user_id = ?`, s.UserID)
+	return err
+}
+
+// HasRecoveryPassphrase reports whether one is set, for a settings screen that
+// has to say so without ever reading the hash.
+func (r *ReaderRepo) HasRecoveryPassphrase(ctx context.Context, s Scope) (bool, error) {
+	if !s.Valid() {
+		return false, ErrNoScope
+	}
+	var n int
+	err := r.db.Read.QueryRowContext(ctx,
+		`SELECT count(*) FROM recovery_passphrases WHERE user_id = ?`, s.UserID).Scan(&n)
+	return n > 0, err
+}
+
+// RecoveryPassphraseHash returns the stored hash for verification, or
+// ErrNotFound when the account has none.
+//
+// Unscoped, like ConsumeRecoveryCode and for the same reason: it is presented by
+// somebody who cannot log in, so requiring a Scope would defeat the only purpose
+// it has. The caller verifies with internal/secret and is responsible for the
+// rate limiting — see grpcsrv, which puts this behind the same ledger and curve
+// as a login.
+func (r *ReaderRepo) RecoveryPassphraseHash(ctx context.Context, userID string) (string, error) {
+	var hash string
+	err := r.db.Read.QueryRowContext(ctx,
+		`SELECT hash FROM recovery_passphrases WHERE user_id = ?`, userID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return hash, err
+}
+
+// MarkRecoveryPassphraseUsed records a redemption without consuming it.
+//
+// Deliberately not single-use. A code is one of ten on a sheet and spending one
+// costs nothing; a passphrase is the single thing somebody memorised, and one
+// that stopped working after its first use would fail at the second moment they
+// needed it — which, for a credential whose whole job is the emergency, is the
+// wrong moment to discover.
+func (r *ReaderRepo) MarkRecoveryPassphraseUsed(ctx context.Context, userID string) error {
+	_, err := r.db.Write.ExecContext(ctx,
+		`UPDATE recovery_passphrases SET used_at = ? WHERE user_id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), userID)
+	return err
+}

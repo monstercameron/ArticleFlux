@@ -159,6 +159,34 @@ func TestTheRulesMatchWhatTheServerEnforces(t *testing.T) {
 		t.Errorf("the Account tab promises %d characters and the server enforces %d",
 			pwMinLength, pwpolicy.MinLength)
 	}
+	if passMinLength != pwpolicy.PassphraseMinLength {
+		t.Errorf("the Account tab promises %d characters for a recovery passphrase "+
+			"and the server enforces %d", passMinLength, pwpolicy.PassphraseMinLength)
+	}
+}
+
+// TestTheRecoveryPassphraseIsOfferedAndShareTheConfirmation.
+//
+// A passphrase is a way into the account WITHOUT the password, so setting one is
+// cutting a key — authorised by the same field as the other two changes rather
+// than by a live session alone.
+func TestTheRecoveryPassphraseIsOfferedAndSharesTheConfirmation(t *testing.T) {
+	out := passwordHTML(t, passwordProps{username: "cam@example.com"})
+	if !strings.Contains(out, `data-role="pass-new"`) {
+		t.Error("the Account tab does not offer a recovery passphrase")
+	}
+	if strings.Count(out, `data-role="pw-confirm"`) != 1 {
+		t.Error("the passphrase grew a second current-password field; one screen " +
+			"asking twice for the same secret teaches people to type it without reading")
+	}
+	// Removing is not offered for something the screen cannot say exists.
+	if strings.Contains(out, `data-action="`+actPassClear+`"`) {
+		t.Error("a remove control is offered before anything is known to be set")
+	}
+	if set := passwordHTML(t, passwordProps{passConfigured: true}); !strings.Contains(
+		set, `data-action="`+actPassClear+`"`) {
+		t.Error("no way to remove a passphrase this session just set")
+	}
 }
 
 // TestTheSudoKeyMatchesTheServers.

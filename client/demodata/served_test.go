@@ -56,6 +56,7 @@ var notServed = map[string]string{
 	"Setup":                   "no accounts exist; the demo has no login screen",
 	"ChangePassword":          "no accounts exist",
 	"ChangeUsername":          "no accounts exist",
+	"SetRecoveryPassphrase":   "no accounts exist",
 	"Reauthenticate":          "no accounts exist",
 	"RefreshSession":          "there is no session to refresh; nothing issues tokens here",
 	"RegenerateRecoveryCodes": "no accounts exist",

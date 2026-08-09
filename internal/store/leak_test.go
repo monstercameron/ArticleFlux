@@ -186,6 +186,13 @@ var unscopedByDesign = map[string]string{
 	"ConsumeRecoveryCode": "a recovery code is presented by somebody who CANNOT log in; " +
 		"requiring a Scope would defeat its only purpose. The code is the credential, " +
 		"and it is bound to the user id passed alongside it.",
+	"RecoveryPassphraseHash": "read by somebody who CANNOT log in, exactly like " +
+		"ConsumeRecoveryCode — a Scope would defeat the only purpose it has. It " +
+		"returns a hash bound to the user id passed alongside it, and the caller " +
+		"(grpcsrv) verifies it behind the same ledger and lockout curve as a login.",
+	"MarkRecoveryPassphraseUsed": "records a redemption that has already been " +
+		"earned on the unscoped path above; the user id is the one that just " +
+		"proved itself.",
 	"CreateResetToken":  "minted for an account by an admin or the CLI; the authorisation is checked at the service, and the token names the user it resets",
 	"ConsumeResetToken": "the presented token is the authorisation, exactly like RotateRefresh",
 	"PurgeResetTokens":  "housekeeping over spent and expired tokens by age alone",

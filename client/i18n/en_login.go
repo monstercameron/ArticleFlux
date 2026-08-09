@@ -50,21 +50,28 @@ func init() {
 		// code stops working, and every other signed-in device is signed out.
 		// Someone recovering an account usually suspects a thief, so the second
 		// is reassurance rather than a warning — but only if it is said first.
-		"recoverLede": "Enter one code from your recovery sheet and choose a new password. " +
-			"The code is used up, and every device signed in to this account is signed out.",
+		// Both credentials, and the difference between them stated where it
+		// matters: a code is spent and a passphrase is not, which is the fact
+		// somebody weighs when deciding which one to use.
+		"recoverLede": "Enter a code from your recovery sheet — or your recovery passphrase — and choose a new password. " +
+			"A code is used up; a passphrase is not. Either way, every device signed in to this account is signed out.",
 
 		// One field for both credentials. The reader pastes whatever they have
 		// and the client routes on shape (authn.LooksLikeRecoveryCode) — asking
 		// somebody already locked out to classify their own credential is asking
 		// them to get it wrong for no reason.
-		"recoverCode":     "Recovery code or reset link",
-		"recoverCodeHint": "Dashes and capitals don't matter.",
+		"recoverCode": "Recovery code, passphrase, or reset link",
+		// The normalisation applies to a CODE only. A passphrase is matched
+		// exactly, because in a sentence those characters are content rather than
+		// decoration — and somebody typing one needs to know that before they get
+		// it wrong three times against a lockout.
+		"recoverCodeHint": "Dashes and capitals don't matter in a code. A passphrase is taken exactly as you type it.",
 		"recoverPassword": "New password",
 
 		"recoverSubmit":  "Reset password and sign in",
 		"recoverWorking": "Resetting…",
 
-		"errRecoverEmpty": "Enter your recovery code and a new password.",
+		"errRecoverEmpty": "Enter your recovery code or passphrase, and a new password.",
 		// A username is needed for a code and not for a reset link, so this only
 		// ever fires on the code path. Saying which one is missing beats a
 		// generic "fill in the form" on a screen with three fields.

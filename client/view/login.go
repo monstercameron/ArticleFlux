@@ -267,10 +267,19 @@ func Login(p loginProps) ui.Node {
 			errMsg.Set(tr.T("login", "errRecoverEmpty"))
 			return
 		}
-		// Which credential this is decides which RPC answers it. The shape rule
-		// lives in internal/authn beside the generators, so the client cannot
-		// disagree with the server about what a code looks like.
-		isCode := authn.LooksLikeRecoveryCode(secretIn)
+		// Which credential this is decides which RPC answers it. The shape rules
+		// live in internal/authn beside the generators, so the client cannot
+		// disagree with the server about what either one looks like.
+		//
+		// THREE cases since §7.2b, not two. It used to ask "is this a code?" and
+		// treat everything else as a reset link, which worked while those were
+		// the only possibilities. A recovery passphrase is a third thing that
+		// looks like neither, so the reset path is now identified POSITIVELY and
+		// anything left over goes to RedeemRecoveryCode — which tries the sheet
+		// and then the passphrase. Left as it was, a passphrase would have been
+		// checked against a table of reset tokens it could never match.
+		isReset := authn.LooksLikeResetToken(secretIn)
+		isCode := !isReset
 		if isCode && u == "" {
 			// Only the code path needs a username: a reset token names its own
 			// account. Saying which field is missing beats "fill in the form" on
@@ -302,6 +311,7 @@ func Login(p loginProps) ui.Node {
 			var remaining int32
 			var err error
 			if isCode {
+				// A code or a passphrase; the server tries them in that order.
 				var res *pb.RedeemRecoveryCodeResponse
 				res, err = c.Recover(context.Background(), u, secretIn, pw)
 				if res != nil {

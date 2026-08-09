@@ -386,6 +386,10 @@ func (d delegatedClicks) wire() {
 					}
 				case actCredCancel:
 					a.cancelCredentialChange()
+				case actPassSet:
+					a.setRecoveryPassphrase()
+				case actPassClear:
+					a.clearRecoveryPassphrase()
 				case actDataImport:
 					a.importOPML()
 				case actDataExport:

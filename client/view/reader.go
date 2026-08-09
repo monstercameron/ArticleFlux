@@ -552,6 +552,12 @@ func Reader(p readerProps) ui.Node {
 	pwNameErr := ui.UseState("")
 	// Which credential change is waiting to be confirmed. See passwordProps.
 	pwPending := ui.UseState("")
+	// The recovery passphrase (§7.2b).
+	passDraft := ui.UseState("")
+	passBusy := ui.UseState(false)
+	passConfigured := ui.UseState(false)
+	passDone := ui.UseState("")
+	passErr := ui.UseState("")
 	// renamedTo is the account's name AFTER a rename this session, or "".
 	//
 	// An override rather than a copy of `p.whoami`, and the distinction is the
@@ -1019,6 +1025,7 @@ func Reader(p readerProps) ui.Node {
 	onPwNew := ui.UseEvent(func(v string) { pwNew.Set(v) })
 	onPwRepeat := ui.UseEvent(func(v string) { pwRepeat.Set(v) })
 	onPwConfirm := ui.UseEvent(func(v string) { pwConfirm.Set(v) })
+	onPassInput := ui.UseEvent(func(v string) { passDraft.Set(v) })
 	onPwName := ui.UseEvent(func(v string) { pwNameDraft.Set(v) })
 	onSmartKeyInput := ui.UseEvent(func(v string) { smartKeyDraft.Set(v) })
 	onSmartModelInput := ui.UseEvent(func(v string) { smartModelDraft.Set(v) })
@@ -6509,6 +6516,95 @@ func Reader(p readerProps) ui.Node {
 	// typed values stay exactly where they are: the reader said "not yet", not
 	// "start again".
 	act.Get().cancelCredentialChange = func() { pwPending.Set("") }
+
+	// setRecoveryPassphrase stores or replaces the phrase, authorised by the same
+	// current-password field as the other two changes.
+	//
+	// No confirmation dialog, and that is the difference between this and them:
+	// it ADDS a way back in without taking anything away. Nothing is signed out,
+	// no name changes, and the previous phrase — if there was one — was already
+	// being replaced by the act of typing a new one. A dialog here would be
+	// ceremony, and ceremony is what teaches people to click through the dialogs
+	// that matter.
+	act.Get().setRecoveryPassphrase = func() {
+		c := client.Get()
+		if c == nil || passBusy.Get() {
+			return
+		}
+		phrase := platform.FieldValue("pass-new")
+		current := platform.FieldValue("pw-confirm")
+		passDone.Set("")
+		switch {
+		case len([]rune(phrase)) < passMinLength:
+			passErr.Set(tr.T("settings", "passErrShort",
+				i18n.Args{"n": strconv.Itoa(passMinLength)}))
+			return
+		case current == "":
+			passErr.Set(tr.T("settings", "pwErrNoConfirm"))
+			return
+		}
+		passErr.Set("")
+		passBusy.Set(true)
+		go func() {
+			ctx := context.Background()
+			on, err := c.SetRecoveryPassphrase(ctx, current, phrase)
+			if err != nil && serverKey(err) == keySudoRequired {
+				if _, rerr := c.Reauthenticate(ctx, current); rerr == nil {
+					on, err = c.SetRecoveryPassphrase(ctx, current, phrase)
+				} else {
+					err = rerr
+				}
+			}
+			ui.PostAsync(func() {
+				passBusy.Set(false)
+				if err != nil {
+					passErr.Set(serverText(tr, err))
+					return
+				}
+				platform.ClearField("pass-new")
+				passDraft.Set("")
+				passConfigured.Set(on)
+				passDone.Set(tr.T("settings", "passDone"))
+			})
+		}()
+	}
+
+	// clearRecoveryPassphrase removes it. The server treats an empty phrase as
+	// the clear, so this is the same call with nothing in it.
+	act.Get().clearRecoveryPassphrase = func() {
+		c := client.Get()
+		if c == nil || passBusy.Get() {
+			return
+		}
+		current := platform.FieldValue("pw-confirm")
+		if current == "" {
+			passErr.Set(tr.T("settings", "pwErrNoConfirm"))
+			return
+		}
+		passErr.Set("")
+		passDone.Set("")
+		passBusy.Set(true)
+		go func() {
+			ctx := context.Background()
+			on, err := c.SetRecoveryPassphrase(ctx, current, "")
+			if err != nil && serverKey(err) == keySudoRequired {
+				if _, rerr := c.Reauthenticate(ctx, current); rerr == nil {
+					on, err = c.SetRecoveryPassphrase(ctx, current, "")
+				} else {
+					err = rerr
+				}
+			}
+			ui.PostAsync(func() {
+				passBusy.Set(false)
+				if err != nil {
+					passErr.Set(serverText(tr, err))
+					return
+				}
+				passConfigured.Set(on)
+				passDone.Set(tr.T("settings", "passCleared"))
+			})
+		}()
+	}
 	act.Get().credPending = func() string { return pwPending.Get() }
 
 	act.Get().changeUsername = func() {
@@ -8658,22 +8754,28 @@ func Reader(p readerProps) ui.Node {
 						stranded: signOutStranded.Get(),
 					},
 					password: passwordProps{
-						draft:         pwNew.Get(),
-						repeat:        pwRepeat.Get(),
-						confirm:       pwConfirm.Get(),
-						busy:          pwBusy.Get(),
-						done:          pwDone.Get(),
-						err:           pwErr.Get(),
-						username:      whoami(),
-						nameDraft:     pwNameDraft.Get(),
-						nameBusy:      pwNameBusy.Get(),
-						nameDone:      pwNameDone.Get(),
-						nameErr:       pwNameErr.Get(),
-						pending:       pwPending.Get(),
-						onNewEdit:     onPwNew,
-						onRepeatEdit:  onPwRepeat,
-						onConfirmEdit: onPwConfirm,
-						onNameEdit:    onPwName,
+						draft:          pwNew.Get(),
+						repeat:         pwRepeat.Get(),
+						confirm:        pwConfirm.Get(),
+						busy:           pwBusy.Get(),
+						done:           pwDone.Get(),
+						err:            pwErr.Get(),
+						username:       whoami(),
+						nameDraft:      pwNameDraft.Get(),
+						nameBusy:       pwNameBusy.Get(),
+						nameDone:       pwNameDone.Get(),
+						nameErr:        pwNameErr.Get(),
+						pending:        pwPending.Get(),
+						passDraft:      passDraft.Get(),
+						passBusy:       passBusy.Get(),
+						passConfigured: passConfigured.Get(),
+						passDone:       passDone.Get(),
+						passErr:        passErr.Get(),
+						onPassEdit:     onPassInput,
+						onNewEdit:      onPwNew,
+						onRepeatEdit:   onPwRepeat,
+						onConfirmEdit:  onPwConfirm,
+						onNameEdit:     onPwName,
 					},
 					smart: smartProps{
 						cfg:         smartCfg.Get(),

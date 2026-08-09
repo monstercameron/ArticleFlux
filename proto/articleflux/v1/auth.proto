@@ -121,6 +121,37 @@ service AuthService {
   // surprise out of proportion to what they did.
   rpc ChangeUsername(ChangeUsernameRequest) returns (ChangeUsernameResponse);
 
+  // SetRecoveryPassphrase stores, replaces or clears a passphrase the reader
+  // chooses, as a second way back in beside the printed sheet of codes.
+  //
+  // # Why both exist
+  //
+  // A sheet is stronger and is what somebody prints and puts in a drawer. A
+  // passphrase is what somebody actually has with them when they are locked out
+  // on a phone in another country — the sheet's weakness is not its entropy, it
+  // is that it is at home. Offering only the strong one means the common case
+  // has no answer at all.
+  //
+  // # What makes it safe to offer
+  //
+  // Three things, and it needs all three, because a memorable secret that opens
+  // an account is otherwise just a weaker password with fewer defences:
+  //
+  //   * Argon2id, never the fast digest recovery codes use. A code is 80 bits of
+  //     server entropy and cannot be searched; a phrase a person chose can.
+  //   * The same lockout curve and durable ledger as Login on redemption.
+  //   * A floor of sixteen characters, the breached-password list, and a refusal
+  //     to be the account's own password (pwpolicy.CheckPassphrase).
+  //
+  // Requires sudo AND the current password, like every other credential change:
+  // setting one is handing out a key, and the post-login window would otherwise
+  // let an unattended session cut itself one.
+  //
+  // An empty passphrase CLEARS it, which is how the reader turns the feature off
+  // without a second RPC that would have the same guards and the same shape.
+  rpc SetRecoveryPassphrase(SetRecoveryPassphraseRequest)
+      returns (SetRecoveryPassphraseResponse);
+
   // RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
   //
   // Requires sudo, because it is the operation that decides who can get back
@@ -176,10 +207,17 @@ message RedeemRecoveryCodeRequest {
   // who cannot present a session, so there is no other way to say whose account
   // this is.
   string username = 1;
-  // code is one entry from the printed sheet. Case, dashes and spaces are all
-  // normalised away server-side (authn.NormalizeRecoveryCode) — they carry no
-  // entropy, and the person typing this is already locked out and already
-  // annoyed.
+  // code is one entry from the printed sheet, OR the account's recovery
+  // passphrase. Case, dashes and spaces are normalised away server-side for the
+  // CODE (authn.NormalizeRecoveryCode) — they carry no entropy, and the person
+  // typing it is already locked out and already annoyed — while a passphrase is
+  // matched exactly, because in a phrase those characters are content.
+  //
+  // One field rather than two, and the server tries the code first. A reader
+  // holding one of them does not know or care which kind of credential the
+  // application considers it, and a form that asks them to classify their own
+  // secret before it will accept it is a form that fails people at the moment
+  // they are least able to answer questions.
   string code = 2;
   // new_password replaces the forgotten one, checked against the same policy as
   // every other password on the instance.
@@ -305,6 +343,19 @@ message ChangeUsernameRequest {
   // is half the credential, and the sudo window is open for fifteen minutes
   // after a login without anybody having typed anything.
   string current_password = 2;
+}
+
+message SetRecoveryPassphraseRequest {
+  // passphrase is what the reader chose. Empty clears whatever is stored.
+  string passphrase = 1;
+  // current_password, for ChangePasswordRequest's reason.
+  string current_password = 2;
+}
+
+message SetRecoveryPassphraseResponse {
+  // configured reports the state AFTER the call, so a screen shows what is true
+  // rather than what was asked for.
+  bool configured = 1;
 }
 
 message ChangeUsernameResponse {

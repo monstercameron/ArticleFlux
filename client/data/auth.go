@@ -455,6 +455,28 @@ func (c *Client) ChangePassword(parent context.Context, current, newPassword str
 	return res.GetSessionsEnded(), nil
 }
 
+// SetRecoveryPassphrase stores, replaces or clears the passphrase that can get
+// this account back without its password.
+//
+// An empty phrase clears it — the server's own contract, so that turning the
+// feature off is the same call rather than a second one with the same guards.
+// Returns the state AFTER the call, so a screen shows what is true instead of
+// what was asked for.
+//
+// `current` for ChangePassword's reason: this cuts a new key to the account.
+func (c *Client) SetRecoveryPassphrase(parent context.Context, current, passphrase string) (bool, error) {
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+
+	res, err := c.auth.SetRecoveryPassphrase(ctx, &pb.SetRecoveryPassphraseRequest{
+		Passphrase: passphrase, CurrentPassword: current,
+	})
+	if err != nil {
+		return false, err
+	}
+	return res.GetConfigured(), nil
+}
+
 // ChangeUsername renames this account and returns the name as STORED.
 //
 // The stored value rather than the typed one, because the server normalises —

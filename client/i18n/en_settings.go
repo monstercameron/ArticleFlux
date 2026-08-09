@@ -242,7 +242,7 @@ func init() {
 		// when a window has closed. The hint says WHY, once, so it reads as a
 		// deliberate rule rather than an inconvenience.
 		"pwConfirmLabel": "Current password",
-		"pwConfirmHint":  "Confirms both changes below",
+		"pwConfirmHint":  "Confirms every change on this screen",
 
 		// The outcome, with the number that makes it evidence. The caller picks
 		// between these two.
@@ -293,6 +293,23 @@ func init() {
 		"nameConfirmYes":   "Change username",
 
 		"credCancel": "Cancel",
+
+		// --- the recovery passphrase (§7.2b)
+		//
+		// The hint leads with WHEN you would want it, because the feature only
+		// makes sense against the alternative: a printed sheet is stronger and is
+		// at home, which is the wrong place to be when you are locked out.
+		"passGroup":       "Recovery passphrase",
+		"passHint":        "A phrase you choose that gets you back in without your password — for when your recovery sheet is at home and you are not.",
+		"passLabel":       "Passphrase",
+		"passRowHint":     "At least 16 characters, and not your password. Setting one replaces any phrase already saved.",
+		"passPlaceholder": "A sentence you will remember",
+		"passSave":        "Save passphrase",
+		"passSaving":      "Saving passphrase…",
+		"passClear":       "Remove passphrase",
+		"passDone":        "Recovery passphrase saved. Keep it somewhere only you can reach.",
+		"passCleared":     "Recovery passphrase removed. Your recovery codes still work.",
+		"passErrShort":    "A recovery passphrase needs at least {n} characters.",
 
 		"notBuiltGroup": "Not on this screen yet",
 		"notBuiltHint":  "What the server can do that this tab cannot ask it to.",

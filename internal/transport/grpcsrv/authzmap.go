@@ -108,6 +108,7 @@ func DefaultPolicy() *authz.Map {
 	// it acts on your account and nobody else's, and the server refuses it
 	// without the current password regardless of role.
 	m.Require(auth+"ChangeUsername", authz.CapSelfAccount)
+	m.Require(auth+"SetRecoveryPassphrase", authz.CapSelfAccount)
 	m.Require(auth+"RegenerateRecoveryCodes", authz.CapSelfAccount)
 	m.Require(reader+"SetPrefs", authz.CapSelfAccount)
 

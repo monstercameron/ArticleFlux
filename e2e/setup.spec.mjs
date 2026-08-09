@@ -139,6 +139,38 @@ test('the account that setup created can sign in', async ({ page }) => {
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
 });
 
+// The way back in for somebody who cannot sign in, and the ONE thing about it
+// nothing tested: that the login screen offers it at all.
+//
+// The recovery card itself has eight tests in client/view — Enter behaviour, a
+// spent code, the confirmation, a reset link arriving with its token. All of
+// them render the card directly. So the card was proven and the door to it was
+// not, which is the same shape as the sign-out control that was written, worked,
+// and had no affordance for its whole life.
+//
+// It lives in this file because only a CLAIMED server shows a login screen. The
+// `-dev` instance every other spec drives has no door at all — which is also why
+// nobody noticed the link was untested, and why Cam could not find it: on a dev
+// server there is nothing to find it on.
+test('the login screen offers a way in for somebody who cannot sign in', async ({ page }) => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="login"]', { timeout: 60_000 });
+
+  const link = page.locator('[data-role="login-recover"]');
+  await expect(link).toBeVisible();
+
+  await link.click();
+  // The recovery screen, by what it asks for rather than by a class: a code and
+  // a new password is what makes it the recovery screen.
+  await expect(page.locator('[data-role="recover-code"]')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-role="recover-password"]')).toBeVisible();
+
+  // And back, because a one-way door on the screen somebody reached by mistake
+  // is worse than no door: they arrived here from a password they mistyped.
+  await page.locator('[data-role="recover-back"]').click();
+  await expect(page.locator('#login-password')).toBeVisible({ timeout: 30_000 });
+});
+
 // signIn takes a fresh context from the address to the reader.
 //
 // Every test here gets its own browser context, so nothing carries a credential

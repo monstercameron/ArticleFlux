@@ -239,3 +239,53 @@ func smallestRepeat(s string) string {
 	}
 	return s
 }
+
+// --- the recovery passphrase (§7.2b) --------------------------------------------
+
+// PassphraseMinLength is the floor for a recovery passphrase.
+//
+// Higher than MinLength, and the reason is what the two things ARE. A password
+// is one factor guarded by a lockout curve, a session, and a person who notices
+// when their reader signs itself out. A recovery passphrase is the thing that
+// gets somebody into the account WITHOUT any of that — it is presented by a
+// stranger by definition, since the whole premise is that the password is gone.
+//
+// Sixteen rather than twelve is not a large jump and is not meant to be: it is
+// the difference between "a password" and "a short sentence", which is also the
+// shape the copy asks for. The lockout, the Argon2id hash and this floor are the
+// three controls; none of them is sufficient and the floor is the cheapest.
+const PassphraseMinLength = 16
+
+// ErrPassphraseTooShort is its own error so a form can name the right rule.
+var ErrPassphraseTooShort = fmt.Errorf(
+	"a recovery passphrase needs at least %d characters", PassphraseMinLength)
+
+// ErrSameAsPassword refuses a passphrase equal to the account password.
+//
+// Not a stylistic objection. The two credentials exist so that losing one
+// leaves the other, and a passphrase equal to the password is a second copy of
+// the first — it survives nothing the password does not survive, while doubling
+// the number of places the same secret is stored.
+var ErrSameAsPassword = errors.New(
+	"a recovery passphrase has to be different from your password")
+
+// CheckPassphrase validates a recovery passphrase.
+//
+// It applies everything Check applies — the known-password list with its
+// folding, the username rule, the repeated character and keyboard-run refusals —
+// and then the two rules that are its own. Sharing the body rather than
+// restating it matters here: a passphrase that "password123" would fail as a
+// password must not sail through as a recovery credential, which is the exact
+// mistake a second, looser validator invites.
+//
+// `password` may be empty when the caller does not have it to compare against;
+// the equality rule is then skipped rather than guessed at.
+func CheckPassphrase(passphrase, username, password string) error {
+	if n := len([]rune(passphrase)); n < PassphraseMinLength {
+		return ErrPassphraseTooShort
+	}
+	if password != "" && passphrase == password {
+		return ErrSameAsPassword
+	}
+	return Check(passphrase, username)
+}

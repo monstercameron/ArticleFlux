@@ -788,6 +788,22 @@ type passwordProps struct {
 	nameBusy  bool
 	nameDone  string
 	nameErr   string
+	// The recovery passphrase (§7.2b): a second way back in that the reader
+	// chooses, beside the generated sheet.
+	//
+	// `passConfigured` is what this SESSION knows, not what the server holds:
+	// nothing reports whether one is already set — WhoAmI does not carry it and
+	// there is no status RPC — so the screen claims a state only after it has
+	// watched one being set or cleared. That is a real gap rather than a design:
+	// the honest version of "is one configured?" needs the server to say so, and
+	// until it does, saying nothing beats guessing.
+	passDraft      string
+	passBusy       bool
+	passConfigured bool
+	passDone       string
+	passErr        string
+	onPassEdit     ui.Handler
+
 	// pending is which change is waiting to be confirmed: "" for none, or one
 	// of pendingPassword / pendingUsername.
 	//
@@ -825,6 +841,8 @@ type passwordProps struct {
 const (
 	actPwChange     = "pw-change"
 	actNameChange   = "name-change"
+	actPassSet      = "pass-set"
+	actPassClear    = "pass-clear"
 	actCredConfirm  = "cred-confirm"
 	actCredCancel   = "cred-cancel"
 	pendingPassword = "password"
@@ -838,6 +856,10 @@ const (
 // pinned by a test in this package, so the copy cannot drift silently.
 const pwMinLength = 12
 
+// passMinLength mirrors pwpolicy.PassphraseMinLength, for pwMinLength's reason
+// and pinned by the same test.
+const passMinLength = 16
+
 func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
 	// Counted in runes, exactly as the server counts it: bytes would tell
 	// somebody writing in Japanese that four characters is twelve.
@@ -849,9 +871,10 @@ func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
 	return []ui.Node{
 		fsGroup(glyphShared, tr.T("settings", "pwGroup"), tr.T("settings", "pwHint")),
 
-		// The current password FIRST, because it authorises both changes below
-		// it and because that is the order the reader answers them in: prove who
-		// you are, then say what to change.
+		// The current password FIRST, because it authorises every change below it
+		// — the password, the username and the recovery passphrase — and because
+		// that is the order the reader answers them in: prove who you are, then
+		// say what to change.
 		setRow(tr.T("settings", "pwConfirmLabel"), tr.T("settings", "pwConfirmHint"),
 			html.Input(html.Props{
 				Class: "field fs-field", Type: "password",
@@ -934,7 +957,54 @@ func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
 		ui.If(p.nameErr != "", func() ui.Node {
 			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.nameErr))
 		}),
+
+		// --- the recovery passphrase
+		//
+		// Last in the group, under the two changes it is insurance against. It
+		// shares the same confirmation field for the same reason they do: setting
+		// one cuts a new key to the account.
+		fsGroup(glyphShared, tr.T("settings", "passGroup"), tr.T("settings", "passHint")),
+		setRow(tr.T("settings", "passLabel"), tr.T("settings", "passRowHint"),
+			html.Div(html.Props{Class: "fs-rename"},
+				html.Input(html.Props{
+					Class: "field fs-field", Type: "password",
+					Placeholder: tr.T("settings", "passPlaceholder"),
+					OnInput:     p.onPassEdit,
+					Data:        map[string]string{"role": "pass-new"},
+					Aria:        map[string]string{"label": tr.T("settings", "passLabel")},
+					Raw:         map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
+				}),
+				actionButton(actPassSet, "chip", passButtonLabel(tr, p)),
+			)),
+		// Removing is its own control and styled as destructive, like the Smart+
+		// key's, and it only appears once this session has seen one set — the
+		// screen does not offer to remove something it cannot say exists.
+		ui.If(p.passConfigured && !p.passBusy, func() ui.Node {
+			return html.Div(html.Props{Class: "set-actions"},
+				html.Button(html.Props{
+					Class: "chip fs-danger",
+					Raw:   map[string]any{"data-action": actPassClear},
+				}, html.Text(tr.T("settings", "passClear"))))
+		}),
+		ui.If(p.passDone != "", func() ui.Node {
+			return html.Div(html.Props{
+				Class: "set-note set-note-live", Role: "status",
+				Aria: map[string]string{"live": "polite"},
+				Data: map[string]string{"good": "true"},
+			}, html.Text(p.passDone))
+		}),
+		ui.If(p.passErr != "", func() ui.Node {
+			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.passErr))
+		}),
 	}
+}
+
+// passButtonLabel, for pwButtonLabel's reason.
+func passButtonLabel(tr i18n.Runtime, p passwordProps) string {
+	if p.passBusy {
+		return tr.T("settings", "passSaving")
+	}
+	return tr.T("settings", "passSave")
 }
 
 // credConfirmDialog states what is about to happen, before it happens.

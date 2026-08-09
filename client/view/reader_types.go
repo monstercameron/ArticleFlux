@@ -380,6 +380,12 @@ type actions struct {
 	// actions would be two ways to end up in the wrong one.
 	credPending func() string
 
+	// The recovery passphrase (§7.2b). Two verbs rather than one taking a value,
+	// for the reason the sign-out trio are three: setting a way into the account
+	// and removing one are different decisions.
+	setRecoveryPassphrase   func()
+	clearRecoveryPassphrase func()
+
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
 

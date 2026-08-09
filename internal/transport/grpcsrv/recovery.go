@@ -179,10 +179,37 @@ func (s *AuthServer) RedeemRecoveryCode(ctx context.Context, req *pb.RedeemRecov
 		s.log.Error("consuming a recovery code", "err", err)
 		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
 	}
+	// Then the passphrase, if the sheet did not answer (§7.2b).
+	//
+	// The order is code-then-phrase because a code is unambiguous and cheap to
+	// check, while this branch runs Argon2id — putting it first would spend the
+	// expensive hash on every mistyped code.
+	//
+	// The RAW value, not the normalised one: `code` has had its dashes, spaces
+	// and case stripped by NormalizeRecoveryCode, which is right for something
+	// printed in Crockford base32 and destroys a phrase. In a sentence those
+	// characters are content.
+	usedPassphrase := false
+	if !ok {
+		matched, perr := s.passphraseMatches(ctx, u.UserID, req.GetCode())
+		if perr != nil {
+			s.log.Error("checking a recovery passphrase", "err", perr)
+			return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		}
+		ok, usedPassphrase = matched, matched
+	}
 	if !ok {
 		fail()
-		s.log.Warn("recovery code rejected", "username", username, "client", addr)
+		s.log.Warn("recovery rejected", "username", username, "client", addr)
 		return nil, errBadRecovery
+	}
+	if usedPassphrase {
+		// Recorded, not consumed — see MarkRecoveryPassphraseUsed. Non-fatal: the
+		// recovery has already been earned, and losing the timestamp is not worth
+		// refusing it over.
+		if uerr := s.repo.MarkRecoveryPassphraseUsed(ctx, u.UserID); uerr != nil {
+			s.log.Warn("recording a passphrase redemption", "err", uerr)
+		}
 	}
 
 	out, err := s.completeRecovery(ctx, u, req.GetNewPassword())

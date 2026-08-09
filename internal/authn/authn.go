@@ -260,6 +260,45 @@ func GenerateToken() (string, error) {
 	return recoveryEncoding.EncodeToString(b), nil
 }
 
+// ResetTokenChars is how long GenerateToken's output is once encoded.
+//
+// 32 bytes in unpadded Crockford base32 is 52 characters, and it is derived here
+// rather than written as a literal so that changing the byte count cannot leave
+// a shape rule quietly describing the old one.
+var ResetTokenChars = len(recoveryEncoding.EncodeToString(make([]byte, 32)))
+
+// LooksLikeResetToken reports whether the input is shaped like a reset token.
+//
+// # Why this is needed now
+//
+// Until §7.2b the recovery screen had two cases and told them apart with one
+// question: a recovery code, or — by elimination — a reset link. Elimination
+// worked because there was nothing else it could be. A RECOVERY PASSPHRASE is a
+// third thing, and it looks like neither, so "not a code" stopped meaning "a
+// reset token" and started meaning "one of two things".
+//
+// Without this the passphrase went down the reset path and was checked against a
+// table of tokens it could never match — a refusal with no explanation, on the
+// screen where the reader has the fewest ways left to get in.
+//
+// Shape only, like LooksLikeRecoveryCode: whatever comes out is still checked
+// against a stored hash, so this decides which QUESTION to ask and never the
+// answer.
+func LooksLikeResetToken(input string) bool {
+	s := ExtractResetToken(input)
+	if len(s) != ResetTokenChars {
+		return false
+	}
+	// The encoding's own alphabet, uppercased first — Crockford is
+	// case-insensitive by design and a pasted link may be either.
+	for _, r := range strings.ToUpper(s) {
+		if !strings.ContainsRune("0123456789ABCDEFGHJKMNPQRSTVWXYZ", r) {
+			return false
+		}
+	}
+	return true
+}
+
 // ---------------------------------------------------------------------------
 // Sudo mode (§7.3)
 // ---------------------------------------------------------------------------

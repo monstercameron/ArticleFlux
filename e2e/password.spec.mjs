@@ -203,6 +203,27 @@ test.describe('changing the password', () => {
     }
   });
 
+  // The recovery passphrase (§7.2b): a second way back in that the reader
+  // chooses. What is provable here is the surface — the field exists, the floor
+  // is enforced before a round trip, and the confirmation is shared rather than
+  // asked for twice. The set-then-redeem LOOP is a Go test (sudo_test.go),
+  // because completing it here would replace the account's password and strand
+  // every later spec.
+  test('a recovery passphrase can be set, and is refused when it is too short', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await expect(page.locator('[data-role="pass-new"]')).toBeVisible({ timeout: 30_000 });
+    // One confirmation for all three writes on this panel.
+    await expect(page.locator('[data-role="pw-confirm"]')).toHaveCount(1);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="pass-new"]').fill('too short');
+    await page.locator('[data-action="pass-set"]').click();
+    await expect(page.locator('.fs-error')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.fs-error')).toContainText(/16 characters/i);
+  });
+
   test('the rules answer as you type, and the breached-list one waits for the server', async ({ page }) => {
     await boot(page);
     await openAccount(page);

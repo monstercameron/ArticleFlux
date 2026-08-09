@@ -511,3 +511,118 @@ func TestChangeUsernameRenamesAndKeepsTheSessionAndPassword(t *testing.T) {
 		t.Errorf("signing in under the new name failed: %v", err)
 	}
 }
+
+// --- the recovery passphrase (§7.2b) --------------------------------------------
+//
+// The loop that matters is set-then-redeem: a passphrase that saves and cannot
+// get anybody back in is the feature failing at the only moment it exists for.
+
+func TestARecoveryPassphraseGetsTheAccountBack(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	const phrase = "seventeen quiet harbours"
+	if _, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+		Passphrase: phrase, CurrentPassword: testPassword,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	// Redeemed through the ordinary recovery path, in the `code` field, which is
+	// the point: the reader does not know or care which kind of credential the
+	// application considers the thing they wrote down.
+	const fresh = "a-brand-new-passphrase-entirely"
+	if _, err := s.RedeemRecoveryCode(context.Background(), &pb.RedeemRecoveryCodeRequest{
+		Username: "cam", Code: phrase, NewPassword: fresh,
+	}); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	// And the account answers to the new password.
+	if _, err := s.Login(context.Background(), &pb.LoginRequest{
+		Username: "cam", Password: fresh,
+	}); err != nil {
+		t.Fatalf("signing in after recovery: %v", err)
+	}
+}
+
+// TestAPassphraseIsNotConsumedByUsingIt.
+//
+// Unlike a code. Somebody memorised this one, and a credential that stops
+// working after its first use fails at the second emergency — which is exactly
+// when they would reach for it again.
+func TestAPassphraseIsNotConsumedByUsingIt(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	const phrase = "seventeen quiet harbours"
+	if _, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+		Passphrase: phrase, CurrentPassword: testPassword,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	for i, pw := range []string{"first-new-passphrase-here", "second-new-passphrase-here"} {
+		if _, err := s.RedeemRecoveryCode(context.Background(), &pb.RedeemRecoveryCodeRequest{
+			Username: "cam", Code: phrase, NewPassword: pw,
+		}); err != nil {
+			t.Fatalf("redemption %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestAWeakPassphraseIsRefused(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	for _, c := range []struct{ phrase, why string }{
+		{"short phrase", "under the sixteen-character floor"},
+		{"passwordpassword1", "on the breached list once folded"},
+		{testPassword, "the account's own password, which survives nothing the password does not"},
+	} {
+		_, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+			Passphrase: c.phrase, CurrentPassword: testPassword,
+		})
+		if got := codeOf(err); got != codes.InvalidArgument {
+			t.Errorf("%q refused with %v, want InvalidArgument (%s)", c.phrase, got, c.why)
+		}
+	}
+}
+
+func TestSettingAPassphraseRequiresTheCurrentPassword(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	_, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+		Passphrase: "seventeen quiet harbours",
+	})
+	if got := codeOf(err); got != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated: setting one cuts a new key to "+
+			"the account and must not ride on a session alone", got)
+	}
+}
+
+// TestClearingAPassphraseStopsItWorking.
+func TestClearingAPassphraseStopsItWorking(t *testing.T) {
+	s, _ := newAuth(t)
+	tok := login(t, s)
+
+	const phrase = "seventeen quiet harbours"
+	if _, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+		Passphrase: phrase, CurrentPassword: testPassword,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	res, err := s.SetRecoveryPassphrase(withToken(tok), &pb.SetRecoveryPassphraseRequest{
+		Passphrase: "", CurrentPassword: testPassword,
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if res.GetConfigured() {
+		t.Error("configured is still true after clearing")
+	}
+	if _, err := s.RedeemRecoveryCode(context.Background(), &pb.RedeemRecoveryCodeRequest{
+		Username: "cam", Code: phrase, NewPassword: "a-brand-new-passphrase-entirely",
+	}); err == nil {
+		t.Error("a cleared passphrase still opened the account")
+	}
+}

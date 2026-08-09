@@ -27,6 +27,7 @@ const (
 	AuthService_Reauthenticate_FullMethodName          = "/articleflux.v1.AuthService/Reauthenticate"
 	AuthService_ChangePassword_FullMethodName          = "/articleflux.v1.AuthService/ChangePassword"
 	AuthService_ChangeUsername_FullMethodName          = "/articleflux.v1.AuthService/ChangeUsername"
+	AuthService_SetRecoveryPassphrase_FullMethodName   = "/articleflux.v1.AuthService/SetRecoveryPassphrase"
 	AuthService_RegenerateRecoveryCodes_FullMethodName = "/articleflux.v1.AuthService/RegenerateRecoveryCodes"
 	AuthService_RedeemRecoveryCode_FullMethodName      = "/articleflux.v1.AuthService/RedeemRecoveryCode"
 	AuthService_RedeemResetToken_FullMethodName        = "/articleflux.v1.AuthService/RedeemResetToken"
@@ -145,6 +146,35 @@ type AuthServiceClient interface {
 	// signing somebody out of their phone for correcting a typo would be a
 	// surprise out of proportion to what they did.
 	ChangeUsername(ctx context.Context, in *ChangeUsernameRequest, opts ...grpc.CallOption) (*ChangeUsernameResponse, error)
+	// SetRecoveryPassphrase stores, replaces or clears a passphrase the reader
+	// chooses, as a second way back in beside the printed sheet of codes.
+	//
+	// # Why both exist
+	//
+	// A sheet is stronger and is what somebody prints and puts in a drawer. A
+	// passphrase is what somebody actually has with them when they are locked out
+	// on a phone in another country — the sheet's weakness is not its entropy, it
+	// is that it is at home. Offering only the strong one means the common case
+	// has no answer at all.
+	//
+	// # What makes it safe to offer
+	//
+	// Three things, and it needs all three, because a memorable secret that opens
+	// an account is otherwise just a weaker password with fewer defences:
+	//
+	//   - Argon2id, never the fast digest recovery codes use. A code is 80 bits of
+	//     server entropy and cannot be searched; a phrase a person chose can.
+	//   - The same lockout curve and durable ledger as Login on redemption.
+	//   - A floor of sixteen characters, the breached-password list, and a refusal
+	//     to be the account's own password (pwpolicy.CheckPassphrase).
+	//
+	// Requires sudo AND the current password, like every other credential change:
+	// setting one is handing out a key, and the post-login window would otherwise
+	// let an unattended session cut itself one.
+	//
+	// An empty passphrase CLEARS it, which is how the reader turns the feature off
+	// without a second RPC that would have the same guards and the same shape.
+	SetRecoveryPassphrase(ctx context.Context, in *SetRecoveryPassphraseRequest, opts ...grpc.CallOption) (*SetRecoveryPassphraseResponse, error)
 	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
 	//
 	// Requires sudo, because it is the operation that decides who can get back
@@ -273,6 +303,16 @@ func (c *authServiceClient) ChangeUsername(ctx context.Context, in *ChangeUserna
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChangeUsernameResponse)
 	err := c.cc.Invoke(ctx, AuthService_ChangeUsername_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) SetRecoveryPassphrase(ctx context.Context, in *SetRecoveryPassphraseRequest, opts ...grpc.CallOption) (*SetRecoveryPassphraseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetRecoveryPassphraseResponse)
+	err := c.cc.Invoke(ctx, AuthService_SetRecoveryPassphrase_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -422,6 +462,35 @@ type AuthServiceServer interface {
 	// signing somebody out of their phone for correcting a typo would be a
 	// surprise out of proportion to what they did.
 	ChangeUsername(context.Context, *ChangeUsernameRequest) (*ChangeUsernameResponse, error)
+	// SetRecoveryPassphrase stores, replaces or clears a passphrase the reader
+	// chooses, as a second way back in beside the printed sheet of codes.
+	//
+	// # Why both exist
+	//
+	// A sheet is stronger and is what somebody prints and puts in a drawer. A
+	// passphrase is what somebody actually has with them when they are locked out
+	// on a phone in another country — the sheet's weakness is not its entropy, it
+	// is that it is at home. Offering only the strong one means the common case
+	// has no answer at all.
+	//
+	// # What makes it safe to offer
+	//
+	// Three things, and it needs all three, because a memorable secret that opens
+	// an account is otherwise just a weaker password with fewer defences:
+	//
+	//   - Argon2id, never the fast digest recovery codes use. A code is 80 bits of
+	//     server entropy and cannot be searched; a phrase a person chose can.
+	//   - The same lockout curve and durable ledger as Login on redemption.
+	//   - A floor of sixteen characters, the breached-password list, and a refusal
+	//     to be the account's own password (pwpolicy.CheckPassphrase).
+	//
+	// Requires sudo AND the current password, like every other credential change:
+	// setting one is handing out a key, and the post-login window would otherwise
+	// let an unattended session cut itself one.
+	//
+	// An empty passphrase CLEARS it, which is how the reader turns the feature off
+	// without a second RPC that would have the same guards and the same shape.
+	SetRecoveryPassphrase(context.Context, *SetRecoveryPassphraseRequest) (*SetRecoveryPassphraseResponse, error)
 	// RegenerateRecoveryCodes issues a fresh sheet and discards the old one.
 	//
 	// Requires sudo, because it is the operation that decides who can get back
@@ -499,6 +568,9 @@ func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePas
 }
 func (UnimplementedAuthServiceServer) ChangeUsername(context.Context, *ChangeUsernameRequest) (*ChangeUsernameResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChangeUsername not implemented")
+}
+func (UnimplementedAuthServiceServer) SetRecoveryPassphrase(context.Context, *SetRecoveryPassphraseRequest) (*SetRecoveryPassphraseResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetRecoveryPassphrase not implemented")
 }
 func (UnimplementedAuthServiceServer) RegenerateRecoveryCodes(context.Context, *RegenerateRecoveryCodesRequest) (*RegenerateRecoveryCodesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegenerateRecoveryCodes not implemented")
@@ -674,6 +746,24 @@ func _AuthService_ChangeUsername_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_SetRecoveryPassphrase_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetRecoveryPassphraseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).SetRecoveryPassphrase(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_SetRecoveryPassphrase_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).SetRecoveryPassphrase(ctx, req.(*SetRecoveryPassphraseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AuthService_RegenerateRecoveryCodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RegenerateRecoveryCodesRequest)
 	if err := dec(in); err != nil {
@@ -766,6 +856,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChangeUsername",
 			Handler:    _AuthService_ChangeUsername_Handler,
+		},
+		{
+			MethodName: "SetRecoveryPassphrase",
+			Handler:    _AuthService_SetRecoveryPassphrase_Handler,
 		},
 		{
 			MethodName: "RegenerateRecoveryCodes",
