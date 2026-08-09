@@ -5,9 +5,15 @@
 <h1 align="center">ArticleFlux</h1>
 
 <p align="center">
-  <strong>A self-hosted feed reader that is Go all the way down.</strong><br>
+  <strong>Signal, ranked for you.</strong><br>
+  A self-hosted feed reader that is Go all the way down.<br>
   The server is Go. The client is Go compiled to WebAssembly. The CSS is Go.<br>
   The transport is real gRPC — in the browser. The only JavaScript that ships is a boot shim.
+</p>
+
+<p align="center">
+  <a href="https://www.earlcameron.com/projects/articleflux"><strong>Read the case study →</strong></a><br>
+  <sub>What it does, what it is built on, what was hard, and how finished it honestly is.</sub>
 </p>
 
 <p align="center">
