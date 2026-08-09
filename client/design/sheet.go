@@ -2528,6 +2528,26 @@ func mobile(r func(string, string) css.Rule) {
 	// good news rather than as activity.
 	css.Global(".set-note-live[data-good='true']", r("border-left-color", "var(--pos)"))
 
+	// --- the credential-change confirmation (Account tab) ---
+	//
+	// A list of consequences rather than prose, because they are read in a
+	// glance by somebody whose attention is already on the button they are about
+	// to press. The marker is an em dash rather than a bullet or a tick: these
+	// are statements of what happens, not a checklist of things to do or things
+	// that went right, and a tick here would read as approval.
+	css.Global(".cred-confirm", r("max-width", "34rem"))
+	css.Global(".cred-facts",
+		r("list-style", "none"), r("margin", "12px 0 18px"), r("padding", "0"),
+		r("display", "grid"), r("gap", "8px"),
+	)
+	css.Global(".cred-fact",
+		r("display", "grid"), r("grid-template-columns", "1.2em 1fr"),
+		r("align-items", "baseline"),
+		r("font-family", "var(--rd)"), r("font-size", "14px"),
+		r("line-height", "1.6"), r("color", "var(--soft)"),
+	)
+	css.Global(".cred-fact::before", r("content", "'—'"), r("color", "var(--mute)"))
+
 	// --- the password rules (Account tab) ---
 	//
 	// A checklist rather than a strength bar, for the reason passwordGroup gives:

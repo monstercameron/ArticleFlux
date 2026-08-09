@@ -550,6 +550,8 @@ func Reader(p readerProps) ui.Node {
 	pwNameBusy := ui.UseState(false)
 	pwNameDone := ui.UseState("")
 	pwNameErr := ui.UseState("")
+	// Which credential change is waiting to be confirmed. See passwordProps.
+	pwPending := ui.UseState("")
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -6408,7 +6410,25 @@ func Reader(p readerProps) ui.Node {
 			pwErr.Set(tr.T("settings", "pwErrName"))
 			return
 		}
+		// Validated, so the dialog is only ever raised for a change that could
+		// actually happen. Asking somebody to confirm and THEN telling them the
+		// password was too short is asking them to approve nothing.
 		pwErr.Set("")
+		pwPending.Set(pendingPassword)
+	}
+
+	// doChangePassword is the confirmed half. The values are re-read from the
+	// DOM rather than carried across the dialog: the fields are still on screen
+	// behind it, and a copy taken before the confirmation is a copy that can
+	// disagree with what the reader is looking at.
+	act.Get().doChangePassword = func() {
+		c := client.Get()
+		if c == nil || pwBusy.Get() {
+			return
+		}
+		next := platform.FieldValue("pw-new")
+		current := platform.FieldValue("pw-confirm")
+		pwPending.Set("")
 		pwBusy.Set(true)
 
 		go func() {
@@ -6460,6 +6480,12 @@ func Reader(p readerProps) ui.Node {
 	// other session and the other deliberately revokes nothing — and a single
 	// button doing whichever fields happened to be filled is a control nobody
 	// can predict.
+	// cancelCredentialChange closes the confirmation and changes nothing. The
+	// typed values stay exactly where they are: the reader said "not yet", not
+	// "start again".
+	act.Get().cancelCredentialChange = func() { pwPending.Set("") }
+	act.Get().credPending = func() string { return pwPending.Get() }
+
 	act.Get().changeUsername = func() {
 		c := client.Get()
 		if c == nil || pwNameBusy.Get() {
@@ -6488,6 +6514,18 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		pwNameErr.Set("")
+		pwPending.Set(pendingUsername)
+	}
+
+	// doChangeUsername is the confirmed half, for doChangePassword's reason.
+	act.Get().doChangeUsername = func() {
+		c := client.Get()
+		if c == nil || pwNameBusy.Get() {
+			return
+		}
+		name := strings.TrimSpace(platform.FieldValue("name-new"))
+		current := platform.FieldValue("pw-confirm")
+		pwPending.Set("")
 		pwNameBusy.Set(true)
 
 		go func() {
@@ -8602,6 +8640,7 @@ func Reader(p readerProps) ui.Node {
 						nameBusy:      pwNameBusy.Get(),
 						nameDone:      pwNameDone.Get(),
 						nameErr:       pwNameErr.Get(),
+						pending:       pwPending.Get(),
 						onNewEdit:     onPwNew,
 						onRepeatEdit:  onPwRepeat,
 						onConfirmEdit: onPwConfirm,
@@ -8715,6 +8754,9 @@ func Reader(p readerProps) ui.Node {
 		}),
 		tabBar(tr, pane.Get(), sel.Get()),
 		helpSheet(tr, helpOpen.Get()),
+		// At the root, beside the other dialogs, because it is fixed to the
+		// VIEWPORT — see credConfirmDialog on what nesting it cost.
+		credConfirmDialog(tr, pwPending.Get(), pwNameDraft.Get(), p.whoami),
 		feedSettings(tr, feedSettingsProps{
 			open:        fsOpen.Get() != "",
 			loading:     fsLoading.Get(),

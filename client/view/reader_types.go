@@ -365,8 +365,20 @@ type actions struct {
 	// that withdraws from the confirmation the server demanded are different
 	// decisions, and collapsing them into one taking a flag would hide which
 	// one a call site meant. See view.passwordGroup.
-	changePassword func()
-	changeUsername func()
+	// Each credential change is TWO verbs: the press that asks, which validates
+	// and raises the confirmation, and the press that commits. Splitting them is
+	// what lets the dialog sit between — and keeps a caller from committing a
+	// change nobody was shown the consequences of.
+	changePassword         func()
+	doChangePassword       func()
+	changeUsername         func()
+	doChangeUsername       func()
+	cancelCredentialChange func()
+	// credPending reports which change the dialog is asking about, so the one
+	// confirm action can dispatch to the right half. A reader rather than a
+	// second pair of actions: the dialog shows one at a time, and two confirm
+	// actions would be two ways to end up in the wrong one.
+	credPending func() string
 
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()

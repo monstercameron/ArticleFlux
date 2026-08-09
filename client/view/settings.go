@@ -788,6 +788,21 @@ type passwordProps struct {
 	nameBusy  bool
 	nameDone  string
 	nameErr   string
+	// pending is which change is waiting to be confirmed: "" for none, or one
+	// of pendingPassword / pendingUsername.
+	//
+	// A confirmation step at all, because both of these do something the reader
+	// cannot see and cannot undo: a password change signs out every other device
+	// they own, and a rename changes what they must type to get in — on an
+	// instance where the username IS the recovery address, it also changes where
+	// "reset my password" would arrive. Neither consequence is visible from a
+	// form that just says "Change password", and neither is reversible by
+	// pressing the button again.
+	//
+	// Raised AFTER the local checks pass, never before: a dialog that appears and
+	// is then followed by "that password is too short" has asked somebody to
+	// confirm something that was never going to happen.
+	pending string
 
 	// The three fields are UNCONTROLLED — these handlers mirror what is typed
 	// into state so the checklist can react, and nothing writes `value` back.
@@ -808,8 +823,12 @@ type passwordProps struct {
 }
 
 const (
-	actPwChange   = "pw-change"
-	actNameChange = "name-change"
+	actPwChange     = "pw-change"
+	actNameChange   = "name-change"
+	actCredConfirm  = "cred-confirm"
+	actCredCancel   = "cred-cancel"
+	pendingPassword = "password"
+	pendingUsername = "username"
 )
 
 // pwMinLength mirrors pwpolicy.MinLength.
@@ -916,6 +935,88 @@ func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
 			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.nameErr))
 		}),
 	}
+}
+
+// credConfirmDialog states what is about to happen, before it happens.
+//
+// # Why it is mounted at the SHELL ROOT and not in the panel it belongs to
+//
+// It is `position: fixed`, and a fixed element inside a transformed ancestor
+// takes THAT ancestor as its containing block rather than the viewport. The
+// settings panel lives inside `.panes`, which transforms — so rendered where it
+// logically belongs, this dialog was positioned against a pane that has been
+// slid sideways. On a desktop it happened to land on screen and looked correct;
+// on a phone it was off the top of the viewport entirely, with the backdrop
+// dimming a screen whose dialog nobody could see.
+//
+// The e2e assertion did not catch it, and that is worth knowing: Playwright's
+// toBeVisible means "rendered with a non-zero box", not "in the viewport". A
+// screenshot caught it. helpSheet, feedSettings and tagSettings all mount at the
+// root for the same reason.
+//
+// # Why a dialog and not a second press on the same button
+//
+// The app's other confirmations arm in place — "Sign out" becomes "Really sign
+// out?" — and that is right for them: the consequence is in the verb, and the
+// only risk is the press itself. These two are different. What a reader needs
+// to be told is not "are you sure" but WHAT ELSE HAPPENS: that changing a
+// password signs out every other device, and that a rename changes the address
+// they sign in with and the one recovery would go to. A chip that changes its
+// label has nowhere to say that.
+//
+// # What it lists
+//
+// Consequences, not reassurance, and the ones that are invisible from the form.
+// "Your feeds are unaffected" would be padding — nobody feared that. Each line
+// is something the reader would otherwise discover afterwards, which is the
+// definition of the thing worth saying first.
+func credConfirmDialog(tr i18n.Runtime, pending, newName, currentName string) ui.Node {
+	if pending == "" {
+		return nil
+	}
+	title, lead := tr.T("settings", "pwConfirmTitle"), tr.T("settings", "pwConfirmLead")
+	facts := []string{
+		tr.T("settings", "pwFactOthers"),
+		tr.T("settings", "pwFactThis"),
+		tr.T("settings", "pwFactRecovery"),
+	}
+	confirm := tr.T("settings", "pwConfirmYes")
+	if pending == pendingUsername {
+		title, lead = tr.T("settings", "nameConfirmTitle"), tr.T("settings", "nameConfirmLead")
+		facts = []string{
+			tr.T("settings", "nameFactSignIn", i18n.Args{"name": newName}),
+			tr.T("settings", "nameFactOld", i18n.Args{"name": currentName}),
+			tr.T("settings", "nameFactSessions"),
+		}
+		confirm = tr.T("settings", "nameConfirmYes")
+	}
+
+	rows := make([]ui.Node, 0, len(facts))
+	for _, f := range facts {
+		rows = append(rows, html.Li(html.Props{Class: "cred-fact"}, html.Text(f)))
+	}
+
+	return scrim(true, actCredCancel,
+		// data-action on the dialog itself, for feedSettings' reason: without it
+		// every click inside walks up to the backdrop and closes the thing.
+		html.Div(html.Props{Class: "fs cred-confirm", Role: "dialog",
+			Raw:  map[string]any{"data-action": "modal-keep"},
+			Aria: map[string]string{"modal": "true", "label": title}},
+			html.Div(html.Props{Class: "fs-head"},
+				html.Span(html.Props{Class: "fs-mark"}, html.Text(title))),
+			html.Div(html.Props{Class: "fs-body"},
+				html.P(html.Props{Class: "set-note"}, html.Text(lead)),
+				html.Ul(html.Props{Class: "cred-facts"}, rows...),
+				html.Div(html.Props{Class: "set-actions"},
+					// The confirming button carries the VERB, not "OK": a reader
+					// who has stopped reading should still be able to tell the two
+					// buttons apart by what they say.
+					actionButton(actCredConfirm, "chip", confirm),
+					actionButton(actCredCancel, "chip", tr.T("settings", "credCancel")),
+				),
+			),
+		),
+	)
 }
 
 // pwButtonLabel keeps the verb the same through the flow.

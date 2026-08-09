@@ -272,6 +272,28 @@ func init() {
 		"nameErrEmpty":    "Enter the address you want to sign in with.",
 		"nameErrEmail":    "A username has to be an email address.",
 
+		// --- the confirmations
+		//
+		// Each line is a consequence the form cannot show and the reader would
+		// otherwise meet afterwards. Written as statements of what WILL happen,
+		// present tense, rather than warnings — "you will be signed out" reads as
+		// a threat, "signs out every other device" reads as a fact.
+		"pwConfirmTitle": "Change your password?",
+		"pwConfirmLead":  "Here is what happens when you do.",
+		"pwFactOthers":   "Signs out every other device signed in to this account.",
+		"pwFactThis":     "Keeps you signed in here.",
+		"pwFactRecovery": "Your recovery codes keep working. This does not replace them.",
+		"pwConfirmYes":   "Change password",
+
+		"nameConfirmTitle": "Change your username?",
+		"nameConfirmLead":  "Here is what happens when you do.",
+		"nameFactSignIn":   "You sign in as {name} from now on.",
+		"nameFactOld":      "{name} stops working as a sign-in name.",
+		"nameFactSessions": "Every device stays signed in, including this one.",
+		"nameConfirmYes":   "Change username",
+
+		"credCancel": "Cancel",
+
 		"notBuiltGroup": "Not on this screen yet",
 		"notBuiltHint":  "What the server can do that this tab cannot ask it to.",
 		"notBuiltNote":  "Regenerating your recovery codes exists on the server and has no control here yet. Naming the devices you are signed in on, and ending all of them at once, are not built anywhere.",

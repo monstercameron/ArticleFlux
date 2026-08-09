@@ -59,6 +59,90 @@ test.describe('changing the password', () => {
     await expect(page.locator('.fs-error')).toContainText(/email address/i);
   });
 
+  test('a password change asks for confirmation, and says what it will do', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="pw-new"]').fill('harbour tin lantern');
+    await page.locator('[data-role="pw-repeat"]').fill('harbour tin lantern');
+    await page.locator('[data-action="pw-change"]').click();
+
+    const dialog = page.locator('.cred-confirm');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    // The consequence that is invisible from the form is the one worth naming.
+    await expect(dialog).toContainText(/signs out every other device/i);
+    await expect(dialog).toContainText(/keeps you signed in here/i);
+
+    // Cancelling changes nothing and keeps what was typed — the reader said
+    // "not yet", not "start again".
+    await page.locator('button[data-action="cred-cancel"]').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('[data-role="pw-new"]')).toHaveValue('harbour tin lantern');
+  });
+
+  test('a rename asks for confirmation, naming both the new and the old name', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="name-new"]').fill('someone.else@example.com');
+    await page.locator('[data-action="name-change"]').click();
+
+    const dialog = page.locator('.cred-confirm');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await expect(dialog).toContainText('someone.else@example.com');
+    await expect(dialog).toContainText(/stays signed in/i);
+
+    await page.locator('button[data-action="cred-cancel"]').click();
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test('the confirmation is actually in the viewport, including on a phone', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="name-new"]').fill('someone.else@example.com');
+    await page.locator('[data-action="name-change"]').click();
+
+    const dialog = page.locator('.cred-confirm');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+
+    // toBeVisible is NOT this assertion. It means "rendered with a non-zero
+    // box", and it passed while the dialog sat off the top of the screen: it is
+    // position:fixed, and mounted inside the settings panel it resolved against
+    // `.panes`, which transforms. Only a screenshot showed it. This is that
+    // check, written down — the box has to be inside the viewport.
+    const box = await dialog.boundingBox();
+    const view = page.viewportSize();
+    expect(box, 'the dialog has no box at all').not.toBeNull();
+    expect(box.y, 'the dialog is off the top of the screen').toBeGreaterThanOrEqual(0);
+    expect(box.x, 'the dialog is off the left of the screen').toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, 'the dialog runs off the bottom').toBeLessThanOrEqual(view.height);
+    expect(box.x + box.width, 'the dialog runs off the right').toBeLessThanOrEqual(view.width);
+  });
+
+  test('Escape closes the confirmation and leaves the screen behind it', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+    await page.locator('[data-role="pw-new"]').fill('harbour tin lantern');
+    await page.locator('[data-role="pw-repeat"]').fill('harbour tin lantern');
+    await page.locator('[data-action="pw-change"]').click();
+    await expect(page.locator('.cred-confirm')).toBeVisible({ timeout: 20_000 });
+
+    // Escape peels ONE layer. It used to fall through to the settings panel and
+    // close both, so somebody who hesitated at the question lost the dialog, the
+    // screen and the three fields they had filled in.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.cred-confirm')).toHaveCount(0);
+    await expect(page.locator('.set-tabs')).toBeVisible();
+    await expect(page.locator('[data-role="pw-new"]')).toHaveValue('harbour tin lantern');
+  });
+
   test('the rules answer as you type, and the breached-list one waits for the server', async ({ page }) => {
     await boot(page);
     await openAccount(page);
@@ -110,6 +194,9 @@ test.describe('changing the password', () => {
     await page.locator('[data-role="pw-new"]').fill('passwordpassword');
     await page.locator('[data-role="pw-repeat"]').fill('passwordpassword');
     await page.locator('[data-action="pw-change"]').click();
+    // Through the confirmation: the local checks pass, so this password only
+    // meets the policy at the server — which is the point of the assertion.
+    await page.locator('button[data-action="cred-confirm"]').click();
 
     await expect(page.locator('.fs-error')).toBeVisible({ timeout: 30_000 });
     // The catalog's own wording for `srv.weakPassword`, not pwpolicy's. The

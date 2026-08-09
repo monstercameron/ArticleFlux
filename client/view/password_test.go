@@ -6,11 +6,15 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/monstercameron/GoWebComponents/v5/html"
 	"github.com/monstercameron/GoWebComponents/v5/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/authn"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/pwpolicy"
 )
 
@@ -62,6 +66,50 @@ func TestTheCurrentPasswordIsAlwaysAskedFor(t *testing.T) {
 // type to get in, and on an instance where the username IS the recovery address
 // it changes where "reset my password" arrives. So it is authorised by the same
 // field rather than by a session alone.
+// confirmHTML renders the dialog on its own, which is where it now lives: at
+// the shell root rather than inside the panel, because it is fixed to the
+// viewport. See credConfirmDialog.
+func confirmHTML(t *testing.T, pending, newName, currentName string) string {
+	t.Helper()
+	return renderView(t, func(tr i18n.Runtime) ui.Node {
+		n := credConfirmDialog(tr, pending, newName, currentName)
+		if n == nil {
+			return html.Div(html.Props{})
+		}
+		return n
+	})
+}
+
+// TestTheConfirmationNamesTheConsequences.
+//
+// The dialog exists because both changes do something the form cannot show and
+// the reader cannot undo. If it stops SAYING those things it has become a
+// speed bump, which is worse than nothing: it trains people to dismiss it.
+func TestTheConfirmationNamesTheConsequences(t *testing.T) {
+	pw := confirmHTML(t, pendingPassword, "", "cam@example.com")
+	for _, want := range []string{"every other device", "signed in here"} {
+		if !strings.Contains(pw, want) {
+			t.Errorf("the password confirmation does not mention %q", want)
+		}
+	}
+
+	name := confirmHTML(t, pendingUsername, "new@example.com", "cam@example.com")
+	// Both names, because "you sign in as X from now on" is only half the fact:
+	// the other half is that the old one stops working.
+	for _, want := range []string{"new@example.com", "cam@example.com"} {
+		if !strings.Contains(name, want) {
+			t.Errorf("the rename confirmation does not name %q", want)
+		}
+	}
+}
+
+// TestNothingIsConfirmedUntilThereIsSomethingToConfirm.
+func TestNothingIsConfirmedUntilThereIsSomethingToConfirm(t *testing.T) {
+	if out := confirmHTML(t, "", "", ""); strings.Contains(out, "cred-confirm") {
+		t.Error("the confirmation renders with nothing pending")
+	}
+}
+
 func TestRenamingIsOfferedAndSharesTheConfirmation(t *testing.T) {
 	out := passwordHTML(t, passwordProps{username: "cam@example.com"})
 	if !strings.Contains(out, `data-role="name-new"`) {
@@ -134,5 +182,78 @@ func TestTheSudoKeyMatchesTheServers(t *testing.T) {
 	if !authn.NeedsSudo(authn.SudoChangePasswd) {
 		t.Error("changing a password is no longer sudo-gated; this flow's " +
 			"confirmation step is now unreachable and should be removed")
+	}
+}
+
+// --- how long to wait -----------------------------------------------------------
+//
+// The lockout was never a ban — three free attempts, then an exponential delay
+// capped at fifteen minutes, counted only from real failures. What made it read
+// as one is that the server computed a precise retry_after and nothing showed
+// it, so "too many requests; please slow down" was the whole of what a
+// locked-out reader was told, and the only way to learn the length was to keep
+// trying: the exact behaviour the limiter exists to stop.
+//
+// These run at this level because the e2e suite CANNOT reach them. It drives a
+// `-dev` server, where proveCurrentPassword returns before it checks anything
+// and no lockout is ever armed.
+
+// waitText renders serverText's answer through the same Provider the panes use,
+// because a Runtime is only obtainable inside one — the catalog lookup is what
+// is being tested, so a stand-in would test nothing.
+func waitText(t *testing.T, err error) string {
+	t.Helper()
+	var out string
+	renderView(t, func(tr i18n.Runtime) ui.Node {
+		out = serverText(tr, err)
+		return html.Div(html.Props{})
+	})
+	return out
+}
+
+func statusWithWait(t *testing.T, secs int32) error {
+	t.Helper()
+	st, err := status.New(codes.ResourceExhausted, "too many requests").
+		WithDetails(&pb.ErrorDetail{Key: "srv.rateLimited", RetryAfterS: secs})
+	if err != nil {
+		t.Fatalf("building the status: %v", err)
+	}
+	return st.Err()
+}
+
+func TestTheWaitIsSaidInSecondsOrMinutes(t *testing.T) {
+	for _, c := range []struct {
+		secs int32
+		want string
+	}{
+		{5, "5 seconds"},
+		{90, "90 seconds"},
+		// Past ninety seconds it becomes minutes, rounded UP: rounding down
+		// sends somebody back a moment early to be refused again.
+		{91, "2 minutes"},
+		{120, "2 minutes"},
+		{841, "15 minutes"},
+	} {
+		got := waitText(t, statusWithWait(t, c.secs))
+		if !strings.Contains(got, c.want) {
+			t.Errorf("retry_after %ds rendered as %q, want it to contain %q",
+				c.secs, got, c.want)
+		}
+	}
+}
+
+// TestNoWaitIsInventedWhenTheServerDidNotSendOne.
+//
+// A refusal with no retry_after is one the reader can act on immediately — a
+// wrong password, a validation error — and appending "try again in 0 seconds"
+// to those would be noise that reads like a fault.
+func TestNoWaitIsInventedWhenTheServerDidNotSendOne(t *testing.T) {
+	st, err := status.New(codes.Unauthenticated, "that password is not right").
+		WithDetails(&pb.ErrorDetail{Key: "srv.badPassword"})
+	if err != nil {
+		t.Fatalf("building the status: %v", err)
+	}
+	if got := waitText(t, st.Err()); strings.Contains(got, "Try again in") {
+		t.Errorf("a wait was invented for a refusal that carried none: %q", got)
 	}
 }

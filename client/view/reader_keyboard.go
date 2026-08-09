@@ -308,6 +308,19 @@ func (r keyboardMap) wire() {
 			case "Escape":
 				ui.PostAsync(func() {
 					a := r.act.Get()
+					// The credential confirmation is peeled FIRST and alone.
+					//
+					// Escape peels one layer, and this dialog is the innermost one
+					// on the Account tab. Without this it fell through to the
+					// settings panel underneath and closed BOTH — so a reader who
+					// hesitated at "Change your password?" lost the dialog, the
+					// screen and the three fields they had filled in, and had to
+					// start over to reach the same question. Measured: the panel
+					// and the dialog both went in one press.
+					if a.credPending != nil && a.credPending() != "" {
+						a.cancelCredentialChange()
+						return
+					}
 					a.closeHelp()
 					// Both settings panels, because Escape closing one dialog and
 					// not the one beside it is the kind of inconsistency a reader

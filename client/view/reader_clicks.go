@@ -375,6 +375,17 @@ func (d delegatedClicks) wire() {
 					a.changePassword()
 				case actNameChange:
 					a.changeUsername()
+				case actCredConfirm:
+					// One action for both, dispatched on which change is
+					// pending — the dialog only ever shows one at a time, and two
+					// confirm actions would be two ways to be in the wrong state.
+					if a.credPending() == pendingUsername {
+						a.doChangeUsername()
+					} else {
+						a.doChangePassword()
+					}
+				case actCredCancel:
+					a.cancelCredentialChange()
 				case actDataImport:
 					a.importOPML()
 				case actDataExport:
