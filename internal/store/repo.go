@@ -1640,6 +1640,43 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 		}
 	}
 
+	// And retire the articles the debug endpoints INVENTED.
+	//
+	// `/debug/ingest-one` and `/debug/ingest-cluster` write REAL rows into
+	// `items` so a test can prove an arriving article reaches an open screen. A
+	// reset of USER state has no reason to touch `items` and never did, so the
+	// corpus every later test counts against grew for the rest of the run —
+	// invisible in the test that caused it, and surfacing as `.item-row` counts
+	// failing in other files entirely.
+	//
+	// Deactivated rather than deleted, and rather than merely withheld from
+	// delivery. Both of those were tried and both are wrong:
+	//
+	//   * `DELETE FROM items` trips a foreign key the moment any spec has made
+	//     a note, a podcast segment or a derive row against an item. reset-state
+	//     then 500s and EVERY later boot fails — 110 failures on a twenty-file
+	//     run, worse than the leak.
+	//   * Excluding them from the `user_item_state` re-insert below fixes the
+	//     unread COUNT and nothing else, because the list reads
+	//     `FROM items JOIN subscriptions` and only LEFT JOINs the state row. The
+	//     articles stayed on screen and the counts stayed wrong.
+	//
+	// `deactivated_at` is the column the list query already honours
+	// (listSelectTail: `i.deactivated_at IS NULL`), so one write hides the row
+	// from every read path at once without removing anything that another table
+	// points at.
+	//
+	// Matched on the `debug-` prefix both endpoints already stamp: it is what
+	// makes these rows recognisably fabricated, it survives the server restart
+	// `connection.spec.mjs` performs mid-run, and it cannot match an article
+	// from a feed, whose GUID is the feed's own.
+	if _, err := r.db.Write.ExecContext(ctx,
+		`UPDATE items SET deactivated_at = ?
+		  WHERE guid LIKE 'debug-%' AND deactivated_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+
 	// Put the state rows BACK, unread.
 	//
 	// Deleting them all used to be the whole of "reset": with an item's read
