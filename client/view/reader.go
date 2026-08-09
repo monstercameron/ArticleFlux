@@ -552,6 +552,31 @@ func Reader(p readerProps) ui.Node {
 	pwNameErr := ui.UseState("")
 	// Which credential change is waiting to be confirmed. See passwordProps.
 	pwPending := ui.UseState("")
+	// renamedTo is the account's name AFTER a rename this session, or "".
+	//
+	// An override rather than a copy of `p.whoami`, and the distinction is the
+	// whole reason it works: whoami is a PROP, fetched once by Root while the
+	// splash was up and never fetched again, so a rename left every reader of it
+	// showing the old name — the Account tab reported "Signed in as cam" and
+	// "Sign in with cam" directly underneath a sentence saying the username had
+	// changed. Seeding a UseState from the prop instead would break the other
+	// way: the state would win forever, including over a fresher prop.
+	//
+	// Empty means "nothing has changed here, believe the prop", which is true on
+	// every boot and stops being true only when this client is the thing that
+	// changed it.
+	renamedTo := ui.UseState("")
+	// whoami is the account's CURRENT name — the override if this session
+	// renamed it, the prop otherwise. A function because the handlers below are
+	// closures built by an earlier render, and reading the handle through one is
+	// what makes them see the latest value rather than the value as of the render
+	// that built them.
+	whoami := func() string {
+		if n := renamedTo.Get(); n != "" {
+			return n
+		}
+		return p.whoami
+	}
 	// Smart+. The config and the language list are fetched when the tab opens,
 	// like stats — they are a snapshot someone asked for, and an instance with
 	// no key should not be polling a screen nobody has.
@@ -6405,8 +6430,8 @@ func Reader(p readerProps) ui.Node {
 		case next != again:
 			pwErr.Set(tr.T("settings", "pwErrMatch"))
 			return
-		case p.whoami != "" &&
-			strings.Contains(strings.ToLower(next), strings.ToLower(p.whoami)):
+		case whoami() != "" &&
+			strings.Contains(strings.ToLower(next), strings.ToLower(whoami())):
 			pwErr.Set(tr.T("settings", "pwErrName"))
 			return
 		}
@@ -6547,6 +6572,10 @@ func Reader(p readerProps) ui.Node {
 				platform.ClearField("name-new")
 				pwNameDraft.Set("")
 				pwNameErr.Set("")
+				// What the account is called NOW, from the server's own answer
+				// rather than from what was typed — it normalises the domain, and
+				// this is the string the login screen will want.
+				renamedTo.Set(stored)
 				// The STORED name, not the typed one: the server lowercases the
 				// domain, and this is what has to be typed at the login screen
 				// from now on.
@@ -8622,7 +8651,7 @@ func Reader(p readerProps) ui.Node {
 					loading:        statsLoading.Get(),
 					statsErr:       statsErr.Get(),
 					serverURL:      platform.Origin(),
-					whoami:         p.whoami,
+					whoami:         whoami(),
 					session: sessionProps{
 						armed:    signOutArmed.Get(),
 						busy:     signOutBusy.Get(),
@@ -8635,7 +8664,7 @@ func Reader(p readerProps) ui.Node {
 						busy:          pwBusy.Get(),
 						done:          pwDone.Get(),
 						err:           pwErr.Get(),
-						username:      p.whoami,
+						username:      whoami(),
 						nameDraft:     pwNameDraft.Get(),
 						nameBusy:      pwNameBusy.Get(),
 						nameDone:      pwNameDone.Get(),
@@ -8756,7 +8785,7 @@ func Reader(p readerProps) ui.Node {
 		helpSheet(tr, helpOpen.Get()),
 		// At the root, beside the other dialogs, because it is fixed to the
 		// VIEWPORT — see credConfirmDialog on what nesting it cost.
-		credConfirmDialog(tr, pwPending.Get(), pwNameDraft.Get(), p.whoami),
+		credConfirmDialog(tr, pwPending.Get(), pwNameDraft.Get(), whoami()),
 		feedSettings(tr, feedSettingsProps{
 			open:        fsOpen.Get() != "",
 			loading:     fsLoading.Get(),

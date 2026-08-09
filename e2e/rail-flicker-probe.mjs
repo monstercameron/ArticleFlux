@@ -14,7 +14,7 @@ await page.goto(BASE);
 
 const pw = page.locator('input[type="password"]');
 if (await pw.count()) {
-  await page.locator('input').first().fill('cam');
+  await page.locator('input').first().fill('cam@example.com');
   await pw.fill('articleflux');
   await page.getByRole('button', { name: /sign in/i }).click();
 }

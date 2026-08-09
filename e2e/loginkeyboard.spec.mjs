@@ -37,7 +37,7 @@ const PORT = APP_PORT + 200;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB = join(here, '.tmp', `loginkb-${process.pid}.db`);
 
-const USER = 'keyboardcam';
+const USER = 'keyboardcam@example.com';
 const PASSWORD = 'correct-horse-battery-staple-77';
 
 let server;

@@ -105,7 +105,7 @@ test('setup creates the account, shows the codes once, and signs you in', async 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="setup"]', { timeout: 60_000 });
 
-  await page.fill('#setup-username', 'cam');
+  await page.fill('#setup-username', 'cam@example.com');
   await page.fill('#setup-email', 'cam@example.com');
   await page.fill('#setup-password', PASSWORD);
   await page.fill('#setup-confirm', PASSWORD);
@@ -133,7 +133,7 @@ test('a claimed server sends the next visitor to the login screen', async ({ pag
 test('the account that setup created can sign in', async ({ page }) => {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="login"]', { timeout: 60_000 });
-  await page.fill('#login-username', 'cam');
+  await page.fill('#login-username', 'cam@example.com');
   await page.fill('#login-password', PASSWORD);
   await page.click('.login-submit');
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
@@ -147,7 +147,7 @@ test('the account that setup created can sign in', async ({ page }) => {
 async function signIn(page) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="login"]', { timeout: 60_000 });
-  await page.fill('#login-username', 'cam');
+  await page.fill('#login-username', 'cam@example.com');
   await page.fill('#login-password', PASSWORD);
   await page.click('.login-submit');
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });

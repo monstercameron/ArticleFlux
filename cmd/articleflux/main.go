@@ -609,7 +609,7 @@ func seedReading(log *slog.Logger, args []string) error {
 
 	fs := flag.NewFlagSet("seed-reading", flag.ExitOnError)
 	dbPath := commonFlags(fs)
-	user := fs.String("user", "cam", "username for the local account")
+	user := fs.String("user", "cam@example.com", "username for the local account")
 	pass := fs.String("password", devPassword, "password, on first run only")
 	focus := fs.String("focus", "",
 		"comma-separated title words this reader cares about; empty derives them from the corpus")
@@ -665,7 +665,7 @@ func seed(log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
 	dbPath := commonFlags(fs)
 	list := fs.String("feeds", "", "comma-separated feed URLs; empty uses the starter set")
-	user := fs.String("user", "cam", "username for the local account")
+	user := fs.String("user", "cam@example.com", "username for the local account")
 	pass := fs.String("password", devPassword, "password, on first run only")
 	// Seeding is an operator action with explicit URLs, not user-supplied input
 	// from a tenant — but it still defaults to off. Allowing loopback and RFC1918
@@ -1307,7 +1307,7 @@ func importOPML(log *slog.Logger, args []string) error {
 	dbPath := commonFlags(fs)
 	file := fs.String("file", "", "path to an OPML file (required)")
 	fetch := fs.Bool("fetch", false, "fetch every feed before returning, instead of leaving it to the poller")
-	user := fs.String("user", "cam", "username for the local account")
+	user := fs.String("user", "cam@example.com", "username for the local account")
 	pass := fs.String("password", devPassword, "password, on first run only")
 	allowPrivate := fs.Bool("allow-private", false, "permit feeds on loopback/LAN addresses")
 	if err := fs.Parse(args); err != nil {

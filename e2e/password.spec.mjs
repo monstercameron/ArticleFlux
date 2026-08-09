@@ -143,6 +143,66 @@ test.describe('changing the password', () => {
     await expect(page.locator('[data-role="pw-new"]')).toHaveValue('harbour tin lantern');
   });
 
+  // A COMPLETED rename, and everything on screen that has to agree with it.
+  //
+  // This is the test the suite was missing, and the bug it would have caught is
+  // the one Cam found: the change succeeded, the note said "Sign in as … from
+  // now on", and the row two lines above it still showed the old name. Every
+  // assertion here was passing at the time — because they all looked at the
+  // message the app printed about itself, and none looked at the page.
+  //
+  // The rule this stands for: after a mutation, assert the SURFACE, not the
+  // confirmation. A success note is the app's own claim, and a stale screen is
+  // precisely the failure where that claim is true and useless.
+  //
+  // It renames BACK in a finally, because the suite shares one account across
+  // every spec — a leaked rename is the same class of cross-file damage that
+  // cost this suite fifty-five failures.
+  test('a completed rename updates every place the name is shown', async ({ page }) => {
+    await boot(page);
+    await openAccount(page);
+
+    const signedInAs = page.locator('.set-fact', { hasText: 'Signed in as' });
+    const original = (await signedInAs.innerText()).replace(/Signed in as/i, '').trim();
+    expect(original, 'no current username to rename from').not.toBe('');
+
+    // Two targets, and the choice between them matters. A retry — or a previous
+    // attempt whose cleanup did not finish — starts with the account ALREADY
+    // called the first one, and renaming it to the name it has makes "the old
+    // name is gone" compare a string with itself. Picking the other target keeps
+    // the test meaningful whatever state it inherits.
+    const renamed = original === 'renamed.by.e2e@example.com'
+      ? 'renamed.again.by.e2e@example.com'
+      : 'renamed.by.e2e@example.com';
+    try {
+      await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+      await page.locator('[data-role="name-new"]').fill(renamed);
+      await page.locator('[data-action="name-change"]').click();
+      await page.locator('button[data-action="cred-confirm"]').click();
+
+      // The app's claim…
+      await expect(page.locator('.set-note-live[data-good="true"]'))
+        .toContainText(renamed, { timeout: 30_000 });
+
+      // …and the page itself, which is the part that was wrong.
+      await expect(signedInAs).toContainText(renamed);
+      // `.fs-row`, and the name is the row's HINT — the line under the label
+      // that says what the account is called right now. That is the element
+      // that was stale.
+      await expect(page.locator('.fs-row', { hasText: 'Sign in with' })).toContainText(renamed);
+      // And the old name is gone from the panel, not merely joined by the new one.
+      await expect(page.locator('.set-panel')).not.toContainText(original);
+    } finally {
+      // Back to what it was, so nothing downstream inherits this.
+      await page.locator('[data-role="pw-confirm"]').fill('any-current-password');
+      await page.locator('[data-role="name-new"]').fill(original);
+      await page.locator('[data-action="name-change"]').click();
+      await page.locator('button[data-action="cred-confirm"]').click();
+      await expect(page.locator('.set-note-live[data-good="true"]'))
+        .toContainText(original, { timeout: 30_000 });
+    }
+  });
+
   test('the rules answer as you type, and the breached-list one waits for the server', async ({ page }) => {
     await boot(page);
     await openAccount(page);

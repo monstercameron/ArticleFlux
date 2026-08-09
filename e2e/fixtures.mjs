@@ -97,7 +97,7 @@ export async function boot(page) {
 export async function signIn(page) {
   const password = page.locator('input[type="password"]');
   if (!(await password.count())) return;
-  await page.locator('input').first().fill('cam');
+  await page.locator('input').first().fill('cam@example.com');
   await password.fill('articleflux');
   await page.getByRole('button', { name: /sign in/i }).click();
 }
