@@ -74,6 +74,15 @@ func init() {
 		"permissionDenied": "you do not have permission to do that",
 		// A limit that waiting fixes...
 		"rateLimited": "too many requests; please slow down",
+
+		// How long to wait, appended to whatever refusal carried a retry_after.
+		//
+		// The number is the difference between a cooldown and a ban as far as
+		// anybody experiences them: a wait you can see the end of is a wait, and
+		// a wait you cannot is a wall. Without this the sentence above was the
+		// whole of what a locked-out reader was told.
+		"waitSeconds": "{message} Try again in {n} seconds.",
+		"waitMinutes": "{message} Try again in {n} minutes.",
 		// ...and one it does not. Same code on the wire, different remedy, so
 		// the reader is told which of "wait" and "this is as much as you get"
 		// applies rather than being left to guess from a retry that never works.

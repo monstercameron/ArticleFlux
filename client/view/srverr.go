@@ -3,6 +3,8 @@
 package view
 
 import (
+	"strconv"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -11,27 +13,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
 )
 
-// serverText turns a gRPC error into a sentence in the reader's language.
-//
-// The server attaches an `ErrorDetail` carrying a catalog key and arguments
-// (see internal/transport/grpcsrv/errkey.go), because it cannot translate its
-// own refusals — the language is a per-device choice it never sees. This
-// resolves that key against the same catalog every other string comes from.
-//
-// Three fallbacks, in order, and each one is a real case rather than defensive
-// padding:
-//
-//  1. No detail — an older server, or a status gRPC itself produced (a
-//     transport failure has no ErrorDetail and never will). Use the message.
-//  2. A detail whose key is not in the catalog — a NEWER server than this
-//     client, sending a refusal this build has never heard of. The English
-//     fallback the server also sent is exactly right for that, and it is why
-//     the message is still populated server-side.
-//  3. Not a gRPC status at all. Use err.Error().
-//
-// Never returns err.String(): gRPC wraps its own text as
-// `rpc error: code = PermissionDenied desc = …`, which turns a clear
-// instruction into something that reads like a crash.
 // serverKey returns the catalog key the server classified a refusal as, or "".
 //
 // serverText answers "what do I show the reader"; this answers "which refusal
@@ -74,6 +55,27 @@ func serverKey(err error) string {
 	return ""
 }
 
+// serverText turns a gRPC error into a sentence in the reader's language.
+//
+// The server attaches an `ErrorDetail` carrying a catalog key and arguments
+// (see internal/transport/grpcsrv/errkey.go), because it cannot translate its
+// own refusals — the language is a per-device choice it never sees. This
+// resolves that key against the same catalog every other string comes from.
+//
+// Three fallbacks, in order, and each one is a real case rather than defensive
+// padding:
+//
+//  1. No detail — an older server, or a status gRPC itself produced (a
+//     transport failure has no ErrorDetail and never will). Use the message.
+//  2. A detail whose key is not in the catalog — a NEWER server than this
+//     client, sending a refusal this build has never heard of. The English
+//     fallback the server also sent is exactly right for that, and it is why
+//     the message is still populated server-side.
+//  3. Not a gRPC status at all. Use err.Error().
+//
+// Never returns err.String(): gRPC wraps its own text as
+// `rpc error: code = PermissionDenied desc = …`, which turns a clear
+// instruction into something that reads like a crash.
 func serverText(tr i18n.Runtime, err error) string {
 	if err == nil {
 		return ""
@@ -110,12 +112,41 @@ func serverText(tr i18n.Runtime, err error) string {
 		if out == detail.GetKey() {
 			break
 		}
-		return withReference(tr, out, st, detail)
+		return withWait(tr, withReference(tr, out, st, detail), detail)
 	}
 	if m := st.Message(); m != "" {
-		return withReference(tr, m, st, seen)
+		return withWait(tr, withReference(tr, m, st, seen), seen)
 	}
 	return err.Error()
+}
+
+// withWait appends how long to wait, when the server said.
+//
+// Every rate limit and every lockout in this application computes a precise
+// retry_after and puts it on the ErrorDetail, and until now nothing read it —
+// so the sentence a locked-out reader saw was "too many requests; please slow
+// down" with no way to tell fifteen seconds from fifteen minutes. That is what
+// makes a COOLDOWN feel like a ban: not the wait, but not knowing its length,
+// which leaves retrying-immediately as the only way to find out and is exactly
+// the behaviour the limiter is trying to stop.
+//
+// Rounded UP to the next minute above ninety seconds, and to the second below
+// it. "Try again in 14 minutes" is what somebody acts on; "in 847 seconds" is
+// arithmetic homework, and rounding DOWN would send them back a moment early to
+// be refused again.
+func withWait(tr i18n.Runtime, msg string, detail *pb.ErrorDetail) string {
+	if detail == nil {
+		return msg
+	}
+	secs := int(detail.GetRetryAfterS())
+	if secs <= 0 {
+		return msg
+	}
+	if secs <= 90 {
+		return tr.T("srv", "waitSeconds", i18n.Args{"message": msg, "n": strconv.Itoa(secs)})
+	}
+	mins := (secs + 59) / 60
+	return tr.T("srv", "waitMinutes", i18n.Args{"message": msg, "n": strconv.Itoa(mins)})
 }
 
 // withReference appends the server's request id to a message the reader is
