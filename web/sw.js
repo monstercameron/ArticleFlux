@@ -27,7 +27,23 @@
 // forgetting to bump it means the old module is served forever, which is
 // exactly the failure this file has to avoid and the one nobody notices,
 // because everything keeps working with old code.
-const VERSION = '1.2.1';
+// BUMP THIS ON EVERY DEPLOY, not only on every release.
+//
+// The cache is keyed on this string, so two different builds sharing it are one
+// build as far as a returning browser is concerned: the Service Worker keeps
+// serving whatever it cached first and the new bundle is never fetched.
+//
+// That is not hypothetical. TEN commits went to production under `1.2.1` —
+// account management, the confirmation dialogs, the recovery passphrase — and a
+// browser that had visited during the first of them saw none of it. The server
+// was correct, the deploy was correct, and the reader was looking at a fortnight
+// -old application with no way to tell.
+//
+// The structural fix is to key this on the build rather than on the release
+// (a content hash of app.wasm, stamped in by whatever assembles bin/web). Until
+// that exists, this line is a manual step and swversion_test.go pins it to
+// buildver.Version so at least the two cannot disagree.
+const VERSION = '1.2.2';
 const CACHE = `articleflux-shell-${VERSION}`;
 
 // DEV is the hole in everything the comment above claims.
