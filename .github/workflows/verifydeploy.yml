@@ -1,0 +1,98 @@
+# Did the box actually take it?
+#
+# # Why this is a separate workflow and not a step in promote.yml
+#
+# It used to be the last step of the promotion, and there it could never
+# succeed. deployhook fires on the promote run COMPLETING (deploy/README.md), so
+# a step inside that run waiting for production to serve the new commit is
+# waiting for a deploy that is waiting for the run it is inside. Every promotion
+# therefore paid a guaranteed ten-minute stall and then warned that production
+# "may still be building" — which was true, because it had not been asked to
+# start yet.
+#
+# The check itself is worth keeping and the reason is on the record: on
+# 2026-08-01 the promotion, the webhook and `update.sh` were all green while the
+# box served the previous build. `update.sh` had self-updated, re-execed after
+# the pull, and concluded there was nothing to do. Nobody established the truth
+# until somebody downloaded the wasm module and grepped the decompressed bytes.
+#
+# So the check moves to the same trigger the deploy uses. It starts when the
+# deploy starts rather than before it, which is the only ordering in which the
+# question can be answered.
+#
+# # Why it may FAIL rather than only warn
+#
+# In promote.yml it was `continue-on-error`, and it had to be: a red promotion
+# after main has already moved cannot un-move it. Here nothing depends on the
+# result, so it is free to be a real failure — and a red run is what makes
+# "production did not take the release" visible without anybody thinking to look.
+name: Verify the deploy
+
+on:
+  workflow_run:
+    # The pair deployhook matches, exactly (deploy/README.md): this workflow, on
+    # this branch. Anything else is not a release.
+    workflows: ["Promote dev to main"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: production is serving the promoted commit
+    runs-on: ubuntu-latest
+    # A failed or cancelled promotion deployed nothing, and asking whether
+    # production is serving a commit that was never released would fail for the
+    # wrong reason.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'dev'
+    timeout-minutes: 25
+    steps:
+      - name: Wait for production to report it
+        env:
+          # The commit the promotion pushed to main — head_sha of the run that
+          # dispatched it, which promote.yml pins to `dev` for this reason.
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          URL: https://feed.earlcameron.com/readyz
+        run: |
+          set -uo pipefail
+          echo "waiting for $URL to report ${SHA:0:12}"
+          # Twenty minutes. A cold wasm build on the droplet is about four, and
+          # this now starts at the same moment the build does rather than before
+          # it — but a 1 GB box under swap has taken longer, and a check that
+          # cries wolf on a slow build teaches people to ignore it.
+          for i in $(seq 1 80); do
+            got=$(curl -fsS -m 20 -D - -o /dev/null "$URL" 2>/dev/null \
+              | tr -d '\r' | awk 'tolower($1)=="x-articleflux-commit:"{print $2}')
+            if [ "$got" = "$SHA" ]; then
+              echo "production is serving ${SHA:0:12} after $((i*15))s"
+              {
+                echo "### Deployed"
+                echo ""
+                echo "Production is serving \`${SHA:0:12}\`, confirmed from the"
+                echo "\`X-ArticleFlux-Commit\` header on /readyz — which the deploy"
+                echo "stamps into the binary it builds, so this is the box"
+                echo "reporting rather than a timestamp being interpreted."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            [ -n "$got" ] && echo "  ${i}: box reports ${got:0:12}, want ${SHA:0:12}"
+            sleep 15
+          done
+          {
+            echo "### Production did NOT take \`${SHA:0:12}\`"
+            echo ""
+            echo "Twenty minutes after the promotion completed, /readyz still does"
+            echo "not report this commit. \`main\` has moved, so the release exists"
+            echo "and the box is not serving it."
+            echo ""
+            echo "Check \`/var/log/deployhook\` and \`/var/log/articleflux\` on the"
+            echo "droplet, and \`curl -sI https://feed.earlcameron.com/readyz\` for"
+            echo "what is actually running. This has happened before: on"
+            echo "2026-08-01 every green light was on while the box served the"
+            echo "previous build."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::production did not report ${SHA:0:12} within twenty minutes"
+          exit 1
