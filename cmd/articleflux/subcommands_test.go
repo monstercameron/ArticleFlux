@@ -136,7 +136,7 @@ func TestAddUserPutsTheAccountInTheExistingTenant(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	if err := addUser(cliLogger(), []string{"-db", db, "-user", "reader", "-role", "viewer"}); err != nil {
+	if err := addUser(cliLogger(), []string{"-db", db, "-user", "reader@example.com", "-role", "viewer"}); err != nil {
 		t.Fatalf("adduser: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestAddUserBeforeInitSaysToRunInit(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	err := addUser(cliLogger(), []string{"-db", db, "-user", "reader"})
+	err := addUser(cliLogger(), []string{"-db", db, "-user", "reader@example.com"})
 	if err == nil {
 		t.Fatal("adduser succeeded with no tenant")
 	}
@@ -179,7 +179,7 @@ func TestAddUserRejectsAnUnknownRole(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	err := addUser(cliLogger(), []string{"-db", db, "-user", "x", "-role", "root"})
+	err := addUser(cliLogger(), []string{"-db", db, "-user", "x@example.com", "-role", "root"})
 	if err == nil {
 		t.Fatal("adduser accepted a role that does not exist")
 	}
@@ -196,11 +196,15 @@ func TestAddUserRejectsAnUnknownRole(t *testing.T) {
 func TestAddUserNamesTheDuplicateRatherThanEchoingSQLite(t *testing.T) {
 	withPassword(t, testPasswordForCLI)
 	db := tempDB(t)
-	if err := initInstance(cliLogger(), []string{"-db", db, "-user", "cam"}); err != nil {
+	// The SAME name init created, so the duplicate is a real one. `adduser`
+	// requires an address now (internal/username) while `init` deliberately does
+	// not, so these two have to be spelled alike or this test stops being about
+	// duplicates at all.
+	if err := initInstance(cliLogger(), []string{"-db", db, "-user", "cam@example.com"}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
-	err := addUser(cliLogger(), []string{"-db", db, "-user", "cam"})
+	err := addUser(cliLogger(), []string{"-db", db, "-user", "cam@example.com"})
 	if err == nil {
 		t.Fatal("adduser created a second account with the same username")
 	}

@@ -187,6 +187,15 @@ func init() {
 		// wrong, so it names the requirement instead of the failure.
 		"weakPassword": "choose a longer password, or one that is not in the known-password list",
 
+		// The credential changes on Settings → Account (§7.2b, §7.3).
+		//
+		// Each says what to do rather than what was wrong with the input: the
+		// reader is standing in front of the field and needs the next move, not a
+		// classification of the last one.
+		"badUsername":    "a username has to be an email address you can read",
+		"usernameTaken":  "that username is already in use",
+		"weakPassphrase": "choose a longer recovery passphrase, one that is not in the known-password list, and not the same as your password",
+
 		// --- an instance built without the optional wiring
 		"noObservability": "observability not wired",
 		"noLogBuffer":     "log buffer not wired",
