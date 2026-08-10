@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/shots/reader-desktop.jpg" alt="ArticleFlux — three-pane reader with per-source hues" width="100%">
+  <img src="design/branding/articleflux-poster.webp" alt="ArticleFlux — signal, ranked for you" width="820">
 </p>
 
 <h1 align="center">ArticleFlux</h1>
@@ -30,6 +30,14 @@
   <img alt="Application JavaScript: none" src="https://img.shields.io/badge/application%20JS-0%20files-F7DF1E?logo=javascript&logoColor=black">
   <img alt="Application CSS: none" src="https://img.shields.io/badge/.css%20files-0-1572B6?logo=css3&logoColor=white">
   <img alt="MIT licence" src="https://img.shields.io/badge/License-MIT-yellow.svg">
+</p>
+
+<p align="center">
+  <img src="web/shots/reader-desktop.jpg" alt="ArticleFlux — three-pane reader with per-source hues" width="100%">
+</p>
+
+<p align="center">
+  <sub>The real reader against the development instance — 153 feeds, 7,303 articles, one SQLite file.</sub>
 </p>
 
 ---
