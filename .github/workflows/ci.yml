@@ -440,14 +440,36 @@ jobs:
   # about seventy and had simply outgrown the number. A timeout is a deadlock
   # detector, and it can only do that job if finishing normally fits inside it.
   #
-  # The real fix is to stop paying for this serially — `--shard=i/N` across a
-  # matrix, each shard with its own server and database, which is compatible
-  # with `workers: 1` because the constraint is per-server. That is a change to
-  # the release gate's shape and wants its own commit, not a deploy's.
+  # SHARDED, four ways, and that is what the ninety minutes above is now for
+  # rather than a wall the suite ran into.
+  #
+  # The serial version took an hour of wall clock to run a suite whose passing
+  # tests total about twenty-three minutes of work. `workers: 1` is why — and it
+  # is correct, because the specs share one server and one database and would
+  # trip over each other otherwise. The important word is SHARE: the constraint
+  # is per-server, not per-suite. Four jobs, four servers, four databases, four
+  # disjoint quarters of the test list, and nothing inside any of them runs in
+  # parallel with anything it could collide with.
+  #
+  # Playwright splits by FILE, so a shard is a set of whole spec files. That
+  # matters here more than it usually would: this suite's failures came from
+  # state leaking BETWEEN files, and a split that cut through the middle of one
+  # would have made an already-hard bug depend on which quarter it landed in.
+  #
+  # Four rather than eight: each shard pays the fixed cost of a build, a browser
+  # download and a server boot, and past four that overhead starts to be most of
+  # the job.
   e2e:
     name: e2e (Playwright, real server + real database)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      # One shard failing must not cancel the others. They are independent runs
+      # against independent databases, and killing the rest would throw away the
+      # evidence from three quarters of the suite to report a quarter of it.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # ADVISORY, TEMPORARILY — restore this to a blocking gate once the suite is
     # green again. Cam's call, 2026-08-09, with the deploy blocked behind it.
     #
@@ -525,7 +547,11 @@ jobs:
       # Twenty-five is also plenty to see the shape of what is broken.
       - name: Run the suite
         working-directory: e2e
-        run: npx playwright test --max-failures=25
+        # --max-failures is PER SHARD, so twenty-five here is a hundred across
+        # the four. That is deliberate: the cap exists to keep a job inside its
+        # timeout rather than to bound the total, and a shard that cannot reach
+        # its own limit is the one that would sit at the wall.
+        run: npx playwright test --shard=${{ matrix.shard }}/4 --max-failures=25
 
       # The evidence, when it fails. `trace: 'retain-on-failure'` and
       # `screenshot: 'only-on-failure'` are already set in the config, and
@@ -541,7 +567,10 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts
+          # Named per shard: four jobs uploading one name is four uploads
+          # racing for the same artifact, and the winner is whichever finished
+          # last rather than whichever failed.
+          name: e2e-artifacts-shard-${{ matrix.shard }}
           path: |
             e2e/test-results/
             e2e/playwright-report/
