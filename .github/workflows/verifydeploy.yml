@@ -64,8 +64,22 @@ jobs:
           # it — but a 1 GB box under swap has taken longer, and a check that
           # cries wolf on a slow build teaches people to ignore it.
           for i in $(seq 1 80); do
-            got=$(curl -fsS -m 20 -D - -o /dev/null "$URL" 2>/dev/null \
-              | tr -d '\r' | awk 'tolower($1)=="x-articleflux-commit:"{print $2}')
+            # `|| true` is what makes this loop survive the thing it waits for.
+            #
+            # A `run:` step executes under `bash -e`, which `set +e` inside the
+            # script cannot undo: the flag is on the shell invocation. So one
+            # failed request aborts the step, and the requests most likely to
+            # fail are the ones DURING the restart it is waiting for — the
+            # deploy swaps a symlink and bounces the service, and curl -f exits
+            # 22 on the 502 nginx serves for the second in between.
+            #
+            # That is what happened on this file's first run: it gave up after
+            # four and a half minutes saying production had not taken the
+            # release, and production took it six minutes later. A check that
+            # cries wolf is worse than none, because the next person ignores
+            # the one that is telling the truth.
+            got=$( (curl -fsS -m 20 -D - -o /dev/null "$URL" 2>/dev/null \
+              | tr -d '\r' | awk 'tolower($1)=="x-articleflux-commit:"{print $2}') || true )
             if [ "$got" = "$SHA" ]; then
               echo "production is serving ${SHA:0:12} after $((i*15))s"
               {
