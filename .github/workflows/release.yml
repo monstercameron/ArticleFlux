@@ -27,7 +27,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/monstercameron/articleflux
-  GO_VERSION: '1.26.5'
+  GO_VERSION: '1.26.6'
 
 jobs:
   verify:

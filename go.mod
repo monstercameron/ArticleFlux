@@ -2,6 +2,8 @@ module github.com/monstercameron/ArticleFlux
 
 go 1.26.5
 
+toolchain go1.26.6
+
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/andybalholm/cascadia v1.3.3

@@ -52,7 +52,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.6"
   # Pinned, not @latest. staticcheck gates every merge, so "whatever was released
   # this morning" is a dependency on a third party's schedule: a new release that
   # adds a check, or that has not caught up with a new Go, turns an unrelated
