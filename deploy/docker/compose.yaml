@@ -9,7 +9,7 @@ services:
     # Run as the host's articleflux system user so the bind-mounted database keeps one
     # owner and a rollback to the systemd unit sees identical permissions. BOX-SPECIFIC:
     # read it with `id articleflux` when installing.
-    user: "997:988"
+    user: "997:987"
     # Host loopback only — nginx stays the sole public listener, the same rule the
     # systemd unit enforced with -addr 127.0.0.1:9000. Inside the container the server
     # binds :9000; publishing to 127.0.0.1 is where that boundary lives now.
