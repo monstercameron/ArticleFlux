@@ -326,8 +326,13 @@ func TestConcurrentListensPayOnce(t *testing.T) {
 			errs <- err
 		}()
 	}
-	// Let them all reach the provider (or the in-flight wait) before releasing.
-	for c.inflightLen() == 0 {
+	// Let them ALL reach the provider or the in-flight wait before releasing.
+	// The old gate was `inflightLen() > 0`, which proves exactly one listener
+	// registered: on a loaded CI runner a listener the scheduler hadn't run yet
+	// could arrive after the leader finished and was deleted from the map,
+	// lead a second (legitimate) call, and fail the pay-once assertion. One
+	// leader in the map plus seven joined waiters is all eight, provably.
+	for c.inflightLen() == 0 || c.inflightWaiters() < listeners-1 {
 		runtime.Gosched()
 	}
 	close(release)

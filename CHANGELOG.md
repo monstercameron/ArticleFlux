@@ -9,6 +9,15 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Fixed — 2026-08-16, test determinism
+
+- `TestConcurrentListensPayOnce` no longer flakes on loaded runners: its release gate
+  proved one listener had registered, not all eight, so a slow-scheduled listener could
+  arrive after the leader finished and legitimately lead a second call. The gate now
+  counts joined waiters (`synthesis.waiters`, test observability alongside
+  `inflightLen`). The production window it exposed is real but covered by the disk
+  cache; the double bill it reported was an artifact of the test's own timing.
+
 ### Added — 2026-08-16, Docker deployment
 
 - The production deployment is a container (`deploy/docker/`): the Release workflow

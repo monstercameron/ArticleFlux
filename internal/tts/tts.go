@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
@@ -113,6 +114,13 @@ type synthesis struct {
 	done  chan struct{}
 	audio []byte
 	err   error
+	// waiters counts callers joined onto this synthesis (the leader excluded).
+	// Observability for the concurrency test only: its release gate used to be
+	// "someone is in flight", which proves ONE listener registered — a listener
+	// the scheduler hadn't run yet could arrive after the leader finished and
+	// was deleted, legitimately lead a second call, and fail the pay-once
+	// assertion for a window the disk cache covers in production.
+	waiters atomic.Int32
 }
 
 // New returns a client, or one that reports ErrNotConfigured from every call.
@@ -308,6 +316,7 @@ func (c *Client) once(ctx context.Context, id string,
 		c.inflight = make(map[string]*synthesis)
 	}
 	if s, ok := c.inflight[id]; ok {
+		s.waiters.Add(1)
 		c.mu.Unlock()
 		select {
 		case <-s.done:
@@ -453,6 +462,18 @@ func (c *Client) inflightLen() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.inflight)
+}
+
+// inflightWaiters is the number of callers currently joined onto in-flight
+// syntheses, across all entries. Test observability, like inflightLen.
+func (c *Client) inflightWaiters() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, s := range c.inflight {
+		n += int(s.waiters.Load())
+	}
+	return n
 }
 
 // cacheID is the identity of one synthesised artifact.
