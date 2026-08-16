@@ -1,0 +1,137 @@
+# Release — verify, build the container image, publish to GHCR, poke the droplet.
+#
+# The AFF-shaped deployment (deploy/docker/): one ritual — promote dev -> main, tag
+# vX.Y.Z on main, push the tag. This verifies the two-repo workspace, bakes the release
+# image (server + client wasm), pushes it, and POSTs the deploy hook; the box's
+# af-reader-autoupdate.sh does the tag comparison and a health-gated rollout with a
+# recorded rollback tag. No inbound SSH from CI; the box pulls.
+#
+# This REPLACES the deployhook.service "deploy on CI green on main" flow for ArticleFlux:
+# a release is a deliberate act (a tag a human pushes), and a docs commit to main no
+# longer restarts the reader mid-someone's-breakfast.
+#
+# workflow_dispatch (and any dev push touching deploy/docker/**) runs verify + a NO-PUSH
+# image build: the dry run that proves the Dockerfile before any tag exists.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['dev']
+    paths: ['deploy/docker/**', '.github/workflows/release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/monstercameron/articleflux
+  GO_VERSION: '1.26.5'
+
+jobs:
+  verify:
+    name: Verify before shipping
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # go.mod replaces GoWebComponents/v5 by relative path; this action materialises the
+      # sibling checkout at the pinned ref, exactly as ci.yml does.
+      - uses: ./.github/actions/gwc
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build (server + client wasm compile)
+        run: make build
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  build:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      # The Dockerfile wants both repos INSIDE the build context as siblings, so this repo
+      # goes into a subdirectory and GWC is checked out beside it. The gwc composite
+      # action cannot be used here — it moves its checkout to ../GoWebComponents, OUTSIDE
+      # the workspace, where a docker build context cannot reach. Its pinned ref is still
+      # the single source of truth: read from the action.yml default, never copied.
+      - uses: actions/checkout@v4
+        with:
+          path: ArticleFlux
+
+      - name: Read the GWC pin from .github/actions/gwc
+        id: gwc
+        run: |
+          set -euo pipefail
+          ref="$(awk '/^  ref:/{f=1} f && /default:/{print $2; exit}' ArticleFlux/.github/actions/gwc/action.yml)"
+          [ -n "$ref" ] || { echo "could not read the gwc ref pin"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "GoWebComponents pin: $ref"
+
+      - name: Check out GoWebComponents
+        uses: actions/checkout@v4
+        with:
+          repository: monstercameron/GoWebComponents
+          ref: ${{ steps.gwc.outputs.ref }}
+          path: GoWebComponents
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        run: echo "sha_tag=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ArticleFlux/deploy/docker/Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.sha_tag }}
+            ${{ env.IMAGE }}:latest
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', env.IMAGE, github.ref_name) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy hook (pull-based droplet update)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      # The hook only STARTS af-reader-autoupdate.sh on the box; a lost delivery is
+      # covered by the daily fallback timer, so a non-200 here is a slower deploy, not a
+      # failed one.
+      - name: POST the deploy hook
+        env:
+          HOOK_SECRET: ${{ secrets.AF_READER_DEPLOY_HOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HOOK_SECRET" ]; then
+            echo "AF_READER_DEPLOY_HOOK_SECRET is not set — skipping the poke; the daily timer will pick this release up."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/hook-body -w '%{http_code}' -m 30 -X POST \
+            -H "X-Articleflux-Deploy-Token: $HOOK_SECRET" \
+            https://feed.earlcameron.com/internal/deploy-hook || echo 000)
+          echo "hook answered $code: $(cat /tmp/hook-body 2>/dev/null || true)"
+          if [ "$code" != "200" ]; then
+            echo "::warning::deploy hook did not answer 200 — the daily fallback timer will still deploy this release"
+          fi

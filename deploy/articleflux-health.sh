@@ -22,6 +22,10 @@ URL="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
 # full disk leaves the first green forever.
 READY_URL="${ARTICLEFLUX_READY_URL:-$(printf '%s' "$URL" | sed 's|/healthz$|/readyz|')}"
 UNIT=articleflux
+# systemd or docker. On a Docker box (deploy/docker/) the reader is a container named
+# $UNIT, not a unit named $UNIT — same watchdog, same probes, same alerts; only the
+# restart verb changes. Set ARTICLEFLUX_RUNTIME=docker in the health unit's Environment=.
+RUNTIME="${ARTICLEFLUX_RUNTIME:-systemd}"
 REPORT_DIR="${REPORT_DIR:-/var/log/articleflux}"
 ALERT="${ALERT:-/usr/local/bin/articleflux-alert}"
 
@@ -66,11 +70,14 @@ probe() {
 
 recover() {
 	reason="$1"
-	logger -t articleflux-health "restarting $UNIT: $reason"
+	logger -t articleflux-health "restarting $UNIT ($RUNTIME): $reason"
 	# reset-failed first, unconditionally. If the unit tripped its start limit,
 	# `restart` alone is refused with "start request repeated too quickly" and
-	# this script would report success while changing nothing.
-	systemctl reset-failed "$UNIT" 2>/dev/null || true
+	# this script would report success while changing nothing. (Docker has no
+	# equivalent state to clear — `docker restart` always means what it says.)
+	if [ "$RUNTIME" = "systemd" ]; then
+		systemctl reset-failed "$UNIT" 2>/dev/null || true
+	fi
 
 	# Snapshot BEFORE the restart. A restart is also an evidence-destroying
 	# event: the wedged process is gone, its goroutine dump with it, and the
@@ -88,7 +95,16 @@ recover() {
 		logger -t articleflux-health "NO STATE CAPTURED: diagnose.sh not found (set DIAGNOSE= or ARTICLEFLUX_REPO= in the unit)"
 	fi
 
-	systemctl restart "$UNIT"
+	if [ "$RUNTIME" = "docker" ]; then
+		# The container's own log tail joins the snapshot — after the restart it
+		# still exists (same container, restarted), but the tail from BEFORE is
+		# the one that shows the wedge.
+		mkdir -p "$REPORT_DIR"
+		docker logs --tail 100 "$UNIT" > "$REPORT_DIR/last-watchdog-container.log" 2>&1 || true
+		docker restart "$UNIT"
+	else
+		systemctl restart "$UNIT"
+	fi
 
 	# Say whether the cure worked. A watchdog that restarts a service into the
 	# same wedge every two minutes forever, silently, is worse than no watchdog:
@@ -109,14 +125,46 @@ Reason: $reason
 State captured: $REPORT_DIR/last-watchdog-restart.json
 
 --- last 20 log lines ---
-$(journalctl -u "$UNIT" --no-pager --lines=20 -o cat 2>/dev/null)"
+$(log_tail 20)"
+	fi
+}
+
+# The service's recent log, wherever it lives for this runtime.
+log_tail() {
+	if [ "$RUNTIME" = "docker" ]; then
+		docker logs --tail "$1" "$UNIT" 2>&1 || true
+	else
+		journalctl -u "$UNIT" --no-pager --lines="$1" -o cat 2>/dev/null || true
 	fi
 }
 
 # Failed, and only failed. This is the crash-loop case: Restart=always means a
 # process that dies is restarted, so the only way the unit reaches "failed" is
 # by exhausting its start limit — exactly the state that never clears itself.
-if systemctl is-failed --quiet "$UNIT"; then
+#
+# The docker translation of the same state machine: `restarting` is the crash
+# loop (the restart policy is actively cycling a container that keeps dying);
+# `exited`/`created` under restart:unless-stopped means someone ran
+# `docker stop` or `compose down` — deliberate, leave it alone, same reasoning
+# as the systemctl-stop case below; absent means never deployed here.
+if [ "$RUNTIME" = "docker" ]; then
+	cstate=$(docker inspect -f '{{.State.Status}}' "$UNIT" 2>/dev/null || echo absent)
+	case "$cstate" in
+	restarting)
+		recover "container is restart-looping"
+		exit 0
+		;;
+	absent)
+		logger -t articleflux-health "container $UNIT does not exist — nothing to watch"
+		exit 0
+		;;
+	exited | created | paused)
+		logger -t articleflux-health "container is $cstate and not restarting — stopped on purpose, leaving it alone"
+		exit 0
+		;;
+	esac
+	# running: fall through to the probes, same as an active unit.
+elif systemctl is-failed --quiet "$UNIT"; then
 	recover "unit is failed (start limit exhausted)"
 	exit 0
 fi
@@ -127,7 +175,7 @@ fi
 # them — it is arguing with them, from cron, invisibly. The first version of this
 # script did exactly that. `systemctl stop` means stopped; `systemctl start` is
 # how it comes back.
-if ! systemctl is-active --quiet "$UNIT"; then
+if [ "$RUNTIME" = "systemd" ] && ! systemctl is-active --quiet "$UNIT"; then
 	state=$(systemctl is-active "$UNIT" 2>/dev/null) || true
 	logger -t articleflux-health "unit is ${state:-unknown} and not failed — stopped on purpose, leaving it alone"
 	exit 0

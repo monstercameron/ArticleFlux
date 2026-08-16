@@ -3,9 +3,19 @@
 Bare DigitalOcean droplet to a reader on TLS. Around twenty minutes, most of it
 waiting on `go build`.
 
+> **The production box moved to Docker on 2026-08-16** — see [`docker/`](docker/) for the
+> current flow: the Release workflow builds `ghcr.io/monstercameron/articleflux:vX.Y.Z`
+> on every tag, the box pulls it via a secret-gated deploy hook, and the rollout is
+> health-gated with a recorded rollback tag. Deploys key off TAG pushes now, not "CI
+> green on `main`" — the old deployhook flow no longer restarts the reader. The image
+> keeps this document's paths exactly (`/opt/articleflux/bin`, `/var/lib/articleflux`),
+> so the backup, restore-drill and health machinery below still means what it says; the
+> health watchdog takes `ARTICLEFLUX_RUNTIME=docker`, and backup/drill point their
+> existing `ARTICLEFLUX_BIN` override at `docker/articleflux-ctr`. Everything below
+> remains true for a systemd box and is the documented deep-rollback path.
+
 This is the **A9 remote-deployment** path. Everything here assumes Ubuntu 24.04
-LTS, nginx, and certbot; nothing here assumes Docker, because there is none in
-this project's loop.
+LTS, nginx, and certbot.
 
 ---
 

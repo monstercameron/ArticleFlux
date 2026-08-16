@@ -1,0 +1,29 @@
+#!/bin/sh
+# articleflux-ctr — run the ArticleFlux CLI out of the deployed container image.
+#
+# The ops scripts (articleflux-backup.sh, articleflux-restore-drill.sh) invoke the binary
+# through their ARTICLEFLUX_BIN override; on a Docker box that override points here. The
+# image keeps host paths (/var/lib/articleflux, and this wrapper adds /var/backups and
+# /tmp), so every -db/-out argument those scripts pass works unchanged — no translation.
+#
+# `docker run --rm` on the PINNED image from compose, not `docker exec` into the serving
+# container: a backup must work while the reader is being recreated mid-deploy, and an
+# exec into a container that is restarting fails at exactly the moment a snapshot matters.
+#
+# Install: /usr/local/bin/articleflux-ctr (0755). Then in /etc/articleflux/backup.env:
+#   ARTICLEFLUX_BIN=/usr/local/bin/articleflux-ctr
+set -eu
+
+COMPOSE_FILE="${AF_COMPOSE_FILE:-/opt/articleflux/compose.yaml}"
+IMAGE=$(grep -oE 'image:[[:space:]]*[^[:space:]]+' "$COMPOSE_FILE" | head -n1 | sed 's/image:[[:space:]]*//')
+RUN_AS=$(grep -oE 'user:[[:space:]]*"[^"]+"' "$COMPOSE_FILE" | head -n1 | sed 's/.*"\(.*\)"/\1/')
+
+[ -n "$IMAGE" ] || { echo "articleflux-ctr: could not read image from $COMPOSE_FILE" >&2; exit 1; }
+
+exec docker run --rm \
+    ${RUN_AS:+--user "$RUN_AS"} \
+    -v /var/lib/articleflux:/var/lib/articleflux \
+    -v /var/backups/articleflux:/var/backups/articleflux \
+    -v /tmp:/tmp \
+    --entrypoint /opt/articleflux/bin/articleflux \
+    "$IMAGE" "$@"

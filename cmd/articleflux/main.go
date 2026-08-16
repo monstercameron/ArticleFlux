@@ -137,6 +137,8 @@ func main() {
 		err = auditCmd(log, args)
 	case "migrate":
 		err = migrate(log, args)
+	case "healthcheck":
+		err = healthcheckCmd(log, args)
 	case "backup":
 		err = backup(log, args)
 	case "vacuum":
@@ -186,6 +188,7 @@ func usage() {
   articleflux reset   -user name [-origin url] [-db path]
   articleflux audit   [-n 50] [-since 24h] [-action a,b] [-alerts] [-json] [-db path]
   articleflux migrate [-db path]
+  articleflux healthcheck [-url http://127.0.0.1:9000/healthz]
   articleflux backup  -out path [-db path] [-keep n]
   articleflux vacuum  [-db path] [-incremental] [-n]
   articleflux rotate-key [-db path] [-yes] [-n]

@@ -1,0 +1,14 @@
+# af-reader-autoupdate.timer — DAILY FALLBACK check for a new ArticleFlux release.
+# The PRIMARY path is the deploy webhook POSTed by the Release workflow the moment the
+# image is published; this timer only covers a lost delivery, so it runs once a day.
+[Unit]
+Description=Daily fallback ArticleFlux auto-update check
+
+[Timer]
+OnBootSec=5min
+OnCalendar=daily
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

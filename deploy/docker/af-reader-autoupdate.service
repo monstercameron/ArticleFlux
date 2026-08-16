@@ -1,0 +1,12 @@
+# af-reader-autoupdate.service — one ArticleFlux auto-update check (driven by the .timer
+# as fallback; the deploy webhook runs the same script as the primary path). Oneshot: the
+# unit's outcome IS the deploy's, because the script blocks on the container healthcheck —
+# `journalctl -u af-reader-autoupdate` answers "did the last update work" directly.
+[Unit]
+Description=ArticleFlux auto-update to the newest v* release tag
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/af-reader-autoupdate.sh

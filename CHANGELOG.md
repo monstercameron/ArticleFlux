@@ -9,6 +9,18 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Added — 2026-08-16, Docker deployment
+
+- The production deployment is a container (`deploy/docker/`): the Release workflow
+  builds the image on every `v*` tag and the droplet pulls it through a secret-gated
+  deploy hook, health-gated with a recorded rollback tag. Releases key off tag pushes —
+  a commit to `main` no longer restarts the reader. `articleflux healthcheck` (new
+  subcommand) is the container's self-probe against the same `/healthz` the ops watchdog
+  gates on. The image mirrors the systemd deployment's paths, so backups, restore drills
+  and the health watchdog keep working (the watchdog gains `ARTICLEFLUX_RUNTIME=docker`;
+  backup/drill point `ARTICLEFLUX_BIN` at the `articleflux-ctr` wrapper). The systemd
+  flow remains documented as the deep rollback.
+
 ## [1.2.0] — 2026-08-08
 
 ### Added

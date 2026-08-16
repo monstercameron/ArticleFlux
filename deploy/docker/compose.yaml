@@ -1,0 +1,43 @@
+# Compose file for the Docker deployment of ArticleFlux — installed to
+# /opt/articleflux/compose.yaml on the droplet (af-reader-deploy-release.sh rewrites the
+# image tag pin in place there; deploys pin immutable v* tags, never :latest).
+services:
+  articleflux:
+    image: ghcr.io/monstercameron/articleflux:v0.0.0 # pinned by af-reader-deploy-release.sh
+    container_name: articleflux
+    restart: unless-stopped
+    # Run as the host's articleflux system user so the bind-mounted database keeps one
+    # owner and a rollback to the systemd unit sees identical permissions. BOX-SPECIFIC:
+    # read it with `id articleflux` when installing.
+    user: "997:988"
+    # Host loopback only — nginx stays the sole public listener, the same rule the
+    # systemd unit enforced with -addr 127.0.0.1:9000. Inside the container the server
+    # binds :9000; publishing to 127.0.0.1 is where that boundary lives now.
+    ports:
+      - "127.0.0.1:9000:9000"
+    # Same path inside and out — the design rule that keeps every ops script true.
+    volumes:
+      - /var/lib/articleflux:/var/lib/articleflux
+    # The Smart+ voice key, if set — same optional env file the systemd unit read.
+    env_file:
+      - path: /etc/articleflux/articleflux.env
+        required: false
+    # Deployment policy lives here, not in the image: -origin must be the URL a browser
+    # actually shows (scheme included) or every WebSocket upgrade is refused with the
+    # page loading fine — the unit file's own hard-won warning. -behind-proxy is safe
+    # ONLY because nginx overwrites X-Forwarded-For in front of this.
+    command:
+      [
+        "serve",
+        "-addr", ":9000",
+        "-db", "/var/lib/articleflux/articleflux.db",
+        "-web", "/opt/articleflux/bin/web",
+        "-origin", "https://feed.earlcameron.com",
+        "-behind-proxy",
+        "-poll", "15m",
+      ]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
