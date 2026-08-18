@@ -121,11 +121,14 @@ var unscopedByDesign = map[string]string{
 	// Scraped sources (4.7/6.8), added alongside this work. Reasons mirrored
 	// from internal/tools/guards so the two lists cannot say different things
 	// about the same method.
-	"ScrapeRuleFor":       "a global source's extraction rule; the poller has no tenant (A14)",
-	"ScopesToDerive":      "DISCOVERS scopes for the interest deriver rather than acting inside one; requiring a Scope would be circular, exactly like ScopeForSession. Background loop only — never reachable from an RPC",
-	"RecordScrapeOutcome": "rule health on a global source, written by the poller (A14)",
-	"KnownGUIDs":          "reads global item guids for one global source (A14)",
-	"RecordOutlinks":      "outlinks are a property of a global item (A14); one extraction serves every subscriber",
+	"ScrapeRuleFor":           "a global source's extraction rule; the poller has no tenant (A14)",
+	"ScopesToDerive":          "DISCOVERS scopes for the interest deriver rather than acting inside one; requiring a Scope would be circular, exactly like ScopeForSession. Background loop only — never reachable from an RPC",
+	"ScopesToRelabel":         "the same shape as ScopesToDerive and safe for the same reason: it DISCOVERS which readers have a per-user taxonomy to sweep, so a Scope would be circular. It returns nothing but (tenant_id, user_id) pairs — no article, no title, no assignment — and every method the sweep calls afterwards takes the Scope this one produced. Background ticker only",
+	"VectorsFor":              "reads item_analysis, which is unscoped BY DESIGN (§27.2, one row per global item, no tenant_id and no user_id) — exactly like AnalysisByIDs beside it. The caller passes ids it already resolved through a scoped query, and the vector is a property of the publisher's text rather than of any reader",
+	"ScopesWithSubscriptions": "DISCOVERS scopes for the weekly category-discovery pass, like ScopesToDerive and ScopesToRelabel. Returns only (tenant_id, user_id) pairs for accounts holding any subscription — no feed, no article, no title — and every method the pass calls afterwards takes the Scope this one produced. Background ticker only",
+	"RecordScrapeOutcome":     "rule health on a global source, written by the poller (A14)",
+	"KnownGUIDs":              "reads global item guids for one global source (A14)",
+	"RecordOutlinks":          "outlinks are a property of a global item (A14); one extraction serves every subscriber",
 	// Identity (5.1). Each of these either PRODUCES a Scope or runs before one
 	// can exist — the same category as ScopeForSession, and the reason that one
 	// is exempt too.

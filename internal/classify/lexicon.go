@@ -384,3 +384,49 @@ func scanWords(s string) []string {
 	}
 	return out
 }
+
+// MergeTerms appends `extra` to `base`, letting a later term replace an earlier
+// one with the same text rather than duplicating it.
+//
+// # Why this is not the caller's problem to solve
+//
+// `Compile` rejects a label carrying the same term twice, and it is right to:
+// two entries for one word are two different weights for one piece of evidence,
+// and whichever the index happened to keep would be silently arbitrary.
+//
+// But the reader amending a built-in has no way to know which terms it already
+// ships. `hardware` carries "raspberry pi" at 1.8; somebody typing "raspberry
+// pi" into their own term list is making a reasonable request and would get a
+// lexicon that refuses to compile — which, on a background sweep, means their
+// labelling silently stops working entirely rather than one term being ignored.
+//
+// The LATER term wins, because the later one is the reader's: an override that
+// lost to the shipped default would be an override that does nothing.
+func MergeTerms(base, extra []Term) []Term {
+	if len(extra) == 0 {
+		return base
+	}
+	out := make([]Term, 0, len(base)+len(extra))
+	at := make(map[string]int, len(base)+len(extra))
+	for _, list := range [][]Term{base, extra} {
+		for _, t := range list {
+			key := strings.ToLower(strings.TrimSpace(t.Text))
+			if key == "" {
+				continue
+			}
+			// Regex and literal terms with the same text are different terms —
+			// one is a pattern and one is a phrase — so they are keyed apart
+			// rather than collapsing into whichever came last.
+			if t.Regex {
+				key = "re:" + key
+			}
+			if i, seen := at[key]; seen {
+				out[i] = t
+				continue
+			}
+			at[key] = len(out)
+			out = append(out, t)
+		}
+	}
+	return out
+}

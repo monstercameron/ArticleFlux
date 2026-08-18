@@ -58,6 +58,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/recommendjob"
+	"github.com/monstercameron/ArticleFlux/internal/relabel"
 	"github.com/monstercameron/ArticleFlux/internal/render"
 	"github.com/monstercameron/ArticleFlux/internal/reqid"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -371,6 +372,17 @@ type App struct {
 	// every article in the database was unclassified no matter how good the
 	// classifier was.
 	analyzer *analyze.Service
+
+	// relabeler runs the PER-USER half of classification (0034): a reader's own
+	// categories, and the built-ins they have amended, scored over items the
+	// shared pass already analysed.
+	//
+	// Separate from `analyzer` rather than a mode of it, because the two have
+	// different cardinality and that is the whole design: one analysis per ITEM
+	// versus one placement per (item, reader). Folding them together is how the
+	// shared row silently becomes per-user, which is the 200x mistake §27.2a
+	// exists to prevent.
+	relabeler *relabel.Service
 	// fanout applies each subscriber's rules to items `analyzer` just finished
 	// analysing (§27.2a, TODO 10.19). It runs downstream of analysis rather than
 	// downstream of ingest, so a rule matching `category` sees the category on
@@ -792,6 +804,14 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 			pipeline.DefaultPolicy,
 		)
 	a.pool.Handle(store.JobAnalyze, a.analyzer.Handle)
+
+	// The per-user labelling sweep (0034). No consent key and no job kind: it
+	// makes no network call, spends nothing, and reads only rows this instance
+	// already has. What bounds it is `store.ScopesToRelabel`, which returns an
+	// empty slice on any instance where nobody has invented or amended a
+	// category — so the default-on cost of this subsystem is one query per
+	// quarter-hour until somebody actually uses the feature.
+	a.relabeler = relabel.New(repo, cfg.Log)
 
 	// Fan-out (§27.2a, TODO 10.19): registered and wired downstream of analysis,
 	// which is the one behavioural change to the pre-M29 path (6.7) — a rule
@@ -2170,6 +2190,25 @@ func (a *App) StartWorkers(ctx context.Context) {
 	// ends with the context the pool ends with.
 	if a.analyzer != nil {
 		go a.analyzer.RunBackfill(ctx, analyze.BackfillInterval)
+	}
+
+	// The per-user labelling sweep, on its own ticker beside the backfill.
+	//
+	// Its own goroutine rather than a step inside the backfill's, because the two
+	// answer different questions and stall for different reasons: the backfill is
+	// behind when the ANALYZER is behind, and this is behind when a reader has
+	// just edited their taxonomy. Chaining them would mean one reader's bad
+	// lexicon delayed everybody's analysis.
+	if a.relabeler != nil {
+		go a.relabeler.Run(ctx, relabel.Interval)
+		// Category discovery, weekly, on its own ticker.
+		//
+		// Weekly rather than quarter-hourly because it proposes a PERMANENT change
+		// to the reader's sidebar, and there is no version of "we found you a new
+		// category" that is improved by arriving four times an hour. It also does
+		// not run at boot — see RunDiscovery — so a crash-looping process cannot
+		// propose a category on every restart.
+		go a.relabeler.RunDiscovery(ctx, relabel.DiscoveryInterval)
 	}
 }
 
