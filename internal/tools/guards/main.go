@@ -228,8 +228,17 @@ var unscopedByDesign = map[string]string{
 	"StaleAnalysis":    "the backfill's queue over global items and their (possibly absent) analysis rows",
 	"ClearAnalysis":    "the repair tool for a fully derived global table (§27.2c); no per-user slice exists to scope to",
 	"PendingSmartPlus": "the Smart+ retry queue over global analysis rows, keyed by llm_at alone",
-	"RecordFetch":      "updates global source health (A14)",
-	"DueSources":       "the scheduler polls for every tenant at once (A14)",
+	"VectorsFor":       "reads item_analysis, unscoped by design for the reason above; the caller passes ids it already resolved through a scoped query, and a TF-IDF vector is a property of the publisher's text rather than of any reader",
+	// The two scope DISCOVERY methods (0034). Neither acts inside a scope — they
+	// produce the scopes a background sweep then acts within — so requiring one
+	// would be circular, exactly as it is for ScopesToDerive. Both return nothing
+	// but (tenant_id, user_id) pairs: no feed, no article, no title, no
+	// assignment. Reasons mirrored from internal/store/leak_test.go so the two
+	// lists cannot say different things about the same method.
+	"ScopesToRelabel":         "DISCOVERS which readers have a per-user taxonomy to sweep; a Scope would be circular, like ScopesToDerive. Returns only (tenant_id, user_id). Background ticker only",
+	"ScopesWithSubscriptions": "DISCOVERS readers holding any subscription, for the weekly category-discovery pass. Same shape and same argument as ScopesToDerive; returns only (tenant_id, user_id). Background ticker only",
+	"RecordFetch":             "updates global source health (A14)",
+	"DueSources":              "the scheduler polls for every tenant at once (A14)",
 	// A scrape rule belongs to the SOURCE, which is global: it is the site's
 	// selectors, not anybody's preference, and the poller that reads it has no
 	// user. The WRITE path (PutScrapeRule) does take a Scope and checks the
@@ -369,17 +378,17 @@ var unscopedByDesign = map[string]string{
 	// are exempt too. Note what is NOT here: ReplaceRecoveryCodes and
 	// RecoveryCodesRemaining are things a logged-in user does to their own
 	// account, and both take a Scope.
-	"RecordLoginAttempt":  "the login ledger, written before identity is established and most valuable for accounts that do not exist",
-	"FailureCounts":       "reads that ledger to decide a lockout, keyed by the username and address being attempted",
-	"LastFailureAt":       "same ledger, same key",
-	"PurgeLoginAttempts":  "housekeeping over the ledger by age alone, like PurgeExpiredSessions",
-	"PurgeAuditLog":       "housekeeping over the audit log by age alone. Unscoped for the same reason AuditTrailInstance is: instance-level rows carry no tenant, and a scoped purge would leave exactly those behind forever.",
-	"ConsumeRecoveryCode": "a recovery code is presented by somebody who CANNOT log in; requiring a Scope would defeat its only purpose. The code is the credential and it is bound to the user id passed alongside it.",
-	"RecoveryPassphraseHash": "read by somebody who CANNOT log in, exactly like ConsumeRecoveryCode — a Scope would defeat the only purpose it has; the hash is bound to the user id passed alongside it and the caller verifies it behind the same ledger and lockout curve as a login",
+	"RecordLoginAttempt":         "the login ledger, written before identity is established and most valuable for accounts that do not exist",
+	"FailureCounts":              "reads that ledger to decide a lockout, keyed by the username and address being attempted",
+	"LastFailureAt":              "same ledger, same key",
+	"PurgeLoginAttempts":         "housekeeping over the ledger by age alone, like PurgeExpiredSessions",
+	"PurgeAuditLog":              "housekeeping over the audit log by age alone. Unscoped for the same reason AuditTrailInstance is: instance-level rows carry no tenant, and a scoped purge would leave exactly those behind forever.",
+	"ConsumeRecoveryCode":        "a recovery code is presented by somebody who CANNOT log in; requiring a Scope would defeat its only purpose. The code is the credential and it is bound to the user id passed alongside it.",
+	"RecoveryPassphraseHash":     "read by somebody who CANNOT log in, exactly like ConsumeRecoveryCode — a Scope would defeat the only purpose it has; the hash is bound to the user id passed alongside it and the caller verifies it behind the same ledger and lockout curve as a login",
 	"MarkRecoveryPassphraseUsed": "records a redemption already earned on the unscoped path above; the user id is the one that just proved itself",
-	"CreateResetToken":    "minted for an account by an admin or the CLI; the authorisation is checked at the service, and the token names the user it resets",
-	"ConsumeResetToken":   "the presented token is the authorisation, exactly like RotateRefresh",
-	"PurgeResetTokens":    "housekeeping over spent and expired tokens by age alone",
+	"CreateResetToken":           "minted for an account by an admin or the CLI; the authorisation is checked at the service, and the token names the user it resets",
+	"ConsumeResetToken":          "the presented token is the authorisation, exactly like RotateRefresh",
+	"PurgeResetTokens":           "housekeeping over spent and expired tokens by age alone",
 }
 
 // guardRepoScope checks that repository methods take a Scope.
