@@ -34,7 +34,7 @@ jobs:
     name: Verify before shipping
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # go.mod replaces GoWebComponents/v5 by relative path; this action materialises the
       # sibling checkout at the pinned ref, exactly as ci.yml does.
@@ -64,7 +64,7 @@ jobs:
       # action cannot be used here — it moves its checkout to ../GoWebComponents, OUTSIDE
       # the workspace, where a docker build context cannot reach. Its pinned ref is still
       # the single source of truth: read from the action.yml default, never copied.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ArticleFlux
 
@@ -78,7 +78,7 @@ jobs:
           echo "GoWebComponents pin: $ref"
 
       - name: Check out GoWebComponents
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: monstercameron/GoWebComponents
           ref: ${{ steps.gwc.outputs.ref }}
