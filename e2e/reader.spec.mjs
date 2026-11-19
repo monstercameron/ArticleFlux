@@ -339,6 +339,22 @@ test.describe('reading', () => {
     await openArticleAt(rows, 0);
     await expect(page.locator('.article-body').first()).toBeVisible();
     await openArticleAt(rows, 2);
+    // Until it has ARRIVED, not merely set off. This used to wait for
+    // `scrollTop > 0`, which is true a frame into the travel — and the wheel
+    // below then took the scroll over 200ms after the click, an inch from the
+    // top, so "scrolling back" went back to the first article and never
+    // touched the one this test is about. It passed while the last article of
+    // a feed could not reach the top of the pane, because the trip was then
+    // too short to interrupt; on CI's runners, once it could, it failed every
+    // time. A reader who scrolls back into an article has got past it first.
+    const target = await rows.nth(2).getAttribute('data-item-id');
+    await expect
+      .poll(async () => page.evaluate((id) => {
+        const pane = document.querySelector('.pane-article');
+        const el = pane?.querySelector(`[data-article-id="${id}"]`);
+        return el ? Math.abs(el.offsetTop - pane.scrollTop) : -1;
+      }, target), { timeout: 20_000 })
+      .toBeLessThan(4);
     await expect
       .poll(async () => page.locator('.pane-article')
         .evaluate((el) => el.scrollTop), { timeout: 20_000 })

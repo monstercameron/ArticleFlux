@@ -60,6 +60,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
   one in `net/http`. CI, the image and the install script all build with 1.27.4 now.
 - The rail-fold tests assumed a pointer that had never moved was not over anything. It is at
   the corner of the window, which is over the rail, and Chromium on Linux says so.
+- **Clicking a headline further down could mark the article in between as read.** The pane
+  travels to the one that was clicked and ignores what passes under the fold on the way — but
+  it decided the trip was over when the pane had been still for two frames, and on a busy
+  machine a smooth scroll has not started moving by then. The guard came off at the start of
+  the trip instead of the end. It waits for the scroll to begin now; if the trip ends short
+  because an article above finished loading mid-flight, it is put right before anything is
+  counted; and a reader who takes the wheel mid-trip gets their scrolling counted from that
+  moment, not from whenever the pane next falls still.
 
 ### Fixed — 2026-11-19, found by using it: the reader, its addresses, and what a keyboard meets
 

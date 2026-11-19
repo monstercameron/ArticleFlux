@@ -1637,8 +1637,11 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 				opts.Set("top", child.Get("offsetTop"))
 				opts.Set("behavior", "smooth")
 				el.Call("scrollTo", opts)
-				whenScrollSettles(el, done)
+				travelToChild(el, childSelector, done)
 				return nil
+			}
+			if travelStop != nil {
+				travelStop()
 			}
 			el.Set("scrollTop", child.Get("offsetTop"))
 			// Final the moment it is assigned, so there is nothing to wait for —
@@ -1666,12 +1669,110 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 	js.Global().Call("requestAnimationFrame", frame)
 }
 
+// travelStop ends the travel now in flight, if any, without reporting it.
+//
+// One at a time, like the hold: a second open while the first is still in flight
+// redirects the same pane, both would see it fall still at the same moment, and
+// the first would then "correct" the pane back to an article the reader has
+// already left. The superseded travel ends silently — its caller's guard has
+// been re-armed for the new target and is the new travel's to release.
+var travelStop func()
+
+// travelToChild sees a smooth scroll to a child through to its end, and reports
+// that end once — whichever of the three ways it comes.
+//
+// The caller has armed something for the duration (the reader's "ignore what
+// passes under the fold on the way" guard), and a smooth scroll over a long
+// article is most of a second. Three things can happen in that time, and each
+// of them was a wrong answer when this was only "wait until it stops":
+//
+//   - It arrives. Then the child is held where it landed (holdChildAtTop), as an
+//     instant open's is, because the articles above it may still be skeletons.
+//   - It stops SHORT. The destination was the child's offset when the scroll was
+//     issued; a body landing above it mid-flight moves the child and not the
+//     destination, so the scroll ends in the middle of the article before — which
+//     the caller, released, then takes for the article being read and marks read.
+//     Nobody chose that article. So the end is checked against where the child
+//     is NOW, and put right before anybody is told the travel is over.
+//   - The reader takes the scroll over: a wheel, a finger. That ends the app's
+//     travel at once — the browser has already cancelled the animation — and the
+//     caller is released at once, because everything from here is the reader's
+//     own scrolling and has to count. Left armed until the pane fell still, the
+//     guard discarded every article a reader scrolled back through, for as long
+//     as they kept scrolling. No correction and no hold in this case: where the
+//     pane is now is where they put it.
+//
+// Only inputs that MOVE the pane count as taking over. A press or a key may be
+// the next navigation, or nothing at all, while the animation carries on; lifting
+// the guard for those would expose exactly the articles it is there to cover.
+func travelToChild(el js.Value, childSelector string, done func()) {
+	if travelStop != nil {
+		travelStop()
+	}
+	doc := js.Global().Get("document")
+	over := false
+	var onInput js.Func
+	opts := js.Global().Get("Object").New()
+	opts.Set("passive", true)
+	opts.Set("capture", true)
+	inputs := []string{"wheel", "touchmove"}
+	// end reports whether this call is the one that ended the travel.
+	end := func() bool {
+		if over {
+			return false
+		}
+		over = true
+		travelStop = nil
+		for _, ev := range inputs {
+			doc.Call("removeEventListener", ev, onInput, opts)
+		}
+		onInput.Release()
+		return true
+	}
+	travelStop = func() { end() }
+	onInput = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if end() && done != nil {
+			done()
+		}
+		return nil
+	})
+	for _, ev := range inputs {
+		doc.Call("addEventListener", ev, onInput, opts)
+	}
+	whenScrollSettles(el, func() {
+		if !end() {
+			return
+		}
+		// Re-queried: the reconciler may have replaced the node since.
+		if c := doc.Call("querySelector", childSelector); c.Truthy() {
+			want := c.Get("offsetTop").Float()
+			if d := want - el.Get("scrollTop").Float(); d > 1 || d < -1 {
+				el.Set("scrollTop", want)
+			}
+			holdChildAtTop(el, childSelector)
+		}
+		if done != nil {
+			done()
+		}
+	})
+}
+
 // whenScrollSettles calls fn once a smooth scroll has stopped moving.
 //
 // Polled rather than listened for: `scrollend` is not available everywhere this
 // runs, and the alternative — a fixed delay matched to the browser's animation —
 // is a guess that is wrong on a slow machine in the one direction that matters.
 // Two consecutive frames at the same offset is the definition of stopped.
+//
+// But only once it has STARTED. A smooth scroll is issued on one frame and
+// begins moving on a later one, and on a machine with frames to spare that is
+// the next; on a loaded one it is not, and "two frames at the same offset" is
+// then true of a scroll that has not begun. That released the caller at the
+// start of the travel instead of the end of it: the guard was off for the whole
+// of the trip, and the article the trip passed over was marked read. So a scroll
+// that has not moved yet is given a dozen frames to do so before stillness is
+// believed — long enough for a slow start, short enough that a scroll with
+// nowhere to go (the child is already at the top) does not keep anyone waiting.
 //
 // Capped, because a scroll can be interrupted by another one and then this would
 // watch a position that keeps moving for as long as the reader keeps scrolling.
@@ -1681,7 +1782,12 @@ func whenScrollSettles(el js.Value, fn func()) {
 	if fn == nil {
 		return
 	}
-	const maxFrames = 90 // ~1.5s at 60fps, well past any smooth scroll
+	const (
+		maxFrames   = 90 // ~1.5s at 60fps, well past any smooth scroll
+		startFrames = 12 // how long a scroll is given to begin
+	)
+	start := el.Get("scrollTop").Float()
+	begun := false
 	last := -1.0
 	same := 0
 	tries := 0
@@ -1689,13 +1795,16 @@ func whenScrollSettles(el js.Value, fn func()) {
 	frame = js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		tries++
 		now := el.Get("scrollTop").Float()
+		if now != start {
+			begun = true
+		}
 		if now == last {
 			same++
 		} else {
 			same = 0
 			last = now
 		}
-		if same >= 2 || tries >= maxFrames {
+		if (same >= 2 && (begun || tries >= startFrames)) || tries >= maxFrames {
 			frame.Release()
 			fn()
 			return nil
