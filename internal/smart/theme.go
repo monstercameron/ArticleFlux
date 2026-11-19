@@ -12,7 +12,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The Smart+ half of the theming engine (§20.16.3).
@@ -181,6 +181,20 @@ type paletteReply struct {
 	Wash   int    `json:"wash"`
 }
 
+// missing names the first required field the reply left empty, or "".
+func (r paletteReply) missing() string {
+	for _, f := range []struct{ name, v string }{
+		{"label", r.Label}, {"ground", r.Ground}, {"raised", r.Raised}, {"sunk", r.Sunk},
+		{"line", r.Line}, {"hair", r.Hair}, {"cream", r.Cream}, {"soft", r.Soft},
+		{"dim", r.Dim}, {"read", r.Read}, {"accent", r.Accent}, {"pos", r.Pos}, {"neg", r.Neg},
+	} {
+		if strings.TrimSpace(f.v) == "" {
+			return f.name
+		}
+	}
+	return ""
+}
+
 // Compose turns a phrase into a palette.
 //
 // Returns the theme, and the repairs the readability floor had to make. The
@@ -246,26 +260,22 @@ func (p *Palettes) ask(ctx context.Context, instructions string, payload llm.The
 	// temperature" is deliberation, and it is the product being bought. A cheap
 	// answer here is twelve colours that individually satisfy the brief and
 	// together look like a spreadsheet.
-	reply, err := schemaflux.Generating[paletteReply](string(body)).
-		Steer(instructions).
+	reply, err := schemaflux.Generate[paletteReply](call, string(body), schemaflux.GenerateOptions{
 		// The ceiling, stated rather than inherited from the tier (ceilings.go).
-		Configure(capGenerate(paletteMaxTokens)).
-		Model(p.llm.OpsModel(ctx)).
-		Smart().
-		// `CompleteFields()` rather than `Strict()` (SchemaFlux DX-007).
-		//
-		// Strict means two things at once, and only one of them was wanted
-		// here. The half that matters is completeness: a palette missing one of
-		// its thirteen colours is not a palette, and the repair pass below
-		// cannot invent the one that never arrived. The half that was arriving
-		// with it — rejecting a property the schema does not name — could fail
-		// a whole theme because a model volunteered a "notes" field alongside
-		// thirteen perfectly good colours, and this is a reader pressing a
-		// button and waiting for an answer.
-		CompleteFields().
-		Run(call)
+		Options: sfOpts(p.llm.OpsModel(ctx), schemaflux.TierSmart, instructions, paletteMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		return design.Theme{}, nil, err
+	}
+	// Completeness, checked here: v1 asked the library for it (`CompleteFields()`,
+	// DX-007) and v2's Generate has no such option — only Extract does, and this
+	// is a generation, not an extraction. A palette missing one of its colours is
+	// not a palette, and the repair pass below cannot invent the one that never
+	// arrived. An extra property the model volunteered is still tolerated, which
+	// was the half of Strict that was never wanted here.
+	if missing := reply.missing(); missing != "" {
+		return design.Theme{}, nil, fmt.Errorf("smart: the palette came back without %s", missing)
 	}
 
 	theme, reps, err := design.NewGenerated(reply.Label, reply.Blurb, design.GeneratedTokens{

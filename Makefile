@@ -13,17 +13,11 @@
 # So the rule is: THE VERBS MUST MATCH scripts/make.ps1, one for one. Two build
 # systems is only a lie if they disagree. Anything added to one goes in the
 # other, and `make help` and `make.ps1 help` list the same set.
-#
-# D0: go.mod carries `replace github.com/monstercameron/GoWebComponents/v5 =>
-# ../GoWebComponents`, because v5.0.0 was never tagged. Building here therefore
-# needs that sibling checkout NEXT TO this one. `make deps` says so loudly rather
-# than letting `go build` fail with a path error nobody reads.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
 ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-GWC_SRC  := $(abspath $(ROOT)/../GoWebComponents)
 BIN      := $(ROOT)/bin
 OUT      := $(BIN)/web
 WASM     := $(OUT)/app.wasm
@@ -44,15 +38,32 @@ VERSION  ?= dev
 # was quietly measuring a different binary from the one CI and make.ps1 measure.
 WASMFLAGS := -trimpath '-ldflags=-s -w'
 
+# GOEXPERIMENT=nojsonv2 on every wasm ARTIFACT build, and only there.
+#
+# Go 1.27 turned the encoding/json v2 implementation on by default, and linking
+# it costs the bundle about a megabyte: 34,510,320 bytes with it against
+# 33,455,770 without, measured on this tree on 2026-11-19. Nothing in the client
+# asks for v2 (it never imports encoding/json/v2), so that megabyte was the price
+# of a toolchain upgrade and bought nothing. GoWebComponents' own launcher forces
+# the same setting for the same reason. With it on, the bundle sat four
+# kilobytes under the +5% ratchet ceiling — the next feature would have had to
+# move wasm-baseline.txt to pay for a JSON implementation nobody uses.
+#
+# It has to be set in EVERY place that builds the shipped module (this file,
+# scripts/make.ps1, ci.yml's ratchet and e2e jobs, deploy/install.sh), or the
+# ratchet measures a different binary from the one that ships. The compile-only
+# checks (`go build ./client/...`, vet, the wasm tests) do not set it: they
+# produce no artifact, and they should keep proving the default toolchain works.
+WASMENV := GOEXPERIMENT=nojsonv2 GOOS=js GOARCH=wasm
+
 .PHONY: help deps gen build test wasmtest wasm demo run dev e2e lint migrate perf perf-compare \
-        tools clean linux install-service backup
+        clean linux install-service backup
 
 help:
 	@echo 'ArticleFlux task runner (mirrors scripts/make.ps1)'
 	@echo
-	@echo '  make deps      check the toolchain and the D0 sibling checkout'
+	@echo '  make deps      check that a Go toolchain is installed'
 	@echo '  make wasmtest  go test client/data + client/i18n + client/platform + client/view (wasm)'
-	@echo '  make tools     build gwc.exe from ../GoWebComponents (D0)'
 	@echo '  make gen       buf lint + buf generate -> internal/pb'
 	@echo '  make build     go build -> bin/articleflux'
 	@echo '  make test      go test ./...'
@@ -76,29 +87,22 @@ help:
 
 # --- toolchain -----------------------------------------------------------------
 
+# `deps` used to check two things, and the second is gone. go.mod once resolved
+# GoWebComponents through a `replace` to a sibling directory, so every build here
+# needed that checkout NEXT TO this one, and this target said so rather than
+# letting `go build` fail with a path error. GWC is a published module now and
+# is downloaded like every other requirement, so nothing has to sit beside this
+# repository. What is left is the failure that still deserves its own sentence:
+# no Go at all, on a distribution whose obvious fix (apt) installs one too old.
+#
+# There was a `tools` target here as well, which built the `gwc` launcher from
+# that same checkout. Nothing in this file ever ran the result — `wasm` calls
+# `go build` directly so its flags stay visible — so it went with the sibling.
 deps:
 	@command -v go >/dev/null || { \
 	  echo 'go is not installed. Ubuntu: see deploy/README.md — the archive from'; \
 	  echo 'go.dev/dl, not apt, which ships a version too old for this go.mod.'; exit 1; }
 	@go version
-	@if [ ! -d "$(GWC_SRC)" ]; then \
-	  echo; \
-	  echo 'GoWebComponents is not checked out at $(GWC_SRC).'; \
-	  echo; \
-	  echo 'D0: go.mod replaces the v5 module with a sibling directory because'; \
-	  echo 'v5.0.0 was never tagged or published. Until it is, this build needs'; \
-	  echo 'the checkout to sit NEXT TO this one:'; \
-	  echo; \
-	  echo '  cd $(dir $(ROOT)) && git clone <gwc-remote> GoWebComponents'; \
-	  echo; \
-	  exit 1; \
-	fi
-	@echo "GoWebComponents: $(GWC_SRC)"
-
-tools: deps
-	@mkdir -p $(BIN)
-	cd $(GWC_SRC) && go build -o $(BIN)/gwc ./tools/gwc
-	@echo "  $(BIN)/gwc"
 
 gen:
 	buf lint
@@ -149,11 +153,18 @@ test:
 # media durations, returned zero every time, and greeted every listener with the
 # SERVER's clock — a bug that lived precisely because an ungated wasm package is
 # a package with no tests at all.
+#
+# The shim's path is quoted INSIDE -exec, and that is not belt-and-braces.
+# `go test` splits the flag's value on spaces and honours quotes around a field,
+# so a GOROOT with a space in it — `C:\Program Files\Go`, when this recipe's
+# body is run under Git Bash on the development box — otherwise asks node to
+# run a file called `C:\Program`, which fails as a missing module rather than as
+# a quoting mistake.
 wasmtest:
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec_node.js"; \
 	 [ -f "$$exec_js" ] || { echo "wasm_exec_node.js not found under $$(go env GOROOT)/lib/wasm — is this Go's Node exec shim missing?"; exit 1; }; \
 	 command -v node >/dev/null || { echo "node is not on PATH — the wasm test harness runs the compiled test binary under it"; exit 1; }; \
-	 GOOS=js GOARCH=wasm go test -exec="node $$exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
+	 GOOS=js GOARCH=wasm go test -exec="node '$$exec_js'" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
 
 lint:
 	go vet ./...
@@ -180,6 +191,17 @@ wasm: deps
 # They ship together or the typography silently is not the design.
 	cp web/fonts.css $(OUT)/fonts.css
 	rm -rf $(OUT)/fonts && cp -r web/fonts $(OUT)/fonts
+# The broadcast's music beds (§19), as make.ps1 stages them. Twelve megabytes, fetched
+# only when a reader turns a bed on, so a build without them still boots — which is
+# exactly why this went missing from this target unnoticed: the container image is built
+# with `make wasm`, and shipped without them, and nothing failed. The server looks for
+# them at <web root>/audio (internal/app audioDirOf).
+	@if [ -d web/audio ]; then rm -rf $(OUT)/audio && cp -r web/audio $(OUT)/audio; fi
+# The landing page served at /welcome (internal/app serves <web root>/welcome.html).
+# install.sh and update.sh get it for free by copying all of web/; this target and
+# make.ps1 copied files by name and so never did, which left /welcome a 404 in the
+# container image and in every local build.
+	@if [ -f web/welcome.html ]; then cp web/welcome.html $(OUT)/welcome.html; fi
 # The manifest and the icons (§20.24). index.html links the manifest by relative
 # path and the manifest names each icon the same way, so a build that ships one
 # without the other is an app the browser refuses to install — with no error on
@@ -190,7 +212,7 @@ wasm: deps
 # `node e2e/home-shots.mjs`. Not part of the app shell: a deployment without them
 # loses the front door's illustrations rather than the reader.
 	rm -rf $(OUT)/shots && cp -r web/shots $(OUT)/shots
-	GOOS=js GOARCH=wasm go build $(WASMFLAGS) -o $(WASM) ./client/app
+	$(WASMENV) go build $(WASMFLAGS) -o $(WASM) ./client/app
 	@# wasm_exec.js must come from the toolchain that produced the module. A stale
 	@# copy from an older Go fails at instantiate with an import mismatch that
 	@# reads like a corrupt binary.
@@ -266,7 +288,7 @@ demo: deps
 	@# stamped index still links fonts.css, and every URL in it is relative.
 	@cp web/fonts.css $(DEMO)/fonts.css
 	@rm -rf $(DEMO)/fonts && cp -r web/fonts $(DEMO)/fonts
-	GOOS=js GOARCH=wasm go build -trimpath \
+	$(WASMENV) go build -trimpath \
 	  '-ldflags=-s -w -X main.version=$(VERSION)' -o $(DEMO)/app.wasm ./client/demo
 	@exec_js="$$(go env GOROOT)/lib/wasm/wasm_exec.js"; \
 	 [ -f "$$exec_js" ] || exec_js="$$(go env GOROOT)/misc/wasm/wasm_exec.js"; \

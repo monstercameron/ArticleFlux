@@ -1,4 +1,4 @@
-import { test, expect, boot, openFeed } from './fixtures.mjs';
+import { test, expect, boot, openFeed, openRow } from './fixtures.mjs';
 
 /**
  * Responsive behaviour, asserted rather than eyeballed.
@@ -86,7 +86,7 @@ for (const w of widths) {
 
     // And in the article view, which renders arbitrary publisher HTML — the
     // most likely thing to break out of the column.
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     // .first(): the reading pane is a STREAM (A28), so opening an article can
     // leave several in it — and on a phone it now reliably does, because the
     // pane is laid out at every width since the filmstrip landed and can
@@ -106,7 +106,7 @@ test('below 720px exactly one pane is visible at a time', async ({ page }) => {
   await expect(page.locator('.pane-list')).toBeVisible();
   await expect(page.locator('.pane-article')).toBeHidden();
 
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(page.locator('.pane-article')).toBeVisible();
   await expect(page.locator('.pane-list')).toBeHidden();
 
@@ -126,7 +126,7 @@ test('at 1080px and up all three panes are visible together', async ({ page }) =
 
   // Clicking must not swap panes on a wide screen — that would be the phone's
   // behaviour leaking onto the desktop.
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(page.locator('.pane-list')).toBeVisible();
   await expect(page.locator('.pane-rail')).toBeVisible();
 });
@@ -255,7 +255,7 @@ test('phone navigation survives the narrow-viewport chrome rules', async ({ page
   // And from the sidebar into a feed, and from the article back again — the
   // full round trip, because a one-way door is the same bug wearing a hat.
   await openFeed(page, /Alpha Journal/);
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(page.locator('.pane-article')).toBeVisible();
   await page.getByRole('button', { name: '‹ List' }).click();
   await expect(page.locator('.pane-list')).toBeVisible();
@@ -306,7 +306,7 @@ for (const theme of THEMES) {
           await page.getByRole('button', { name: '‹ Feeds' }).click().catch(() => {});
         }
       }
-      await page.locator('.item-row').first().click();
+      await openRow(page, 0);
       await expect(page.locator('.article h1').first()).toBeVisible();
       await expectNoHorizontalOverflow(page);
 

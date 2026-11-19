@@ -21,7 +21,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // subscribeFixture is a plain, network-free server: nil fetcher, no site
@@ -372,8 +372,8 @@ func TestSubscribeSmartCategorizePrefOffAttemptsNoSuggestion(t *testing.T) {
 	// typed operation, so a categorizer that ran despite the gate would reach
 	// the provider without ever touching Do — and an assertion on Do would pass
 	// while the gate was broken.
-	prov := schemafluxtest.New().Shaped()
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().Shaped()
+	sftest.Install(t, prov)
 	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{
@@ -429,8 +429,8 @@ func TestSubscribeSmartCategorizeSuggestsAnExistingCategory(t *testing.T) {
 	// `Choose` tags its options `i-000001`, `i-000002`, … in the order given
 	// and answers with the id — here the reader has one folder, "Tech", so it
 	// is the first option and the sentinel "None of these fit" is the second.
-	provider := schemafluxtest.New().Shaped().Reply(`{"id":"i-000001"}`)
-	schemafluxtest.Install(t, provider)
+	provider := sftest.New().Shaped().Reply(`{"q1":1}`) // A47: a labelled decision (Which), answered by position
+	sftest.Install(t, provider)
 	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{
@@ -459,8 +459,8 @@ func TestSubscribeSmartCategorizeSkippedWhenReaderAlreadyChoseAFolder(t *testing
 	if err != nil {
 		t.Fatalf("CreateFolder: %v", err)
 	}
-	prov := schemafluxtest.New().Shaped()
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().Shaped()
+	sftest.Install(t, prov)
 	srv.categorizer = smart.NewCategorizer(&fakePaletteClient{configured: true}, nil)
 
 	resp, err := srv.Subscribe(context.Background(), &pb.SubscribeRequest{

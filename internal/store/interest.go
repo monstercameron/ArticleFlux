@@ -76,13 +76,19 @@ func (r *ReaderRepo) ReplaceFeedAffinity(ctx context.Context, s Scope, rows []Fe
 			`DELETE FROM feed_affinity WHERE user_id = ?`, s.UserID); err != nil {
 			return err
 		}
+		// Prepared once for the batch; see ReplaceTermAffinity.
+		ins, err := tx.PrepareContext(ctx, `
+			INSERT INTO feed_affinity
+			    (user_id, source_id, impressions, opens, favorites, notes, bookmarks,
+			     bounces, median_dwell_ms, completion_rate, volume_per_day,
+			     half_life_hours, score, last_engaged_at, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ins.Close() }()
 		for _, a := range rows {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO feed_affinity
-				    (user_id, source_id, impressions, opens, favorites, notes, bookmarks,
-				     bounces, median_dwell_ms, completion_rate, volume_per_day,
-				     half_life_hours, score, last_engaged_at, updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			if _, err := ins.ExecContext(ctx,
 				s.UserID, a.SourceID, a.Impressions, a.Opens, a.Favorites, a.Notes,
 				a.Bookmarks, a.Bounces, a.MedianDwellMS, a.CompletionRate,
 				a.VolumePerDay, a.HalfLifeHours, a.Score, nullify(a.LastEngagedAt), now,
@@ -146,11 +152,18 @@ func (r *ReaderRepo) ReplaceTermAffinity(ctx context.Context, s Scope, terms []T
 			`DELETE FROM term_affinity WHERE user_id = ?`, s.UserID); err != nil {
 			return err
 		}
+		// Prepared once for the batch. The driver has no statement cache, so
+		// tx.ExecContext per row re-parsed and re-planned the INSERT up to
+		// MaxTerms (2000) times inside the single write connection.
+		ins, err := tx.PrepareContext(ctx,
+			`INSERT INTO term_affinity (user_id, term, weight, doc_freq, updated_at)
+			 VALUES (?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ins.Close() }()
 		for _, t := range terms {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO term_affinity (user_id, term, weight, doc_freq, updated_at)
-				 VALUES (?,?,?,?,?)`,
-				s.UserID, t.Term, t.Weight, t.DocFreq, now); err != nil {
+			if _, err := ins.ExecContext(ctx, s.UserID, t.Term, t.Weight, t.DocFreq, now); err != nil {
 				return err
 			}
 		}
@@ -673,6 +686,23 @@ func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []Ra
 			`DELETE FROM item_clusters WHERE user_id = ?`, s.UserID); err != nil {
 			return err
 		}
+		// Both prepared once for the batch; see ReplaceTermAffinity.
+		insRank, err := tx.PrepareContext(ctx, `
+			INSERT INTO home_ranking
+			    (user_id, item_id, score, rank, slot, cluster_id, topic_id, reasons_json, tier, computed_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = insRank.Close() }()
+		insCluster, err := tx.PrepareContext(ctx, `
+			INSERT INTO item_clusters
+			    (user_id, item_id, cluster_id, is_head, other_sources, computed_at)
+			VALUES (?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = insCluster.Close() }()
 		for _, it := range items {
 			reasons, err := json.Marshal(it.Reasons)
 			if err != nil {
@@ -682,10 +712,7 @@ func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []Ra
 			if tier == "" {
 				tier = "smart"
 			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO home_ranking
-				    (user_id, item_id, score, rank, slot, cluster_id, topic_id, reasons_json, tier, computed_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			if _, err := insRank.ExecContext(ctx,
 				s.UserID, it.ItemID, it.Score, it.Rank, it.Slot, nullify(it.ClusterID),
 				nullify(it.TopicID), string(reasons), tier, now); err != nil {
 				return err
@@ -696,10 +723,7 @@ func (r *ReaderRepo) ReplaceHomeRanking(ctx context.Context, s Scope, items []Ra
 			if c.IsHead {
 				isHead = 1
 			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO item_clusters
-				    (user_id, item_id, cluster_id, is_head, other_sources, computed_at)
-				VALUES (?,?,?,?,?,?)`,
+			if _, err := insCluster.ExecContext(ctx,
 				s.UserID, c.ItemID, c.ClusterID, isHead, c.OtherSources, now); err != nil {
 				return err
 			}
@@ -886,12 +910,83 @@ func (r *ReaderRepo) HalfLifeFor(ctx context.Context, s Scope, sourceID string) 
 		return 0, err
 	}
 
-	// Under ten engagements the median is noise dressed as a measurement.
-	const minSamples = 10
-	if len(ages) < minSamples {
-		return 0, nil
+	return halfLifeOf(ages), nil
+}
+
+// halfLifeOf is the median of ascending ages, or zero under minHalfLifeSamples.
+func halfLifeOf(ages []float64) float64 {
+	if len(ages) < minHalfLifeSamples {
+		return 0
 	}
-	return ages[len(ages)/2], nil
+	return ages[len(ages)/2]
+}
+
+// Under ten engagements the median is noise dressed as a measurement.
+const minHalfLifeSamples = 10
+
+// HalfLives is HalfLifeFor for every source at once, keyed by source id; a
+// source with too little data is absent, which reads as the zero HalfLifeFor
+// returns.
+//
+// # Why it exists: derive called HalfLifeFor once per source
+//
+// The per-source statement cannot seek on the source: its filter is on
+// `i.source_id`, so SQLite walks every engagement this reader has ever made
+// (engagements_user_item) and joins each to its item to test the source — and
+// does that again for the next source. A derivation over 150 feeds was 150
+// full passes over the reader's whole engagement log, inside the job every
+// reader's homepage waits on. One pass, grouped here, returns the same medians:
+// the rows, the filters and the ascending order within a source are the
+// statement's own, so each source's slice is exactly the slice HalfLifeFor
+// would have built. TestHalfLivesMatchesHalfLifeFor.
+func (r *ReaderRepo) HalfLives(ctx context.Context, s Scope) (map[string]float64, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT i.source_id,
+		       (e.at - (strftime('%s', i.published_at) * 1000)) / 3600000.0 AS age_hours
+		  FROM engagements e
+		  JOIN items i ON i.id = e.item_id
+		 WHERE e.user_id = ?
+		   AND e.kind IN ('opened','dwell','completed')
+		   AND e.at > strftime('%s', i.published_at) * 1000
+		 ORDER BY i.source_id, age_hours ASC`, s.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]float64{}
+	var (
+		cur  string
+		ages []float64
+	)
+	flush := func() {
+		if h := halfLifeOf(ages); h != 0 {
+			out[cur] = h
+		}
+		ages = ages[:0]
+	}
+	for rows.Next() {
+		var src string
+		var age float64
+		if err := rows.Scan(&src, &age); err != nil {
+			return nil, err
+		}
+		if src != cur {
+			flush()
+			cur = src
+		}
+		if age >= 0 && !math.IsInf(age, 0) {
+			ages = append(ages, age)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	flush()
+	return out, nil
 }
 
 // Entity is one brand, product or organisation the reader keeps reading about.
@@ -1000,6 +1095,16 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 			`DELETE FROM entity_affinity WHERE user_id = ?`, s.UserID); err != nil {
 			return err
 		}
+		// Prepared once for the batch; see ReplaceTermAffinity.
+		ins, err := tx.PrepareContext(ctx, `
+			INSERT INTO entity_affinity
+			  (user_id, name, label, kind, weight, mentions, suppressed, steer,
+			   first_seen_at, last_seen_at, computed_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ins.Close() }()
 		for _, e := range es {
 			if e.Name == "" {
 				continue
@@ -1012,11 +1117,7 @@ func (r *ReaderRepo) ReplaceEntityAffinity(ctx context.Context, s Scope, es []En
 			if v, ok := steer[e.Name]; ok {
 				st = clampSteer(v)
 			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO entity_affinity
-				  (user_id, name, label, kind, weight, mentions, suppressed, steer,
-				   first_seen_at, last_seen_at, computed_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			if _, err := ins.ExecContext(ctx,
 				s.UserID, e.Name, e.Label, e.Kind, e.Weight, e.Mentions,
 				boolInt(suppressed[e.Name]), st, first, now, now); err != nil {
 				return err
@@ -1172,7 +1273,7 @@ func (r *ReaderRepo) RankedItems(ctx context.Context, s Scope, after, limit int)
 		limit = MaxRankedPage
 	}
 
-	rows, err := r.db.Read.QueryContext(ctx, `
+	rows, err := r.db.query(ctx, `
 		SELECT hr.item_id, hr.score, hr.rank, hr.slot, ifnull(hr.topic_id,''),
 		       hr.reasons_json, hr.tier,
 		       i.source_id, COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
@@ -1254,20 +1355,32 @@ func (r *ReaderRepo) CountRanked(ctx context.Context, s Scope) (int, error) {
 		return 0, ErrNoScope
 	}
 	var n int
-	err := r.db.Read.QueryRowContext(ctx, `
+	// CROSS JOIN, which in SQLite is an inner join whose order the planner may
+	// not change — so the same rows as the JOIN form, counted from the other end.
+	// Left to choose, the planner drove this from user_item_state's unread rows
+	// (uis_user_recent: every unread article the reader has, 16,700 on G3) and
+	// probed home_ranking for each, 3.6ms. The ranking is at most MaxRanked rows,
+	// so walking it and probing each row's state by primary key is bounded by
+	// the page, not the backlog. This is issued beside every ListFeeds, so it is
+	// on the sidebar's critical path. TestCountRankedPlanIsDrivenByTheRanking.
+	err := r.db.queryRow(ctx, countRankedSQL, s.UserID).Scan(&n)
+	return n, err
+}
+
+// countRankedSQL is CountRanked's statement, a constant so the plan test can
+// EXPLAIN exactly it.
+const countRankedSQL = `
 		SELECT count(*)
 		  FROM home_ranking hr
-		  JOIN items i ON i.id = hr.item_id
-		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = hr.user_id
-		  JOIN sources src ON src.id = i.source_id
-		  JOIN user_item_state uis
+		  CROSS JOIN user_item_state uis
 		    ON uis.item_id = hr.item_id AND uis.user_id = hr.user_id
+		  CROSS JOIN items i ON i.id = hr.item_id
+		  CROSS JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = hr.user_id
+		  CROSS JOIN sources src ON src.id = i.source_id
 		 WHERE hr.user_id = ?
 		   AND i.deactivated_at IS NULL
 		   AND src.deactivated_at IS NULL
-		   AND uis.read_at IS NULL`, s.UserID).Scan(&n)
-	return n, err
-}
+		   AND uis.read_at IS NULL`
 
 // ScopesToDerive returns the users whose interest layer is worth recomputing:
 // those with at least one AFFINITY-BEARING engagement newer than `since`.

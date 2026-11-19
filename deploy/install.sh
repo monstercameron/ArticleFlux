@@ -11,7 +11,6 @@
 #
 # What it leaves behind:
 #   /opt/ArticleFlux            the checkout, and bin/ built from it
-#   /opt/GoWebComponents        the sibling library go.mod's replace points at
 #   /var/lib/articleflux        the database, the keys, the asset cache
 #   /var/backups/articleflux    rollback points, written by update.sh
 #   /etc/articleflux/*.env      alerting and off-box backup, both empty by default
@@ -25,14 +24,12 @@ set -euo pipefail
 SCRIPT_ARGS="$*"
 
 REPO_URL="${ARTICLEFLUX_REPO_URL:-https://github.com/monstercameron/ArticleFlux.git}"
-GWC_URL="${GWC_REPO_URL:-https://github.com/monstercameron/GoWebComponents.git}"
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
-GWC="${GWC_REPO:-/opt/GoWebComponents}"
 DATA="${ARTICLEFLUX_DATA:-/var/lib/articleflux}"
 BACKUPS="${ARTICLEFLUX_BACKUPS:-/var/backups/articleflux}"
 OWNER="${ARTICLEFLUX_USER:-articleflux}"
 PORT="${ARTICLEFLUX_PORT:-9000}"
-GO_VERSION="${GO_VERSION:-1.26.5}"
+GO_VERSION="${GO_VERSION:-1.27.3}"
 BRANCH="${ARTICLEFLUX_BRANCH:-main}"
 
 ORIGIN=""
@@ -44,7 +41,7 @@ while [ $# -gt 0 ]; do
 		--branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
 		--no-nginx) WITH_NGINX=0; shift ;;
 		--verbose|-v) VERBOSE=1; shift ;;
-		-h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
 	esac
 done
@@ -142,14 +139,14 @@ done_ok "directories ready"
 # --- 5. source ---------------------------------------------------------------
 step "Cloning the source"
 [ -d "$REPO/.git" ] || run git clone --quiet --branch "$BRANCH" "$REPO_URL" "$REPO"
-# GoWebComponents is a hard requirement, not an optional extra: go.mod resolves
-# it through `replace ... => ../GoWebComponents`, and without the sibling
-# checkout the build fails at module load with a path that means nothing to
-# somebody who has not read go.mod.
-[ -d "$GWC/.git" ] || run git clone --quiet "$GWC_URL" "$GWC"
+# One clone, where there used to be two. go.mod once resolved GoWebComponents
+# through `replace ... => ../GoWebComponents`, so this step cloned it alongside.
+# It is a published module now and the build below downloads it with every
+# other requirement, so nothing has to sit beside this checkout. An
+# /opt/GoWebComponents left by an earlier install is not removed here: it is
+# not this script's to delete, and nothing reads it.
 run git -C "$REPO" fetch --quiet --all
 note "ArticleFlux:      $(git -C "$REPO" log -1 --format='%h %s' | cut -c1-56)"
-note "GoWebComponents:  $(git -C "$GWC" log -1 --format='%h %s' | cut -c1-56)"
 done_ok "source ready"
 
 # --- 6. build ----------------------------------------------------------------
@@ -159,7 +156,9 @@ export HOME="${HOME:-/root}"
 mkdir -p "$REPO/bin"
 rm -rf "$REPO/bin/web"
 cp -a "$REPO/web" "$REPO/bin/web"
-( cd "$REPO" && export GOOS=js GOARCH=wasm && run /usr/local/go/bin/go build -trimpath -ldflags="-s -w" -o "$REPO/bin/web/app.wasm" ./client/app )
+# GOEXPERIMENT=nojsonv2 with the rest of the wasm environment: the setting every
+# build of the shipped module agrees on (the Makefile's WASMENV note says why).
+( cd "$REPO" && export GOEXPERIMENT=nojsonv2 GOOS=js GOARCH=wasm && run /usr/local/go/bin/go build -trimpath -ldflags="-s -w" -o "$REPO/bin/web/app.wasm" ./client/app )
 # From the toolchain, not the repo — see the note in update.sh. Its absence is a
 # client that boots to "Go is not defined" while every server-side check passes.
 goroot=$(/usr/local/go/bin/go env GOROOT)
@@ -167,9 +166,12 @@ exec_js="$goroot/lib/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || { echo "wasm_exec.js not found under $goroot"; exit 1; }
 cp "$exec_js" "$REPO/bin/web/wasm_exec.js"
-run gzip -9 -kf "$REPO/bin/web/app.wasm"
-run gzip -9 -kf "$REPO/bin/web/wasm_exec.js"
-note "client: $(du -h "$REPO/bin/web/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web/app.wasm.gz" | cut -f1) gzipped"
+# Both encodings for everything in the web root worth compressing, by the same tool
+# `make wasm` and update.sh run (cmd/precompress carries the reasoning). This was
+# `gzip -9 -kf` on two files — the copy that left index.html and fonts.css uncompressed
+# and brotli unserved on every fresh install.
+( cd "$REPO" && run /usr/local/go/bin/go run ./cmd/precompress "$REPO/bin/web" )
+note "client: $(du -h "$REPO/bin/web/app.wasm" | cut -f1) raw, $(du -h "$REPO/bin/web/app.wasm.gz" | cut -f1) gzipped, $(du -h "$REPO/bin/web/app.wasm.br" | cut -f1) brotli"
 ( cd "$REPO" && run /usr/local/go/bin/go build -trimpath -o "$REPO/bin/articleflux" ./cmd/articleflux )
 note "server: $(du -h "$REPO/bin/articleflux" | cut -f1)"
 chown -R "$OWNER:$OWNER" "$REPO/bin"
@@ -185,32 +187,28 @@ sed -e "s#/opt/articleflux#$REPO#g" \
     -e "s#/var/lib/articleflux#$DATA#g" \
     "$REPO/deploy/articleflux.service" > /etc/systemd/system/articleflux.service
 
-# The backup unit carries the same example paths as the main one, so it gets the
-# same substitution. Copied verbatim, it fails with 203/EXEC on a case-sensitive
-# filesystem — /opt/articleflux is not /opt/ArticleFlux.
-for u in articleflux-health.service articleflux-health.timer articleflux-backup.service articleflux-backup.timer articleflux-restore-drill.service articleflux-restore-drill.timer "articleflux-alert@.service"; do
-	[ -f "$REPO/deploy/$u" ] || continue
-	sed -e "s#/opt/articleflux#$REPO#g" -e "s#/var/lib/articleflux#$DATA#g" -e "s#/var/backups/articleflux#$BACKUPS#g" "$REPO/deploy/$u" > "/etc/systemd/system/$u"
-done
-install -m 755 "$REPO/deploy/articleflux-health.sh" /usr/local/bin/articleflux-health
-install -m 755 "$REPO/deploy/articleflux-alert.sh" /usr/local/bin/articleflux-alert
-install -m 755 "$REPO/deploy/articleflux-backup.sh" /usr/local/bin/articleflux-backup
-install -m 755 "$REPO/deploy/articleflux-restore-drill.sh" /usr/local/bin/articleflux-restore-drill
+# The ops layer — watchdog, nightly backup, weekly restore drill, the alert template —
+# is install-ops.sh's, called after the server is up (below) rather than carried here.
+# This used to be a second copy of its sed, its script installs and its timer enables,
+# and the two had already drifted: the copy here skipped any unit it could not find,
+# checked nothing afterwards, and so could report success over a backup unit whose
+# ExecStart or OnFailure= named a file that was not there — the nightly 203/EXEC the
+# production box ran for three months. update.sh keeps the units current through the
+# same script.
 install -m 755 "$REPO/deploy/update.sh" /usr/local/bin/articleflux-update 2>/dev/null || true
 
-# Where the scripts look for the checkout, said once rather than guessed four
-# times.
+# The watchdog's probe address, said once rather than guessed.
 #
-# articleflux-health.sh and diagnose.sh both search a list of likely paths, and
-# the list is a fallback rather than the answer: install.sh KNOWS where it put
-# things. Writing it into a drop-in means the pre-restart state snapshot runs on
-# this box whatever the layout, which is the failure the hardcoded
-# /opt/ArticleFlux caused on a README-installed one — silently, because a
-# snapshot that never ran looks exactly like a snapshot that found nothing.
+# install-ops.sh (below) writes the other half of the health unit's configuration —
+# ARTICLEFLUX_REPO, so the pre-restart state snapshot finds diagnose.sh whatever the
+# layout (the failure the hardcoded /opt/ArticleFlux caused on a README-installed box,
+# silently, because a snapshot that never ran looks exactly like one that found
+# nothing). The one thing only THIS script knows is --port, so that is all that is here;
+# ARTICLEFLUX_REPO used to be set in both files, and a value in two places is a value
+# that disagrees in one.
 mkdir -p /etc/systemd/system/articleflux-health.service.d
 cat > /etc/systemd/system/articleflux-health.service.d/paths.conf <<CONF
 [Service]
-Environment=ARTICLEFLUX_REPO=$REPO
 Environment=ARTICLEFLUX_HEALTH_URL=http://127.0.0.1:$PORT/healthz
 CONF
 
@@ -260,9 +258,12 @@ fi
 run systemctl daemon-reload
 run sudo -u "$OWNER" "$REPO/bin/articleflux" migrate -db "$DATA/articleflux.db"
 run systemctl enable --now articleflux
-run systemctl enable --now articleflux-health.timer
-[ -f /etc/systemd/system/articleflux-backup.timer ] && run systemctl enable --now articleflux-backup.timer
-[ -f /etc/systemd/system/articleflux-restore-drill.timer ] && run systemctl enable --now articleflux-restore-drill.timer
+# After the server, not before: this enables the watchdog's timer, and a watchdog that
+# starts probing a server that is not up yet would restart or alert on a fresh install.
+# It also refuses to enable anything unless every ExecStart= and the alert template
+# exist and the binary the backup will run starts as $OWNER — so an install that
+# cannot back itself up fails HERE, loudly, instead of at 03:30.
+run sh "$REPO/deploy/install-ops.sh" --runtime systemd --bin "$REPO/bin/articleflux" 	--repo "$REPO" --data "$DATA" --backups "$BACKUPS" --user "$OWNER"
 note "restart=always, enabled at boot, health-checked every 2 minutes"
 note "backups nightly, restore drilled weekly; alerts go to journald until /etc/articleflux/alert.env names a channel"
 done_ok "service running"

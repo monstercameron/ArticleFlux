@@ -12,8 +12,7 @@
 
         gen build test wasm run lint migrate
 
-    plus `tools` (build gwc.exe), `dev` (build + serve, the loop Cam watches) and
-    `clean`.
+    plus `dev` (build + serve, the loop Cam watches) and `clean`.
 
     Usage:  ./scripts/make.ps1 <verb> [-Port 9000]
 
@@ -27,7 +26,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('gen', 'build', 'test', 'wasmtest', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'perf', 'tools', 'clean', 'help')]
+    [ValidateSet('gen', 'build', 'test', 'wasmtest', 'wasm', 'demo', 'run', 'dev', 'e2e', 'lint', 'migrate', 'perf', 'clean', 'desktop', 'help')]
     [string]$Target = 'help',
 
     # 9000 is the port Cam watches to follow along; changing the default moves the
@@ -62,7 +61,14 @@ param(
     # The two labels -Compare reads. Defaults to the two names the workflow
     # above produces.
     [string]$From = 'baseline',
-    [string]$To = 'after'
+    [string]$To = 'after',
+
+    # `desktop` only: the Windows architecture of ArticleFlux.exe. amd64 is the
+    # target GoWebComponents' desktop support is verified on (it runs under
+    # emulation on Windows on ARM); arm64 builds and is not yet certified by
+    # GWC. See docs/DESKTOP.md.
+    [ValidateSet('amd64', 'arm64')]
+    [string]$Arch = 'amd64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,8 +80,6 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
-$GWC       = Join-Path $Root 'bin\gwc.exe'
-$GWCSource = Join-Path (Split-Path $Root -Parent) 'GoWebComponents'
 $ClientApp = Join-Path $Root 'client\app'
 $WebSrc    = Join-Path $Root 'web'
 $OutDir    = Join-Path $Root 'bin\web'
@@ -90,24 +94,6 @@ function Invoke-Checked {
     param([string]$What, [scriptblock]$Body)
     & $Body
     if ($LASTEXITCODE -ne 0) { Fail "$What failed (exit $LASTEXITCODE)" }
-}
-
-function Ensure-Tools {
-    if (-not (Test-Path $GWC)) {
-        Step 'gwc.exe missing — building it from the GWC checkout'
-        Invoke-Tools
-    }
-}
-
-function Invoke-Tools {
-    Step "building gwc.exe from $GWCSource"
-    if (-not (Test-Path $GWCSource)) {
-        Fail "GWC checkout not found at $GWCSource. D0: v5.0.0 was never tagged, so the sibling checkout is not optional."
-    }
-    Push-Location $GWCSource
-    try { Invoke-Checked 'go build (gwc)' { go build -o $GWC ./tools/gwc } }
-    finally { Pop-Location }
-    Write-Host "    $GWC" -ForegroundColor DarkGray
 }
 
 function Invoke-Gen {
@@ -175,6 +161,14 @@ function Invoke-Test {
 # broken test: ci.yml's wasmtest job runs the identical suite WITHOUT this
 # skip, on Linux, where the syscall is supported, so nothing here goes
 # permanently unchecked — it is checked on the platform that can check it.
+#
+# The shim's path is quoted INSIDE -exec, in single quotes, and it has to be.
+# `go test` splits that flag's value on spaces and honours quotes around a
+# field, and GOROOT on this machine is `C:\Program Files\Go` — so the unquoted
+# spelling asked node to run `C:\Program`, and every package failed with node's
+# "Cannot find module" instead of a test result. Single quotes because they are
+# ordinary characters inside a PowerShell double-quoted string, so they reach
+# go.exe exactly as written.
 function Invoke-WasmTest {
     Step 'go test (wasm, via node) -> client/data + client/i18n + client/platform + client/view'
     $goroot = (go env GOROOT)
@@ -189,7 +183,7 @@ function Invoke-WasmTest {
     Invoke-Checked 'go test (wasm)' {
         $env:GOOS = 'js'; $env:GOARCH = 'wasm'
         try {
-            go test -exec="node $execJs" `
+            go test -exec="node '$execJs'" `
                 -skip 'TestEveryReferencedKeyExists|TestNoOrphanedKeys|TestEveryServerErrorKeyExists|TestServerErrorKeysMatchTheirEnglishFallback' `
                 ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
         } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
@@ -313,7 +307,6 @@ function Invoke-PerfCompare {
 }
 
 function Invoke-Wasm {
-    Ensure-Tools
     if (-not (Test-Path $ClientApp)) {
         Write-Host '    client/app has no main yet (Tier 8) — skipping wasm' -ForegroundColor DarkGray
         return
@@ -365,20 +358,38 @@ function Invoke-Wasm {
     # ships one without the other is an app the browser refuses to install — with
     # nothing on screen to say so, because nothing on the page is broken.
     Copy-Item (Join-Path $WebSrc 'manifest.webmanifest') (Join-Path $OutDir 'manifest.webmanifest') -Force
+
+    # The landing page at /welcome. The server reads <web root>/welcome.html
+    # (internal/app), and this script copies the web root file by file — so a
+    # file nobody listed is a page that 404s, on the one build path that is not
+    # a wholesale copy of web/. install.sh and update.sh never missed it for
+    # exactly that reason, which is how it went unnoticed here.
+    $welcomeSrc = Join-Path $WebSrc 'welcome.html'
+    if (Test-Path $welcomeSrc) {
+        Copy-Item $welcomeSrc (Join-Path $OutDir 'welcome.html') -Force
+    }
     $iconsOut = Join-Path $OutDir 'icons'
     if (Test-Path $iconsOut) { Remove-Item $iconsOut -Recurse -Force }
     Copy-Item (Join-Path $WebSrc 'icons') $iconsOut -Recurse -Force
 
-    # `go build` directly rather than `gwc build`: the launcher wraps the same
-    # toolchain, and this keeps the exact flags visible — -trimpath and -s -w are
-    # what the G5 baseline in wasm-baseline.txt was measured with, so building
-    # differently would make the CI ratchet compare two different things.
-    $env:GOOS = 'js'; $env:GOARCH = 'wasm'
+    # `go build` directly rather than GoWebComponents' `gwc build` launcher: it
+    # wraps the same toolchain, and this keeps the exact flags visible — -trimpath
+    # and -s -w are what the G5 baseline in wasm-baseline.txt was measured with,
+    # so building differently would make the CI ratchet compare two different
+    # things. This verb once built that launcher first anyway, from a sibling
+    # checkout, and then never ran it; that step is gone, and with it the last
+    # thing here that needed GWC's source on disk rather than in the module cache.
+    #
+    # GOEXPERIMENT=nojsonv2, on the artifact builds only (this one and the demo's):
+    # Go 1.27 links encoding/json v2 by default and it costs the bundle about a
+    # megabyte the client never uses. The Makefile's WASMENV note has the numbers
+    # and the rule that every build of the shipped module must agree on it.
+    $env:GOOS = 'js'; $env:GOARCH = 'wasm'; $env:GOEXPERIMENT = 'nojsonv2'
     try {
         Invoke-Checked 'go build (wasm)' {
             go build -trimpath -ldflags="-s -w" -o $WasmOut ./client/app
         }
-    } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
+    } finally { Remove-Item Env:GOOS, Env:GOARCH, Env:GOEXPERIMENT -ErrorAction SilentlyContinue }
 
     # wasm_exec.js comes from the toolchain, so it must match the compiler that
     # produced the module. A stale copy from an older Go fails at instantiate
@@ -500,12 +511,12 @@ function Invoke-Demo {
     Copy-Item (Join-Path $WebSrc 'fonts') $demoFonts -Recurse -Force
 
     $raw = Join-Path $DemoDir 'app.wasm'
-    $env:GOOS = 'js'; $env:GOARCH = 'wasm'
+    $env:GOOS = 'js'; $env:GOARCH = 'wasm'; $env:GOEXPERIMENT = 'nojsonv2'
     try {
         Invoke-Checked 'go build (demo wasm)' {
             go build -trimpath -ldflags="-s -w -X main.version=$DemoVersion" -o $raw ./client/demo
         }
-    } finally { Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue }
+    } finally { Remove-Item Env:GOOS, Env:GOARCH, Env:GOEXPERIMENT -ErrorAction SilentlyContinue }
 
     # wasm_exec.js must come from the toolchain that produced the module.
     $exec = Join-Path (go env GOROOT) 'lib\wasm\wasm_exec.js'
@@ -550,6 +561,59 @@ function Invoke-Migrate {
 
 function Ensure-Build { if (-not (Test-Path 'bin\articleflux.exe')) { Invoke-Build } }
 
+# desktop - the Windows app (docs/DESKTOP.md, plan.md A45 / section 4a).
+#
+# Output is bin/desktop/: ArticleFlux.exe and, beside it, web/ - the client,
+# assembled exactly as `wasm` assembles bin/web. The executable finds its
+# client in the web folder next to it, so the folder is the whole install and
+# can be zipped as it stands.
+#
+# Its own web root rather than bin/web, so building the desktop app never
+# replaces the bundle a running dev server is serving. Invoke-Wasm is reused
+# rather than copied: it reads $OutDir and $WasmOut, and PowerShell resolves a
+# variable through the CALLER's scope first, so the two locals below redirect
+# it without that function knowing the desktop exists. A copy of its forty
+# lines would be the two-implementations-of-one-decision failure Invoke-Wasm's
+# own comment describes.
+#
+# The shell is its own Go module (desktop/go.mod), built with `go -C`, so its
+# window toolkit never enters the root module's dependency list. CGO is off:
+# Wails' Windows backend loads WebView2 through syscalls, and no C toolchain is
+# needed on this box. GOOS/GOARCH/CGO_ENABLED are set for the one command and
+# removed after, so a persisted `go env -w` value cannot leak in either way.
+function Invoke-Desktop {
+    $DesktopDir = Join-Path $Root 'bin\desktop'
+    $OutDir  = Join-Path $DesktopDir 'web'
+    $WasmOut = Join-Path $OutDir 'app.wasm'
+    # Invoke-Wasm's own banner says bin/web; with the two locals above, it
+    # writes here.
+    Step 'client -> bin/desktop/web'
+    Invoke-Wasm
+    if (-not (Test-Path $WasmOut)) { Fail "the client did not build into $OutDir" }
+
+    # The nested module inherits the root's requirements through its replace,
+    # so every dependency change at the root leaves desktop/go.sum one step
+    # behind, and nothing in CI builds this module to notice. Tidying here is
+    # what keeps the verb from failing on "missing go.sum entry" the day after
+    # somebody else's upgrade; the diff it leaves in desktop/go.{mod,sum} is
+    # that upgrade's, and belongs in the same commit.
+    Step 'go mod tidy (desktop module)'
+    Invoke-Checked 'go mod tidy (desktop)' { go -C (Join-Path $Root 'desktop') mod tidy }
+
+    $exe = Join-Path $DesktopDir 'ArticleFlux.exe'
+    Step "building the desktop app -> bin/desktop/ArticleFlux.exe (windows/$Arch)"
+    $env:GOOS = 'windows'; $env:GOARCH = $Arch; $env:CGO_ENABLED = '0'
+    try {
+        Invoke-Checked 'go build (desktop)' {
+            go -C (Join-Path $Root 'desktop') build -trimpath -ldflags='-s -w -H windowsgui' -o $exe ./cmd/articleflux-desktop
+        }
+    } finally { Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue }
+
+    $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+    Write-Host "    ArticleFlux.exe = $mb MB; run it, or zip bin/desktop as it stands" -ForegroundColor DarkGray
+    Write-Host '    needs the WebView2 runtime (part of Windows 11; Evergreen installer on Windows 10)' -ForegroundColor DarkGray
+}
+
 function Invoke-Run {
     param([switch]$Dev)
     Invoke-Build
@@ -565,7 +629,6 @@ function Invoke-Run {
 }
 
 switch ($Target) {
-    'tools'   { Invoke-Tools }
     'gen'     { Invoke-Gen }
     'build'   { Invoke-Build }
     'test'    { Invoke-Test }
@@ -577,6 +640,7 @@ switch ($Target) {
     'perf'    { if ($Compare) { Invoke-PerfCompare } else { Invoke-Perf } }
     'run'     { Invoke-Run }
     'dev'     { Invoke-Wasm; Invoke-Run -Dev }
+    'desktop' { Invoke-Desktop }
     'e2e'     {
         Invoke-Build
         Invoke-Wasm
@@ -596,7 +660,6 @@ switch ($Target) {
         Write-Host @'
 ArticleFlux task runner (TODO 1.4)
 
-  ./scripts/make.ps1 tools      build gwc.exe from ../GoWebComponents  (D0: no published tag)
   ./scripts/make.ps1 gen        buf lint + buf generate -> internal/pb
   ./scripts/make.ps1 build      go build -> bin/articleflux.exe
   ./scripts/make.ps1 test       go test ./...
@@ -614,6 +677,7 @@ ArticleFlux task runner (TODO 1.4)
   ./scripts/make.ps1 run        build, then serve on :9000
   ./scripts/make.ps1 dev        wasm + run          <- the loop to leave open
   ./scripts/make.ps1 e2e        build, then run the Playwright suite (desktop + phone)
+  ./scripts/make.ps1 desktop    the Windows app -> bin/desktop/ArticleFlux.exe + web/ (-Arch amd64|arm64)
   ./scripts/make.ps1 clean      remove bin/ (which is all generated output)
 
 Run it from anywhere: it sets the working directory to the repository root

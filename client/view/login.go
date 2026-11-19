@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -463,10 +463,14 @@ func Login(p loginProps) ui.Node {
 		})
 	}
 
-	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "login"}},
-		html.Form(html.Props{Class: "login-card", Role: "main",
+	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "login"}},
+		html.Form(html.Props{Class: "login-card",
 			Raw: map[string]any{"onsubmit": "return false"}},
-			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
+			// The wordmark is this screen's heading, because there is no other:
+			// without one a screen reader's heading list for the sign-in page
+			// was empty, and the first thing it could jump to was a text box.
+			// The recovery card keeps the mark a div — it has its own title.
+			html.H1(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 			html.P(html.Props{Class: "login-lede"},
 				html.Text(tr.T("login", "lede"))),
 
@@ -485,10 +489,16 @@ func Login(p loginProps) ui.Node {
 					// password manager cannot offer to fill, and a reader who
 					// uses one is the reader most likely to have a password worth
 					// having.
+					//
+					// enterkeyhint="go" on every field here, because Enter in
+					// every field here signs in (enterActionFor) — a phone
+					// keyboard offering "next" would promise a different press
+					// from the one it makes.
 					Raw: map[string]any{
 						"autocomplete":   "username",
 						"autocapitalize": "none",
 						"spellcheck":     "false",
+						"enterkeyhint":   "go",
 					},
 				}),
 			),
@@ -502,17 +512,22 @@ func Login(p loginProps) ui.Node {
 					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "login-password"},
-					Raw:     map[string]any{"autocomplete": "current-password"},
+					Raw:     map[string]any{"autocomplete": "current-password", "enterkeyhint": "go"},
 				}),
 			),
 
 			// The error is rendered in a live region so a screen reader announces
 			// a rejected login. Without it the only feedback is visual, and a
 			// blind reader gets silence and an unchanged page.
+			//
+			// role="alert" alone. It used to carry aria-live="polite" as well,
+			// which contradicts the role's own assertive politeness, and screen
+			// readers resolve that contradiction differently — some announce
+			// twice, some wait until the reader stops typing. A refusal of the
+			// thing they just submitted is exactly what assertive is for.
 			html.Div(html.Props{
 				Class: errClass(errMsg.Get()),
 				Role:  "alert",
-				Aria:  map[string]string{"live": "polite"},
 			}, html.Text(errMsg.Get())),
 
 			html.Button(html.Props{
@@ -578,8 +593,8 @@ func recoverCard(p recoverCardProps) ui.Node {
 	if p.recovered {
 		return recoveredCard(p)
 	}
-	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "recover"}},
-		html.Form(html.Props{Class: "login-card", Role: "main",
+	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "recover"}},
+		html.Form(html.Props{Class: "login-card",
 			Raw: map[string]any{"onsubmit": "return false"}},
 			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 			html.H1(html.Props{Class: "login-title"}, html.Text(tr.T("login", "recoverTitle"))),
@@ -590,29 +605,26 @@ func recoverCard(p recoverCardProps) ui.Node {
 			// offers to update the stored credential — which is exactly what a
 			// reader wants after changing it, and exactly what they will not do
 			// by hand.
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "login-username"}},
-					html.Text(tr.T("login", "username"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "text", ID: "login-username",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "username"), ID: "login-username",
+				Control: html.Input(kitWire("login-username", "", html.Props{
+					Class: "field login-input", Type: "text",
 					Value:   p.userSeed,
 					OnInput: p.onUser,
 					Data:    map[string]string{"role": "login-username"},
+					// "go" for the login card's reason: Enter in any of these
+					// three fields submits the recovery.
 					Raw: map[string]any{
 						"autocomplete":   "username",
 						"autocapitalize": "none",
 						"spellcheck":     "false",
+						"enterkeyhint":   "go",
 					},
-				}),
-			),
+				})),
+			}),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "recover-code"}},
-					html.Text(tr.T("login", "recoverCode"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "text", ID: "recover-code",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "recoverCode"), Hint: tr.T("login", "recoverCodeHint"), ID: "recover-code",
+				Control: html.Input(kitWire("recover-code", tr.T("login", "recoverCodeHint"), html.Props{
+					Class: "field login-input", Type: "text",
 					Value:   p.codeSeed,
 					OnInput: p.onCode,
 					Data:    map[string]string{"role": "recover-code"},
@@ -620,31 +632,31 @@ func recoverCard(p recoverCardProps) ui.Node {
 					// where that is right: a recovery code is single-use, so a
 					// manager offering last month's spent code back is offering a
 					// credential that is guaranteed not to work.
+					//
+					// The hint under it is its description, so a screen reader
+					// hears what shape of thing to type when it lands in the
+					// box rather than only if it reads on past it.
 					Raw: map[string]any{
 						"autocomplete":   "off",
 						"autocapitalize": "characters",
 						"spellcheck":     "false",
+						"enterkeyhint":   "go",
 					},
-				}),
-				html.P(html.Props{Class: "login-hint"},
-					html.Text(tr.T("login", "recoverCodeHint"))),
-			),
+				})),
+			}),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "recover-password"}},
-					html.Text(tr.T("login", "recoverPassword"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "password", ID: "recover-password",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "recoverPassword"), ID: "recover-password",
+				Control: html.Input(kitWire("recover-password", "", html.Props{
+					Class: "field login-input", Type: "password",
 					Value:   p.passSeed,
 					OnInput: p.onPass,
 					Data:    map[string]string{"role": "recover-password"},
 					// new-password, not current-password: it tells a manager to
 					// offer a generated one and to update the saved entry rather
 					// than fill the old value into the box being used to replace it.
-					Raw: map[string]any{"autocomplete": "new-password"},
-				}),
-			),
+					Raw: map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
+				})),
+			}),
 
 			// One reserved band holding two slots, stacked on top of each other
 			// rather than one after the other.
@@ -660,19 +672,12 @@ func recoverCard(p recoverCardProps) ui.Node {
 			// Both stay in the document, both keep their live region, and the band
 			// is exactly one message tall whichever one speaks. See .login-slots.
 			html.Div(html.Props{Class: "login-slots"},
-				html.Div(html.Props{
-					Class: errClass(p.errMsg),
-					Role:  "alert",
-					Aria:  map[string]string{"live": "polite"},
-				}, html.Text(p.errMsg)),
+				kitFieldError(kitFormCard, p.errMsg),
 
 				// Separate from the error slot and announced politely: this is good
 				// news with a number in it, and a screen reader that skipped it would
 				// drop the one prompt telling somebody to print a new sheet.
-				html.Div(html.Props{
-					Class: noticeClass(p.notice),
-					Aria:  map[string]string{"live": "polite"},
-				}, html.Text(p.notice)),
+				kitLive(kitLiveProps{Class: noticeClass(p.notice), Live: kitLivePolite}, html.Text(p.notice)),
 			),
 
 			html.Button(html.Props{
@@ -756,19 +761,15 @@ func enterActionFor(recovering, recovered bool, role string) enterTarget {
 // reason bootSplash carries one.
 func recoveredCard(p recoverCardProps) ui.Node {
 	tr := p.tr
-	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "recovered"}},
-		html.Div(html.Props{Class: "login-card", Role: "main"},
+	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "recovered"}},
+		html.Div(html.Props{Class: "login-card"},
 			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 			html.H1(html.Props{Class: "login-title"}, html.Text(tr.T("login", "recoveredTitle"))),
 
 			// Announced, not merely shown. A reader who cannot see the screen is
 			// as entitled to "this was your last code" as one who can, and this
 			// is the only place the sentence is ever said.
-			html.P(html.Props{
-				Class: noticeClass(p.notice),
-				Role:  "status",
-				Aria:  map[string]string{"live": "polite"},
-			}, html.Text(p.notice)),
+			kitLive(kitLiveProps{Paragraph: true, Class: noticeClass(p.notice), Role: kitRoleStatus, Live: kitLivePolite}, html.Text(p.notice)),
 
 			html.P(html.Props{Class: "login-hint"},
 				html.Text(tr.T("login", "recoveredHint"))),
@@ -931,6 +932,22 @@ func loginMessage(tr i18n.Runtime, err error) string {
 	st, ok := status.FromError(err)
 	if !ok {
 		return tr.T("login", "errGeneric")
+	}
+	// The two refusals a person at this screen most needs told apart, by the
+	// key the server already classifies them with: a wrong password is fixed
+	// by typing again, and a lockout is made WORSE by typing again. The
+	// server's own English for both is terse ("too many requests; please slow
+	// down") and reads as a fault; these say what happened and what to do, and
+	// the lockout keeps the wait the server computed (withWait).
+	//
+	// The burst limiter in front of the lockout refuses with a bare
+	// ResourceExhausted and no key, so that is a lockout too.
+	switch key := serverKey(err); {
+	case key == "srv.badCredentials":
+		return tr.T("login", "errWrongPassword")
+	case key == "srv.rateLimited", key == "srv.tooManyAttempts",
+		key == "" && st.Code() == codes.ResourceExhausted:
+		return withWait(tr, tr.T("login", "errLocked"), serverDetail(err))
 	}
 	switch st.Code() {
 	case codes.Unavailable, codes.DeadlineExceeded:

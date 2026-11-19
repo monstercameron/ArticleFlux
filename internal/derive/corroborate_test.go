@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/textvec"
 )
@@ -234,33 +233,5 @@ func TestClusterRowsMatchCorroborateExactly(t *testing.T) {
 	// and clusterRows must not either.
 	if got := byID["i4"]; !got.IsHead || got.ClusterID != "i4" || got.OtherSources != 0 {
 		t.Errorf("i4 = %+v, want a singleton head cluster of its own id", got)
-	}
-}
-
-// Every kind named in deliberateKinds must actually exist in the registry.
-//
-// The switch this map replaced had cases for `starred` and `clicked_through`, neither
-// of which is a kind — so two of its branches were dead and the click-through
-// multiplier had never applied to anything. A typo in a string literal is invisible;
-// this makes it a test failure.
-func TestDeliberateKindsAreRealKinds(t *testing.T) {
-	for k := range deliberateKinds {
-		spec, ok := signals.Lookup(k)
-		if !ok {
-			t.Errorf("deliberateKinds names %q, which is not a signal kind", k)
-			continue
-		}
-		if !spec.Affinity {
-			t.Errorf("deliberateKinds names %q, which is excluded from affinity", k)
-		}
-	}
-	// And the sign has to agree with the registry, or the re-rank contradicts the
-	// taxonomy: a kind with a negative prior must not multiply the score up.
-	for k, w := range deliberateKinds {
-		spec, _ := signals.Lookup(k)
-		if (spec.Prior < 0) != (w < 0) {
-			t.Errorf("%q has prior %v but re-rank weight %v — the signs disagree",
-				k, spec.Prior, w)
-		}
 	}
 }

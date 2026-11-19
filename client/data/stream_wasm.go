@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )

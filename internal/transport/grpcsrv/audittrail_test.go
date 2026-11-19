@@ -107,7 +107,7 @@ func TestChangePasswordLeavesAnAuditEntry(t *testing.T) {
 
 	if _, err := s.ChangePassword(withToken(tok), &pb.ChangePasswordRequest{
 		CurrentPassword: testPassword,
-		NewPassword: "a-perfectly-good-passphrase",
+		NewPassword:     "a-perfectly-good-passphrase",
 	}); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}

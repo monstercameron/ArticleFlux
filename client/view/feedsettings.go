@@ -3,11 +3,12 @@
 package view
 
 import (
+	"hash/fnv"
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -42,6 +43,9 @@ type feedSettingsProps struct {
 	// the sidebar behind it.
 	folders  []*pb.Folder
 	folderID string
+	// armed is Reader's one armed confirmation (see armableRemove); this panel
+	// reads it for Unsubscribe.
+	armed string
 }
 
 // pollChoices are the intervals offered.
@@ -64,23 +68,42 @@ var cacheChoices = []int32{0, 25, 100, 500}
 // unsubscribing is the other button, and conflating the two loses the archive.
 var muteChoices = []int{0, 24, 24 * 7, 24 * 30}
 
+// backlogChoices are the windows after which an unread article is marked read,
+// in days. 0 is never, and is what every feed starts as. The one-press "clear it
+// now" is Mark all read in the actions group below, not a second button here.
+var backlogChoices = []int{0, 1, 3, 7, 30}
+
 // roleFeedSettingsClose is what openFeedSettings focuses when the panel opens.
-// See actionButtonRole for why the close button rather than the first field.
+// See kitDialogClose for why the close button rather than the first field.
 const roleFeedSettingsClose = "feed-settings-close"
+
+// fieldFeedTitle is the rename field's id, which its <label> points at.
+const fieldFeedTitle = "fs-feed-title"
+
+// renameAttrs are what a rename field carries beyond its value.
+//
+// autocomplete off, because what the browser would offer is its history of
+// whatever was typed into fields that looked like this one — on a screen where
+// the field holds one feed's name, every other feed's name is the wrong answer.
+// enterkeyhint "done", because Enter commits the rename (reader_keyboard.go) and
+// a phone keyboard otherwise labels that key "return", which promises a newline.
+// A function rather than a shared map, so no render can hand the next one a map
+// it has written to.
+func renameAttrs() map[string]any {
+	return map[string]any{"autocomplete": "off", "enterkeyhint": "done"}
+}
 
 func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 	body := []ui.Node{}
 	switch {
 	case p.err != "":
-		body = append(body, html.Div(html.Props{Class: "fs-error"}, html.Text(p.err)))
+		// An alert, as every other fs-error that replaces what was asked for is:
+		// the panel opened, and what arrived instead of its settings is this.
+		body = append(body, kitAlert("fs-error", p.err))
 	case p.loading || p.s == nil:
 		// The same skeleton vocabulary the rest of the app uses, so a loading
 		// panel is recognisably the same kind of event as a loading list.
-		for i := 0; i < 5; i++ {
-			body = append(body, html.Div(html.Props{
-				Class: "sk sk-line sk-w-90", Key: "fs-sk-" + strconv.Itoa(i),
-			}))
-		}
+		body = append(body, kitSkLines("fs-sk-", 0, 5, "sk-w-90")...)
 	default:
 		body = feedSettingsBody(tr, p)
 	}
@@ -94,77 +117,69 @@ func feedSettings(tr i18n.Runtime, p feedSettingsProps) ui.Node {
 	// animate out (see scrim). Building it closed is safe because every branch
 	// above already answers a nil `p.s` — that IS the loading state, and a
 	// closed panel simply renders it behind visibility:hidden.
-	return scrim(p.open, "feed-settings-close",
-		// data-action on the DIALOG, not just the scrim.
-		//
-		// The delegated listener resolves a click to the nearest ancestor
-		// carrying data-action. Without one here, every click inside the panel
-		// walked up to the backdrop and hit its close action — so touching a
-		// text field shut the panel. A no-op on the dialog stops the walk before
-		// it gets there, which is the delegated equivalent of stopPropagation.
-		html.Div(html.Props{Class: "fs", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": tr.T("feedSettings", "title")}},
-			html.Div(html.Props{Class: "fs-head"},
-				html.Span(html.Props{Class: "fs-mark"}, html.Text(title)),
-				ui.If(p.saving, func() ui.Node {
-					return html.Span(html.Props{Class: "fs-saving"},
-						html.Text(tr.T("feedSettings", "saving")))
-				}),
-				actionButtonRole("feed-settings-close", roleFeedSettingsClose,
-					"btn btn-ghost fs-close", tr.T("feedSettings", "close")),
-			),
-			html.Div(html.Props{Class: "fs-body"}, body...),
-		),
+	// data-action on the DIALOG, not just the scrim.
+	//
+	// The delegated listener resolves a click to the nearest ancestor
+	// carrying data-action. Without one here, every click inside the panel
+	// walked up to the backdrop and hit its close action — so touching a
+	// text field shut the panel. A no-op on the dialog stops the walk before
+	// it gets there, which is the delegated equivalent of stopPropagation.
+	return kitDialog(kitDialogProps{Open: p.open, CloseAction: "feed-settings-close", Class: "fs", Title: tr.T("feedSettings", "title")},
+		kitDialogHead(kitDialogHeadProps{Prefix: "fs", After: []ui.Node{kitDialogSaving(p.saving, tr.T("feedSettings", "saving"))},
+			Title: title, Close: kitDialogClose("fs", "feed-settings-close", roleFeedSettingsClose, tr.T("feedSettings", "close"))}),
+		kitDialogBody("fs", body...),
 	)
 }
 
 func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 	s := p.s
 	id := s.GetSourceId()
+	nameHint := tr.T("feedSettings", "nameHint")
 
 	// --- yours ---------------------------------------------------------------
 	mine := []ui.Node{
-		fsGroup(glyphYours, tr.T("feedSettings", "yoursGroup"),
+		kitHeading(glyphYours, tr.T("feedSettings", "yoursGroup"),
 			tr.T("feedSettings", "yoursGroupHint")),
 		// The rename commits on Enter AND on the button. Enter alone is the
 		// faster path and the one a keyboard reader will use, but a text field
 		// whose only commit is a keystroke nobody mentioned is a field that looks
 		// broken — you type, you click away, and your change is gone.
-		fsRow(tr.T("feedSettings", "nameLabel"), tr.T("feedSettings", "nameHint"),
-			html.Div(html.Props{Class: "fs-rename"},
+		kitField(kitFieldProps{Label: tr.T("feedSettings", "nameLabel"), Hint: nameHint, ID: fieldFeedTitle,
+			Control: html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
-					Class: "field fs-field", Type: "text",
+					Class: "field fs-field", Type: "text", ID: fieldFeedTitle,
 					Placeholder: s.GetResolvedTitle(),
 					Value:       p.draftTitle,
 					OnInput:     p.onTitleEdit,
 					Data:        map[string]string{"role": "feed-title"},
-					Aria:        map[string]string{"label": tr.T("feedSettings", "nameAria")},
+					Aria:        fieldAria(fieldFeedTitle, nameHint),
+					Raw:         renameAttrs(),
 				}),
-				itemChip("fs-rename", tr.T("feedSettings", "rename"), false, id),
-			)),
+				kitAction(kitChipProps{Action: "fs-rename", Label: tr.T("feedSettings", "rename"), ItemID: id}),
+			)}),
 		// Filing sits directly under the name, because they are the same kind of
 		// decision — what this feed is called and where it lives — and both are
 		// things a reader changes when a subscription turns out to be something
 		// other than what they expected when they added it.
-		fsRow(tr.T("feedSettings", "categoryLabel"), tr.T("feedSettings", "categoryHint"),
-			fsFolders(tr, id, p.folderID, p.folders)),
-		fsRow(tr.T("feedSettings", "megafeedLabel"), tr.T("feedSettings", "megafeedHint"),
-			fsToggle("fs-megafeed", id, s.GetInMegafeed(),
-				tr.T("feedSettings", "megafeedOn"), tr.T("feedSettings", "megafeedOff"))),
-		fsRow(tr.T("feedSettings", "muteLabel"), tr.T("feedSettings", "muteHint"),
-			fsChoices("fs-mute", id, muteFor(s.GetMutedUntil()), muteLabels(tr))),
-		fsRow(tr.T("feedSettings", "cacheLabel"), tr.T("feedSettings", "cacheHint"),
-			fsChoices("fs-cache", id, int(s.GetCacheDepth()), cacheLabels(tr))),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "categoryLabel"), Hint: tr.T("feedSettings", "categoryHint"),
+			Control: fsFolders(tr, id, p.folderID, p.folders)}),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "megafeedLabel"), Hint: tr.T("feedSettings", "megafeedHint"),
+			Control: kitSwitch(kitChipProps{Action: "fs-megafeed", ItemID: id}, s.GetInMegafeed(),
+				tr.T("feedSettings", "megafeedOn"), tr.T("feedSettings", "megafeedOff"))}),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "muteLabel"), Hint: tr.T("feedSettings", "muteHint"),
+			Control: fsChoices("fs-mute", id, muteFor(s.GetMutedUntil()), muteLabels(tr))}),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "backlogLabel"), Hint: tr.T("feedSettings", "backlogHint"),
+			Control: fsChoices("fs-backlog", id, int(s.GetClearBacklogDays()), backlogLabels(tr))}),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "cacheLabel"), Hint: tr.T("feedSettings", "cacheHint"),
+			Control: fsChoices("fs-cache", id, int(s.GetCacheDepth()), cacheLabels(tr))}),
 	}
 	if len(p.tags) > 0 {
 		chips := make([]ui.Node, 0, len(p.tags))
 		for _, t := range p.tags {
-			chips = append(chips, html.Span(html.Props{Class: "chip chip-static chip-mini",
-				Key: "fs-tag-" + t}, html.Text(t)))
+			chips = append(chips, kitStatic(kitStaticProps{Label: t, Mini: true, Key: "fs-tag-" + t}))
 		}
-		mine = append(mine, fsRow(tr.T("feedSettings", "tagsLabel"), tr.T("feedSettings", "tagsHint"),
-			html.Div(html.Props{Class: "fs-tags"}, chips...)))
+		mine = append(mine, kitSetting(kitSettingProps{Label: tr.T("feedSettings", "tagsLabel"), Hint: tr.T("feedSettings", "tagsHint"),
+			Control: kitChipGroup(kitGroupTags, "", chips...)}))
 	}
 
 	// --- shared --------------------------------------------------------------
@@ -180,36 +195,39 @@ func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 	source := []ui.Node{
 		// The warning is the heading, not a footnote under it. Someone changing
 		// a poll interval should read why before they change it, not after.
-		fsGroup(glyphShared, tr.T("feedSettings", "sharedGroup"),
+		kitHeading(glyphShared, tr.T("feedSettings", "sharedGroup"),
 			shared+" "+tr.T("feedSettings", "sharedWarn")),
-		fsRow(tr.T("feedSettings", "urlLabel"), "",
-			html.Div(html.Props{Class: "fs-url"}, html.Text(s.GetFeedUrl()))),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "urlLabel"), Hint: "",
+			Control: html.Div(html.Props{Class: "fs-url"}, html.Text(s.GetFeedUrl()))}),
 		ui.If(s.GetSiteUrl() != "", func() ui.Node {
-			return fsRow(tr.T("feedSettings", "siteLabel"), "",
-				html.A(html.Props{Class: "fs-url fs-link", Href: s.GetSiteUrl(),
+			return kitSetting(kitSettingProps{Label: tr.T("feedSettings", "siteLabel"), Hint: "",
+				Control: html.A(html.Props{Class: "fs-url fs-link", Href: s.GetSiteUrl(),
 					Target: "_blank", Rel: "noopener noreferrer"},
 					html.Text(s.GetSiteUrl()),
 					// Right-hand side, because it leaves the app.
 					html.Span(html.Props{Class: "gl-trail",
 						Aria: map[string]string{"hidden": "true"}},
-						html.Text(glyphExternal))))
+						html.Text(glyphExternal)))})
 		}),
-		fsRow(tr.T("feedSettings", "pollLabel"), tr.T("feedSettings", "pollHint"),
-			fsChoices("fs-poll", id, int(s.GetFetchIntervalS()), pollLabels(tr))),
+		kitSetting(kitSettingProps{Label: tr.T("feedSettings", "pollLabel"), Hint: tr.T("feedSettings", "pollHint"),
+			Control: fsChoices("fs-poll", id, int(s.GetFetchIntervalS()), pollLabels(tr))}),
 	}
 
 	// --- health --------------------------------------------------------------
-	health := []ui.Node{
-		fsGroup(glyphHealth, tr.T("feedSettings", "healthGroup"), ""),
-		fsFact(tr.T("feedSettings", "lastFetched"), relOrNever(tr, s.GetLastFetchAt())),
-		fsFact(tr.T("feedSettings", "lastSucceded"), relOrNever(tr, s.GetLastSuccessAt())),
-		fsFact(tr.T("feedSettings", "nextFetch"), relOrNever(tr, s.GetNextFetchAt())),
+	facts := []kitFactPair{
+		kitFact(tr.T("feedSettings", "lastFetched"), relOrNever(tr, s.GetLastFetchAt())),
+		kitFact(tr.T("feedSettings", "lastSucceded"), relOrNever(tr, s.GetLastSuccessAt())),
+		kitFact(tr.T("feedSettings", "nextFetch"), relOrNever(tr, s.GetNextFetchAt())),
 		// Same shape as the server screen's Articles line, so the two agree.
-		fsFact(tr.T("feedSettings", "itemsHeld"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItemCount())),
+		kitFact(tr.T("feedSettings", "itemsHeld"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItemCount())),
 			"unread": thousands(tr, int(s.GetUnreadCount()))})),
 	}
 	if n := s.GetConsecutiveFailures(); n > 0 {
-		health = append(health, fsFact(tr.T("feedSettings", "failures"), thousands(tr, int(n))))
+		facts = append(facts, kitFact(tr.T("feedSettings", "failures"), thousands(tr, int(n))))
+	}
+	health := []ui.Node{
+		kitHeading(glyphHealth, tr.T("feedSettings", "healthGroup"), ""),
+		kitFacts(kitFactsPanel, facts...),
 	}
 	if e := s.GetLastError(); e != "" {
 		// The publisher's error verbatim. It is the single most useful string
@@ -220,18 +238,20 @@ func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 
 	// --- actions -------------------------------------------------------------
 	actions := []ui.Node{
-		fsGroup(glyphAction, tr.T("feedSettings", "actionsGroup"), ""),
-		html.Div(html.Props{Class: "fs-actions"},
-			glyphItemChip("fs-refresh", glyphRefresh, tr.T("feedSettings", "fetchNow"), false, id),
-			glyphItemChip("fs-markall", glyphMarkRead, tr.T("feedSettings", "markAllRead"), false, id),
-			// Unsubscribe is separated and styled as destructive. It does not
-			// delete the source or the items — A22 — but it is the only control
-			// here that removes something from the reader's sidebar.
-			html.Button(html.Props{
-				Class: "chip fs-danger",
-				Raw:   map[string]any{"data-action": "fs-unsubscribe", "data-for-item": id},
-			}, lead("\u2715"), html.Text(tr.T("feedSettings", "unsubscribe"))),
+		kitHeading(glyphAction, tr.T("feedSettings", "actionsGroup"), ""),
+		kitChipGroup(kitGroupPanelActions, "",
+			kitAction(kitChipProps{Action: "fs-refresh", Glyph: glyphRefresh, Label: tr.T("feedSettings", "fetchNow"), ItemID: id}),
+			kitAction(kitChipProps{Action: "fs-markall", Glyph: glyphMarkRead, Label: tr.T("feedSettings", "markAllRead"), ItemID: id}),
 		),
+		// Unsubscribe is separated and styled as destructive. It does not delete
+		// the source or the items — A22 — but it is the only control here that
+		// removes something from the reader's sidebar, and the panel closes as
+		// it does, so a misfire lands the reader somewhere else with the feed
+		// gone and no undo on screen. It asks first (see armableRemove).
+		armableRemoveFor(tr, armUnsubscribe+id, p.armed, id, "fs-unsubscribe",
+			tr.T("feedSettings", "unsubscribe"),
+			tr.T("feedSettings", "unsubscribeWarn", i18n.Args{"feed": s.GetResolvedTitle()}),
+			actUnsubscribeDo, tr.T("feedSettings", "unsubscribeConfirm"), "✕"),
 		html.Div(html.Props{Class: "fs-note"},
 			html.Text(tr.T("feedSettings", "unsubscribeNote"))),
 	}
@@ -244,50 +264,43 @@ func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 
 // --- small pieces -------------------------------------------------------------
 
-func fsGroup(glyph, title, note string) ui.Node {
-	return html.Div(html.Props{Class: "fs-group"},
-		html.Div(html.Props{Class: "fs-group-head"},
-			lead(glyph),
-			html.Span(html.Props{Class: "fs-group-title"}, html.Text(strings.ToUpper(title))),
-		),
-		ui.If(note != "", func() ui.Node {
-			return html.Span(html.Props{Class: "fs-group-note"}, html.Text(note))
-		}),
-	)
-}
-
-func fsRow(label, hint string, control ui.Node) ui.Node {
-	return html.Div(html.Props{Class: "fs-row"},
-		html.Div(html.Props{Class: "fs-label"},
-			html.Span(html.Props{Class: "fs-label-name"}, html.Text(label)),
-			ui.If(hint != "", func() ui.Node {
-				return html.Span(html.Props{Class: "fs-hint"}, html.Text(hint))
-			}),
-		),
-		html.Div(html.Props{Class: "fs-control"}, control),
-	)
-}
-
-func fsFact(label, value string) ui.Node {
-	return html.Div(html.Props{Class: "fs-fact"},
-		html.Span(html.Props{Class: "fs-fact-name"}, html.Text(label)),
-		html.Span(html.Props{Class: "fs-fact-value"}, html.Text(value)),
-	)
-}
-
-// fsToggle is a two-state switch rendered as one button, so its label always
-// states the CURRENT state rather than the action — which is what a reader
-// glancing at a settings panel is trying to read off it.
-func fsToggle(action, id string, on bool, whenOn, whenOff string) ui.Node {
-	label := whenOff
-	if on {
-		label = whenOn
+// fieldAria is what a field inside a kitField carries: its row's hint as
+// its description, so the sentence under the label is read when the field is
+// focused rather than only by somebody who arrows past it. Nothing when there is
+// no hint, because a describedby naming a missing element is a broken reference.
+func fieldAria(id, hint string) map[string]string {
+	if hint == "" {
+		return map[string]string{}
 	}
-	return html.Button(html.Props{
-		Class: "chip",
-		Raw:   map[string]any{"data-action": action, "data-for-item": id},
-		Aria:  map[string]string{"pressed": strconv.FormatBool(on)},
-	}, html.Text(label))
+	return map[string]string{"describedby": id + "-hint"}
+}
+
+// labelledAria names a row group after its label element and describes it with
+// its hint, by the ids kitSetting gives them.
+func labelledAria(id, hint string) map[string]string {
+	a := map[string]string{"labelledby": id + "-label"}
+	if hint != "" {
+		a["describedby"] = id + "-hint"
+	}
+	return a
+}
+
+// rowID is the id a row's label and hint are referenced by, derived from the two
+// strings themselves.
+//
+// Derived rather than passed, because kitSetting has a hundred callers and every one
+// of them is already uniquely identified by what it says — two rows on one
+// screen with the same name and the same sentence would be a bug on the screen
+// long before it was one in the ids. A hash, and not the label itself, because
+// the label is translated copy with spaces and punctuation in it, and an id is
+// neither of those things. Deterministic, so a re-render patches the same id it
+// rendered last time instead of churning the attribute.
+func rowID(label, hint string) string {
+	h := fnv.New32a()
+	h.Write([]byte(label))
+	h.Write([]byte{0})
+	h.Write([]byte(hint))
+	return "row-" + strconv.FormatUint(uint64(h.Sum32()), 36)
 }
 
 // fsFolders is the category picker: the same chips the add-a-feed form offers,
@@ -298,24 +311,13 @@ func fsToggle(action, id string, on bool, whenOn, whenOff string) ui.Node {
 // about one subscription and the delegated handler has to know which — the panel
 // being open is not something the click can see.
 func fsFolders(tr i18n.Runtime, sourceID, current string, folders []*pb.Folder) ui.Node {
-	kids := []ui.Node{fsFolderChip(sourceID, "", tr.T("feedSettings", "noCategory"), current == "")}
+	kids := []ui.Node{kitPick(kitChipProps{Action: "fs-folder", ItemID: sourceID, Mini: true,
+		Key: "fs-folder-", Label: tr.T("feedSettings", "noCategory")}, "", current == "")}
 	for _, f := range folders {
-		kids = append(kids, fsFolderChip(sourceID, f.GetId(), f.GetName(), current == f.GetId()))
+		kids = append(kids, kitPick(kitChipProps{Action: "fs-folder", ItemID: sourceID, Mini: true,
+			Key: "fs-folder-" + f.GetId(), Label: f.GetName()}, f.GetId(), current == f.GetId()))
 	}
-	return html.Div(html.Props{Class: "fs-choices"}, kids...)
-}
-
-func fsFolderChip(sourceID, folderID, label string, on bool) ui.Node {
-	return html.Button(html.Props{
-		Class: "chip chip-mini",
-		Key:   "fs-folder-" + folderID,
-		Raw: map[string]any{
-			"data-action":   "fs-folder",
-			"data-for-item": sourceID,
-			"data-value":    folderID,
-		},
-		Aria: map[string]string{"pressed": strconv.FormatBool(on)},
-	}, html.Text(label))
+	return kitChipGroup(kitGroupChoices, "", kids...)
 }
 
 type fsChoice struct {
@@ -329,18 +331,10 @@ type fsChoice struct {
 func fsChoices(action, id string, current int, choices []fsChoice) ui.Node {
 	kids := make([]ui.Node, 0, len(choices))
 	for _, c := range choices {
-		kids = append(kids, html.Button(html.Props{
-			Class: "chip chip-mini",
-			Key:   action + "-" + strconv.Itoa(c.value),
-			Raw: map[string]any{
-				"data-action":   action,
-				"data-for-item": id,
-				"data-value":    strconv.Itoa(c.value),
-			},
-			Aria: map[string]string{"pressed": strconv.FormatBool(c.value == current)},
-		}, html.Text(c.label)))
+		kids = append(kids, kitPick(kitChipProps{Action: action, ItemID: id, Mini: true,
+			Key: action + "-" + strconv.Itoa(c.value), Label: c.label}, strconv.Itoa(c.value), c.value == current))
 	}
-	return html.Div(html.Props{Class: "fs-choices"}, kids...)
+	return kitChipGroup(kitGroupChoices, "", kids...)
 }
 
 func pollLabels(tr i18n.Runtime) []fsChoice {
@@ -349,6 +343,10 @@ func pollLabels(tr i18n.Runtime) []fsChoice {
 
 func cacheLabels(tr i18n.Runtime) []fsChoice {
 	return choicesFrom(tr, "cache.", int32sToInts(cacheChoices))
+}
+
+func backlogLabels(tr i18n.Runtime) []fsChoice {
+	return choicesFrom(tr, "backlog.", backlogChoices)
 }
 
 func muteLabels(tr i18n.Runtime) []fsChoice {

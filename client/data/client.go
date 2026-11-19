@@ -13,6 +13,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	// Registering the gzip codec is the whole client half of response
+	// compression: grpc-go then lists it in grpc-accept-encoding on every call,
+	// and the server compresses the list RPCs it allowlists for a client that
+	// does (internal/app/compress.go). Nothing here ever SENDS gzip, so a server
+	// without the codec is unaffected.
+	_ "google.golang.org/grpc/encoding/gzip"
 
 	"github.com/monstercameron/GoGRPCBridge/pkg/grpctunnel"
 

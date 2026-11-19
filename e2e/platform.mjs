@@ -75,12 +75,42 @@ async function windowsPids(port) {
   const pids = new Set();
   const { code, out } = await run('netstat', ['-ano', '-p', 'TCP']);
   if (code !== 0) return pids;
+  // A listener is recognised by its FOREIGN address, not by the state column.
+  //
+  // `LISTENING` was the test, and on this Windows build netstat prints the
+  // state of a listening socket as whatever it likes — the same row for the
+  // dev server on :9000, sampled three times in a row, read CLOSED, FIN_WAIT_1
+  // and FIN_WAIT_1 — while curl got 200 from it the whole time. The state
+  // filter dropped the row, the set came back empty, and connection.spec's
+  // restart test failed on "nothing was listening to kill" against a server
+  // that was answering. A foreign address of port 0 is what makes a row a
+  // listener in the first place: a connection always has a real peer port,
+  // so this still never matches a client (the browser) talking to the port.
   for (const line of out.split(/\r?\n/)) {
-    if (!line.includes('LISTENING')) continue;
     const cols = line.trim().split(/\s+/);
+    if (cols[0] !== 'TCP') continue;
+    const listening = line.includes('LISTENING') || /:0$/.test(cols[2] || '');
+    if (!listening) continue;
     if (!(cols[1] || '').endsWith(`:${port}`)) continue;
     const pid = cols[cols.length - 1];
     if (pid && pid !== '0') pids.add(pid);
+  }
+  if (pids.size) return pids;
+
+  // And when netstat has no row at all, ask the TCP stack's own cmdlet.
+  //
+  // The state column was not the whole of it. On the 11:22 build's run the
+  // same restart test failed again with the fix above in place, and sampling
+  // the :9000 dev server four times showed why: netstat printed NO row for
+  // the listener, in any state, while Get-NetTCPConnection returned its pid
+  // every time. RemotePort 0 is the same listener test as above, asked of a
+  // source that does not drop the row.
+  const ps = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `Get-NetTCPConnection -LocalPort ${Number(port)} -ErrorAction SilentlyContinue | ` +
+    'Where-Object { $_.RemotePort -eq 0 } | ForEach-Object { $_.OwningProcess }']);
+  for (const line of ps.out.split(/\r?\n/)) {
+    const pid = line.trim();
+    if (/^\d+$/.test(pid) && pid !== '0') pids.add(pid);
   }
   return pids;
 }

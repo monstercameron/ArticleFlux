@@ -40,6 +40,6 @@ func init() {
 		// it is not, and that second one is the bug that lost My Feed's resume.
 		"disliked": "Disliked",
 		"notes":    "Notes",
-		"unfiled": "Unfiled",
+		"unfiled":  "Unfiled",
 	})
 }

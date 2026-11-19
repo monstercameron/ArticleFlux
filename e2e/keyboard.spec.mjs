@@ -24,6 +24,20 @@ import { test, expect, boot, currentArticle, openRow } from './fixtures.mjs';
  */
 
 test.describe('the keyboard map', () => {
+  // Desktop only, the whole file, and it is the device rather than the claim.
+  // Every test here presses a single-key binding, and a phone has no keyboard
+  // to press one on: its on-screen keyboard exists only while a text field has
+  // focus, which is exactly when the bindings are switched off. (The one part
+  // of this that DOES reach a phone — letters typed into the search box must
+  // not fire as commands — is reader.spec.mjs's "shortcuts do not fire while
+  // typing", which runs on both projects.) Several of these would pass on the
+  // mobile project anyway, because Playwright can deliver a key no phone user
+  // could; a pass there would be proving nothing.
+  test.beforeEach(async ({}, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop',
+      'single-key shortcuts need a hardware keyboard, which a phone does not have');
+  });
+
   // Whatever a test presses might land the app in focus mode or leave a dialog
   // open; the next test should not inherit that. Two Escapes because focus mode
   // and a dialog are two different layers and one Escape only peels the
@@ -252,7 +266,17 @@ test.describe('the keyboard map', () => {
   test('u toggles unread-only, by the KEY and not only the button', async ({ page }) => {
     await boot(page);
     const before = await page.locator('.item-row').count();
-    await page.locator('.item-row').first().click();
+    // By the title, and then WAIT for the row to say it has been read.
+    //
+    // Both halves are a flake this test had. A click on the row's centre lands
+    // on its meta line, where a category chip routes to that category instead
+    // of opening the article (see openRow in fixtures.mjs) — so on a run where
+    // the classifier had chipped row 0, nothing was opened and nothing was
+    // read. And `u` pressed in the same breath as the click races the mark-read
+    // it depends on: the unread-only query can be answered before the server
+    // has heard that the article was opened, and the list comes back whole.
+    const opened = await openRow(page, 0);
+    await expect(opened).toHaveAttribute('data-read', 'true');
 
     // Distinct from reader.spec.mjs's "unread-only hides what has been read",
     // which drives the toggle by clicking it — this is the same behaviour

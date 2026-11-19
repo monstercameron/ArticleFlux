@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
-	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/v2"
 )
 
 // translate_test.go documents exactly why this file exists: everything past
@@ -44,7 +46,10 @@ func batchFromInput(t *testing.T, input string) map[string]string {
 }
 
 // echoEntriesJSON builds a well-formed translateBatch reply that answers every
-// key it was asked about with a recognisable, checkable value.
+// key it was asked about with a recognisable, checkable value: "TR:" plus the
+// English it was sent. Built FROM the English rather than from the key, because
+// a translation has to keep the English's placeholders to be accepted at all
+// (i18n.CheckTranslation) — "TR:list.readingTime#other" lost its {count}.
 func echoEntriesJSON(batch map[string]string) string {
 	var b strings.Builder
 	b.WriteString(`{"entries":[`)
@@ -54,10 +59,28 @@ func echoEntriesJSON(batch map[string]string) string {
 			b.WriteString(",")
 		}
 		first = false
-		fmt.Fprintf(&b, `{"key":%s,"text":%s}`, jsonStr(k), jsonStr("TR:"+k))
+		fmt.Fprintf(&b, `{"key":%s,"text":%s}`, jsonStr(k), jsonStr("TR:"+batch[k]))
 	}
 	b.WriteString(`]}`)
 	return b.String()
+}
+
+// plainKey picks a non-plural English key with no placeholder.
+func plainKey(t *testing.T, source map[string]string) string {
+	t.Helper()
+	keys := make([]string, 0, len(source))
+	for k := range source {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !strings.Contains(k, pluralSep) && !strings.Contains(source[k], "{") &&
+			!strings.Contains(source[k], "<") {
+			return k
+		}
+	}
+	t.Fatal("no plain key in the catalog")
+	return ""
 }
 
 func jsonStr(s string) string {
@@ -78,8 +101,8 @@ func TestCatalogBatchesAllKeysAndAssemblesTheFullResult(t *testing.T) {
 	tr := NewTranslator(fake, settings)
 
 	source := flatten(i18n.Export(i18n.DefaultLocale))
-	prov := answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
-		return echoEntriesJSON(batchFromInput(t, r.SystemPrompt+r.UserPrompt)), nil
+	prov := answering(t, func(_ int, r schemaflux.Request) (string, error) {
+		return echoEntriesJSON(batchFromInput(t, r.System+r.User)), nil
 	})
 
 	got, err := tr.Catalog(context.Background(), "fr", false)
@@ -91,14 +114,32 @@ func TestCatalogBatchesAllKeysAndAssemblesTheFullResult(t *testing.T) {
 		t.Fatalf("got %d translated entries, want %d (one per source key)", len(flat), len(source))
 	}
 	for k := range source {
-		if flat[k] != "TR:"+k {
-			t.Errorf("key %q = %q, want %q", k, flat[k], "TR:"+k)
+		if flat[k] != "TR:"+source[k] {
+			t.Errorf("key %q = %q, want %q", k, flat[k], "TR:"+source[k])
 		}
 	}
-	wantBatches := (len(source) + batchSize - 1) / batchSize
-	if n := prov.CallCount(); n != wantBatches {
-		t.Errorf("provider called %d times, want %d (ceil(%d source keys / %d batchSize))",
-			n, wantBatches, len(source), batchSize)
+	// Every key in exactly one batch, no batch over batchSize. Batches are
+	// packed by whole KEY now (a plural's forms travel together), so the count
+	// can exceed ceil(n/batchSize) by the few batches closed early — bounded
+	// rather than exact.
+	sent := map[string]int{}
+	for _, r := range prov.Requests() {
+		b := batchFromInput(t, r.System+r.User)
+		if len(b) > batchSize {
+			t.Errorf("a batch carried %d messages, over batchSize %d", len(b), batchSize)
+		}
+		for k := range b {
+			sent[k]++
+		}
+	}
+	for k := range source {
+		if sent[k] != 1 {
+			t.Errorf("key %q was sent %d times, want exactly once", k, sent[k])
+		}
+	}
+	minBatches := (len(source) + batchSize - 1) / batchSize
+	if n := prov.CallCount(); n < minBatches || n > minBatches+minBatches/4+1 {
+		t.Errorf("provider called %d times for %d messages; want about %d", n, len(source), minBatches)
 	}
 }
 
@@ -112,18 +153,18 @@ func TestCatalogStopsAtTheFirstBatchFailure(t *testing.T) {
 	fake := &fakeLLM{configured: true}
 	tr := NewTranslator(fake, settings)
 
-	prov := answering(t, func(call int, r schemaflux.CompletionRequest) (string, error) {
+	prov := answering(t, func(call int, r schemaflux.Request) (string, error) {
 		if call == 1 {
 			return "", errors.New("llm: provider returned 500: overloaded")
 		}
-		return echoEntriesJSON(batchFromInput(t, r.SystemPrompt+r.UserPrompt)), nil
+		return echoEntriesJSON(batchFromInput(t, r.System+r.User)), nil
 	})
 
 	_, err := tr.Catalog(context.Background(), "fr", false)
 	if err == nil || !strings.Contains(err.Error(), "overloaded") {
 		t.Fatalf("err = %v, want the provider's failure surfaced", err)
 	}
-	if !strings.Contains(err.Error(), "messages 61-120") {
+	if !regexp.MustCompile(`messages \d+-\d+`).MatchString(err.Error()) {
 		t.Errorf("err = %v, want it to name the failing batch's message range", err)
 	}
 	if n := prov.CallCount(); n != 2 {
@@ -142,14 +183,12 @@ func TestCatalogDropsAKeyTheModelInventedThatWasNotAsked(t *testing.T) {
 	tr := NewTranslator(fake, settings)
 
 	source := flatten(i18n.Export(i18n.DefaultLocale))
-	var real string
-	for k := range source {
-		real = k
-		break
-	}
+	// A plain key with no placeholder, so "translated" is an ACCEPTABLE answer
+	// and the only thing under test is the invented key beside it.
+	real := plainKey(t, source)
 
-	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
-		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
+	_ = answering(t, func(_ int, r schemaflux.Request) (string, error) {
+		batch := batchFromInput(t, r.System+r.User)
 		if _, ok := batch[real]; ok {
 			return fmt.Sprintf(`{"entries":[{"key":%s,"text":"translated"},`+
 				`{"key":"totally.invented.key","text":"hacked"}]}`, jsonStr(real)), nil
@@ -180,14 +219,13 @@ func TestCatalogDropsAnEmptyTranslationForAnAskedKey(t *testing.T) {
 	tr := NewTranslator(fake, settings)
 
 	source := flatten(i18n.Export(i18n.DefaultLocale))
-	var real string
-	for k := range source {
-		real = k
-		break
-	}
+	// Plain, so emptying it drops exactly one flat entry. (Emptying a plural's
+	// `other` would drop the whole message — CheckTranslation refuses a plural
+	// with no fallback form — which is right, and a different test.)
+	real := plainKey(t, source)
 
-	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
-		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
+	_ = answering(t, func(_ int, r schemaflux.Request) (string, error) {
+		batch := batchFromInput(t, r.System+r.User)
 		if _, ok := batch[real]; !ok {
 			return echoEntriesJSON(batch), nil
 		}
@@ -200,7 +238,7 @@ func TestCatalogDropsAnEmptyTranslationForAnAskedKey(t *testing.T) {
 				b.WriteString(",")
 			}
 			first = false
-			text := "TR:" + k
+			text := "TR:" + batch[k]
 			if k == real {
 				text = ""
 			}
@@ -232,8 +270,8 @@ func TestCatalogAllBatchesEmptyIsAnError(t *testing.T) {
 	fake := &fakeLLM{configured: true}
 	tr := NewTranslator(fake, settings)
 
-	_ = answering(t, func(_ int, r schemaflux.CompletionRequest) (string, error) {
-		batch := batchFromInput(t, r.SystemPrompt+r.UserPrompt)
+	_ = answering(t, func(_ int, r schemaflux.Request) (string, error) {
+		batch := batchFromInput(t, r.System+r.User)
 		var b strings.Builder
 		b.WriteString(`{"entries":[`)
 		first := true
@@ -264,7 +302,7 @@ func TestTranslateBatchMalformedJSONIsAReadableError(t *testing.T) {
 		t.Fatal("fr is not an offered language")
 	}
 	_, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
@@ -277,7 +315,7 @@ func TestTranslateBatchWrongTopLevelShapeIsAReadableError(t *testing.T) {
 	tr := NewTranslator(&fakeLLM{configured: true}, nil)
 	lang, _ := LanguageByCode("fr")
 	_, err := tr.translateBatch(context.Background(), lang, "gpt-5-mini", map[string]string{"a.b": "Hello"})
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
@@ -353,9 +391,9 @@ func TestTranslateBatchSendsLanguageAndPayload(t *testing.T) {
 	// shape. A request with no schema is the regression that matters: it is how
 	// a translation call turns into free prose that parses as nothing.
 	sent := prov.Requests()[0]
-	if sent.JSONSchema == nil {
+	if sent.Schema == nil {
 		t.Error("the request carried no schema; the reply would be unconstrained prose")
-	} else if props, ok := sent.JSONSchema["properties"].(map[string]any); ok {
+	} else if props, ok := sent.Schema["properties"].(map[string]any); ok {
 		if _, hasEntries := props["entries"]; !hasEntries {
 			t.Errorf("the schema is not the batch shape: %v", props)
 		}

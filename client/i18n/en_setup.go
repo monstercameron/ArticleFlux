@@ -57,6 +57,12 @@ func init() {
 		// live with a lost code is the person reading this sentence.
 		"codesWarn": "Nobody can recover this account for you. Put them somewhere that is not this computer.",
 		"codesCopy": "Copy",
-		"codesDone": "I've saved them — open my reader",
+		// The button's word once the copy worked, and the sentence under it.
+		"codesCopied":     "Copied",
+		"codesCopiedNote": "On your clipboard. Paste them somewhere safe before you go on.",
+		// The browser refused — usually a server reached over plain http,
+		// where browsers withhold the clipboard. The remedy, not the cause.
+		"codesCopyFailed": "This browser wouldn't copy them. Select the codes above and copy them yourself, or print them.",
+		"codesDone":       "I've saved them — open my reader",
 	})
 }

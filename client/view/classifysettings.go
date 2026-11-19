@@ -3,8 +3,8 @@
 package view
 
 import (
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -14,8 +14,8 @@ import (
 // files articles into, and the Smart+ panel that explains what the model's
 // tie-breaking pass would send and to whom.
 //
-// It reuses the feed panel's `fs-*` vocabulary — fsGroup, fsRow, and (for the
-// Smart+ switches) smartsettings.go's smartToggle — for the same reason
+// It reuses the feed panel's `fs-*` vocabulary — kitHeading, kitSetting, and (for
+// the Smart+ switches) kitSwitch — for the same reason
 // tagsettings.go does: a reader who has already read one settings panel in
 // this app should recognise the next one rather than learn a second dialog
 // language.
@@ -52,7 +52,7 @@ const actClassifyCatToggle = "classify-cat-toggle"
 
 func settingsClassify(tr i18n.Runtime, p classifySettingsProps) []ui.Node {
 	out := []ui.Node{
-		fsGroup(glyphClassify, tr.T("classify", "catGroup"), tr.T("classify", "catGroupHint")),
+		kitHeading(glyphClassify, tr.T("classify", "catGroup"), tr.T("classify", "catGroupHint")),
 	}
 	for _, c := range design.Categories {
 		out = append(out, catListRow(tr, c, csvHas(p.hiddenCats, c.Slug)))
@@ -61,13 +61,11 @@ func settingsClassify(tr i18n.Runtime, p classifySettingsProps) []ui.Node {
 		html.Text(tr.T("classify", "catShowHint"))))
 
 	out = append(out,
-		fsGroup(glyphShared, tr.T("classify", "smartGroup"), tr.T("classify", "smartGroupHint")),
-		setRow(tr.T("classify", "smartTextLabel"), tr.T("classify", "smartTextHint"),
-			smartToggle("classify-smart-text", false, true,
-				tr.T("settings", "on"), tr.T("settings", "off"))),
-		setRow(tr.T("classify", "smartOwnLabel"), tr.T("classify", "smartOwnHint"),
-			smartToggle("classify-smart-own", false, true,
-				tr.T("settings", "on"), tr.T("settings", "off"))),
+		kitHeading(glyphShared, tr.T("classify", "smartGroup"), tr.T("classify", "smartGroupHint")),
+		kitSetting(kitSettingProps{Label: tr.T("classify", "smartTextLabel"), Hint: tr.T("classify", "smartTextHint"), Control: kitSwitch(kitChipProps{Action: "classify-smart-text", Disabled: true}, false,
+			tr.T("settings", "on"), tr.T("settings", "off"))}),
+		kitSetting(kitSettingProps{Label: tr.T("classify", "smartOwnLabel"), Hint: tr.T("classify", "smartOwnHint"), Control: kitSwitch(kitChipProps{Action: "classify-smart-own", Disabled: true}, false,
+			tr.T("settings", "on"), tr.T("settings", "off"))}),
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("classify", "smartNotWired"))),
 	)
 	return out
@@ -79,10 +77,15 @@ func catListRow(tr i18n.Runtime, c design.CategoryInfo, hidden bool) ui.Node {
 	if props == nil {
 		props = map[string]any{}
 	}
-	return html.Div(html.Props{Class: "cat-list-row", Key: "catrow-" + c.Slug},
+	// A group named by the category, for kitSetting's reason: the toggle reads only
+	// "Shown" or "Hidden", and twelve of those in a row say nothing about which
+	// category each one is.
+	nameID := "catrow-name-" + c.Slug
+	return html.Div(html.Props{Class: "cat-list-row", Key: "catrow-" + c.Slug,
+		Role: "group", Aria: map[string]string{"labelledby": nameID}},
 		html.I(html.Props{Class: "cat-swatch", Raw: props}),
-		html.Span(html.Props{Class: "cat-list-name"}, html.Text(categoryName(tr, c.Slug))),
-		fsToggle(actClassifyCatToggle, c.Slug, !hidden,
+		html.Span(html.Props{Class: "cat-list-name", ID: nameID}, html.Text(categoryName(tr, c.Slug))),
+		kitSwitch(kitChipProps{Action: actClassifyCatToggle, ItemID: c.Slug}, !hidden,
 			tr.T("classify", "catShow"), tr.T("classify", "catHide")),
 	)
 }

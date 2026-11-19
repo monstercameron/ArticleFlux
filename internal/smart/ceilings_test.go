@@ -1,6 +1,10 @@
 package smart
 
 import (
+	"context"
+	"errors"
+
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,10 +42,10 @@ func TestEveryTypedOperationStatesItsCeiling(t *testing.T) {
 	// means adding it here, which is the point: a new call site should have to
 	// think about its ceiling once.
 	starts := []string{
-		"schemaflux.Extracting[",
-		"schemaflux.Generating[",
-		"schemaflux.Choosing[",
-		"schemaflux.Summarizing(",
+		"schemaflux.Extract[",
+		"schemaflux.Generate[",
+		"schemaflux.Choose(",
+		"schemaflux.Summarize(",
 	}
 
 	found := 0
@@ -63,11 +67,11 @@ func TestEveryTypedOperationStatesItsCeiling(t *testing.T) {
 			// The chain ends at Run. A generous window rather than an exact
 			// one: these chains carry long comments, and a limit tight enough
 			// to be precise would be a limit somebody has to keep raising.
-			for j := i; j < len(lines) && j < i+40; j++ {
-				if strings.Contains(lines[j], "Configure(cap") {
+			for j := max(0, i-8); j < len(lines) && j < i+40; j++ {
+				if strings.Contains(lines[j], "sfOpts(") {
 					capped = true
 				}
-				if strings.Contains(lines[j], ".Run(") {
+				if strings.Contains(lines[j], "err = opErr(err)") {
 					break
 				}
 			}
@@ -75,7 +79,7 @@ func TestEveryTypedOperationStatesItsCeiling(t *testing.T) {
 				t.Errorf("%s:%d: this operation names no output ceiling, so it inherits "+
 					"SchemaFlux's tier default (2000 for Fast, 4000 for Smart). A ceiling "+
 					"below what the feature emits is llm.ErrTruncated, and nothing in the "+
-					"unpaid suite can see it. Add Configure(cap…) — see ceilings.go.\n\t%s",
+					"unpaid suite can see it. State it with sfOpts(…) — see ceilings.go.\n\t%s",
 					name, i+1, strings.TrimSpace(lines[i]))
 			}
 		}
@@ -128,5 +132,22 @@ func TestTheRestoredCeilingsAreTheHandChosenNumbers(t *testing.T) {
 			t.Errorf("%s ceiling is %d, below the %d a Fast operation gets for free — "+
 				"lowering a ceiling saves nothing and buys ErrTruncated", name, n, fastDefault)
 		}
+	}
+}
+
+// SchemaFlux v2 leaves provider text out of its errors' messages. The Smart+
+// refusal classifier in internal/app tells a bad key from a spent quota by those
+// words, so opErr has to put them back — this pins that it does, end to end
+// through a real v2 operation.
+func TestAProviderRefusalKeepsItsWordsThroughAV2Operation(t *testing.T) {
+	failing(t, &llm.StatusError{Code: 401, Message: "Incorrect API key provided"})
+	in := NewInterest(&fakeLLM{configured: true}, nil)
+	_, err := in.LabelTopic(context.Background(), []string{"sqlite", "wal"}, "Sqlite")
+	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "Incorrect API key") {
+		t.Fatalf("err = %v, want the provider's status and words in the message", err)
+	}
+	var se *llm.StatusError
+	if !errors.As(err, &se) {
+		t.Error("the provider's typed error is no longer reachable with errors.As")
 	}
 }

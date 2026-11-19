@@ -1,7 +1,7 @@
 # The public demo — build client/demo and publish it to GitHub Pages.
 #
 # ArticleFlux is self-hosted, which means "try it" otherwise costs a Go
-# toolchain, two clones, a WebAssembly build and a running server. That is a lot
+# toolchain, a clone, a WebAssembly build and a running server. That is a lot
 # to ask of somebody who has not decided whether they care yet. This workflow
 # removes every step: the demo is a static page whose "server" is an in-memory
 # instance compiled into the same module (client/demodata).
@@ -56,7 +56,6 @@ on:
       - "e2e/demo-smoke.mjs"
       - "Makefile"
       - ".github/workflows/pages.yml"
-      - ".github/actions/gwc/**"
   workflow_dispatch:
     inputs:
       version:
@@ -81,7 +80,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.27.3"
 
 jobs:
   build:
@@ -92,10 +91,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      # D0 — see .github/actions/gwc. `path: ../GoWebComponents` is not a thing
-      # actions/checkout will do, and this is the four lines that make it work.
-      - uses: ./.github/actions/gwc
 
       - uses: actions/setup-go@v7
         with:

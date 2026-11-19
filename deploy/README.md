@@ -1,21 +1,30 @@
-# Hosting ArticleFlux on an Ubuntu droplet
+# Deploying ArticleFlux
+
+**Run the container.** [`docs/INSTALL.md`](../docs/INSTALL.md) is the install: one
+`docker compose up -d`, a named volume, the first login, a TLS proxy (Caddy or this
+directory's [`nginx.conf`](nginx.conf)), and every day-two operation in container terms.
+Nothing on the host needs Go, and nothing is built there. This document is everything
+else about deployment:
+
+| | |
+|---|---|
+| **The reference box** (feed.earlcameron.com) | [`docker/`](docker/) — its production compose file, the pull-based updater (`af-reader-autoupdate.*`: a `v*` tag publishes `ghcr.io/monstercameron/articleflux:vX.Y.Z`, the box pulls it and rolls out health-gated), and `articleflux-ctr` for running the CLI out of the image. **The box still runs systemd**; [`docker/CUTOVER.md`](docker/CUTOVER.md) is the runbook that moves it. |
+| **The ops layer** — nightly verified backup, weekly restore drill, watchdog, alerting | Below, from [8. Backups](#8-backups). The same units serve either runtime: `sudo sh deploy/install-ops.sh` for systemd, `--runtime docker` for the container. |
+| **A box without Docker** | The rest of this document: a bare Ubuntu droplet to TLS with a hardened systemd unit, built from source. Also the deep rollback for a container box — the paths are the same on purpose. |
+
+The image keeps this document's paths exactly (`/opt/articleflux/bin`,
+`/var/lib/articleflux`), so the backup, restore-drill and health machinery means the same
+thing under both runtimes.
+
+---
+
+# The systemd install, on an Ubuntu droplet
 
 Bare DigitalOcean droplet to a reader on TLS. Around twenty minutes, most of it
 waiting on `go build`.
 
-> **The production box moved to Docker on 2026-08-16** — see [`docker/`](docker/) for the
-> current flow: the Release workflow builds `ghcr.io/monstercameron/articleflux:vX.Y.Z`
-> on every tag, the box pulls it via a secret-gated deploy hook, and the rollout is
-> health-gated with a recorded rollback tag. Deploys key off TAG pushes now, not "CI
-> green on `main`" — the old deployhook flow no longer restarts the reader. The image
-> keeps this document's paths exactly (`/opt/articleflux/bin`, `/var/lib/articleflux`),
-> so the backup, restore-drill and health machinery below still means what it says; the
-> health watchdog takes `ARTICLEFLUX_RUNTIME=docker`, and backup/drill point their
-> existing `ARTICLEFLUX_BIN` override at `docker/articleflux-ctr`. Everything below
-> remains true for a systemd box and is the documented deep-rollback path.
-
-This is the **A9 remote-deployment** path. Everything here assumes Ubuntu 24.04
-LTS, nginx, and certbot.
+This is the **A9 remote-deployment** path without a container. Everything here assumes
+Ubuntu 24.04 LTS, nginx, and certbot.
 
 ---
 
@@ -25,7 +34,6 @@ LTS, nginx, and certbot.
 |---|---|
 | Droplet | 1 GB RAM minimum. The wasm build peaks near 2 GB — see [Building on a 1 GB droplet](#building-on-a-1-gb-droplet). |
 | A domain | An `A` record pointing at the droplet's IP, resolving **before** you run certbot. |
-| The GWC checkout | **D0**: `go.mod` replaces `GoWebComponents/v5` with `../GoWebComponents`, because v5.0.0 was never tagged. That sibling directory is not optional. |
 
 Everything runs as an unprivileged `articleflux` user. Nothing in this guide
 needs the app to touch anything outside `/opt/articleflux`,
@@ -75,13 +83,13 @@ sudo apt install -y git nginx certbot python3-certbot-nginx build-essential
 # Go from the archive, NOT from apt. Ubuntu's golang-go is several releases
 # behind what go.mod requires, and the failure is a confusing one: the toolchain
 # reports an unsupported go directive rather than "your Go is old".
-GO_VERSION=1.26.3
+GO_VERSION=1.27.3
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
 echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
 export PATH=$PATH:/usr/local/go/bin
-go version   # expect go1.26.3
+go version   # expect go1.27.3
 ```
 
 Firewall — do this **before** exposing anything. Note that `9000` is absent on
@@ -108,17 +116,16 @@ sudo chmod 700 /var/lib/articleflux /var/backups/articleflux
 
 ## 3. The source
 
-Both checkouts, side by side. The sibling layout is what the `replace` directive
-in `go.mod` points at (D0).
+One checkout. Every dependency, GoWebComponents included, is a published module
+that `go build` downloads, so nothing has to be cloned beside it (D0, closed).
 
 ```bash
 sudo mkdir -p /opt/src && sudo chown "$USER" /opt/src
 cd /opt/src
 git clone <your-articleflux-remote> ArticleFlux
-git clone <your-gwc-remote>         GoWebComponents
 
 cd /opt/src/ArticleFlux
-make deps     # verifies Go and the sibling checkout, and says so if either is missing
+make deps     # verifies Go is installed, and says where to get it if it is not
 ```
 
 ## 4. Build
@@ -133,9 +140,10 @@ sudo chown -R articleflux:articleflux /opt/articleflux
 
 ## 5. Create the first account
 
-**Do not skip this.** Without an account there is nothing to log in as, and the
-server refuses to start rather than presenting a login screen nobody can get
-past. `init` runs once and refuses to run again.
+Or skip it and claim the instance from the browser, which is the better route —
+[`docs/INSTALL.md` § The first login](../docs/INSTALL.md#the-first-login) says why, and
+what the unclaimed window costs. From the shell, `init` runs once and refuses to run
+again:
 
 ```bash
 # The password is read from stdin, so it never lands in shell history or `ps`.
@@ -161,9 +169,10 @@ curl -s localhost:9000/readyz     # ready
 ```
 
 If it will not start, the boot checks name the reason in one line —
-`journalctl -u articleflux -n 30`. They cover the three failures that otherwise
-surface hours later: no account, a missing web root, an unwritable data
-directory.
+`journalctl -u articleflux -n 30`. They cover the failures that otherwise surface
+hours later: a missing web root or client bundle, an unwritable data directory, a
+stored secret that will not decrypt. No account is not one of them: an unclaimed
+instance starts, serves the setup screen, and logs that it is unclaimed.
 
 ## 7. TLS
 
@@ -204,15 +213,25 @@ Not optional, and not `cp`. See the comment at the top of
 `articleflux-backup.service` for why a file copy of a WAL-mode database produces
 a backup that restores cleanly and is silently missing a transaction.
 
-```bash
-sudo install -m 0644 deploy/articleflux-backup.service /etc/systemd/system/
-sudo install -m 0644 deploy/articleflux-backup.timer   /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now articleflux-backup.timer
+The backup is one of four jobs that are installed together or not at all — backup,
+restore drill, watchdog, and the alert template every one of them reports failure
+through:
 
+```bash
+sudo sh deploy/install-ops.sh             # a container box: add --runtime docker
 sudo systemctl start articleflux-backup    # run one now
 ls -lh /var/backups/articleflux/
 ```
+
+`install-ops.sh` is one command rather than a list of `install` lines because the list is
+what failed. Installing this unit and its timer, as this step once said, left out the
+script its `ExecStart` names and the template its `OnFailure=` names, and systemd accepts
+both at `enable` time without a word: the production box's backup exited `203/EXEC` every
+night for three months and alerted no one. The script installs every piece, rewrites the
+paths for this box, and enables nothing until each `ExecStart`, the alert template and
+the binary the backup will run are all shown to exist and run. Its header lists the
+options (`--bin` for an install prefix other than `/opt/articleflux`, `--keep` for
+retention). `deploy/install.sh` performs the same installation on a fresh box.
 
 **What a backup consists of.** `articleflux backup` writes the database *and*
 copies the instance's key files — `secrets.key`, `proxy.key`, `speech.key` —
@@ -325,11 +344,8 @@ they restore as a pair. Backups taken after the rotation carry the new one.
 `articleflux-restore-drill.timer` performs the restore above every Sunday, into
 a temp directory, and fails loudly if the newest backup does not migrate and
 open — or if it is more than two days old, which means the nightly job has been
-failing. Enable it with the rest:
-
-```bash
-sudo systemctl enable --now articleflux-restore-drill.timer
-```
+failing. `install-ops.sh` enabled it with the rest; run one by hand with
+`sudo systemctl start articleflux-restore-drill`.
 
 ---
 
@@ -556,10 +572,12 @@ deployhook target. Until all three exist, the row above stays true.
 
 ## Updating
 
+This is the systemd box. A container is updated by changing its image tag —
+[`docs/INSTALL.md` § Upgrading](../docs/INSTALL.md#upgrading), or on the reference box by
+pushing a `v*` tag and letting `af-reader-autoupdate` roll it out.
+
 ```bash
 cd /opt/src/ArticleFlux && git pull
-cd /opt/src/GoWebComponents && git pull    # D0: keep the sibling in step
-cd /opt/src/ArticleFlux
 
 make linux
 sudo systemctl stop articleflux
@@ -584,6 +602,9 @@ the superadmin's, and destroy the old printouts.
 ---
 
 ## Operating it
+
+The systemd spellings; the container's are in
+[`docs/INSTALL.md` § Day two](../docs/INSTALL.md#day-two).
 
 ```bash
 journalctl -u articleflux -f              # logs

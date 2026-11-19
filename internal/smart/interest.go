@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Interest is the Smart+ half of the interest layer (§18.8b): it implements
@@ -156,6 +157,24 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 		return nil, err
 	}
 
+	// The escalation ladder (A47). Rung 1 — the free-tier scorer — has already
+	// ordered these, and derive only asks when its lead is not clear. Rung 2,
+	// when this instance has a JEV credential, is ONE labelled decision: which of
+	// these should lead. JEV cannot write, so a JEV pick carries no reason of
+	// its own and the row keeps its free-tier reasons. Rung 3, only when rung 2
+	// is unavailable, is the model's richer answer below: twelve picks, each with
+	// a reason. The same payload (body) is the subject of both, so JEV is sent
+	// nothing the model would not be.
+	ctx = llm.WithTask(ctx, llm.TaskRerank)
+	if in.llm.DeciderAvailable(ctx) {
+		// Rung 3 here is this function's own Extract below, not the model
+		// answering the bare decision (llm.Policy.CallerRung3): when JEV cannot
+		// answer, fall through to it.
+		if picks, err := in.leadByDecision(ctx, string(body), len(cands)); err == nil {
+			return picks, nil
+		}
+	}
+
 	// The model is the bridge's now — see llm.Client.OpsContext.
 	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
@@ -180,13 +199,11 @@ func (in *Interest) RerankCandidates(ctx context.Context, cands []derive.Candida
 	// for has still answered the question; failing the whole re-rank over the
 	// extra field would drop the reader to deterministic order for no gain. The
 	// ids are re-validated below either way, which is the check that matters.
-	reply, err := schemaflux.Extracting[rerankReply](string(body)).
-		Steer(rerankInstructions).
+	reply, err := schemaflux.Extract[rerankReply](call, string(body), schemaflux.ExtractOptions{
 		// The ceiling, stated rather than inherited from the tier (ceilings.go).
-		Configure(capExtract(rerankMaxTokens)).
-		Model(in.llm.OpsModel(ctx)).
-		Smart().
-		Run(call)
+		Options: sfOpts(in.llm.OpsModel(ctx), schemaflux.TierSmart, rerankInstructions, rerankMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		return nil, err
 	}
@@ -292,15 +309,13 @@ func (in *Interest) ExtractEntities(ctx context.Context, titles []string) ([]der
 	// Not `Strict()`, for the reason given at the re-rank above: an extra field
 	// costs nothing here, and every name is normalised and de-duplicated below
 	// before it becomes a row.
-	reply, err := schemaflux.Extracting[entityReply](string(body)).
-		Steer(entityInstructions).
+	reply, err := schemaflux.Extract[entityReply](call, string(body), schemaflux.ExtractOptions{
 		// 4000, restored: this call had it explicitly before the migration and
 		// inherited Fast's 2000 afterwards, which is a refusal rather than a
 		// shorter list once an article names enough things (ceilings.go).
-		Configure(capExtract(entityMaxTokens)).
-		Model(in.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		Options: sfOpts(in.llm.OpsModel(ctx), schemaflux.TierFast, entityInstructions, entityMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		return nil, err
 	}
@@ -426,17 +441,14 @@ func (in *Interest) LabelTopic(ctx context.Context, terms []string, fallback str
 	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
 	defer cancel()
 
-	label, err := schemaflux.Generating[string](
-		topicLabelInstructions +
-			"\n\nThe cluster's most distinctive terms: " + strings.Join(terms, ", ") +
-			"\nThe deterministic label to beat, and to return unchanged if the terms " +
-			"do not describe a coherent subject: " + fallback).
+	label, err := schemaflux.Generate[string](call, topicLabelInstructions+
+		"\n\nThe cluster's most distinctive terms: "+strings.Join(terms, ", ")+
+		"\nThe deterministic label to beat, and to return unchanged if the terms "+
+		"do not describe a coherent subject: "+fallback,
 		// Low deliberation, as the hand-built request said with Effort: the
 		// terms are in front of the model and more thinking buys tokens.
-		Configure(capGenerate(topicLabelMaxTokens)).
-		Model(in.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		schemaflux.GenerateOptions{Options: sfOpts(in.llm.OpsModel(ctx), schemaflux.TierFast, "", topicLabelMaxTokens)})
+	err = opErr(err)
 	if err != nil {
 		// An answer that is empty or all whitespace does not reach here as an
 		// empty string — the library refuses it at the provider boundary as
@@ -472,4 +484,30 @@ func (in *Interest) model(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(m), nil
+}
+
+// leadByDecision is rung 2 of the rerank: one labelled decision, "which of these
+// should lead", whose labels are the candidates' one-based ordinals — never
+// their ids (§18.8). Answered by JEV through the Decisions pair, or by the model
+// answering the same decision when JEV is unsure or down; either way one pick
+// and no reason.
+func (in *Interest) leadByDecision(ctx context.Context, payload string, n int) ([]derive.Pick, error) {
+	labels := make([]string, n)
+	for i := range labels {
+		labels[i] = strconv.Itoa(i + 1)
+	}
+	call, cancel := context.WithTimeout(in.llm.OpsContext(ctx), interestTimeout)
+	defer cancel()
+	got, err := schemaflux.Which(call, payload,
+		"Which candidate id should this reader read first, judged on substance against their profile?",
+		labels, sfOpts(in.llm.OpsModel(ctx), schemaflux.TierFast, "", rerankMaxTokens))
+	err = opErr(err)
+	if err != nil {
+		return nil, err
+	}
+	id, err := strconv.Atoi(got)
+	if err != nil || id < 1 || id > n {
+		return nil, fmt.Errorf("smart: the lead decision named %q, not a candidate", got)
+	}
+	return []derive.Pick{{Index: id - 1}}, nil
 }

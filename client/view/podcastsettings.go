@@ -5,9 +5,10 @@ package view
 import (
 	"strconv"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 )
 
@@ -72,6 +73,19 @@ type podcastProps struct {
 	// sentence somebody can act on.
 	lastError   string
 	lastErrorAt string
+	// keyUnreadable is true when the Smart+ config was asked for and REFUSED. Only
+	// an administrator may read it, so for every other account the question never
+	// gets an answer — and "still checking" is then a lie that lasts for ever,
+	// with a Start button that stays dead beside it. Unknown, said plainly, and
+	// not a reason to refuse: the server answers for itself when asked to speak.
+	keyUnreadable bool
+	// bed and bedTracks are the music under the broadcast, which the intro
+	// promises and this tab used not to offer — it lived only on Listening.
+	bed       string
+	bedTracks []data.AudioTrack
+	// status is what became of the last press on this screen: prefSaving,
+	// prefSaved, prefFailed, or "" before any.
+	status string
 }
 
 // actPodcastStart launches the show from here.
@@ -82,23 +96,29 @@ type podcastProps struct {
 const actPodcastStart = "podcast-start"
 
 func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
-	met := slidePrereqsMet(p.needs)
-	// Nothing is declared blocked while a requirement is still being asked about.
-	// "Something above is still off" beside a row that says "checking" is the
-	// screen contradicting itself.
-	blocked := !met && !p.keyUnknown
+	// The START rule, the one the handler and the list chip use: a requirement the
+	// reader owns refuses, the server's key refuses only once it is KNOWN to be
+	// missing. This used to be "everything met", which counts an unanswered key as
+	// missing — so the button was dead while the row beside it said "checking", and
+	// stayed dead for an account that can never be told.
+	why := slideStartBlockedBy(p.needs, !p.keyUnknown)
+	blocked := why != ""
 
 	out := []ui.Node{
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "intro"))),
-		fsGroup(glyphListen, tr.T("slides", "needsTitle"), tr.T("podcast", "needsHint")),
+		podcastStatus(tr, p.status),
+		kitHeading(glyphListen, tr.T("slides", "needsTitle"), tr.T("podcast", "needsHint")),
 	}
 	for _, q := range p.needs {
-		out = append(out, podcastNeedRow(tr, q, p.keyUnknown))
+		out = append(out, podcastNeedRow(tr, q, p.keyUnknown, p.keyUnreadable))
 		// Directly under the key, because that is the row it corrects. A
 		// refusal shown anywhere else on this screen would read as a general
 		// fault rather than as evidence about this specific claim.
 		if q.Key == prereqServerKey && p.lastError != "" {
 			out = append(out, podcastRefusalRow(tr, p.lastError))
+		}
+		if q.Key == prereqServerKey && p.keyUnreadable {
+			out = append(out, html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "keyUnreadable"))))
 		}
 	}
 
@@ -107,9 +127,14 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 	// the rows above already say which requirement is the problem.
 	out = append(out,
 		ui.If(blocked, func() ui.Node {
+			// Two different sentences, because the remedies are different people:
+			// a switch above is the reader's, a missing key is whoever runs the server.
+			if why == prereqServerKey {
+				return html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "blockedKey")))
+			}
 			return html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "blocked")))
 		}),
-		html.Div(html.Props{Class: "set-actions"},
+		kitChipGroup(kitGroupActions, "",
 			// Genuinely disabled, not merely announced as such.
 			//
 			// This carried `aria-disabled` — the only one in the codebase, and
@@ -118,8 +143,8 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 			// silently doing nothing (slideNeedsStart refuses on the same
 			// condition). Assistive tech was told it was unavailable and
 			// everybody else was told it was ready. `Disabled` is the property
-			// smartToggle already uses and the one the browser acts on.
-			html.Button(podcastStartProps(!met),
+			// kitSwitch already uses and the one the browser acts on.
+			html.Button(podcastStartProps(blocked),
 				html.Text(tr.T("slides", "needsStart"))),
 		),
 
@@ -127,16 +152,26 @@ func settingsPodcast(tr i18n.Runtime, p podcastProps) []ui.Node {
 		// checklist above — "Join the stories up" — and one preference drawn twice
 		// on one screen is a screen where somebody presses the copy that is not
 		// the one they were looking at.
-		fsGroup(glyphSlideshow, tr.T("podcast", "soundGroup"), tr.T("podcast", "soundHint")),
+		kitHeading(glyphSlideshow, tr.T("podcast", "soundGroup"), tr.T("podcast", "soundHint")),
 		// Only while there is a broadcast to have a manner — the same rule the
 		// Listening tab applies, and for the same reason: a tone picker for a
 		// narrator nobody has switched on is a control with nothing to act on.
 		ui.If(p.podcast, func() ui.Node {
-			return setRow(tr.T("settings", "vibe"), tr.T("settings", "vibeHint"),
-				vibePicker(tr, p.vibe))
+			return kitSetting(kitSettingProps{Label: tr.T("settings", "vibe"), Hint: tr.T("settings", "vibeHint"),
+				Control: vibePicker(tr, p.vibe)})
 		}),
-		setRow(tr.T("settings", "digest"), tr.T("settings", "digestHint"),
-			glyphChip("toggle-digest", glyphAction, onOff(tr, p.digest), p.digest)),
+		// The absent picker says why it is absent. A row that is missing leaves the
+		// reader looking for it, and the switch that brings it back is above.
+		ui.If(!p.podcast, func() ui.Node {
+			return html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "vibeOff")))
+		}),
+		// Not gated on the broadcast switch: the sting and the music play whenever
+		// read-to-me is running, and a control hidden behind a switch is how
+		// somebody ends up with music they cannot turn off.
+		kitSetting(kitSettingProps{Label: tr.T("settings", "bed"), Hint: tr.T("settings", "bedHint"),
+			Control: bedPicker(tr, p.bed, p.bedTracks)}),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "digest"), Hint: podcastDigestHint(tr, p.podcast),
+			Control: kitToggle(kitChipProps{Action: "toggle-digest", Glyph: glyphAction, Label: onOff(tr, p.digest)}, p.digest)}),
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("podcast", "spendNote"))),
 	)
 	return out
@@ -186,27 +221,32 @@ func podcastRefusalRow(tr i18n.Runtime, kind string) ui.Node {
 	)
 }
 
-func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown bool) ui.Node {
+func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown, keyUnreadable bool) ui.Node {
 	var control ui.Node
 	switch {
+	case keyUnreadable && !q.Fixable:
+		control = kitStatic(kitStaticProps{Label: tr.T("podcast", "needsUnreadable")})
 	case keyUnknown && !q.Fixable:
 		// Asked and not yet answered. A pending state rather than the absent one:
 		// see podcastProps.keyUnknown.
-		control = html.Span(html.Props{Class: "chip chip-static"},
-			html.Text(tr.T("podcast", "needsChecking")))
+		control = kitStatic(kitStaticProps{Label: tr.T("podcast", "needsChecking")})
 	case q.Fixable:
 		// The same action the dialog used, so the switch it writes is the same
 		// switch — see reader.slideNeedsFix.
-		control = pickChip(actSlideNeedsFix, q.Key, onOff(tr, q.On), q.On)
+		control = kitPick(kitChipProps{Action: actSlideNeedsFix, Mini: true, Key: actSlideNeedsFix + "-" + q.Key, Label: onOff(tr, q.On)}, q.Key, q.On)
 	case q.On:
-		control = html.Span(html.Props{Class: "chip chip-static"},
-			html.Text(tr.T("slides", "needsPresent")))
+		control = kitStatic(kitStaticProps{Label: tr.T("slides", "needsPresent")})
 	default:
-		control = html.Span(html.Props{Class: "chip chip-static is-missing"},
-			html.Text(tr.T("slides", "needsAbsent")))
+		control = kitStatic(kitStaticProps{Label: tr.T("slides", "needsAbsent"), Extra: "is-missing"})
 	}
+	// A group named by the requirement and described by its reason, for
+	// kitSetting's reason: the control is a chip reading "on" or "off", and without
+	// the row's name around it a listener tabbing down the checklist heard
+	// "off, toggle button" four times with nothing to say what was off.
+	id := "pc-need-" + q.Key
 	return html.Div(html.Props{
-		Class: "mf-row pc-need", Key: "pc-need-" + q.Key,
+		Class: "mf-row pc-need", Key: id, Role: "group",
+		Aria: map[string]string{"labelledby": id + "-label", "describedby": id + "-hint"},
 		Raw: map[string]any{
 			"data-on": strconv.FormatBool(q.On),
 			// Optional requirements are marked so the stylesheet can keep them
@@ -216,9 +256,63 @@ func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown bool) ui.Node {
 		},
 	},
 		html.Div(html.Props{Class: "mf-main"},
-			html.Span(html.Props{Class: "mf-name"}, html.Text(tr.T("slides", "need."+q.Key))),
-			html.Span(html.Props{Class: "mf-evidence"}, html.Text(tr.T("slides", "why."+q.Key))),
+			html.Span(html.Props{Class: "mf-name", ID: id + "-label"}, html.Text(tr.T("slides", "need."+q.Key))),
+			html.Span(html.Props{Class: "mf-evidence", ID: id + "-hint"}, html.Text(tr.T("slides", "why."+q.Key))),
 		),
 		html.Div(html.Props{Class: "mf-control"}, control),
 	)
+}
+
+// slideNeedsFixWrite is what pressing a requirement's chip does: which
+// preference it writes, and to what. ok is false for a row that is not a switch.
+//
+// Every row flips, whichever way it stands. Two of them only ever turned ON — the
+// chip was written for the dialog that listed what was missing — and on this tab
+// the same chip also reads "on", so pressing it did nothing and the only way to
+// take Smart+ voice or Keep playing back was a different tab.
+func slideNeedsFixWrite(key string, smart, podcast, auto bool) (pref string, next, ok bool) {
+	switch key {
+	case prereqSmartVoice:
+		return "tts.smartPlus", !smart, true
+	case prereqPodcast:
+		return "tts.podcast", !podcast, true
+	case prereqKeepPlaying:
+		return "tts.autoplay", !auto, true
+	}
+	return "", false, false
+}
+
+// podcastStatus is the line that says what became of the last press.
+//
+// Always in the tree, with nothing in it until something is pressed: a live
+// region that appears together with its message is one assistive technology has
+// not yet registered, so the first "saved" is announced to nobody.
+func podcastStatus(tr i18n.Runtime, status string) ui.Node {
+	text := ""
+	attrs := map[string]string{}
+	switch status {
+	case prefSaving:
+		text = tr.T("podcast", "saving")
+	case prefSaved:
+		text = tr.T("podcast", "saved")
+		attrs["good"] = "true"
+	case prefFailed:
+		text = tr.T("podcast", "saveFailed")
+		attrs["bad"] = "true"
+	}
+	class := "set-note set-note-live"
+	if text == "" {
+		class = "pc-status"
+	}
+	return kitLive(kitLiveProps{Class: class, Role: kitRoleStatus, Live: kitLivePolite, Data: attrs},
+		html.Text(text))
+}
+
+// podcastDigestHint says what the summary switch does HERE, where the broadcast
+// switch is on the same screen and outranks it.
+func podcastDigestHint(tr i18n.Runtime, broadcast bool) string {
+	if broadcast {
+		return tr.T("podcast", "digestOverridden")
+	}
+	return tr.T("settings", "digestHint")
 }

@@ -3,12 +3,13 @@ package smart
 import (
 	"context"
 	"errors"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // Podcast.Segment's coverage gap and the reason it is closed here is identical
@@ -18,7 +19,7 @@ import (
 // A13 runs on typed operations now (plan P3.9), so what a test scripts is the
 // PROVIDER's body. The `fakeLLM` is still here and still matters — it answers
 // `Configured()`, the gate every one of these calls passes through before a
-// request is written. `schemafluxtest.Install` calls `t.Setenv`, so nothing in
+// request is written. `sftest.Install` calls `t.Setenv`, so nothing in
 // this file may call `t.Parallel`.
 
 // podBrief is requestSent under a name that says what is being looked for.
@@ -30,7 +31,7 @@ import (
 // preference row must not be able to rewrite the model's standing
 // instructions), and it means an assertion here can only be "the brief reached
 // the model", never "it reached it as a system instruction".
-func podBrief(prov *schemafluxtest.Provider, n int) string {
+func podBrief(prov *sftest.Provider, n int) string {
 	return requestSent(prov, n)
 }
 
@@ -108,7 +109,10 @@ func TestSegmentContextCancellationPropagates(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled to be recognisable via errors.Is", err)
 	}
-	if spy.ContextN(0).Err() == nil {
+	// SchemaFlux v2 refuses an ended context before asking the provider at
+	// all, where v1 passed it through and let the provider notice. Either is
+	// correct; what must not happen is a provider answering on a cancelled call.
+	if spy.CallCount() > 0 && spy.ContextN(0).Err() == nil {
 		t.Error("the context handed to the provider was not the caller's cancelled one")
 	}
 }
@@ -167,7 +171,7 @@ func TestSegmentSendsThePodcastInstructionsAndAssembledInput(t *testing.T) {
 	// owns the envelope and this package owns what goes in it. The assembled
 	// input arriving INTACT is the contract; being the entire user prompt was
 	// never one.
-	if got, want := maskShape(requestSent(prov, 0)), maskShape(podcastInput(seg, "the body")); !strings.Contains(got, want) {
+	if got, want := maskShape(requestSent(prov, 0)), maskShape(jsonQuoted(podcastInput(seg, "the body"))); !strings.Contains(got, want) {
 		t.Errorf("the provider was not sent the input podcastInput would build (shape masked):\ngot  %q\nwant it to contain %q",
 			got, want)
 	}
@@ -553,7 +557,7 @@ func TestWriteSegmentMalformedReplyIsAReadableError(t *testing.T) {
 	_ = replying(t, `{"blocks":[{"story":1`) // truncated
 	p := NewPodcast(&fakeLLM{configured: true}, nil, t.TempDir())
 	_, err := p.WriteSegment(context.Background(), threeStoryGroup())
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }

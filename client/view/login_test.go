@@ -4,6 +4,7 @@ package view
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -41,6 +42,7 @@ func TestLoginMessageEveryGRPCCode(t *testing.T) {
 	const (
 		errUnreachable = "Can't reach the server. Check it's running, then try again."
 		errGeneric     = "Couldn't sign in. Check the server is running and try again."
+		errLocked      = "Too many sign-in attempts, so signing in is paused for now."
 	)
 	const rawMessage = "some transport-composed english"
 
@@ -61,7 +63,9 @@ func TestLoginMessageEveryGRPCCode(t *testing.T) {
 		{codes.NotFound, errGeneric},
 		{codes.AlreadyExists, errGeneric},
 		{codes.PermissionDenied, errGeneric},
-		{codes.ResourceExhausted, rawMessage}, // routed through serverText
+		// A bare ResourceExhausted is the burst limiter in front of the
+		// lockout, which sends no key: told as a lockout, not as its English.
+		{codes.ResourceExhausted, errLocked},
 		{codes.FailedPrecondition, rawMessage},
 		{codes.Aborted, errGeneric},
 		{codes.OutOfRange, errGeneric},
@@ -107,7 +111,8 @@ func TestLoginMessageResolvesAServerCatalogKey(t *testing.T) {
 		t.Fatalf("WithDetails: %v", err)
 	}
 
-	want := "invalid username or password"
+	// Not the server's terse English: the sentence that says what to do.
+	want := "That username and password don't match. Check both — the password is case-sensitive — and try again."
 	if got := loginMessage(tr, withDetail.Err()); got != want {
 		t.Errorf("loginMessage with ErrorDetail key srv.badCredentials = %q, want %q", got, want)
 	}
@@ -133,5 +138,22 @@ func TestLoginMessageFallsBackWhenTheKeyIsUnknown(t *testing.T) {
 	}
 	if got == "srv.aKeyThisBuildHasNeverHeardOf" {
 		t.Errorf("loginMessage leaked the raw catalog key instead of falling back to English")
+	}
+}
+
+// TestLoginMessageSaysALockoutIsALockout pins the second refusal a person at
+// the sign-in card has to tell apart from a typo: the persistent lockout. It
+// says to stop, and it carries the wait the server measured, because "try
+// again" without a time is how a cooldown becomes a longer one.
+func TestLoginMessageSaysALockoutIsALockout(t *testing.T) {
+	tr := mustRuntime(t)
+	st := status.New(codes.ResourceExhausted, "too many requests; please slow down")
+	withDetail, err := st.WithDetails(&pb.ErrorDetail{Key: "srv.rateLimited", RetryAfterS: 600})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	got := loginMessage(tr, withDetail.Err())
+	if !strings.HasPrefix(got, "Too many sign-in attempts") || !strings.Contains(got, "10 minutes") {
+		t.Errorf("lockout = %q, want the lockout sentence with its 10-minute wait", got)
 	}
 }

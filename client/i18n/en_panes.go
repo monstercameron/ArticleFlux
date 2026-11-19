@@ -11,6 +11,16 @@ func init() {
 		// The masthead's second line: how many feeds, then either a count or
 		// "all quiet". One key so a locale can reorder the two halves.
 		"mastheadSub": "{feeds} · {state}",
+		// The same line while the first feed list is still in flight. Not a count:
+		// there is not one yet, and a zero here would be a statement.
+		"mastheadLoading": "loading…",
+		// The control that folds the rail to a strip at the edge of the window.
+		// Two labels, because it is an icon and its name has to say what
+		// pressing it does, which is the opposite thing in each state. "The
+		// feeds", not "the sidebar": a reader knows what is in it, not what the
+		// layout calls it.
+		"foldOn":  "Fold the feeds away",
+		"foldOff": "Keep the feeds open",
 
 		"bandStreams": "Streams",
 		"bandFeeds":   "Feeds",
@@ -95,9 +105,13 @@ func init() {
 		"connecting":      "Connecting…",
 		"loading":         "Loading…",
 		"loadingArticles": "Loading articles",
-		"loadMore":        "Load more",
-		"end":             "That's everything.",
-		"backToFeeds":     "‹ Feeds",
+		// The accessible name of the middle pane, as a landmark. Never drawn: the
+		// pane's visible heading is the scope ("All articles", a feed's name), and
+		// a landmark's name has to stay the same while that changes.
+		"paneLabel":   "Articles",
+		"loadMore":    "Load more",
+		"end":         "That's everything.",
+		"backToFeeds": "‹ Feeds",
 
 		// The subtitle under the scope title. One per scope, because each says
 		// a different thing about the ordering — and the ordering is the fact
@@ -111,8 +125,8 @@ func init() {
 		// "{n} unread, newest first" — a number about a different stream sitting
 		// under a list of the articles you wrote on. Same shape as the other
 		// three: what this list IS, in four words, and no count.
-		"subNotes": "Everything you wrote on.",
-		"subUnread":   "Unread only. Press u to show everything.",
+		"subNotes":  "Everything you wrote on.",
+		"subUnread": "Unread only. Press u to show everything.",
 
 		"searchPlaceholder": "Search",
 		"searchAria":        "Search articles",
@@ -214,11 +228,15 @@ func init() {
 		"emptyFailed":     "This list didn't load",
 		"emptyFailedHint": "The message above says why. Nothing has been lost.",
 		"emptyNoArticles": "No articles yet",
-		// The pinned URL box this used to point at is gone — the chosen design has
-		// no top bar at all (see railPane's head comment in panes.go). Adding a
-		// feed now opens a dialog from the button at the foot of the rail, so the
-		// hint sends the reader there instead of to a control that no longer exists.
-		"emptyNoArticlesHint": "Add a feed — the button sits at the bottom of the sidebar.",
+		// The hint used to point at the Add button at the foot of the rail, and
+		// on a phone the rail is not on screen: "at the bottom of the sidebar"
+		// sent a new reader looking for something they could not see. The button
+		// is under this sentence now (emptyFirstRun), so the sentence only has to
+		// say what following something does.
+		"emptyNoArticlesHint": "Follow a site — paste its address or a feed link — and its articles land here.",
+		// The same title for a reader WITH feeds that have brought nothing in yet.
+		// Adding another is not the answer, so it is not the direction.
+		"emptyNoArticlesWaiting": "Your feeds haven't brought anything in yet. New articles appear here as they're fetched.",
 		// My Feed empty is its own case, and the hint is the reason why: the other
 		// empty lists are empty because of a filter the reader chose, so the direction
 		// is "undo that". This one is empty because the ranking has not run yet or has
@@ -238,7 +256,10 @@ func init() {
 		// Its own accessible name because the visible line is the server's prose and a
 		// screen reader arriving at it mid-row has no way to know it is an explanation
 		// rather than more of the article.
-		"whyAria": "Why this is in My Feed",
+		//
+		// Rendered as a visually-hidden prefix rather than an aria-label, so it ends
+		// in a colon: it is read immediately before the reason it introduces.
+		"whyAria": "Why this is in My Feed:",
 		// The lead-in for a Smart+ promotion reason. The model is asked for a fragment
 		// completing "moved up because …", so this supplies the clause its answer was
 		// written against — without it the line reads as a sentence missing its subject.
@@ -328,12 +349,31 @@ func init() {
 		"noBody":      "This entry has no body. Open the original to read it.",
 
 		"byline": "by {author}",
+		// The two ends of the floating bar. The same step as j and k, for a
+		// reader whose hand is on the pointer: this article is not for me, the
+		// next one please. Named for where it goes, not for the key.
+		"prevArticle": "Previous article",
+		"nextArticle": "Next article",
 
 		"like":         "Like",
 		"dislike":      "Dislike",
 		"readLater":    "Read later",
 		"markUnread":   "Mark unread",
 		"openOriginal": "Open original",
+		// Article translation (§10.5b). The control says what pressing it WILL
+		// do, so it reads "Show original" while the translation is showing.
+		"translate":    "Translate",
+		"showOriginal": "Show original",
+		"translating":  "Translating…",
+		// The line under the actions while a translation is showing. Names the
+		// language it came FROM, because that is the fact the reader no longer
+		// has in front of them.
+		"translatedFrom":    "Translated from {language}.",
+		"translatedUnknown": "Translated.",
+		// Said rather than discovered halfway down the page.
+		"translatedPartial": "The end of this article is in the original language.",
+		"translateFailed":   "Couldn't translate this article: {err}",
+		"translateSame":     "This article is already in your language.",
 		// The proxy pair. "View page" rather than "Proxy" or "Snapshot": the
 		// reader is choosing what to look at, not which mechanism fetches it,
 		// and the mechanism is explained inside the page itself where it
@@ -435,6 +475,8 @@ func init() {
 		"title": "Keyboard shortcuts",
 		"mark":  "Keys",
 		"sub":   "Arrows move inside a pane; Tab moves between them.",
+		// The sheet's visible way out, as every other dialog has one.
+		"close": "Close",
 
 		"groupAnywhere": "Anywhere",
 		"groupRail":     "In the feed list",
@@ -466,6 +508,7 @@ func init() {
 		"slidesVoice":  "Turn Read to me on or off",
 		"slidesLeave":  "Leave the slideshow",
 		"focusMode":    "Read full width, or bring the columns back",
+		"railFold":     "Fold the feeds away, or bring them back",
 		"openOriginal": "Open the original in a new tab",
 		"like":         "Like",
 		"dislike":      "Dislike",

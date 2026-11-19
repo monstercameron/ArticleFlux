@@ -17,7 +17,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/smart"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // The broadcast path, end to end (§19).
@@ -594,7 +594,7 @@ func TestTheSplitOpeningNeverBreaksPlayback(t *testing.T) {
 // call passes through, and which is still worth satisfying from here so these
 // tests drive the real Podcast writer end to end.
 type fakeWriter struct {
-	prov *schemafluxtest.Provider
+	prov *sftest.Provider
 }
 
 func (f *fakeWriter) Configured(context.Context) bool { return true }
@@ -614,6 +614,9 @@ func (f *fakeWriter) OpsContext(ctx context.Context) context.Context { return ct
 // every time the default moves, for no property they assert.
 func (f *fakeWriter) OpsModel(context.Context) string { return "" }
 
+// DeciderAvailable: no JEV rung in this fake (A47).
+func (f *fakeWriter) DeciderAvailable(context.Context) bool { return false }
+
 // Do is unreachable on the paths these tests exercise and says so, rather than
 // answering plausibly: a silent fallback here would let a feature that stopped
 // using its operation keep passing.
@@ -630,7 +633,7 @@ func (f *fakeWriter) seen() (string, int) {
 		return "", 0
 	}
 	last := reqs[len(reqs)-1]
-	return last.SystemPrompt + last.UserPrompt, len(reqs)
+	return last.System + last.User, len(reqs)
 }
 
 // withWriter swaps in a podcast writer that always succeeds.
@@ -639,8 +642,8 @@ func withWriter(t *testing.T, a *App) *fakeWriter {
 	// Whatever it is asked for, it says goodbye. The point of these tests is
 	// which prompt arrives and what the handler does with the answer, not
 	// whether a model can write.
-	prov := schemafluxtest.New().Shaped().Reply("That's the lot. Back when there's more.")
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().Shaped().Reply("That's the lot. Back when there's more.")
+	sftest.Install(t, prov)
 	w := &fakeWriter{prov: prov}
 	a.podcast = smart.NewPodcast(w, a.settings, t.TempDir())
 	return w

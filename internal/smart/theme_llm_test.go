@@ -11,7 +11,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // The guards for the theming generator (§20.16.3), over the llmClient seam so none
@@ -51,10 +51,10 @@ func palettesWith(f *fakeLLM) *Palettes { return NewPalettes(f, nil) }
 
 // palettesScripted installs a provider answering with the given body and
 // returns Palettes wired to it.
-func palettesScripted(t *testing.T, body string) (*Palettes, *schemafluxtest.Provider) {
+func palettesScripted(t *testing.T, body string) (*Palettes, *sftest.Provider) {
 	t.Helper()
-	prov := schemafluxtest.New().Shaped().Reply(body)
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().Shaped().Reply(body)
+	sftest.Install(t, prov)
 	return NewPalettes(&fakeLLM{configured: true}, nil), prov
 }
 
@@ -65,9 +65,9 @@ func palettesScripted(t *testing.T, body string) (*Palettes, *schemafluxtest.Pro
 // but it now travels inside the prompt the library composed, so the assertions
 // that unmarshal it have to find it there. First brace to last brace: the
 // payload is the only JSON object in the request.
-func themeBodySent(t *testing.T, prov *schemafluxtest.Provider) string {
+func themeBodySent(t *testing.T, prov *sftest.Provider) string {
 	t.Helper()
-	sent := prov.LastRequest().UserPrompt
+	sent := prov.LastRequest().User
 	i, j := strings.Index(sent, "{"), strings.LastIndex(sent, "}")
 	if i < 0 || j <= i {
 		t.Fatalf("no JSON payload in the request:\n%s", sent)
@@ -287,7 +287,7 @@ func TestTheRequestIsBoundedAndDeliberate(t *testing.T) {
 		t.Errorf("MaxTokens is %d; a reasoning model spends most of a small "+
 			"budget thinking and emits nothing", r.MaxTokens)
 	}
-	if r.JSONSchema == nil || r.SchemaName == "" {
+	if r.Schema == nil || r.SchemaName == "" {
 		t.Error("the reply is not schema-constrained; “return a palette” is answered " +
 			"with an object, an object in prose, or a CSS block")
 	}
@@ -305,7 +305,7 @@ func TestTheRequestIsBoundedAndDeliberate(t *testing.T) {
 // ask() past a successful Do() with a real transport failure before this.
 
 func TestComposeProviderErrorSurfaces(t *testing.T) {
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(errors.New("upstream on fire")))
+	sftest.Install(t, sftest.New().Fail(errors.New("upstream on fire")))
 	f := &fakeLLM{configured: true}
 	_, _, err := palettesWith(f).Compose(context.Background(), "slate and rain", design.ToneDark)
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
@@ -314,7 +314,7 @@ func TestComposeProviderErrorSurfaces(t *testing.T) {
 }
 
 func TestComposeContextCancellationPropagates(t *testing.T) {
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	sftest.Install(t, sftest.New().Fail(context.Canceled))
 	f := &fakeLLM{configured: true, reply: func(int, llm.Request) (string, error) {
 		return "", context.Canceled
 	}}

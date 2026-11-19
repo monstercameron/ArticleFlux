@@ -48,11 +48,14 @@ func init() {
 		"composeLabel":       "Describe it",
 		"composeHint":        "A place, a time of day, a mood — anything a room could be. Every colour is checked for legibility before it is used.",
 		"composePlaceholder": "a cold library at 2am",
-		"composeAria":        "Describe the theme you want",
 		"composeGo":          "Make it",
 		"composeWorking":     "Choosing colours…",
 		"composeTrimmed":     "That was longer than the box takes, so only the first part was used.",
 		"composeDrop":        "Forget this theme",
+		// Forget this theme's confirmation. A generated palette cost a call and
+		// is not stored anywhere else, so the warning says it cannot come back.
+		"composeDropWarn":    "This palette is kept nowhere else, and describing it again will not give you the same colours.",
+		"composeDropConfirm": "Forget it",
 		"composeUnnamed":     "Yours",
 		"composeNoPrompt":    "Made for you.",
 

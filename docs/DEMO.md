@@ -2,8 +2,8 @@
 
 A build of the reader with the server inside it, published as a static page.
 
-ArticleFlux is self-hosted, which means "have a look at it" otherwise costs a Go toolchain, two
-clones, a WebAssembly build and a running server. That is a lot to ask of somebody who has not
+ArticleFlux is self-hosted, which means "have a look at it" otherwise costs a Go toolchain, a
+clone, a WebAssembly build and a running server. That is a lot to ask of somebody who has not
 decided whether they care yet. The demo removes every step: one URL, no account, no install.
 
 - **Where it lives:** GitHub Pages, published by [`.github/workflows/pages.yml`](../.github/workflows/pages.yml).
@@ -222,18 +222,6 @@ node e2e/demo-smoke.mjs bin/demo
 node e2e/demo-smoke.mjs https://monstercameron.github.io/ArticleFlux/
 ```
 
-### The D0 wrinkle
-
-`go.mod` replaces `github.com/monstercameron/GoWebComponents/v5` with a **sibling directory**,
-because v5.0.0 was never tagged — and `actions/checkout` refuses any path outside the workspace, so
-the obvious `path: ../GoWebComponents` fails at the second step of every job. `.github/actions/gwc`
-is the four lines that make it work: check out inside, move next door, and assert the checkout really
-is the v5 module rather than letting a wrong major version surface later as an unresolvable import.
-Both workflows use it, so there is one place to fix rather than four to keep in step.
-
-That is also what lets the repository's own replace directive, `make deps` and CI agree without
-editing `go.mod` in the pipeline — an edited `go.mod` is a build that is not the build anybody runs.
-
 ## Files
 
 | | |
@@ -248,4 +236,3 @@ editing `go.mod` in the pipeline — an edited `go.mod` is a build that is not t
 | `client/i18n/en_demo.go` | that note's four strings, in the catalog like everything else |
 | `e2e/demo-smoke.mjs` | serves the bundle and proves it boots — the last gate before publishing |
 | `.github/workflows/pages.yml` | build · verify · boot · publish |
-| `.github/actions/gwc` | the D0 sibling checkout, in one place for both workflows |

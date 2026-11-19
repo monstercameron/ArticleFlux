@@ -29,6 +29,10 @@ type ItemCategory struct {
 	// to store the winning Matches at analysis time, alongside category_scores
 	// — a schema change this ticket does not make.
 	Reason []string
+	// Rung is which paid rung placed the item when ByModel is true (A47):
+	// "jev" or "model", or "" for a row written before 0035. ByModel stays true
+	// for both, so a client that knows only the bool is still told the truth.
+	Rung string
 }
 
 // categoryFloors is each built-in slug's MinScore, resolved once rather than
@@ -139,6 +143,7 @@ func resolveCategory(row ItemAnalysis) ItemCategory {
 			Secondary: excluding(row.ModelPrimary, row.ModelSecondary),
 			Genre:     row.Genre,
 			ByModel:   true,
+			Rung:      row.ModelRung,
 		}
 	}
 

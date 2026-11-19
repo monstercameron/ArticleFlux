@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/entities"
 	"github.com/monstercameron/ArticleFlux/internal/idgen"
 )
 
@@ -65,14 +66,28 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 		// The stored hash and the text it belongs to come back with the id, so an
 		// edit can be NOTICED and the version being replaced can be kept
 		// (0024, TODO F34). One row of a query that was already happening.
+		//
+		// Every column the UPDATE below writes comes back too, RAW — not
+		// coalesced — so that "the poll changed nothing" can be decided exactly,
+		// NULL against NULL (see the skip in the loop). Except the body: it
+		// averages 24 KB, so instead of copying it out on every row of every poll
+		// to compare it in Go, SQLite compares it in place against the incoming
+		// one (`IS`, which is NULL-safe) and the body itself is read only when an
+		// edit needs the old version.
 		sel, err := tx.PrepareContext(ctx,
-			`SELECT id, coalesce(content_hash,''), title, coalesce(summary,''),
-			        coalesce(content_html,'')
+			`SELECT id, content_hash, title, summary, content_html IS ?,
+			        author, url, dupe_key, word_count, image_url
 			   FROM items WHERE source_id = ? AND guid = ?`)
 		if err != nil {
 			return err
 		}
 		defer sel.Close()
+		body, err := tx.PrepareContext(ctx,
+			`SELECT coalesce(content_html,'') FROM items WHERE id = ?`)
+		if err != nil {
+			return err
+		}
+		defer body.Close()
 
 		// The hash goes in with the row. Without it the very next poll would
 		// compare new text against an empty hash and report every article on the
@@ -100,15 +115,21 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 		}
 		defer upd.Close()
 
-		// An edit bumps the counter and stamps when it was seen. Separate from
-		// the update above so the common case — a re-poll of fifty unchanged
-		// articles — never touches these columns at all.
-		mark, err := tx.PrepareContext(ctx, `
-			UPDATE items SET revision = revision + 1, edited_at = ? WHERE id = ?`)
+		// An edit bumps the counter and stamps when it was seen — in the SAME
+		// statement as the new text. It used to be a second UPDATE after the one
+		// above, and every UPDATE of `items` fires items_au, which deletes and
+		// re-inserts the article's full-text row: an edited article was
+		// re-tokenised twice, inside the single writer, for one change.
+		updEdited, err := tx.PrepareContext(ctx, `
+			UPDATE items SET title=?, author=?, summary=?, content_html=?,
+			                 url=?, dupe_key=?, word_count=?, image_url=?,
+			                 content_hash=?,
+			                 revision = revision + 1, edited_at = ?
+			 WHERE id=?`)
 		if err != nil {
 			return err
 		}
-		defer mark.Close()
+		defer updEdited.Close()
 
 		// The version being REPLACED, kept so "what changed" has two sides.
 		// `INSERT OR IGNORE` against the (item_id, content_hash) index from 0010:
@@ -125,13 +146,65 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 
 		var fresh []string
 		for _, it := range items {
-			var id, oldHash, oldTitle, oldSummary, oldBody string
-			err := sel.QueryRowContext(ctx, sourceID, it.GUID).
-				Scan(&id, &oldHash, &oldTitle, &oldSummary, &oldBody)
+			var (
+				id, oldTitle                         string
+				hashCol, summaryCol                  sql.NullString
+				authorCol, urlCol, dupeCol, imageCol sql.NullString
+				oldWords                             int
+				sameBody                             bool
+			)
+			err := sel.QueryRowContext(ctx, nullify(it.ContentHTML), sourceID, it.GUID).
+				Scan(&id, &hashCol, &oldTitle, &summaryCol, &sameBody,
+					&authorCol, &urlCol, &dupeCol, &oldWords, &imageCol)
+			// The coalesced forms the rest of this loop has always compared.
+			oldHash, oldSummary := hashCol.String, summaryCol.String
+			// The stored body, read below only by the edit path.
+			var oldBody string
 			switch err {
 			case nil:
 				newHash := contentHash(it.Title, it.Summary, it.ContentHTML)
+				// The common case of every poll: the feed re-sent an article we
+				// already hold, byte for byte. The UPDATE below would write the
+				// row back exactly as it is — and items_au would still delete and
+				// re-insert its full-text entry, re-tokenising title, summary and
+				// a body that averages 24 KB on the development database, for every
+				// entry of every feed on every poll, inside the one write
+				// connection. Skipping it leaves the row, the FTS index and the
+				// counts exactly as the UPDATE would have.
+				if newHash == oldHash && hashCol.Valid && it.Title == oldTitle &&
+					sameNullable(summaryCol, it.Summary) && sameBody &&
+					sameNullable(authorCol, it.Author) && sameNullable(urlCol, it.URL) &&
+					sameNullable(dupeCol, it.DupeKey) && sameNullable(imageCol, it.ImageURL) &&
+					oldWords == it.WordCount {
+					res.Updated++
+					continue
+				}
 				edited := newHash != oldHash
+				if edited && oldHash != "" {
+					// Everything below that reads oldBody runs under exactly this
+					// condition, so this is the only place it is needed.
+					if err := body.QueryRowContext(ctx, id).Scan(&oldBody); err != nil {
+						return err
+					}
+				}
+				// A correction of OURS is not an edit of THEIRS.
+				//
+				// Titles and summaries stored before 2026-11-19 kept their numeric
+				// character references ("Google&#8217;s"), because the normaliser
+				// did not decode them. It does now, so the next poll hands this
+				// function the same article with the same words, decoded — a
+				// different hash, and by the rule above an "edited" mark and a
+				// revision row for every such article on the instance, each one
+				// claiming a publisher changed something. If the incoming text is
+				// exactly the decoded form of what is stored, the row is brought
+				// up to date and nothing is recorded: no revision, no mark, no
+				// count. The body is compared as it is — it is HTML and was never
+				// decoded — so a real edit that arrives with the correction still
+				// registers as one.
+				if edited && oldHash != "" &&
+					contentHash(entities.Decode(oldTitle), entities.Decode(oldSummary), oldBody) == newHash {
+					edited = false
+				}
 				if edited && oldHash != "" {
 					// Keep what is about to be overwritten. Only when a hash was
 					// stored: a row from before 0024 has no recorded version, and
@@ -143,17 +216,19 @@ func (r *ReaderRepo) IngestItems(ctx context.Context, sourceID string, items []I
 						return err
 					}
 				}
-				if _, err := upd.ExecContext(ctx, it.Title, nullify(it.Author),
+				if edited && oldHash != "" {
+					if _, err := updEdited.ExecContext(ctx, it.Title, nullify(it.Author),
+						nullify(it.Summary), nullify(it.ContentHTML), nullify(it.URL),
+						nullify(it.DupeKey), it.WordCount, nullify(it.ImageURL),
+						newHash, now, id); err != nil {
+						return err
+					}
+					res.Edited++
+				} else if _, err := upd.ExecContext(ctx, it.Title, nullify(it.Author),
 					nullify(it.Summary), nullify(it.ContentHTML), nullify(it.URL),
 					nullify(it.DupeKey), it.WordCount, nullify(it.ImageURL),
 					newHash, id); err != nil {
 					return err
-				}
-				if edited && oldHash != "" {
-					if _, err := mark.ExecContext(ctx, now, id); err != nil {
-						return err
-					}
-					res.Edited++
 				}
 				res.Updated++
 			case sql.ErrNoRows:
@@ -467,6 +542,18 @@ func nullify(s string) any {
 	return s
 }
 
+// sameNullable reports whether a stored column already holds exactly what
+// writing nullify(v) into it would store: NULL for "", the string otherwise.
+// Exact rather than coalesced, so a column some other writer left as the empty string is not
+// mistaken for one ingest would leave NULL — skipping a write is only safe when
+// the write would have been a no-op.
+func sameNullable(col sql.NullString, v string) bool {
+	if v == "" {
+		return !col.Valid
+	}
+	return col.Valid && col.String == v
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -486,9 +573,21 @@ func minInt(a, b int) int {
 // to know about.
 func contentHash(title, summary, body string) string {
 	h := sha256.New()
-	for _, part := range []string{title, summary, body} {
-		h.Write([]byte(strings.TrimSpace(part)))
-		h.Write([]byte{0})
+	// Fed through a fixed buffer rather than as []byte(part): the conversion
+	// copied every article body onto the heap once per hash — 24 KB a row on the
+	// development database, on every row of every poll — only to be read once
+	// and dropped. The bytes hashed are identical.
+	var buf [4096]byte
+	for _, part := range [3]string{title, summary, body} {
+		part = strings.TrimSpace(part)
+		for len(part) > 0 {
+			n := copy(buf[:], part)
+			h.Write(buf[:n])
+			part = part[n:]
+		}
+		buf[0] = 0
+		h.Write(buf[:1])
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(h.Sum(sum[:0]))
 }

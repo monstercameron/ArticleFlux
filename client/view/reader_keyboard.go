@@ -8,7 +8,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // The keyboard map: every shortcut the reader pane answers to.
@@ -306,6 +306,25 @@ func (r keyboardMap) wire() {
 				}
 				return
 			case "Escape":
+				// The Mark all read confirmation, when focus is in it, is
+				// answered "Cancel" and nothing else: it is a dialog, Escape is
+				// how a dialog is dismissed, and peeling the layers below as well
+				// would also leave the list and blur the caret that cancelling
+				// is about to hand back to the chip. Focus is checked rather than
+				// the armed flag, because an armed confirmation the reader has
+				// tabbed away from is not the layer they are pressing Escape at.
+				if platform.FocusedIn(`[data-role="` + markAllConfirmRole + `"]`) {
+					ui.PostAsync(func() { r.act.Get().cancelMarkAll() })
+					return
+				}
+				// The same for a removal waiting on its confirming press
+				// (armableRemove): Escape answers it "Cancel" and stops there,
+				// so a reader who hesitated over Unsubscribe keeps both the feed
+				// and the panel it is in.
+				if platform.FocusedIn(`[data-role="` + armConfirmRole + `"]`) {
+					ui.PostAsync(func() { r.act.Get().disarm(true) })
+					return
+				}
 				ui.PostAsync(func() {
 					a := r.act.Get()
 					// The credential confirmation is peeled FIRST and alone.
@@ -411,6 +430,11 @@ func (r keyboardMap) wire() {
 			// letter of the word.
 			case "w":
 				ui.PostAsync(func() { r.act.Get().toggleFocus() })
+			// b, for the reason an editor uses it: it is the key people already
+			// reach for to put a sidebar away. A letter rather than `[` or `\`,
+			// which are a modifier away on half the world's keyboards.
+			case "b":
+				ui.PostAsync(func() { r.act.Get().toggleRail() })
 			// s for slideshow. It is the next step past w — w gives the article
 			// the window, this gives it the screen — so the two sitting next to
 			// each other in the help sheet is the whole explanation.

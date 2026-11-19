@@ -21,7 +21,6 @@ ORIG_ARGS=("$@")
 SELF_HASH=$(sha256sum "$0" 2>/dev/null | cut -d" " -f1)
 
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
-GWC="${GWC_REPO:-/opt/GoWebComponents}"
 DB="${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}"
 HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
 # The APPLICATION, addressed directly, not through nginx. Step 8 asks two
@@ -84,7 +83,6 @@ stash_repo() {
 	fi
 }
 stash_repo "$REPO"
-[ -d "$GWC/.git" ] && stash_repo "$GWC"
 note "current: $(cd "$REPO" && git log -1 --format='%h %s' 2>/dev/null | cut -c1-64)"
 done_ok "ready"
 
@@ -121,16 +119,12 @@ if [ "${AF_REEXEC:-}" = "1" ] && [ -z "${AF_OLD_SHA:-}" ]; then
 	note "re-execed by a version that did not pass a starting revision — building anyway"
 fi
 
-# The sibling library first: go.mod points at it with a replace directive, so a
-# server built against a stale checkout of it is a server built from code that
-# is not what this commit says it is.
-if [ -d "$GWC/.git" ]; then
-	run git -C "$GWC" fetch --quiet --all --prune
-	gwc_branch=$(git -C "$GWC" rev-parse --abbrev-ref HEAD)
-	run git -C "$GWC" merge --ff-only "origin/$gwc_branch" || warn "GoWebComponents is not fast-forwardable — left on $(git -C "$GWC" log -1 --format=%h)"
-	note "GoWebComponents: $(git -C "$GWC" log -1 --format='%h %s' | cut -c1-56)"
-fi
-
+# One repository, and only one. This used to fast-forward a GoWebComponents
+# checkout beside this one first, because go.mod resolved it through a replace
+# directive and a stale sibling meant a server built from code the commit did
+# not describe. go.mod names a published version now, so the commit being
+# fetched below IS the whole description of what gets built — and a checkout
+# still sitting at /opt/GoWebComponents from before is neither read nor moved.
 run git -C "$REPO" fetch --quiet --all --prune --tags
 if [ -n "$REF" ]; then
 	run git -C "$REPO" checkout --quiet "$REF"
@@ -228,7 +222,11 @@ export GOFLAGS="-trimpath"
 mkdir -p "$GOCACHE"
 rm -rf "$REPO/bin/web.new"
 cp -a "$REPO/web" "$REPO/bin/web.new"
-( cd "$REPO" && export GOOS=js GOARCH=wasm && run "$GO" build -ldflags="-s -w" -o "$REPO/bin/web.new/app.wasm" ./client/app )
+# GOEXPERIMENT=nojsonv2 like every other build of the shipped module (the Makefile's
+# WASMENV note has the numbers): without it this was the one deployment path that linked
+# Go 1.27's encoding/json v2 into the bundle — about a megabyte of every cold load that the
+# client never uses, and a module the CI size ratchet had not measured.
+( cd "$REPO" && export GOEXPERIMENT=nojsonv2 GOOS=js GOARCH=wasm && run "$GO" build -ldflags="-s -w" -o "$REPO/bin/web.new/app.wasm" ./client/app )
 # wasm_exec.js comes from the TOOLCHAIN, not the repo, and it is not optional:
 # without it the page loads, the module downloads, and the app dies at
 # "Go is not defined" behind a boot error that blames the server. This script
@@ -238,7 +236,15 @@ cp -a "$REPO/web" "$REPO/bin/web.new"
 # It must also come from the same Go that built the module — a copy from an
 # older toolchain fails at instantiate with an import mismatch that reads like a
 # corrupt binary.
-goroot=$("$GO" env GOROOT)
+#
+# Asked from INSIDE the repo for exactly that reason. go.mod names a toolchain,
+# and a $GO older than it does not fail the build above: it downloads the named
+# one and builds with that. Outside a module the same `go env GOROOT` answers
+# for the installed toolchain instead, so on a box whose /usr/local/go has
+# fallen behind go.mod — every box, the day go.mod moves — the shim would come
+# from one Go and the module from another. This script runs from / under
+# systemd-run, so the cd is what makes the two agree.
+goroot=$(cd "$REPO" && "$GO" env GOROOT)
 exec_js="$goroot/lib/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || exec_js="$goroot/misc/wasm/wasm_exec.js"
 [ -f "$exec_js" ] || { echo "wasm_exec.js not found under $goroot — the client cannot boot without it"; exit 1; }
@@ -305,19 +311,25 @@ mv "$REPO/bin/web.new" "$REPO/bin/web"
 rm -rf "$REPO/bin/web.old"
 chown -R "$OWNER:$OWNER" "$REPO/bin"
 
-# Unit files travel with the repo, so a change to them lands on the next update
-# instead of waiting for somebody to remember. Copied only when different, so an
-# unchanged deploy does not churn systemd.
-for u in articleflux-health.service articleflux-health.timer articleflux-backup.service articleflux-backup.timer; do
-	if [ -f "$REPO/deploy/$u" ] && ! cmp -s "$REPO/deploy/$u" "/etc/systemd/system/$u"; then
-		cp "$REPO/deploy/$u" "/etc/systemd/system/$u"
-		note "updated unit: $u"
-		reload_units=1
-	fi
-done
-if [ -f "$REPO/deploy/articleflux-health.sh" ] && ! cmp -s "$REPO/deploy/articleflux-health.sh" /usr/local/bin/articleflux-health; then
-	install -m 755 "$REPO/deploy/articleflux-health.sh" /usr/local/bin/articleflux-health
-	note "updated the health watchdog"
+# The ops layer (watchdog, nightly backup, restore drill, alert template, and the
+# scripts their ExecStart= lines name) travels with the repo, so a change to it lands on
+# the next update instead of waiting for somebody to remember — through install-ops.sh,
+# the one installer for it.
+#
+# This was a loop of `cp deploy/<unit> /etc/systemd/system/` for four of the seven units.
+# A raw copy is wrong on any box whose layout is not the template's: the units carry
+# /opt/articleflux and /var/backups/articleflux, install.sh rewrites them, and the next
+# update copied the template straight back over the rewrite — ARTICLEFLUX_BIN pointing at
+# a binary that is not there, which is the nightly 203/EXEC the production box ran for
+# three months. It also never touched the scripts or the drill and alert units, so a box
+# updated rather than installed kept whatever it started with.
+#
+# Not fatal. The build above has already proven itself and is about to be restarted; a
+# unit that systemd-analyze rejects is a problem with the ops layer, said loudly here, and
+# must not roll a good server back.
+if ! run sh "$REPO/deploy/install-ops.sh" --runtime systemd --bin "$REPO/bin/articleflux" \
+	--repo "$REPO" --data "$(dirname "$DB")" --backups "$BACKUPS" --user "$OWNER"; then
+	warn "install-ops.sh refused the ops layer (its output is in $LOG) — the server is fine; fix that and re-run it"
 fi
 # articleflux.service itself is deliberately NOT copied: the deployed copy holds
 # this box's address, paths and flags, and the repo's is a template with
@@ -326,8 +338,6 @@ fi
 if ! cmp -s "$REPO/deploy/articleflux.service" /etc/systemd/system/articleflux.service; then
 	note "deploy/articleflux.service differs from the installed unit (expected — it holds this box's paths)"
 fi
-[ -n "${reload_units:-}" ] && run systemctl daemon-reload
-
 run systemctl reset-failed "$SERVICE" || true
 run systemctl restart "$SERVICE"
 done_ok "restarted"

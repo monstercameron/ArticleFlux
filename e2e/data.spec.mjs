@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, openSettings } from './fixtures.mjs';
 
 /**
  * Settings › Data: bringing a subscription list in, and taking one out (F1).
@@ -31,8 +31,7 @@ const OPML = `<?xml version="1.0" encoding="UTF-8"?>
 /** Opens Settings and switches to the Data tab. */
 async function openDataTab(page) {
   await boot(page);
-  await page.keyboard.press(',');
-  await expect(page.locator('.set-tabs')).toBeVisible();
+  await openSettings(page);
   await page.locator('[data-action="settings-tab"][data-value="data"]').click();
   await expect(page.locator('[data-action="settings-tab"][data-value="data"]'))
     .toHaveAttribute('aria-current', 'true');

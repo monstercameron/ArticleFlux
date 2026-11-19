@@ -265,11 +265,18 @@ func TestConfigHonoursOpenAIAPIKeyFromEnvironment(t *testing.T) {
 
 // --- ListLanguages / TranslateUI -----------------------------------------------
 
-func TestListLanguagesDeniedForNonOwner(t *testing.T) {
+// ListLanguages is readable by any signed-in reader — the capability map's
+// CapReadItems, which the inline owner check used to contradict — and by
+// nobody who is not signed in.
+func TestListLanguagesIsReadableByAMemberButNotAnonymously(t *testing.T) {
 	sc := ownerScope("member")
 	s, _ := smartConfigServer(t, nil, sc, fixedScope(sc))
-	if _, err := s.ListLanguages(context.Background(), &pb.ListLanguagesRequest{}); codeOf(err) != codes.PermissionDenied {
-		t.Fatalf("code = %v, want PermissionDenied", codeOf(err))
+	if _, err := s.ListLanguages(context.Background(), &pb.ListLanguagesRequest{}); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	s, _ = smartConfigServer(t, nil, store.Scope{}, nil)
+	if _, err := s.ListLanguages(context.Background(), &pb.ListLanguagesRequest{}); codeOf(err) != codes.Unauthenticated {
+		t.Fatalf("anonymous: code = %v, want Unauthenticated", codeOf(err))
 	}
 }
 

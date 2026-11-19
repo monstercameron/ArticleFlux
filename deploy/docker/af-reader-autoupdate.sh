@@ -20,7 +20,7 @@ IMAGE="ghcr.io/monstercameron/articleflux"
 log() { printf '[af-reader-autoupdate] %s\n' "$1"; }
 
 [ -d "$SRC/.git" ] || { log "ERROR: $SRC is not a git checkout"; exit 1; }
-[ -f "$APP/compose.yaml" ] || { log "ERROR: $APP/compose.yaml missing — install deploy/docker/compose.yaml"; exit 1; }
+[ -f "$APP/compose.yaml" ] || { log "ERROR: $APP/compose.yaml missing — install deploy/docker/compose.production.yaml there (CUTOVER.md)"; exit 1; }
 
 git -C "$SRC" fetch -q --tags origin
 git -C "$SRC" reset -q --hard origin/main

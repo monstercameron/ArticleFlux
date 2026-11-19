@@ -56,11 +56,19 @@ test.describe('the homepage', () => {
     //     property that tells the truth.
     const missing = await page.evaluate(async () => {
       const el = document.querySelector('.hm');
+      // Instant, for this walk only. The scroller is `scroll-behavior: smooth`,
+      // so each assignment below STARTS a glide rather than moving the page —
+      // and the next one, 60ms later, retargets it before it has got anywhere.
+      // The page never reached the pictures it was being walked past, they
+      // never came near the viewport, and a test that had not scrolled to them
+      // reported them missing.
+      el.style.scrollBehavior = 'auto';
       for (let y = 0; y < el.scrollHeight; y += 500) {
         el.scrollTop = y;
         await new Promise((r) => setTimeout(r, 60));
       }
       el.scrollTop = 0;
+      el.style.scrollBehavior = '';
       const shown = [...document.images].filter((i) => i.getClientRects().length > 0);
       await Promise.all(shown.filter((i) => !i.complete).map((i) => new Promise((r) => {
         i.addEventListener('load', r, { once: true });
@@ -99,11 +107,19 @@ test.describe('the homepage', () => {
     // 2, the phone pass at 3 (see e2e/home-shots.mjs).
     const tooSmall = await page.evaluate(async (floor) => {
       const el = document.querySelector('.hm');
+      // Instant, for this walk only. The scroller is `scroll-behavior: smooth`,
+      // so each assignment below STARTS a glide rather than moving the page —
+      // and the next one, 60ms later, retargets it before it has got anywhere.
+      // The page never reached the pictures it was being walked past, they
+      // never came near the viewport, and a test that had not scrolled to them
+      // reported them missing.
+      el.style.scrollBehavior = 'auto';
       for (let y = 0; y < el.scrollHeight; y += 500) {
         el.scrollTop = y;
         await new Promise((r) => setTimeout(r, 60));
       }
       el.scrollTop = 0;
+      el.style.scrollBehavior = '';
       const dsf = (w) => (w >= 2000 ? 2 : 3);
       return [...document.images]
         .filter((i) => i.getClientRects().length > 0 && i.naturalWidth)
@@ -179,12 +195,18 @@ test.describe('the homepage', () => {
     await openHome(page);
     await page.locator(".hm-link[data-hm='go:listen']").click();
     await expect(page.locator(".hm-link[aria-current='true']")).toHaveText(/Listening/);
-    const y = await page.evaluate(() => {
+    // Landed on the section, within a smooth-scroll frame of its top — POLLED,
+    // because the marker and the scroll no longer arrive together. The rail row
+    // is lit the moment it is clicked (a scroll the reader started is trusted
+    // until it lands — see homeFlight in client/view/home.go), where it used to
+    // flicker back to the section being left and only settle on arrival. This
+    // assertion had been leaning on that flicker to wait for the scroll: one
+    // look, straight after the marker, was 11,000px short of a page that was
+    // still on its way.
+    await expect.poll(() => page.evaluate(() => {
       const el = document.querySelector('.hm');
-      return el.scrollTop - document.querySelector("[data-band='listen']").offsetTop;
-    });
-    // Landed on the section, within a smooth-scroll frame of its top.
-    expect(Math.abs(y)).toBeLessThan(60);
+      return Math.abs(el.scrollTop - document.querySelector("[data-band='listen']").offsetTop);
+    })).toBeLessThan(60);
   });
 
   test('nothing scrolls sideways on a phone', async ({ page, isMobile }) => {

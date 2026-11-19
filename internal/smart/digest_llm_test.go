@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // Everything past Digest.Speakable's Configured() gate.
@@ -18,28 +18,28 @@ import (
 // request, and the digest's own brief — every rule in it about SPOKEN output —
 // rides in through Steer. A summarise answers with the bare text, no wrapper.
 //
-// `schemafluxtest.Install` swaps the provider in for the test's duration and
+// `sftest.Install` swaps the provider in for the test's duration and
 // restores the previous one. It calls `t.Setenv`, so none of these may call
 // `t.Parallel`.
 
 // digesting installs a provider answering with the given bodies, in order, and
 // returns a Digest caching into dir.
-func digesting(t *testing.T, dir string, bodies ...string) (*Digest, *schemafluxtest.Provider) {
+func digesting(t *testing.T, dir string, bodies ...string) (*Digest, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(bodies...)
+	sftest.Install(t, p)
 	return NewDigest(&fakeLLM{configured: true}, nil, dir), p
 }
 
 // sentTo returns everything the provider was asked on call n, system and user
 // prompt together — the brief goes in through Steer and the article through the
 // input, and which of the two carries which is the library's business.
-func sentTo(p *schemafluxtest.Provider, n int) string {
+func sentTo(p *sftest.Provider, n int) string {
 	reqs := p.Requests()
 	if n >= len(reqs) {
 		return ""
 	}
-	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+	return reqs[n].System + reqs[n].User
 }
 
 // --- success path --------------------------------------------------------------
@@ -97,8 +97,8 @@ func TestSpeakableSuccessCleansCachesAndCallsOnce(t *testing.T) {
 // A provider error must reach the caller and must NOT be cached — caching an
 // error would make one bad request or outage permanent for that item.
 func TestSpeakableProviderErrorSurfacesAndIsNotCached(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("upstream on fire"))
+	sftest.Install(t, p)
 	d := NewDigest(&fakeLLM{configured: true}, nil, t.TempDir())
 
 	_, err := d.Speakable(context.Background(), "item-1", "LWN", "Fsyncgate", "body")

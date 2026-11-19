@@ -5,10 +5,11 @@ package view
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -517,7 +518,11 @@ func discoverGatedBody(
 ) ui.Node {
 	switch {
 	case !prefsLoaded:
-		return html.Div(html.Props{Class: "discover-status"},
+		// role=status on the waits and the failure, so the page says out loud
+		// what it is doing: Refresh replaces the whole list with this, and a
+		// reader who cannot see the spinner otherwise pressed a button and got
+		// silence.
+		return kitLive(kitLiveProps{Class: "discover-status", Role: kitRoleStatus},
 			html.Div(html.Props{Class: "spin-ring", Aria: map[string]string{"hidden": "true"}}),
 			html.Span(html.Props{Class: "spin-label"}, html.Text(tr.T("discover", "loading"))),
 		)
@@ -525,10 +530,8 @@ func discoverGatedBody(
 		// The toggle already lives in the header (one control, not two) —
 		// this box explains what it's for and points at it rather than
 		// duplicating it.
-		return html.Div(html.Props{Class: "discover-empty discover-gate"},
-			html.P(html.Props{}, html.Text(tr.T("discover", "gateTitle"))),
-			html.P(html.Props{Class: "discover-hint"}, html.Text(tr.T("discover", "gateHint"))),
-		)
+		return kitEmpty(kitEmptyProps{Class: "discover-empty discover-gate", Title: tr.T("discover", "gateTitle"),
+			TitleTag: "p", Lines: []string{tr.T("discover", "gateHint")}, LineClass: "discover-hint"})
 	default:
 		return discoverBody(tr, loading, loadErr, recs, busy, leaving, leavingKind)
 	}
@@ -553,15 +556,10 @@ func discoverGatedBody(
 // A switch whose position is unknown must not be operable. Disabled is the
 // honest render for that beat, and it is a short one.
 func discoverSmartPlusToggle(tr i18n.Runtime, on, busy bool) ui.Node {
-	return html.Button(html.Props{
-		Type: "button", Class: "chip discover-smartplus",
-		Disabled: busy,
-		Raw:      map[string]any{attrDiscoverSmartPlus: "1"},
-		Aria: map[string]string{
-			"pressed": strconv.FormatBool(on),
-			"label":   tr.T("discover", "smartPlusToggleLabel"),
-		},
-	}, html.Text(tr.T("discover", "smartPlusToggle")))
+	return kitToggle(kitChipProps{TypeButton: true, Extra: "discover-smartplus", Disabled: busy,
+		Data:      []html.DataAttribute{{Name: strings.TrimPrefix(attrDiscoverSmartPlus, "data-"), Value: "1"}},
+		AriaLabel: tr.T("discover", "smartPlusToggleLabel"),
+		Label:     tr.T("discover", "smartPlusToggle")}, on)
 }
 
 func refreshLabel(tr i18n.Runtime, refreshing bool) string {
@@ -581,18 +579,16 @@ func discoverBody(
 		// 2026-08-01) — the caller flips loading true for both the first mount
 		// AND every Refresh, so this branch fully replaces whatever was there,
 		// same .spin-ring panes.go's live-preview loading state already uses.
-		return html.Div(html.Props{Class: "discover-status"},
+		return kitLive(kitLiveProps{Class: "discover-status", Role: kitRoleStatus},
 			html.Div(html.Props{Class: "spin-ring", Aria: map[string]string{"hidden": "true"}}),
 			html.Span(html.Props{Class: "spin-label"}, html.Text(tr.T("discover", "loading"))),
 		)
 	case loadErr:
-		return html.Div(html.Props{Class: "discover-status discover-status-error"},
+		return kitLive(kitLiveProps{Class: "discover-status discover-status-error", Role: kitRoleStatus},
 			html.Text(tr.T("discover", "loadFailed")))
 	case len(recs) == 0:
-		return html.Div(html.Props{Class: "discover-empty"},
-			html.P(html.Props{}, html.Text(tr.T("discover", "empty"))),
-			html.P(html.Props{Class: "discover-hint"}, html.Text(tr.T("discover", "emptyHint"))),
-		)
+		return kitEmpty(kitEmptyProps{Class: "discover-empty", Title: tr.T("discover", "empty"), TitleTag: "p",
+			Lines: []string{tr.T("discover", "emptyHint")}, LineClass: "discover-hint"})
 	}
 
 	cards := make([]ui.Node, 0, len(recs))
@@ -603,7 +599,9 @@ func discoverBody(
 		}
 		cards = append(cards, discoverCard(tr, r, busy == r.GetDomain(), kind))
 	}
-	return html.Div(html.Props{Class: "discover-list"}, cards...)
+	// A list of cards, each a listitem, so "8 items" is said before the first
+	// card is read — the same thing the rail's sections say about themselves.
+	return kitList(kitListProps{Class: "discover-list", Unnamed: true}, cards...)
 }
 
 func discoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leavingKind string) ui.Node {
@@ -611,7 +609,12 @@ func discoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leavingKind 
 	if title == "" {
 		title = r.GetDomain()
 	}
-	cardProps := html.Props{Class: "discover-card", Key: "rec-" + r.GetDomain()}
+	item := kitItemProps{Class: "discover-card", Key: "rec-" + r.GetDomain()}
+	// The title is the card's heading, and the description of both its
+	// buttons. Every card has a Follow and a Not for me, so out of context — a
+	// screen reader's list of buttons, or a Tab landing mid-page — they were
+	// a column of identical pairs; described by the title, each says whose it is.
+	titleID := "rec-title-" + r.GetDomain()
 	if leavingKind != "" {
 		// data-leaving drives the CSS keyframe animation (design/sheet.go) —
 		// a positive (pos-tinted, "kept") exit for Follow, a negative
@@ -620,11 +623,11 @@ func discoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leavingKind 
 		// above is what makes this the SAME DOM node across the two renders
 		// (attribute added, then the card removed from recs a beat later)
 		// rather than a fresh element the animation could never play on.
-		cardProps.Raw = map[string]any{"data-leaving": leavingKind}
+		item.Data = html.DataAttribute{Name: "leaving", Value: leavingKind}
 	}
-	return html.Div(cardProps,
+	return kitItem(item,
 		html.Div(html.Props{Class: "discover-card-head"},
-			html.Span(html.Props{Class: "discover-card-title"}, html.Text(title)),
+			html.H2(html.Props{Class: "discover-card-title", ID: titleID}, html.Text(title)),
 			// A live link, not just the domain as text — §18.7's whole model is
 			// "the system's say-so", and the reader should be able to check that
 			// say-so against the actual site before deciding, the same way
@@ -646,11 +649,13 @@ func discoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leavingKind 
 				Type: "button", Class: "discover-accept",
 				Disabled: busy,
 				Raw:      map[string]any{attrDiscoverAccept: r.GetDomain()},
+				Aria:     map[string]string{"describedby": titleID},
 			}, html.Text(acceptLabel(tr, busy))),
 			html.Button(html.Props{
 				Type: "button", Class: "discover-reject",
 				Disabled: busy,
 				Raw:      map[string]any{attrDiscoverReject: r.GetDomain()},
+				Aria:     map[string]string{"describedby": titleID},
 			}, html.Text(rejectLabel(tr, busy))),
 		),
 	)

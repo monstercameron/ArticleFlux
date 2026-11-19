@@ -15,6 +15,7 @@
 package platform
 
 import (
+	"strconv"
 	"strings"
 	"syscall/js"
 )
@@ -1421,10 +1422,118 @@ func OnPaneResize(rootSelector string, onMove func(grip string, x int), onCommit
 		return nil
 	})
 
+	// The keyboard half. Without it the handle is a tab stop that does nothing,
+	// which is worse than not being one.
+	//
+	// Arrows move the edge by a step and Shift makes the step four times as
+	// large; the position is derived from where the handle IS rather than kept
+	// in a counter, so a drag followed by a key press continues from the drag.
+	// The move goes through the same onMove the pointer uses — the clamp lives
+	// there, and a second copy of it here would be a second set of limits.
+	//
+	// Committed on keyup, not per keydown: a held arrow auto-repeats, and saving
+	// on every repeat would be a round trip per frame for a width that is still
+	// changing.
+	const keyStep = 16
+	keyed := ""
+	describe := func(g js.Value) {
+		// The separator's value, for a screen reader: the width of the pane on
+		// its left, in pixels. Written here rather than rendered, for the reason
+		// given on view.grip.
+		//
+		// Read from the variable the move just wrote, not measured off the pane:
+		// the column animates to its new width, so a measurement taken in the
+		// same tick reports where the edge WAS.
+		which := g.Call("getAttribute", "data-grip").String()
+		px := strings.TrimSuffix(strings.TrimSpace(RootVar("--w-"+which)), "px")
+		if n, err := strconv.Atoi(px); err == nil {
+			g.Call("setAttribute", "aria-valuenow", strconv.Itoa(n))
+		}
+	}
+	keydown := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		e := args[0]
+		t := e.Get("target")
+		if !t.Truthy() || t.Get("closest").Type() != js.TypeFunction {
+			return nil
+		}
+		g := t.Call("closest", "[data-grip]")
+		if !g.Truthy() {
+			return nil
+		}
+		step := 0
+		switch e.Get("key").String() {
+		case "ArrowLeft":
+			step = -keyStep
+		case "ArrowRight":
+			step = keyStep
+		default:
+			return nil
+		}
+		if e.Get("shiftKey").Truthy() {
+			step *= 4
+		}
+		e.Call("preventDefault")
+		// stopPropagation as well: the reader's own key map gives the arrows to
+		// whichever pane has focus, and this handle sits between two of them.
+		e.Call("stopPropagation")
+		which := g.Call("getAttribute", "data-grip").String()
+		// Where the edge is GOING, not where it is drawn this instant. The
+		// column animates to a new width, so for a few frames after a press the
+		// handle is still near its old position — and a second press measured
+		// from there asks for the same width the first one did. Two presses,
+		// one step. The variable already holds the destination, so the
+		// difference between it and the pane's current drawn width is how far
+		// the handle still has to travel, and that is added before the step.
+		x := g.Call("getBoundingClientRect").Get("left").Int()
+		if prev := g.Get("previousElementSibling"); prev.Truthy() {
+			px := strings.TrimSuffix(strings.TrimSpace(RootVar("--w-"+which)), "px")
+			if want, err := strconv.Atoi(px); err == nil {
+				drawn := prev.Call("getBoundingClientRect").Get("width").Float()
+				x += want - int(drawn+0.5)
+			}
+		}
+		onMove(which, x+step)
+		describe(g)
+		keyed = which
+		return nil
+	})
+	keyup := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if keyed == "" {
+			return nil
+		}
+		g := keyed
+		keyed = ""
+		onCommit(g)
+		return nil
+	})
+	// Focus is when a screen reader asks what this is, so that is when the
+	// value has to be true — it may have been changed by a drag since.
+	focusin := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		t := args[0].Get("target")
+		if !t.Truthy() || t.Get("closest").Type() != js.TypeFunction {
+			return nil
+		}
+		if g := t.Call("closest", "[data-grip]"); g.Truthy() {
+			describe(g)
+		}
+		return nil
+	})
+
 	root.Call("addEventListener", "pointerdown", down)
 	root.Call("addEventListener", "pointermove", move)
 	root.Call("addEventListener", "pointerup", up)
 	root.Call("addEventListener", "pointercancel", up)
+	// Capture phase for keydown, so this runs before the reader's delegated key
+	// handler rather than after it has already moved the selection.
+	root.Call("addEventListener", "keydown", keydown, true)
+	root.Call("addEventListener", "keyup", keyup)
+	root.Call("addEventListener", "focusin", focusin)
 
 	return Listener{target: root, event: "pointerdown", fn: down}
 }
@@ -2714,31 +2823,55 @@ func SetThemeColor(hex string) {
 	meta.Call("setAttribute", "content", hex)
 }
 
-// WriteClipboard copies text, and says nothing when it cannot.
+// WriteClipboard copies text and reports, once, whether it worked.
 //
 // navigator.clipboard is unavailable on an insecure origin — which a
 // self-hosted instance reached over plain HTTP is — and it rejects when the
-// call is not tied to a user gesture. Both are conditions the caller cannot fix
-// and the reader cannot act on, so the failure is swallowed: the codes are on
-// screen either way, and a copy button that throws an error dialog over a
-// perfectly readable list has made things worse.
-func WriteClipboard(text string) {
+// call is not tied to a user gesture. Neither is something the caller can fix,
+// but both are something the reader has to be TOLD: the one place this is used
+// is the recovery-code sheet, and a Copy button that silently did nothing is a
+// reader who believes their codes are on the clipboard, closes the screen, and
+// has nothing to paste. So the outcome goes back to the caller, which says
+// "Copied" or tells them to select the codes themselves.
+//
+// done runs on a browser callback, not on the render loop — callers hand it
+// to ui.PostAsync. It is never called twice, and it is called with false
+// synchronously when there is no clipboard to ask.
+func WriteClipboard(text string, done func(ok bool)) {
+	report := func(ok bool) {
+		if done != nil {
+			done(ok)
+		}
+	}
 	nav := js.Global().Get("navigator")
 	if !nav.Truthy() {
+		report(false)
 		return
 	}
 	cb := nav.Get("clipboard")
 	if !cb.Truthy() {
+		report(false)
 		return
 	}
 	promise := cb.Call("writeText", text)
 	if !promise.Truthy() {
+		report(false)
 		return
 	}
-	var onRejected js.Func
-	onRejected = js.FuncOf(func(js.Value, []js.Value) any {
+	var onResolved, onRejected js.Func
+	release := func() {
+		onResolved.Release()
 		onRejected.Release()
+	}
+	onResolved = js.FuncOf(func(js.Value, []js.Value) any {
+		release()
+		report(true)
 		return nil
 	})
-	promise.Call("catch", onRejected)
+	onRejected = js.FuncOf(func(js.Value, []js.Value) any {
+		release()
+		report(false)
+		return nil
+	})
+	promise.Call("then", onResolved, onRejected)
 }

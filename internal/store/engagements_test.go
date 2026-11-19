@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -273,5 +274,40 @@ func TestRecordEngagementsRejectsUnscopedAndOversized(t *testing.T) {
 	big := make([]signals.Event, MaxEngagementBatch+1)
 	if _, err := repo.RecordEngagements(ctx, sc, big); err == nil {
 		t.Error("an oversized batch should be rejected, not silently truncated")
+	}
+}
+
+// The derivation must see the NEWEST events when the window holds more than it
+// reads — EngagementsSince keeps the oldest, which is the bug this replaced.
+func TestRecentEngagementsKeepsTheNewestInTimeOrder(t *testing.T) {
+	db := openTest(t)
+	repo, sc := seedReader(t, db)
+	ctx := context.Background()
+	var evs []signals.Event
+	for i := 0; i < 30; i++ {
+		evs = append(evs, signals.Event{ID: fmt.Sprintf("e%02d", i), Kind: signals.Searched,
+			Surface: signals.SurfaceSearch, At: time.Now().Add(time.Duration(i-40) * time.Minute).UnixMilli()})
+	}
+	if _, err := repo.RecordEngagements(ctx, sc, evs); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.RecentEngagements(ctx, sc, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 10 || got[0].ID != "e20" || got[9].ID != "e29" {
+		var ids []string
+		for _, e := range got {
+			ids = append(ids, e.ID)
+		}
+		t.Fatalf("got %v, want e20..e29 oldest first", ids)
+	}
+	// Tenant isolation: another user's scope sees none of them.
+	other := Scope{TenantID: sc.TenantID, UserID: "someone-else", Role: "member"}
+	if got, _ := repo.RecentEngagements(ctx, other, 0, 10); len(got) != 0 {
+		t.Errorf("another user read %d of this user's events", len(got))
+	}
+	if _, err := repo.RecentEngagements(ctx, Scope{}, 0, 10); err != ErrNoScope {
+		t.Errorf("an empty scope was not refused: %v", err)
 	}
 }

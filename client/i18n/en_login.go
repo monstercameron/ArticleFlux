@@ -34,6 +34,13 @@ func init() {
 		// them even where English does not.
 		"errUnreachable": "Can't reach the server. Check it's running, then try again.",
 		"errGeneric":     "Couldn't sign in. Check the server is running and try again.",
+		// The server's own two refusals, in words a person acts on. One message
+		// for a wrong username and a wrong password, as the server deliberately
+		// sends one: telling them apart would say which accounts exist.
+		"errWrongPassword": "That username and password don't match. Check both — the password is case-sensitive — and try again.",
+		// Typing again is what makes a lockout longer, so the sentence says
+		// to stop. The wait, when the server sent one, follows it (srv.wait*).
+		"errLocked": "Too many sign-in attempts, so signing in is paused for now.",
 
 		// --- account recovery (§7.2)
 		//

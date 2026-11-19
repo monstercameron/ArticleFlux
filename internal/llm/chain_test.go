@@ -7,10 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/mw"
 )
 
 // The SchemaFlux seam, from this side.
@@ -26,19 +25,19 @@ import (
 // actually go through the chain", which is not visible from the outside
 // otherwise: a Do that skipped the chain entirely would return exactly the same
 // text.
-func probe(seen *atomic.Int64, last *schemaflux.CompletionRequest) mw.Middleware {
-	return func(next mw.Handler) mw.Handler {
+func probe(seen *atomic.Int64, last *schemaflux.Request) mw.Middleware {
+	return func(next schemaflux.Provider) schemaflux.Provider {
 		return probeProvider{next: next, seen: seen, last: last}
 	}
 }
 
 type probeProvider struct {
-	next mw.Handler
+	next schemaflux.Provider
 	seen *atomic.Int64
-	last *schemaflux.CompletionRequest
+	last *schemaflux.Request
 }
 
-func (p probeProvider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (p probeProvider) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	p.seen.Add(1)
 	if p.last != nil {
 		*p.last = req
@@ -46,10 +45,6 @@ func (p probeProvider) Complete(ctx context.Context, req schemaflux.CompletionRe
 	return p.next.Complete(ctx, req)
 }
 func (p probeProvider) Name() string { return p.next.Name() }
-func (p probeProvider) EstimateCost(r schemaflux.CompletionRequest) float64 {
-	return p.next.EstimateCost(r)
-}
-func (p probeProvider) RetryPolicy() (int, time.Duration) { return p.next.RetryPolicy() }
 
 func TestEveryRequestTravelsThroughTheChain(t *testing.T) {
 	var seen atomic.Int64
@@ -70,7 +65,7 @@ func TestTheChainSeesTheModelAndPromptsItNeedsToActOn(t *testing.T) {
 	// the right answer and would silently do nothing useful, so what reaches it
 	// is asserted rather than assumed.
 	var seen atomic.Int64
-	var last schemaflux.CompletionRequest
+	var last schemaflux.Request
 	c, _ := captureOK(t, "hello")
 	c.Use(probe(&seen, &last))
 
@@ -83,8 +78,8 @@ func TestTheChainSeesTheModelAndPromptsItNeedsToActOn(t *testing.T) {
 	if last.Model != "gpt-5" {
 		t.Errorf("model = %q, want gpt-5", last.Model)
 	}
-	if last.SystemPrompt != "be brief" || last.UserPrompt != "the article" {
-		t.Errorf("prompts = %q / %q", last.SystemPrompt, last.UserPrompt)
+	if last.System != "be brief" || last.User != "the article" {
+		t.Errorf("prompts = %q / %q", last.System, last.User)
 	}
 	if last.MaxTokens != 900 {
 		t.Errorf("MaxTokens = %d, want 900", last.MaxTokens)
@@ -93,7 +88,7 @@ func TestTheChainSeesTheModelAndPromptsItNeedsToActOn(t *testing.T) {
 
 func TestTheChainIsToldWhenAnAnswerMustBeJSON(t *testing.T) {
 	var seen atomic.Int64
-	var last schemaflux.CompletionRequest
+	var last schemaflux.Request
 	c, _ := captureOK(t, "{}")
 	c.Use(probe(&seen, &last))
 
@@ -103,13 +98,13 @@ func TestTheChainIsToldWhenAnAnswerMustBeJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last.ResponseFormat != "json" {
-		t.Errorf("ResponseFormat = %q, want json", last.ResponseFormat)
+	if last.Format != "json" {
+		t.Errorf("ResponseFormat = %q, want json", last.Format)
 	}
 	if last.SchemaName != "verdict" {
 		t.Errorf("SchemaName = %q", last.SchemaName)
 	}
-	if len(last.JSONSchema) == 0 {
+	if len(last.Schema) == 0 {
 		t.Error("the schema did not reach the chain")
 	}
 }
@@ -119,7 +114,7 @@ func TestTheDefaultModelReachesTheChainRatherThanAnEmptyString(t *testing.T) {
 	// SchemaFlux correctly refuses to invent a number for — so the default has
 	// to be resolved before the chain, not inside the HTTP call.
 	var seen atomic.Int64
-	var last schemaflux.CompletionRequest
+	var last schemaflux.Request
 	c, _ := captureOK(t, "hello")
 	c.Use(probe(&seen, &last))
 
@@ -158,7 +153,7 @@ func TestAChainErrorIsReturnedAndTheProviderIsNotCalled(t *testing.T) {
 	c, calls := fakeClient("sk-test", func(*http.Request) (*http.Response, error) {
 		return jsonResponse(http.StatusOK, responsesReply{Status: "completed", OutputText: "hi"}), nil
 	})
-	c.Use(func(mw.Handler) mw.Handler { return refuser{err: refused} })
+	c.Use(func(schemaflux.Provider) schemaflux.Provider { return refuser{err: refused} })
 
 	_, err := c.Do(context.Background(), Request{Input: "x"})
 	if !errors.Is(err, refused) {
@@ -171,12 +166,10 @@ func TestAChainErrorIsReturnedAndTheProviderIsNotCalled(t *testing.T) {
 
 type refuser struct{ err error }
 
-func (r refuser) Complete(context.Context, schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
-	return schemaflux.CompletionResponse{}, r.err
+func (r refuser) Complete(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+	return schemaflux.Response{}, r.err
 }
-func (r refuser) Name() string                                      { return "refuser" }
-func (r refuser) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
-func (r refuser) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
+func (r refuser) Name() string { return "refuser" }
 
 // --- what must NOT have moved into the dependency ---------------------------
 
@@ -248,23 +241,23 @@ func TestUsageIsReportedOntoTheChain(t *testing.T) {
 	// that from what the provider reports. A response with no usage is an
 	// unpriced call — which the library correctly refuses to invent a number
 	// for, so the meter would read zero forever and look like a free instance.
-	var got schemaflux.CompletionResponse
+	var got schemaflux.Response
 	c, _ := fakeClient("sk-test", func(*http.Request) (*http.Response, error) {
 		reply := responsesReply{Status: "completed", OutputText: "hi"}
 		reply.Usage.InputTokens = 120
 		reply.Usage.OutputTokens = 34
 		return jsonResponse(http.StatusOK, reply), nil
 	})
-	c.Use(func(next mw.Handler) mw.Handler { return usageSpy{next: next, out: &got} })
+	c.Use(func(next schemaflux.Provider) schemaflux.Provider { return usageSpy{next: next, out: &got} })
 
 	if _, err := c.Do(context.Background(), Request{Input: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Usage.InputTokens != 120 || got.Usage.OutputTokens != 34 {
+	if got.Usage.Input != 120 || got.Usage.Output != 34 {
 		t.Errorf("usage = %+v, want 120 in / 34 out", got.Usage)
 	}
-	if got.Usage.TotalTokens != 154 {
-		t.Errorf("total = %d, want 154", got.Usage.TotalTokens)
+	if got.Usage.Total != 154 {
+		t.Errorf("total = %d, want 154", got.Usage.Total)
 	}
 	if got.Model != DefaultModel {
 		t.Errorf("model = %q, want the one the call actually used", got.Model)
@@ -272,18 +265,16 @@ func TestUsageIsReportedOntoTheChain(t *testing.T) {
 }
 
 type usageSpy struct {
-	next mw.Handler
-	out  *schemaflux.CompletionResponse
+	next schemaflux.Provider
+	out  *schemaflux.Response
 }
 
-func (u usageSpy) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (u usageSpy) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	res, err := u.next.Complete(ctx, req)
 	*u.out = res
 	return res, err
 }
-func (u usageSpy) Name() string                                        { return u.next.Name() }
-func (u usageSpy) EstimateCost(r schemaflux.CompletionRequest) float64 { return u.next.EstimateCost(r) }
-func (u usageSpy) RetryPolicy() (int, time.Duration)                   { return u.next.RetryPolicy() }
+func (u usageSpy) Name() string { return u.next.Name() }
 
 func TestTheRunningTokenCountStillWorks(t *testing.T) {
 	// Usage() is what the Settings meter reads today. It has to keep counting

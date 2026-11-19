@@ -8,9 +8,14 @@
 # writer in between produces a backup that opens cleanly and is missing a
 # transaction. It restores, it passes a smoke test, and it is wrong.
 #
-# Install alongside the timer:
-#   sudo install -m 0644 deploy/articleflux-backup.{service,timer} /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now articleflux-backup.timer
+# Install with the rest of the ops layer, never on its own:
+#   sudo sh deploy/install-ops.sh                       # or --runtime docker
+#
+# This header used to say "install the .service and the .timer", and that is what was
+# done on the production box: this unit, without the script its ExecStart names, without
+# the alert template its OnFailure= names, with ARTICLEFLUX_BIN at a path that did not
+# exist. It failed 203/EXEC every night and told nobody. install-ops.sh installs all of
+# it and refuses to enable anything until each of those three resolves.
 
 [Unit]
 Description=ArticleFlux nightly backup

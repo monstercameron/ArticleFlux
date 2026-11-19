@@ -1,6 +1,6 @@
 package design
 
-import "github.com/monstercameron/GoWebComponents/v5/css"
+import "github.com/monstercameron/GoWebComponents/v7/css"
 
 // The slideshow: the reader with nothing else on the screen (§19).
 //
@@ -81,10 +81,10 @@ func slideshowCSS(r func(string, string) css.Rule) {
 	// nothing behind it is addressable while it runs — so a dialog appearing over
 	// it would be a control the reader cannot get back to.
 	css.Global(".slides",
-		r("position", "fixed"), r("inset", "0"), r("z-index", "70"),
-		r("display", "grid"), r("grid-template-rows", "1fr auto"),
+		css.Position.Fixed, css.Inset(css.Zero), css.ZIndex(70),
+		css.Display.Grid, css.GridRows(css.Fr(1), css.TrackAuto),
 		r("background", "var(--bg)"),
-		r("overflow", "hidden"),
+		css.Overflow.Hidden,
 		// The scene duration, defended in the doc comment above.
 		css.Custom("t-slide", "calc(var(--mo) * 900ms)"),
 		// The title-card reveal, longer still. This is the one moment the display
@@ -152,8 +152,8 @@ func slideshowCSS(r func(string, string) css.Rule) {
 // of two.
 func slidesEnter(r func(string, string) css.Rule) {
 	css.Global(".slides", css.Keyframes("slides-in",
-		css.At("0%", r("opacity", "0")),
-		css.At("100%", r("opacity", "1")),
+		css.At("0%", css.OpacityNum(css.Num(0))),
+		css.At("100%", css.OpacityNum(css.Num(1))),
 	),
 		r("animation-duration", "var(--t-slide)"),
 		r("animation-timing-function", "var(--e-out)"),
@@ -175,8 +175,8 @@ func slidesEnter(r func(string, string) css.Rule) {
 // deliberate — they are different rooms.
 func slideWash(r func(string, string) css.Rule) {
 	css.Global(".slide-wash",
-		r("position", "absolute"), r("inset", "0"),
-		r("pointer-events", "none"),
+		css.Position.Absolute, css.Inset(css.Zero),
+		css.PointerEvents.None,
 		r("background",
 			"radial-gradient(120% 78% at 50% 116%, "+
 				"color-mix(in srgb, var(--c, var(--cc)) 26%, transparent), transparent 68%)"),
@@ -186,8 +186,8 @@ func slideWash(r func(string, string) css.Rule) {
 		// outgoing one is gone by then; over a 900ms rise on a dark ground the
 		// seam is invisible, and the alternative is holding two washes alive.
 		css.Keyframes("wash-in",
-			css.At("0%", r("opacity", "0")),
-			css.At("100%", r("opacity", "1")),
+			css.At("0%", css.OpacityNum(css.Num(0))),
+			css.At("100%", css.OpacityNum(css.Num(1))),
 		),
 		r("animation-duration", "var(--t-slide)"),
 		r("animation-timing-function", "var(--e-out)"),
@@ -198,8 +198,8 @@ func slideWash(r func(string, string) css.Rule) {
 	// piece of pure atmosphere in the file and it earns its place by making the
 	// signature element read as lit rather than drawn.
 	css.Global(".slide-wash::after",
-		r("content", `""`), r("position", "absolute"),
-		r("inset", "auto 0 0 0"), r("height", "34%"),
+		r("content", `""`), css.Position.Absolute,
+		r("inset", "auto 0 0 0"), css.H(css.Percent(34)),
 		r("background",
 			"linear-gradient(to top, color-mix(in srgb, var(--c, var(--cc)) 13%, transparent), transparent)"),
 	)
@@ -208,7 +208,7 @@ func slideWash(r func(string, string) css.Rule) {
 	// the type. Neutral rather than hued: this is about luminance, and tinting it
 	// would be a second opinion about the colour the wash has already given.
 	css.Global(".slide-vignette",
-		r("position", "absolute"), r("inset", "0"), r("pointer-events", "none"),
+		css.Position.Absolute, css.Inset(css.Zero), css.PointerEvents.None,
 		r("background",
 			"radial-gradient(120% 90% at 50% 45%, transparent 52%, "+
 				"color-mix(in srgb, var(--bg) 78%, transparent) 100%)"),
@@ -229,10 +229,10 @@ func slideWash(r func(string, string) css.Rule) {
 // constraint, same fix).
 func slideCard(r func(string, string) css.Rule) {
 	css.Global(".slide",
-		r("position", "relative"), r("z-index", "1"),
-		r("display", "grid"),
+		css.Position.Relative, css.ZIndex(1),
+		css.Display.Grid,
 		r("grid-template-rows", "1.55fr auto minmax(0, .95fr)"),
-		r("min-height", "0"), r("overflow", "hidden"),
+		css.MinHeight(css.Zero), css.Overflow.Hidden,
 		// The margin the top track stops providing.
 		//
 		// While the card is up, the 1.55fr above it is all the air anyone could
@@ -248,8 +248,8 @@ func slideCard(r func(string, string) css.Rule) {
 		// UPWARD — the same direction the card travelled — so a story leaves the
 		// way it was reading rather than sliding off sideways like a card.
 		css.Keyframes("slide-in",
-			css.At("0%", r("opacity", "0"), r("transform", "translateY(calc(var(--mo) * 18px))")),
-			css.At("100%", r("opacity", "1"), r("transform", "none")),
+			css.At("0%", css.OpacityNum(css.Num(0)), r("transform", "translateY(calc(var(--mo) * 18px))")),
+			css.At("100%", css.OpacityNum(css.Num(1)), r("transform", "none")),
 		),
 		r("animation-duration", "var(--t-slide)"),
 		r("animation-timing-function", "var(--e-out)"),
@@ -259,7 +259,7 @@ func slideCard(r func(string, string) css.Rule) {
 		r("grid-template-rows", "0fr auto minmax(0, 1fr)"))
 	css.Global(".slides[data-phase='out'] .slide",
 		r("grid-template-rows", "0fr auto minmax(0, 1fr)"),
-		r("opacity", "0"),
+		css.OpacityNum(css.Num(0)),
 		r("transform", "translateY(calc(var(--mo) * -26px))"),
 		r("transition", "grid-template-rows var(--t-slide) var(--e-io), "+
 			"opacity var(--t-slide) var(--e-out), transform var(--t-slide) var(--e-out)"),
@@ -278,15 +278,15 @@ func slideCard(r func(string, string) css.Rule) {
 	// usually decoration — but here the number is TRUE and it is the one fact a
 	// half-watching reader most wants: whether this loop is nearly round.
 	css.Global(".slide-slug",
-		r("display", "flex"), r("align-items", "center"), r("gap", "12px"),
-		r("font-family", "var(--ui)"),
+		css.Display.Flex, css.Items.Center, css.Gap(css.Px(12)),
+		css.Font(css.VarFontStack("ui")),
 		r("font-size", "clamp(12px, .95vw, 15px)"),
-		r("letter-spacing", ".13em"), r("text-transform", "uppercase"),
-		r("color", "var(--soft)"),
+		r("letter-spacing", ".13em"), css.TextTransform.Uppercase,
+		css.TextColor(css.Var("soft")),
 		r("margin-bottom", "clamp(14px, 1.6vw, 26px)"),
 		css.Keyframes("slug-in",
-			css.At("0%", r("opacity", "0"), r("transform", "translateY(calc(var(--mo) * 10px))")),
-			css.At("100%", r("opacity", "1"), r("transform", "none")),
+			css.At("0%", css.OpacityNum(css.Num(0)), r("transform", "translateY(calc(var(--mo) * 10px))")),
+			css.At("100%", css.OpacityNum(css.Num(1)), r("transform", "none")),
 		),
 		r("animation-duration", "var(--t-slide)"),
 		r("animation-timing-function", "var(--e-out)"),
@@ -299,7 +299,7 @@ func slideCard(r func(string, string) css.Rule) {
 	// that changes meaning: "two hours ago" reads the same from anywhere.
 	css.Global(".slide-source",
 		r("color", "var(--ink, var(--c, var(--cream)))"),
-		r("font-weight", "500"),
+		css.FontWeight.Medium,
 	)
 	// .slide-dot's own geometry is declared with the other two source marks in
 	// sheet.go, because it is the same three-element shape and the wrapper's
@@ -309,22 +309,22 @@ func slideCard(r func(string, string) css.Rule) {
 	// The running-order counter goes to the far end of the line, where a page
 	// number lives, rather than sitting in the run of the slug.
 	css.Global(".slide-order",
-		r("margin-left", "auto"), r("color", "var(--mute)"),
-		r("font-variant-numeric", "tabular-nums"),
+		r("margin-inline-start", "auto"), css.TextColor(css.Var("mute")),
+		css.FontVariantNumeric.TabularNums,
 	)
 
 	// The headline. This is the largest type in the application by a factor of
 	// two, and it is sized in vw because the thing it has to satisfy is legible
 	// at four metres on a laptop and not absurd on a phone.
 	css.Global(".slide-head",
-		r("margin", "0"),
-		r("font-family", "var(--dsp)"),
+		css.Margin(css.Zero),
+		css.Font(css.VarFontStack("dsp")),
 		r("font-variation-settings", `"SOFT" 55, "WONK" 1, "opsz" 96`),
 		r("font-size", "clamp(34px, 5vw, 86px)"),
-		r("line-height", "1.04"), r("font-weight", "600"),
+		css.LineHeight(css.Num(1.04)), css.FontWeight.Semibold,
 		r("letter-spacing", "-.035em"),
-		r("color", "var(--cream)"),
-		r("max-width", "19ch"), r("overflow-wrap", "anywhere"),
+		css.TextColor(css.Var("cream")),
+		css.MaxWidth(css.Ch(19)), css.OverflowWrap.Anywhere,
 		r("transition", "font-size var(--t-slide) var(--e-io)"),
 	)
 	// The reveal: a wipe from the baseline up, plus a short rise. A title card
@@ -345,7 +345,7 @@ func slideCard(r func(string, string) css.Rule) {
 	// smaller, and it keeps the reader's thread while the body scrolls under it.
 	css.Global(".slides[data-phase='read'] .slide-head, .slides[data-phase='out'] .slide-head",
 		r("font-size", "clamp(23px, 2.3vw, 38px)"),
-		r("max-width", "34ch"),
+		css.MaxWidth(css.Ch(34)),
 	)
 }
 
@@ -379,10 +379,10 @@ const stageMask = "linear-gradient(to bottom, transparent 0, currentColor 5%, " 
 func slideStage(r func(string, string) css.Rule) {
 	css.Global(".slide-stage",
 		r("grid-row", "3"),
-		r("position", "relative"), r("overflow", "hidden"),
-		r("min-height", "0"),
+		css.Position.Relative, css.Overflow.Hidden,
+		css.MinHeight(css.Zero),
 		r("padding-inline", "var(--slide-gut)"),
-		r("opacity", "0"),
+		css.OpacityNum(css.Num(0)),
 		r("transition", "opacity var(--t-slide) var(--e-out)"),
 		// Both spellings: -webkit-mask-image is still what Safari reads, and the
 		// consequence of it being missing is not a missing nicety — it is the
@@ -396,14 +396,14 @@ func slideStage(r func(string, string) css.Rule) {
 		r("-webkit-mask-image", stageMask),
 		r("mask-image", stageMask),
 	)
-	css.Global(".slides[data-phase='read'] .slide-stage", r("opacity", "1"))
+	css.Global(".slides[data-phase='read'] .slide-stage", css.OpacityNum(css.Num(1)))
 
 	css.Global(".slide-flow",
 		r("transform", "translateY(calc(var(--shift, 0px) * var(--scan, 0)))"),
 		// Linear, and linear is the whole point: an eased scroll accelerates and
 		// decelerates between every pair of ticks, which reads as the text being
 		// tugged rather than travelling.
-		r("transition", "transform var(--t-glide) linear"),
+		css.Transition(css.PropTransform, css.VarDuration("t-glide"), css.Linear),
 		r("will-change", "transform"),
 	)
 	// A paused slideshow must actually stop, including mid-glide.
@@ -415,11 +415,11 @@ func slideStage(r func(string, string) css.Rule) {
 	// deliberately NOT tied to the reader's Appearance size, which is calibrated
 	// for the opposite viewing distance.
 	css.Global(".slide-body",
-		r("font-family", "var(--rd)"),
+		css.Font(css.VarFontStack("rd")),
 		r("font-size", "clamp(18px, 1.45vw, 27px)"),
-		r("line-height", "1.72"),
-		r("color", "var(--read)"),
-		r("max-width", "62ch"),
+		css.LineHeight(css.Num(1.72)),
+		css.TextColor(css.Var("read")),
+		css.MaxWidth(css.Ch(62)),
 		// The top figure is the gap between the headline and the first line of
 		// prose, and it wants to be generous: the header and the body are the same
 		// column of text at two sizes, and too little space between them reads as
@@ -429,28 +429,28 @@ func slideStage(r func(string, string) css.Rule) {
 		// the last paragraph scroll up to a comfortable READING position rather
 		// than stopping with its final line pinned to the bottom edge.
 		r("padding-block", "clamp(26px, 3vw, 52px) 22vh"),
-		r("overflow-wrap", "anywhere"),
+		css.OverflowWrap.Anywhere,
 	)
 	// The lede gets the same promotion it gets in the reader, one notch up and
 	// in the full cream — it is where the eye lands when the body arrives.
 	css.Global(".slide-body p:first-of-type",
-		r("color", "var(--cream)"), r("font-size", "1.09em"))
+		css.TextColor(css.Var("cream")), css.FontSize(css.Ems(1.09)))
 	css.Global(".slide-body p", r("margin", "0 0 1em"))
 	css.Global(".slide-body h2, .slide-body h3",
-		r("font-family", "var(--dsp)"), r("font-weight", "600"),
-		r("color", "var(--cream)"), r("margin", "1.5em 0 .5em"),
-		r("font-size", "1.18em"),
+		css.Font(css.VarFontStack("dsp")), css.FontWeight.Semibold,
+		css.TextColor(css.Var("cream")), r("margin", "1.5em 0 .5em"),
+		css.FontSize(css.Ems(1.18)),
 	)
 	css.Global(".slide-body img",
-		r("max-width", "100%"), r("height", "auto"),
-		r("border-radius", "14px"), r("margin", "1.3em 0"),
+		css.MaxWidth(css.Full), css.H(css.Auto),
+		css.Rounded(css.Px(14)), r("margin", "1.3em 0"),
 	)
 	css.Global(".slide-body blockquote",
-		r("border-left", "3px solid var(--c, var(--line))"),
-		r("padding-left", "20px"), r("margin", "1.3em 0"),
-		r("color", "var(--soft)"), r("font-style", "italic"),
+		r("border-inline-start", "3px solid var(--c, var(--line))"),
+		r("padding-inline-start", "20px"), r("margin", "1.3em 0"),
+		css.TextColor(css.Var("soft")), css.FontStyle.Italic,
 	)
-	css.Global(".slide-body ul, .slide-body ol", r("margin", "0 0 1em 1.2em"))
+	css.Global(".slide-body ul, .slide-body ol", r("margin", "0 0 1em"), r("margin-inline-start", "1.2em"))
 	css.Global(".slide-body ul", r("list-style", "disc"))
 	css.Global(".slide-body ol", r("list-style", "decimal"))
 	css.Global(".slide-body li", r("margin", ".3em 0"))
@@ -468,7 +468,7 @@ func slideStage(r func(string, string) css.Rule) {
 	// line, which is the caption band this deliberately is not.
 	css.Global(".slide-said",
 		r("margin", "0 0 .85em"),
-		r("color", "var(--read)"),
+		css.TextColor(css.Var("read")),
 		// The transition is what makes the emphasis read as the voice moving
 		// rather than as the page repainting, and it uses the mode's own
 		// duration token rather than a number: --t-slide is what everything
@@ -479,16 +479,16 @@ func slideStage(r func(string, string) css.Rule) {
 	css.Global(".slide-said[data-said='said']", r("opacity", ".42"))
 	css.Global(".slide-said[data-said='before']", r("opacity", ".24"))
 	css.Global(".slide-said[data-said='now']",
-		r("opacity", "1"), r("color", "var(--cream)"),
+		css.OpacityNum(css.Num(1)), css.TextColor(css.Var("cream")),
 	)
 	// Said once, at the top, and quietly: it explains an absence rather than
 	// announcing a feature.
 	css.Global(".slide-said-note",
-		r("font-family", "var(--ui)"),
+		css.Font(css.VarFontStack("ui")),
 		r("font-size", "clamp(11px, .78vw, 14px)"),
 		r("letter-spacing", ".08em"),
-		r("text-transform", "uppercase"),
-		r("color", "var(--soft)"),
+		css.TextTransform.Uppercase,
+		css.TextColor(css.Var("soft")),
 		r("opacity", ".55"),
 		r("margin-top", "1.6em"),
 	)
@@ -497,16 +497,16 @@ func slideStage(r func(string, string) css.Rule) {
 	// keep.
 	css.Global(".slide-body a",
 		r("color", "var(--ink, var(--cream))"), r("text-decoration", "none"))
-	css.Global(".slide-body pre, .slide-body table", r("display", "none"))
+	css.Global(".slide-body pre, .slide-body table", css.Display.None)
 
 	// What is shown while the body is still coming. Not a skeleton: a skeleton is
 	// for a layout you are about to interact with, and this is a title card that
 	// is simply holding. One quiet line under the headline says the display is
 	// working rather than stuck.
 	css.Global(".slide-wait",
-		r("font-family", "var(--ui)"), r("font-size", "clamp(13px, 1vw, 16px)"),
-		r("letter-spacing", ".1em"), r("text-transform", "uppercase"),
-		r("color", "var(--mute)"),
+		css.Font(css.VarFontStack("ui")), r("font-size", "clamp(13px, 1vw, 16px)"),
+		r("letter-spacing", ".1em"), css.TextTransform.Uppercase,
+		css.TextColor(css.Var("mute")),
 		r("margin-top", "clamp(16px, 2vw, 30px)"),
 	)
 	// A wait has to LOOK like a wait.
@@ -524,7 +524,7 @@ func slideStage(r func(string, string) css.Rule) {
 	// nothing.
 	css.Global(".slide-working", css.Keyframes("slide-breathe",
 		css.At("0%", r("opacity", "calc(1 - var(--mo) * 0.55)")),
-		css.At("50%", r("opacity", "1")),
+		css.At("50%", css.OpacityNum(css.Num(1))),
 		css.At("100%", r("opacity", "calc(1 - var(--mo) * 0.55)")),
 	),
 		// 2.6s, which is the connection dot's tempo while it is trying to
@@ -547,19 +547,18 @@ func slideStage(r func(string, string) css.Rule) {
 	// chrome: an underline on hover, and nothing at rest. A bordered pill here
 	// would be the only object on the screen asking to be clicked, on a display
 	// designed to be watched.
-	css.Global(".slide-voice",
-		r("color", "var(--cc)"),
-		r("max-width", "46ch"), r("line-height", "1.5"),
-		r("text-align", "left"),
-		r("background", "none"), r("border", "0"), r("padding", "0"),
-		r("cursor", "pointer"),
-		r("font-family", "var(--ui)"), r("font-size", "clamp(13px, 1vw, 16px)"),
-		r("letter-spacing", ".1em"), r("text-transform", "uppercase"),
+	css.Global(".slide-voice", ruleSet(bareButton,
+		css.TextColor(css.Var("cc")),
+		css.MaxWidth(css.Ch(46)), css.LineHeight(css.Num(1.5)),
+		css.TextAlign.Start,
+		css.Padding(css.Zero),
+		css.Font(css.VarFontStack("ui")), r("font-size", "clamp(13px, 1vw, 16px)"),
+		r("letter-spacing", ".1em"), css.TextTransform.Uppercase,
 		r("text-decoration", "none"),
 		r("transition", "color "+warm),
-	)
+	)...)
 	css.Global(".slide-voice:hover",
-		r("color", "var(--cream)"), r("text-decoration", "underline"),
+		css.TextColor(css.Var("cream")), r("text-decoration", "underline"),
 		r("text-underline-offset", ".3em"))
 
 }
@@ -576,19 +575,19 @@ func slideStage(r func(string, string) css.Rule) {
 func slideRule(r func(string, string) css.Rule) {
 	css.Global(".slide-rule",
 		r("grid-row", "2"),
-		r("position", "relative"), r("z-index", "2"),
-		r("height", "2px"),
+		css.Position.Relative, css.ZIndex(2),
+		css.H(css.Px(2)),
 		r("background", "color-mix(in srgb, var(--line) 70%, transparent)"),
 	)
 	css.Global(".slide-rule i",
-		r("position", "absolute"), r("inset", "0"),
+		css.Position.Absolute, css.Inset(css.Zero),
 		r("transform-origin", "left center"),
 		r("transform", "scaleX(var(--fill, 0))"),
 		r("background", "var(--c, var(--cc))"),
 		// The same smoothing the flow uses, and it has to be the same: the two
 		// are driven by one variable and must not visibly disagree about where
 		// the slide has got to.
-		r("transition", "transform var(--t-glide) linear"),
+		css.Transition(css.PropTransform, css.VarDuration("t-glide"), css.Linear),
 		// A short bloom of the source's colour above the rule. This is what makes
 		// it read as lit rather than as a filled bar, and it is why the colour is
 		// legible from across a room at 2px tall.
@@ -614,15 +613,15 @@ func slideRule(r func(string, string) css.Rule) {
 // does also has a key of its own, so the pointer is never the only way.
 func slideHud(r func(string, string) css.Rule) {
 	css.Global(".slide-hud",
-		r("position", "absolute"), r("inset", "auto 0 0 auto"),
-		r("z-index", "3"),
-		r("display", "flex"), r("align-items", "center"), r("gap", "8px"),
-		r("padding", "42px 30px 26px 60px"),
-		r("opacity", "0"),
+		css.Position.Absolute, r("inset-block", "auto 0"), r("inset-inline", "auto 0"),
+		css.ZIndex(3),
+		css.Display.Flex, css.Items.Center, css.Gap(css.Px(8)),
+		r("padding", "42px 30px 26px"), r("padding-inline-start", "60px"),
+		css.OpacityNum(css.Num(0)),
 		// Not clickable while invisible. Without this the strip along the bottom
 		// right swallows clicks aimed at nothing, which on a touchscreen means a
 		// tap meant to reveal the controls presses one of them instead.
-		r("pointer-events", "none"),
+		css.PointerEvents.None,
 		r("transition", "opacity "+slow),
 	)
 	// Revealed by MOVEMENT, not by hover.
@@ -638,41 +637,43 @@ func slideHud(r func(string, string) css.Rule) {
 	// button moves no pointer, and a control that is focused but invisible is
 	// worse than one that is merely hidden.
 	css.Global(".slides[data-hud='true'] .slide-hud, .slide-hud:focus-within",
-		r("opacity", "1"), r("pointer-events", "auto"))
+		css.OpacityNum(css.Num(1)), css.PointerEvents.Auto)
 
 	// The cursor goes with the controls. A display left running with a mouse
 	// arrow parked in the middle of a headline is the one detail that says
 	// "this is a web page" rather than "this is a broadcast" — and it comes back
 	// the instant anything moves, so it can never be lost.
 	css.Global(".slides", r("cursor", "none"))
-	css.Global(".slides[data-hud='true']", r("cursor", "default"))
+	css.Global(".slides[data-hud='true']", css.Cursor.Default)
 
 	css.Global(".slide-btn",
-		r("width", "40px"), r("height", "40px"),
-		r("display", "grid"), r("place-items", "center"),
-		r("border-radius", "12px"),
-		r("border", "1px solid var(--line)"),
+		css.W(css.Px(40)), css.H(css.Px(40)),
+		css.Display.Grid, r("place-items", "center"),
+		css.Rounded(css.Px(12)),
+		css.Border(css.Px(1), css.Var("line")),
 		r("background", "color-mix(in srgb, var(--sur) 76%, transparent)"),
 		r("backdrop-filter", "blur(8px)"),
-		r("color", "var(--soft)"),
-		r("font-size", "15px"),
-		r("cursor", "pointer"),
+		css.TextColor(css.Var("soft")),
+		css.FontSize(css.Px(15)),
+		css.Cursor.Pointer,
 		r("transition", "color "+warm+", border-color "+warm+", transform "+move),
 	)
-	css.Global(".slide-btn:hover",
-		r("color", "var(--cream)"), r("border-color", "var(--soft)"))
-	css.Global(".slide-btn[aria-pressed='true']",
-		r("color", "var(--cc)"), r("border-color", "var(--cc)"))
+	css.Global(".slide-btn:hover", ruleSet(controlHover)...)
+	// data-on is Pause's lit state: it is an action button whose label
+	// already says which way it goes, so it cannot carry aria-pressed (see
+	// slideBtn in client/view/slideshow.go), and it still lights while paused.
+	css.Global(".slide-btn[aria-pressed='true'], .slide-btn[data-on='true']",
+		css.TextColor(css.Var("cc")), css.BorderColor(css.Var("cc")))
 	css.Global(".slide-btn:active", r("transform", "scale(.93)"), r("transition-duration", "0s"))
 
 	// The state line: what mode this is in and what it is waiting for. It shares
 	// the HUD's fade, so a reader who wants to know reaches for the corner and a
 	// reader who does not is never told.
 	css.Global(".slide-state",
-		r("font-family", "var(--ui)"), r("font-size", "12.5px"),
-		r("letter-spacing", ".09em"), r("text-transform", "uppercase"),
-		r("color", "var(--mute)"), r("margin-right", "6px"),
-		r("white-space", "nowrap"),
+		css.Font(css.VarFontStack("ui")), r("font-size", "12.5px"),
+		r("letter-spacing", ".09em"), css.TextTransform.Uppercase,
+		css.TextColor(css.Var("mute")), r("margin-inline-end", "6px"),
+		css.WhiteSpace.NoWrap,
 	)
 }
 
@@ -690,12 +691,12 @@ func slideNarrow(r func(string, string) css.Rule) {
 	css.Global(".slide", css.Media(css.MaxW(900),
 		r("grid-template-rows", "1fr auto minmax(0, 1fr)"))...)
 	css.Global(".slide-head", css.Media(css.MaxW(900),
-		r("font-size", "clamp(28px, 8vw, 44px)"), r("max-width", "16ch"))...)
+		r("font-size", "clamp(28px, 8vw, 44px)"), css.MaxWidth(css.Ch(16)))...)
 	css.Global(".slide-body", css.Media(css.MaxW(900),
 		r("font-size", "17.5px"), r("padding-block", "16px 26vh"))...)
 	// The slug's running order is the first thing to go when there is no room
 	// for it: the source and the time are what identify the story.
-	css.Global(".slide-order", css.Media(css.MaxW(520), r("display", "none"))...)
+	css.Global(".slide-order", css.Media(css.MaxW(520), css.Display.None)...)
 	// A short window — a laptop in landscape is often only 700px tall — cannot
 	// afford a title card that fills it, so the headline comes down a step.
 	// RawMedia because the helper set covers widths only, and height is the axis
@@ -704,5 +705,5 @@ func slideNarrow(r func(string, string) css.Rule) {
 	css.Global(".slide-head", css.Media(css.RawMedia("(max-height:760px)"),
 		r("font-size", "clamp(28px, 3.6vw, 54px)"))...)
 	css.Global(".slide-hud", css.Media(css.MaxW(900),
-		r("padding", "30px 18px 18px 40px"))...)
+		r("padding", "30px 18px 18px"), r("padding-inline-start", "40px"))...)
 }

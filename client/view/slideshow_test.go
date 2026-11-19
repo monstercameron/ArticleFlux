@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/GoWebComponents/v7/ui"
+
 	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -1044,5 +1047,26 @@ func TestSpeechRateRejectsValuesThatAreNotNumbers(t *testing.T) {
 		if got := speechRateValue(c.pref); got != c.want {
 			t.Errorf("speechRateValue(%q) = %v, want %v", c.pref, got, c.want)
 		}
+	}
+}
+
+// The HUD's actions are plain buttons and its one switch is a toggle. Pause in
+// particular says which way it goes in its label, and also reporting a pressed
+// state gave a screen reader "Resume, toggle button, pressed" — two answers
+// that disagree. Its lit state rides data-on instead, so the pixels keep it.
+func TestSlideHudPressedStatesMeanSomething(t *testing.T) {
+	out := renderView(t, func(tr i18n.Runtime) ui.Node {
+		return slideHud(tr, slideProps{paused: true, audio: true})
+	})
+	for _, action := range []string{actSlidePrev, actSlidePause, actSlideNext, actSlideLeave} {
+		if b := buttonBlock(t, out, `data-action="`+action+`"`); strings.Contains(b, "aria-pressed") {
+			t.Errorf("%s is an action but carries aria-pressed: %s", action, b)
+		}
+	}
+	if b := buttonBlock(t, out, `data-action="`+actSlidePause+`"`); !strings.Contains(b, `data-on="true"`) {
+		t.Errorf("a paused HUD's Pause is not lit: %s", b)
+	}
+	if b := buttonBlock(t, out, `data-action="`+actSlideListen+`"`); !strings.Contains(b, `aria-pressed="true"`) {
+		t.Errorf("Read to me lost its pressed state: %s", b)
 	}
 }

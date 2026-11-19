@@ -1,7 +1,10 @@
 package smart
 
 import (
-	schemaflux "github.com/monstercameron/schemaflux"
+	"errors"
+	"strings"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The output ceiling every Smart+ operation runs under, said out loud.
@@ -85,41 +88,72 @@ const (
 	translateMaxTokens = maxOutputTokens
 )
 
-// The four Configure closures below exist because the fluent builders are
-// distinct generic types with no shared interface — `ExtractRequest[T]` and
-// `SummarizeRequest` have identical `Configure` methods over different options
-// structs, and Go cannot abstract over that. One helper per options type is the
-// smallest honest way to say the same thing at thirteen call sites.
+// sfOpts is the options every typed call in this package states: the
+// instance's model, the tier, the steering, and the token ceiling.
 //
-// `OpOptions.MaxOutputTokens` is the field `ops.CallLLM` actually reads: it
-// overrides `config.GetMaxTokens(intelligence)` when non-zero and is ignored
-// when zero, so setting it changes only the ceiling and leaves the tier's other
-// effects — temperature, model class — alone.
-
-func capExtract(n int) func(schemaflux.ExtractOptions) schemaflux.ExtractOptions {
-	return func(o schemaflux.ExtractOptions) schemaflux.ExtractOptions {
-		o.OpOptions.MaxOutputTokens = n
-		return o
+// SchemaFlux v2 replaced the fluent builders (`.Steer(...).Configure(...)
+// .Model(...).Fast()`) with one Options value per call, so the four Configure
+// closures that used to live here — one per builder type, because Go could not
+// abstract over them — are one function now. The ceiling is still stated at
+// every call site rather than inherited from the tier, for the reason above:
+// a tier change must not become a length change.
+//
+// `MaxOutputTokens` is v2's own field for the ceiling and overrides the tier's;
+// the tier still decides the temperature (Mode) and, when no model is pinned,
+// the model. The model IS always pinned here (OpsModel), so the tier never
+// chooses it.
+func sfOpts(model string, tier schemaflux.Tier, steering string, maxTokens int) schemaflux.Options {
+	return schemaflux.Options{
+		Model:           model,
+		Tier:            tier,
+		Steering:        steering,
+		MaxOutputTokens: maxTokens,
 	}
 }
 
-func capGenerate(n int) func(schemaflux.GenerateOptions) schemaflux.GenerateOptions {
-	return func(o schemaflux.GenerateOptions) schemaflux.GenerateOptions {
-		o.OpOptions.MaxOutputTokens = n
-		return o
+// opErr keeps the cause's own words on an error from a SchemaFlux operation.
+//
+// v2's *schemaflux.Error deliberately leaves provider text out of Error() —
+// "summarize: unavailable (articleflux/gpt-6-luna)" — and keeps it as the
+// wrapped Err. Two things in this repository read that text: the Smart+
+// refusal classifier in internal/app (an invalid key, a spent quota and an
+// unknown model are told apart by the provider's words) and the "nothing to
+// summarise" fallback, keyed on the library's own empty-completion message. v1
+// put both in the message; without this, every refusal would read as
+// "refused" and every empty digest as a provider fault.
+//
+// Only the innermost non-SchemaFlux cause is added, and only when the answer
+// was not the problem: an invalid answer's cause can quote the model's output,
+// and that never goes into an error string.
+func opErr(err error) error {
+	if err == nil {
+		return nil
 	}
+	if errors.Is(err, schemaflux.ErrInvalidAnswer) && !strings.Contains(causeOf(err), "empty completion") {
+		return err
+	}
+	cause := causeOf(err)
+	if cause == "" || strings.Contains(err.Error(), cause) {
+		return err
+	}
+	return &causedError{err: err, cause: cause}
 }
 
-func capChoose(n int) func(schemaflux.ChooseOptions) schemaflux.ChooseOptions {
-	return func(o schemaflux.ChooseOptions) schemaflux.ChooseOptions {
-		o.OpOptions.MaxOutputTokens = n
-		return o
-	}
+type causedError struct {
+	err   error
+	cause string
 }
 
-func capSummarize(n int) func(schemaflux.SummarizeOptions) schemaflux.SummarizeOptions {
-	return func(o schemaflux.SummarizeOptions) schemaflux.SummarizeOptions {
-		o.OpOptions.MaxOutputTokens = n
-		return o
+func (e *causedError) Error() string { return e.err.Error() + ": " + e.cause }
+func (e *causedError) Unwrap() error { return e.err }
+
+// causeOf is the message of the outermost error in err's chain that is not a
+// *schemaflux.Error, or "".
+func causeOf(err error) string {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if _, own := e.(*schemaflux.Error); !own {
+			return e.Error()
+		}
 	}
+	return ""
 }

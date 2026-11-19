@@ -3,6 +3,8 @@ package feed
 import (
 	"strings"
 	"testing"
+
+	"github.com/monstercameron/ArticleFlux/internal/entities"
 )
 
 // The previous implementations of the three text helpers, kept verbatim.
@@ -34,7 +36,14 @@ func oldStripTags(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return basicEntities.Replace(b.String())
+	// The entity step is the CURRENT one, on purpose. What this file compares
+	// is the rewritten stripping, summarising and counting against the old
+	// (early stop, no slice per word); the table of sixteen entities the old
+	// code ended with was replaced separately, by internal/entities, and its
+	// behaviour is pinned there. Keeping the old table here would make this
+	// comparison fail on every WordPress title in the corpus for a reason it
+	// was never about.
+	return entities.Decode(b.String())
 }
 
 func oldSummarize(html string) string {

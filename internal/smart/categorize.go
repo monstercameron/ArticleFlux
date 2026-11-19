@@ -7,11 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Categorizer is the Smart+ suggestion for where a newly-added feed belongs.
@@ -78,14 +79,36 @@ const maxCategorizeExisting = 40
 // contain.
 func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription string, existing []string) (
 	category string, isNew bool, err error) {
+	category, isNew, _, err = c.SuggestFrom(ctx, feedTitle, feedDescription, existing)
+	return category, isNew, err
+}
+
+// SuggestFrom is Suggest, also saying which rung of the escalation ladder
+// (A47) answered: llm.RungCode when one of the reader's own folders is named
+// in the feed's title or description as a whole word — no key, no egress —
+// llm.RungDecider when JEV picked, llm.RungModel when the model did.
+func (c *Categorizer) SuggestFrom(ctx context.Context, feedTitle, feedDescription string, existing []string) (
+	category string, isNew bool, rung llm.Rung, err error) {
 
 	feedTitle = strings.TrimSpace(feedTitle)
 	if feedTitle == "" {
-		return "", false, ErrNoFeedTitle
+		return "", false, "", ErrNoFeedTitle
+	}
+	// Rung 1, before any key is consulted: the free tier answers alone when
+	// exactly one of the reader's folders is named, as a whole word, in what
+	// the feed says about itself. Two named is a tie the code will not break.
+	if name, ok := namedFolder(feedTitle+" "+feedDescription, existing); ok {
+		return name, false, llm.RungCode, nil
 	}
 	if !c.llm.Configured(ctx) {
-		return "", false, llm.ErrNotConfigured
+		return "", false, "", llm.ErrNotConfigured
 	}
+	ctx, prov := llm.WithProvenance(llm.WithTask(ctx, llm.TaskCategorize))
+	defer func() {
+		if err == nil && rung == "" {
+			rung = prov.Rung()
+		}
+	}()
 
 	trimmedExisting := make([]string, 0, len(existing))
 	for _, e := range existing {
@@ -132,7 +155,7 @@ func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription st
 	// be a call whose only possible answer is "make one up".
 	if len(trimmedExisting) == 0 {
 		name, gerr := c.invent(call, about)
-		return name, true, gerr
+		return name, true, "", gerr
 	}
 
 	// The sentinel is an option like any other, which is what lets a pick and a
@@ -153,31 +176,35 @@ func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription st
 	// model was picking folders knowing nothing about the feed, confidently.
 	// Fixed upstream (SchemaFlux TODOS.md **ST-010**); this is the shape that
 	// reads correctly now that it works.
-	picked, err := schemaflux.Choosing[string](options).
-		By("which of these folders this feed most obviously belongs in",
-			"pick "+strconv.Quote(noneFit)+" only when none of them is a reasonable home for it").
-		Steer(about).
+	// A labelled decision (A47): `Which`, the operation SchemaFlux v2's decision
+	// providers answer typed, so on an instance with a JEV credential the pick
+	// goes to JEV first and to the model only when JEV refuses, is unsure or is
+	// down (llm.Ladder[TaskCategorize]). It cannot answer with a folder that
+	// was not offered, as Choose could not.
+	picked, err := schemaflux.Which(call, about,
+		"Which of these folders does this feed most obviously belong in? Pick "+strconv.Quote(noneFit)+
+			" only when none of them is a reasonable home for it.",
+		options,
 		// The ceiling, stated rather than inherited from the tier (ceilings.go).
-		Configure(capChoose(categorizeMaxTokens)).
 		// Fast: this is a pick from a short list already in front of the model,
 		// not a judgement call. The old request said the same thing by setting
 		// Effort low, and for the same reason.
-		Model(c.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		sfOpts(c.llm.OpsModel(ctx), schemaflux.TierFast, "", categorizeMaxTokens),
+	)
+	err = opErr(err)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 
 	picked = strings.TrimSpace(picked)
 	if picked == "" {
-		return "", false, fmt.Errorf("smart: the category operation answered with nothing")
+		return "", false, "", fmt.Errorf("smart: the category operation answered with nothing")
 	}
 	if picked == noneFit {
 		name, gerr := c.invent(call, about)
-		return name, true, gerr
+		return name, true, "", gerr
 	}
-	return picked, false, nil
+	return picked, false, "", nil
 }
 
 // invent names a category when none of the reader's own is a home for the feed.
@@ -188,14 +215,11 @@ func (c *Categorizer) Suggest(ctx context.Context, feedTitle, feedDescription st
 // that reply needed an `isNew` flag the model could get wrong independently of
 // the name it returned.
 func (c *Categorizer) invent(ctx context.Context, about string) (string, error) {
-	name, err := schemaflux.Generating[string](
-		"Name one folder this feed belongs in. Two words at most, title case, " +
-			"the kind of name somebody would give a folder in a reader — a subject, " +
-			"not a description of the feed. " + about).
-		Configure(capGenerate(inventMaxTokens)).
-		Model(c.llm.OpsModel(ctx)).
-		Fast().
-		Run(ctx)
+	name, err := schemaflux.Generate[string](ctx, "Name one folder this feed belongs in. Two words at most, title case, "+
+		"the kind of name somebody would give a folder in a reader — a subject, "+
+		"not a description of the feed. "+about,
+		schemaflux.GenerateOptions{Options: sfOpts(c.llm.OpsModel(ctx), schemaflux.TierFast, "", inventMaxTokens)})
+	err = opErr(err)
 	if err != nil {
 		return "", err
 	}
@@ -223,4 +247,46 @@ func trimRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// namedFolder is rung 1 of categorisation: the one existing folder whose name
+// appears in text as a whole word, case-insensitively. ok is false for none and
+// for two or more — a tie is the model's to break, not a guess for the code.
+func namedFolder(text string, existing []string) (string, bool) {
+	lower := " " + strings.ToLower(text) + " "
+	found := ""
+	for _, name := range existing {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if len([]rune(n)) < 3 {
+			continue
+		}
+		if containsWord(lower, n) {
+			if found != "" && !strings.EqualFold(found, name) {
+				return "", false
+			}
+			found = strings.TrimSpace(name)
+		}
+	}
+	return found, found != ""
+}
+
+func containsWord(hay, needle string) bool {
+	for off := 0; ; {
+		i := strings.Index(hay[off:], needle)
+		if i < 0 {
+			return false
+		}
+		i += off
+		before, after := rune(' '), rune(' ')
+		if i > 0 {
+			before = rune(hay[i-1])
+		}
+		if end := i + len(needle); end < len(hay) {
+			after = rune(hay[end])
+		}
+		if !unicode.IsLetter(before) && !unicode.IsDigit(before) && !unicode.IsLetter(after) && !unicode.IsDigit(after) {
+			return true
+		}
+		off = i + 1
+	}
 }

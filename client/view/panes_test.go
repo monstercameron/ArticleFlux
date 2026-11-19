@@ -9,7 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
+	xhtml "golang.org/x/net/html"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 
@@ -839,5 +841,227 @@ func TestUnfiledRowWaitsForSomethingToBeFiled(t *testing.T) {
 				t.Errorf("the Uncategorised row went missing\n--- output ---\n%s", out)
 			}
 		})
+	}
+}
+
+// --- the rail's list semantics ------------------------------------------------
+
+// parseDoc parses rendered markup into a tree the a11y checks below can walk.
+func parseDoc(t *testing.T, out string) *xhtml.Node {
+	t.Helper()
+	doc, err := xhtml.Parse(strings.NewReader(out))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return doc
+}
+
+func attrOf(n *xhtml.Node, key string) (string, bool) {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val, true
+		}
+	}
+	return "", false
+}
+
+func walk(n *xhtml.Node, visit func(*xhtml.Node)) {
+	if n.Type == xhtml.ElementNode {
+		visit(n)
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		walk(c, visit)
+	}
+}
+
+func elementKids(n *xhtml.Node) []*xhtml.Node {
+	var out []*xhtml.Node
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == xhtml.ElementNode {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// railWithEverything is a rail with every section populated and one category
+// unfolded, so its open category's feeds are rendered inside it.
+func railWithEverything() railProps {
+	return railProps{
+		feeds: []*pb.Feed{
+			{SourceId: "s1", Title: "Alpha", FolderId: "f1", UnreadCount: 3},
+			{SourceId: "s2", Title: "Beta", FolderId: "f1"},
+			{SourceId: "s3", Title: "Gamma"},
+		},
+		folders:  []*pb.Folder{{Id: "f1", Name: "Work"}},
+		tags:     []*pb.Tag{{Id: "t1", Name: "go", FeedCount: 2}},
+		openCats: "f1",
+	}
+}
+
+// Every rail section is a list a screen reader can count, and it is a VALID
+// one: role=list holds listitems and nothing else, and no listitem is loose.
+// The sections hold things that are not rows — the "nothing here" notes, the
+// open category's own feeds — and the invariant is what keeps them out.
+func TestRailSectionsAreListsOfListitems(t *testing.T) {
+	p := railWithEverything()
+	doc := parseDoc(t, renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(p) }))
+
+	lists := 0
+	walk(doc, func(n *xhtml.Node) {
+		role, _ := attrOf(n, "role")
+		switch role {
+		case "list":
+			lists++
+			if _, ok := attrOf(n, "aria-label"); !ok {
+				t.Errorf("a rail list has no name: four unnamed lists in one nav are " +
+					"indistinguishable")
+			}
+			for _, c := range elementKids(n) {
+				if r, _ := attrOf(c, "role"); r != "listitem" {
+					cls, _ := attrOf(c, "class")
+					t.Errorf("a rail list holds a <%s class=%q> that is not a listitem",
+						c.Data, cls)
+				}
+			}
+		case "listitem":
+			if r, _ := attrOf(n.Parent, "role"); r != "list" {
+				cls, _ := attrOf(n, "class")
+				t.Errorf("a rail listitem (class %q) is not inside a list", cls)
+			}
+		}
+	})
+	// Streams, Feeds, Categories, the open Work folder, and Tags.
+	if lists != 5 {
+		t.Errorf("rendered %d rail lists, want 5 (streams, feeds, categories, the "+
+			"open folder, tags)", lists)
+	}
+
+	// The open folder's feeds are a list of their own, inside the folder's
+	// item — not extra members of the Categories list.
+	walk(doc, func(n *xhtml.Node) {
+		if v, _ := attrOf(n, "aria-label"); v != "Work" {
+			return
+		}
+		if r, _ := attrOf(n, "role"); r != "list" {
+			return
+		}
+		if got := len(elementKids(n)); got != 2 {
+			t.Errorf("the open folder lists %d feeds, want 2", got)
+		}
+	})
+}
+
+// A fold's toggle names the fold it controls while the fold is there, and
+// names nothing while it is not: a closed fold is not in the document, and an
+// aria-controls pointing at nothing is a broken reference.
+func TestRailTogglesControlTheirFolds(t *testing.T) {
+	p := railWithEverything()
+	p.tagsClosed = true
+	doc := parseDoc(t, renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(p) }))
+
+	ids := map[string]bool{}
+	walk(doc, func(n *xhtml.Node) {
+		if id, ok := attrOf(n, "id"); ok {
+			ids[id] = true
+		}
+	})
+	open, shut := 0, 0
+	walk(doc, func(n *xhtml.Node) {
+		exp, ok := attrOf(n, "aria-expanded")
+		if !ok {
+			return
+		}
+		ctl, has := attrOf(n, "aria-controls")
+		switch exp {
+		case "true":
+			open++
+			if !has || !ids[ctl] {
+				t.Errorf("an open toggle (%v) controls %q, which is not in the document",
+					n.Attr, ctl)
+			}
+		case "false":
+			shut++
+			if has {
+				t.Errorf("a closed toggle still names %q in aria-controls", ctl)
+			}
+		}
+	})
+	// Streams, Feeds, Categories and the Work folder open; Tags and the
+	// Unfiled category (Gamma is in no folder) shut.
+	if open != 4 || shut != 2 {
+		t.Errorf("open/shut toggles = %d/%d, want 4/2", open, shut)
+	}
+}
+
+// --- Mark all read's confirmation ----------------------------------------------
+
+// The confirmation is an alertdialog that focus is moved into, so it is
+// described by its question rather than shouting it through aria-live, and
+// Cancel carries the handle armMarkAll focuses.
+func TestMarkAllConfirmIsADialogFocusCanEnter(t *testing.T) {
+	out := renderView(t, func(tr i18n.Runtime) ui.Node { return markAllConfirm(tr, "Alpha") })
+	doc := parseDoc(t, out)
+
+	var dialog, cancel *xhtml.Node
+	walk(doc, func(n *xhtml.Node) {
+		if r, _ := attrOf(n, "role"); r == "alertdialog" {
+			dialog = n
+		}
+		if r, _ := attrOf(n, "data-role"); r == markAllCancelRole {
+			cancel = n
+		}
+	})
+	if dialog == nil {
+		t.Fatalf("no alertdialog rendered:\n%s", out)
+	}
+	if v, ok := attrOf(dialog, "aria-live"); ok {
+		t.Errorf("the dialog carries aria-live=%q; focus moving into it is what "+
+			"announces it", v)
+	}
+	if r, _ := attrOf(dialog, "data-role"); r != markAllConfirmRole {
+		t.Errorf("the dialog's data-role is %q, want %q — reader.go finds it by that",
+			r, markAllConfirmRole)
+	}
+	desc, _ := attrOf(dialog, "aria-describedby")
+	found := false
+	walk(doc, func(n *xhtml.Node) {
+		if id, _ := attrOf(n, "id"); id == desc && n.FirstChild != nil &&
+			strings.Contains(n.FirstChild.Data, "Alpha") {
+			found = true
+		}
+	})
+	if !found {
+		t.Errorf("aria-describedby=%q does not resolve to the question naming the list", desc)
+	}
+	if cancel == nil {
+		t.Fatalf("Cancel carries no data-role=%q, so arming has nothing to focus", markAllCancelRole)
+	}
+	if a, _ := attrOf(cancel, "data-action"); a != "mark-all-cancel" {
+		t.Errorf("the focus target is %q, want the Cancel button — focus must land "+
+			"on the answer that does nothing", a)
+	}
+}
+
+// --- action chips are not toggles -------------------------------------------
+
+// Listen, Stop and Mark unread do something when pressed; they are not on or
+// off, and any aria-pressed — "false" included — would announce them as a
+// switch. Like and Read later are switches and keep it.
+func TestArticleActionsAreNotToggleButtons(t *testing.T) {
+	out := renderView(t, func(tr i18n.Runtime) ui.Node {
+		return html.Div(html.Props{},
+			legacyGlyphItemAction("listen-stop", glyphStop, "Stop", "i1"),
+			itemAction("expand", "Read the rest", "i1"),
+			legacyGlyphItemChip("like", glyphLiked, "Like", true, "i1"),
+		)
+	})
+	for _, action := range []string{"listen-stop", "expand"} {
+		if b := buttonBlock(t, out, `data-action="`+action+`"`); strings.Contains(b, "aria-pressed") {
+			t.Errorf("%s is an action but carries aria-pressed: %s", action, b)
+		}
+	}
+	if b := buttonBlock(t, out, `data-action="like"`); !strings.Contains(b, `aria-pressed="true"`) {
+		t.Errorf("Like lost its pressed state: %s", b)
 	}
 }

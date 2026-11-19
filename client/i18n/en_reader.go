@@ -51,6 +51,7 @@ func init() {
 		"errSave":        "Couldn't save that.",
 		"errSaveNote":    "Couldn't save that note.",
 		"errSaveLayout":  "Couldn't save the layout.",
+		"errLoadPrefs":   "Couldn't load your settings, so some switches may show their defaults. Reload to try again.",
 		"errAddTag":      "Couldn't add that tag.",
 		"errRemoveTag":   "Couldn't remove that tag.",
 		"errSaveTag":     "Couldn't save that tag: {err}",
@@ -113,7 +114,14 @@ func init() {
 
 		// --- the fatal overlay, when the socket will not come back
 		"fatalTitle": "ArticleFlux can't reach its server",
-		"fatalHint":  "Check that it's running, then reload.",
+		// What to do, for both people who see this: the one who runs the server
+		// and the one who does not (and cannot "check that it's running"). And
+		// the fear the screen raises, answered.
+		"fatalHint": "Reload in a moment. If you run this server yourself, check that it is running first. Nothing you have read or saved is lost.",
+		// The button under it, so the remedy is something to press rather than
+		// a browser control to go and find — on a phone app window there is no
+		// reload button at all.
+		"fatalReload": "Reload",
 
 		// --- scope titles that are built rather than fixed
 		"scopeSearch": "Results for {query}",

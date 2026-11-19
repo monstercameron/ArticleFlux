@@ -55,9 +55,17 @@ func TestEgressKeysWereNotWidened(t *testing.T) {
 // later amendment could quietly admit something it should not. This checks every
 // list in the package against the enumerated never-list.
 func TestNoAllowlistAdmitsAForbiddenKey(t *testing.T) {
+	// Every allowlist in the package. It named two for as long as there were
+	// two, and four more were added without joining it; §10.5b's is the one
+	// that noticed.
 	lists := map[string]map[string]bool{
-		"EgressKeys":   EgressKeys,
-		"ClassifyKeys": ClassifyKeys,
+		"EgressKeys":    EgressKeys,
+		"ClassifyKeys":  ClassifyKeys,
+		"ThemeKeys":     ThemeKeys,
+		"RelevanceKeys": RelevanceKeys,
+		"WebSearchKeys": WebSearchKeys,
+		"PlanKeys":      PlanKeys,
+		"TranslateKeys": TranslateKeys,
 	}
 	for name, list := range lists {
 		for k := range list {

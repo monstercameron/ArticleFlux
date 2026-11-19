@@ -1,4 +1,4 @@
-import { test, expect, boot, signIn, openFeed, openStream, openRail, feedRow, currentArticle } from './fixtures.mjs';
+import { test, expect, boot, signIn, openFeed, openStream, openRail, feedRow, currentArticle, openRow } from './fixtures.mjs';
 
 /**
  * The address bar (§20.13b).
@@ -85,7 +85,7 @@ test.describe('the address bar', () => {
 
   test('opening an article puts it in the address', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(currentArticle(page).locator('h1')).toBeVisible();
     await expect.poll(() => path(page)).toMatch(/\/read\/[^/]+$/);
   });
@@ -162,7 +162,7 @@ test.describe('the address bar', () => {
     const feedRoot = stripArticle(await settled(page, /^\/feed\/[^/]+$/));
 
     // Move to a DIFFERENT article in the same feed.
-    await page.locator('.item-row').nth(1).click();
+    await openRow(page, 1);
     await expect(currentArticle(page).locator('h1')).toBeVisible();
     await expect.poll(() => path(page)).toMatch(/\/read\/[^/]+$/);
 

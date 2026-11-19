@@ -1,12 +1,13 @@
 package design
 
 import (
+	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/css"
+	"github.com/monstercameron/GoWebComponents/v7/css"
 )
 
 // These tests exist because the two systems this package now carries — theming
@@ -126,6 +127,8 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// The filmstrip's coordinates: a pane's position in the strip, and the
 		// position currently showing. Geometry, not palette.
 		"--pane": true, "--strip": true,
+		// And which way it runs: -1 under dir="rtl". Direction, not palette.
+		"--dirx": true,
 		// The article's own gutter, so a full-bleed child can reach back out to
 		// the pane edge. A measurement, and one the reader changes by resizing.
 		"--art-pad": true,
@@ -457,3 +460,80 @@ type key struct{ theme, token, ground string }
 // pair not listed, so a new theme could not inherit the exception. An entry that
 // comes back has to be argued for again.
 var known = map[key]float64{}
+
+// TestDirectionalRulesAreLogical keeps the sheet right-to-left safe.
+//
+// Root sets `dir` from the language (i18n.DirectionFor), and a logical property
+// — margin-inline-start, inset-inline-end, text-align: start — follows it for
+// free. A physical one does not: `margin-left: auto` pushes a control to the
+// right edge in Arabic too, where it belongs on the left. Nothing errors and no
+// LTR screenshot changes, which is why it is asserted here, against the source
+// of the files that were converted, rather than left to the next reader of
+// Arabic to find.
+//
+// Two shapes stay physical on purpose, because they do not depend on direction
+// at all: centring by `left: 50%` with a translate of -50% (the result is the
+// middle either way), and an `inset` that is the same on both sides. The four
+// corner brackets of the focus icon (focus.go) are a drawing, not a layout, and
+// that file is not in the list.
+func TestDirectionalRulesAreLogical(t *testing.T) {
+	files := []string{"sheet.go", "categories.go", "theme.go", "motion.go",
+		"slideshow.go", "home.go", "filmstrip.go"}
+	physical := regexp.MustCompile(
+		`r\("((?:margin|padding|border)-(?:left|right)(?:-[a-z]+)?|left|right|float|clear)",\s*"([^"]*)"\)` +
+			`|r\("text-align",\s*"(left|right)"\)`)
+	// A four-value shorthand whose left and right differ is the same mistake
+	// written another way.
+	shorthand := regexp.MustCompile(`r\("(margin|padding|inset|border-radius|border-width)",\s*"([^" ]+) ([^" ]+) ([^" ]+) ([^" ]+)"\)`)
+	centring := map[string]bool{`r("left", "50%")`: true, `r("inset", "0 auto 0 50%")`: true}
+	// The typed constructors can say the same physical thing without the string
+	// the patterns above look for — css.Left(…) is `left:` — so a declaration
+	// moved from r(…) to its typed form must not be able to leave this test's
+	// sight on the way. There is no centring exemption here: the two centring
+	// shapes stay as r(…) literals, where the exemption can see them.
+	typedPhysical := regexp.MustCompile(
+		`css\.(?:Left|Right|PaddingX|MarginX|InsetX|BorderLeft|BorderRight|BorderX|RoundedLeft|RoundedRight)\(` +
+			`|css\.TextAlign\.(?:Left|Right)\b`)
+	// shared_rules.go holds the declaration groups the other files spread into
+	// their rules, so a physical property there is one in every rule that uses it.
+	files = append(files, "shared_rules.go")
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, m := range physical.FindAllString(line, -1) {
+				if !centring[m] {
+					t.Errorf("%s:%d: %s is physical; use the logical property "+
+						"(margin-inline-start, inset-inline-end, text-align: start …)", f, i+1, m)
+				}
+			}
+			for _, m := range typedPhysical.FindAllString(line, -1) {
+				t.Errorf("%s:%d: %s… is a physical side; keep the logical property", f, i+1, m)
+			}
+			for _, m := range shorthand.FindAllStringSubmatch(line, -1) {
+				if centring[m[0]] {
+					continue
+				}
+				left, right := m[5], m[3]
+				if m[1] == "border-radius" {
+					// top-left top-right bottom-right bottom-left
+					left, right = m[2]+m[5], m[3]+m[4]
+				}
+				if left != right {
+					t.Errorf("%s:%d: %s differs left and right; split the inline "+
+						"side out as a logical property", f, i+1, m[0])
+				}
+			}
+		}
+	}
+	// And the strip must read the direction it slides in.
+	sheet := sheetText(t)
+	if !strings.Contains(sheet, "--dirx") || !strings.Contains(sheet, "var(--dirx, 1)") {
+		t.Error("the filmstrip no longer reads --dirx, so panes slide the wrong way in a right-to-left interface")
+	}
+}

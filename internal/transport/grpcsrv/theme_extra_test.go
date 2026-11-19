@@ -18,7 +18,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/themewire"
 	"github.com/monstercameron/ArticleFlux/internal/topics"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // The gaps theme_test.go's own fixtures cannot reach: a caller who never
@@ -110,7 +110,7 @@ func TestComposeThemeWithNoGeneratorNeedsAKey(t *testing.T) {
 func TestComposeThemeSucceedsOverAFakeGenerator(t *testing.T) {
 	sc := scopeForTheme()
 	s, _ := themingFor(t, sc)
-	schemafluxtest.Install(t, schemafluxtest.New().Reply(goodPaletteJSON))
+	sftest.Install(t, sftest.New().Reply(goodPaletteJSON))
 	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true}, nil)
 
 	res, err := s.ComposeTheme(context.Background(), &pb.ComposeThemeRequest{
@@ -181,7 +181,7 @@ func TestSuggestThemeUsesTheSmartPaletteWhenConsentedAndConfigured(t *testing.T)
 	if err := repo.SetPrefs(ctx, sc, store.Prefs{AttunePrefKey: "true"}); err != nil {
 		t.Fatalf("prefs: %v", err)
 	}
-	schemafluxtest.Install(t, schemafluxtest.New().Reply(goodPaletteJSON))
+	sftest.Install(t, sftest.New().Reply(goodPaletteJSON))
 	s.palettes = smart.NewPalettes(&fakePaletteClient{configured: true}, nil)
 
 	res, err := s.SuggestTheme(ctx, &pb.SuggestThemeRequest{Base: themewire.Tokens(design.Ink)})
@@ -319,6 +319,9 @@ func (f *fakePaletteClient) OpsContext(ctx context.Context) context.Context { re
 // OpsModel names the model the operation runs on. A model has to arrive at
 // the provider or SchemaFlux refuses the call before making it.
 func (f *fakePaletteClient) OpsModel(context.Context) string { return "test-model" }
+
+// DeciderAvailable: no JEV rung in this fake (A47).
+func (f *fakePaletteClient) DeciderAvailable(context.Context) bool { return false }
 
 func (f *fakePaletteClient) Do(context.Context, llm.Request) (string, error) {
 	f.n++

@@ -1,6 +1,6 @@
 # ArticleFlux — a multi-tenant feed reader, bookmark manager, and ranking engine
 
-*GoWebComponents v5 + GoGRPCBridge. Working name. Started 2026-07-26.*
+*GoWebComponents v7 + GoGRPCBridge. Working name. Started 2026-07-26.*
 
 ---
 
@@ -199,7 +199,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 |---|---|---|
 | **A1** | Source of truth | **Server of record**, with a **read-only offline mirror** (§12) |
 | **A2** | Scope | See §5 phases |
-| **A3** | Framework | GWC **v5.0.0** — `ui.PostAsync` makes a stream-driven UI safe |
+| **A3** | Framework | GWC **v7** (decided at v5.0.0; `go.mod` names the release — see D0) — `ui.PostAsync` makes a stream-driven UI safe |
 | **A4** | Client storage | **IndexedDB via `interop.PersistentStore` only — no client SQLite** (§12.2) |
 | **A5** | Transport (own client) | **gRPC over GoGRPCBridge v1.1.1** |
 | **A6** | Article rendering | A **four-tier ladder** (§10.1) |
@@ -240,6 +240,9 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 | **A42** | **Nobody but OpenAI.** A feature may depend on the reader's own server, the publisher's own site, and OpenAI — and on nothing else. No mail provider, no push vendor, no app store, no archive service, no other company's account, on either side of the boundary. This is not a privacy posture, it is a *liveness* one: every third party is a service that can price us, rate-limit us, deprecate us, or vanish, and a self-hosted reader whose features die when someone else's product does is not self-hosted. OpenAI is the single, named, replaceable exception (A11–A12), it is gated per user, it is billed to the reader's own key, and the whole product works without it. Where a capability genuinely requires a third party, the answer is to ship the **primitive** the reader can point wherever they like — a webhook rather than a Slack integration, an Atom feed rather than a share button (§28). |
 | **A43** | **Smart is on this machine; Smart+ is a model asked.** The `+` is the egress-and-billing boundary and the only thing in the interface that marks it — never a quality claim, never a tier badge. Every capability that exists at both levels is named with **one noun, two prefixes** (*Smart ranking* → *Smart+ ranking*, not "ranking" → a fresh coinage), so the pair reads as a pair. `TODO.md` "The naming pass — Smart vs Smart+" (2026-07-27) is where this was worked out; `client/i18n`'s catalog test asserts the tier-prefixed label set against a canonical list, so a fifth capability cannot be added under a name that skips the rule. |
 | **A44** | **The browser's own voice is never called "Smart voice."** A11–A31 pair every other two-tier capability as Smart/Smart+, and that pattern makes this one look obligatory — it is not. The free tier under *Smart+ voice* is the operating system's own synthesiser: ArticleFlux does not derive it, choose it, or improve it, so naming it Smart would claim credit that is not ours, and would turn the `+` into a quality ladder exactly where it has to keep meaning "this one leaves the machine." Stays *"Read articles aloud"* / *"your browser's own synthesiser."* |
+| **A45** | **The Windows desktop edition is the server in a window, not a second app** | `desktop/` (its own Go module) runs the real `internal/app` in-process on 127.0.0.1, in DevMode behind a launch-token gate, and shows the unchanged wasm client in a WebView2 window through Wails v3 at the revision GoWebComponents v7.0.8 pins. One SQLite file in `%LOCALAPPDATA%\ArticleFlux`; desktop settings are `user_prefs` rows. New dependency, owner-requested; alternatives in §4a; how-to in `docs/DESKTOP.md`. |
+| **A46** | **My Feed ranks against a decayed, shrunk, signed profile, and pays for exploration out of a stated budget** | The log is folded into one assessed judgement per item (`rank.Assess`: dwell against expected reading time, completion, depth, re-reads, saves, click-outs, notes, tags, position-debiased choices; bounces counted once; the verdict read from `user_item_state.rating`, not summed from events). Each judgement is filed under its source, nearest topic, named entities and — only when it points away from its own feed's site — target domain, and folded into a shrunk mean per key (`rank.Affinity`: prior worth K items, four decay clocks). `rank.ScoreCandidate` is a pure sum of reasons; `rank.Assemble` spends up to 20% of the page (never under 5%, scaled by how little the profile knows) on exploration probes and records every fatigue demotion as a reason. §18.4a, 2026-11-19. |
+| **A47** | **Decisions escalate code → JEV → gpt-6-luna** | Every Smart task that is a decision is answered by on-machine code when its stated bar is met, then by the JEV typed-decision API (SchemaFlux v2 `jev`/`jev-openrouter`/`jev-litellm`) when the instance has that credential, then by the model. Prose tasks skip JEV. A per-task table in `internal/llm/ladder.go`; the answering rung is recorded. **Amends A42**: JEV is a second named, replaceable, per-instance, opt-in exception beside OpenAI, owner-requested 2026-11-19. §18.8b. |
 
 ---
 
@@ -249,7 +252,7 @@ WebSocket tunnel. Everything is exportable in formats other tools accept.
 ┌───────────────── any browser, anywhere (+ offline) ─────────┐   ┌──────────────────────┐
 │  Service Worker: app shell + Web Push          (§12, §17)   │   │ Reeder · Unread ·    │
 │  IndexedDB: trip packs + outbox + leader election    (§12)  │   │ NetNewsWire · FeedMe │
-│  app.wasm (GWC v5) — version-stamped, skew-checked (§22.6)  │   └──────────┬───────────┘
+│  app.wasm (GWC v7) — version-stamped, skew-checked (§22.6)  │   └──────────┬───────────┘
 │   Home | Reader | Bookmarks | Trends | Screensaver |         │              │ GReader REST
 │   Settings | Admin                                          │              │   (§15.1)
 └──────────────────────────┬──────────────────────────────────┘              │
@@ -284,6 +287,21 @@ token-authenticated, rate-limited), **public share feeds** (§7.8, unguessable a
 **`/healthz` and `/readyz`** (§22.4), unauthenticated by necessity and therefore deliberately
 information-free.
 
+**The container is the first-class install (decided 2026-11-19).** One published image —
+`ghcr.io/monstercameron/articleflux:vX.Y.Z`, `linux/amd64` + `linux/arm64`, distroless, non-root,
+built by `release.yml` on a `v*` tag — one volume at `/var/lib/articleflux` holding everything the
+instance writes, published on loopback with a TLS proxy in front. `docs/INSTALL.md` owns that
+install; the systemd build-on-the-box path (`deploy/README.md`) stays as the alternative and as the
+deep rollback, with the same paths so the backup/drill/watchdog units serve both runtimes
+(`deploy/install-ops.sh --runtime systemd|docker`). Deployment policy reaches the container through
+the environment the binary already reads (`ARTICLEFLUX_ORIGIN`, `ARTICLEFLUX_BEHIND_PROXY`), never
+through a baked-in flag; `-behind-proxy` is not an image default because it trusts a header any
+client can send. **First login is the browser setup screen**, not `init`, because it is the only
+route that issues recovery codes; the cost is an unclaimed window, closed locally by the loopback
+publish and on a server by claiming it as the proxy comes up. Upgrades are pull-and-recreate;
+because migrations are forward-only (A23), rolling back past one is restoring the pre-upgrade
+backup, and the documents say so instead of implying a tag swap.
+
 > **Correction carried from review.** Earlier revisions said to "crib CashFlux's `AuthService` and
 > admin-console shape." Verified against the source: CashFlux uses **bcrypt** (A17 requires Argon2id),
 > a **hand-rolled JSON codec** over `grpc.ServiceDesc` with a comment marking real protobuf as a later
@@ -291,6 +309,42 @@ information-free.
 > useful *stylistic* reference for device-family and rate-limiter patterns and for the hardened
 > `grpctunnel.Wrap` call — **not** a source for tenant, capability, or protobuf plumbing. Budget M2
 > and M18 as new work.
+
+### 4a A45: the Windows desktop edition
+
+The owner asked for a Windows desktop app built with the latest GWC desktop features, storing
+in SQLite. A9 still describes the product; this is a second **packaging** of it for one person on
+one machine, and it changes nothing about the server, the client or the contract.
+
+**What GWC v7.0.8 offers, and what was usable.** GWC's desktop support is Wails v3 beta.17 with a
+GWC Windows-menu patch (fork `monstercameron/wails` at `0965e9db`), a portable frontend SDK in the
+published module (`v7/desktop`: window controls, menus, dialogs, storage, behind capability
+gates), and a Wails adapter in a *separate, unpublished* module that its README calls
+contributor-linked. The adapter can only be consumed by a `replace` to a sibling GWC checkout —
+ruled out here (AGENTS.md: this repository builds from itself) — and the SDK is client-side, so
+using it means client changes. What the shell uses is therefore the engine GWC's desktop support
+is built on, **at the revision GWC pins**, through the module proxy; the SDK is the named
+follow-up (`docs/DESKTOP.md` → Hooks). GWC verifies windows/amd64 (emulated on ARM); that is the
+default build, arm64 is opt-in.
+
+**Decided.** The real server in-process on 127.0.0.1, an ephemeral port remembered across
+launches (the origin keys the client's localStorage and Service Worker), DevMode with
+`host.Gate` in front (exact Host, a per-launch HttpOnly SameSite=Strict cookie, same-origin for
+upgrades and writes, `/debug/` unmounted); the database and every sidecar in
+`%LOCALAPPDATA%\ArticleFlux`, single-instance by an OS file lock; web assets beside the executable
+because `internal/app` serves and hashes a directory. A desktop-host script injected into its own
+window carries title and external links until the client can call the GWC SDK; it is not
+application JavaScript in A26's sense — not served, not in `web/`, not in the bundle.
+
+**Alternatives considered.** *Embed the server's page in Wails' own asset server*
+(`wails.localhost`): WebView2's resource interception cannot carry the gRPC WebSocket, so the
+client could not reach its own server. *The GWC adapter via a local replace*: unbuildable from this
+repository alone. *A login-required local server*: a password for one's own laptop, for no threat
+the gate does not already answer. *Embedding the web root*: a second static server or an
+extract-on-launch copy, either of which drifts from `internal/app`'s CSP and precompression
+handling. *A non-Wails WebView binding* (e.g. a bare go-webview2): exposes the WebView2 events
+Wails lacks, but leaves GWC's supported path entirely. *No desktop build, a PWA install instead*:
+already possible (§20.24) and still needs a server running somewhere.
 
 ---
 
@@ -2014,6 +2068,56 @@ Consequences that are not obvious from the code:
   for exactly this.
 - **A partial catalog is cached on purpose.** Nine tenths of the keys is a usable UI — the Bundle falls
   back to English for the rest — and paying again for the same nine tenths helps nobody.
+  *Amended 2026-11-19 (§22.16c):* the cache is now valid **per key**, against a hash of that key's
+  English, so "a build that edits one string invalidates every translation of it" now means exactly
+  that string and not the whole catalog; a key the model answered unusably is recorded as rejected
+  and is not re-billed until its English changes or `force` is used.
+
+### 10.5b Article translation on demand (2026-11-19)
+
+§10.5's "per-item, on demand" made concrete, and a **second named amendment to §18.8** (the first is
+§27.4e), written down so it can be disagreed with.
+
+**`SmartService.TranslateArticle(item_id, locale, force)`** returns the title and body in the reader's
+language **with the sanitised original beside it**, so the reader can toggle. Any UI locale is a
+target, English included (the common case is an English reader and a German article).
+
+**What leaves, and the type that enforces it.** `llm.TranslatePayload` — `target` (code and English
+name), `title` (first batch only), and `segments`: the **text nodes** of the article after
+`sanitize.HTML(…, Feed)`, in document order, each with a per-request ordinal. Never HTML, never an
+attribute — so no link target, image URL or tracking parameter can leave — and never the URL, author,
+feed or feed title, item id, or anything about the reader. `llm.TranslateKeys` is its own allowlist
+(`AuditTranslate`), checked against `ForbiddenKeys` with every other list. Text inside `pre`, `code`,
+`kbd`, `samp`, `var` is not sent. Up to `llm.MaxTranslateRunes` (48,000); the tail past it stays in the
+original and the response says `partial`.
+
+**Nothing the model writes is trusted as markup.** Each answer is written back into the text node it
+came from (whitespace around it restored from the original), the tree is re-rendered — which escapes
+it — and the result goes through the sanitizer again. Structure (headings, lists, links, images) is
+the original's by construction. The client renders it through its ordinary sanitised article path.
+
+**Consent and gates.** `smart.translate_articles` (system key, owner, **default off**;
+`Get/SetSmartConfig.translate_articles_enabled`) AND a key. Once the owner consents, any signed-in
+reader may request a fresh translation, rate-limited per reader (30/hour, burst 5) — the theming /
+voice line: a reader may spend on their own reading experience. The instance spend ceiling and
+breaker apply because every call goes through the `internal/llm` funnel. A **cached** translation
+needs neither key nor consent: serving it sends nothing. `TranslateArticleRequest.cache_only` asks
+for exactly that and nothing more — a miss answers `not_cached`, never a provider call, and is not
+rate-limited — so the client offers a translation somebody already paid for even where fresh ones
+are off. A member learns whether they are on from `ListLanguagesResponse.translate_articles_enabled`
+(consent AND a key), `ListLanguages` being readable by any signed-in reader. Both bodies come back
+through GetItem's image-proxy rewrite (`SmartServer.WithAssetProxy`, per reader's `proxy.images`).
+
+**Cache.** `item_translations` (0013, made invalidatable by 0036: `source_hash`, `source_lang`), one
+row per (item, locale), valid only while `source_hash` matches the sanitised title+body — a
+publisher's correction re-translates. **The row records nothing about who asked** (it would turn a
+cache into a reading log); isolation is in the access: `ReaderRepo.ItemTranslation /
+PutItemTranslation / ItemLanguage` take the caller's Scope and return `ErrNotFound` for an item the
+scope cannot see, exactly as `GetItem` does. Shared items are translated once per instance.
+
+**No-op refusal.** The source language is the feed's declared language, else the analyzer's `en`
+(it can only say `en` or `und`); asking for the language it is already in is
+`srv.articleSameLanguage`, before anything is sent.
 
 ### 10.6 Preservation — when the source goes away
 
@@ -2992,6 +3096,74 @@ rather than sampling at random) · **Clusters** (~10%, one card per corroborated
 Topics need roughly 50–100 engaged items to mean anything; the app says so rather than presenting a
 confident wrong answer.
 
+### 18.4a The scorer as built (A46, 2026-11-19)
+
+The formula above was the design. What shipped before A46 diverged from it in ways the code and its
+tests showed, and A46 replaces it. `rank.Score` stays, unchanged, as the reference the replay test
+compares against.
+
+**What the old pipeline did wrong, each verified in code:** the derivation read the *oldest* 5,000
+events in the window (`EngagementsSince` clamps and sorts ascending), so an active reader's newest
+behaviour was invisible; a bounce was scored twice (the client emits `dwell` and `bounced`, both
+summed, −2.0); `scroll_depth` scored +0.2 whatever its value; repeats of one act were summed linearly;
+a cleared like counted forever (clearing writes no event); nothing decayed inside the 90-day window,
+although the entity code's comment said it did; feed affinity was an unshrunk open rate (one open of
+one impression = 1.0) clamped at 0, so a disliked source could not go below "unknown"; `chose`'s
+required position was never read; the Explore slot was a *label on positions 82–92%* of the sorted
+list, so nothing was ever explored and the content gate closed the feedback loop (only what was shown
+could be engaged with); diversity reordered rows without recording why; and freshness carried the
+largest coefficient, so "published today" led almost every row's reasons. Mark-all-read was verified
+neutral and stays so.
+
+**Signals → evidence.** `rank.Assess` folds one item's events into `Implicit ∈ [−1,1]` (tanh of
+bounded, once-per-act contributions ordered by what each act costs the reader), the standing verdict,
+and two exposure flags: `Unchosen` (on screen, nothing done — no information on one item, a weak
+aggregate negative) and `PassedOver` (§18.1's repeated-sittings row). Dwell is classified against
+expected reading time from the word count: ten seconds on a 2,000-word essay is a bounce, on a 40-word
+post a skim; unknown length never concludes rejection; a completion at bounce-length dwell is a flick.
+`bulk_read`/`sync_read` are not even exposures.
+
+**Evidence → profile.** Per key, a shrunk weighted mean: `Σ wᵢvᵢ / (Σ wᵢ + K)` with K = 6 items for
+sources and domains, 4 for topics and entities. A mean, not a net balance — the first draft used
+`(pos−neg)/(pos+neg+K)`, which saturates for any consistently one-signed key, and the replay caught it.
+Implicit reading decays with a 30-day half-life either way; likes 120 days; dislikes 180 (asymmetric:
+a like adds 1.0, a dislike −1.6). The implicit and explicit halves are summed separately so each is
+its own reason.
+
+**Score.** Topic (strength from cosine above 0.18, steer applied, `0.15 + readPref`), entity (same,
+strongest in full and the rest at a third), `concept_feedback` (the verdict half for topic and
+entities — the old multiplier, now an addend), feed (source preference), `avoided` (any negative
+reading preference), domain (foreign domains only), fresh (0.5, a tie-breaker), corroboration, volume
+(scaled by how little the reader reads that source), duplicate, skipped, negative (suppressed topic,
+−1.5, demoted not removed), external, deliberate (the item's own verdict or read-later). The score is
+the sum of the reasons; a test asserts it.
+
+**Page.** `rank.Assemble`: exploit rows need a content reason (as before); exploration rows are spaced
+evenly at a budget of `max(5%, 20% × mean novelty)` of the page, chosen by novelty (1 − confidence in
+the item's source and topic) and never from a blocked source or topic (shrunk preference < −0.3,
+suppressed, or the reader's own dislike); at most two rows from one feed and four from one domain in
+any 20; each earlier row from the same feed/topic/domain in the window costs 0.25/0.05/0.10, recorded
+as a `fatigue` reason. Slots are honest: `explore` for probes, `cluster_head` for a story several feeds
+carried, `top` otherwise. **Cold start** is now §18.4's own rule — round-robin probes within the budget,
+labelled as such, with the learning band still shown — rather than an empty page.
+
+**Reason vocabulary**, additive: `avoided`, `explore`, `fatigue` are new terms; every existing term
+keeps its meaning. The client needs `myFeed.factor.avoided`, `.explore`, `.fatigue` (it falls back to
+the term itself until they exist).
+
+**Evidence, and its limits.** `internal/rank/sim_test.go` replays 21 days, 20 seeds, closed-loop, a
+synthetic reader with known tastes, old pipeline against new. On the rows that are not probes A46
+beats the old page in both a plain world (0.568 vs 0.544 mean true utility of the top 20; an oracle
+with the same caps scores 0.614) and a realistic one with week-one curiosity and cleared mis-taps
+(0.496 vs 0.448). Exploration costs 0.06–0.09 of that over three weeks, which is the price of the
+budget and is asserted bounded. **Not yet better:** the share of rows on the week-one mistake (0.061
+vs 0.038) — a shrunk mean needs ~50 ignored exposures to outweigh fifteen early full reads. Logged by
+the test, not asserted; the open question is D-RANK-1 below.
+
+> **D-RANK-1 (open).** Should ignored exposures weigh more than 0.1 of a read (faster recovery from
+> early noise, closer to R17's line), or should implicit evidence decay faster than 30 days? Measure
+> on a real log before choosing.
+
 ### 18.5 Highlights mode — the good bits of a firehose
 
 The problem: Hacker News posts 94 a day. You will never read it in full, but you don't want to miss
@@ -3114,6 +3286,79 @@ to Smart. Smart+ must never produce an empty homepage.
 > named constant (`llm.MaxProfileExamples`) applied at the boundary in `RankPayload.Trim`, not
 > assumed from the caller — and the two new keys (`positive_examples`, `negative_examples`) are on
 > `llm.EgressKeys`, with `TestNothingLeavesThatSection188DoesNotPermit` updated to cover them.
+
+> **Amendment, 2026-11-19 (A46): the derived profile got narrower.** A topic the reader suppressed,
+> or whose shrunk preference is negative, is no longer sent as an interest (it was: every cluster
+> left); the rest are ordered by preference and capped at `llm.MaxProfileTopics` (12) in
+> `RankPayload.Trim` — the count was unbounded. The rerank now reorders only the exploit rows of the
+> head; exploration probes keep their places. Tests: `TestSmartPlusNeverDescribesASuppressedTopicAsAnInterest`.
+
+### 18.8b The escalation ladder and SchemaFlux v2 (A47, 2026-11-19)
+
+**SchemaFlux v2.0.2** (`github.com/monstercameron/schemaflux/v2`) replaced v1: operation functions
+with one options value instead of fluent builders, the client carried on the context
+(`WithClient`) so nothing in this repository sets a process default (guard 6's `ops.go` exemption is
+gone; its only exemption is the test seam `internal/llm/sftest`), and its own price table, which
+carries **gpt-6-luna — the default model now** (`llm.DefaultModel`) — and `jev-latest`. What the
+upgrade changed in behaviour, deliberately: provider errors are classified for v2 (`llm.sfError`) so
+a missing key, spent budget, truncation or refusal is not retried as an outage; v2 keeps provider
+text out of error messages, and `smart.opErr` puts it back because the refusal classifier reads it;
+reasoning effort travels on the request now, honoured only when a caller states it (an operation's
+own preference is ignored, so no feature moved to a dearer setting); a call with no deadline gets
+`requestTimeout`, not v2's 30 s; typed `WebSearch` is refused (`ErrTypedWebSearch`) — A10 stays the
+one feature that may search; v2's Generate has no `CompleteFields`, so the theme checks its palette's
+fields itself; v2 sends caller text to the model as a JSON string literal.
+
+**The ladder.** For every Smart task that is a decision: (1) **code** answers when its bar is met —
+no key, no egress, no spend, so the free tier is complete alone; (2) **JEV**, TypeSafe AI's
+typed-decision model behind the "System One" protocol, when the task's row allows it and the instance
+has a JEV credential — it answers yes/no, labelled choices and scales over a state, writes no text,
+and is priced per token in SchemaFlux's table (`jev-latest`); (3) **gpt-6-luna** when JEV is absent, refuses
+the decision as unsupported, fails in transit, answers below the row's floor, or answers something
+that is not an answer. Rungs 2→3 are SchemaFlux v2's `mw.Decisions` pair, built per call in
+`OpsContext`; the policy is one table (`llm.Ladder`); the rung that answered is recorded
+(`llm.Provenance`). Both paid rungs run under the one spend ceiling; each has its own breaker.
+
+| Task | Rungs | Code's bar (rung 1 alone) | What leaves |
+|---|---|---|---|
+| Categorise a new feed (Smart+ "file under") | code → JEV → model, all one `Which` | exactly one reader folder named as a whole word in the feed's title or description | folder names, feed title and description — the same subject on both paid rungs |
+| My Feed rerank | code → JEV (one lead, no reason) → the model's own 12-pick read with reasons | top exploit score beats the fifth by ≥ `derive.RerankConfidentGap` (1.0) | §18.8's payload; JEV gets it as the decision's state |
+| Article classification (A14) | code → JEV (one `Which` per article over the shipped slugs + "none of these") → the model's own read (runtime contributor schema, unchanged) | the lexicon classifier placed it and is not `Ambiguous`: top score clears its `MinScore` floor AND beats the runner-up by the `Margin` factor (×1.35), the item is English, and it has ≥ 25 words or a body (`pipeline.ShouldEscalate`, policy `ambiguous`) | to JEV: the TRIMMED title, summary and body of the payload the model would get (`llm.ClassifyDecisionSubject`), the slugs as labels — never the source title, never a label prompt |
+| Site relevance (§18.7) | code → model | — the verdict's reason is shown to the reader | §18.7's payload |
+| Entities, topic labels | code always, model adds | the heuristic list / term label always exists | titles / terms |
+| Digest, broadcast, translation, theme | model only | the cache, the article itself, the built-in themes | as before — prose, which a decision model cannot write |
+| Add-feed scrape rule ("is this page a feed, how to follow it") | code → model, never JEV | the deterministic feed and list finders (§11) | as before — the answer is a RULE (selectors, a JSON path), written text, not a label |
+
+**Egress for JEV.** Destinations are enumerated (`llm.DeciderHosts`): `api.typesafe.ai`,
+`openrouter.ai`, or an operator-set LiteLLM base URL (refused when unset). A decision request carries
+the question, the labels and the subject — never more than the model would be sent for the same
+operation, never a credential (`TestJEVIsSentNoMoreThanTheModelWouldBe`). The credential is a sealed
+setting (`smart.jev_api_key`, rotated with the OpenAI key) with `SCHEMAFLUX_TYPESAFE_API_KEY` /
+`TYPESAFE_API_KEY` as fallback, and `smart.jev_provider` / `smart.jev_base_url` select the route.
+**Where rung 3 is the caller's own.** For the rerank and for classification the model's operation is
+richer than the decision (reasons; genre, keyphrases and tags), so their rows set `CallerRung3`: the
+Decisions pair is given a generator that refuses, a JEV miss surfaces as an error, and the caller runs
+its own model read — the model is never paid for the bare decision and then again for the read.
+Classification asks JEV once per escalated article, the same request count as rung 3 (which reads one
+article per request); folding several articles into one multi-question decision would put several
+articles' text into one state to save round trips a background job does not need. An instance with
+only a JEV key can classify; it simply has no rung 3. **Provenance is stored per article**:
+`item_analysis.model_rung` ('jev' | 'model', migration 0035), surfaced as `store.ItemCategory.Rung`;
+`category_by_model` stays true for both, so the existing wire stays truthful.
+
+**Setting it, and saying who answered (2026-11-19).** `SetSmartConfigRequest` carries the JEV half
+with the OpenAI key's contract: `jev_api_key` (empty leaves it) + `clear_jev_api_key`, and optional
+`jev_provider` (one of `llm.DeciderHosts`' three names) and `jev_base_url` (https only,
+`netguard.CheckURL` plus "localhost" refused, **required for `jev-litellm` and refused beside the
+other two** — their hosts are fixed, and a base URL beside them would be a destination the
+enumeration does not list; leaving LiteLLM removes it). A refused JEV field refuses the whole save.
+Owner-only, `CapTenantSettings`, as the OpenAI key is. `GetSmartConfigResponse` reports
+`jev_configured`, `jev_key_hint`, `jev_from_environment`, `jev_provider`, `jev_base_url` and
+`jev_ready` (key AND a complete route — `DeciderAvailable`'s test without the per-task half); never
+the key. The Smart+ tab shows the ladder with each rung's state, then the two keys. Provenance on the
+wire is `Item.category_rung` ("" | "jev" | "model"), set only beside `category_by_model`. The base
+URL check is the early, legible one: it does not resolve the name, and the decider's HTTP client is
+SchemaFlux's, not netguard's dialer.
 
 ### 18.9 Explainability is the product
 
@@ -4019,7 +4264,7 @@ The panel is grouped by ownership, and that grouping is A14 made visible:
 
 | Group | Table | Changing it affects |
 |---|---|---|
-| **Yours** — name override, in-the-ranked-feed, mute, offline depth, tags | `subscriptions` | you |
+| **Yours** — name override, in-the-ranked-feed, mute, clear-the-backlog window, offline depth, tags | `subscriptions` | you |
 | **Shared** — feed URL, site URL, poll interval | `sources` | **every subscriber on this server** |
 | **Health** — last fetch/success/next, item and unread counts, the publisher's error verbatim | `sources` | read-only |
 | **Actions** — fetch now, mark all read, unsubscribe | — | — |
@@ -4041,6 +4286,21 @@ reasoning as honouring conditional GET (§22).
 Every mutable field is `optional` on the wire, unset meaning "leave it alone" — the same tri-state
 rule `SetItemState` uses, so a client that knows about half these fields cannot blank the other half
 by omitting them.
+
+**Clear the backlog** (`subscriptions.clear_backlog_days`, migration 0037; 0 = never, the default;
+the panel offers 1 / 3 / 7 / 30) is a *yours* setting for the same reason mute is: whether an old
+article is still worth attention is the reader's judgement, so two readers of one feed in one tenant
+choose independently. It marks the feed's unread articles **older than the window by publication
+time** read for that reader — `read_at` on `user_item_state` and nothing else. Nothing is deleted
+(A22), **starred / Read later items are skipped**, and ratings are not touched. It goes through
+`MarkAllRead` rather than a second `UPDATE`, so the sync `rev`, the undo batch and the counts the
+badge is read from stay consistent by construction. It runs in two places: **once on save** (the
+service applies a window as it stores it, so the reply already shows the smaller pile), and **on the
+poller's heartbeat** after each fetch, one scoped call per reader who has any window set
+(`ScopesWithBacklogRules` is the only unscoped read, a discovery step like `ScopesToDerive`). The
+heartbeat, not a hook on ingest, because a rule is about *age* and articles age with nothing
+arriving. There is no separate "clear it now" button: **Mark all read** in the Actions group already
+is one, and the row's hint points at it.
 
 ### 20.16 Themes and motion — every value is a token (A39)
 
@@ -5218,6 +5478,10 @@ background jobs. Rev 7 never said how they coexist, which means `SQLITE_BUSY` on
 - **Long jobs never hold the write lock** — extraction, pack building, and audio synthesis do their
   work outside a transaction and take the lock only to commit.
 - Checkpoint WAL on a schedule so it doesn't grow unbounded.
+- **Planner statistics** are refreshed with `PRAGMA optimize` on the *write* connection (it writes
+  `sqlite_stat1`, so it is a writer's job) under `analysis_limit=400`, at close and every six hours
+  (§22.12a). The pragma and the limit are per-connection, so the pass pins the writer's one connection
+  rather than trusting the pool to hand back the same one; it is cancellable and a no-op read-only.
 
 ### 22.3 First run — the bootstrap gap
 
@@ -5390,6 +5654,48 @@ on the reference box (the D8 home server, not a workstation).
 **Two of these are load-bearing rather than nice:** the unread-by-folder query, because it's the app's
 hottest path and R2 says it changed shape twice; and wasm boot, because A5 spent the bundle budget on
 gRPC and G5 is the gate that decides whether that was affordable.
+
+#### 22.12a What the 2026-11-19 pass settled
+
+Four rules came out of measuring the G3 fixture (50k items × 3 users × 150 feeds) and the real
+development database, and each is held by a test rather than by this paragraph:
+
+- **A list that is defined by a state row is driven from the state row.** Starred, Liked and
+  Disliked walked `items_published` — every item on the instance, every tenant's — to find a
+  reader's twenty-five stars. They start from `uis_user_starred` / `idx_uis_rating` now
+  (`stateDrivenFrom`). `planaudit_test.go` asserts the driving index of each hot statement, so
+  the next query that quietly becomes a scan fails a test instead of a dashboard.
+- **Ingest does not write a row that has not changed.** Every UPDATE on `items` fires the
+  full-text trigger, which re-tokenises the whole article; an unchanged re-poll did that for
+  every entry of every feed on every interval, inside the single writer. The UPDATE is skipped
+  when every written column already matches (`ingest_noop_test.go` counts the writes).
+- **Hot read statements stay prepared** (`store/stmtcache.go`, bounded, reference-counted). The
+  driver re-prepares on every query otherwise, and for a cheap read the prepare was most of it.
+- **Derivation asks once, not once per source** (`HalfLives`), and its whole-table rewrites
+  prepare their INSERT once per transaction.
+
+**Compression is the server's job, and nobody else's.** `internal/app/compress.go` negotiates
+Brotli then gzip then identity (q-values, `*`, never a 406), serves a precompressed sibling when
+it is current and compresses on the fly into a bounded cache when it is not, and leaves
+upgrades, ranges, event streams and already-encoded bodies alone. The reverse proxies in
+`deploy/` must not add their own (`gzip off`, no `encode`): a second layer double-compresses and
+strips the weakened ETags. Two exclusions are security, not tuning — `/p` and `/asset` return
+publisher HTML carrying this server's signatures, and the gRPC compressor answers only an
+allowlist of list RPCs, never one that returns a token or a signed URL. That is the BREACH shape
+(a secret and attacker-chosen text compressed together), and the allowlist is how it is avoided.
+
+**Planner statistics are refreshed, and bounded** (`store/optimize.go`, `app/optimize.go`). Production
+never ran `ANALYZE`, so every plan was made without `sqlite_stat1`. `PRAGMA optimize` now runs on the
+write connection at close, once shortly after boot in its all-tables form (`0x10002` — a freshly opened
+connection has used no table, so the plain form would do nothing) and every six hours after, always
+under `analysis_limit=400` so the cost per index is a constant and not a scan of a 2.7 GB file on the
+single writer. Measured on the G3 fixture with no statistics: 56 ms cold, about 1 ms warm. A failure
+is a log line and never fatal; a read-only or closed store is a no-op. `TestPinnedPlansHoldWithStatistics`
+re-runs the plan audit on that populated database after an optimize, and every pinned plan is
+unchanged.
+
+Still open, and the owner's call: the scrollbar's general counts (210–430 ms on G3) could use the badge's
+state-row definition, which is equal only under migration 0015's invariant.
 
 ### 22.13 Browser support
 
@@ -5614,7 +5920,7 @@ bodies. That is §10.5's job and a different machine. And **`{err}` interpolatio
 sentence around a transport failure is translated, gRPC's own socket text inside it is
 not, because paraphrasing the actionable half helps nobody.
 
-**`client/i18n` carries no build tag, deliberately.****`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and
+**`client/i18n` carries no build tag, deliberately.** `client/view` is `js && wasm` and
 cannot be linked into a native test binary; the catalog can, which is what makes
 `keycoverage_test.go` and `provider_test.go` possible — and, unplanned but decisive,
 what lets the *server* read the English catalog in order to translate it (§10.5a).
@@ -5704,6 +6010,59 @@ reader see.
 authors — that is §10.5, a different machine); gRPC's own transport text inside an `{err}`
 interpolation (paraphrasing the actionable half helps nobody); command-line strings, model
 identifiers, keyboard key names, CSS class names, and `data-` attribute values.
+
+#### 22.16c On-the-fly translation, and what a translated string must pass (2026-11-19)
+
+**Per-key, incremental.** The UI cache (one `scope='system'` settings row per locale, as before) now
+records, per base key, the `i18n.SourceHash` of the English it was translated from (`hashes`) and the
+keys the model answered unusably (`rejected`). Only keys with neither a current hash nor a current
+rejection are sent. A new build pays for the strings it changed; a language chosen for the first
+time is filled in batches while the reader looks at English. Pre-existing rows are honoured as a
+whole when their whole-catalog hash still matches, and upgraded on the next write.
+
+**`SmartService.GetUIStrings(locale, keys, fill)`** answers from the cache only — it never waits on
+the model — with each entry's `source_hash`, how many requested keys are `pending`, and whether a
+background fill is `filling`. **Any signed-in reader may read** (the application's own text, no
+spend); `fill` starts a background translation **for an owner with a key only** (else `idle_reason`
+`not_owner` / `no_key`) — the §10.5a rule that a translation re-bills the instance. One fill per
+locale at a time, bounded by `fillTimeout`, the spend ceiling and the breaker; each batch is written
+as it lands, so a stopped fill keeps what it paid for. `TranslateUI` keeps its contract for old
+clients and is built on the same cache, so it too sends only missing keys.
+
+**The client loop** (`client/data.FillUIStrings`) asks for exactly `i18n.Missing(locale)`, merges, and
+polls (4 s doubling to 15 s, at most 60 rounds) while the server is filling. Merging is
+`i18n.Import`, which advances `i18n.Revision()` — the view's cue to nudge `Root` so the Provider
+re-renders; without that, memoised panes keep the English they already drew.
+
+**Every translated entry passes `i18n.CheckTranslation`, on the server before caching AND in
+`Import` on the client** — one implementation, so the two cannot disagree:
+
+- the key exists in this build's English, and a non-empty `source_hash` names that English (a bundle
+  older or newer than the server keeps its English rather than showing a translation of other words);
+- a plain message carries **exactly** the English `{placeholders}`; a plural form may drop one (a dual
+  says "two" in words) but never invent one, and `other` must keep all of English `other`'s;
+- a plural has `other`; categories the locale never selects are dropped;
+- no tag-shaped markup the English lacks (catalog text renders as text, so this is a visible-garbage
+  rule, not an injection one), no control characters, no growth past 4× + 40 runes.
+
+A refused entry renders in English. A missing key is never a raw `ns.key` for a translated locale —
+the Bundle's fallback chain reaches English first.
+
+**Plurals per target language.** `i18n.PluralCategories(locale)` mirrors the GWC runtime's rule table
+(`TestPluralCategoriesMatchTheRuntime` checks it against real counts): Arabic six forms,
+Polish/Russian/Ukrainian four, Japanese/Korean/Chinese one, the rest two. The translator is sent one
+`key#category` per category the TARGET selects, with English `other` as the source for forms English
+lacks. Before this, Polish and Russian were sent only `one`/`other` and rendered `other` — the
+fraction form — for "5 minutes".
+
+**Direction.** `Root` sets `lang` and `dir` from `i18n.DirectionFor`. Correction to §22.16's claim that
+the design "uses logical properties": as of this date `client/design` has ~97 physical
+`left`/`right`/`margin-left`-style declarations against ~13 logical ones, so RTL layout is **not**
+cheap yet; that is a design task, tracked separately.
+
+**What a v2 SchemaFlux translate operation changes.** Nothing above: the model call is behind
+`smart.translationEngine` (two methods, keyed by catalog key and by segment ordinal), and the cache,
+checks, gates and tests sit on top of it.
 
 ---
 
@@ -5918,7 +6277,8 @@ sentence. **Until signed off these remain open**; nothing here is settled by hav
 
 
 **The five that genuinely cannot be settled at a desk** stay open by necessity, not neglect:
-**D0** (tag and push v5.0.0 — an action), **D1** (gofeed coverage against real feeds), ~~**D2**~~
+~~**D0**~~ (**closed 2026-11-19** — nobody tagged v5.0.0; the dependency moved to a published v7
+release and the `replace` went with it, see §25.1), **D1** (gofeed coverage against real feeds), ~~**D2**~~
 (**closed 2026-07-26 by G1** — and it came back *no*, against the desk read; see §25.1), **D7**
 (extraction quality, judged by eyeball), **D13** (pack transport, needs a real 30 MB pack). Each
 requires executing something. **That is why this plan is not, and cannot be, fully waterfall** — three
@@ -5932,10 +6292,20 @@ plan-complete this design can honestly be before code exists.
 
 ### 25.1 The open list
 
-**D0 — GWC dependency.** `go list -m -versions .../GoWebComponents/v5` **returns nothing.** The
-CHANGELOG has a `v5.0.0 - 2026-07-25` entry but **no matching git tag** — verified. Needs
-`replace ... => ../GoWebComponents`, and A9 sharpens it: a remote deployment means building on, or
-copying source to, the target box. *Recommendation: tag and push v5.0.0.* *(GoGRPCBridge v1.1.1 is a
+**D0 — GWC dependency. RESOLVED 2026-11-19**, and not by the action the question asked for.
+`go.mod` requires `github.com/monstercameron/GoWebComponents/v7 v7.0.8` — a tag that exists and
+resolves through the module proxy — and **carries no `replace`.** A clone of this repository is now
+the whole input to a build, which is the property D0 was really about: CI no longer materialises a
+sibling checkout, the image's build context is this repository alone, and the deploy scripts neither
+clone nor fast-forward a second one. A9's sharpening (building on the target box means carrying
+source to it) is answered the same way.
+
+The question as originally put, kept because it explains four months of build scaffolding:
+`go list -m -versions .../GoWebComponents/v5` **returned nothing.** The CHANGELOG had a
+`v5.0.0 - 2026-07-25` entry but **no matching git tag**, so the module could only be reached through
+`replace ... => ../GoWebComponents`. *Recommendation at the time: tag and push v5.0.0.* That tag was
+never pushed. `v5.0.1` was, on 2026-07-28, and the `replace` stayed anyway because GWC was being
+changed alongside this project; it is the move to v7 that removed it. *(GoGRPCBridge v1.1.1 is a
 real tag matching HEAD.)*
 
 **D1 — Parser. RESOLVED 2026-07-26.** `mmcdole/gofeed` underneath, our normalisation layer on top.

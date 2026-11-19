@@ -146,6 +146,8 @@ type feed struct {
 	cacheDepth    int32
 	fetchInterval int32
 	mutedUntil    string
+	// clearBacklogDays is the standing "clear the backlog" window; 0 is never.
+	clearBacklogDays int32
 
 	lastFetch   time.Time
 	lastSuccess time.Time

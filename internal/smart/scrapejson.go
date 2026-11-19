@@ -9,7 +9,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 
 	"time"
 )
@@ -96,14 +96,12 @@ func (a *SiteAnalyzer) ProposeJSON(ctx context.Context, indexURL, dataURL, hint 
 		// selector proposal and for the same reason: the answer is a fixed Go
 		// type, so the schema comes from it rather than from a `jsonSchema()`
 		// kept alongside that nothing checked agreed with it.
-		answer, err := schemaflux.Extracting[jsonAnswer](in).
-			Steer(jsonInstructions).
+		answer, err := schemaflux.Extract[jsonAnswer](call, in, schemaflux.ExtractOptions{
 			// The same 6000 as scrape.go's, and for the same reason: this is the
 			// second dialect of one feature (ceilings.go).
-			Configure(capExtract(analyzeMaxTokensSF)).
-			Model(a.llm.OpsModel(ctx)).
-			Fast().
-			Run(call)
+			Options: sfOpts(a.llm.OpsModel(ctx), schemaflux.TierFast, jsonInstructions, analyzeMaxTokensSF),
+		})
+		err = opErr(err)
 		if err != nil {
 			return nil, err
 		}

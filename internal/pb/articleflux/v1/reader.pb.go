@@ -418,6 +418,17 @@ type Item struct {
 	// different remedies, and a UI that hides the difference sends people to edit
 	// a lexicon that was never consulted.
 	CategoryByModel bool `protobuf:"varint,29,opt,name=category_by_model,json=categoryByModel,proto3" json:"category_by_model,omitempty"`
+	// WHICH paid rung chose it when category_by_model is true (plan.md A47,
+	// §18.8b): "jev" — the typed-decision model picked one of the shipped labels —
+	// or "model", the generating model's own read. Empty when the terms earned it,
+	// and for a verdict stored before the rung was recorded (migration 0035).
+	//
+	// Beside the bool rather than replacing it, so a client that knows only
+	// category_by_model is still told the truth: both rungs are "a model chose
+	// this". The difference matters for the same reason the bool does — the
+	// remedy for a wrong label — and because JEV only picks: it chose one label
+	// from a fixed list and wrote nothing beside it.
+	CategoryRung string `protobuf:"bytes,30,opt,name=category_rung,json=categoryRung,proto3" json:"category_rung,omitempty"`
 	// Article revisions (TODO F34). Numbered well clear of the classifier block
 	// above so the two lanes can extend without a renumbering collision.
 	//
@@ -664,6 +675,13 @@ func (x *Item) GetCategoryByModel() bool {
 		return x.CategoryByModel
 	}
 	return false
+}
+
+func (x *Item) GetCategoryRung() string {
+	if x != nil {
+		return x.CategoryRung
+	}
+	return ""
 }
 
 func (x *Item) GetRevision() int32 {
@@ -4666,6 +4684,10 @@ type FeedSettings struct {
 	InMegafeed    bool   `protobuf:"varint,4,opt,name=in_megafeed,json=inMegafeed,proto3" json:"in_megafeed,omitempty"`         // eligible for the ranked homepage
 	MutedUntil    string `protobuf:"bytes,5,opt,name=muted_until,json=mutedUntil,proto3" json:"muted_until,omitempty"`          // RFC3339; empty means not muted
 	CacheDepth    int32  `protobuf:"varint,6,opt,name=cache_depth,json=cacheDepth,proto3" json:"cache_depth,omitempty"`         // items kept for offline (A5); 0 = none
+	// clear_backlog_days is how old an unread article from this feed may get
+	// before it is marked read for you; 0 means never. Read state only: nothing
+	// is deleted, and starred items are left alone.
+	ClearBacklogDays int32 `protobuf:"varint,7,opt,name=clear_backlog_days,json=clearBacklogDays,proto3" json:"clear_backlog_days,omitempty"`
 	// --- shared with every other subscriber (sources) ---
 	FeedUrl        string `protobuf:"bytes,10,opt,name=feed_url,json=feedUrl,proto3" json:"feed_url,omitempty"`
 	SiteUrl        string `protobuf:"bytes,11,opt,name=site_url,json=siteUrl,proto3" json:"site_url,omitempty"`
@@ -4754,6 +4776,13 @@ func (x *FeedSettings) GetMutedUntil() string {
 func (x *FeedSettings) GetCacheDepth() int32 {
 	if x != nil {
 		return x.CacheDepth
+	}
+	return 0
+}
+
+func (x *FeedSettings) GetClearBacklogDays() int32 {
+	if x != nil {
+		return x.ClearBacklogDays
 	}
 	return 0
 }
@@ -4854,8 +4883,11 @@ type UpdateFeedSettingsRequest struct {
 	MutedUntil     *string                `protobuf:"bytes,4,opt,name=muted_until,json=mutedUntil,proto3,oneof" json:"muted_until,omitempty"`
 	CacheDepth     *int32                 `protobuf:"varint,5,opt,name=cache_depth,json=cacheDepth,proto3,oneof" json:"cache_depth,omitempty"`
 	FetchIntervalS *int32                 `protobuf:"varint,6,opt,name=fetch_interval_s,json=fetchIntervalS,proto3,oneof" json:"fetch_interval_s,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Setting it also applies it once, now, so the reply already shows the
+	// cleared pile rather than the one the reader chose to shrink.
+	ClearBacklogDays *int32 `protobuf:"varint,7,opt,name=clear_backlog_days,json=clearBacklogDays,proto3,oneof" json:"clear_backlog_days,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UpdateFeedSettingsRequest) Reset() {
@@ -4926,6 +4958,13 @@ func (x *UpdateFeedSettingsRequest) GetCacheDepth() int32 {
 func (x *UpdateFeedSettingsRequest) GetFetchIntervalS() int32 {
 	if x != nil && x.FetchIntervalS != nil {
 		return *x.FetchIntervalS
+	}
+	return 0
+}
+
+func (x *UpdateFeedSettingsRequest) GetClearBacklogDays() int32 {
+	if x != nil && x.ClearBacklogDays != nil {
+		return *x.ClearBacklogDays
 	}
 	return 0
 }
@@ -6272,7 +6311,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14consecutive_failures\x18\t \x01(\x05R\x13consecutiveFailures\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\n" +
-	" \x01(\tR\tlastError\"\xa3\a\n" +
+	" \x01(\tR\tlastError\"\xc8\a\n" +
 	"\x04Item\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tsource_id\x18\x02 \x01(\tR\bsourceId\x12!\n" +
@@ -6308,7 +6347,8 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x14secondary_categories\x18\x1a \x03(\tR\x13secondaryCategories\x12'\n" +
 	"\x0fcategory_reason\x18\x1b \x03(\tR\x0ecategoryReason\x12\x14\n" +
 	"\x05genre\x18\x1c \x01(\tR\x05genre\x12*\n" +
-	"\x11category_by_model\x18\x1d \x01(\bR\x0fcategoryByModel\x12\x1a\n" +
+	"\x11category_by_model\x18\x1d \x01(\bR\x0fcategoryByModel\x12#\n" +
+	"\rcategory_rung\x18\x1e \x01(\tR\fcategoryRung\x12\x1a\n" +
 	"\brevision\x18( \x01(\x05R\brevision\x12\x1b\n" +
 	"\tedited_at\x18) \x01(\tR\beditedAt\"h\n" +
 	"\x15ScrollLiveViewRequest\x12\x1d\n" +
@@ -6570,7 +6610,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x17GetFeedSettingsResponse\x128\n" +
 	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"V\n" +
 	"\x1aUpdateFeedSettingsResponse\x128\n" +
-	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"\xee\x04\n" +
+	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"\x9c\x05\n" +
 	"\fFeedSettings\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12%\n" +
@@ -6580,7 +6620,8 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\vmuted_until\x18\x05 \x01(\tR\n" +
 	"mutedUntil\x12\x1f\n" +
 	"\vcache_depth\x18\x06 \x01(\x05R\n" +
-	"cacheDepth\x12\x19\n" +
+	"cacheDepth\x12,\n" +
+	"\x12clear_backlog_days\x18\a \x01(\x05R\x10clearBacklogDays\x12\x19\n" +
 	"\bfeed_url\x18\n" +
 	" \x01(\tR\afeedUrl\x12\x19\n" +
 	"\bsite_url\x18\v \x01(\tR\asiteUrl\x12\x12\n" +
@@ -6595,7 +6636,7 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\n" +
 	"item_count\x18\x18 \x01(\x05R\titemCount\x12!\n" +
 	"\funread_count\x18\x19 \x01(\x05R\vunreadCount\x12)\n" +
-	"\x10subscriber_count\x18\x1a \x01(\x05R\x0fsubscriberCount\"\xc3\x02\n" +
+	"\x10subscriber_count\x18\x1a \x01(\x05R\x0fsubscriberCount\"\x8d\x03\n" +
 	"\x19UpdateFeedSettingsRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12$\n" +
@@ -6605,12 +6646,14 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"mutedUntil\x88\x01\x01\x12$\n" +
 	"\vcache_depth\x18\x05 \x01(\x05H\x03R\n" +
 	"cacheDepth\x88\x01\x01\x12-\n" +
-	"\x10fetch_interval_s\x18\x06 \x01(\x05H\x04R\x0efetchIntervalS\x88\x01\x01B\b\n" +
+	"\x10fetch_interval_s\x18\x06 \x01(\x05H\x04R\x0efetchIntervalS\x88\x01\x01\x121\n" +
+	"\x12clear_backlog_days\x18\a \x01(\x05H\x05R\x10clearBacklogDays\x88\x01\x01B\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_in_megafeedB\x0e\n" +
 	"\f_muted_untilB\x0e\n" +
 	"\f_cache_depthB\x13\n" +
-	"\x11_fetch_interval_s\"\xdf\x01\n" +
+	"\x11_fetch_interval_sB\x15\n" +
+	"\x13_clear_backlog_days\"\xdf\x01\n" +
 	"\n" +
 	"Engagement\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +

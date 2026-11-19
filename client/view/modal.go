@@ -5,8 +5,8 @@ package view
 import (
 	"strconv"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // scrim is the backdrop every dialog in the application shares, and the reason

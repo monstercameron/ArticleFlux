@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 )
@@ -177,5 +177,22 @@ func TestAResetLinkArrivesWithItsTokenInTheBox(t *testing.T) {
 
 	if !strings.Contains(out, "d34db33f") {
 		t.Errorf("a followed reset link leaves the code field empty:\n%s", out)
+	}
+}
+
+// The code box is described by the hint under it, so a screen reader landing
+// in the box hears what shape of thing to type there; and a recovery code is
+// single-use, so no manager may offer an old one back.
+func TestRecoveryCodeFieldIsDescribedByItsHint(t *testing.T) {
+	out := recoverCardHTML(t, recoverCardProps{})
+	field := elementTag(t, out, `id="recover-code"`)
+	if !strings.Contains(field, `aria-describedby="recover-code-hint"`) {
+		t.Errorf("the code field is not described by its hint: %s", field)
+	}
+	if !strings.Contains(field, `autocomplete="off"`) {
+		t.Errorf("the code field invites autofill: %s", field)
+	}
+	if !strings.Contains(out, `id="recover-code-hint"`) {
+		t.Errorf("the hint the field points at is not rendered")
 	}
 }

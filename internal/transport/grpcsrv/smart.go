@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
+	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/ratelimit"
 	"github.com/monstercameron/ArticleFlux/internal/secret"
@@ -64,12 +67,38 @@ type SmartServer struct {
 	palettes   *smart.Palettes
 	reader     *store.ReaderRepo
 	themeLimit *ratelimit.Limiter
+
+	// Article translation (§10.5b, translate.go). Built on first use from
+	// llm, settings and reader, so an instance wired before this existed gets
+	// it without a constructor change.
+	articleOnce    sync.Once
+	articleTr      *smart.ArticleTranslator
+	translateLimit *ratelimit.Limiter
+	// mintAsset is ReaderServer.mintAsset, for the same rewrite on a
+	// translation's two bodies (§10.1a, translate.go). Nil leaves them as the
+	// publisher wrote them, which is what an instance with no asset proxy does
+	// on GetItem too.
+	mintAsset func(absURL string) string
+}
+
+// WithAssetProxy points a translated article's images at the local proxy,
+// exactly as ReaderServer.WithAssetProxy does for the article itself. Install
+// the same minting function on both: two servers that proxied differently
+// would show the reader a translation fetching from a host its original does
+// not.
+func (s *SmartServer) WithAssetProxy(mint func(absURL string) string) *SmartServer {
+	s.mintAsset = mint
+	return s
 }
 
 // NewSmartServer wires the Smart+ surface.
 func NewSmartServer(settings *store.SettingsRepo, client *llm.Client, tr *smart.Translator,
 	scopeOf func(context.Context) (store.Scope, error), log *slog.Logger) *SmartServer {
-	return &SmartServer{settings: settings, llm: client, tr: tr, scopeOf: scopeOf, log: log}
+	if tr != nil {
+		tr.WithLog(log)
+	}
+	return &SmartServer{settings: settings, llm: client, tr: tr, scopeOf: scopeOf, log: log,
+		translateLimit: ratelimit.New(ratelimit.Options{})}
 }
 
 // WithRefusals installs the observation the screen needs to stop claiming more
@@ -131,6 +160,13 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 	if err != nil {
 		return nil, err
 	}
+	// The JEV half is validated before ANYTHING is written, so a refused base
+	// URL cannot leave behind the OpenAI key or the model saved by the same
+	// press — a half-applied save reads, on the screen, as a save that worked.
+	jev, err := s.jevChange(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	switch {
 	case req.GetClearApiKey():
@@ -181,6 +217,21 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		s.log.Info("smart+ classification consent changed", "enabled", req.GetClassifyEnabled(), "by", sc.UserID)
 	}
 
+	// The article-translation consent (§10.5b), the same shape and the same
+	// log line as classification's: it is what makes article text leave.
+	if req.TranslateArticlesEnabled != nil {
+		v := "false"
+		if req.GetTranslateArticlesEnabled() {
+			v = "true"
+		}
+		if err := s.settings.SetSystemValue(ctx, smart.KeyTranslateArticles, v, sc.UserID); err != nil {
+			return nil, errKey(codes.Internal, "srv.saveClassifyFailed",
+				"couldn't save that setting", nil)
+		}
+		s.log.Info("smart+ article translation consent changed",
+			"enabled", req.GetTranslateArticlesEnabled(), "by", sc.UserID)
+	}
+
 	// T4. Negative is refused rather than clamped: somebody typing -5 meant
 	// something, and silently reading it as "no ceiling" is the opposite of what
 	// they were reaching for.
@@ -198,7 +249,211 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		s.log.Info("smart+ spend limit changed", "usd", usd, "by", sc.UserID)
 	}
 
+	if err := s.applyJEV(ctx, sc, jev); err != nil {
+		return nil, err
+	}
+
 	return &pb.SetSmartConfigResponse{Config: s.config(ctx)}, nil
+}
+
+// jevPlan is a validated JEV change, ready to write. Nil pointers leave the
+// stored value alone.
+type jevPlan struct {
+	key      string // non-empty: store it
+	clearKey bool
+	provider *string
+	baseURL  *string
+}
+
+// jevDefaultProvider is what an unset route means — the same default
+// internal/app's DeciderKeyFunc applies, stated once more here because the
+// screen has to report the route actually in force, not an empty string.
+const jevDefaultProvider = "jev"
+
+// jevChange validates the JEV half of a SetSmartConfig against what is stored,
+// because the rules are about the RESULT: a LiteLLM route needs a base URL
+// whether this request sends one or one is already there.
+func (s *SmartServer) jevChange(ctx context.Context, req *pb.SetSmartConfigRequest) (jevPlan, error) {
+	var plan jevPlan
+	stored := s.jevStored(ctx)
+	provider, base := stored.provider, stored.base
+
+	if req.JevProvider != nil {
+		p := strings.TrimSpace(req.GetJevProvider())
+		// The enumeration is llm.DeciderHosts, the egress test's own list, so a
+		// route this accepts is one that test has already seen.
+		if _, known := llm.DeciderHosts[p]; !known {
+			return plan, errKey(codes.InvalidArgument, "srv.jevBadProvider",
+				"the decision route must be jev, jev-openrouter or jev-litellm", nil)
+		}
+		plan.provider, provider = &p, p
+	}
+	if req.JevBaseUrl != nil {
+		b := strings.TrimSpace(req.GetJevBaseUrl())
+		if b != "" {
+			if err := checkDeciderBaseURL(b); err != nil {
+				return plan, err
+			}
+		}
+		plan.baseURL, base = &b, b
+	}
+
+	// Only when this request touches the route: a stored state these rules
+	// would refuse (written before them, or by hand) must not make every
+	// unrelated save — a model, a spend limit — fail with a message about a
+	// field nobody touched.
+	touched := req.JevProvider != nil || req.JevBaseUrl != nil
+	switch {
+	case !touched:
+	case provider == "jev-litellm" && base == "":
+		// The ladder would skip rung 2 silently (llm.Client.decider), which is
+		// a setting that looks saved and does nothing. Said now instead.
+		return plan, errKey(codes.InvalidArgument, "srv.jevBaseURLRequired",
+			"a LiteLLM route needs the base URL of your proxy", nil)
+	case provider != "jev-litellm" && req.JevBaseUrl != nil && base != "":
+		// The other two routes have fixed hosts. A base URL beside them would be
+		// a way to point decisions at a host llm.DeciderHosts does not list.
+		return plan, errKey(codes.InvalidArgument, "srv.jevBaseURLNotUsed",
+			"only a LiteLLM route takes a base URL — the other two have fixed addresses", nil)
+	case provider != "jev-litellm" && base != "" && plan.baseURL == nil:
+		// Leaving LiteLLM: the proxy's address goes with it, for the reason
+		// above — a stored base URL that "only LiteLLM reads" is one code
+		// change away from being read by the others.
+		empty := ""
+		plan.baseURL = &empty
+	}
+
+	switch {
+	case req.GetClearJevApiKey():
+		plan.clearKey = true
+	case strings.TrimSpace(req.GetJevApiKey()) != "":
+		key := strings.TrimSpace(req.GetJevApiKey())
+		// A shape check only, like the OpenAI key's, and looser, because
+		// TypeSafe publishes no prefix to check against. What it catches is
+		// what actually gets pasted into this box by mistake: a URL, a whole
+		// shell line, a key with its variable name in front.
+		if strings.Contains(key, "://") || strings.ContainsAny(key, " \t\r\n=") {
+			return plan, errKey(codes.InvalidArgument, "srv.badJevKeyShape",
+				"that does not look like a JEV API key — paste the key alone", nil)
+		}
+		plan.key = key
+	}
+	return plan, nil
+}
+
+// checkDeciderBaseURL is the LiteLLM base URL's whole validation: https only,
+// a host, no credentials in the URL, and nothing netguard.CheckURL refuses —
+// the SSRF guard's own early check, reused rather than restated, so a literal
+// loopback, private, link-local or metadata address is refused here exactly
+// as a feed URL naming one is. Like CheckURL this does not resolve the name;
+// "localhost" is refused by name because it is the one name every resolver
+// agrees on.
+func checkDeciderBaseURL(raw string) error {
+	bad := errKey(codes.InvalidArgument, "srv.jevBadBaseURL",
+		"the base URL must be an https:// address on a public host", nil)
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || u.User != nil {
+		return bad
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return bad
+	}
+	if netguard.CheckURL(raw) != nil {
+		return bad
+	}
+	return nil
+}
+
+// applyJEV writes a validated plan, the route before the key, so a save that
+// sets both never leaves a moment where the new key is paired with the old
+// route.
+func (s *SmartServer) applyJEV(ctx context.Context, sc store.Scope, plan jevPlan) error {
+	if plan.provider != nil {
+		if err := s.settings.SetSystemValue(ctx, store.KeyJEVProvider, *plan.provider, sc.UserID); err != nil {
+			return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+		}
+		s.log.Info("smart+ decision route changed", "provider", *plan.provider, "by", sc.UserID)
+	}
+	if plan.baseURL != nil {
+		var err error
+		if *plan.baseURL == "" {
+			err = s.settings.DeleteSystemValue(ctx, store.KeyJEVBaseURL)
+		} else {
+			err = s.settings.SetSystemValue(ctx, store.KeyJEVBaseURL, *plan.baseURL, sc.UserID)
+		}
+		if err != nil {
+			return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+		}
+		// Logged in full (it can carry no credentials — checkDeciderBaseURL
+		// refuses them): it is a destination for article text, which is what
+		// every other line at this level is about.
+		s.log.Info("smart+ decision base URL changed", "url", *plan.baseURL, "by", sc.UserID)
+	}
+	switch {
+	case plan.clearKey:
+		if err := s.settings.SetSystemSecret(ctx, store.KeyJEVAPIKey, "", sc.UserID); err != nil {
+			return s.jevSecretErr(err)
+		}
+		s.log.Info("smart+ jev key cleared", "by", sc.UserID)
+	case plan.key != "":
+		if err := s.settings.SetSystemSecret(ctx, store.KeyJEVAPIKey, plan.key, sc.UserID); err != nil {
+			return s.jevSecretErr(err)
+		}
+		s.log.Info("smart+ jev key set", "by", sc.UserID)
+	}
+	return nil
+}
+
+// jevState is the JEV configuration as the ladder will see it: the route with
+// its default applied, and the key wherever it came from.
+type jevState struct {
+	provider, base string
+	key            string
+	fromEnv        bool
+}
+
+// jevStored reads the JEV credential the way internal/app's DeciderKeyFunc
+// resolves it for a call — the sealed setting first, then
+// SCHEMAFLUX_TYPESAFE_API_KEY, then TYPESAFE_API_KEY — so the screen reports
+// the credential the ladder will actually use.
+func (s *SmartServer) jevStored(ctx context.Context) jevState {
+	st := jevState{provider: jevDefaultProvider}
+	if p, err := s.settings.SystemValue(ctx, store.KeyJEVProvider); err == nil && strings.TrimSpace(p) != "" {
+		st.provider = strings.TrimSpace(p)
+	}
+	if b, err := s.settings.SystemValue(ctx, store.KeyJEVBaseURL); err == nil {
+		st.base = strings.TrimSpace(b)
+	}
+	k, err := s.settings.SystemSecret(ctx, store.KeyJEVAPIKey)
+	if err != nil && !errors.Is(err, store.ErrNoSetting) && !errors.Is(err, secret.ErrKeyLength) {
+		// The OpenAI key's reason: undecryptable reads as absent here, and is
+		// logged, because pasting it again works and abandons the old one.
+		s.log.Warn("stored JEV key could not be read", "err", err)
+	}
+	st.key = strings.TrimSpace(k)
+	if st.key == "" {
+		for _, env := range []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"} {
+			if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+				st.key, st.fromEnv = v, true
+				break
+			}
+		}
+	}
+	return st
+}
+
+// jevSecretErr is secretErr for the JEV key, whose environment fallback has a
+// different name — telling an owner to set OPENAI_API_KEY for a JEV key would
+// be advice that changes nothing.
+func (s *SmartServer) jevSecretErr(err error) error {
+	if errors.Is(err, secret.ErrKeyLength) {
+		return errKey(codes.FailedPrecondition, "srv.cannotStoreJevSecret",
+			"this server has no encryption key, so it will not store a credential — "+
+				"set SCHEMAFLUX_TYPESAFE_API_KEY in the environment instead", nil)
+	}
+	s.log.Error("couldn't save the JEV key", "err", err)
+	return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
 }
 
 // ListModels asks the provider which model ids this key can use.
@@ -232,22 +487,38 @@ func (s *SmartServer) ListModels(ctx context.Context, _ *pb.ListModelsRequest) (
 	return out, nil
 }
 
+// ListLanguages is readable by any signed-in reader, which is what the
+// capability map (CapReadItems) always said and this method's own owner check
+// did not. Coverage is a fact about the application's text, the same cache
+// GetUIStrings already serves a member; and the article-translation flag is
+// the one thing a member needs from the Smart+ config, without the config.
 func (s *SmartServer) ListLanguages(ctx context.Context, _ *pb.ListLanguagesRequest) (
 	*pb.ListLanguagesResponse, error) {
-	if _, err := s.requireOwner(ctx); err != nil {
+	if _, err := s.requireReader(ctx); err != nil {
 		return nil, err
 	}
-	cached := s.tr.CachedLocales(ctx)
+	cov := s.tr.Coverage(ctx)
 	out := make([]*pb.SmartLanguage, 0, len(smart.Languages))
 	for _, l := range smart.Languages {
+		c := cov[l.Code]
 		out = append(out, &pb.SmartLanguage{
 			Code:        l.Code,
 			EnglishName: l.English,
 			NativeName:  l.Native,
-			Cached:      cached[l.Code],
+			Cached:      c.Cached,
+			Translated:  int32(c.Done),
+			Total:       int32(c.Total),
 		})
 	}
-	return &pb.ListLanguagesResponse{Languages: out, SourceLocale: i18n.DefaultLocale}, nil
+	// Consent AND a key, read the way config() reads each — the same
+	// two-gate order smart.ArticleTranslator.Translate refuses in, so this can
+	// only say "on" when a press would actually be attempted.
+	consent := false
+	if v, err := s.settings.SystemValue(ctx, smart.KeyTranslateArticles); err == nil {
+		consent = strings.TrimSpace(v) == "true"
+	}
+	return &pb.ListLanguagesResponse{Languages: out, SourceLocale: i18n.DefaultLocale,
+		TranslateArticlesEnabled: consent && s.llm != nil && s.llm.Configured(ctx)}, nil
 }
 
 func (s *SmartServer) TranslateUI(ctx context.Context, req *pb.TranslateUIRequest) (
@@ -309,6 +580,9 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 	if v, err := s.settings.SystemValue(ctx, smart.KeyClassifyEnabled); err == nil {
 		out.ClassifyEnabled = strings.TrimSpace(v) == "true"
 	}
+	if v, err := s.settings.SystemValue(ctx, smart.KeyTranslateArticles); err == nil {
+		out.TranslateArticlesEnabled = strings.TrimSpace(v) == "true"
+	}
 	if v, err := s.settings.SystemValue(ctx, store.KeySmartBudgetUSD); err == nil {
 		// An unparseable row reads as no ceiling, matching what the middleware
 		// does with it. A screen that showed a limit the enforcement does not
@@ -359,6 +633,18 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 	if n := len(key); n >= 4 {
 		out.KeyHint = key[n-4:]
 	}
+
+	// Rung 2, reported the way the key above is: presence, the last four, and
+	// where it came from — never the key.
+	jev := s.jevStored(ctx)
+	out.JevConfigured = jev.key != ""
+	out.JevFromEnvironment = jev.fromEnv
+	if n := len(jev.key); n >= 4 {
+		out.JevKeyHint = jev.key[n-4:]
+	}
+	out.JevProvider, out.JevBaseUrl = jev.provider, jev.base
+	_, knownRoute := llm.DeciderHosts[jev.provider]
+	out.JevReady = out.JevConfigured && knownRoute && (jev.provider != "jev-litellm" || jev.base != "")
 
 	u := s.llm.Usage()
 	out.InputTokens, out.OutputTokens, out.Requests = u.InputTokens, u.OutputTokens, u.Requests

@@ -33,6 +33,16 @@ type SystemKey string
 const (
 	// KeyOpenAIAPIKey holds the Smart+ credential, encrypted at rest.
 	KeyOpenAIAPIKey SystemKey = "smart.openai_api_key"
+	// KeyJEVAPIKey holds the credential for rung 2 of the escalation ladder
+	// (A47), the JEV decision API — encrypted at rest exactly as the OpenAI key
+	// is, with SCHEMAFLUX_TYPESAFE_API_KEY / TYPESAFE_API_KEY as the fallback.
+	KeyJEVAPIKey SystemKey = "smart.jev_api_key"
+	// KeyJEVProvider names the route: "jev" (TypeSafe's own endpoint, the
+	// default), "jev-openrouter" or "jev-litellm". Plain, not sealed.
+	KeyJEVProvider SystemKey = "smart.jev_provider"
+	// KeyJEVBaseURL is the base URL for "jev-litellm", the operator's own proxy,
+	// which has no default. Ignored by the other two routes.
+	KeyJEVBaseURL SystemKey = "smart.jev_base_url"
 	// KeySmartModel is the compatibility default: the model a call uses when
 	// it does not ask for a tier, and the fallback for a tier that has no
 	// model of its own set (TODO 11.13). It used to be documented as "the

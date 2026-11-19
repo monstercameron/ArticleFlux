@@ -203,6 +203,13 @@ func DefaultPolicy() *authz.Map {
 	// Choosing an interface language is not an administrative act.
 	m.Require(smart+"ListLanguages", authz.CapReadItems)
 	m.Require(smart+"TranslateUI", authz.CapReadItems)
+	// Reading a cached UI translation costs nothing and is the application's
+	// own text (§22.16c); the fill it may request is owner-gated inline.
+	m.Require(smart+"GetUIStrings", authz.CapReadItems)
+	// Translating an article you can read is reading it (§10.5b). The spend is
+	// gated on the owner's consent key and bounded per-user inline, the theming
+	// shape below.
+	m.Require(smart+"TranslateArticle", authz.CapReadItems)
 	// Neither is choosing what your own reader looks like (§20.16.3). These are
 	// the only two methods on this service with no inline role check, and the
 	// spend is bounded per-user by ratelimit.ThemePerUser instead — the same line

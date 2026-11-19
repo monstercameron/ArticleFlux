@@ -1,9 +1,8 @@
 # ArticleFlux — the weekly proof that a backup restores.
 #
-# Install alongside the timer:
-#   sudo install -m 0755 deploy/articleflux-restore-drill.sh /usr/local/bin/articleflux-restore-drill
-#   sudo install -m 0644 deploy/articleflux-restore-drill.{service,timer} /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now articleflux-restore-drill.timer
+# Install with the rest of the ops layer: `sudo sh deploy/install-ops.sh` (or
+# `--runtime docker`). See articleflux-backup.service for what installing one unit of
+# this set at a time cost.
 #
 # An untested backup is a belief, not a backup. The nightly job already
 # integrity-checks the copy it writes, which proves the file is well-formed

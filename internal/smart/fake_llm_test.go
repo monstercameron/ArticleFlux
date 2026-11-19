@@ -2,12 +2,14 @@ package smart
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
-	"github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
+	"github.com/monstercameron/schemaflux/v2"
 )
 
 // liveProviderName is what the fake calls itself, and it matches production.
@@ -26,18 +28,18 @@ const liveProviderName = "articleflux"
 // replying installs a provider answering with the given bodies, in order. The
 // last one repeats once the list runs out, so a test that makes an unknown
 // number of calls does not have to predict it.
-func replying(t *testing.T, bodies ...string) *schemafluxtest.Provider {
+func replying(t *testing.T, bodies ...string) *sftest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().As(liveProviderName).Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().As(liveProviderName).Shaped().Reply(bodies...)
+	sftest.Install(t, prov)
 	return prov
 }
 
 // failing installs a provider that fails every call with err.
-func failing(t *testing.T, err error) *schemafluxtest.Provider {
+func failing(t *testing.T, err error) *sftest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().As(liveProviderName).Fail(err)
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().As(liveProviderName).Fail(err)
+	sftest.Install(t, prov)
 	return prov
 }
 
@@ -49,12 +51,12 @@ func failing(t *testing.T, err error) *schemafluxtest.Provider {
 // system prompt as a trust boundary — so an assertion in this package can only
 // honestly be "this text reached the model", never "it reached it as a system
 // instruction".
-func requestSent(prov *schemafluxtest.Provider, n int) string {
+func requestSent(prov *sftest.Provider, n int) string {
 	reqs := prov.Requests()
 	if n >= len(reqs) {
 		return ""
 	}
-	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+	return reqs[n].System + reqs[n].User
 }
 
 // spyOn installs a provider that records the context of every call.
@@ -67,18 +69,18 @@ func requestSent(prov *schemafluxtest.Provider, n int) string {
 // The recording itself is upstream now (SchemaFlux DX-005). This used to be a
 // hand-rolled wrapper around the provider, along with a second one for
 // request-dependent replies; both were reported and both are methods on
-// schemafluxtest.Provider today, so what is left here is a name.
-func spyOn(t *testing.T, bodies ...string) *schemafluxtest.Provider {
+// sftest.Provider today, so what is left here is a name.
+func spyOn(t *testing.T, bodies ...string) *sftest.Provider {
 	t.Helper()
 	return replying(t, bodies...)
 }
 
 // answering installs a provider that computes each reply from the request it
 // was sent, for the batching paths where a fixed list cannot know what to say.
-func answering(t *testing.T, fn func(call int, req schemaflux.CompletionRequest) (string, error)) *schemafluxtest.Provider {
+func answering(t *testing.T, fn func(call int, req schemaflux.Request) (string, error)) *sftest.Provider {
 	t.Helper()
-	prov := schemafluxtest.New().As(liveProviderName).ReplyFunc(fn)
-	schemafluxtest.Install(t, prov)
+	prov := sftest.New().As(liveProviderName).ReplyFunc(fn)
+	sftest.Install(t, prov)
 	return prov
 }
 
@@ -94,6 +96,8 @@ func answering(t *testing.T, fn func(call int, req schemaflux.CompletionRequest)
 type fakeLLM struct {
 	mu         sync.Mutex
 	configured bool
+	// decider is what DeciderAvailable answers.
+	decider bool
 
 	// calls and ctxs are captured in call order, so a test can assert not just
 	// the final answer but HOW MANY times the model was asked and with what
@@ -123,7 +127,7 @@ func (f *fakeLLM) Configured(context.Context) bool { return f.configured }
 //
 // The real client's version puts ArticleFlux's own provider on the context,
 // which SchemaFlux prefers over anything registered globally — and that would
-// defeat `schemafluxtest.Install`, whose whole job is to be the provider a test
+// defeat `sftest.Install`, whose whole job is to be the provider a test
 // gets. Leaving the context alone is what lets the installed fake answer.
 func (f *fakeLLM) OpsContext(ctx context.Context) context.Context {
 	f.mu.Lock()
@@ -141,6 +145,9 @@ func (f *fakeLLM) OpsContext(ctx context.Context) context.Context {
 // should produce, and the tests that assert on the model want a value they can
 // recognise rather than a plausible one.
 func (f *fakeLLM) OpsModel(context.Context) string { return "test-model" }
+
+// DeciderAvailable is set per test; false is every pre-A47 test.
+func (f *fakeLLM) DeciderAvailable(context.Context) bool { return f.decider }
 
 func (f *fakeLLM) Do(ctx context.Context, r llm.Request) (string, error) {
 	f.mu.Lock()
@@ -174,4 +181,12 @@ func (f *fakeLLM) ctxN(i int) context.Context {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.ctxs[i]
+}
+
+// jsonQuoted is s as SchemaFlux v2 puts caller text into a prompt: a JSON
+// string literal, quotes and escapes included, so a containment check against
+// the sent prompt has to look for that form rather than the raw text.
+func jsonQuoted(s string) string {
+	b, _ := json.Marshal(s)
+	return strings.Trim(string(b), `"`)
 }

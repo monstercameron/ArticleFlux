@@ -1,0 +1,51 @@
+# ArticleFlux — the generic compose file. Self-contained: it needs the published image
+# and nothing else from this repository, so it works from a clone or downloaded on its own.
+#
+#   docker compose up -d          # then open http://127.0.0.1:9000 and claim it
+#
+# docs/INSTALL.md is the document for everything this file does not say: first login,
+# putting it behind a TLS proxy, upgrades, backups, the CLI. (deploy/docker/ holds the
+# PRODUCTION compose file for one particular box; this is not that.)
+services:
+  articleflux:
+    # Pin a release (vX.Y.Z) on anything you care about. `latest` is fine for trying it,
+    # but migrations are forward-only: a `pull` of a newer latest upgrades the database,
+    # and the previous image will then refuse to open it. Pinning makes an upgrade a
+    # decision you make — and take a backup before — rather than a side effect of a pull.
+    image: ghcr.io/monstercameron/articleflux:latest
+    restart: unless-stopped
+    # LOOPBACK. The only address on this machine that can reach the reader is its own,
+    # which matters most in the minutes before anyone has claimed it: an unclaimed
+    # instance serves its setup screen to whoever arrives first. Behind a reverse proxy
+    # on the same host this is still the right line; the proxy is the public listener.
+    # Publishing "9000:9000" instead puts it on every interface, without TLS.
+    ports:
+      - "127.0.0.1:9000:9000"
+    # Everything the instance owns is in this one volume: the database and its WAL, the
+    # three key files that seal stored credentials and sign proxied URLs, and the on-disk
+    # caches. The image seeds it with the right owner on first use.
+    volumes:
+      - articleflux-data:/var/lib/articleflux
+    # Configuration, if any — absent is fine. For a server behind a proxy it holds
+    # ARTICLEFLUX_ORIGIN and ARTICLEFLUX_BEHIND_PROXY; docs/INSTALL.md says what goes in
+    # it, and .env.example documents every variable. A separate name from `.env` on
+    # purpose: compose reads `.env` beside this file for its own interpolation, and in a
+    # clone that is the DEVELOPMENT .env.
+    env_file:
+      - path: articleflux.env
+        required: false
+    # The server needs no Linux capability (it binds an unprivileged port as a non-root
+    # user), so it gets none, and cannot gain any through a setuid file.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # The healthcheck is the image's own (`articleflux healthcheck` against /healthz), so
+    # `docker compose ps` shows health with nothing declared here.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  articleflux-data:

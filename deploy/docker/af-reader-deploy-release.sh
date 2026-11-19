@@ -25,7 +25,7 @@ case "$TAG" in
 esac
 
 COMPOSE_FILE="$APP_DIR/compose.yaml"
-[ -f "$COMPOSE_FILE" ] || die "$COMPOSE_FILE missing — install deploy/docker/compose.yaml first"
+[ -f "$COMPOSE_FILE" ] || die "$COMPOSE_FILE missing — install deploy/docker/compose.production.yaml there first (CUTOVER.md)"
 
 cd "$APP_DIR"
 log "deploying tag: $TAG"

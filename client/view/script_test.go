@@ -8,8 +8,8 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // The captions (plan §19, TODO 11.46/11.48).

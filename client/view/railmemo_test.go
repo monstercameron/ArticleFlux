@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // Does railPane actually bail out of re-rendering?

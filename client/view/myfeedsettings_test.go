@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -151,24 +151,26 @@ func TestMyFeedErrorReplacesTheScreen(t *testing.T) {
 }
 
 // Every scoring term internal/rank can emit has a label, so a new factor shows
-// up as a word rather than as a blank row with a number beside it.
+// up as a word rather than as a machine key, and an unknown one shows nothing.
 func TestEveryRankTermHasAFactorLabel(t *testing.T) {
 	// The list in reader.proto's Item.rank_reason_terms, which is the documented
 	// contract between the scorer and this screen.
 	terms := []string{
 		"topic", "entity", "feed", "domain", "fresh", "corroboration", "manual",
 		"volume", "duplicate", "negative", "skipped", "external", "deliberate",
+		"concept_feedback", "avoided", "explore", "fatigue",
 		"smartplus",
 	}
 	renderView(t, func(tr i18n.Runtime) ui.Node {
 		for _, term := range terms {
-			if got := factorLabel(tr, term); got == term {
+			if got := factorLabel(tr, term); got == "" || got == term {
 				t.Errorf("scoring term %q has no label; the row would read as a machine key", term)
 			}
 		}
-		// An unknown one falls back to itself rather than to nothing.
-		if got := factorLabel(tr, "not-a-term"); got != "not-a-term" {
-			t.Errorf("unknown term rendered as %q, want the term itself", got)
+		// An unknown one renders as nothing — its row is skipped — never as
+		// the identifier the server sent.
+		if got := factorLabel(tr, "not-a-term"); got != "" {
+			t.Errorf("unknown term rendered as %q, want nothing", got)
 		}
 		return html.Div(html.Props{})
 	})

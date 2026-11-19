@@ -1,4 +1,4 @@
-import { test, expect, boot, openFeed, feedRow, openStream } from './fixtures.mjs';
+import { test, expect, boot, openFeed, openStream } from './fixtures.mjs';
 
 /**
  * Mark all read reaches the list it was pressed on, and no further.
@@ -23,9 +23,21 @@ import { test, expect, boot, openFeed, feedRow, openStream } from './fixtures.mj
 const ALPHA = 'Alpha Journal';
 const BETA = 'Beta Notes';
 
-/** unreadOn reads a sidebar row's unread badge, or 0 when it has none. */
+/**
+ * unreadOn reads a sidebar row's unread badge, or 0 when it has none.
+ *
+ * Read in place, WITHOUT bringing the rail on screen. It used to go through
+ * feedRow, which on a phone is a navigation: the rail replaces the list, and
+ * the Mark all read chip the test reaches for next is then in a pane that is
+ * not showing — a two-minute wait on a control that was working. A badge's
+ * text is in the DOM whichever pane is up, so reading it needs no trip.
+ *
+ * By class and text rather than by role, because a role query skips what is
+ * hidden from the accessibility tree, which on a phone is the whole rail.
+ */
 async function unreadOn(page, name) {
-  const row = await feedRow(page, name);
+  const row = page.locator('.pane-rail .feed-row:not(.stream-row)')
+    .filter({ has: page.locator('.feed-name', { hasText: name }) }).first();
   const badge = row.locator('.feed-count');
   if ((await badge.count()) === 0) return 0;
   const text = (await badge.first().textContent()) || '';

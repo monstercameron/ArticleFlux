@@ -18,6 +18,14 @@
 *.db.backup*
 *.db-wal.backup*
 *.db-shm.backup*
+# The log ring's spill (internal/obs/spill.go), which `serve` writes beside the
+# database as `<db>.log.jsonl`. The same miss as the backups above and for the
+# same reason — the name does not END in `.db`, so `*.db` never matched it — and
+# the same class of content: every request path, which is to say every article
+# opened, and every login. It appeared in `git status` the first time anyone ran
+# the dev server from the repository root.
+*.db.log.jsonl
+*.db.log.jsonl.*
 
 # Synthesised speech. Every file here is one of the reader's articles read aloud
 # and cached on disk — the same privacy class as the database, in a directory

@@ -1,4 +1,4 @@
-import { test, expect, boot, currentArticle, openRail } from './fixtures.mjs';
+import { test, expect, boot, openNote, currentArticle, openRail, openRow } from './fixtures.mjs';
 
 /**
  * Clicking through from a feed title or a tag, without opening the article
@@ -66,7 +66,7 @@ test.describe('feed title links', () => {
 
   test('clicking the feed title in an open article routes to that feed', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(currentArticle(page).locator('h1')).toBeVisible();
 
     await currentArticle(page).locator('.item-source').first().click();
@@ -76,21 +76,11 @@ test.describe('feed title links', () => {
   });
 });
 
-/** openNote reveals the note-and-tag editor on the article being read. */
-async function openNote(page) {
-  const field = page.locator('.note-field').first();
-  if (!(await field.count())) {
-    await page.locator('[data-action="toggle-note"]').first().click();
-  }
-  await expect(field).toBeVisible({ timeout: 15_000 });
-  return field;
-}
-
 /** tagFirstArticle files the first article's feed under name — same recipe
  * tagsettings.spec.mjs uses, waiting for the server rather than the optimistic
  * chip. */
 async function tagFirstArticle(page, name) {
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await openNote(page);
   const panel = page.locator('.article-note').first();
   await panel.locator('[data-role="tag"]').first().fill(name);

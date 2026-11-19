@@ -5,6 +5,10 @@ func init() {
 	text(DefaultLocale, "settings", map[string]string{
 		"title": "Settings",
 		"sub":   "Everything this reader does, and everything it is doing.",
+		// The accessible name of the strip of section buttons. Never drawn: a
+		// landmark needs a name to be told apart from the feed rail's, and the
+		// page's own heading already says "Settings" to a sighted reader.
+		"navLabel": "Settings sections",
 
 		// TODO N7 — the strip is three headed groups, not thirteen flat peers.
 		// "Your reader" is the everyday screens; "Your library" is the
@@ -153,6 +157,7 @@ func init() {
 		"autoplayHint":   "When an article finishes, mark it read and start the next one down the list. Stops at the end of what's loaded. Works with either voice.",
 		// Lowercase on purpose: these sit inside a chip that the row above has
 		// already named, so they are the value and not a heading.
+		"prefSaveFailed": "Couldn't save that setting, so it has gone back to what is stored. Check your connection and try again.",
 		"on":             "on",
 		"off":            "off",
 		"audioCacheNote": "Audio is cached on the server, so listening to the same article twice sends it once.",
@@ -234,6 +239,11 @@ func init() {
 		"pwRuleName":   "Doesn't contain your account name",
 		"pwRuleMatch":  "Both entries match",
 		"pwRuleKnown":  "Not a password attackers try first — checked when you save",
+		// Read after each rule by a screen reader, in place of the ✓ and × the
+		// sheet draws: they lead with a comma so the rule and its state are one
+		// phrase, not two sentences.
+		"pwRuleMet":   ", met",
+		"pwRuleUnmet": ", not met yet",
 
 		"pwChange":   "Change password",
 		"pwChanging": "Changing password…",
@@ -307,9 +317,15 @@ func init() {
 		"passSave":        "Save passphrase",
 		"passSaving":      "Saving passphrase…",
 		"passClear":       "Remove passphrase",
-		"passDone":        "Recovery passphrase saved. Keep it somewhere only you can reach.",
-		"passCleared":     "Recovery passphrase removed. Your recovery codes still work.",
-		"passErrShort":    "A recovery passphrase needs at least {n} characters.",
+		// Remove passphrase's confirmation.
+		"passClearWarn":    "Without it, your recovery codes are the only way back in if you forget your password. This takes effect at once.",
+		"passClearConfirm": "Remove it",
+		// The safe answer to every two-step removal (armableRemove), and the
+		// button that has focus when one asks.
+		"armCancel":    "Cancel",
+		"passDone":     "Recovery passphrase saved. Keep it somewhere only you can reach.",
+		"passCleared":  "Recovery passphrase removed. Your recovery codes still work.",
+		"passErrShort": "A recovery passphrase needs at least {n} characters.",
 
 		"notBuiltGroup": "Not on this screen yet",
 		"notBuiltHint":  "What the server can do that this tab cannot ask it to.",
@@ -349,6 +365,9 @@ func init() {
 		// --- activity
 		"activityGroup": "Recent activity",
 		"activityHint":  "Held in memory, newest first. It does not survive a restart.",
+		// The level chips' group name. A floor, not a filter: WARN shows warnings
+		// and errors, which is what min_level means on the wire.
+		"logLevelAria":  "Lowest level shown",
 		"reload":        "Reload",
 		"activityEmpty": "Nothing at this level yet.",
 

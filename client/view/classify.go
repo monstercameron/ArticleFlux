@@ -5,24 +5,25 @@ package view
 import (
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
-// Article classification: the category chip on a list row (panes.go's
-// itemRow) and in the article pane (panes.go's articleBlock), plus the pure
+// Article classification: the category chip on a list row (list.go's
+// itemRow) and in the article pane (article.go's articleBlock), plus the pure
 // lookups both of them and the Classification settings tab share.
 //
 // # Why this is its own file
 //
-// itemRow and articleBlock already exist in panes.go and only need one call
-// each; the substance — 26 names, a colour lookup, the chip's own markup, the
-// quieter secondary and genre variants — lives here so the two call sites stay
-// small. See client/design/classify.go for the colour ramp and its CSS, and
+// itemRow and articleBlock already exist in list.go and article.go and only
+// need one call each; the substance — 26 names, a colour lookup, the chip's own
+// markup, the quieter secondary and genre variants — lives here so the two call
+// sites stay small. See client/design/classify.go for the colour ramp and its CSS, and
 // client/i18n/en_classify.go for the catalog these read from.
 
 // categoryName resolves a slug to its short display name.
@@ -170,6 +171,11 @@ func categoryChip(tr i18n.Runtime, it *pb.Item, hiddenCats string) ui.Node {
 // judge whether the category is right — the same instinct §76's editable
 // terms/threshold screen is for, just read-only here.
 func categoryTitle(tr i18n.Runtime, it *pb.Item) string {
+	// Rung 2 of the ladder answered, not the model: say which, because "the
+	// model" is the thing a reader has opinions and a spend limit about.
+	if data.CategoryChooser(it) == data.CategoryByDecider {
+		return tr.T("classify", "catByDecider")
+	}
 	if it.GetCategoryByModel() {
 		return tr.T("classify", "catByModel")
 	}

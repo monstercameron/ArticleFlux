@@ -239,5 +239,10 @@ func OnPopState(fn func()) Listener { return Listener{} }
 // installed-app window chrome to paint.
 func SetThemeColor(hex string) {}
 
-// WriteClipboard does nothing natively: there is no clipboard to write to.
-func WriteClipboard(text string) {}
+// WriteClipboard reports failure natively: there is no clipboard to write to,
+// and a caller that says "Copied" here would be saying something untrue.
+func WriteClipboard(text string, done func(ok bool)) {
+	if done != nil {
+		done(false)
+	}
+}

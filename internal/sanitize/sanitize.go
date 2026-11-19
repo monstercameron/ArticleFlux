@@ -36,7 +36,7 @@ package sanitize
 import (
 	"strings"
 
-	gwc "github.com/monstercameron/GoWebComponents/v5/sanitize"
+	gwc "github.com/monstercameron/GoWebComponents/v7/sanitize"
 	"golang.org/x/net/html"
 )
 

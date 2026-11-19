@@ -53,7 +53,7 @@ import (
 // this list does not. A sealed setting missing from here would survive a
 // rotation unrotated and be unreadable afterwards, which is the failure this
 // whole file exists to prevent, reintroduced by omission.
-var SecretSystemKeys = []SystemKey{KeyOpenAIAPIKey}
+var SecretSystemKeys = []SystemKey{KeyOpenAIAPIKey, KeyJEVAPIKey}
 
 // RotatedSecrets counts what a rotation moved.
 type RotatedSecrets struct {

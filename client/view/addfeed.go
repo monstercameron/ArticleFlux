@@ -4,10 +4,9 @@ package view
 
 import (
 	"strconv"
-	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -112,6 +111,14 @@ const (
 	actAddCategorizeSmart = "add-feed-categorize-smart"
 )
 
+// The ids the dialogs' <label>s point at. See kitFieldProps.ID for why a field's id
+// is a constant rather than derived.
+const (
+	fieldAddURL   = "af-url"
+	fieldAddTitle = "af-title"
+	fieldCatName  = "cat-name"
+)
+
 // unfiledID is the sentinel for feeds with no category.
 //
 // A sentinel rather than a nil group, because "Unfiled" is a place a reader
@@ -142,38 +149,37 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 	// panel uses them — a dropdown hides the range of what is possible behind a
 	// click, and this is a list a reader is meant to recognise, not search.
 	chips := []ui.Node{
-		pickChip(actAddFolder, "", tr.T("addFeed", "noCategory"), p.folderID == "" && !p.newOpen),
+		kitPick(kitChipProps{Action: actAddFolder, Mini: true, Key: actAddFolder + "-" + "", Label: tr.T("addFeed", "noCategory")}, "", p.folderID == "" && !p.newOpen),
 	}
 	for _, f := range p.folders {
-		chips = append(chips, pickChip(actAddFolder, f.GetId(), f.GetName(),
+		chips = append(chips, kitPick(kitChipProps{Action: actAddFolder, Mini: true, Key: actAddFolder + "-" + f.GetId(), Label: f.GetName()}, f.GetId(),
 			p.folderID == f.GetId() && !p.newOpen))
 	}
-	chips = append(chips, html.Button(html.Props{
-		Class: "chip chip-new",
-		Key:   "af-new",
-		Raw:   map[string]any{"data-action": actAddNewCat},
-		Aria:  map[string]string{"pressed": strconv.FormatBool(p.newOpen)},
-	}, html.Text(tr.T("addFeed", "newCategory"))))
+	chips = append(chips, kitToggle(kitChipProps{Action: actAddNewCat, Extra: "chip-new", Key: "af-new", Label: tr.T("addFeed", "newCategory")}, p.newOpen))
 
+	urlHint, nameHint := tr.T("addFeed", "urlHint"), tr.T("addFeed", "nameHint")
 	body := []ui.Node{
-		afFieldWith(tr.T("addFeed", "urlLabel"),
-			tr.T("addFeed", "urlHint"),
-			html.Div(html.Props{Class: "af-lamps"},
+		kitField(kitFieldProps{Look: kitFormDialog, Label: tr.T("addFeed", "urlLabel"), Hint: urlHint, ID: fieldAddURL,
+			Aside: html.Div(html.Props{Class: "af-lamps"},
 				smartLamp(tr, p.smartOn, actAddSmart,
 					tr.T("addFeed", "smartName"), tr.T("addFeed", "smartAria")),
 				smartLamp(tr, p.smartCategorizeOn, actAddCategorizeSmart,
 					tr.T("addFeed", "categorizeSmartName"), tr.T("addFeed", "categorizeSmartAria")),
 			),
-			html.Input(html.Props{
-				Class: "field af-input", Type: "url",
+			Control: html.Input(html.Props{
+				Class: "field af-input", Type: "url", ID: fieldAddURL,
 				Placeholder: tr.T("addFeed", "urlPlaceholder"),
 				Value:       p.url,
 				OnInput:     p.onURLInput,
 				Data:        map[string]string{"role": "add-feed"},
-				Aria:        map[string]string{"label": tr.T("addFeed", "urlLabel")},
-			})),
-		afField(tr.T("addFeed", "categoryLabel"), tr.T("addFeed", "categoryHint"),
-			html.Div(html.Props{Class: "af-chips"}, chips...)),
+				Aria:        fieldAria(fieldAddURL, urlHint),
+				// An address is not prose: a spell checker underlining every
+				// hostname in red is noise on the one field the dialog is for.
+				// "go" because Enter submits the dialog from here.
+				Raw: map[string]any{"spellcheck": "false", "enterkeyhint": "go"},
+			})}),
+		kitSetting(kitSettingProps{Look: kitFormDialog, Label: tr.T("addFeed", "categoryLabel"), Hint: tr.T("addFeed", "categoryHint"),
+			Control: html.Div(html.Props{Class: "af-chips"}, chips...)}),
 	}
 	if p.newOpen {
 		body = append(body, html.Div(html.Props{Class: "af-sub"},
@@ -183,19 +189,24 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 				Value:       p.newCategory,
 				OnInput:     p.onNewInput,
 				Data:        map[string]string{"role": "add-feed-category"},
-				Aria:        map[string]string{"label": tr.T("addFeed", "newCategoryAria")},
+				// Its own name, because it has no visible label: it opens under
+				// the folder chips as the answer to "＋ New".
+				Aria: map[string]string{"label": tr.T("addFeed", "newCategoryAria")},
+				Raw:  map[string]any{"autocomplete": "off", "enterkeyhint": "go"},
 			})))
 	}
 	body = append(body,
-		afField(tr.T("addFeed", "nameLabel"), tr.T("addFeed", "nameHint"),
-			html.Input(html.Props{
-				Class: "field af-input", Type: "text",
+		kitField(kitFieldProps{Look: kitFormDialog, Label: tr.T("addFeed", "nameLabel"), Hint: nameHint, ID: fieldAddTitle,
+			Control: html.Input(html.Props{
+				Class: "field af-input", Type: "text", ID: fieldAddTitle,
 				Placeholder: tr.T("addFeed", "namePlaceholder"),
 				Value:       p.title,
 				OnInput:     p.onTitleInput,
 				Data:        map[string]string{"role": "add-feed-title"},
-				Aria:        map[string]string{"label": tr.T("addFeed", "nameAria")},
-			})),
+				Aria:        fieldAria(fieldAddTitle, nameHint),
+				// Off for renameAttrs' reason; "go" for the address field's.
+				Raw: map[string]any{"autocomplete": "off", "enterkeyhint": "go"},
+			})}),
 	)
 
 	body = append(body, ladder(tr, p)...)
@@ -211,32 +222,16 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 		submit = tr.T("addFeed", "working")
 	}
 
-	return scrim(p.open, actAddClose,
+	return kitDialog(kitDialogProps{Open: p.open, CloseAction: actAddClose, Class: "af", Title: tr.T("addFeed", "title")},
 		// data-action on the dialog itself, for the reason feedSettings documents:
 		// the delegated listener walks up to the nearest ancestor carrying one, so
 		// without this a click on a text field resolves to the backdrop's close.
-		html.Div(html.Props{Class: "af", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": tr.T("addFeed", "title")}},
-			html.Div(html.Props{Class: "af-head"},
-				html.Span(html.Props{Class: "af-mark"}, html.Text(tr.T("addFeed", "title"))),
-				actionButton(actAddClose, "btn btn-ghost af-close", tr.T("addFeed", "close")),
-			),
-			html.Div(html.Props{Class: "af-body"}, body...),
-			html.Div(html.Props{Class: "af-foot"},
-				ui.If(p.err != "", func() ui.Node {
-					return html.Div(html.Props{Class: "af-error", Role: "alert"},
-						html.Text(p.err))
-				}),
-				html.Div(html.Props{Class: "af-actions"},
-					actionButton(actAddClose, "btn btn-ghost", tr.T("addFeed", "cancel")),
-					html.Button(html.Props{
-						Class: "btn af-go",
-						Raw:   map[string]any{"data-action": actAddSubmit},
-						Aria:  map[string]string{"busy": strconv.FormatBool(p.busy)},
-					}, html.Text(submit)),
-				),
-			),
+		kitDialogHead(kitDialogHeadProps{Prefix: "af", Title: tr.T("addFeed", "title"),
+			Close: kitDialogClose("af", actAddClose, "", tr.T("addFeed", "close"))}),
+		kitDialogBody("af", body...),
+		kitDialogFoot("af", []ui.Node{kitFieldError(kitFormDialog, p.err)},
+			kitAction(kitChipProps{Action: actAddClose, Look: kitChipBtn, Extra: "btn-ghost", Label: tr.T("addFeed", "cancel")}),
+			kitAction(kitChipProps{Action: actAddSubmit, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: submit}),
 		),
 	)
 }
@@ -291,7 +286,11 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 		}
 		return []ui.Node{html.Div(html.Props{Class: "af-ladder"},
 			append([]ui.Node{
-				html.Div(html.Props{Class: "af-ladder-title"},
+				// Every rung's title is an h3 under the dialog's h2: it is the
+				// heading of what just appeared below a form the reader has
+				// already been through, and a heading is what someone jumps to
+				// to find out what changed.
+				html.H3(html.Props{Class: "af-ladder-title"},
 					html.Text(tr.T("addFeed", "foundTitle"))),
 				html.Div(html.Props{Class: "af-hint"}, html.Text(tr.T("addFeed", "foundHint"))),
 			}, rows...)...,
@@ -305,7 +304,7 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 	}
 
 	kids := []ui.Node{
-		html.Div(html.Props{Class: "af-ladder-title"}, html.Text(tr.T("addFeed", "noFeedTitle"))),
+		html.H3(html.Props{Class: "af-ladder-title"}, html.Text(tr.T("addFeed", "noFeedTitle"))),
 		html.Div(html.Props{Class: "af-hint"}, html.Text(tr.T("addFeed", "noFeedHint"))),
 	}
 	switch p.smartStatus {
@@ -348,11 +347,7 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 		analyze = tr.T("addFeed", "smartWorking")
 	}
 	kids = append(kids, html.Div(html.Props{Class: "af-smart"},
-		html.Button(html.Props{
-			Class: "btn af-retry",
-			Raw:   map[string]any{"data-action": actAddAnalyze},
-			Aria:  map[string]string{"busy": strconv.FormatBool(p.smartBusy)},
-		}, html.Text(analyze)),
+		kitAction(kitChipProps{Action: actAddAnalyze, Look: kitChipBtn, Extra: "af-retry", Busy: kitTriOf(p.smartBusy), Label: analyze}),
 	))
 	return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
 }
@@ -394,7 +389,7 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 		label = tr.T("addFeed", "proposalPaths")
 	}
 	return html.Div(html.Props{Class: "af-ladder"},
-		html.Div(html.Props{Class: "af-ladder-title"},
+		html.H3(html.Props{Class: "af-ladder-title"},
 			html.Text(tr.T("addFeed", "proposalTitle"))),
 		html.Div(html.Props{Class: "af-hint"},
 			html.Text(tr.T("addFeed", "proposalFound", i18n.Count(int(prop.GetFound()))))),
@@ -426,11 +421,7 @@ func proposalBlock(tr i18n.Runtime, p addFeedProps) ui.Node {
 			)
 		}),
 		html.Div(html.Props{Class: "af-actions"},
-			html.Button(html.Props{
-				Class: "btn af-go",
-				Raw:   map[string]any{"data-action": actAddFollow},
-				Aria:  map[string]string{"busy": strconv.FormatBool(p.busy)},
-			}, html.Text(tr.T("addFeed", "proposalFollow"))),
+			kitAction(kitChipProps{Action: actAddFollow, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: tr.T("addFeed", "proposalFollow")}),
 		),
 	)
 }
@@ -442,33 +433,6 @@ func linkOf(r *pb.ScrapeRule) string {
 		return r.GetLinkSelector()
 	}
 	return r.GetLinkTemplate()
-}
-
-// afField is one labelled control: an eyebrow, the control, and the sentence
-// that says what it is for.
-//
-// The hint sits UNDER the control rather than under the label, so the eye goes
-// label → control → explanation, and a reader who already knows what to type
-// never has to read past the field to get to it.
-func afField(label, hint string, control ui.Node) ui.Node {
-	return afFieldWith(label, hint, nil, control)
-}
-
-// afFieldWith is afField with something on the far end of the label row.
-//
-// One caller: the address field, which carries the Smart+ lamp. It belongs on
-// THAT row and not in the dialog's header, because the capability is about the
-// address — what happens when the thing you typed turns out not to be a feed —
-// and a control in the header would be making a claim about the whole dialog.
-func afFieldWith(label, hint string, aside, control ui.Node) ui.Node {
-	return html.Div(html.Props{Class: "af-field"},
-		html.Div(html.Props{Class: "af-eyebrow-row"},
-			html.Span(html.Props{Class: "af-eyebrow"}, html.Text(strings.ToUpper(label))),
-			aside,
-		),
-		control,
-		html.Span(html.Props{Class: "af-hint"}, html.Text(hint)),
-	)
 }
 
 // smartLamp is the Smart+ state, on the address row, always visible.
@@ -494,29 +458,22 @@ func smartLamp(tr i18n.Runtime, on bool, action, name, aria string) ui.Node {
 	// lamp, so the categorize lamp beside it (addFeedDialog's af-lamps row) is
 	// the same control wearing different words rather than a second
 	// near-identical function.
+	//
+	// The long sentence is the TITLE and nothing else. It used to be the
+	// aria-label as well, which made a forty-word name for a two-word button: a
+	// screen reader read the whole explanation every time focus passed through,
+	// and the name somebody can see was buried at the front of it. As a title
+	// alone it is the button's description — announced after the name and the
+	// pressed state, once — and the name is the words on the lamp.
 	return html.Button(html.Props{
 		Class: "af-lamp",
 		Raw:   map[string]any{"data-action": action},
 		Title: aria,
-		Aria: map[string]string{
-			"pressed": strconv.FormatBool(on),
-			"label":   aria,
-		},
+		Aria:  map[string]string{"pressed": strconv.FormatBool(on)},
 	},
 		html.I(html.Props{Class: "af-lamp-dot", Aria: map[string]string{"hidden": "true"}}),
 		html.Span(html.Props{Class: "af-lamp-label"}, html.Text(name)),
 	)
-}
-
-// pickChip is a chip whose payload is a string rather than fsChoices' int, which
-// is what a folder id is.
-func pickChip(action, value, label string, pressed bool) ui.Node {
-	return html.Button(html.Props{
-		Class: "chip chip-mini",
-		Key:   action + "-" + value,
-		Raw:   map[string]any{"data-action": action, "data-value": value},
-		Aria:  map[string]string{"pressed": strconv.FormatBool(pressed)},
-	}, html.Text(label))
 }
 
 // --- the category editor -----------------------------------------------------
@@ -559,50 +516,37 @@ func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
 		fate = tr.T("category", "fate", i18n.Count(p.feeds))
 	}
 
-	danger := actionButton(actCatDelete, "btn fs-danger", tr.T("category", "delete"))
-	if p.confirm {
-		danger = actionButton(actCatConfirm, "btn fs-danger", tr.T("category", "confirm"))
-	}
+	arm := kitArm(kitArmProps{Armed: p.confirm,
+		Action: actCatDelete, ArmedAction: actCatConfirm,
+		Label: tr.T("category", "delete"), ArmedLabel: tr.T("category", "confirm"),
+		Look: kitChipBtn, Danger: true,
+		Warn: tr.T("category", "confirmWarn", i18n.Args{"name": p.name}), WarnClass: "af-warn"})
 
-	return scrim(p.open, actCatClose,
-		html.Div(html.Props{Class: "af af-narrow", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": tr.T("category", "title")}},
-			html.Div(html.Props{Class: "af-head"},
-				html.Span(html.Props{Class: "af-mark"}, html.Text(p.name)),
-				actionButton(actCatClose, "btn btn-ghost af-close", tr.T("category", "close")),
-			),
-			html.Div(html.Props{Class: "af-body"},
-				afField(tr.T("category", "nameLabel"), fate,
-					html.Input(html.Props{
-						Class: "field af-input", Type: "text",
-						Placeholder: p.name,
-						Value:       p.draft,
-						OnInput:     p.onInput,
-						Data:        map[string]string{"role": "category-name"},
-						Aria:        map[string]string{"label": tr.T("category", "nameAria")},
-					})),
-			),
-			html.Div(html.Props{Class: "af-foot"},
-				ui.If(p.err != "", func() ui.Node {
-					return html.Div(html.Props{Class: "af-error", Role: "alert"},
-						html.Text(p.err))
-				}),
-				ui.If(p.confirm, func() ui.Node {
-					return html.Div(html.Props{Class: "af-warn"},
-						html.Text(tr.T("category", "confirmWarn", i18n.Args{"name": p.name})))
-				}),
-				html.Div(html.Props{Class: "af-actions"},
-					danger,
-					html.Div(html.Props{Class: "af-spring"}),
-					actionButton(actCatClose, "btn btn-ghost", tr.T("category", "cancel")),
-					html.Button(html.Props{
-						Class: "btn af-go",
-						Raw:   map[string]any{"data-action": actCatSave},
-						Aria:  map[string]string{"busy": strconv.FormatBool(p.busy)},
-					}, html.Text(tr.T("category", "save"))),
-				),
-			),
+	return kitDialog(kitDialogProps{Open: p.open, CloseAction: actCatClose,
+		Class: "af af-narrow", Title: tr.T("category", "title")},
+		kitDialogHead(kitDialogHeadProps{Prefix: "af", Title: p.name,
+			Close: kitDialogClose("af", actCatClose, "", tr.T("category", "close"))}),
+		kitDialogBody("af",
+			kitField(kitFieldProps{Look: kitFormDialog, Label: tr.T("category", "nameLabel"), Hint: fate, ID: fieldCatName,
+				Control: html.Input(html.Props{
+					Class: "field af-input", Type: "text", ID: fieldCatName,
+					Placeholder: p.name,
+					Value:       p.draft,
+					OnInput:     p.onInput,
+					Data:        map[string]string{"role": "category-name"},
+					Aria:        fieldAria(fieldCatName, fate),
+					Raw:         renameAttrs(),
+				})}),
+		),
+		kitDialogFoot("af", []ui.Node{kitFieldError(kitFormDialog, p.err),
+			// An alert, for signOutGroup's reason: arming changes what the
+			// next press on the red button does, and somebody who cannot see
+			// its label change has to be told before they press it again.
+			arm.Warn},
+			arm.Button,
+			html.Div(html.Props{Class: "af-spring"}),
+			kitAction(kitChipProps{Action: actCatClose, Look: kitChipBtn, Extra: "btn-ghost", Label: tr.T("category", "cancel")}),
+			kitAction(kitChipProps{Action: actCatSave, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: tr.T("category", "save")}),
 		),
 	)
 }

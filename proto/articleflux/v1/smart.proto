@@ -39,6 +39,11 @@ service SmartService {
 
   // ListLanguages returns the offered UI translation targets and which of them
   // are already cached for the running build's English.
+  //
+  // Any signed-in reader may call it: choosing an interface language is not an
+  // administrative act, and the coverage describes the application, not
+  // anybody's data. It is also where a member learns whether article
+  // translation is on (`translate_articles_enabled`).
   rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
 
   // ListModels asks the provider which model ids this instance's key can use,
@@ -59,6 +64,36 @@ service SmartService {
   // bypasses the cache — the only lever a reader has when a translation came
   // back wrong.
   rpc TranslateUI(TranslateUIRequest) returns (TranslateUIResponse);
+
+  // GetUIStrings is the on-the-fly half of UI translation (plan.md §22.16c).
+  //
+  // It answers from the cache ONLY — it never waits on the model — so the
+  // client can call it with the keys it is missing, merge what comes back, and
+  // go on showing English for the rest. Cached per (locale, key, hash of that
+  // key's English): a new build pays for the strings it changed and nothing
+  // else, once per instance rather than once per reader.
+  //
+  // Any signed-in reader may READ a cached translation; it costs nothing and
+  // describes the application, not anybody's data. `fill` asks the server to
+  // translate what is missing in the background, and that is a spend, so it is
+  // honoured for an owner only and only with a key — for anyone else it is
+  // ignored and `filling` says so. The client polls with the keys still
+  // missing until `pending` reaches zero or `filling` goes false.
+  rpc GetUIStrings(GetUIStringsRequest) returns (GetUIStringsResponse);
+
+  // TranslateArticle translates one article's title and body into a locale
+  // (plan.md §10.5b), and returns the original beside it so the reader can
+  // toggle.
+  //
+  // Egress: the article's title and the TEXT of its body — never its URL,
+  // author, feed, or any markup or link target — under the owner's
+  // `smart.translate_articles` consent, which defaults off. Cached per (item,
+  // locale, hash of the sanitised source) in a table that records nothing about
+  // who asked; a cached answer is served to any reader who can see the item,
+  // with no key and no spend. A fresh translation is open to any signed-in
+  // reader once the owner has consented, rate-limited per reader, and bounded by
+  // the instance's spend ceiling like every other Smart+ call.
+  rpc TranslateArticle(TranslateArticleRequest) returns (TranslateArticleResponse);
 
   // ComposeTheme turns a phrase into a complete palette (§20.16.3).
   //
@@ -200,6 +235,11 @@ message GetSmartConfigResponse {
   // and the bill is the owner's, and a per-reader toggle would imply the
   // reader controls something they do not.
   bool classify_enabled = 6;
+  // Whether this instance consents to sending an ARTICLE's title and body text
+  // to the model to translate it for a reader (§10.5b,
+  // `smart.translate_articles`). Default off, for exactly classify_enabled's
+  // reasons: it spends money and egresses the publisher's words.
+  bool translate_articles_enabled = 7;
   // What the model has cost this instance since the process started, in USD,
   // for the calls the rate tables could price.
   //
@@ -260,6 +300,32 @@ message GetSmartConfigResponse {
   string last_error = 21;
   // RFC3339, empty when there has been no failure since this process started.
   string last_error_at = 22;
+
+  // Rung 2 of the escalation ladder (plan.md A47, §18.8b): JEV, TypeSafe AI's
+  // typed-decision model. Reported exactly the way the OpenAI key above is —
+  // whether one is present, its last four characters, and whether it came from
+  // the environment — and never the key itself.
+  //
+  // Presence, not proof, for `configured`'s reason: checking that a key works
+  // costs a call.
+  bool jev_configured = 40;
+  string jev_key_hint = 41;
+  // True when the key came from SCHEMAFLUX_TYPESAFE_API_KEY or TYPESAFE_API_KEY
+  // rather than from this screen — removing nothing here would stop it.
+  bool jev_from_environment = 42;
+  // The route in force: "jev" (TypeSafe's own endpoint, and what an unset row
+  // means), "jev-openrouter" or "jev-litellm". There is no environment source
+  // for the route or the base URL — only the key falls back — so neither has a
+  // from_environment of its own.
+  string jev_provider = 43;
+  // The operator's LiteLLM proxy. Only ever set alongside "jev-litellm"; the
+  // other two routes have fixed, enumerated hosts (llm.DeciderHosts).
+  string jev_base_url = 44;
+  // Whether rung 2 would actually be tried: a key is present AND the route is
+  // complete (a LiteLLM route with no base URL is not). Computed here so the
+  // screen and the ladder cannot disagree about what "available" means — it is
+  // llm.Client.DeciderAvailable's test without the per-task half.
+  bool jev_ready = 45;
 }
 
 message SetSmartConfigRequest {
@@ -282,6 +348,26 @@ message SetSmartConfigRequest {
   // into, and the strictest possible reading of an empty field would silently
   // disable every paid feature on the instance.
   optional double budget_usd = 5;
+  // The consent for translating article text (§10.5b). Optional for
+  // classify_enabled's reason: an unrelated save must not decide egress.
+  optional bool translate_articles_enabled = 6;
+
+  // The JEV credential (A47), with the OpenAI key's contract exactly: empty
+  // leaves the stored key untouched, and removing it is its own explicit field.
+  // Plain rather than optional for that reason — the zero value already means
+  // "leave it alone", and a form that confused "leave it" with "delete it" would
+  // delete credentials by accident.
+  string jev_api_key = 7;
+  bool clear_jev_api_key = 8;
+  // The route: "jev", "jev-openrouter" or "jev-litellm"; anything else is
+  // refused. Optional, so a key change does not re-decide where decisions go.
+  optional string jev_provider = 9;
+  // The LiteLLM proxy's base URL: https only, refused for an address the SSRF
+  // guard refuses, required for "jev-litellm" and refused for the other two
+  // routes (their hosts are fixed — a base URL beside them would be a way to
+  // send decisions somewhere llm.DeciderHosts does not list). Set to "" to
+  // remove it. Unset leaves it alone.
+  optional string jev_base_url = 10;
 }
 
 message SetSmartConfigResponse { GetSmartConfigResponse config = 1; }
@@ -305,6 +391,15 @@ message ListLanguagesResponse {
   // The locale the catalog is authored in — always available, never translated,
   // never billed.
   string source_locale = 2;
+  // Whether a reader pressing Translate on an article can get a FRESH
+  // translation: the owner has consented (`smart.translate_articles`) AND a key
+  // is present. Here rather than only on the owner-only config because this
+  // response is the one a member may read, and a member otherwise learnt it by
+  // pressing the control into a refusal. One bool and not the two halves: which
+  // half is missing is the owner's business, and the member's next step is the
+  // same either way. A cached translation is readable whatever this says (see
+  // TranslateArticleRequest.cache_only).
+  bool translate_articles_enabled = 3;
 }
 
 message SmartLanguage {
@@ -315,6 +410,12 @@ message SmartLanguage {
   string native_name = 3;
   // Already translated for this build: selecting it costs nothing.
   bool cached = 4;
+  // How much of this build's catalog is translated, so the picker can say
+  // "nearly free" for a language a new build added a dozen strings to. A key
+  // the model was asked for and answered unusably counts as done: it renders
+  // in English and will not be paid for again until its English changes.
+  int32 translated = 5;
+  int32 total = 6;
 }
 
 message TranslateUIRequest {
@@ -339,4 +440,72 @@ message UIMessage {
   string text = 2;
   // Plural forms, keyed by CLDR category: zero, one, two, few, many, other.
   map<string, string> forms = 3;
+  // Fingerprint of the English this was translated from (client/i18n
+  // SourceHash). A client whose own English for the key differs — a bundle
+  // older or newer than the server — drops the entry and keeps its English.
+  // Empty from TranslateUI, which predates it.
+  string source_hash = 4;
+}
+
+message GetUIStringsRequest {
+  string locale = 1;
+  // The keys wanted. Empty means every key the server has for the locale.
+  repeated string keys = 2;
+  // Start translating the locale's missing keys in the background. Owner-only
+  // and key-only; ignored otherwise (see `filling`).
+  bool fill = 3;
+}
+
+message GetUIStringsResponse {
+  string locale = 1;
+  // Cached translations of the requested keys, valid for the server's English.
+  repeated UIMessage messages = 2;
+  // Requested keys the cache cannot answer yet.
+  int32 pending = 3;
+  // A background fill is running for this locale, so polling is worthwhile.
+  bool filling = 4;
+  // Why no fill is running when keys are pending: "not_owner", "no_key",
+  // "unsupported", or "" when one is running or nothing is pending. A class,
+  // never provider text (§22.11).
+  string idle_reason = 5;
+}
+
+message TranslateArticleRequest {
+  string item_id = 1;
+  // The reader's language — any locale the UI offers, English included.
+  string locale = 2;
+  // Translate again even if a cached translation exists.
+  bool force = 3;
+  // Answer from the cache or not at all: never the provider, so it needs no
+  // consent and no key, spends nothing, and is not counted against the rate
+  // limit. A miss is an ordinary answer with `not_cached` set, not an error —
+  // "nobody has paid for this yet" is not a failure. Wins over `force`, because
+  // the one promise this flag makes is that nothing leaves the machine.
+  bool cache_only = 4;
+}
+
+message TranslateArticleResponse {
+  string item_id = 1;
+  string locale = 2;
+  // What the source was detected as ("" when unknown).
+  string source_locale = 3;
+  string title = 4;
+  // Sanitised HTML with the original structure — the same elements, links and
+  // images, with only the text replaced. Rendered through the client's
+  // ordinary sanitised article path, like any other content_html, and with its
+  // subresources repointed at the local proxy exactly as GetItem's are (§10.1a,
+  // per reader: the `proxy.images` preference) — the cache stores the
+  // publisher's URLs, and the rewrite happens on the way out.
+  string content_html = 5;
+  // The sanitised original, so the reader can toggle back. Proxied the same way.
+  string original_title = 6;
+  string original_content_html = 7;
+  // Served from cache: no egress and no spend.
+  bool cached = 8;
+  // The article was longer than one translation covers; the tail stays in the
+  // original language.
+  bool partial = 9;
+  // A cache_only request found nothing cached for this article as it stands.
+  // Only item_id and locale are set beside it.
+  bool not_cached = 10;
 }

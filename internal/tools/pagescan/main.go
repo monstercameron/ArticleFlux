@@ -42,8 +42,8 @@ func main() {
 		feeds   = flag.Bool("feeds", false, "climb rungs 1-3 and print any feeds found")
 		rule    = flag.String("rule", "",
 			"item|title|link|date|summary|image — pipe-separated attrsel selectors to try")
-		layout  = flag.String("layout", "", "Go time layout for a human-readable date selector")
-		private = flag.Bool("allow-private", false, "permit loopback/LAN addresses (local fixtures)")
+		layout   = flag.String("layout", "", "Go time layout for a human-readable date selector")
+		private  = flag.Bool("allow-private", false, "permit loopback/LAN addresses (local fixtures)")
 		jsonRule = flag.String("json", "",
 			"items|title|link|date|id — dotted paths to try against a discovered JSON endpoint")
 		limit = flag.Int("limit", 6000, "truncate the printed outline to this many bytes; 0 for all")

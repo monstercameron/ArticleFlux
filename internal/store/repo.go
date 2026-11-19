@@ -100,7 +100,7 @@ func (r *ReaderRepo) ListFeeds(ctx context.Context, s Scope) ([]Feed, error) {
 	if !s.Valid() {
 		return nil, ErrNoScope
 	}
-	rows, err := r.db.Read.QueryContext(ctx, `
+	rows, err := r.db.query(ctx, `
 		SELECT sub.id, src.id,
 		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
 		       src.feed_url, COALESCE(src.site_url,''), COALESCE(sub.folder_id,''),
@@ -383,7 +383,9 @@ func listFilter(q ListQuery, withCursor bool) ([]string, []any, error) {
 // driveIndex is allowed to speak, which also makes it obvious that nothing else
 // in the statement is dynamic.
 const (
-	listSelectHead = `
+	listSelectHead = listColumns + `
+		  FROM items i `
+	listColumns = `
 		SELECT i.id, i.source_id,
 		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
 		       i.title, COALESCE(i.author,''), COALESCE(i.summary,''),
@@ -391,8 +393,7 @@ const (
 		       uis.read_at IS NOT NULL, uis.starred_at IS NOT NULL,
 		       COALESCE(uis.rating,0),
 		       i.word_count, COALESCE(i.image_url,''),
-		       COALESCE(i.revision,0), COALESCE(i.edited_at,'')
-		  FROM items i `
+		       COALESCE(i.revision,0), COALESCE(i.edited_at,'')`
 	listSelectTail = `
 		  JOIN sources src ON src.id = i.source_id
 		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
@@ -401,6 +402,109 @@ const (
 		   AND i.deactivated_at IS NULL
 		   AND src.deactivated_at IS NULL`
 )
+
+// listSQL builds ListItems' statement and arguments for an already-clamped
+// query. Separate from ListItems so the plan-regression tests can EXPLAIN the
+// exact statement a reader's list issues rather than a hand-copied lookalike
+// (planaudit_test.go) — a copy is what drifts.
+func listSQL(s Scope, q ListQuery) (string, []any, error) {
+	where, filterArgs, err := listFilter(q, true)
+	if err != nil {
+		return "", nil, err
+	}
+	args := append([]any{s.UserID, s.UserID, s.TenantID}, filterArgs...)
+
+	// Three WriteStrings around the index hint, not one WriteString of a
+	// concatenation. `a + driveIndex(q) + b` builds the whole 700-byte statement
+	// as a new string on every list request just to hand it to a builder that is
+	// about to copy it again; writing the constant halves straight through costs
+	// nothing and copies once.
+	sb := strings.Builder{}
+	sb.Grow(len(listSelectHead) + len(listSelectTail) + 128)
+	if from, ok := stateDrivenFrom(q); ok {
+		sb.WriteString(listColumns)
+		sb.WriteString(from)
+	} else {
+		sb.WriteString(listSelectHead)
+		sb.WriteString(driveIndex(q))
+		sb.WriteString(listSelectTail)
+	}
+	for _, w := range where {
+		sb.WriteString(" AND ")
+		sb.WriteString(w)
+	}
+	// The id tiebreak matches the index in 0001_init.sql. Without it two items
+	// published in the same second have no defined order and a cursor can skip
+	// or repeat one.
+	sb.WriteString(` ORDER BY i.published_at DESC, i.id DESC LIMIT ?`)
+	// Fetch one extra to learn whether another page exists, rather than running
+	// a second COUNT query.
+	args = append(args, q.Limit+1)
+	return sb.String(), args, nil
+}
+
+// stateDrivenFrom is the FROM/WHERE preamble for the lists defined by a sparse
+// piece of the reader's OWN state — Starred, Liked, Disliked — and ok=false
+// for every other list.
+//
+// # The measurement
+//
+// Every other list is driven by walking items newest-first (driveIndex) and
+// stopping at the 51st row that passes, which is right when most rows pass. A
+// starred list is the opposite case: on the G3 fixture with 25 starred
+// articles, the walk visited all 50,000 items to find them — 124ms for the page
+// and 620ms for its count (the scrollbar total the first page asks for), and
+// the same again for Liked. Items are global (A14), so on a shared instance the
+// walk is over every tenant's items, not just this reader's.
+//
+// Driving from the reader's state rows instead visits exactly the starred (or
+// rated) rows, through the partial index that exists for them, and sorts those.
+//
+// # Why the rows are identical
+//
+// listFilter already requires `uis.starred_at IS NOT NULL` (or a non-zero
+// rating) for these shapes, so the LEFT JOIN to user_item_state could never
+// have produced a NULL-extended row that survived the WHERE: it is an inner join
+// in effect, and this spells it as one. The output columns, the remaining
+// filters, ORDER BY and LIMIT are untouched, so the rows and their order are
+// the same — TestStateDrivenListsMatchTheWalk compares them on G3.
+//
+// # The trade
+//
+// The page is now sorted rather than read in order, so its cost grows with the
+// number of starred rows rather than the number of items: a reader with ten
+// thousand stars pays a sort of ten thousand. That is still bounded by the
+// reader's own actions rather than by the size of the instance.
+//
+// CROSS JOIN pins the order (state first), and INDEXED BY pins the index —
+// `uis.rating <> 0` restates the partial index's own WHERE, which SQLite needs
+// verbatim to use it; it is implied by listFilter's `> 0` / `< 0`.
+func stateDrivenFrom(q ListQuery) (string, bool) {
+	var from string
+	switch {
+	case q.StarredOnly:
+		from = `
+		  FROM user_item_state uis INDEXED BY uis_user_starred`
+	case q.RatedOnly != 0:
+		from = `
+		  FROM user_item_state uis INDEXED BY idx_uis_rating`
+	default:
+		return "", false
+	}
+	from += `
+		  CROSS JOIN items i ON i.id = uis.item_id
+		  JOIN sources src ON src.id = i.source_id
+		  JOIN subscriptions sub ON sub.source_id = i.source_id AND sub.user_id = ?
+		 WHERE uis.user_id = ?
+		   AND sub.tenant_id = ?
+		   AND i.deactivated_at IS NULL
+		   AND src.deactivated_at IS NULL`
+	if !q.StarredOnly {
+		from += `
+		   AND uis.rating <> 0`
+	}
+	return from, true
+}
 
 // ListItems returns one page plus the cursor for the next.
 //
@@ -418,35 +522,11 @@ func (r *ReaderRepo) ListItems(ctx context.Context, s Scope, q ListQuery) ([]Ite
 		q.Limit = MaxLimit
 	}
 
-	where, filterArgs, err := listFilter(q, true)
+	query, args, err := listSQL(s, q)
 	if err != nil {
 		return nil, "", err
 	}
-	args := append([]any{s.UserID, s.UserID, s.TenantID}, filterArgs...)
-
-	// Three WriteStrings around the index hint, not one WriteString of a
-	// concatenation. `a + driveIndex(q) + b` builds the whole 700-byte statement
-	// as a new string on every list request just to hand it to a builder that is
-	// about to copy it again; writing the constant halves straight through costs
-	// nothing and copies once.
-	sb := strings.Builder{}
-	sb.Grow(len(listSelectHead) + len(listSelectTail) + 128)
-	sb.WriteString(listSelectHead)
-	sb.WriteString(driveIndex(q))
-	sb.WriteString(listSelectTail)
-	for _, w := range where {
-		sb.WriteString(" AND ")
-		sb.WriteString(w)
-	}
-	// The id tiebreak matches the index in 0001_init.sql. Without it two items
-	// published in the same second have no defined order and a cursor can skip
-	// or repeat one.
-	sb.WriteString(` ORDER BY i.published_at DESC, i.id DESC LIMIT ?`)
-	// Fetch one extra to learn whether another page exists, rather than running
-	// a second COUNT query.
-	args = append(args, q.Limit+1)
-
-	rows, err := r.db.Read.QueryContext(ctx, sb.String(), args...)
+	rows, err := r.db.query(ctx, query, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -485,7 +565,7 @@ func (r *ReaderRepo) GetItem(ctx context.Context, s Scope, id string) (Item, err
 		return Item{}, ErrNoScope
 	}
 	var it Item
-	err := r.db.Read.QueryRowContext(ctx, `
+	err := r.db.queryRow(ctx, `
 		SELECT i.id, i.source_id,
 		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
 		       i.title, COALESCE(i.author,''), COALESCE(i.summary,''),
@@ -704,6 +784,12 @@ type MarkQuery struct {
 	// Uncategorised mirrors ListQuery.Uncategorised, for the same reason
 	// every other selection field here mirrors one.
 	Uncategorised bool
+	// SkipStarred leaves Read later items unread. A reader pressing Mark all
+	// read has said "everything here"; a standing rule that acts while they are
+	// away has not, and quietly reading something they saved for later is the
+	// one thing it must never do. Not a ListQuery field, because no list has
+	// an "except starred" filter for a mark to mirror.
+	SkipStarred bool
 }
 
 // listQuery is the shape listFilter consumes. Cursor and Limit are deliberately
@@ -816,6 +902,9 @@ func (r *ReaderRepo) MarkAllRead(ctx context.Context, s Scope, q MarkQuery, befo
 			q0 += ` AND ` + w
 		}
 		args = append(args, filterArgs...)
+		if q.SkipStarred {
+			q0 += ` AND uis.starred_at IS NULL`
+		}
 		// The WHERE on DO UPDATE is what makes this undoable.
 		//
 		// COALESCE kept an already-read row's timestamp but still stamped it with
@@ -1056,7 +1145,7 @@ func (r *ReaderRepo) Search(ctx context.Context, s Scope, query, sourceID string
 		 ORDER BY hits.score`)
 	args = append(args, s.UserID, s.UserID)
 
-	rows, err := r.db.Read.QueryContext(ctx, hits.String(), args...)
+	rows, err := r.db.query(ctx, hits.String(), args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1461,10 +1550,21 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 	if n, ok, err := r.countUnreadFast(ctx, s, q); ok {
 		return n, err
 	}
-
-	where, filterArgs, err := listFilter(q, false)
+	query, args, err := countSQL(s, q)
 	if err != nil {
 		return 0, err
+	}
+	var n int
+	err = r.db.queryRow(ctx, query, args...).Scan(&n)
+	return n, err
+}
+
+// countSQL builds CountQuery's general statement — see listSQL for why it is
+// a function of its own.
+func countSQL(s Scope, q ListQuery) (string, []any, error) {
+	where, filterArgs, err := listFilter(q, false)
+	if err != nil {
+		return "", nil, err
 	}
 	args := append([]any{s.UserID, s.UserID, s.TenantID}, filterArgs...)
 
@@ -1472,8 +1572,14 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 	// The joins mirror ListItems exactly, including the LEFT JOIN that is only
 	// needed for the read/starred filters: dropping it when those filters are
 	// absent would make the two queries structurally different for no gain, and
-	// structurally different is how they drift.
-	sb.WriteString(`
+	// structurally different is how they drift. The state-driven shapes use the
+	// same preamble as their list for the same reason (stateDrivenFrom).
+	if from, ok := stateDrivenFrom(q); ok {
+		sb.WriteString(`
+		SELECT count(*)`)
+		sb.WriteString(from)
+	} else {
+		sb.WriteString(`
 		SELECT count(*)
 		  FROM items i
 		  JOIN sources src ON src.id = i.source_id
@@ -1482,14 +1588,12 @@ func (r *ReaderRepo) CountQuery(ctx context.Context, s Scope, q ListQuery) (int,
 		 WHERE sub.tenant_id = ?
 		   AND i.deactivated_at IS NULL
 		   AND src.deactivated_at IS NULL`)
+	}
 	for _, w := range where {
 		sb.WriteString(" AND ")
 		sb.WriteString(w)
 	}
-
-	var n int
-	err = r.db.Read.QueryRowContext(ctx, sb.String(), args...).Scan(&n)
-	return n, err
+	return sb.String(), args, nil
 }
 
 // countUnreadFast answers the sidebar's badge from uis_unread_by_source alone.
@@ -1523,7 +1627,7 @@ func (r *ReaderRepo) countUnreadFast(ctx context.Context, s Scope, q ListQuery) 
 		return 0, false, nil
 	}
 	var n int
-	err := r.db.Read.QueryRowContext(ctx, `
+	err := r.db.queryRow(ctx, `
 		SELECT COALESCE(sum(
 		           (SELECT count(*) FROM user_item_state uis
 		             INDEXED BY uis_unread_by_source
@@ -1652,6 +1756,14 @@ func (r *ReaderRepo) ResetUserState(ctx context.Context, s Scope) error {
 		// the whole suite is written against.
 		`UPDATE subscriptions SET folder_id = NULL WHERE user_id = ? AND tenant_id = ?`,
 		`DELETE FROM folders WHERE user_id = ? AND tenant_id = ?`,
+		// And the backlog window (§20.15). It is the one per-feed setting that
+		// goes on ACTING after the test that set it has finished: a window left
+		// behind marks a feed's articles read again on the next sweep, and on
+		// every save of any other setting on that feed — so the rows deleted at
+		// the top of this list would quietly come back as read for whichever
+		// spec ran next. feedbacklog.spec.mjs puts it back itself; this is for
+		// the run where that spec fails before it gets the chance.
+		`UPDATE subscriptions SET clear_backlog_days = 0 WHERE user_id = ? AND tenant_id = ?`,
 	} {
 		if _, err := r.db.Write.ExecContext(ctx, q, s.UserID, s.TenantID); err != nil {
 			return err
@@ -1864,7 +1976,7 @@ func (r *ReaderRepo) GetFavicon(ctx context.Context, host string) (FaviconRow, e
 	var fetched string
 	var b []byte
 	var ct, etag *string
-	err := r.db.Read.QueryRowContext(ctx,
+	err := r.db.queryRow(ctx,
 		`SELECT host, bytes, content_type, etag, fetched_at, failures FROM favicons WHERE host = ?`,
 		host).Scan(&row.Host, &b, &ct, &etag, &fetched, &row.Failures)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2267,7 +2379,7 @@ func (r *ReaderRepo) GetNote(ctx context.Context, s Scope, itemID string) (strin
 		return "", ErrNoScope
 	}
 	var body string
-	err := r.db.Read.QueryRowContext(ctx,
+	err := r.db.queryRow(ctx,
 		`SELECT body FROM item_notes WHERE user_id=? AND tenant_id=? AND item_id=?`,
 		s.UserID, s.TenantID, itemID).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2338,6 +2450,9 @@ type FeedSettings struct {
 	InMegafeed    bool
 	MutedUntil    string
 	CacheDepth    int
+	// ClearBacklogDays is how old this feed's unread articles may get before
+	// they are marked read for this reader. 0 is never.
+	ClearBacklogDays int
 
 	// Shared with every other subscriber on this server.
 	FeedURL        string
@@ -2365,6 +2480,9 @@ type FeedSettingsPatch struct {
 	MutedUntil     *string
 	CacheDepth     *int
 	FetchIntervalS *int
+	// ClearBacklogDays is validated by the repo, not the caller; see
+	// maxBacklogDays.
+	ClearBacklogDays *int
 }
 
 // minFetchInterval is the floor on how often a source may be polled.
@@ -2394,6 +2512,7 @@ func (r *ReaderRepo) GetFeedSettings(ctx context.Context, s Scope, sourceID stri
 		       COALESCE(sub.title,''),
 		       COALESCE(NULLIF(sub.title,''), NULLIF(src.title,''), src.feed_url),
 		       sub.in_megafeed, COALESCE(sub.muted_until,''), sub.cache_depth,
+		       sub.clear_backlog_days,
 		       src.feed_url, COALESCE(src.site_url,''), src.kind,
 		       src.fetch_interval_s, COALESCE(src.next_fetch_at,''),
 		       COALESCE(src.last_fetch_at,''), COALESCE(src.last_success_at,''),
@@ -2411,7 +2530,7 @@ func (r *ReaderRepo) GetFeedSettings(ctx context.Context, s Scope, sourceID stri
 		 WHERE sub.source_id = ? AND sub.user_id = ? AND sub.tenant_id = ?`,
 		s.UserID, sourceID, s.UserID, s.TenantID).
 		Scan(&f.SourceID, &f.Title, &f.ResolvedTitle,
-			&f.InMegafeed, &f.MutedUntil, &f.CacheDepth,
+			&f.InMegafeed, &f.MutedUntil, &f.CacheDepth, &f.ClearBacklogDays,
 			&f.FeedURL, &f.SiteURL, &f.Kind,
 			&f.FetchIntervalS, &f.NextFetchAt,
 			&f.LastFetchAt, &f.LastSuccessAt, &f.LastError, &f.Failures,
@@ -2495,6 +2614,17 @@ func (r *ReaderRepo) UpdateFeedSettings(ctx context.Context, s Scope, sourceID s
 				d = 0
 			}
 			set = append(set, "cache_depth = ?")
+			args = append(args, d)
+		}
+		if p.ClearBacklogDays != nil {
+			d := *p.ClearBacklogDays
+			if d < 0 {
+				d = 0
+			}
+			if d > maxBacklogDays {
+				d = maxBacklogDays
+			}
+			set = append(set, "clear_backlog_days = ?")
 			args = append(args, d)
 		}
 		if len(set) > 0 {

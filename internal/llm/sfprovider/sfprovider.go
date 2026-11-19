@@ -26,10 +26,11 @@
 //     truncated response as a failure rather than as a short answer. Those are
 //     §18.8 promises made to a reader, and moving them into a dependency means
 //     re-auditing them on every upgrade of it.
-//  2. **Two gaps are still open upstream** (§6, checked 2026-08-07): the hosted
-//     `tools` array A10 needs has no field on `schemaflux.CompletionRequest`,
-//     and reasoning effort is inferred from the model name rather than set per
-//     request. Both are features this repo already uses.
+//  2. **Both gaps v1 had are closed in v2** (schemaflux/v2 v2.0.2, checked
+//     2026-11-19): `Request.Effort` and `Request.WebSearch` exist. This repo
+//     honours a caller-stated effort and REFUSES typed web search (see
+//     llm.ErrTypedWebSearch), so A10 still sends its hosted tool through the
+//     audited request here.
 //  3. **The API is still moving.** Depending on the four-method Provider
 //     interface — which is the library's most stable surface, since every
 //     middleware and the client itself are written against it — is a much
@@ -48,56 +49,58 @@ import (
 	"errors"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/provider"
 )
 
-// Complete is the one method that matters, and Provider is the seam.
+// Provider is the seam, and both halves of it are asserted rather than trusted.
 //
-// Declared as a compile-time assertion rather than trusted: SchemaFlux is a
-// sibling checkout under active development, so the day its interface grows a
-// method is the day this line should fail, here, rather than at whichever call
-// site happens to be edited next.
-var _ schemaflux.Provider = (*Provider)(nil)
+// SchemaFlux v2's Provider is two methods (Complete, Name); retry settings are
+// an OPTIONAL interface the library looks for (provider.Retrier). A provider
+// that silently stopped satisfying Retrier would be retried with the library's
+// default of three repeats instead of this one's two — three bills for one
+// outage — so the second line is as load-bearing as the first.
+var (
+	_ schemaflux.Provider = (*Provider)(nil)
+	_ provider.Retrier    = (*Provider)(nil)
+)
 
 // DoFunc performs one completion. It is the audited call in `internal/llm`,
 // passed in rather than imported, because internal/llm imports THIS package and
 // the reverse would be a cycle.
-type DoFunc func(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error)
+type DoFunc func(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error)
 
 // Provider adapts ArticleFlux's own Responses-API call to SchemaFlux's seam.
 type Provider struct {
 	name string
 	do   DoFunc
-	// maxRetries and backoff are what SchemaFlux's retry middleware asks this
-	// provider for. They are provider-specific by design: the library will not
-	// guess a policy for somebody else's endpoint.
+	// maxRetries and backoff are what SchemaFlux asks this provider for
+	// (provider.Retrier). They are provider-specific by design: the library will
+	// not guess a policy for somebody else's endpoint.
 	maxRetries int
 	backoff    time.Duration
-	// estimate turns a request into an expected dollar cost, for the budget
-	// middleware, which refuses a call BEFORE it is made. Nil means "no
-	// estimate", which the budget treats as zero — see EstimateCost.
-	estimate func(schemaflux.CompletionRequest) float64
 }
 
 // Option configures a Provider.
 type Option func(*Provider)
 
-// WithRetryPolicy sets what the retry middleware is told.
+// WithRetryPolicy sets what the library is told. A negative maxRetries means
+// never retry.
 func WithRetryPolicy(maxRetries int, backoff time.Duration) Option {
 	return func(p *Provider) { p.maxRetries, p.backoff = maxRetries, backoff }
 }
 
-// WithCostEstimate supplies the pre-call estimate the budget middleware spends.
-func WithCostEstimate(fn func(schemaflux.CompletionRequest) float64) Option {
-	return func(p *Provider) { p.estimate = fn }
-}
-
 // New builds a provider around the caller's own completion function.
 //
-// `name` is what appears in SchemaFlux's logs, metrics and cost records. It is
-// "articleflux-openai" rather than "openai" deliberately: the cost tables and
-// the metric tags should say which client made the call, and an instance that
-// later runs a second provider needs the two to be distinguishable.
+// `name` is what appears in SchemaFlux's records and price lookups. It is
+// "articleflux-openai" rather than "openai" deliberately: the records should
+// say which client made the call, and an instance that later runs a second
+// provider needs the two to be distinguishable.
+//
+// (v1 also took a pre-call cost estimate here, for its budget middleware. v2's
+// Provider has no EstimateCost — the library reserves against its own Budget
+// type — and this repository keeps its own spend ceiling (llm.Client.Budget), so
+// the option went with the method.)
 func New(name string, do DoFunc, opts ...Option) *Provider {
 	p := &Provider{
 		name:       name,
@@ -120,30 +123,17 @@ var ErrNoCompletion = errors.New("sfprovider: no completion function")
 //
 // Nothing is decided here. The key, the model, the schema and the tools were
 // all resolved by the caller in `internal/llm`, from the tenant scope carried
-// on `ctx` — which is what keeps this repo's per-instance key out of the
-// package-level provider registry that G1 is about.
-func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+// on `ctx` — which is what keeps this repo's per-instance key out of any
+// process-wide client that G1 is about.
+func (p *Provider) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if p.do == nil {
-		return schemaflux.CompletionResponse{}, ErrNoCompletion
+		return schemaflux.Response{}, ErrNoCompletion
 	}
 	return p.do(ctx, req)
 }
 
-// Name identifies this provider in logs, metrics and cost records.
+// Name identifies this provider in records and price lookups.
 func (p *Provider) Name() string { return p.name }
 
-// EstimateCost is what the budget middleware spends before the call.
-//
-// Zero when nothing was supplied, and zero is the honest answer rather than a
-// guess: SchemaFlux's own rule is that a number which was not measured does not
-// exist, and an invented estimate would make a spend cap enforce a fiction.
-func (p *Provider) EstimateCost(req schemaflux.CompletionRequest) float64 {
-	if p.estimate == nil {
-		return 0
-	}
-	return p.estimate(req)
-}
-
-// RetryPolicy is provider-specific, which is why the library asks rather than
-// assumes.
+// RetryPolicy implements provider.Retrier.
 func (p *Provider) RetryPolicy() (int, time.Duration) { return p.maxRetries, p.backoff }

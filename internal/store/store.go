@@ -10,9 +10,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -41,6 +43,15 @@ type DB struct {
 	// readOnly records how this database was opened, because verify has to
 	// prove the same things in a way a read-only connection can answer.
 	readOnly bool
+	// stmts keeps the read path's hot statements prepared (stmtcache.go). Nil
+	// on a DB not built by Open, which then runs every query ad hoc.
+	stmts *stmtCache
+	// closed is set by Close so a maintenance pass that races it is a no-op rather
+	// than an error on a pool that is going away.
+	closed atomic.Bool
+	// log receives maintenance failures that have no caller to return to
+	// (Close). Nil means slog.Default().
+	log *slog.Logger
 }
 
 // Options configure Open.
@@ -71,6 +82,9 @@ type Options struct {
 	// every ReadOnly open. That is not hypothetical — it is what made this option
 	// unusable, and every caller of it (cmd/classifyprobe) unable to start.
 	ReadOnly bool
+	// Log receives the failures nobody can be told about directly: the
+	// planner-statistics pass at Close. Nil means slog.Default().
+	Log *slog.Logger
 }
 
 // Open opens (and creates) the database with the A24 pragmas.
@@ -194,7 +208,8 @@ func Open(opt Options) (*DB, error) {
 	write.SetMaxOpenConns(1)
 	write.SetMaxIdleConns(1)
 
-	db := &DB{Read: read, Write: write, path: opt.Path, readOnly: opt.ReadOnly}
+	db := &DB{Read: read, Write: write, path: opt.Path, readOnly: opt.ReadOnly,
+		stmts: newStmtCache(read), log: opt.Log}
 	if err := db.verify(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -259,6 +274,14 @@ func (db *DB) verify() error {
 
 // Close shuts both pools down.
 func (db *DB) Close() error {
+	// Planner statistics first, while the writer still exists (optimize.go). Its
+	// failure is logged and never returned: a database that closed without fresh
+	// statistics is a database that closed.
+	db.optimizeAtClose()
+	db.closed.Store(true)
+	// Statements first: a prepared statement belongs to a connection, and
+	// finalizing it after its pool is gone is a use-after-close.
+	db.stmts.close()
 	var first error
 	for _, p := range []*sql.DB{db.Write, db.Read} {
 		if p == nil {

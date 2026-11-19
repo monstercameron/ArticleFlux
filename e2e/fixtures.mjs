@@ -111,23 +111,15 @@ export async function signIn(page) {
  * the phone without each one re-implementing it.
  */
 export async function openFeed(page, name) {
-  const rail = page.locator('.pane-rail');
-  if (!(await rail.isVisible())) {
-    await page.getByRole('button', { name: '‹ Feeds' }).click();
-    await expect(rail).toBeVisible();
-  }
+  const rail = await openRail(page);
   await railRow(rail, name).click();
+  await settledOn(page, 'list');
   await expect(page.locator('.pane-list')).toBeVisible();
 }
 
 /** feedRow returns a sidebar row, making it visible first if needed. */
 export async function feedRow(page, name) {
-  const rail = page.locator('.pane-rail');
-  if (!(await rail.isVisible())) {
-    await page.getByRole('button', { name: '‹ Feeds' }).click();
-    await expect(rail).toBeVisible();
-  }
-  return railRow(rail, name);
+  return railRow(await openRail(page), name);
 }
 
 /**
@@ -169,9 +161,45 @@ function railRow(rail, name) {
  * The title is the one part of a row that is only ever the row.
  */
 export async function openRow(page, index = 0) {
+  await showList(page);
   const row = page.locator('.item-row').nth(index);
   await row.locator('.item-title').click();
+  // On a phone the click is also a navigation, and the next helper decides
+  // where it is from `data-view` — so it waits here for the article to be the
+  // pane showing, rather than letting the next step read the view mid-slide.
+  await settledOn(page, 'article');
   return row;
+}
+
+/**
+ * openNote reveals the note-and-tag editor on the article being read.
+ *
+ * The panel is a disclosure: the summary row (tags, the note preview, the sync
+ * mark) is always on screen and the textarea is behind the toggle. A test that
+ * reaches straight for .note-field waits forever for something that is
+ * deliberately not rendered yet.
+ *
+ * Pressed AGAIN if the editor does not appear, and that is the app's rule
+ * rather than a retry papering over one. `toggle-note` is one of the actions
+ * the reader refuses while the pane is travelling (verdictActionsUnsafeDuringTravel
+ * in client/view/reader_clicks.go): a click that lands mid-scroll could belong
+ * to whichever article is sliding past, so it is dropped, and "click again once
+ * the travel settles" is the documented recovery. Every spec that opened the
+ * note did so straight after opening a row — i.e. mid-travel — and pressed
+ * once, so on the runs where the travel was still going the editor never
+ * opened and the test failed on a field that was "not found" (seen on desktop
+ * in reader.spec's "leaving the field saves…" and dialogs.spec's Tag settings
+ * cycle on the same run). Four specs carried their own copy; this is the one.
+ */
+export async function openNote(page) {
+  const field = page.locator('.note-field').first();
+  await expect(async () => {
+    if (!(await field.count())) {
+      await page.locator('[data-action="toggle-note"]').first().click();
+    }
+    await expect(field).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  return field;
 }
 
 /**
@@ -203,6 +231,7 @@ export function currentArticle(page) {
 export async function openStream(page, name) {
   const rail = await openRail(page);
   await rail.getByRole('button', { name }).first().click();
+  await settledOn(page, 'list');
   await expect(page.locator('.pane-list')).toBeVisible();
 }
 
@@ -214,11 +243,98 @@ export async function openStream(page, name) {
  */
 export async function openRail(page) {
   const rail = page.locator('.pane-rail');
-  if (!(await rail.isVisible())) {
+  if (await isPhone(page)) {
+    // The tab bar, not "‹ Feeds". That back button lives in the LIST pane, so
+    // it is only on screen while the list is — and on a phone a test is just as
+    // often in the article or in settings, where reaching for it waits out the
+    // whole timeout. The Feeds tab is on screen from every view, and it is
+    // what a phone reader would press.
+    if (await view(page) !== 'rail') {
+      await page.locator('.tabbar [data-action="tab-feeds"]').click();
+    }
+    await settledOn(page, 'rail');
+  } else if (!(await rail.isVisible())) {
+    // Between the phone breakpoint and 1080px there is no tab bar and no rail,
+    // and the list's "‹ Feeds" is the way there.
     await page.getByRole('button', { name: '‹ Feeds' }).click();
-    await expect(rail).toBeVisible();
   }
+  await expect(rail).toBeVisible();
   return rail;
+}
+
+/**
+ * showList brings the article list on screen, which on a phone it often is not.
+ *
+ * Below 900px the shell shows ONE pane, so a test that has just opened an
+ * article (or the rail, or settings) and then reaches for a row is reaching
+ * into a pane that is in the DOM and deliberately hidden. From the article the
+ * way back is the pane's own "‹ List", which keeps the scope the reader was in;
+ * from anywhere else it is the Read tab — which resets the scope to All, so a
+ * test that needs a particular feed opens it with openFeed instead.
+ *
+ * Decided by `data-view`, the shell's own answer to "which pane is showing",
+ * and NOT by asking whether `.pane-list` is visible. The panes slide, and for
+ * the length of the slide the list that is leaving is still visible: a helper
+ * that asked then concluded it was already there, did nothing, and the next
+ * click waited two minutes on a control that had finished sliding away.
+ *
+ * A no-op on a wide viewport, where the list is always showing.
+ */
+export async function showList(page) {
+  const list = page.locator('.pane-list');
+  if (await isPhone(page)) {
+    const at = await view(page);
+    if (at === 'article') {
+      await page.locator('.pane-article [data-action="back-list"]').click();
+    } else if (at !== 'list') {
+      await page.locator('.tabbar [data-action="tab-home"]').click();
+    }
+    await settledOn(page, 'list');
+  }
+  await expect(list).toBeVisible();
+  return list;
+}
+
+/**
+ * openSettings opens the settings surface the way the device would.
+ *
+ * `,` on a desktop, which is what the specs that open settings have always
+ * pressed (keyboard.spec.mjs proves the binding itself). The Settings tab on a
+ * phone, which has no keyboard to press it on — Playwright would deliver the
+ * key anyway, and a test that passes on a phone by doing something no phone
+ * user can do is not telling anybody anything about the phone.
+ */
+export async function openSettings(page) {
+  if (await isPhone(page)) {
+    await page.locator('.tabbar [data-action="tab-settings"]').click();
+    await settledOn(page, 'settings');
+  } else {
+    await page.keyboard.press(',');
+  }
+  await expect(page.locator('.set-tabs')).toBeVisible();
+}
+
+/** isPhone reports whether the shell is in its one-pane layout. */
+export async function isPhone(page) {
+  return page.locator('.tabbar').isVisible();
+}
+
+/** view is the pane the shell says it is showing (rail|list|article|settings). */
+function view(page) {
+  return page.locator('.shell').getAttribute('data-view');
+}
+
+/**
+ * settledOn waits, on a phone, for the shell to be showing `want`.
+ *
+ * Every navigation on a phone is asynchronous — the click posts, the shell
+ * re-renders, the panes slide — so a helper that acts on the view straight
+ * after a click reads the one it is leaving. Nothing to wait for on a wide
+ * viewport, where every pane is always on screen whatever `data-view` says.
+ */
+async function settledOn(page, want) {
+  if (!(await isPhone(page))) return;
+  await expect(page.locator('.shell')).toHaveAttribute('data-view', want);
 }
 
 /**

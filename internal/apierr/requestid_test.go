@@ -108,4 +108,3 @@ func TestRequestIDDoesNotDistinguishCrossTenantFromAGenuineMiss(t *testing.T) {
 		t.Error("detail keys differ — a cross-tenant access is distinguishable from a miss")
 	}
 }
-

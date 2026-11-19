@@ -9,8 +9,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -172,8 +172,22 @@ func Setup(p setupProps) ui.Node {
 			p.onSuccess(c)
 		}
 	})
+	// What the last Copy press achieved: copyNone before one, then copyOK or
+	// copyFailed. The sheet says which, because a Copy that silently did nothing
+	// — the ordinary case on a self-hosted instance reached over plain HTTP —
+	// is a reader who believes their codes are on the clipboard and has nothing
+	// to paste.
+	copied := ui.UseState(copyNone)
 	onCopy := ui.UseEvent(func() {
-		platform.WriteClipboard(strings.Join(codes.Get(), "\n"))
+		platform.WriteClipboard(strings.Join(codes.Get(), "\n"), func(ok bool) {
+			ui.PostAsync(func() {
+				if ok {
+					copied.Set(copyOK)
+				} else {
+					copied.Set(copyFailed)
+				}
+			})
+		})
 	})
 
 	onKey := func(k platform.Key) {
@@ -191,79 +205,77 @@ func Setup(p setupProps) ui.Node {
 	}, []any{username.Get(), password.Get(), confirm.Get(), busy.Get(), int(step.Get())})
 
 	if step.Get() == stepCodes {
-		return setupCodes(tr, codes.Get(), onCopy, onDone)
+		return setupCodes(tr, codes.Get(), copied.Get(), onCopy, onDone)
 	}
 
-	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "setup"}},
-		html.Form(html.Props{Class: "login-card", Role: "main",
+	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "setup"}},
+		html.Form(html.Props{Class: "login-card",
 			Raw: map[string]any{"onsubmit": "return false"}},
-			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "mark"))),
+			// The page's heading, as on the login card — see Login.
+			html.H1(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "mark"))),
 			html.P(html.Props{Class: "login-lede"}, html.Text(tr.T("setup", "lede"))),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "setup-username"}},
-					html.Text(tr.T("setup", "username"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "text", ID: "setup-username",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "username"), ID: "setup-username",
+				Control: html.Input(kitWire("setup-username", "", html.Props{
+					Class: "field login-input", Type: "text",
 					// The seed, not the state: see the seeds' declaration.
 					Value:   userSeed.Get(),
 					OnInput: onUser,
 					Data:    map[string]string{"role": "setup-username"},
-					Raw:     map[string]any{"autocomplete": "username"},
-				}),
-			),
+					// The login card's set, for the login card's reasons: a
+					// username is an identifier, so a phone capitalising its
+					// first letter or "correcting" it makes an account whose
+					// name the reader then cannot type back. And "go", because
+					// Enter in any field on this card submits it (onKey).
+					Raw: map[string]any{
+						"autocomplete":   "username",
+						"autocapitalize": "none",
+						"spellcheck":     "false",
+						"enterkeyhint":   "go",
+					},
+				})),
+			}),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "setup-email"}},
-					html.Text(tr.T("setup", "email"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "email", ID: "setup-email",
+			// The note under the address is the field's description (kitWire
+			// points the input's describedby at it): it is the one fact about
+			// this address a reader needs before typing it. Said next to the
+			// field rather than in a policy nobody opens: this server has no
+			// mailer, so an address here is a label and not a way back in. The
+			// codes on the next screen are the way back in, and the two facts
+			// belong together.
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "email"),
+				Hint: tr.T("setup", "emailHint"), HintClass: "login-foot", ID: "setup-email",
+				Control: html.Input(kitWire("setup-email", tr.T("setup", "emailHint"), html.Props{
+					Class: "field login-input", Type: "email",
 					Value:   emailSeed.Get(),
 					OnInput: onEmail,
 					Data:    map[string]string{"role": "setup-email"},
-					Raw:     map[string]any{"autocomplete": "email"},
-				}),
-				// Said next to the field rather than in a policy nobody opens:
-				// this server has no mailer, so an address here is a label and
-				// not a way back in. The codes on the next screen are the way
-				// back in, and the two facts belong together.
-				html.P(html.Props{Class: "login-foot"}, html.Text(tr.T("setup", "emailHint"))),
-			),
+					Raw:     map[string]any{"autocomplete": "email", "enterkeyhint": "go"},
+				})),
+			}),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "setup-password"}},
-					html.Text(tr.T("setup", "password"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "password", ID: "setup-password",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "password"),
+				Hint: tr.T("setup", "passwordHint"), HintClass: "login-foot", ID: "setup-password",
+				Control: html.Input(kitWire("setup-password", tr.T("setup", "passwordHint"), html.Props{
+					Class: "field login-input", Type: "password",
 					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "setup-password"},
-					Raw:     map[string]any{"autocomplete": "new-password"},
-				}),
-				html.P(html.Props{Class: "login-foot"}, html.Text(tr.T("setup", "passwordHint"))),
-			),
+					Raw:     map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
+				})),
+			}),
 
-			html.Div(html.Props{Class: "login-field"},
-				html.Label(html.Props{Class: "login-label",
-					Raw: map[string]any{"for": "setup-confirm"}},
-					html.Text(tr.T("setup", "confirm"))),
-				html.Input(html.Props{
-					Class: "field login-input", Type: "password", ID: "setup-confirm",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "confirm"), ID: "setup-confirm",
+				Control: html.Input(kitWire("setup-confirm", "", html.Props{
+					Class: "field login-input", Type: "password",
 					Value:   confirmSeed.Get(),
 					OnInput: onConfirm,
 					Data:    map[string]string{"role": "setup-confirm"},
-					Raw:     map[string]any{"autocomplete": "new-password"},
-				}),
-			),
+					Raw:     map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
+				})),
+			}),
 
-			html.Div(html.Props{
-				Class: errClass(errMsg.Get()),
-				Role:  "alert",
-				Aria:  map[string]string{"live": "polite"},
-			}, html.Text(errMsg.Get())),
+			kitFieldError(kitFormCard, errMsg.Get()),
 
 			html.Button(html.Props{
 				Class:    "btn login-submit",
@@ -275,15 +287,31 @@ func Setup(p setupProps) ui.Node {
 	)
 }
 
+// The outcomes of the sheet's Copy button.
+const (
+	copyNone   = ""
+	copyOK     = "copied"
+	copyFailed = "failed"
+)
+
 // setupCodes is the second step: the sheet, and the only chance to keep it.
-func setupCodes(tr i18n.Runtime, sheet []string, onCopy, onDone ui.Handler) ui.Node {
+func setupCodes(tr i18n.Runtime, sheet []string, copied string, onCopy, onDone ui.Handler) ui.Node {
 	lines := make([]ui.Node, 0, len(sheet))
 	for _, c := range sheet {
 		lines = append(lines, html.Li(html.Props{Class: "setup-code"}, html.Text(c)))
 	}
-	return html.Div(html.Props{Class: "login", Data: map[string]string{"phase": "setup-codes"}},
-		html.Div(html.Props{Class: "login-card", Role: "main"},
-			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "codesMark"))),
+	copyLabel := tr.T("setup", "codesCopy")
+	note := ""
+	switch copied {
+	case copyOK:
+		copyLabel = tr.T("setup", "codesCopied")
+		note = tr.T("setup", "codesCopiedNote")
+	case copyFailed:
+		note = tr.T("setup", "codesCopyFailed")
+	}
+	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "setup-codes"}},
+		html.Div(html.Props{Class: "login-card"},
+			html.H1(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "codesMark"))),
 			html.P(html.Props{Class: "login-lede"}, html.Text(tr.T("setup", "codesLede"))),
 
 			html.Ul(html.Props{Class: "setup-codes",
@@ -294,13 +322,18 @@ func setupCodes(tr i18n.Runtime, sheet []string, onCopy, onDone ui.Handler) ui.N
 			html.Div(html.Props{Class: "set-actions"},
 				html.Button(html.Props{
 					Class: "chip", Type: "button", OnClick: onCopy,
-					Data: map[string]string{"role": "setup-copy"},
-				}, html.Text(tr.T("setup", "codesCopy"))),
+					Data: map[string]string{"role": "setup-copy", "copied": copied},
+				}, html.Text(copyLabel)),
 				html.Button(html.Props{
 					Class: "btn login-submit", Type: "button", OnClick: onDone,
 					Data: map[string]string{"role": "setup-done"},
 				}, html.Text(tr.T("setup", "codesDone"))),
 			),
+			// Always in the document, empty until Copy is pressed, so the
+			// outcome is announced when it arrives (errClass's reason).
+			kitLive(kitLiveProps{Class: "login-foot setup-copy-note", Role: kitRoleStatus, Paragraph: true,
+				Data: map[string]string{"bad": boolAttr(copied == copyFailed)}},
+				html.Text(note)),
 		),
 	)
 }

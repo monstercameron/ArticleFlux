@@ -71,7 +71,7 @@ func TestSteerInterestPropagatesANonNotFoundError(t *testing.T) {
 		t.Errorf("code = %v, want InvalidArgument", status.Code(err))
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		t.Error("an unscoped caller was told the topic does not exist, which leaks nothing "+
+		t.Error("an unscoped caller was told the topic does not exist, which leaks nothing " +
 			"but is still the wrong reason")
 	}
 }

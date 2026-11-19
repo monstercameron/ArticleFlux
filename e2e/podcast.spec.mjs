@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, isPhone, openSettings } from './fixtures.mjs';
 
 /**
  * The two modes (plan §19, "Two modes, and the correction one of them makes").
@@ -186,5 +186,157 @@ test.describe('the two modes', () => {
     await startSilent(page);
     await expect(slides(page)).toHaveAttribute('data-mode', 'silent');
     await expect(page.locator('.slide-voice')).toHaveCount(0);
+  });
+});
+
+/**
+ * Persistence: every control on the FluxCast tab keeps what the reader chose.
+ *
+ * Each test changes ONE control, waits for the tab to say it has saved — the
+ * "Saved" line is the whole point of that line, since a reload straight after a
+ * press races the write — reloads the page, and reads the control back. The
+ * reload is the cheapest honest stand-in for "closed the app and came back",
+ * and for a second device: the value has to come from the server, because
+ * nothing else survives it.
+ *
+ * Every test sets a value that is NOT the default and restores it, so the order
+ * of the tests, and a failed one, cannot leave the next one starting from the
+ * state it was meant to prove.
+ */
+async function openFluxCast(page) {
+  // The gear in the list's corner on a desktop; on a phone the list is not on
+  // screen after a reload that lands elsewhere, and the Settings tab is how a
+  // phone gets there at all (fixtures.mjs: openSettings).
+  if (await isPhone(page)) {
+    await openSettings(page);
+  } else {
+    await expect(async () => {
+      await page.locator('.list-corner').getByRole('button', { name: 'Settings' }).click();
+      await expect(page.locator('.pane-settings')).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 30_000 });
+  }
+  await page.getByRole('button', { name: /^FluxCast$/ }).click();
+  await expect(page.locator('.set-panel .pc-need')).toHaveCount(4);
+}
+
+const needSwitch = (page, key) => page.locator(`.pc-need:has(#pc-need-${key}-label) button`);
+const status = (page) => page.locator('.set-panel [role="status"]').first();
+
+/** Presses a control and waits for the tab to say it was stored. */
+async function pressAndSave(page, control) {
+  await control.click();
+  await expect(status(page)).toContainText(/^Saved/, { timeout: 15_000 });
+}
+
+/** Sets a switch to `want`, whichever way it starts, and waits for it to be stored. */
+async function setSwitch(page, control, want) {
+  const now = (await control.getAttribute('aria-pressed')) === 'true';
+  if (now !== want) await pressAndSave(page, control);
+  await expect(control).toHaveAttribute('aria-pressed', String(want));
+}
+
+async function reloadToFluxCast(page) {
+  await page.reload();
+  await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+  await openFluxCast(page);
+}
+
+test.describe('the FluxCast tab keeps what was chosen', () => {
+  for (const [key, label] of [
+    ['smartVoice', 'Smart+ voice'],
+    ['podcast', 'Join the stories up'],
+    ['keepPlaying', 'Keep playing'],
+  ]) {
+    test(`${label} survives a reload, in both directions`, async ({ page }) => {
+      await boot(page);
+      await openFluxCast(page);
+      const control = needSwitch(page, key);
+
+      // Both directions: the Smart+ voice and Keep playing chips used to turn on
+      // and never off, so "survives a reload" was only ever half of the claim.
+      for (const want of [true, false]) {
+        await setSwitch(page, control, want);
+        await reloadToFluxCast(page);
+        await expect(needSwitch(page, key)).toHaveAttribute('aria-pressed', String(want));
+        await expect(page.locator(`.pc-need:has(#pc-need-${key}-label)`))
+          .toHaveAttribute('data-on', String(want));
+      }
+    });
+  }
+
+  test('the summary switch survives a reload', async ({ page }) => {
+    await boot(page);
+    await openFluxCast(page);
+    const digest = page.locator('.set-panel [data-action="toggle-digest"]');
+    await setSwitch(page, digest, true);
+    await reloadToFluxCast(page);
+    await expect(page.locator('.set-panel [data-action="toggle-digest"]'))
+      .toHaveAttribute('aria-pressed', 'true');
+    await setSwitch(page, page.locator('.set-panel [data-action="toggle-digest"]'), false);
+  });
+
+  test('the narrator\'s manner survives a reload', async ({ page }) => {
+    await boot(page);
+    await openFluxCast(page);
+    // The picker exists only while the broadcast is on, and says why otherwise.
+    const podcast = needSwitch(page, 'podcast');
+    await setSwitch(page, podcast, false);
+    await expect(page.locator('.set-panel [data-action="podcast-vibe"]')).toHaveCount(0);
+    await expect(page.locator('.set-panel')).toContainText('to choose how the narrator sounds');
+    await setSwitch(page, podcast, true);
+
+    await pressAndSave(page, page.locator('.set-panel [data-action="podcast-vibe"][data-value="dry"]'));
+    await reloadToFluxCast(page);
+    await expect(page.locator('.set-panel [data-action="podcast-vibe"][data-value="dry"]'))
+      .toHaveAttribute('aria-pressed', 'true');
+
+    // Put back, and leave the broadcast as this test found it.
+    await pressAndSave(page, page.locator('.set-panel [data-action="podcast-vibe"][data-value="calm"]'));
+    await setSwitch(page, needSwitch(page, 'podcast'), false);
+  });
+
+  test('the music choice survives a reload', async ({ page }) => {
+    await boot(page);
+    await openFluxCast(page);
+    const off = page.locator('.set-panel [data-action="podcast-bed"][data-value="off"]');
+    await expect(off).toBeVisible();
+    const wasOff = (await off.getAttribute('aria-pressed')) === 'true';
+    // The other of the two, so the test changes something whichever way it starts.
+    const target = wasOff
+      ? page.locator('.set-panel [data-action="podcast-bed"]:not([data-value="off"])').first()
+      : off;
+    const targetValue = await target.getAttribute('data-value');
+    await pressAndSave(page, target);
+
+    await reloadToFluxCast(page);
+    await expect(page.locator(`.set-panel [data-action="podcast-bed"][data-value="${targetValue}"]`))
+      .toHaveAttribute('aria-pressed', 'true');
+
+    // Put back.
+    const back = wasOff ? page.locator('.set-panel [data-action="podcast-bed"][data-value="off"]')
+      : page.locator('.set-panel [data-action="podcast-bed"]:not([data-value="off"])').first();
+    await pressAndSave(page, back);
+  });
+
+  test('a press that cannot be stored goes back and says so', async ({ page }) => {
+    await boot(page);
+    await openFluxCast(page);
+    const digest = page.locator('.set-panel [data-action="toggle-digest"]');
+    const before = await digest.getAttribute('aria-pressed');
+
+    // Refuse the write at the wire rather than stopping the server, which other
+    // tests in this run share. The transport is a WebSocket, so what can be
+    // refused is the whole connection: going offline makes the next call fail
+    // the way a dropped tunnel does.
+    await page.context().setOffline(true);
+    try {
+      await digest.click();
+      await expect(status(page)).toContainText(/Couldn.t save/, { timeout: 30_000 });
+      // Put back to what the server holds, not left showing a value that was
+      // never stored.
+      await expect(digest).toHaveAttribute('aria-pressed', before);
+    } finally {
+      await page.context().setOffline(false);
+    }
   });
 });

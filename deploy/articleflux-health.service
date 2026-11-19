@@ -1,6 +1,7 @@
 # ArticleFlux — the watchdog that notices what systemd cannot.
 #
-# Install:  sudo systemctl enable --now articleflux-health.timer
+# Install:  sudo sh deploy/install-ops.sh   (or --runtime docker; it writes the
+#           ARTICLEFLUX_RUNTIME drop-in this script reads, and enables the timer)
 # Logs:     journalctl -u articleflux-health
 #
 # systemd restarts a process that EXITS. It has nothing to say about a process

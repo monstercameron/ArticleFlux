@@ -161,3 +161,65 @@ func TestGetItemModelPrimarySetsByModel(t *testing.T) {
 		t.Error("CategoryByModel = false for a model verdict")
 	}
 }
+
+// TestCategoryRungNamesWhoChoseIt is A47's provenance on the wire: the code
+// rung leaves category_rung empty, and each paid rung names itself — on both
+// read paths that fill category_by_model (GetItem's batch of one and
+// ListItems' page), with category_by_model true for either paid rung so a
+// client that knows only the bool is still told the truth.
+func TestCategoryRungNamesWhoChoseIt(t *testing.T) {
+	srv, repo, sc := newCategoryServer(t)
+	ctx := context.Background()
+
+	items, _, err := srv.svc.ListItems(ctx, sc, store.ListQuery{Limit: 10})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("seed ListItems: %d items, %v", len(items), err)
+	}
+	id := items[0].ID
+	for _, c := range []struct {
+		name    string
+		row     store.ItemAnalysis
+		byModel bool
+		rung    string
+	}{
+		// Code: the terms earned it; nothing paid was asked.
+		{"code", store.ItemAnalysis{CategoryScores: map[string]float64{"security": 8.0}}, false, ""},
+		{"jev", store.ItemAnalysis{ModelPrimary: "business", ModelRung: "jev"}, true, "jev"},
+		{"model", store.ItemAnalysis{ModelPrimary: "science", ModelRung: "model"}, true, "model"},
+		// A verdict stored before 0035 recorded the rung: still the model's, and
+		// the wire says so without inventing which rung.
+		{"pre-0035", store.ItemAnalysis{ModelPrimary: "science"}, true, ""},
+	} {
+		row := c.row
+		row.ItemID, row.AnalyzerVersion, row.LexiconHash, row.AnalyzedAt = id, 1, "h", time.Now().UTC()
+		if err := repo.UpsertAnalysis(ctx, []store.ItemAnalysis{row}); err != nil {
+			t.Fatalf("%s: UpsertAnalysis: %v", c.name, err)
+		}
+		res, err := srv.GetItem(ctx, &pb.GetItemRequest{Id: id})
+		if err != nil {
+			t.Fatalf("%s: GetItem: %v", c.name, err)
+		}
+		if it := res.GetItem(); it.GetCategoryByModel() != c.byModel || it.GetCategoryRung() != c.rung {
+			t.Errorf("%s: GetItem by_model=%v rung=%q, want %v %q",
+				c.name, it.GetCategoryByModel(), it.GetCategoryRung(), c.byModel, c.rung)
+		}
+		list, err := srv.ListItems(ctx, &pb.ListItemsRequest{Limit: 50})
+		if err != nil {
+			t.Fatalf("%s: ListItems: %v", c.name, err)
+		}
+		found := false
+		for _, it := range list.GetItems() {
+			if it.GetId() != id {
+				continue
+			}
+			found = true
+			if it.GetCategoryByModel() != c.byModel || it.GetCategoryRung() != c.rung {
+				t.Errorf("%s: ListItems by_model=%v rung=%q, want %v %q",
+					c.name, it.GetCategoryByModel(), it.GetCategoryRung(), c.byModel, c.rung)
+			}
+		}
+		if !found {
+			t.Errorf("%s: ListItems did not carry the item", c.name)
+		}
+	}
+}

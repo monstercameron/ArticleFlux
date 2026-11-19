@@ -1,6 +1,14 @@
-# Compose file for the Docker deployment of ArticleFlux — installed to
-# /opt/articleflux/compose.yaml on the droplet (af-reader-deploy-release.sh rewrites the
-# image tag pin in place there; deploys pin immutable v* tags, never :latest).
+# THE PRODUCTION compose file — feed.earlcameron.com, one droplet, nginx in front.
+#
+# Not a template. Every value below that is not a default is a fact about that one box:
+# its origin, the uid:gid of its articleflux user, its bind-mounted data directory. To run
+# ArticleFlux anywhere else, start from the generic /compose.yaml at the repository root
+# and docs/INSTALL.md.
+#
+# Installed to /opt/articleflux/compose.yaml on the droplet — the name the scripts beside
+# this file expect there (af-reader-deploy-release.sh rewrites the image tag pin in place;
+# articleflux-ctr reads the image and `user:` from it). Deploys pin immutable v* tags,
+# never :latest. deploy/docker/CUTOVER.md is how the box moves onto this from systemd.
 services:
   articleflux:
     image: ghcr.io/monstercameron/articleflux:v0.0.0 # pinned by af-reader-deploy-release.sh
@@ -15,7 +23,9 @@ services:
     # binds :9000; publishing to 127.0.0.1 is where that boundary lives now.
     ports:
       - "127.0.0.1:9000:9000"
-    # Same path inside and out — the design rule that keeps every ops script true.
+    # Same path inside and out — the design rule that keeps every ops script true. A bind
+    # mount rather than a named volume because the data predates the container: 2.7 GB of
+    # database, its key files and its caches are already in this directory.
     volumes:
       - /var/lib/articleflux:/var/lib/articleflux
     # The Smart+ voice key, if set — same optional env file the systemd unit read.
@@ -26,6 +36,10 @@ services:
     # actually shows (scheme included) or every WebSocket upgrade is refused with the
     # page loading fine — the unit file's own hard-won warning. -behind-proxy is safe
     # ONLY because nginx overwrites X-Forwarded-For in front of this.
+    #
+    # Written out in full although the image now defaults -addr and -web through its
+    # environment: this is the line a person compares against the systemd unit's
+    # ExecStart during a cutover or a rollback, and it should read the same.
     command:
       [
         "serve",

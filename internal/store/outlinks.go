@@ -170,13 +170,13 @@ func (r *ReaderRepo) OutlinkCandidates(ctx context.Context, s Scope, sinceMS int
 
 // StoredRecommendation is one row of the recommendations table.
 type StoredRecommendation struct {
-	Domain     string
-	FeedURL    string
-	Title      string
-	Score      float64
-	Rung       int
-	Evidence   string
-	Status     string
+	Domain   string
+	FeedURL  string
+	Title    string
+	Score    float64
+	Rung     int
+	Evidence string
+	Status   string
 	// TopicLabel is the topic this candidate matched, when it has one — rungs
 	// 1-2 usually don't (see 0031's migration comment). Persisted structurally
 	// so DismissedTopics can steer future scoring by topic without re-parsing

@@ -212,7 +212,7 @@ directory. A restart will NOT fix it and the watchdog deliberately has not tried
 $(df -h /var/lib/articleflux 2>/dev/null)
 
 --- last 20 log lines ---
-$(journalctl -u $UNIT --no-pager --lines=20 -o cat 2>/dev/null)"
+$(log_tail 20)"
 		fi
 	fi
 	exit 0

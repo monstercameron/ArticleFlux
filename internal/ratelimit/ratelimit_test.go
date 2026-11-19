@@ -219,6 +219,8 @@ func TestTheTableMatchesTheSpec(t *testing.T) {
 		{WebSubPerSource, 120, time.Minute},
 		{PackBuildPerUser, 10, time.Hour},
 		{DefaultPerUser, 600, time.Minute},
+		{ThemePerUser, 20, time.Hour},
+		{ArticleTranslatePerUser, 30, time.Hour},
 	}
 	for _, c := range cases {
 		if c.rule.Limit != c.limit || c.rule.Per != c.per {

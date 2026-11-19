@@ -168,7 +168,6 @@ var urlish = map[string]bool{
 	"content": true, "background": true, "longdesc": true,
 }
 
-
 func TestXSSCorpusIsNeutralisedUnderEveryPolicy(t *testing.T) {
 	for _, c := range xssCorpus {
 		for _, p := range allPolicies {

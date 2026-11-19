@@ -3,12 +3,13 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The bridge, driven end to end.
@@ -56,10 +57,7 @@ func TestATypedOperationReachesTheProviderAtAll(t *testing.T) {
 	// later.
 	c, cap := opsClientFor(t, `Woodworking`)
 
-	got, err := schemaflux.Generating[string]("Name a folder for a hand-tools blog.").
-		Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background()))
+	got, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder for a hand-tools blog.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}})
 	if err != nil {
 		t.Fatalf("the operation never reached the provider: %v", err)
 	}
@@ -85,11 +83,7 @@ func TestTheInstancesConfiguredModelReachesTheWireWhenNamed(t *testing.T) {
 	c.WithModel(func(context.Context) string { return "gpt-5" })
 
 	ctx := context.Background()
-	if _, err := schemaflux.Generating[string]("anything").
-		Model(c.OpsModel(context.Background())).
-		Model(c.OpsModel(ctx)).
-		Fast().
-		Run(c.OpsContext(ctx)); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(ctx), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if cap.wire.Model != "gpt-5" {
@@ -108,11 +102,7 @@ func TestWithoutAConfiguredModelTheBuiltInDefaultIsSent(t *testing.T) {
 	if got := c.OpsModel(ctx); got != DefaultModel {
 		t.Errorf("OpsModel = %q, want the built-in %q", got, DefaultModel)
 	}
-	if _, err := schemaflux.Generating[string]("anything").
-		Model(c.OpsModel(context.Background())).
-		Model(c.OpsModel(ctx)).
-		Fast().
-		Run(c.OpsContext(ctx)); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(ctx), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if cap.wire.Model != DefaultModel {
@@ -128,28 +118,23 @@ func TestWithoutAConfiguredModelTheBuiltInDefaultIsSent(t *testing.T) {
 // resolve to and the library refuses before making the call. When the provider
 // was named "openai" — which it was, purely to make that table resolve — the
 // same mistake would have silently run an OpenAI default instead.
-func TestAnOperationThatNamesNoModelIsRefusedRatherThanGuessed(t *testing.T) {
-	// The environment overrides are cleared first, and that is the whole
-	// precondition worth stating: SCHEMAFLUX_MODEL and its per-tier siblings
-	// short-circuit provider resolution entirely, so on a machine where one is
-	// set an unnamed model resolves to whatever it names regardless of who the
-	// provider is. The guarantee below holds when nothing has been set, which is
-	// the deployed case.
-	t.Setenv("SCHEMAFLUX_MODEL", "")
-	t.Setenv("SCHEMAFLUX_MODEL_SMART", "")
-	t.Setenv("SCHEMAFLUX_MODEL_FAST", "")
-	t.Setenv("SCHEMAFLUX_MODEL_QUICK", "")
+func TestAnOperationThatNamesNoModelRunsTheInstancesModel(t *testing.T) {
+	// Under SchemaFlux v1 an unnamed model was REFUSED (the provider was not in
+	// the library's tier table), and that refusal was this repository's guard
+	// against silently running a vendor default. v2 carries the model on the
+	// Client that OpsContext puts on the context, resolved from the tenant scope
+	// at that moment, so an operation that names none gets the instance's —
+	// never the library's gpt-6-luna-by-tier, and never an environment override.
+	t.Setenv("SCHEMAFLUX_MODEL", "something-the-environment-says")
+	c, cap := opsClientFor(t, `x`)
+	c.WithModel(func(context.Context) string { return "the-instances-model" })
 
-	c, _ := opsClientFor(t, `x`)
-
-	_, err := schemaflux.Generating[string]("anything").
-		Fast().
-		Run(c.OpsContext(context.Background()))
-	if err == nil {
-		t.Fatal("an operation with no model ran anyway")
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "anything",
+		schemaflux.GenerateOptions{Options: schemaflux.Options{Tier: schemaflux.TierFast}}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "no default model") {
-		t.Errorf("err = %v, want it to say there is no default model for this provider", err)
+	if cap.wire.Model != "the-instances-model" {
+		t.Errorf("model on the wire = %q, want the instance's", cap.wire.Model)
 	}
 }
 
@@ -160,9 +145,7 @@ func TestTheAuditedGuaranteesHoldForTypedOperationsToo(t *testing.T) {
 	// provider-side, or where they are sent.
 	c, cap := opsClientFor(t, `x`)
 
-	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if cap.wire.Store {
@@ -183,9 +166,7 @@ func TestTheKeyIsResolvedPerCallForTypedOperationsToo(t *testing.T) {
 	key := "sk-first"
 	c, cap := fakeClientKeyed(t, func(context.Context) string { return key }, `x`)
 
-	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := cap.req.Header.Get("Authorization"); got != "Bearer sk-first" {
@@ -193,9 +174,7 @@ func TestTheKeyIsResolvedPerCallForTypedOperationsToo(t *testing.T) {
 	}
 
 	key = "sk-second"
-	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := cap.req.Header.Get("Authorization"); got != "Bearer sk-second" {
@@ -211,9 +190,7 @@ func TestAnOperationWithNoKeyNeverLeaves(t *testing.T) {
 		return jsonResponse(http.StatusOK, responsesReply{Status: "completed", OutputText: "x"}), nil
 	})}
 
-	if _, err := schemaflux.Generating[string]("anything").Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err == nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "anything", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}}); err == nil {
 		t.Fatal("an unconfigured instance ran an operation")
 	}
 	if sent {
@@ -228,11 +205,8 @@ func TestTheOperationsOwnPromptAndSchemaAreCarriedThrough(t *testing.T) {
 	// fault.
 	c, cap := opsClientFor(t, `{"id":"i-000001"}`)
 
-	if _, err := schemaflux.Choosing[string]([]string{"Tech", "Cooking"}).
-		By("which folder this belongs in").
-		Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	if _, err := schemaflux.Choose(c.OpsContext(context.Background()), []string{"Tech", "Cooking"},
+		schemaflux.ChooseOptions{Criteria: []string{"which folder this belongs in"}, Options: schemaflux.Options{Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(cap.wire.Instructions, "selection expert") {
@@ -277,4 +251,25 @@ func fakeClientKeyed(t *testing.T, keyOf KeyFunc, reply string) (*Client, *captu
 		}), nil
 	})}
 	return c, cap
+}
+
+// SchemaFlux (since v1.2.0, and Options.WebSearch in v2) lets any operation ask for web search.
+// The typed path must refuse it before anything leaves: which features may reach
+// the live web is an §18.8 grant made per feature (A10, through Do), and a
+// builder method one keystroke away from every Smart+ call site is not that
+// grant. Refusing is also the honest failure — silently dropping the flag would
+// let an operation present an unsearched answer as a searched one.
+func TestATypedOperationCannotTurnOnWebSearch(t *testing.T) {
+	c, cap := opsClientFor(t, `anything`)
+
+	_, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "What happened today?", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), WebSearch: true, Tier: schemaflux.TierFast}})
+	if err == nil {
+		t.Fatal("a typed operation asking for web search was allowed through")
+	}
+	if !errors.Is(err, ErrTypedWebSearch) && !strings.Contains(err.Error(), ErrTypedWebSearch.Error()) {
+		t.Errorf("err = %v, want ErrTypedWebSearch", err)
+	}
+	if cap.req != nil {
+		t.Errorf("a request left the machine anyway:\n%s", cap.body)
+	}
 }

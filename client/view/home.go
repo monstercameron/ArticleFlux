@@ -4,9 +4,10 @@ package view
 
 import (
 	"strings"
+	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -77,6 +78,23 @@ const (
 	homeBridgeURL = "https://github.com/monstercameron/GoGRPCBridge"
 )
 
+// homeFlight is a programmatic scroll in progress: where it is going, and
+// until when that claim is to be trusted over what the scroller reports.
+//
+// The deadline is what keeps this from becoming a trap. A reader who grabs the
+// wheel mid-glide never arrives at the target, and without an expiry the marker
+// would ignore the scroll position for the rest of the visit.
+type homeFlight struct {
+	target int
+	until  time.Time
+}
+
+// homeFlightWindow is how long a smooth scroll between two bands may take. The
+// longest hop on this page (g, from the last band to the first) settles in
+// well under a second in every engine tried; a second and a half is that with
+// room, and short enough that a hand-scroll takes over again almost at once.
+const homeFlightWindow = 1500 * time.Millisecond
+
 func Home() ui.Node {
 	tr := i18n.UseI18n()
 	ns := tr.NS("home")
@@ -98,6 +116,10 @@ func Home() ui.Node {
 	sheetRef := ui.UseRef(false)
 	sheetRef.Set(sheet.Get())
 
+	// The band a key or a click has SENT the page to, while it is still on its
+	// way there. See homeFlight.
+	flight := ui.UseRef(homeFlight{target: -1})
+
 	goTo := func(i int) {
 		if i < 0 {
 			i = 0
@@ -105,7 +127,12 @@ func Home() ui.Node {
 		if i >= len(homeBands) {
 			i = len(homeBands) - 1
 		}
+		flight.Set(homeFlight{target: i, until: time.Now().Add(homeFlightWindow)})
 		band.Set(i)
+		// The ref as well as the state, and at once: a second key arriving before
+		// the next render must step from where this one is GOING, and the ref is
+		// only refreshed from the state when a render happens.
+		bandRef.Set(i)
 		platform.ScrollChildToTop(".hm", "[data-band='"+homeBands[i]+"']", true, nil)
 	}
 
@@ -176,7 +203,24 @@ func Home() ui.Node {
 		// records anything; the rail marker follows whatever is at the top,
 		// however it got there.
 		l := platform.OnTopmostChild(".hm", ".hm", "data-band", func(id string, _ bool) {
-			ui.PostAsync(func() { band.Set(homeBandIndex(id)) })
+			ui.PostAsync(func() {
+				at := homeBandIndex(id)
+				// Passing through is not arriving. The scroll that `j` starts is
+				// smooth, so on its way to the next band the page spends several
+				// frames with the PREVIOUS one still topmost — and this callback
+				// used to report each of them, setting the marker back to where
+				// the reader had just left. A second `j` pressed during the glide
+				// then stepped from the old band and went nowhere: two presses,
+				// one section. While a flight is open, only its destination (or
+				// its expiry) is believed.
+				if f := flight.Get(); f.target >= 0 {
+					if at != f.target && time.Now().Before(f.until) {
+						return
+					}
+					flight.Set(homeFlight{target: -1})
+				}
+				band.Set(at)
+			})
 		})
 		return l.Release
 	}, []any{})
@@ -394,7 +438,6 @@ func homeFigArt(class, src, narrow, alt, caption, w, h string) ui.Node {
 
 	var shot ui.Node = img
 	if narrow != "" {
-		class += " hm-fig-wide"
 		shot = html.Picture(html.Props{},
 			html.Source(html.Props{Raw: map[string]any{
 				// 1000px and not 700: the swap has to happen while there is still
@@ -410,7 +453,10 @@ func homeFigArt(class, src, narrow, alt, caption, w, h string) ui.Node {
 		)
 	}
 
-	return html.Figure(html.Props{Class: "hm-fig " + class},
+	// ClassNames rather than concatenation: most callers pass no class of their
+	// own, and "hm-fig " + "" + " hm-fig-wide" put a stray double space in the
+	// attribute of every wide figure on the page.
+	return html.Figure(html.Props{Class: html.ClassNames("hm-fig", class, html.When(narrow != "", "hm-fig-wide"))},
 		html.Div(html.Props{Class: "hm-shot"}, shot),
 		html.Figcaption(html.Props{Class: "hm-cap"}, html.Text(caption)),
 	)
@@ -628,7 +674,10 @@ func homeClose(ns i18n.Namespace) ui.Node {
 			homeLink("", homeSourceURL, ns.T("footSource")),
 			homeLink("", homeGwcURL, ns.T("footGwc")),
 			homeLink("", homeBridgeURL, ns.T("footBridge")),
-			html.Button(html.Props{Raw: map[string]any{"data-hm": "sheet-open"}},
+			// haspopup, like the rail's key hint that opens the same sheet: two
+			// controls doing one thing should announce it the same way.
+			html.Button(html.Props{Raw: map[string]any{"data-hm": "sheet-open"},
+				Aria: map[string]string{"haspopup": "dialog"}},
 				html.Text(ns.T("footKeys")),
 			),
 		),

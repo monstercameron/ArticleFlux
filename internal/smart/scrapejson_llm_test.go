@@ -8,7 +8,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // ProposeJSON is scrapejson.go's counterpart to Propose, sharing the same
@@ -41,20 +41,20 @@ func goodJSONAnswer() string {
 // A9 runs on `Extracting` now (plan P3.6): the library writes the request and
 // derives the schema from `jsonAnswer`, so a test scripts the PROVIDER. The
 // bodies are the same JSON as before.
-func jsonScraping(t *testing.T, bodies ...string) (*SiteAnalyzer, *schemafluxtest.Provider) {
+func jsonScraping(t *testing.T, bodies ...string) (*SiteAnalyzer, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(bodies...)
+	sftest.Install(t, p)
 	return NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t)), p
 }
 
 // jsonSent is everything the provider was asked on call n.
-func jsonSent(p *schemafluxtest.Provider, n int) string {
+func jsonSent(p *sftest.Provider, n int) string {
 	reqs := p.Requests()
 	if n >= len(reqs) {
 		return ""
 	}
-	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+	return reqs[n].System + reqs[n].User
 }
 
 func TestProposeJSONAcceptsAGoodRuleOnTheFirstAttempt(t *testing.T) {
@@ -210,8 +210,8 @@ func TestProposeJSONEmptyItemsPathWithNoNotesIsPlainErrNoList(t *testing.T) {
 }
 
 func TestProposeJSONProviderErrorSurfacesWithoutRetry(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("upstream on fire"))
+	sftest.Install(t, p)
 	a := NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t))
 
 	_, err := a.ProposeJSON(context.Background(),

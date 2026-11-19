@@ -19,13 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SmartService_GetSmartConfig_FullMethodName = "/articleflux.v1.SmartService/GetSmartConfig"
-	SmartService_SetSmartConfig_FullMethodName = "/articleflux.v1.SmartService/SetSmartConfig"
-	SmartService_ListLanguages_FullMethodName  = "/articleflux.v1.SmartService/ListLanguages"
-	SmartService_ListModels_FullMethodName     = "/articleflux.v1.SmartService/ListModels"
-	SmartService_TranslateUI_FullMethodName    = "/articleflux.v1.SmartService/TranslateUI"
-	SmartService_ComposeTheme_FullMethodName   = "/articleflux.v1.SmartService/ComposeTheme"
-	SmartService_SuggestTheme_FullMethodName   = "/articleflux.v1.SmartService/SuggestTheme"
+	SmartService_GetSmartConfig_FullMethodName   = "/articleflux.v1.SmartService/GetSmartConfig"
+	SmartService_SetSmartConfig_FullMethodName   = "/articleflux.v1.SmartService/SetSmartConfig"
+	SmartService_ListLanguages_FullMethodName    = "/articleflux.v1.SmartService/ListLanguages"
+	SmartService_ListModels_FullMethodName       = "/articleflux.v1.SmartService/ListModels"
+	SmartService_TranslateUI_FullMethodName      = "/articleflux.v1.SmartService/TranslateUI"
+	SmartService_GetUIStrings_FullMethodName     = "/articleflux.v1.SmartService/GetUIStrings"
+	SmartService_TranslateArticle_FullMethodName = "/articleflux.v1.SmartService/TranslateArticle"
+	SmartService_ComposeTheme_FullMethodName     = "/articleflux.v1.SmartService/ComposeTheme"
+	SmartService_SuggestTheme_FullMethodName     = "/articleflux.v1.SmartService/SuggestTheme"
 )
 
 // SmartServiceClient is the client API for SmartService service.
@@ -65,6 +67,11 @@ type SmartServiceClient interface {
 	SetSmartConfig(ctx context.Context, in *SetSmartConfigRequest, opts ...grpc.CallOption) (*SetSmartConfigResponse, error)
 	// ListLanguages returns the offered UI translation targets and which of them
 	// are already cached for the running build's English.
+	//
+	// Any signed-in reader may call it: choosing an interface language is not an
+	// administrative act, and the coverage describes the application, not
+	// anybody's data. It is also where a member learns whether article
+	// translation is on (`translate_articles_enabled`).
 	ListLanguages(ctx context.Context, in *ListLanguagesRequest, opts ...grpc.CallOption) (*ListLanguagesResponse, error)
 	// ListModels asks the provider which model ids this instance's key can use,
 	// for the picker on the Smart tab (replacing a free-text field an operator
@@ -83,6 +90,34 @@ type SmartServiceClient interface {
 	// bypasses the cache — the only lever a reader has when a translation came
 	// back wrong.
 	TranslateUI(ctx context.Context, in *TranslateUIRequest, opts ...grpc.CallOption) (*TranslateUIResponse, error)
+	// GetUIStrings is the on-the-fly half of UI translation (plan.md §22.16c).
+	//
+	// It answers from the cache ONLY — it never waits on the model — so the
+	// client can call it with the keys it is missing, merge what comes back, and
+	// go on showing English for the rest. Cached per (locale, key, hash of that
+	// key's English): a new build pays for the strings it changed and nothing
+	// else, once per instance rather than once per reader.
+	//
+	// Any signed-in reader may READ a cached translation; it costs nothing and
+	// describes the application, not anybody's data. `fill` asks the server to
+	// translate what is missing in the background, and that is a spend, so it is
+	// honoured for an owner only and only with a key — for anyone else it is
+	// ignored and `filling` says so. The client polls with the keys still
+	// missing until `pending` reaches zero or `filling` goes false.
+	GetUIStrings(ctx context.Context, in *GetUIStringsRequest, opts ...grpc.CallOption) (*GetUIStringsResponse, error)
+	// TranslateArticle translates one article's title and body into a locale
+	// (plan.md §10.5b), and returns the original beside it so the reader can
+	// toggle.
+	//
+	// Egress: the article's title and the TEXT of its body — never its URL,
+	// author, feed, or any markup or link target — under the owner's
+	// `smart.translate_articles` consent, which defaults off. Cached per (item,
+	// locale, hash of the sanitised source) in a table that records nothing about
+	// who asked; a cached answer is served to any reader who can see the item,
+	// with no key and no spend. A fresh translation is open to any signed-in
+	// reader once the owner has consented, rate-limited per reader, and bounded by
+	// the instance's spend ceiling like every other Smart+ call.
+	TranslateArticle(ctx context.Context, in *TranslateArticleRequest, opts ...grpc.CallOption) (*TranslateArticleResponse, error)
 	// ComposeTheme turns a phrase into a complete palette (§20.16.3).
 	//
 	// What leaves the instance is the phrase and the tone, and nothing else — see
@@ -170,6 +205,26 @@ func (c *smartServiceClient) TranslateUI(ctx context.Context, in *TranslateUIReq
 	return out, nil
 }
 
+func (c *smartServiceClient) GetUIStrings(ctx context.Context, in *GetUIStringsRequest, opts ...grpc.CallOption) (*GetUIStringsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUIStringsResponse)
+	err := c.cc.Invoke(ctx, SmartService_GetUIStrings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *smartServiceClient) TranslateArticle(ctx context.Context, in *TranslateArticleRequest, opts ...grpc.CallOption) (*TranslateArticleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TranslateArticleResponse)
+	err := c.cc.Invoke(ctx, SmartService_TranslateArticle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *smartServiceClient) ComposeTheme(ctx context.Context, in *ComposeThemeRequest, opts ...grpc.CallOption) (*ComposeThemeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ComposeThemeResponse)
@@ -227,6 +282,11 @@ type SmartServiceServer interface {
 	SetSmartConfig(context.Context, *SetSmartConfigRequest) (*SetSmartConfigResponse, error)
 	// ListLanguages returns the offered UI translation targets and which of them
 	// are already cached for the running build's English.
+	//
+	// Any signed-in reader may call it: choosing an interface language is not an
+	// administrative act, and the coverage describes the application, not
+	// anybody's data. It is also where a member learns whether article
+	// translation is on (`translate_articles_enabled`).
 	ListLanguages(context.Context, *ListLanguagesRequest) (*ListLanguagesResponse, error)
 	// ListModels asks the provider which model ids this instance's key can use,
 	// for the picker on the Smart tab (replacing a free-text field an operator
@@ -245,6 +305,34 @@ type SmartServiceServer interface {
 	// bypasses the cache — the only lever a reader has when a translation came
 	// back wrong.
 	TranslateUI(context.Context, *TranslateUIRequest) (*TranslateUIResponse, error)
+	// GetUIStrings is the on-the-fly half of UI translation (plan.md §22.16c).
+	//
+	// It answers from the cache ONLY — it never waits on the model — so the
+	// client can call it with the keys it is missing, merge what comes back, and
+	// go on showing English for the rest. Cached per (locale, key, hash of that
+	// key's English): a new build pays for the strings it changed and nothing
+	// else, once per instance rather than once per reader.
+	//
+	// Any signed-in reader may READ a cached translation; it costs nothing and
+	// describes the application, not anybody's data. `fill` asks the server to
+	// translate what is missing in the background, and that is a spend, so it is
+	// honoured for an owner only and only with a key — for anyone else it is
+	// ignored and `filling` says so. The client polls with the keys still
+	// missing until `pending` reaches zero or `filling` goes false.
+	GetUIStrings(context.Context, *GetUIStringsRequest) (*GetUIStringsResponse, error)
+	// TranslateArticle translates one article's title and body into a locale
+	// (plan.md §10.5b), and returns the original beside it so the reader can
+	// toggle.
+	//
+	// Egress: the article's title and the TEXT of its body — never its URL,
+	// author, feed, or any markup or link target — under the owner's
+	// `smart.translate_articles` consent, which defaults off. Cached per (item,
+	// locale, hash of the sanitised source) in a table that records nothing about
+	// who asked; a cached answer is served to any reader who can see the item,
+	// with no key and no spend. A fresh translation is open to any signed-in
+	// reader once the owner has consented, rate-limited per reader, and bounded by
+	// the instance's spend ceiling like every other Smart+ call.
+	TranslateArticle(context.Context, *TranslateArticleRequest) (*TranslateArticleResponse, error)
 	// ComposeTheme turns a phrase into a complete palette (§20.16.3).
 	//
 	// What leaves the instance is the phrase and the tone, and nothing else — see
@@ -296,6 +384,12 @@ func (UnimplementedSmartServiceServer) ListModels(context.Context, *ListModelsRe
 }
 func (UnimplementedSmartServiceServer) TranslateUI(context.Context, *TranslateUIRequest) (*TranslateUIResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TranslateUI not implemented")
+}
+func (UnimplementedSmartServiceServer) GetUIStrings(context.Context, *GetUIStringsRequest) (*GetUIStringsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetUIStrings not implemented")
+}
+func (UnimplementedSmartServiceServer) TranslateArticle(context.Context, *TranslateArticleRequest) (*TranslateArticleResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TranslateArticle not implemented")
 }
 func (UnimplementedSmartServiceServer) ComposeTheme(context.Context, *ComposeThemeRequest) (*ComposeThemeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ComposeTheme not implemented")
@@ -414,6 +508,42 @@ func _SmartService_TranslateUI_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SmartService_GetUIStrings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUIStringsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SmartServiceServer).GetUIStrings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SmartService_GetUIStrings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SmartServiceServer).GetUIStrings(ctx, req.(*GetUIStringsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SmartService_TranslateArticle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TranslateArticleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SmartServiceServer).TranslateArticle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SmartService_TranslateArticle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SmartServiceServer).TranslateArticle(ctx, req.(*TranslateArticleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SmartService_ComposeTheme_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ComposeThemeRequest)
 	if err := dec(in); err != nil {
@@ -476,6 +606,14 @@ var SmartService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TranslateUI",
 			Handler:    _SmartService_TranslateUI_Handler,
+		},
+		{
+			MethodName: "GetUIStrings",
+			Handler:    _SmartService_GetUIStrings_Handler,
+		},
+		{
+			MethodName: "TranslateArticle",
+			Handler:    _SmartService_TranslateArticle_Handler,
 		},
 		{
 			MethodName: "ComposeTheme",

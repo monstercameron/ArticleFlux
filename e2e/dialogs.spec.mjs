@@ -1,4 +1,4 @@
-import { test, expect, boot, openRail, openAddFeed } from './fixtures.mjs';
+import { test, expect, boot, openNote, openRail, openAddFeed, openRow } from './fixtures.mjs';
 import { FEED_ORIGIN } from './ports.mjs';
 
 /**
@@ -133,14 +133,22 @@ test.describe('every dialog', () => {
       async () => { await closeButton(page, 'Feed settings').click(); });
   });
 
-  test('Keyboard shortcuts opens, closes, and is untabbable when closed', async ({ page }) => {
+  test('Keyboard shortcuts opens, closes, and is untabbable when closed', async ({ page }, testInfo) => {
+    // A sheet of key bindings, opened by a key: there is nothing on it a phone
+    // reader can use, and no key to open it with.
+    test.skip(testInfo.project.name !== 'desktop',
+      'the shortcut sheet is opened by a key and lists keys; a phone has no keyboard');
     await boot(page);
     await cycle(page, 'Keyboard shortcuts',
       async () => { await page.keyboard.press('?'); },
       async () => { await page.keyboard.press('Escape'); });
   });
 
-  test('Command palette opens, closes, and is untabbable when closed', async ({ page }) => {
+  test('Command palette opens, closes, and is untabbable when closed', async ({ page }, testInfo) => {
+    // Ctrl-K is the palette's only way in — nothing on screen opens it — so on
+    // a phone the test could only open it with a chord no phone user can type.
+    test.skip(testInfo.project.name !== 'desktop',
+      'the palette is opened only by Ctrl-K, which a phone has no keyboard for');
     await boot(page);
     await cycle(page, 'Command palette',
       async () => { await page.keyboard.press('Control+k'); },
@@ -149,8 +157,8 @@ test.describe('every dialog', () => {
 
   /** tagUp files an article under TAG and returns its rail slot, gear-hoverable. */
   async function tagUp(page, TAG) {
-    await page.locator('.item-row').first().click();
-    await page.locator('[data-action="toggle-note"]').first().click();
+    await openRow(page, 0);
+    await openNote(page);
     const panel = page.locator('.article-note').first();
     await panel.locator('[data-role="tag"]').first().fill(TAG);
     await panel.locator('[data-action="add-tag"]').first().click();
@@ -193,7 +201,17 @@ test.describe('every dialog', () => {
     await cycle(page, 'Tag settings',
       // force:true: the gear is opacity:0 until hover on desktop, which is the
       // design, not something this cycle is testing.
-      async () => { await slot.locator('[data-action="tag-settings"]').click({ force: true }); },
+      //
+      // The hover first is what makes forcing safe: force skips the wait for
+      // the element to stop moving, and the rail is still settling after
+      // tagUp — a forced click then lands on the tag's ROW, which selects the
+      // tag instead (the phone run that failed here was sitting on the
+      // "kbdmap1" list with the dialog never opened). tagsettings.spec.mjs's
+      // openTagSettings has the same fix for the same failure.
+      async () => {
+        await slot.hover();
+        await slot.locator('[data-action="tag-settings"]').click({ force: true });
+      },
       async () => { await closeButton(page, 'Tag settings').click(); });
   });
 

@@ -16,11 +16,11 @@ func init() {
 			"read over music. Everything it depends on is here, with what is on and " +
 			"what is not.",
 
-		// The checklist's hint. It says the switches are REAL, because they are:
-		// each one writes the same preference the Listening tab writes, and a
-		// reader who thinks this is a wizard will look for an Apply button that
-		// does not exist.
-		"needsHint": "Each of these is a real setting — changing it here changes it everywhere.",
+		// The checklist's hint. It says the switches are REAL, and what that buys:
+		// each one is saved the moment it is pressed, to the account, so a reader
+		// who thinks this is a wizard does not look for an Apply button that does
+		// not exist, and knows the other device will agree.
+		"needsHint": "Each switch takes effect as soon as you press it and is saved to your account, so it is the same on every device you sign in on.",
 		// Said when something required is off. It does not name which: the rows
 		// above are right there and already say so, and a sentence that repeats a
 		// list is a sentence people stop reading.
@@ -30,8 +30,24 @@ func init() {
 		// blank, because a row with no state reads as a row that failed.
 		"needsChecking": "checking",
 
-		"soundGroup": "How it sounds",
-		"soundHint":  "The manner of the narration, and whether the day gets a summary of its own.",
+		"soundGroup": "The narration",
+		"soundHint":  "The narrator's manner, the music under it, and whether each article is summarised instead of read in full.",
+		// Where a control is absent or overruled, the screen says so here rather
+		// than leaving the reader to wonder why it is missing or does nothing.
+		"vibeOff":          "Turn on “Join the stories up” above to choose how the narrator sounds.",
+		"digestOverridden": "No effect while “Join the stories up” is on, because a broadcast segment is already the short version. Your choice is kept for when it is off.",
+
+		// What became of the last press. Said in the outcome's own terms — saved
+		// where, and what that means for the next device — rather than "OK".
+		"saving":     "Saving…",
+		"saved":      "Saved to your account, so it will be the same on your other devices.",
+		"saveFailed": "Couldn't save your last change, so the switch has gone back to what is stored. Check your connection and try again.",
+
+		// The key row for an account that is not allowed to see the server's
+		// configuration. Unknown is the honest state, and it is not a refusal.
+		"needsUnreadable": "can't tell from here",
+		"keyUnreadable":   "Only the person who runs this server can see whether it has a key. You can still start; if there is no key, the show says so.",
+		"blockedKey":      "This server has no OpenAI key, so read to me cannot speak. Whoever runs the server can add one.",
 		// The egress line, stated once and plainly. Consent to being read aloud is
 		// not consent to being rewritten, and the two switches above do different
 		// things with a reader's articles.

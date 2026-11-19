@@ -65,6 +65,7 @@ func init() {
 		"catGroup":     "Categories",
 		"catGroupHint": "Smart categories: the 26 sections this machine sorts articles into on its own, deterministically and for free. None is the common case — about half a real feed clears no category, and that is correct, not a bug.",
 		"catByModel":   "Chosen by the model, not the term list.",
+		"catByDecider": "Chosen by the decision model (JEV), not the term list.",
 		"catReason":    "Matched on: {terms}",
 		"catShow":      "Shown",
 		"catHide":      "Hidden",

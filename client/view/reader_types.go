@@ -191,7 +191,7 @@ type actions struct {
 	pickFolder func(id, name string)
 	// refreshTopicCounts refills the rail's per-category unread numbers.
 	refreshTopicCounts func()
-	// pickCategory browses one classification label — see topicRows (panes.go).
+	// pickCategory browses one classification label — see topicRows (rail.go).
 	pickCategory func(slug string)
 	// pickUncategorised browses the articles that got no label at all — the
 	// complement of pickCategory, and NOT the rail's Unfiled row.
@@ -388,6 +388,8 @@ type actions struct {
 
 	// toggleFocus gives the reading pane the whole window, and takes it back.
 	toggleFocus func()
+	// toggleRail folds the rail to a strip at the edge, or keeps it open.
+	toggleRail func()
 
 	// Migration, on the Data tab (F1). Two verbs rather than one taking a
 	// direction: one opens a file chooser and ends in a report the screen keeps,
@@ -419,6 +421,11 @@ type actions struct {
 	saveSmartKey   func()
 	clearSmartKey  func()
 	saveSmartModel func()
+	// The JEV key and its route (A47), the OpenAI key's actions plus the route.
+	saveJEVKey  func()
+	clearJEVKey func()
+	setJEVRoute func(route string)
+	saveJEVBase func()
 	// toggleSmartModelCustom switches the model picker between the live list
 	// and the free-text field. Local UI state only — see smartsettings.go.
 	toggleSmartModelCustom func()
@@ -430,6 +437,32 @@ type actions struct {
 	// English, which needs neither.
 	setLocale   func(code string)
 	retranslate func()
+	// toggleArticleTranslate is the owner's consent for article translation
+	// (§10.5b) — a server setting, saved before the switch claims to have moved.
+	toggleArticleTranslate func()
+
+	// translateArticle is one article's Translate / Show original control:
+	// the first press asks the server, later presses flip between the two
+	// versions without asking again. translationLanded files the answer,
+	// through this Ref for revisionsLanded's reason.
+	translateArticle  func(id string)
+	translationLanded func(id, locale string, res *pb.TranslateArticleResponse, err error)
+	// probeTranslation asks the cache, for free, whether an article is already
+	// translated, where a fresh translation cannot be had.
+	probeTranslation func(id string)
+
+	// arm and disarm are the two-step removals (see armableRemove). arm names
+	// what is waiting for its confirming press; disarm forgets it, and
+	// `refocus` puts focus back on the control that armed it — true for
+	// Cancel and Escape, false when the removal went ahead and that control is
+	// gone.
+	arm    func(key string)
+	disarm func(refocus bool)
+	// armPassClear is arm(armPassClear) after the one check the removal will
+	// make anyway: that the current password has been typed. Asking for a
+	// confirmation the server is then going to refuse is two presses for an
+	// error message.
+	armPassClear func()
 
 	// Appearance. Four verbs rather than one taking a key, because they are not
 	// interchangeable: three set a named value and the fourth CLEARS one, and
@@ -518,6 +551,13 @@ type actions struct {
 	// against that same frozen article, opened whatever sat next to IT
 	// rather than next to what was on screen.
 	navStep func(delta int) *pb.Item
+	// navFrom is navStep measured from a NAMED article instead of the current
+	// one, for the Previous and Next on an article's own bar. Two articles can
+	// be on screen at once, and "current" is whichever the scroll handler last
+	// saw reach the top — so a press on the lower article's Next would
+	// otherwise skip from the upper one. An id that is not in the list falls
+	// back to navStep's answer.
+	navFrom func(id string, delta int) *pb.Item
 
 	// applyAddress moves the reader to whatever the address bar now says, after a
 	// Back or a Forward (§20.13b, client/view/reader_route.go).
@@ -589,6 +629,14 @@ type readerProps struct {
 	// straight-to-reader path have no identity to report, and the Account tab
 	// already says so in words.
 	whoami string
+	// owner is whether that account administers the instance — Root's reading
+	// of the role WhoAmI reported (isOwnerRole). It decides which Smart+
+	// controls are offered at all: a member is never shown a consent switch the
+	// server would refuse.
+	owner bool
+	// langFill is where Root's on-the-fly translation of the interface has got
+	// to, for the language picker to report honestly (see langFill).
+	langFill langFill
 }
 
 // prefBool reads a stored flag, keeping the caller's default when it is absent.

@@ -9,7 +9,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/recommend"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // maxRecommendTopics is how many of the reader's largest topics contribute
@@ -193,18 +193,14 @@ func (c *RelevanceChecker) Check(
 	// `payload.Trim` still decides what may leave, and still runs above. The
 	// schema is derived from the verdict type below rather than written out by
 	// hand, so a field renamed here cannot drift from a schema kept elsewhere.
-	verdict, err := schemaflux.Extracting[relevanceVerdict](payload.Prompt()).
-		Steer(llm.RelevanceInstructions).
-		// The answer must satisfy the shape; a missing field is a failure rather
-		// than a zero value that reads as "not relevant".
-		Strict().
-		// Short: a two-post read against a topic string, not a judgement over
-		// forty candidates.
-		// The ceiling, stated rather than inherited from the tier (ceilings.go).
-		Configure(capExtract(relevanceMaxTokens)).
-		Model(c.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+	opts := sfOpts(c.llm.OpsModel(ctx), schemaflux.TierFast, llm.RelevanceInstructions, relevanceMaxTokens)
+	// The answer must satisfy the shape; a missing field is a failure rather
+	// than a zero value that reads as "not relevant". v1's `.Strict()` is v2's
+	// ModeStrict, which implies ExactFields and CompleteFields.
+	opts.Mode = schemaflux.ModeStrict
+	verdict, err := schemaflux.Extract[relevanceVerdict](call, payload.Prompt(),
+		schemaflux.ExtractOptions{Options: opts})
+	err = opErr(err)
 	if err != nil {
 		return false, "", err
 	}

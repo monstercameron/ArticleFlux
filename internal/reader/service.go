@@ -59,6 +59,9 @@ type Service struct {
 	// channel also go through, and a dependency on a delivery mechanism here is
 	// how one entry point starts behaving differently from another.
 	onIngest func(sourceID string, itemIDs []string)
+	// onBacklog is called after a save-time backlog clear that marked something
+	// (WithBacklogHook). Nil on an instance with no event bus.
+	onBacklog func(sc store.Scope, sourceID string, marked int)
 	// log is where PollDue and Refresh report a panic recovered from a
 	// per-source poll (see pollOneRecovered and WithLogger). Nil on an instance
 	// nobody has wired one into; logger() falls back to slog.Default() rather
@@ -118,6 +121,20 @@ func (s *Service) WithRankPrefHook(f func(store.Scope)) *Service {
 // list starts reshuffling under somebody who is reading it.
 func (s *Service) WithIngestHook(f func(sourceID string, itemIDs []string)) *Service {
 	s.onIngest = f
+	return s
+}
+
+// WithBacklogHook announces a backlog window that cleared something at SAVE time.
+//
+// The periodic sweep already tells the reader (App.sweepBacklogs), so the one
+// path that cleared silently was the save: the device that pressed the button got
+// the new counts in the reply, and every other device of the same reader kept
+// showing the old pile until its next read. A func for the reason the hooks above
+// are — the service layer must not know how anybody is told.
+//
+// Called only when `marked > 0`, with the reader's own scope and the one feed.
+func (s *Service) WithBacklogHook(f func(sc store.Scope, sourceID string, marked int)) *Service {
+	s.onBacklog = f
 	return s
 }
 
@@ -844,7 +861,25 @@ func (s *Service) GetFeedSettings(ctx context.Context, sc store.Scope, sourceID 
 
 func (s *Service) UpdateFeedSettings(ctx context.Context, sc store.Scope, sourceID string,
 	p store.FeedSettingsPatch) (store.FeedSettings, error) {
-	return s.repo.UpdateFeedSettings(ctx, sc, sourceID, p)
+	f, err := s.repo.UpdateFeedSettings(ctx, sc, sourceID, p)
+	if err != nil || p.ClearBacklogDays == nil || f.ClearBacklogDays == 0 {
+		return f, err
+	}
+	// Choosing a window applies it now. Waiting for the poller's next sweep
+	// would leave the pile on screen for the length of a poll interval, and the
+	// reader would reasonably conclude the control did nothing. The settings are
+	// read back afterwards so the reply carries the cleared unread count rather
+	// than the one the reader just decided was too big.
+	marked, err := s.repo.ClearBacklog(ctx, sc, sourceID)
+	if err != nil {
+		return f, err
+	}
+	// Nothing marked, nothing to announce: a save that cleared no article leaves
+	// every other device's counts exactly right already.
+	if marked > 0 && s.onBacklog != nil {
+		s.onBacklog(sc, sourceID, marked)
+	}
+	return s.repo.GetFeedSettings(ctx, sc, sourceID)
 }
 
 // RecordEngagements validates and appends observations to the signals log.

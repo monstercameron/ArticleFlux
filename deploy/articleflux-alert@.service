@@ -9,10 +9,10 @@
 # so one unit covers every producer of bad news and there is exactly one place
 # to change where that news goes.
 #
-# Install:
-#   sudo install -m 0755 deploy/articleflux-alert.sh /usr/local/bin/articleflux-alert
-#   sudo install -m 0644 deploy/articleflux-alert@.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
+# Install with the rest of the ops layer — `sudo sh deploy/install-ops.sh` — because the
+# units that name this template are useless without it and systemd will not say so: an
+# OnFailure= pointing at a template that is not installed is accepted at enable time and
+# does nothing at failure time.
 #
 # Then configure a channel in /etc/articleflux/alert.env — see the script's
 # header. Without one this still runs and still writes to journald; it just does

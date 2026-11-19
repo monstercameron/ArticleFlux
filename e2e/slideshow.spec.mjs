@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, isPhone } from './fixtures.mjs';
 
 /**
  * The slideshow (§19).
@@ -70,6 +70,37 @@ async function openSettings(page) {
   await expect(page.locator('.pane-settings')).toBeVisible();
 }
 
+/**
+ * control does what a key does in the show, the way the device would do it.
+ *
+ * A desktop presses the key. A phone has no keyboard, so it does what a phone
+ * viewer does: touches the screen, which brings the transport up
+ * (platform.OnPointerActivity listens for touchstart for exactly this), and
+ * taps the button that does the same thing. Same mode, same state, same
+ * assertions afterwards — only the gesture differs, and the gesture a test uses
+ * on a phone has to be one a phone user has.
+ *
+ * The touch lands at the left edge, halfway down, which is the slide's
+ * gradient and not a control or a link, so it reveals and does nothing else.
+ */
+const HUD = {
+  Space: /^(Pause|Resume)$/,
+  ArrowRight: 'Next story',
+  ArrowLeft: 'Previous story',
+  Escape: 'Leave the slideshow',
+  v: 'Read to me',
+};
+async function control(page, key) {
+  if (!(await isPhone(page))) {
+    await page.keyboard.press(key);
+    return;
+  }
+  const { height } = page.viewportSize();
+  await page.touchscreen.tap(6, Math.round(height / 2));
+  await expect(slides(page)).toHaveAttribute('data-hud', 'true', { timeout: 10_000 });
+  await page.locator('.slide-hud').getByRole('button', { name: HUD[key] }).click();
+}
+
 test.describe('slideshow', () => {
   test('starts on the feed being read, one story filling the screen', async ({ page }) => {
     await boot(page);
@@ -132,7 +163,9 @@ test.describe('slideshow', () => {
     await boot(page);
     await startShow(page);
 
-    await page.keyboard.press('Space');
+    // The space bar on a desktop; on a phone, the Pause button it stands in
+    // for (see control). The clock stopping is the claim on both.
+    await control(page, 'Space');
     await expect(slides(page)).toHaveAttribute('data-paused', 'true');
 
     const fill = () => slides(page).evaluate(
@@ -143,7 +176,7 @@ test.describe('slideshow', () => {
     // that may already have been in flight when the key landed.
     expect(await fill()).toBeLessThan(held + 0.05);
 
-    await page.keyboard.press('Space');
+    await control(page, 'Space');
     await expect(slides(page)).toHaveAttribute('data-paused', 'false');
   });
 
@@ -153,28 +186,28 @@ test.describe('slideshow', () => {
     await expect(page.locator('.slide-order')).toHaveText('1 of 5');
     const first = await page.locator('.slide-head').innerText();
 
-    await page.keyboard.press('ArrowRight');
+    await control(page, 'ArrowRight');
     await expect(page.locator('.slide-order')).toHaveText('2 of 5');
     await expect(page.locator('.slide-head')).not.toHaveText(first);
 
-    await page.keyboard.press('ArrowLeft');
+    await control(page, 'ArrowLeft');
     await expect(page.locator('.slide-order')).toHaveText('1 of 5');
     await expect(page.locator('.slide-head')).toHaveText(first);
 
     // It LOOPS rather than stopping, because the mode is something you leave
     // running: reaching the end and going dark is the display turning itself off
     // at some point during the afternoon.
-    await page.keyboard.press('ArrowLeft');
+    await control(page, 'ArrowLeft');
     await expect(page.locator('.slide-order')).toHaveText('5 of 5');
   });
 
   test('escape leaves, and the reader is where the show got to', async ({ page }) => {
     await boot(page);
     await startShow(page);
-    await page.keyboard.press('ArrowRight');
+    await control(page, 'ArrowRight');
     await expect(page.locator('.slide-order')).toHaveText('2 of 5');
 
-    await page.keyboard.press('Escape');
+    await control(page, 'Escape');
 
     // Gone entirely, not hidden: it holds a parsed article body and a
     // full-screen gradient, and a reader who left the mode should be paying for
@@ -183,7 +216,11 @@ test.describe('slideshow', () => {
     await expect(page.locator('.pane-list')).toBeVisible();
   });
 
-  test('while it runs it owns the keyboard', async ({ page }) => {
+  test('while it runs it owns the keyboard', async ({ page }, testInfo) => {
+    // The claim is about KEYS reaching the reader underneath, and a phone has
+    // no keyboard to send them from; there is no tap that means Ctrl+K.
+    test.skip(testInfo.project.name !== 'desktop',
+      'about keys leaking past the show; a phone has no keyboard');
     await boot(page);
     await startShow(page);
 
@@ -249,7 +286,7 @@ test.describe('slideshow', () => {
     await boot(page);
     await startShow(page);
 
-    await page.keyboard.press('Space');
+    await control(page, 'Space');
     await expect(slides(page)).toHaveAttribute('data-paused', 'true');
     await expect(slides(page)).toHaveAttribute('data-hud', 'true');
 
@@ -260,7 +297,7 @@ test.describe('slideshow', () => {
       .toBe('1');
 
     // Resuming lets it fade again.
-    await page.keyboard.press('Space');
+    await control(page, 'Space');
     await expect(slides(page)).toHaveAttribute('data-paused', 'false');
     await expect.poll(() => slides(page).getAttribute('data-hud'),
       { timeout: 20_000 }).toBe('false');
@@ -282,7 +319,7 @@ test.describe('slideshow', () => {
     await boot(page);
     await startShow(page);
 
-    await page.keyboard.press('v');
+    await control(page, 'v');
 
     // It says why, on the slide, as a BUTTON. The requirements themselves are no
     // longer a panel over the show — four preference switches inside a
@@ -316,8 +353,13 @@ test.describe('slideshow', () => {
       .toContainText(/not on this server/i);
     // Start refuses rather than disappearing: a button that vanishes leaves the
     // reader hunting for it.
-    await expect(page.getByRole('button', { name: /Start reading to me/i }))
-      .toHaveAttribute('aria-disabled', 'true');
+    //
+    // DISABLED, not aria-disabled. The button used to carry only the ARIA
+    // attribute, which describes a state and enforces nothing — it could still
+    // be pressed. podcastStartProps sets the real `disabled` now (and
+    // podcastsettings_test.go says why its own assertion changed); this one
+    // went on asking for the attribute that had been replaced.
+    await expect(page.getByRole('button', { name: /Start reading to me/i })).toBeDisabled();
 
     // The switches are real. Flipping one here is flipping it everywhere -- no
     // staged copy, no Apply.

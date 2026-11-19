@@ -121,7 +121,14 @@ write_report() {
 	repo="${REPO:-${ARTICLEFLUX_REPO:-/opt/ArticleFlux}}"
 	sha=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
 	subject=$(git -C "$repo" log -1 --format=%s 2>/dev/null || echo unknown)
-	gwc_sha=$(git -C "${GWC:-/opt/GoWebComponents}" rev-parse HEAD 2>/dev/null || echo unknown)
+	# The GoWebComponents version this checkout builds against, read out of go.mod.
+	# It was the HEAD of a sibling checkout while go.mod resolved GWC through a
+	# replace directive; go.mod names a published version now, so the file IS the
+	# answer and there is no second repository to ask. awk rather than `go list
+	# -m`: this runs while reporting a failure, possibly one where the toolchain
+	# or the network is the thing that failed.
+	gwc_ver=$(awk '{ for (i = 1; i < NF; i++) if ($i ~ /^github\.com\/monstercameron\/GoWebComponents(\/|$)/) { print $(i + 1); exit } }' "$repo/go.mod" 2>/dev/null || true)
+	[ -n "$gwc_ver" ] || gwc_ver=unknown
 
 	{
 		printf '{
@@ -158,8 +165,8 @@ write_report() {
 ' "$sha"
 		printf '    "subject": "%s",
 ' "$(json_str "$subject")"
-		printf '    "gowebcomponents_commit": "%s",
-' "$gwc_sha"
+		printf '    "gowebcomponents_version": "%s",
+' "$(json_str "$gwc_ver")"
 		printf '    "dirty": %s
 ' "$(git -C "$repo" diff --quiet 2>/dev/null && echo false || echo true)"
 		printf '  },

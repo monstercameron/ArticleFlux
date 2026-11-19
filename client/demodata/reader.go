@@ -743,6 +743,12 @@ func (s *readerService) UpdateFeedSettings(_ context.Context, req *pb.UpdateFeed
 	if req.CacheDepth != nil {
 		f.cacheDepth = req.GetCacheDepth()
 	}
+	if req.ClearBacklogDays != nil {
+		f.clearBacklogDays = req.GetClearBacklogDays()
+		// Applied now, as the server does: the pile the reader just chose to
+		// shrink should be visibly smaller in the reply.
+		in.clearBacklog(f)
+	}
 	if req.FetchIntervalS != nil {
 		// The shared half of the panel. On a real instance this changes how
 		// often a source is polled for EVERY subscriber, which is why the panel
@@ -842,6 +848,25 @@ func (s *readerService) SubscribeScrape(_ context.Context, req *pb.SubscribeScra
 	}, nil
 }
 
+// clearBacklog marks a feed's unread articles older than its window read, and
+// leaves anything starred alone — the same rule the server applies. Caller
+// holds the lock.
+func (in *Instance) clearBacklog(f *feed) {
+	if f.clearBacklogDays <= 0 {
+		return
+	}
+	cutoff := in.clock().Add(-time.Duration(f.clearBacklogDays) * 24 * time.Hour)
+	at := stamp(in.clock())
+	for _, it := range in.items {
+		if it.feed != f || it.read || it.starred || it.published.After(cutoff) {
+			continue
+		}
+		it.read = true
+		it.readAt = at
+	}
+	in.rev++
+}
+
 // settings renders one feed's panel. Caller holds the lock.
 func (in *Instance) settings(f *feed) *pb.FeedSettings {
 	s := &pb.FeedSettings{
@@ -851,6 +876,8 @@ func (in *Instance) settings(f *feed) *pb.FeedSettings {
 		InMegafeed:    f.inMegafeed,
 		MutedUntil:    f.mutedUntil,
 		CacheDepth:    f.cacheDepth,
+
+		ClearBacklogDays: f.clearBacklogDays,
 
 		FeedUrl:        f.feedURL,
 		SiteUrl:        f.siteURL,

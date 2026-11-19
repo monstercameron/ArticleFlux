@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 )
@@ -130,5 +130,96 @@ func TestPodcastDoesNotDenyAKeyItHasNotAskedAbout(t *testing.T) {
 	answered := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, false)})
 	if !strings.Contains(answered, "not on this server") {
 		t.Error("a missing key is not reported once the config has landed")
+	}
+}
+
+// An account that cannot read the server's Smart+ config (only an administrator
+// can) is never going to be told whether there is a key. The row used to say
+// "checking" for ever, and the Start button — which counted the unanswered key
+// as a missing one — stayed dead beside it with no reason given.
+func TestPodcastDoesNotCheckForEverWhenTheKeyCannotBeRead(t *testing.T) {
+	out := renderPodcast(t, podcastProps{
+		needs: slidePrereqs(true, true, true, false), keyUnknown: true, keyUnreadable: true,
+	})
+	if strings.Contains(out, "checking") {
+		t.Error("still says it is checking an answer that will never come")
+	}
+	if !strings.Contains(out, "can&#39;t tell from here") && !strings.Contains(out, "can't tell from here") {
+		t.Error("the key row does not say it is unknown")
+	}
+	if strings.Contains(out, "disabled") {
+		t.Error("Start is dead although everything the reader owns is on and the key is merely unknown")
+	}
+}
+
+// While the answer is genuinely in flight the button agrees with the handler:
+// the reader's own switches decide, the unanswered key does not.
+func TestPodcastStartFollowsTheStartRuleWhileTheKeyIsUnknown(t *testing.T) {
+	ready := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, false), keyUnknown: true})
+	if strings.Contains(ready, "disabled") {
+		t.Error("Start is disabled only because the key has not been asked about yet")
+	}
+	off := renderPodcast(t, podcastProps{needs: slidePrereqs(false, true, true, false), keyUnknown: true})
+	if !strings.Contains(off, "disabled") {
+		t.Error("Start is pressable with Smart+ voice off")
+	}
+}
+
+// A missing key is not the reader's to switch on, so the line under the rows
+// names who can.
+func TestPodcastBlockedByTheKeyNamesWhoCanFixIt(t *testing.T) {
+	out := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, false)})
+	if !strings.Contains(out, "Whoever runs the server") {
+		t.Error("a missing key is described as something above that is off")
+	}
+	if strings.Contains(out, "Something above is still off") {
+		t.Error("the reader is told to flip a switch that is not theirs")
+	}
+}
+
+// The status line is a live region that is there before it has anything to say,
+// and carries the outcome in words.
+func TestPodcastStatusAnnouncesTheOutcome(t *testing.T) {
+	none := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true)})
+	if !strings.Contains(none, `role="status"`) {
+		t.Error("no live region until something is pressed, so the first result is announced to nobody")
+	}
+	for status, want := range map[string]string{
+		prefSaving: "Saving",
+		prefSaved:  "Saved to your account",
+		prefFailed: "Couldn",
+	} {
+		out := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true), status: status})
+		if !strings.Contains(out, want) {
+			t.Errorf("status %q does not say %q", status, want)
+		}
+	}
+	failed := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true), status: prefFailed})
+	if !strings.Contains(failed, `data-bad="true"`) {
+		t.Error("a failed save is not marked as one")
+	}
+}
+
+// The things a reader would otherwise have to guess: why there is no tone
+// picker, and that the summary switch is overruled by the broadcast.
+func TestPodcastSaysWhyAControlIsAbsentOrOverruled(t *testing.T) {
+	off := renderPodcast(t, podcastProps{needs: slidePrereqs(true, false, true, true)})
+	if !strings.Contains(off, "to choose how the narrator sounds") {
+		t.Error("the tone picker is absent without saying why")
+	}
+	on := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true), podcast: true, digest: true})
+	if !strings.Contains(on, "No effect while") {
+		t.Error("the summary switch does not say the broadcast overrules it")
+	}
+	if strings.Contains(on, "to choose how the narrator sounds") {
+		t.Error("the tone picker's absence is explained while it is present")
+	}
+}
+
+// The music under the programme is chosen here too: the intro promises it.
+func TestPodcastOffersTheMusic(t *testing.T) {
+	out := renderPodcast(t, podcastProps{needs: slidePrereqs(true, true, true, true), bed: bedOff})
+	if !strings.Contains(out, `data-action="`+actBed+`"`) {
+		t.Error("no music control on the tab that promises music")
 	}
 }

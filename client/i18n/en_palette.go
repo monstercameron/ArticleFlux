@@ -60,9 +60,13 @@ func init() {
 		// The three destinations a reader most often wants from the palette and
 		// could not reach from it (N12): the settings screen itself, the dialog
 		// that starts a subscription, and the sheet that lists every other key.
-		"cmd.settings":   "Open settings",
-		"cmd.add-feed":   "Add a feed",
-		"cmd.shortcuts":  "Show keyboard shortcuts",
+		"cmd.settings":  "Open settings",
+		"cmd.add-feed":  "Add a feed",
+		"cmd.shortcuts": "Show keyboard shortcuts",
+		// Both directions in one label, as the help sheet has it: the palette
+		// does not know which way the rail is, and a word that is only true
+		// half the time is worse than a sentence.
+		"cmd.toggle-rail": "Fold the feeds away, or bring them back",
 	})
 
 	// Feed and tag hints. Both are counts, both are plural, and neither is a

@@ -17,6 +17,11 @@ import (
 // what a real instance reports before its classifier has run over the backlog,
 // which is the state every instance is in on its first day.
 //
+// The same holds for the item fields that say WHO placed a category —
+// category_by_model and category_rung (A47) — which the demo's items leave
+// empty: with no key there is no paid rung to name, and an empty rung is what a
+// real instance sends for an article its free tier placed or left alone.
+//
 // So the handler counts, rather than refusing. It is the same arithmetic it
 // would do over a labelled fixture, and the day the demo seeds labels the
 // numbers stop being zero without this file changing.

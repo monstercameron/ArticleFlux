@@ -5,8 +5,8 @@ package view
 import (
 	"strconv"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -87,9 +87,9 @@ func settingsData(tr i18n.Runtime, p dataProps) []ui.Node {
 	}
 
 	out := []ui.Node{
-		fsGroup(glyphAdd, tr.T("data", "inGroup"), tr.T("data", "inGroupHint")),
-		setRow(tr.T("data", "importLabel"), tr.T("data", "importHint"),
-			glyphChip(actDataImport, glyphFeeds, importLabel, false)),
+		kitHeading(glyphAdd, tr.T("data", "inGroup"), tr.T("data", "inGroupHint")),
+		kitSetting(kitSettingProps{Label: tr.T("data", "importLabel"), Hint: tr.T("data", "importHint"),
+			Control: kitAction(kitChipProps{Action: actDataImport, Glyph: glyphFeeds, Label: importLabel})}),
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("data", "importPollNote"))),
 	}
 
@@ -97,10 +97,10 @@ func settingsData(tr i18n.Runtime, p dataProps) []ui.Node {
 	// a failure has no report and a reader who has just pressed a button looks
 	// where the button is.
 	if p.note != "" {
-		out = append(out, html.Div(html.Props{
+		out = append(out, kitLive(kitLiveProps{
 			Class: "set-note set-note-live",
 			Data:  map[string]string{"bad": strconv.FormatBool(p.noteBad)},
-			Role:  "status",
+			Role:  kitRoleStatus,
 		}, html.Text(p.note)))
 	}
 	if p.result != nil {
@@ -108,9 +108,9 @@ func settingsData(tr i18n.Runtime, p dataProps) []ui.Node {
 	}
 
 	out = append(out,
-		fsGroup(glyphExternal, tr.T("data", "outGroup"), tr.T("data", "outGroupHint")),
-		setRow(tr.T("data", "exportLabel"), tr.T("data", "exportHint"),
-			glyphChip(actDataExport, glyphFeeds, exportLabel, false)),
+		kitHeading(glyphExternal, tr.T("data", "outGroup"), tr.T("data", "outGroupHint")),
+		kitSetting(kitSettingProps{Label: tr.T("data", "exportLabel"), Hint: tr.T("data", "exportHint"),
+			Control: kitAction(kitChipProps{Action: actDataExport, Glyph: glyphFeeds, Label: exportLabel})}),
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("data", "outNote"))),
 	)
 	return out
@@ -127,28 +127,31 @@ func importReport(tr i18n.Runtime, fileName string, r *pb.ImportOpmlResponse) []
 		from = fileName
 	}
 
-	out := []ui.Node{
-		fsGroup(glyphMarkRead, tr.T("data", "reportGroup"),
-			hintFrom(tr, from)),
-		setFact(tr.T("data", "factSubscribed"), thousands(tr, int(r.GetSubscribed()))),
+	facts := []kitFactPair{
+		kitFact(tr.T("data", "factSubscribed"), thousands(tr, int(r.GetSubscribed()))),
 	}
 	// Only when they are not zero. A row reading "0 already subscribed" on a
 	// first import is a row that carries nothing, and when it does appear it
 	// says something by existing.
 	if r.GetAlreadySubscribed() > 0 {
-		out = append(out, setFact(tr.T("data", "factAlready"),
+		facts = append(facts, kitFact(tr.T("data", "factAlready"),
 			thousands(tr, int(r.GetAlreadySubscribed()))))
 	}
 	if r.GetFolders() > 0 {
-		out = append(out, setFact(tr.T("data", "factFolders"),
+		facts = append(facts, kitFact(tr.T("data", "factFolders"),
 			thousands(tr, int(r.GetFolders()))))
 	}
 	// The deployment's own fact (A14): a feed somebody else here already reads
 	// is polled once, not twice. Shown because it is the answer to "will 151
 	// feeds hammer these publishers", which is a fair thing to wonder.
 	if r.GetShared() > 0 {
-		out = append(out, setFact(tr.T("data", "factShared"),
+		facts = append(facts, kitFact(tr.T("data", "factShared"),
 			thousands(tr, int(r.GetShared()))))
+	}
+	out := []ui.Node{
+		kitHeading(glyphMarkRead, tr.T("data", "reportGroup"),
+			hintFrom(tr, from)),
+		kitFacts(kitFactsTab, facts...),
 	}
 
 	skips := r.GetSkips()

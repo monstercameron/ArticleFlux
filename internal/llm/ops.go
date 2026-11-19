@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm/sfprovider"
 )
@@ -19,32 +19,19 @@ import (
 //
 // # The one hazard, and why this arrangement is not it
 //
-// SchemaFlux resolves an operation's provider from `ctx` if one is carried there
-// and from a package-level default otherwise. The package-level default is the
-// migration's G1 — the blocker that can hand one tenant's API key to another
-// tenant's request — because ArticleFlux's key is a per-instance encrypted
-// setting, and a provider built around one instance's key would answer every
-// other instance's call with it.
+// SchemaFlux resolves an operation's client from `ctx` if one is carried there
+// (schemaflux.WithClient) and from the process default (schemaflux.SetDefault)
+// otherwise. The process default is the migration's G1 — the blocker that can
+// hand one tenant's API key to another tenant's request — because ArticleFlux's
+// key is a per-instance encrypted setting.
 //
-// **The provider registered here holds no tenant state at all.** It is
-// `sfprovider` wrapping this Client's `send`, which resolves the key by calling
-// `KeyFunc(ctx)` at the moment of the call — so the same provider object is
-// correct for every tenant, and which one is registered globally stops being a
-// question anybody can get wrong. That is what makes it safe to register one,
-// and it is the only reason the structural guard exempts this file.
-//
-// The context path is used anyway, on every operation, via OpsContext. Belt and
-// braces: if the global were ever set to something tenant-specific by code that
-// does not exist yet, every operation in this repository would still be reading
-// the provider from its own context rather than from that.
-//
-// # Why a Client here at all
-//
-// `ops.WithProvider(ctx, p)` — the function that actually carries a provider on
-// a context — lives in `schemaflux/internal/ops`, which the Go toolchain forbids
-// this repository from importing. `(*schemaflux.Client).Context(ctx)` is the only
-// public route to the same thing, so a Client is constructed purely to be asked
-// for contexts. It makes no calls of its own.
+// So this package never sets the default. Every operation is handed a context
+// from OpsContext, which carries a Client whose provider holds no tenant state
+// at all: `sfprovider` wrapping this Client's `send`, which resolves the key by
+// calling `KeyFunc(ctx)` at the moment of the call. Under v1 the only public
+// route to a context-carried provider also wrote the process default; under v2
+// (schemaflux/v2 v2.0.2) the default is never touched, so guard 6 has nothing
+// left to exempt in this file.
 
 // opsProviderName is what this provider calls itself to SchemaFlux.
 //
@@ -84,31 +71,28 @@ func (c *Client) OpsContext(ctx context.Context) context.Context {
 	if c == nil {
 		return ctx
 	}
-	// Per CLIENT, not per process.
+	// Per CLIENT, not per process: each Client builds its own provider once.
 	//
-	// It was a package-level sync.Once, and that made the bridge single-shot:
-	// the first Client to ask for a context registered its provider and every
-	// later one silently got that one instead. Benign in a server with one
-	// client and wrong everywhere else — in a test binary it meant the second
-	// test's client was never consulted, which is how it was found.
-	//
-	// Two Clients now each build their own, and each `Context` carries its own
-	// provider. They still both write SchemaFlux's package-level default on the
-	// way past, and that is still harmless for the reason at the top of this
-	// file: every provider here is tenant-agnostic, so whichever won the race
-	// answers correctly for everybody.
-	c.opsOnce.Do(func() {
-		// NewClient takes a key it will never use: the provider below resolves
-		// the real one per call from the tenant scope on ctx. Passing a
-		// placeholder rather than a real key is deliberate — a key captured here
-		// would be one instance's, which is the whole hazard.
-		c.opsClient = schemaflux.NewClient("unused-see-OpsContext").
-			WithProviderInstance(c.opsProvider())
+	// SchemaFlux v2 carries a whole Client value on the context
+	// (schemaflux.WithClient), and nothing here writes the process default
+	// (schemaflux.SetDefault) — v1's only public route to a context-carried
+	// provider also overwrote the package-level default on the way past, which
+	// was harmless only because the provider is tenant-agnostic. In v2 the
+	// global is simply never touched, which is what guard 6 asks for.
+	c.opsOnce.Do(func() { c.opsProv = c.opsProvider() })
+	return schemaflux.WithClient(ctx, schemaflux.Client{
+		// The generator alone, or — for a decision task on an instance with a
+		// JEV credential — the Decisions pair (ladder.go). Resolved per call.
+		Provider: c.opsClientProvider(ctx, c.opsProv),
+		// The instance's model, resolved now from the tenant scope on ctx. A
+		// call site that names Options.Model still wins over it.
+		Model: modelFor(ctx, c),
+		// v2 gives a call whose context has no deadline thirty seconds. Every
+		// feature in internal/smart sets its own, longer, deadline; this keeps
+		// one that forgets at this package's own ceiling, as v1 did, rather
+		// than at a library default chosen for chat-sized answers.
+		Timeout: requestTimeout,
 	})
-	if c.opsClient == nil {
-		return ctx
-	}
-	return c.opsClient.Context(ctx)
 }
 
 // opsProvider is the same seam Do uses, wrapping the same audited call.
@@ -121,87 +105,68 @@ func (c *Client) OpsContext(ctx context.Context) context.Context {
 //
 // # Two providers, and why the outer one exists
 //
-// `audited` below is the call. What is REGISTERED with SchemaFlux is the outer
-// one, which runs the inner through `Client.run` — the span, the breaker and the
-// middleware chain, the same three things Do gets.
-//
-// It was registered directly for a while, and the consequence was quiet and
-// expensive: the chain is where the spend ceiling lives (cost.go), and the typed
-// path is ten of the twelve Smart+ features. A cap somebody set on the Smart+ tab
-// bounded categorisation and translation and nothing else — digests, interest
-// derivation, podcast scripts, relevance ranking and scraping all spent past it,
-// and those are the scheduled ones, which is to say the ones that spend while
-// nobody is watching. The breaker was in the same shape.
-//
-// SchemaFlux calls the outer provider once per operation, so nothing here
-// nests: the chain is entered exactly once per call, as it is from Do.
+// `audited` below is the call. What SchemaFlux is handed is the outer one,
+// which runs the inner through `Client.run` — the span, the breaker and the
+// middleware chain (where the spend ceiling lives), the same three things Do
+// gets. Registering the audited call directly was once how ten of twelve
+// Smart+ features spent past the cap.
 func (c *Client) opsProvider() *sfprovider.Provider {
 	audited := sfprovider.New(opsProviderName,
-		func(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+		func(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 			key := keyFrom(ctx, c)
 			if key == "" {
-				return schemaflux.CompletionResponse{}, ErrNotConfigured
+				return schemaflux.Response{}, ErrNotConfigured
 			}
-			// Already resolved by the outer provider, and read back here rather
-			// than resolved again: the middleware priced and budgeted against
-			// this string, so the request that goes out has to carry the same
-			// one or the ceiling is bounding a model nobody ran.
+			// `WebSearch` (Options.WebSearch in v2) is refused, not forwarded and
+			// not silently dropped. Forwarding it would hand the model live web
+			// access from a path §18.8 never reviewed for it — A10 is the one
+			// feature that may search, and it is hand-built through Do with
+			// WebSearchTool named explicitly. Dropping it would be worse: the
+			// operation would present an unsearched answer as a searched one.
+			if req.WebSearch {
+				return schemaflux.Response{}, ErrTypedWebSearch
+			}
+			// Tools and Messages are set by v2 chat sessions only. The audited
+			// request has no field for either, so a request carrying them would
+			// be answered as if they were not there — v2 asks a provider that
+			// cannot take them to say so before anything is sent.
+			if len(req.Tools) > 0 || len(req.Messages) > 0 {
+				return schemaflux.Response{}, &schemaflux.Error{Kind: schemaflux.ErrUnsupported,
+					Message: "the articleflux provider takes no tools or message lists"}
+			}
 			model := req.Model
 			if model == "" {
 				model = modelFor(ctx, c)
 			}
-			// The operation composed these. Everything the library decided —
-			// the prompt it wrote, the schema it derived from the Go type — is
-			// carried straight through to the audited request.
+			// Effort: v2 sends one on the request, which v1 could not (G6). A
+			// caller's explicit Options.Effort is honoured; an operation's own
+			// PREFERENCE (EffortPreferred) is not, and the request goes at
+			// DefaultEffort as every typed operation did under v1 — so the
+			// upgrade does not quietly move a feature to a dearer setting.
+			effort := ""
+			if req.Effort != "" && !req.EffortPreferred {
+				effort = string(req.Effort)
+			}
 			text, usage, err := c.send(ctx, key, model, Request{
-				Instructions:    req.SystemPrompt,
-				Input:           req.UserPrompt,
+				Instructions:    req.System,
+				Input:           req.User,
 				SchemaName:      req.SchemaName,
-				Schema:          req.JSONSchema,
+				Schema:          req.Schema,
 				MaxOutputTokens: req.MaxTokens,
+				Effort:          effort,
 			})
 			if err != nil {
-				return schemaflux.CompletionResponse{}, err
+				return schemaflux.Response{}, err
 			}
-			return schemaflux.CompletionResponse{
-				Content:  text,
-				Model:    model,
-				Provider: opsProviderName,
-				Usage: schemaflux.TokenUsage{
-					PromptTokens:     int(usage.InputTokens),
-					CompletionTokens: int(usage.OutputTokens),
-					TotalTokens:      int(usage.InputTokens + usage.OutputTokens),
-					InputTokens:      int(usage.InputTokens),
-					OutputTokens:     int(usage.OutputTokens),
-				},
-			}, nil
+			return schemaflux.Response{Content: text, Model: model, Usage: sfUsage(usage)}, nil
 		})
 
 	return sfprovider.New(opsProviderName,
-		func(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
-			// The model is NOT substituted here any more, and that is the
-			// change worth noticing in this file.
-			//
-			// It used to be: G5 said the library gave a caller no way to name a
-			// model, so this middleware overwrote whatever the speed tier had
-			// resolved with the instance's configured one. It worked, and it was
-			// dishonest — the model was decided somewhere no call site could
-			// see, and it forced the provider to be named after a vendor this is
-			// not (see opsProviderName) purely to get past the tier's lookup.
-			//
-			// SchemaFlux DX-001 added `.Model(...)` to the operations, so every
-			// feature in internal/smart names this instance's model itself and
-			// `req.Model` arrives already correct. That matters to the chain and
-			// not only to the call: the budget prices its estimate off
-			// `req.Model`, and a ceiling estimated against one model while the
-			// call runs another is a ceiling in the wrong currency. It is now
-			// the same value in both places because there is only one place that
-			// sets it.
-			//
-			// The tier still decides the token ceiling and the temperature,
-			// which is the part of "how hard should this think" that does not
-			// contradict an operator's choice of model.
-			return c.run(ctx, audited, req)
+		func(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
+			res, err := c.run(ctx, audited, req)
+			// Classified for v2's retry and repair logic (sferrors.go): an
+			// unconfigured key or a spent budget must not be retried as an outage.
+			return res, sfError(err)
 		})
 }
 
@@ -262,9 +227,12 @@ func (c *Client) WithModel(m ModelFunc) *Client {
 // in a document nobody has open is not an answer.
 //
 //   - **A10, web-search discovery.** It sends the Responses API's hosted
-//     `tools: [{"type":"web_search"}]`. `schemaflux.CompletionRequest` has no
-//     field for it (G4, still open upstream as P2.3), so an operation cannot
-//     express the one thing this feature is.
+//     `tools: [{"type":"web_search"}]`. SchemaFlux v1.2.0 closed G4 upstream
+//     (`CompletionRequest.WebSearch`, `.WebSearch()` on operations), and this
+//     call still stays hand-built: the typed path REFUSES that flag
+//     (ErrTypedWebSearch), because which features may reach the live web is an
+//     §18.8 decision made per feature, and a one-word builder method is not the
+//     place to make it.
 //   - **A14, article classification.** `registry.Build` composes the request's
 //     schema at RUNTIME from the reader's own contributor set, so the shape is
 //     not known until the call is assembled. `Extracting[T]` derives its schema

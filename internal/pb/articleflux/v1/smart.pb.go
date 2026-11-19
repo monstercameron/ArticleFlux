@@ -594,6 +594,11 @@ type GetSmartConfigResponse struct {
 	// and the bill is the owner's, and a per-reader toggle would imply the
 	// reader controls something they do not.
 	ClassifyEnabled bool `protobuf:"varint,6,opt,name=classify_enabled,json=classifyEnabled,proto3" json:"classify_enabled,omitempty"`
+	// Whether this instance consents to sending an ARTICLE's title and body text
+	// to the model to translate it for a reader (§10.5b,
+	// `smart.translate_articles`). Default off, for exactly classify_enabled's
+	// reasons: it spends money and egresses the publisher's words.
+	TranslateArticlesEnabled bool `protobuf:"varint,7,opt,name=translate_articles_enabled,json=translateArticlesEnabled,proto3" json:"translate_articles_enabled,omitempty"`
 	// What the model has cost this instance since the process started, in USD,
 	// for the calls the rate tables could price.
 	//
@@ -652,7 +657,32 @@ type GetSmartConfigResponse struct {
 	// the log and from `articleflux speech`.
 	LastError string `protobuf:"bytes,21,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// RFC3339, empty when there has been no failure since this process started.
-	LastErrorAt   string `protobuf:"bytes,22,opt,name=last_error_at,json=lastErrorAt,proto3" json:"last_error_at,omitempty"`
+	LastErrorAt string `protobuf:"bytes,22,opt,name=last_error_at,json=lastErrorAt,proto3" json:"last_error_at,omitempty"`
+	// Rung 2 of the escalation ladder (plan.md A47, §18.8b): JEV, TypeSafe AI's
+	// typed-decision model. Reported exactly the way the OpenAI key above is —
+	// whether one is present, its last four characters, and whether it came from
+	// the environment — and never the key itself.
+	//
+	// Presence, not proof, for `configured`'s reason: checking that a key works
+	// costs a call.
+	JevConfigured bool   `protobuf:"varint,40,opt,name=jev_configured,json=jevConfigured,proto3" json:"jev_configured,omitempty"`
+	JevKeyHint    string `protobuf:"bytes,41,opt,name=jev_key_hint,json=jevKeyHint,proto3" json:"jev_key_hint,omitempty"`
+	// True when the key came from SCHEMAFLUX_TYPESAFE_API_KEY or TYPESAFE_API_KEY
+	// rather than from this screen — removing nothing here would stop it.
+	JevFromEnvironment bool `protobuf:"varint,42,opt,name=jev_from_environment,json=jevFromEnvironment,proto3" json:"jev_from_environment,omitempty"`
+	// The route in force: "jev" (TypeSafe's own endpoint, and what an unset row
+	// means), "jev-openrouter" or "jev-litellm". There is no environment source
+	// for the route or the base URL — only the key falls back — so neither has a
+	// from_environment of its own.
+	JevProvider string `protobuf:"bytes,43,opt,name=jev_provider,json=jevProvider,proto3" json:"jev_provider,omitempty"`
+	// The operator's LiteLLM proxy. Only ever set alongside "jev-litellm"; the
+	// other two routes have fixed, enumerated hosts (llm.DeciderHosts).
+	JevBaseUrl string `protobuf:"bytes,44,opt,name=jev_base_url,json=jevBaseUrl,proto3" json:"jev_base_url,omitempty"`
+	// Whether rung 2 would actually be tried: a key is present AND the route is
+	// complete (a LiteLLM route with no base URL is not). Computed here so the
+	// screen and the ladder cannot disagree about what "available" means — it is
+	// llm.Client.DeciderAvailable's test without the per-task half.
+	JevReady      bool `protobuf:"varint,45,opt,name=jev_ready,json=jevReady,proto3" json:"jev_ready,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -725,6 +755,13 @@ func (x *GetSmartConfigResponse) GetDefaultModel() string {
 func (x *GetSmartConfigResponse) GetClassifyEnabled() bool {
 	if x != nil {
 		return x.ClassifyEnabled
+	}
+	return false
+}
+
+func (x *GetSmartConfigResponse) GetTranslateArticlesEnabled() bool {
+	if x != nil {
+		return x.TranslateArticlesEnabled
 	}
 	return false
 }
@@ -820,6 +857,48 @@ func (x *GetSmartConfigResponse) GetLastErrorAt() string {
 	return ""
 }
 
+func (x *GetSmartConfigResponse) GetJevConfigured() bool {
+	if x != nil {
+		return x.JevConfigured
+	}
+	return false
+}
+
+func (x *GetSmartConfigResponse) GetJevKeyHint() string {
+	if x != nil {
+		return x.JevKeyHint
+	}
+	return ""
+}
+
+func (x *GetSmartConfigResponse) GetJevFromEnvironment() bool {
+	if x != nil {
+		return x.JevFromEnvironment
+	}
+	return false
+}
+
+func (x *GetSmartConfigResponse) GetJevProvider() string {
+	if x != nil {
+		return x.JevProvider
+	}
+	return ""
+}
+
+func (x *GetSmartConfigResponse) GetJevBaseUrl() string {
+	if x != nil {
+		return x.JevBaseUrl
+	}
+	return ""
+}
+
+func (x *GetSmartConfigResponse) GetJevReady() bool {
+	if x != nil {
+		return x.JevReady
+	}
+	return false
+}
+
 type SetSmartConfigRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Empty leaves the stored key untouched, so the model can be changed without
@@ -840,7 +919,26 @@ type SetSmartConfigRequest struct {
 	// ceiling rather than "refuse everything": a cap is something somebody opts
 	// into, and the strictest possible reading of an empty field would silently
 	// disable every paid feature on the instance.
-	BudgetUsd     *float64 `protobuf:"fixed64,5,opt,name=budget_usd,json=budgetUsd,proto3,oneof" json:"budget_usd,omitempty"`
+	BudgetUsd *float64 `protobuf:"fixed64,5,opt,name=budget_usd,json=budgetUsd,proto3,oneof" json:"budget_usd,omitempty"`
+	// The consent for translating article text (§10.5b). Optional for
+	// classify_enabled's reason: an unrelated save must not decide egress.
+	TranslateArticlesEnabled *bool `protobuf:"varint,6,opt,name=translate_articles_enabled,json=translateArticlesEnabled,proto3,oneof" json:"translate_articles_enabled,omitempty"`
+	// The JEV credential (A47), with the OpenAI key's contract exactly: empty
+	// leaves the stored key untouched, and removing it is its own explicit field.
+	// Plain rather than optional for that reason — the zero value already means
+	// "leave it alone", and a form that confused "leave it" with "delete it" would
+	// delete credentials by accident.
+	JevApiKey      string `protobuf:"bytes,7,opt,name=jev_api_key,json=jevApiKey,proto3" json:"jev_api_key,omitempty"`
+	ClearJevApiKey bool   `protobuf:"varint,8,opt,name=clear_jev_api_key,json=clearJevApiKey,proto3" json:"clear_jev_api_key,omitempty"`
+	// The route: "jev", "jev-openrouter" or "jev-litellm"; anything else is
+	// refused. Optional, so a key change does not re-decide where decisions go.
+	JevProvider *string `protobuf:"bytes,9,opt,name=jev_provider,json=jevProvider,proto3,oneof" json:"jev_provider,omitempty"`
+	// The LiteLLM proxy's base URL: https only, refused for an address the SSRF
+	// guard refuses, required for "jev-litellm" and refused for the other two
+	// routes (their hosts are fixed — a base URL beside them would be a way to
+	// send decisions somewhere llm.DeciderHosts does not list). Set to "" to
+	// remove it. Unset leaves it alone.
+	JevBaseUrl    *string `protobuf:"bytes,10,opt,name=jev_base_url,json=jevBaseUrl,proto3,oneof" json:"jev_base_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -908,6 +1006,41 @@ func (x *SetSmartConfigRequest) GetBudgetUsd() float64 {
 		return *x.BudgetUsd
 	}
 	return 0
+}
+
+func (x *SetSmartConfigRequest) GetTranslateArticlesEnabled() bool {
+	if x != nil && x.TranslateArticlesEnabled != nil {
+		return *x.TranslateArticlesEnabled
+	}
+	return false
+}
+
+func (x *SetSmartConfigRequest) GetJevApiKey() string {
+	if x != nil {
+		return x.JevApiKey
+	}
+	return ""
+}
+
+func (x *SetSmartConfigRequest) GetClearJevApiKey() bool {
+	if x != nil {
+		return x.ClearJevApiKey
+	}
+	return false
+}
+
+func (x *SetSmartConfigRequest) GetJevProvider() string {
+	if x != nil && x.JevProvider != nil {
+		return *x.JevProvider
+	}
+	return ""
+}
+
+func (x *SetSmartConfigRequest) GetJevBaseUrl() string {
+	if x != nil && x.JevBaseUrl != nil {
+		return *x.JevBaseUrl
+	}
+	return ""
 }
 
 type SetSmartConfigResponse struct {
@@ -1095,9 +1228,18 @@ type ListLanguagesResponse struct {
 	Languages []*SmartLanguage       `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
 	// The locale the catalog is authored in — always available, never translated,
 	// never billed.
-	SourceLocale  string `protobuf:"bytes,2,opt,name=source_locale,json=sourceLocale,proto3" json:"source_locale,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SourceLocale string `protobuf:"bytes,2,opt,name=source_locale,json=sourceLocale,proto3" json:"source_locale,omitempty"`
+	// Whether a reader pressing Translate on an article can get a FRESH
+	// translation: the owner has consented (`smart.translate_articles`) AND a key
+	// is present. Here rather than only on the owner-only config because this
+	// response is the one a member may read, and a member otherwise learnt it by
+	// pressing the control into a refusal. One bool and not the two halves: which
+	// half is missing is the owner's business, and the member's next step is the
+	// same either way. A cached translation is readable whatever this says (see
+	// TranslateArticleRequest.cache_only).
+	TranslateArticlesEnabled bool `protobuf:"varint,3,opt,name=translate_articles_enabled,json=translateArticlesEnabled,proto3" json:"translate_articles_enabled,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ListLanguagesResponse) Reset() {
@@ -1144,6 +1286,13 @@ func (x *ListLanguagesResponse) GetSourceLocale() string {
 	return ""
 }
 
+func (x *ListLanguagesResponse) GetTranslateArticlesEnabled() bool {
+	if x != nil {
+		return x.TranslateArticlesEnabled
+	}
+	return false
+}
+
 type SmartLanguage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Code  string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
@@ -1152,7 +1301,13 @@ type SmartLanguage struct {
 	EnglishName string `protobuf:"bytes,2,opt,name=english_name,json=englishName,proto3" json:"english_name,omitempty"`
 	NativeName  string `protobuf:"bytes,3,opt,name=native_name,json=nativeName,proto3" json:"native_name,omitempty"`
 	// Already translated for this build: selecting it costs nothing.
-	Cached        bool `protobuf:"varint,4,opt,name=cached,proto3" json:"cached,omitempty"`
+	Cached bool `protobuf:"varint,4,opt,name=cached,proto3" json:"cached,omitempty"`
+	// How much of this build's catalog is translated, so the picker can say
+	// "nearly free" for a language a new build added a dozen strings to. A key
+	// the model was asked for and answered unusably counts as done: it renders
+	// in English and will not be paid for again until its English changes.
+	Translated    int32 `protobuf:"varint,5,opt,name=translated,proto3" json:"translated,omitempty"`
+	Total         int32 `protobuf:"varint,6,opt,name=total,proto3" json:"total,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1213,6 +1368,20 @@ func (x *SmartLanguage) GetCached() bool {
 		return x.Cached
 	}
 	return false
+}
+
+func (x *SmartLanguage) GetTranslated() int32 {
+	if x != nil {
+		return x.Translated
+	}
+	return 0
+}
+
+func (x *SmartLanguage) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
 }
 
 type TranslateUIRequest struct {
@@ -1338,7 +1507,12 @@ type UIMessage struct {
 	// carries it instead.
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	// Plural forms, keyed by CLDR category: zero, one, two, few, many, other.
-	Forms         map[string]string `protobuf:"bytes,3,rep,name=forms,proto3" json:"forms,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Forms map[string]string `protobuf:"bytes,3,rep,name=forms,proto3" json:"forms,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Fingerprint of the English this was translated from (client/i18n
+	// SourceHash). A client whose own English for the key differs — a bundle
+	// older or newer than the server — drops the entry and keeps its English.
+	// Empty from TranslateUI, which predates it.
+	SourceHash    string `protobuf:"bytes,4,opt,name=source_hash,json=sourceHash,proto3" json:"source_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1394,6 +1568,362 @@ func (x *UIMessage) GetForms() map[string]string {
 	return nil
 }
 
+func (x *UIMessage) GetSourceHash() string {
+	if x != nil {
+		return x.SourceHash
+	}
+	return ""
+}
+
+type GetUIStringsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Locale string                 `protobuf:"bytes,1,opt,name=locale,proto3" json:"locale,omitempty"`
+	// The keys wanted. Empty means every key the server has for the locale.
+	Keys []string `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	// Start translating the locale's missing keys in the background. Owner-only
+	// and key-only; ignored otherwise (see `filling`).
+	Fill          bool `protobuf:"varint,3,opt,name=fill,proto3" json:"fill,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUIStringsRequest) Reset() {
+	*x = GetUIStringsRequest{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUIStringsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUIStringsRequest) ProtoMessage() {}
+
+func (x *GetUIStringsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUIStringsRequest.ProtoReflect.Descriptor instead.
+func (*GetUIStringsRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *GetUIStringsRequest) GetLocale() string {
+	if x != nil {
+		return x.Locale
+	}
+	return ""
+}
+
+func (x *GetUIStringsRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *GetUIStringsRequest) GetFill() bool {
+	if x != nil {
+		return x.Fill
+	}
+	return false
+}
+
+type GetUIStringsResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Locale string                 `protobuf:"bytes,1,opt,name=locale,proto3" json:"locale,omitempty"`
+	// Cached translations of the requested keys, valid for the server's English.
+	Messages []*UIMessage `protobuf:"bytes,2,rep,name=messages,proto3" json:"messages,omitempty"`
+	// Requested keys the cache cannot answer yet.
+	Pending int32 `protobuf:"varint,3,opt,name=pending,proto3" json:"pending,omitempty"`
+	// A background fill is running for this locale, so polling is worthwhile.
+	Filling bool `protobuf:"varint,4,opt,name=filling,proto3" json:"filling,omitempty"`
+	// Why no fill is running when keys are pending: "not_owner", "no_key",
+	// "unsupported", or "" when one is running or nothing is pending. A class,
+	// never provider text (§22.11).
+	IdleReason    string `protobuf:"bytes,5,opt,name=idle_reason,json=idleReason,proto3" json:"idle_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUIStringsResponse) Reset() {
+	*x = GetUIStringsResponse{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUIStringsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUIStringsResponse) ProtoMessage() {}
+
+func (x *GetUIStringsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUIStringsResponse.ProtoReflect.Descriptor instead.
+func (*GetUIStringsResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetUIStringsResponse) GetLocale() string {
+	if x != nil {
+		return x.Locale
+	}
+	return ""
+}
+
+func (x *GetUIStringsResponse) GetMessages() []*UIMessage {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+func (x *GetUIStringsResponse) GetPending() int32 {
+	if x != nil {
+		return x.Pending
+	}
+	return 0
+}
+
+func (x *GetUIStringsResponse) GetFilling() bool {
+	if x != nil {
+		return x.Filling
+	}
+	return false
+}
+
+func (x *GetUIStringsResponse) GetIdleReason() string {
+	if x != nil {
+		return x.IdleReason
+	}
+	return ""
+}
+
+type TranslateArticleRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	ItemId string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// The reader's language — any locale the UI offers, English included.
+	Locale string `protobuf:"bytes,2,opt,name=locale,proto3" json:"locale,omitempty"`
+	// Translate again even if a cached translation exists.
+	Force bool `protobuf:"varint,3,opt,name=force,proto3" json:"force,omitempty"`
+	// Answer from the cache or not at all: never the provider, so it needs no
+	// consent and no key, spends nothing, and is not counted against the rate
+	// limit. A miss is an ordinary answer with `not_cached` set, not an error —
+	// "nobody has paid for this yet" is not a failure. Wins over `force`, because
+	// the one promise this flag makes is that nothing leaves the machine.
+	CacheOnly     bool `protobuf:"varint,4,opt,name=cache_only,json=cacheOnly,proto3" json:"cache_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranslateArticleRequest) Reset() {
+	*x = TranslateArticleRequest{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranslateArticleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranslateArticleRequest) ProtoMessage() {}
+
+func (x *TranslateArticleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranslateArticleRequest.ProtoReflect.Descriptor instead.
+func (*TranslateArticleRequest) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *TranslateArticleRequest) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *TranslateArticleRequest) GetLocale() string {
+	if x != nil {
+		return x.Locale
+	}
+	return ""
+}
+
+func (x *TranslateArticleRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+func (x *TranslateArticleRequest) GetCacheOnly() bool {
+	if x != nil {
+		return x.CacheOnly
+	}
+	return false
+}
+
+type TranslateArticleResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	ItemId string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	Locale string                 `protobuf:"bytes,2,opt,name=locale,proto3" json:"locale,omitempty"`
+	// What the source was detected as ("" when unknown).
+	SourceLocale string `protobuf:"bytes,3,opt,name=source_locale,json=sourceLocale,proto3" json:"source_locale,omitempty"`
+	Title        string `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
+	// Sanitised HTML with the original structure — the same elements, links and
+	// images, with only the text replaced. Rendered through the client's
+	// ordinary sanitised article path, like any other content_html, and with its
+	// subresources repointed at the local proxy exactly as GetItem's are (§10.1a,
+	// per reader: the `proxy.images` preference) — the cache stores the
+	// publisher's URLs, and the rewrite happens on the way out.
+	ContentHtml string `protobuf:"bytes,5,opt,name=content_html,json=contentHtml,proto3" json:"content_html,omitempty"`
+	// The sanitised original, so the reader can toggle back. Proxied the same way.
+	OriginalTitle       string `protobuf:"bytes,6,opt,name=original_title,json=originalTitle,proto3" json:"original_title,omitempty"`
+	OriginalContentHtml string `protobuf:"bytes,7,opt,name=original_content_html,json=originalContentHtml,proto3" json:"original_content_html,omitempty"`
+	// Served from cache: no egress and no spend.
+	Cached bool `protobuf:"varint,8,opt,name=cached,proto3" json:"cached,omitempty"`
+	// The article was longer than one translation covers; the tail stays in the
+	// original language.
+	Partial bool `protobuf:"varint,9,opt,name=partial,proto3" json:"partial,omitempty"`
+	// A cache_only request found nothing cached for this article as it stands.
+	// Only item_id and locale are set beside it.
+	NotCached     bool `protobuf:"varint,10,opt,name=not_cached,json=notCached,proto3" json:"not_cached,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranslateArticleResponse) Reset() {
+	*x = TranslateArticleResponse{}
+	mi := &file_articleflux_v1_smart_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranslateArticleResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranslateArticleResponse) ProtoMessage() {}
+
+func (x *TranslateArticleResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_articleflux_v1_smart_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranslateArticleResponse.ProtoReflect.Descriptor instead.
+func (*TranslateArticleResponse) Descriptor() ([]byte, []int) {
+	return file_articleflux_v1_smart_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *TranslateArticleResponse) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetLocale() string {
+	if x != nil {
+		return x.Locale
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetSourceLocale() string {
+	if x != nil {
+		return x.SourceLocale
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetContentHtml() string {
+	if x != nil {
+		return x.ContentHtml
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetOriginalTitle() string {
+	if x != nil {
+		return x.OriginalTitle
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetOriginalContentHtml() string {
+	if x != nil {
+		return x.OriginalContentHtml
+	}
+	return ""
+}
+
+func (x *TranslateArticleResponse) GetCached() bool {
+	if x != nil {
+		return x.Cached
+	}
+	return false
+}
+
+func (x *TranslateArticleResponse) GetPartial() bool {
+	if x != nil {
+		return x.Partial
+	}
+	return false
+}
+
+func (x *TranslateArticleResponse) GetNotCached() bool {
+	if x != nil {
+		return x.NotCached
+	}
+	return false
+}
+
 var File_articleflux_v1_smart_proto protoreflect.FileDescriptor
 
 const file_articleflux_v1_smart_proto_rawDesc = "" +
@@ -1439,7 +1969,7 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\tsignature\x18\x03 \x01(\tR\tsignature\x12\x14\n" +
 	"\x05smart\x18\x04 \x01(\bR\x05smart\x125\n" +
 	"\arepairs\x18\x05 \x03(\v2\x1b.articleflux.v1.ThemeRepairR\arepairs\"\x17\n" +
-	"\x15GetSmartConfigRequest\"\xb6\x05\n" +
+	"\x15GetSmartConfigRequest\"\xd1\a\n" +
 	"\x16GetSmartConfigResponse\x12\x1e\n" +
 	"\n" +
 	"configured\x18\x01 \x01(\bR\n" +
@@ -1448,7 +1978,8 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\x11can_store_secrets\x18\x03 \x01(\bR\x0fcanStoreSecrets\x12\x14\n" +
 	"\x05model\x18\x04 \x01(\tR\x05model\x12#\n" +
 	"\rdefault_model\x18\x05 \x01(\tR\fdefaultModel\x12)\n" +
-	"\x10classify_enabled\x18\x06 \x01(\bR\x0fclassifyEnabled\x12\x19\n" +
+	"\x10classify_enabled\x18\x06 \x01(\bR\x0fclassifyEnabled\x12<\n" +
+	"\x1atranslate_articles_enabled\x18\a \x01(\bR\x18translateArticlesEnabled\x12\x19\n" +
 	"\bcost_usd\x18\x1e \x01(\x01R\acostUsd\x12!\n" +
 	"\fpriced_calls\x18\x1f \x01(\x03R\vpricedCalls\x12%\n" +
 	"\x0eunpriced_calls\x18  \x01(\x03R\runpricedCalls\x12\x1d\n" +
@@ -1464,16 +1995,34 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\x10from_environment\x18\x14 \x01(\bR\x0ffromEnvironment\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\x15 \x01(\tR\tlastError\x12\"\n" +
-	"\rlast_error_at\x18\x16 \x01(\tR\vlastErrorAt\"\xef\x01\n" +
+	"\rlast_error_at\x18\x16 \x01(\tR\vlastErrorAt\x12%\n" +
+	"\x0ejev_configured\x18( \x01(\bR\rjevConfigured\x12 \n" +
+	"\fjev_key_hint\x18) \x01(\tR\n" +
+	"jevKeyHint\x120\n" +
+	"\x14jev_from_environment\x18* \x01(\bR\x12jevFromEnvironment\x12!\n" +
+	"\fjev_provider\x18+ \x01(\tR\vjevProvider\x12 \n" +
+	"\fjev_base_url\x18, \x01(\tR\n" +
+	"jevBaseUrl\x12\x1b\n" +
+	"\tjev_ready\x18- \x01(\bR\bjevReady\"\x8d\x04\n" +
 	"\x15SetSmartConfigRequest\x12$\n" +
 	"\x0eopenai_api_key\x18\x01 \x01(\tR\fopenaiApiKey\x12\"\n" +
 	"\rclear_api_key\x18\x02 \x01(\bR\vclearApiKey\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12.\n" +
 	"\x10classify_enabled\x18\x04 \x01(\bH\x00R\x0fclassifyEnabled\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"budget_usd\x18\x05 \x01(\x01H\x01R\tbudgetUsd\x88\x01\x01B\x13\n" +
+	"budget_usd\x18\x05 \x01(\x01H\x01R\tbudgetUsd\x88\x01\x01\x12A\n" +
+	"\x1atranslate_articles_enabled\x18\x06 \x01(\bH\x02R\x18translateArticlesEnabled\x88\x01\x01\x12\x1e\n" +
+	"\vjev_api_key\x18\a \x01(\tR\tjevApiKey\x12)\n" +
+	"\x11clear_jev_api_key\x18\b \x01(\bR\x0eclearJevApiKey\x12&\n" +
+	"\fjev_provider\x18\t \x01(\tH\x03R\vjevProvider\x88\x01\x01\x12%\n" +
+	"\fjev_base_url\x18\n" +
+	" \x01(\tH\x04R\n" +
+	"jevBaseUrl\x88\x01\x01B\x13\n" +
 	"\x11_classify_enabledB\r\n" +
-	"\v_budget_usd\"X\n" +
+	"\v_budget_usdB\x1d\n" +
+	"\x1b_translate_articles_enabledB\x0f\n" +
+	"\r_jev_providerB\x0f\n" +
+	"\r_jev_base_url\"X\n" +
 	"\x16SetSmartConfigResponse\x12>\n" +
 	"\x06config\x18\x01 \x01(\v2&.articleflux.v1.GetSmartConfigResponseR\x06config\"\x13\n" +
 	"\x11ListModelsRequest\"k\n" +
@@ -1481,31 +2030,68 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\x06models\x18\x01 \x03(\tR\x06models\x12\x18\n" +
 	"\acurrent\x18\x02 \x01(\tR\acurrent\x12#\n" +
 	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\"\x16\n" +
-	"\x14ListLanguagesRequest\"y\n" +
+	"\x14ListLanguagesRequest\"\xb7\x01\n" +
 	"\x15ListLanguagesResponse\x12;\n" +
 	"\tlanguages\x18\x01 \x03(\v2\x1d.articleflux.v1.SmartLanguageR\tlanguages\x12#\n" +
-	"\rsource_locale\x18\x02 \x01(\tR\fsourceLocale\"\x7f\n" +
+	"\rsource_locale\x18\x02 \x01(\tR\fsourceLocale\x12<\n" +
+	"\x1atranslate_articles_enabled\x18\x03 \x01(\bR\x18translateArticlesEnabled\"\xb5\x01\n" +
 	"\rSmartLanguage\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12!\n" +
 	"\fenglish_name\x18\x02 \x01(\tR\venglishName\x12\x1f\n" +
 	"\vnative_name\x18\x03 \x01(\tR\n" +
 	"nativeName\x12\x16\n" +
-	"\x06cached\x18\x04 \x01(\bR\x06cached\"B\n" +
+	"\x06cached\x18\x04 \x01(\bR\x06cached\x12\x1e\n" +
+	"\n" +
+	"translated\x18\x05 \x01(\x05R\n" +
+	"translated\x12\x14\n" +
+	"\x05total\x18\x06 \x01(\x05R\x05total\"B\n" +
 	"\x12TranslateUIRequest\x12\x16\n" +
 	"\x06locale\x18\x01 \x01(\tR\x06locale\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\"|\n" +
 	"\x13TranslateUIResponse\x12\x16\n" +
 	"\x06locale\x18\x01 \x01(\tR\x06locale\x125\n" +
 	"\bmessages\x18\x02 \x03(\v2\x19.articleflux.v1.UIMessageR\bmessages\x12\x16\n" +
-	"\x06cached\x18\x03 \x01(\bR\x06cached\"\xa7\x01\n" +
+	"\x06cached\x18\x03 \x01(\bR\x06cached\"\xc8\x01\n" +
 	"\tUIMessage\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12:\n" +
-	"\x05forms\x18\x03 \x03(\v2$.articleflux.v1.UIMessage.FormsEntryR\x05forms\x1a8\n" +
+	"\x05forms\x18\x03 \x03(\v2$.articleflux.v1.UIMessage.FormsEntryR\x05forms\x12\x1f\n" +
+	"\vsource_hash\x18\x04 \x01(\tR\n" +
+	"sourceHash\x1a8\n" +
 	"\n" +
 	"FormsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\x91\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"U\n" +
+	"\x13GetUIStringsRequest\x12\x16\n" +
+	"\x06locale\x18\x01 \x01(\tR\x06locale\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\tR\x04keys\x12\x12\n" +
+	"\x04fill\x18\x03 \x01(\bR\x04fill\"\xba\x01\n" +
+	"\x14GetUIStringsResponse\x12\x16\n" +
+	"\x06locale\x18\x01 \x01(\tR\x06locale\x125\n" +
+	"\bmessages\x18\x02 \x03(\v2\x19.articleflux.v1.UIMessageR\bmessages\x12\x18\n" +
+	"\apending\x18\x03 \x01(\x05R\apending\x12\x18\n" +
+	"\afilling\x18\x04 \x01(\bR\afilling\x12\x1f\n" +
+	"\vidle_reason\x18\x05 \x01(\tR\n" +
+	"idleReason\"\x7f\n" +
+	"\x17TranslateArticleRequest\x12\x17\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x16\n" +
+	"\x06locale\x18\x02 \x01(\tR\x06locale\x12\x14\n" +
+	"\x05force\x18\x03 \x01(\bR\x05force\x12\x1d\n" +
+	"\n" +
+	"cache_only\x18\x04 \x01(\bR\tcacheOnly\"\xd5\x02\n" +
+	"\x18TranslateArticleResponse\x12\x17\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x16\n" +
+	"\x06locale\x18\x02 \x01(\tR\x06locale\x12#\n" +
+	"\rsource_locale\x18\x03 \x01(\tR\fsourceLocale\x12\x14\n" +
+	"\x05title\x18\x04 \x01(\tR\x05title\x12!\n" +
+	"\fcontent_html\x18\x05 \x01(\tR\vcontentHtml\x12%\n" +
+	"\x0eoriginal_title\x18\x06 \x01(\tR\roriginalTitle\x122\n" +
+	"\x15original_content_html\x18\a \x01(\tR\x13originalContentHtml\x12\x16\n" +
+	"\x06cached\x18\b \x01(\bR\x06cached\x12\x18\n" +
+	"\apartial\x18\t \x01(\bR\apartial\x12\x1d\n" +
+	"\n" +
+	"not_cached\x18\n" +
+	" \x01(\bR\tnotCached2\xd3\x06\n" +
 	"\fSmartService\x12_\n" +
 	"\x0eGetSmartConfig\x12%.articleflux.v1.GetSmartConfigRequest\x1a&.articleflux.v1.GetSmartConfigResponse\x12_\n" +
 	"\x0eSetSmartConfig\x12%.articleflux.v1.SetSmartConfigRequest\x1a&.articleflux.v1.SetSmartConfigResponse\x12\\\n" +
@@ -1513,6 +2099,8 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\n" +
 	"ListModels\x12!.articleflux.v1.ListModelsRequest\x1a\".articleflux.v1.ListModelsResponse\x12V\n" +
 	"\vTranslateUI\x12\".articleflux.v1.TranslateUIRequest\x1a#.articleflux.v1.TranslateUIResponse\x12Y\n" +
+	"\fGetUIStrings\x12#.articleflux.v1.GetUIStringsRequest\x1a$.articleflux.v1.GetUIStringsResponse\x12e\n" +
+	"\x10TranslateArticle\x12'.articleflux.v1.TranslateArticleRequest\x1a(.articleflux.v1.TranslateArticleResponse\x12Y\n" +
 	"\fComposeTheme\x12#.articleflux.v1.ComposeThemeRequest\x1a$.articleflux.v1.ComposeThemeResponse\x12Y\n" +
 	"\fSuggestTheme\x12#.articleflux.v1.SuggestThemeRequest\x1a$.articleflux.v1.SuggestThemeResponseBPZNgithub.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1;articlefluxv1b\x06proto3"
 
@@ -1528,27 +2116,31 @@ func file_articleflux_v1_smart_proto_rawDescGZIP() []byte {
 	return file_articleflux_v1_smart_proto_rawDescData
 }
 
-var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_articleflux_v1_smart_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_articleflux_v1_smart_proto_goTypes = []any{
-	(*ThemeTokens)(nil),            // 0: articleflux.v1.ThemeTokens
-	(*ThemeRepair)(nil),            // 1: articleflux.v1.ThemeRepair
-	(*ComposeThemeRequest)(nil),    // 2: articleflux.v1.ComposeThemeRequest
-	(*ComposeThemeResponse)(nil),   // 3: articleflux.v1.ComposeThemeResponse
-	(*SuggestThemeRequest)(nil),    // 4: articleflux.v1.SuggestThemeRequest
-	(*SuggestThemeResponse)(nil),   // 5: articleflux.v1.SuggestThemeResponse
-	(*GetSmartConfigRequest)(nil),  // 6: articleflux.v1.GetSmartConfigRequest
-	(*GetSmartConfigResponse)(nil), // 7: articleflux.v1.GetSmartConfigResponse
-	(*SetSmartConfigRequest)(nil),  // 8: articleflux.v1.SetSmartConfigRequest
-	(*SetSmartConfigResponse)(nil), // 9: articleflux.v1.SetSmartConfigResponse
-	(*ListModelsRequest)(nil),      // 10: articleflux.v1.ListModelsRequest
-	(*ListModelsResponse)(nil),     // 11: articleflux.v1.ListModelsResponse
-	(*ListLanguagesRequest)(nil),   // 12: articleflux.v1.ListLanguagesRequest
-	(*ListLanguagesResponse)(nil),  // 13: articleflux.v1.ListLanguagesResponse
-	(*SmartLanguage)(nil),          // 14: articleflux.v1.SmartLanguage
-	(*TranslateUIRequest)(nil),     // 15: articleflux.v1.TranslateUIRequest
-	(*TranslateUIResponse)(nil),    // 16: articleflux.v1.TranslateUIResponse
-	(*UIMessage)(nil),              // 17: articleflux.v1.UIMessage
-	nil,                            // 18: articleflux.v1.UIMessage.FormsEntry
+	(*ThemeTokens)(nil),              // 0: articleflux.v1.ThemeTokens
+	(*ThemeRepair)(nil),              // 1: articleflux.v1.ThemeRepair
+	(*ComposeThemeRequest)(nil),      // 2: articleflux.v1.ComposeThemeRequest
+	(*ComposeThemeResponse)(nil),     // 3: articleflux.v1.ComposeThemeResponse
+	(*SuggestThemeRequest)(nil),      // 4: articleflux.v1.SuggestThemeRequest
+	(*SuggestThemeResponse)(nil),     // 5: articleflux.v1.SuggestThemeResponse
+	(*GetSmartConfigRequest)(nil),    // 6: articleflux.v1.GetSmartConfigRequest
+	(*GetSmartConfigResponse)(nil),   // 7: articleflux.v1.GetSmartConfigResponse
+	(*SetSmartConfigRequest)(nil),    // 8: articleflux.v1.SetSmartConfigRequest
+	(*SetSmartConfigResponse)(nil),   // 9: articleflux.v1.SetSmartConfigResponse
+	(*ListModelsRequest)(nil),        // 10: articleflux.v1.ListModelsRequest
+	(*ListModelsResponse)(nil),       // 11: articleflux.v1.ListModelsResponse
+	(*ListLanguagesRequest)(nil),     // 12: articleflux.v1.ListLanguagesRequest
+	(*ListLanguagesResponse)(nil),    // 13: articleflux.v1.ListLanguagesResponse
+	(*SmartLanguage)(nil),            // 14: articleflux.v1.SmartLanguage
+	(*TranslateUIRequest)(nil),       // 15: articleflux.v1.TranslateUIRequest
+	(*TranslateUIResponse)(nil),      // 16: articleflux.v1.TranslateUIResponse
+	(*UIMessage)(nil),                // 17: articleflux.v1.UIMessage
+	(*GetUIStringsRequest)(nil),      // 18: articleflux.v1.GetUIStringsRequest
+	(*GetUIStringsResponse)(nil),     // 19: articleflux.v1.GetUIStringsResponse
+	(*TranslateArticleRequest)(nil),  // 20: articleflux.v1.TranslateArticleRequest
+	(*TranslateArticleResponse)(nil), // 21: articleflux.v1.TranslateArticleResponse
+	nil,                              // 22: articleflux.v1.UIMessage.FormsEntry
 }
 var file_articleflux_v1_smart_proto_depIdxs = []int32{
 	0,  // 0: articleflux.v1.ComposeThemeResponse.theme:type_name -> articleflux.v1.ThemeTokens
@@ -1559,26 +2151,31 @@ var file_articleflux_v1_smart_proto_depIdxs = []int32{
 	7,  // 5: articleflux.v1.SetSmartConfigResponse.config:type_name -> articleflux.v1.GetSmartConfigResponse
 	14, // 6: articleflux.v1.ListLanguagesResponse.languages:type_name -> articleflux.v1.SmartLanguage
 	17, // 7: articleflux.v1.TranslateUIResponse.messages:type_name -> articleflux.v1.UIMessage
-	18, // 8: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
-	6,  // 9: articleflux.v1.SmartService.GetSmartConfig:input_type -> articleflux.v1.GetSmartConfigRequest
-	8,  // 10: articleflux.v1.SmartService.SetSmartConfig:input_type -> articleflux.v1.SetSmartConfigRequest
-	12, // 11: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
-	10, // 12: articleflux.v1.SmartService.ListModels:input_type -> articleflux.v1.ListModelsRequest
-	15, // 13: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
-	2,  // 14: articleflux.v1.SmartService.ComposeTheme:input_type -> articleflux.v1.ComposeThemeRequest
-	4,  // 15: articleflux.v1.SmartService.SuggestTheme:input_type -> articleflux.v1.SuggestThemeRequest
-	7,  // 16: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
-	9,  // 17: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
-	13, // 18: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
-	11, // 19: articleflux.v1.SmartService.ListModels:output_type -> articleflux.v1.ListModelsResponse
-	16, // 20: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
-	3,  // 21: articleflux.v1.SmartService.ComposeTheme:output_type -> articleflux.v1.ComposeThemeResponse
-	5,  // 22: articleflux.v1.SmartService.SuggestTheme:output_type -> articleflux.v1.SuggestThemeResponse
-	16, // [16:23] is the sub-list for method output_type
-	9,  // [9:16] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	22, // 8: articleflux.v1.UIMessage.forms:type_name -> articleflux.v1.UIMessage.FormsEntry
+	17, // 9: articleflux.v1.GetUIStringsResponse.messages:type_name -> articleflux.v1.UIMessage
+	6,  // 10: articleflux.v1.SmartService.GetSmartConfig:input_type -> articleflux.v1.GetSmartConfigRequest
+	8,  // 11: articleflux.v1.SmartService.SetSmartConfig:input_type -> articleflux.v1.SetSmartConfigRequest
+	12, // 12: articleflux.v1.SmartService.ListLanguages:input_type -> articleflux.v1.ListLanguagesRequest
+	10, // 13: articleflux.v1.SmartService.ListModels:input_type -> articleflux.v1.ListModelsRequest
+	15, // 14: articleflux.v1.SmartService.TranslateUI:input_type -> articleflux.v1.TranslateUIRequest
+	18, // 15: articleflux.v1.SmartService.GetUIStrings:input_type -> articleflux.v1.GetUIStringsRequest
+	20, // 16: articleflux.v1.SmartService.TranslateArticle:input_type -> articleflux.v1.TranslateArticleRequest
+	2,  // 17: articleflux.v1.SmartService.ComposeTheme:input_type -> articleflux.v1.ComposeThemeRequest
+	4,  // 18: articleflux.v1.SmartService.SuggestTheme:input_type -> articleflux.v1.SuggestThemeRequest
+	7,  // 19: articleflux.v1.SmartService.GetSmartConfig:output_type -> articleflux.v1.GetSmartConfigResponse
+	9,  // 20: articleflux.v1.SmartService.SetSmartConfig:output_type -> articleflux.v1.SetSmartConfigResponse
+	13, // 21: articleflux.v1.SmartService.ListLanguages:output_type -> articleflux.v1.ListLanguagesResponse
+	11, // 22: articleflux.v1.SmartService.ListModels:output_type -> articleflux.v1.ListModelsResponse
+	16, // 23: articleflux.v1.SmartService.TranslateUI:output_type -> articleflux.v1.TranslateUIResponse
+	19, // 24: articleflux.v1.SmartService.GetUIStrings:output_type -> articleflux.v1.GetUIStringsResponse
+	21, // 25: articleflux.v1.SmartService.TranslateArticle:output_type -> articleflux.v1.TranslateArticleResponse
+	3,  // 26: articleflux.v1.SmartService.ComposeTheme:output_type -> articleflux.v1.ComposeThemeResponse
+	5,  // 27: articleflux.v1.SmartService.SuggestTheme:output_type -> articleflux.v1.SuggestThemeResponse
+	19, // [19:28] is the sub-list for method output_type
+	10, // [10:19] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_articleflux_v1_smart_proto_init() }
@@ -1593,7 +2190,7 @@ func file_articleflux_v1_smart_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_articleflux_v1_smart_proto_rawDesc), len(file_articleflux_v1_smart_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   19,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

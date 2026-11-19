@@ -5,25 +5,21 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // counting is the smallest middleware that can prove composition.
 type counting struct {
-	next mw.Handler
+	next schemaflux.Provider
 	n    *int
 }
 
-func (c counting) Complete(ctx context.Context, r schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (c counting) Complete(ctx context.Context, r schemaflux.Request) (schemaflux.Response, error) {
 	*c.n++
 	return c.next.Complete(ctx, r)
 }
-func (c counting) Name() string                                        { return c.next.Name() }
-func (c counting) EstimateCost(r schemaflux.CompletionRequest) float64 { return c.next.EstimateCost(r) }
-func (c counting) RetryPolicy() (int, time.Duration)                   { return c.next.RetryPolicy() }
+func (c counting) Name() string { return c.next.Name() }
 
 // Money, and the ceiling on it.
 //
@@ -260,7 +256,7 @@ func TestTheBudgetIsMiddlewareAndComposes(t *testing.T) {
 	var seen int
 	c.Use(
 		c.Budget(func(context.Context) float64 { return 1000 }),
-		func(next mw.Handler) mw.Handler { return counting{next: next, n: &seen} },
+		func(next schemaflux.Provider) schemaflux.Provider { return counting{next: next, n: &seen} },
 	)
 	if _, err := c.Do(context.Background(), Request{Model: aPricedModel, Input: "x"}); err != nil {
 		t.Fatal(err)

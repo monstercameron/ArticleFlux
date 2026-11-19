@@ -255,6 +255,20 @@ func report(t *testing.T, name string, d time.Duration) {
 // is a benchmark whose wins do not transfer.
 func buildG3Fixture(t testing.TB) *DB {
 	t.Helper()
+	db := buildG3FixtureNoStats(t)
+	// ANALYZE, because SQLite's planner without statistics can choose a
+	// different index than it will in production — and a benchmark that measures
+	// a plan the real instance never uses is worse than no benchmark.
+	if _, err := db.Write.ExecContext(context.Background(), `ANALYZE`); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+// buildG3FixtureNoStats is the same database as production has: populated, and
+// with no sqlite_stat1 (optimize_test.go measures what PRAGMA optimize does to it).
+func buildG3FixtureNoStats(t testing.TB) *DB {
+	t.Helper()
 	ctx := context.Background()
 
 	db, err := Open(Options{Path: filepath.Join(t.TempDir(), "g3.db")})
@@ -375,13 +389,6 @@ func buildG3Fixture(t testing.TB) *DB {
 				t.Fatal(err)
 			}
 		}
-	}
-
-	// ANALYZE, because SQLite's planner without statistics can choose a
-	// different index than it will in production — and a benchmark that measures
-	// a plan the real instance never uses is worse than no benchmark.
-	if _, err := db.Write.ExecContext(ctx, `ANALYZE`); err != nil {
-		t.Fatal(err)
 	}
 
 	t.Logf("fixture: %d items x %d users across %d feeds, built in %v",

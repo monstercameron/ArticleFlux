@@ -79,7 +79,7 @@ func TestCachedCatalogIsServedWithoutAKey(t *testing.T) {
 	hash := hashOf(source)
 	seedCache(t, settings, cached{
 		SourceHash: hash, Locale: "fr", Model: "gpt-5-mini",
-		Entries: map[string]string{"boot.appName": "ArticleFlux"},
+		Entries: map[string]string{"login.submit": "Se connecter"},
 	})
 
 	entries, err := tr.Catalog(ctx, "fr", false)
@@ -91,7 +91,7 @@ func TestCachedCatalogIsServedWithoutAKey(t *testing.T) {
 	}
 	var found bool
 	for _, e := range entries {
-		if e.Key == "boot.appName" && e.Text == "ArticleFlux" {
+		if e.Key == "login.submit" && e.Text == "Se connecter" {
 			found = true
 		}
 	}
@@ -158,8 +158,10 @@ func TestCachedLocalesReportsOnlyCurrentHashMatches(t *testing.T) {
 	tr := NewTranslator(nil, settings)
 	hash := hashOf(flatten(i18n.Export(i18n.DefaultLocale)))
 
-	seedCache(t, settings, cached{SourceHash: hash, Locale: "fr", Entries: map[string]string{"a": "b"}})
-	seedCache(t, settings, cached{SourceHash: "stale", Locale: "de", Entries: map[string]string{"a": "b"}})
+	// A real key: an entry the English does not have is not a usable
+	// translation, and a row of nothing usable is not "free to select".
+	seedCache(t, settings, cached{SourceHash: hash, Locale: "fr", Entries: map[string]string{"login.submit": "Se connecter"}})
+	seedCache(t, settings, cached{SourceHash: "stale", Locale: "de", Entries: map[string]string{"login.submit": "Anmelden"}})
 	// "es" is never written at all.
 
 	got := tr.CachedLocales(context.Background())

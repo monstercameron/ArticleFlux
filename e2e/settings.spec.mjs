@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, openSettings } from './fixtures.mjs';
 
 /**
  * Every settings tab, each asserted to render ITS OWN content.
@@ -23,9 +23,13 @@ import { test, expect, boot } from './fixtures.mjs';
  * against the DOM rather than against itself.
  */
 
+// Fourteen, in settingsTabs order. It had gone stale a second time — thirteen
+// here against fourteen in Go, with Discover the one missing — and the count
+// assertion below was failing on that rather than on anything about a panel.
 const TABS = [
-  'reading', 'myfeed', 'appearance', 'listening', 'podcast', 'smart', 'classify',
-  'feeds', 'data', 'account', 'server', 'activity', 'speed',
+  'reading', 'appearance', 'myfeed', 'listening', 'podcast',
+  'feeds', 'classify', 'discover', 'data',
+  'smart', 'account', 'server', 'activity', 'speed',
 ];
 
 test.describe('settings', () => {
@@ -35,7 +39,7 @@ test.describe('settings', () => {
 
   test('every tab renders, and each shows content none of the others do', async ({ page }) => {
     await boot(page);
-    await page.keyboard.press(',');
+    await openSettings(page);
     await expect(page.locator('.set-tabs')).toBeVisible();
 
     await expect(page.locator('[data-action="settings-tab"]')).toHaveCount(TABS.length);
@@ -71,7 +75,7 @@ test.describe('settings', () => {
 
   test('the active tab is the only one marked aria-current', async ({ page }) => {
     await boot(page);
-    await page.keyboard.press(',');
+    await openSettings(page);
     await page.locator('[data-action="settings-tab"][data-value="feeds"]').click();
 
     const current = page.locator('[data-action="settings-tab"][aria-current="true"]');

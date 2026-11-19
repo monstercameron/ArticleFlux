@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -1397,9 +1397,9 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 	return html.Div(html.Props{Class: "slide", Key: "slide-" + it.GetId()},
 		html.Div(html.Props{Class: "slide-card"},
 			html.Div(html.Props{Class: "slide-slug"},
-				sourceMark(it.GetSourceId(), p.hosts, "slide-dot"),
+				kitSourceMark(it.GetSourceId(), p.hosts, "slide-dot"),
 				html.Span(html.Props{Class: "slide-source"}, html.Text(it.GetSourceTitle())),
-				html.Span(html.Props{}, html.Text(relTime(tr, it.GetPublishedAt()))),
+				timeTag(tr, it.GetPublishedAt()),
 				// The running order. A number that is TRUE — where this story sits
 				// in the feed being shown — rather than a decorative marker, which
 				// is the only thing that earns a counter a place on a screen this
@@ -1496,29 +1496,54 @@ func slideHud(tr i18n.Runtime, p slideProps) ui.Node {
 	}
 	return html.Div(html.Props{Class: "slide-hud"},
 		html.Span(html.Props{Class: "slide-state"}, html.Text(slideState(tr, p))),
-		slideBtn(actSlidePrev, glyphSlidePrev, tr.T("slides", "previous"), false),
-		slideBtn(actSlidePause, pauseGlyph, pauseLabel, p.paused),
-		slideBtn(actSlideNext, glyphSlideNext, tr.T("slides", "next"), false),
+		slideBtn(actSlidePrev, glyphSlidePrev, tr.T("slides", "previous"), nil),
+		// Pause says what it will do, so it is NOT a toggle button. It was
+		// both: its label flipped to Resume and it reported aria-pressed as
+		// well, which a screen reader put together as "Resume, toggle button,
+		// pressed" — two answers to one question, and they disagree about
+		// whether pressing it starts or stops the show. The label is the
+		// answer; the amber a paused HUD shows is kept, via data-on.
+		slideBtn(actSlidePause, pauseGlyph, pauseLabel, map[string]any{"data-on": strconv.FormatBool(p.paused)}),
+		slideBtn(actSlideNext, glyphSlideNext, tr.T("slides", "next"), nil),
 		// The read-to-me switch is in the HUD as well as in settings, because it
 		// is the one setting a reader changes WHILE watching — the moment you
 		// decide you would rather be told this than read it is the moment you are
-		// already looking at it.
-		slideBtn(actSlideListen, glyphListen, tr.T("slides", "readToMe"), p.audio),
-		slideBtn(actSlideLeave, glyphRemove, tr.T("slides", "leave"), false),
+		// already looking at it. A real toggle: one label, two states.
+		slideToggle(actSlideListen, glyphListen, tr.T("slides", "readToMe"), p.audio),
+		slideBtn(actSlideLeave, glyphRemove, tr.T("slides", "leave"), nil),
 	)
 }
 
-// slideBtn is the HUD's only control shape. Its accessible name is the label,
-// and the glyph is hidden, for the reason lead() gives: a screen reader
-// announcing the character is worse than announcing the word.
-func slideBtn(action, glyph, label string, pressed bool) ui.Node {
+// slideBtn is the HUD's control shape. Its accessible name is the label, and
+// the glyph is hidden, for the reason lead() gives: a screen reader announcing
+// the character is worse than announcing the word.
+//
+// No aria-pressed, because Previous, Next and Leave are actions: any value of
+// it, "false" included, makes a button a toggle, and "Leave, toggle button, not
+// pressed" describes a switch nobody can find the other side of. extra is
+// merged into the element's attributes (Pause's data-on).
+func slideBtn(action, glyph, label string, extra map[string]any) ui.Node {
+	raw := map[string]any{"data-action": action}
+	for k, v := range extra {
+		raw[k] = v
+	}
+	return html.Button(html.Props{
+		Class: "slide-btn",
+		Title: label,
+		Raw:   raw,
+		Aria:  map[string]string{"label": label},
+	}, html.Span(html.Props{Aria: map[string]string{"hidden": "true"}}, html.Text(glyph)))
+}
+
+// slideToggle is slideBtn for the one HUD control that is on or off.
+func slideToggle(action, glyph, label string, on bool) ui.Node {
 	return html.Button(html.Props{
 		Class: "slide-btn",
 		Title: label,
 		Raw:   map[string]any{"data-action": action},
 		Aria: map[string]string{
 			"label":   label,
-			"pressed": strconv.FormatBool(pressed),
+			"pressed": strconv.FormatBool(on),
 		},
 	}, html.Span(html.Props{Aria: map[string]string{"hidden": "true"}}, html.Text(glyph)))
 }

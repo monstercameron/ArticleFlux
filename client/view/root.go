@@ -4,10 +4,11 @@ package view
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -89,6 +90,11 @@ func Root() ui.Node {
 	// `saved` and for its reasons: read once when Reader mounts, and this is the
 	// only place in the app that already knows the answer.
 	whoami := ui.UseRef("")
+	// Whether that identity is an owner, for the one decision the client makes
+	// with it: whether this device may ask the server to translate the rest of a
+	// language (a spend), or only read what is already cached. A Ref beside
+	// whoami, for its reasons.
+	owner := ui.UseRef(false)
 	// catalogReady exists only to force one re-render after a translated catalog
 	// lands. The locale has not changed at that point — it was already set — so
 	// nothing else would invalidate the tree, and the reader would sit looking
@@ -228,6 +234,7 @@ func Root() ui.Node {
 				// unless WhoAmI answered — the error path above returns — and an
 				// empty name is what the Account tab already handles anyway.
 				whoami.Set(who.GetUsername())
+				owner.Set(isOwnerRole(who.GetRole()))
 				phase.Set(phaseReader)
 			})
 		}()
@@ -253,36 +260,94 @@ func Root() ui.Node {
 		PersistenceKey:   i18n.PersistenceKey,
 	})
 
-	// A saved non-English locale needs its catalog fetched before anything below
-	// renders in it. Guarded by a Ref rather than a dep list, for the reason the
-	// WhoAmI effect above records; re-runs when the locale changes because that
-	// is exactly when a different catalog is wanted.
+	// The language in force, filled in on the fly (plan.md §22.16c).
 	//
-	// Best-effort: a server that cannot translate today must still hand the
-	// reader their feeds, in English, rather than a splash screen. Import is
-	// idempotent, and a locale whose catalog never arrives simply falls back to
-	// English key by key.
-	fetched := ui.UseRef("")
+	// It used to be one blocking whole-catalog call, and two things were wrong
+	// with that. The reader looked at nothing in their language until every
+	// string had come back, and a member could not get even the cached half of
+	// it, because that call is owner-only. Now English is on screen at once,
+	// each cached batch replaces its keys as it lands, and only an owner's device
+	// asks the server to translate what is still missing — a spend against the
+	// instance, which is the owner's decision.
+	//
+	// Root runs the loop, not the language picker, because Root is the only
+	// component that can make a merge VISIBLE: a batch changes no state the
+	// reconciler can see, so the catalogReady nudge below is what re-renders the
+	// Provider and with it every memoised pane. The picker reads where the loop
+	// has got to from `fill`, so there is one loop per language and never two
+	// racing each other for the same keys.
+	//
+	// Guarded by a Ref rather than trusting the dep list, for the WhoAmI effect's
+	// reason; the previous loop is cancelled when the language changes, so a
+	// reader flicking between three languages does not leave three running.
+	fill := ui.UseState(langFill{})
+	fillFor := ui.UseRef("")
+	fillStop := ui.UseRef[context.CancelFunc](nil)
 	ui.UseEffect(func() func() {
 		want := locale.Get()
 		c := authed.Get()
-		if c == nil || want == "" || want == i18n.DefaultLocale || fetched.Get() == want {
+		key := want + "|" + strconv.FormatBool(owner.Get())
+		if c == nil || fillFor.Get() == key {
 			return nil
 		}
-		fetched.Set(want)
+		fillFor.Set(key)
+		if stop := fillStop.Get(); stop != nil {
+			stop()
+			fillStop.Set(nil)
+		}
+		if want == "" || want == i18n.DefaultLocale {
+			fill.Set(langFill{})
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		fillStop.Set(cancel)
+		mine := owner.Get()
+		done, total := langCoverage(want)
+		// On the next frame, not in this effect.
+		//
+		// This effect first runs in the commit that MOUNTS the reader — `authed`
+		// going non-nil is what both of them wait for. A Set here re-renders
+		// Root in the middle of that commit's effect phase, and the reader's own
+		// mount effects — the ones that open the stream and ask for the feeds —
+		// never ran: no request left the page, the badge said "connecting"
+		// until the tab was closed, and nothing was logged, because nothing had
+		// failed. It only ever happened in a language other than English,
+		// because for English the Set above is a Set to the value already held
+		// and re-renders nothing. Every reader who chose a language met it on
+		// their next load.
+		ui.PostAsync(func() {
+			if ctx.Err() != nil {
+				return
+			}
+			fill.Set(langFill{locale: want, done: done, total: total, running: true, owner: mine})
+		})
 		go func() {
-			// force=false, so this is a server-side cache read on every boot
-			// after the first. A cold cache — the English changed in a new
-			// build — pays for one re-translation and is then warm for every
-			// other device too.
-			_, _ = c.TranslateUI(context.Background(), want, false)
-			// PostAsync so the re-render happens on the frame loop with the
-			// catalog already in the bundle. Setting the locale to what it
-			// already is would not re-render, so this nudges the ref instead.
-			ui.PostAsync(func() { catalogReady.Set(catalogReady.Get() + 1) })
+			res, err := c.FillUIStrings(ctx, want, mine, func(int) {
+				// PostAsync so the re-render happens on the frame loop with the
+				// batch already in the bundle.
+				ui.PostAsync(func() {
+					if ctx.Err() != nil {
+						return
+					}
+					catalogReady.Set(catalogReady.Get() + 1)
+					cur := fill.Get()
+					cur.done, cur.total = langCoverage(want)
+					fill.Set(cur)
+				})
+			})
+			ui.PostAsync(func() {
+				// A loop cancelled by a newer language reports nothing: the
+				// state already describes the language that replaced it.
+				if ctx.Err() != nil && fill.Get().locale != want {
+					return
+				}
+				d, t := langCoverage(want)
+				fill.Set(langFill{locale: want, done: d, total: t, owner: mine,
+					idle: res.IdleReason, failed: err != nil && ctx.Err() == nil})
+			})
 		}()
 		return nil
-	}, []any{locale.Get(), authed.Get() != nil})
+	}, []any{locale.Get(), authed.Get() != nil, owner.Get()})
 
 	// The document's own language and direction. Not decoration: they decide
 	// hyphenation, quotation marks, the spellchecker, and which way the logical
@@ -307,12 +372,15 @@ func Root() ui.Node {
 	case phaseHome:
 		child = ui.CreateElement(Home)
 	case phaseReader:
-		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get(), whoami: whoami.Get()})
+		child = ui.CreateElement(Reader, readerProps{client: authed.Get(), prefs: saved.Get(), whoami: whoami.Get(),
+			owner: owner.Get(), langFill: fill.Get()})
 	case phaseSetup:
 		child = ui.CreateElement(Setup, setupProps{
 			tunnel: tunnel,
 			onSuccess: func(c *data.Client) {
 				authed.Set(c)
+				// Whoever claims the instance is its first administrator.
+				owner.Set(true)
 				// Straight to the reader, and deliberately without the prefs
 				// round trip the login path takes: an account created ten
 				// seconds ago has no saved view to wait for, and pausing on a
@@ -338,7 +406,17 @@ func Root() ui.Node {
 					if err == nil {
 						applyBootAppearance(p)
 					}
+					// And who signed in, which the boot path learns from the WhoAmI
+					// it already made. Without it a reader who signed in on this
+					// screen was nobody to the Account tab and a member to the
+					// language picker, until they reloaded. A failure leaves both
+					// at their honest zero.
+					who, werr := c.WhoAmI(context.Background())
 					ui.PostAsync(func() {
+						if werr == nil {
+							whoami.Set(who.GetUsername())
+							owner.Set(isOwnerRole(who.GetRole()))
+						}
 						saved.Set(p)
 						phase.Set(phaseReader)
 					})

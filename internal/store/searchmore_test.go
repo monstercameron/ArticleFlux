@@ -7,12 +7,12 @@ import (
 
 func TestPlainTermPicksTheFirstMeaningfulWord(t *testing.T) {
 	cases := map[string]string{
-		"decoding":                 "decoding",
-		"AND OR NOT NEAR":          "",
-		"and decoding or lock":     "decoding",
-		`"quoted phrase"`:          "quoted",
-		"  spaced   out  words  ":  "spaced",
-		"":                         "",
+		"decoding":                "decoding",
+		"AND OR NOT NEAR":         "",
+		"and decoding or lock":    "decoding",
+		`"quoted phrase"`:         "quoted",
+		"  spaced   out  words  ": "spaced",
+		"":                        "",
 	}
 	for in, want := range cases {
 		if got := plainTerm(in); got != want {

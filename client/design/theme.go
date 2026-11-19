@@ -3,7 +3,7 @@ package design
 import (
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/css"
+	"github.com/monstercameron/GoWebComponents/v7/css"
 )
 
 // The theming engine.
@@ -363,53 +363,51 @@ func ReadingSizeByName(name string) ReadingSize {
 // attribute, and everything below only decides geometry.
 func appearanceCSS(r func(string, string) css.Rule) {
 	css.Global(".thm-grid",
-		r("display", "grid"),
+		css.Display.Grid,
 		r("grid-template-columns", "repeat(auto-fill, minmax(196px, 1fr))"),
-		r("gap", "10px"), r("margin-top", "14px"),
+		css.Gap(css.Px(10)), r("margin-top", "14px"),
 	)
 	css.Global(".thm-card",
-		r("position", "relative"), r("overflow", "hidden"),
-		r("display", "flex"), r("flex-direction", "column"), r("gap", "8px"),
-		r("padding", "15px 16px 16px"), r("border-radius", "14px"),
-		r("border", "1px solid"), r("text-align", "left"),
+		css.Position.Relative, css.Overflow.Hidden,
+		css.Display.Flex, css.FlexDir.Col, css.Gap(css.Px(8)),
+		r("padding", "15px 16px 16px"), css.Rounded(css.Px(14)),
+		r("border", "1px solid"), css.TextAlign.Start,
 		r("transition", "transform "+move+", box-shadow "+move),
 	)
 	// 2px, not the chip's 1px: a card is a bigger object and the same lift on it
 	// is a twitch.
-	css.Global(".thm-card:hover", r("transform", "translateY(-2px)"))
-	css.Global(".thm-card:active", r("transform", "translateY(0)"), r("transition-duration", "0s"))
+	css.Global(".thm-card:hover", css.Transform(css.TranslateY(css.Px(-2))))
+	css.Global(".thm-card:active", css.Transform(css.TranslateY(css.Zero)), r("transition-duration", "0s"))
 	// The selection marker is the app's own: a 3px bar in the accent, down the
 	// left edge, drawing itself. The same gesture as the current feed in the rail
 	// and the highlighted row in the palette — a reader learns "you are here"
 	// once. It is the CARD's accent rather than the interface's, because at the
 	// moment of choosing, the interface's accent is still the old theme's.
-	css.Global(".thm-card::before",
-		r("content", `""`), r("position", "absolute"),
-		r("left", "0"), r("top", "11px"), r("bottom", "11px"),
-		r("width", "3px"), r("border-radius", "0 3px 3px 0"),
+	css.Global(".thm-card::before", ruleSet(hueBar,
+		css.Top(css.Px(11)), css.Bottom(css.Px(11)),
 		r("background", "var(--thm-accent)"),
 		r("transform", "scaleX(0)"), r("transform-origin", "0 50%"),
 		r("transition", "transform "+mark),
-	)
+	)...)
 	css.Global(".thm-card[aria-pressed='true']::before", r("transform", "scaleX(1)"))
 	css.Global(".thm-card[aria-pressed='true']",
 		r("box-shadow", "0 0 0 2px var(--thm-accent)"))
 
-	css.Global(".thm-swatches", r("display", "flex"), r("gap", "5px"), r("align-items", "center"))
+	css.Global(".thm-swatches", css.Display.Flex, css.Gap(css.Px(5)), css.Items.Center)
 	css.Global(".thm-dot",
-		r("width", "11px"), r("height", "11px"), r("border-radius", "50%"),
-		r("display", "inline-block"), r("flex", "none"),
+		css.W(css.Px(11)), css.H(css.Px(11)), css.Rounded(css.Percent(50)),
+		css.Display.InlineBlock, r("flex", "none"),
 	)
 	// The accent is larger than the three beside it, because it is the one the
 	// reader can change and the other three come with the theme.
-	css.Global(".thm-dot-accent", r("width", "15px"), r("height", "15px"))
+	css.Global(".thm-dot-accent", css.W(css.Px(15)), css.H(css.Px(15)))
 	css.Global(".thm-name",
-		r("font-family", "var(--dsp)"),
+		css.Font(css.VarFontStack("dsp")),
 		r("font-variation-settings", `"SOFT" 50, "WONK" 1, "opsz" 32`),
-		r("font-size", "15.5px"), r("font-weight", "600"),
-		r("letter-spacing", "-.015em"), r("line-height", "1.1"),
+		r("font-size", "15.5px"), css.FontWeight.Semibold,
+		r("letter-spacing", "-.015em"), css.LineHeight(css.Num(1.1)),
 	)
-	css.Global(".thm-blurb", r("font-size", "12px"), r("line-height", "1.45"))
+	css.Global(".thm-blurb", css.FontSize(css.Px(12)), css.LineHeight(css.Num(1.45)))
 
 	// --- accents ---
 	//
@@ -418,15 +416,15 @@ func appearanceCSS(r func(string, string) css.Rule) {
 	// the button's accessible label and its tooltip, which is where a name
 	// belongs when the control is the sample.
 	css.Global(".acc-row",
-		r("display", "flex"), r("gap", "10px"), r("flex-wrap", "wrap"),
+		css.Display.Flex, css.Gap(css.Px(10)), css.FlexWrap.Wrap,
 		r("padding", "14px 0 4px"),
 	)
 	css.Global(".acc-dot",
-		r("width", "28px"), r("height", "28px"), r("border-radius", "50%"),
+		css.W(css.Px(28)), css.H(css.Px(28)), css.Rounded(css.Percent(50)),
 		r("background", "var(--acc)"), r("border", "0"), r("flex", "none"),
 		r("transition", "transform "+mark+", box-shadow "+move),
 	)
-	css.Global(".acc-dot:hover", r("transform", "scale(1.12)"))
+	css.Global(".acc-dot:hover", css.Transform(css.Scale(1.12)))
 	// A ring punched out of the middle in the page's own ground, so the selected
 	// swatch reads as a target rather than as a slightly larger circle. The outer
 	// ring is the colour itself, which keeps the mark legible on a swatch whose
@@ -441,9 +439,9 @@ func appearanceCSS(r func(string, string) css.Rule) {
 	// control demonstrates itself. A size picker whose only sample is 13px of UI
 	// text is a picker you have to leave the screen to evaluate.
 	css.Global(".rd-sample",
-		r("font-family", "var(--rd)"), r("font-size", "var(--rd-size)"),
-		r("line-height", "1.76"), r("color", "var(--read)"),
-		r("max-width", "66ch"), r("margin", "14px 0 0"),
+		css.Font(css.VarFontStack("rd")), css.FontSize(css.VarLength("rd-size")),
+		css.LineHeight(css.Num(1.76)), css.TextColor(css.Var("read")),
+		css.MaxWidth(css.Ch(66)), r("margin", "14px 0 0"),
 		r("transition", "font-size "+move),
 	)
 }

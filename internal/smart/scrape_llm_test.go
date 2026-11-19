@@ -8,7 +8,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // SiteAnalyzer.Propose's model call was entirely unreachable from a test before
@@ -31,20 +31,20 @@ func goodScrapeAnswer() string {
 // body rather than a fake `Do`'s reply. The bodies themselves are unchanged —
 // the same JSON the hand-written schema described, now derived from
 // `scrapeAnswer` instead.
-func scraping(t *testing.T, bodies ...string) (*SiteAnalyzer, *schemafluxtest.Provider) {
+func scraping(t *testing.T, bodies ...string) (*SiteAnalyzer, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(bodies...)
+	sftest.Install(t, p)
 	return NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t)), p
 }
 
 // scrapeSent is everything the provider was asked on call n.
-func scrapeSent(p *schemafluxtest.Provider, n int) string {
+func scrapeSent(p *sftest.Provider, n int) string {
 	reqs := p.Requests()
 	if n >= len(reqs) {
 		return ""
 	}
-	return reqs[n].SystemPrompt + reqs[n].UserPrompt
+	return reqs[n].System + reqs[n].User
 }
 
 // --- success path --------------------------------------------------------------
@@ -229,8 +229,8 @@ func TestProposeIgnoresAnUnexpectedExtraField(t *testing.T) {
 // --- provider errors and cancellation ----------------------------------------
 
 func TestProposeProviderErrorSurfacesWithoutRetry(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("upstream on fire"))
+	sftest.Install(t, p)
 	a := NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t))
 
 	_, err := a.Propose(context.Background(), "https://notes.example/", index)
@@ -245,7 +245,7 @@ func TestProposeProviderErrorSurfacesWithoutRetry(t *testing.T) {
 func TestProposeContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	sftest.Install(t, sftest.New().Fail(context.Canceled))
 	a := NewSiteAnalyzer(&fakeLLM{configured: true}, newSettings(t))
 
 	_, err := a.Propose(ctx, "https://notes.example/", index)

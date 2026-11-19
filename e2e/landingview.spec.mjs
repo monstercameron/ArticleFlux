@@ -1,4 +1,4 @@
-import { test, expect, boot, signIn, openFeed } from './fixtures.mjs';
+import { test, expect, boot, signIn, openSettings, openFeed, openRow } from './fixtures.mjs';
 
 /**
  * The landing view setting (Settings → Reading → "Where you land").
@@ -15,8 +15,7 @@ function landingSelect(page) {
 }
 
 async function openReadingSettings(page) {
-  await page.keyboard.press(',');
-  await expect(page.locator('.set-tabs')).toBeVisible();
+  await openSettings(page);
   await expect(landingSelect(page)).toBeVisible();
 }
 
@@ -62,7 +61,7 @@ test.describe('landing view', () => {
     // Leave a trail on a DIFFERENT feed, so landing on Alpha Journal is
     // provably the setting's doing and not an accident of A30's resume.
     await openFeed(page, /Beta Notes/);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(page.locator('.article[data-current="true"] h1')).toBeVisible();
 
     // The trail itself, by id. This is what "the article last read" MEANS, and

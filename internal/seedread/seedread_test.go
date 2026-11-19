@@ -327,9 +327,9 @@ func TestRunEngagementBranchesAreAllReachable(t *testing.T) {
 	}
 
 	titles := []string{
-		"Gizmos guide entry 3",      // interesting, roll 0.0194 < 0.6: opened, and hashMod(like,4)==0
-		"Gizmos manual part 1",      // interesting, roll 0.2107 < 0.6: opened, and hashMod(reread,5)==0
-		"Gizmos explained volume 0", // interesting, roll 0.6799 >= 0.6: skipped, not opened
+		"Gizmos guide entry 3",         // interesting, roll 0.0194 < 0.6: opened, and hashMod(like,4)==0
+		"Gizmos manual part 1",         // interesting, roll 0.2107 < 0.6: opened, and hashMod(reread,5)==0
+		"Gizmos explained volume 0",    // interesting, roll 0.6799 >= 0.6: skipped, not opened
 		"Gadget review number 7 today", // not interesting, hashMod(bounce,12)==0: bounced
 	}
 	var ingest []store.IngestItem
@@ -382,8 +382,8 @@ func TestSeedHandlesLargeCorporaAcrossPagesAndBatches(t *testing.T) {
 	for i := 0; i < n; i++ {
 		ingest = append(ingest, store.IngestItem{
 			GUID: fmt.Sprintf("big-%d", i), URL: fmt.Sprintf("https://tech.example/p/big-%d", i),
-			Title:       fmt.Sprintf("Widgetcraft roundup entry number %d", i),
-			Summary:     "s", ContentHTML: "<p>s</p>",
+			Title:   fmt.Sprintf("Widgetcraft roundup entry number %d", i),
+			Summary: "s", ContentHTML: "<p>s</p>",
 			PublishedAt: now.Add(-time.Duration(i+100) * time.Hour), WordCount: 800,
 		})
 	}

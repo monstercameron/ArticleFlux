@@ -3,7 +3,7 @@ package design
 import (
 	"strconv"
 
-	"github.com/monstercameron/GoWebComponents/v5/css"
+	"github.com/monstercameron/GoWebComponents/v7/css"
 )
 
 // Focus mode: the reading pane takes the whole window.
@@ -44,20 +44,20 @@ func focusCSS(r func(string, string) css.Rule) {
 	// Wide: rail, grip, list, grip, article — four tracks close, the fifth takes
 	// the space.
 	css.Global(".shell[data-focus='true'] .panes", css.Media(css.MinW(1221),
-		r("grid-template-columns", "0px 0px 0px 0px 1fr"))...)
+		css.GridCols(css.TrackLen(css.Px(0)), css.TrackLen(css.Px(0)), css.TrackLen(css.Px(0)), css.TrackLen(css.Px(0)), css.Fr(1)))...)
 	// Tablet: the reading pane has already replaced the list, so only the rail
 	// and its grip are left to close.
 	css.Global(".shell[data-focus='true'] .panes", css.Media(css.MaxW(1220),
-		r("grid-template-columns", "0px 0px 1fr"))...)
+		css.GridCols(css.TrackLen(css.Px(0)), css.TrackLen(css.Px(0)), css.Fr(1)))...)
 	// Phone: one column already. Emitted last so it wins over the rule above,
 	// which also matches at this width.
 	css.Global(".shell[data-focus='true'] .panes", css.Media(css.MaxW(900),
-		r("grid-template-columns", "1fr"))...)
+		css.GridCols(css.Fr(1)))...)
 	// The tab bar goes too. On a phone it is the only thing between the article
 	// and the edge of the screen, and "focus" that leaves a navigation bar on
 	// screen is a setting that did not do what it said.
 	css.Global(".shell[data-focus='true'] .tabbar", css.Media(css.MaxW(900),
-		r("display", "none"))...)
+		css.Display.None)...)
 
 	// The closing panes fade as they narrow. Without it the last 40px of the
 	// list is a column of half-words being squeezed, which reads as a layout
@@ -67,7 +67,7 @@ func focusCSS(r func(string, string) css.Rule) {
 	// here is what silently dropped the strip's transform — a shorthand does not
 	// merge.
 	css.Global(".shell[data-focus='true'] :is(.pane-rail, .pane-list)",
-		r("opacity", "0"), r("pointer-events", "none"))
+		css.OpacityNum(css.Num(0)), css.PointerEvents.None)
 
 	// The reading column recentres. Every band of the article moves together —
 	// the nav, the article, its note, and the seams between articles — or the
@@ -117,43 +117,42 @@ func focusButton(r func(string, string) css.Rule) {
 	// one for a single control: a 0px box in the flow, holding one 34px button
 	// that overflows it, costs the layout nothing.
 	css.Global(".focus-perch",
-		r("position", "sticky"), r("top", "0"), r("z-index", "6"),
-		r("height", "0"), r("display", "flex"), r("justify-content", "flex-end"),
+		css.Position.Sticky, css.Top(css.Zero), css.ZIndex(6),
+		css.H(css.Zero), css.Display.Flex, css.Justify.End,
 		r("padding", "14px 18px 0"),
 		// The perch spans the pane; only the button in it may be clicked, or an
 		// invisible strip would swallow every click along the top of the article.
-		r("pointer-events", "none"),
+		css.PointerEvents.None,
 	)
-	css.Global(".focus-perch > *", r("pointer-events", "auto"))
+	css.Global(".focus-perch > *", css.PointerEvents.Auto)
 
 	css.Global(".focus-btn",
-		r("width", "34px"), r("height", "34px"),
-		r("display", "grid"), r("place-items", "center"),
-		r("border-radius", "10px"),
-		r("border", "1px solid var(--line)"),
+		css.W(css.Px(34)), css.H(css.Px(34)),
+		css.Display.Grid, r("place-items", "center"),
+		css.Rounded(css.Px(10)),
+		css.Border(css.Px(1), css.Var("line")),
 		// Translucent and blurred, because it floats over prose. A solid chip
 		// punches a hole in the paragraph behind it; this reads as glass over it.
 		r("background", "color-mix(in srgb, var(--sur) 82%, transparent)"),
 		r("backdrop-filter", "blur(7px)"),
-		r("color", "var(--soft)"),
+		css.TextColor(css.Var("soft")),
 		r("transition", "border-color "+warm+", color "+warm+
 			", background-color "+warm+", transform "+move),
 	)
-	css.Global(".focus-btn:hover",
-		r("border-color", "var(--soft)"), r("color", "var(--cream)"))
+	css.Global(".focus-btn:hover", ruleSet(controlHover)...)
 	css.Global(".focus-btn[aria-pressed='true']",
-		r("border-color", "var(--cc)"), r("color", "var(--cc)"))
+		css.BorderColor(css.Var("cc")), css.TextColor(css.Var("cc")))
 	css.Global(".focus-btn:active", r("transform", "scale(.93)"),
 		r("transition-duration", "0s"))
 
 	css.Global(".focus-box",
-		r("position", "relative"), r("display", "block"),
-		r("width", "16px"), r("height", "16px"),
+		css.Position.Relative, css.Display.Block,
+		css.W(css.Px(16)), css.H(css.Px(16)),
 	)
 	// One 6px L per corner, built from two borders of a box. Drawn in
 	// currentColor so the icon inherits every state the button is already in.
 	css.Global(".focus-box i",
-		r("position", "absolute"), r("width", "6px"), r("height", "6px"),
+		css.Position.Absolute, css.W(css.Px(6)), css.H(css.Px(6)),
 		r("border", "1.5px solid currentColor"),
 		r("transition", "transform "+mark),
 	)
@@ -164,16 +163,16 @@ func focusButton(r func(string, string) css.Rule) {
 		edges  []css.Rule
 		sx, sy int
 	}{
-		{"fc-tl", []css.Rule{r("top", "0"), r("left", "0"),
+		{"fc-tl", []css.Rule{css.Top(css.Zero), r("left", "0"),
 			r("border-right", "0"), r("border-bottom", "0"),
 			r("border-radius", "2px 0 0 0")}, 1, 1},
-		{"fc-tr", []css.Rule{r("top", "0"), r("right", "0"),
+		{"fc-tr", []css.Rule{css.Top(css.Zero), r("right", "0"),
 			r("border-left", "0"), r("border-bottom", "0"),
 			r("border-radius", "0 2px 0 0")}, -1, 1},
-		{"fc-bl", []css.Rule{r("bottom", "0"), r("left", "0"),
+		{"fc-bl", []css.Rule{css.Bottom(css.Zero), r("left", "0"),
 			r("border-right", "0"), r("border-top", "0"),
 			r("border-radius", "0 0 0 2px")}, 1, -1},
-		{"fc-br", []css.Rule{r("bottom", "0"), r("right", "0"),
+		{"fc-br", []css.Rule{css.Bottom(css.Zero), r("right", "0"),
 			r("border-left", "0"), r("border-top", "0"),
 			r("border-radius", "0 0 2px 0")}, -1, -1},
 	} {

@@ -285,6 +285,7 @@ func (s *Service) toRow(a pipeline.Analysis, enriched bool, now time.Time) store
 		row.ModelPrimary = a.Primary
 		row.ModelSecondary = a.Secondary
 		row.ModelTags = a.ModelTags
+		row.ModelRung = a.ModelRung
 	}
 	return row
 }

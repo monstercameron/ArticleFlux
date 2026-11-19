@@ -3,10 +3,11 @@ package smart
 import (
 	"context"
 	"errors"
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // categorize_test.go covers the guards. This file is everything past the
@@ -41,17 +42,17 @@ import (
 //   - **`Generating[string]` answers with the bare string**, with no wrapper,
 //     because the target type has no fields to name.
 const (
-	pickFirst  = `{"id":"i-000001"}`
-	pickSecond = `{"id":"i-000002"}`
+	pickFirst  = `{"q1":1}`
+	pickSecond = `{"q1":2}`
 )
 
 // scripted installs a provider answering with the given bodies, in order, and
 // hands back the categorizer and the provider so a test can assert on what was
 // sent as well as on what came back.
-func scripted(t *testing.T, bodies ...string) (*Categorizer, *schemafluxtest.Provider) {
+func scripted(t *testing.T, bodies ...string) (*Categorizer, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(bodies...)
+	sftest.Install(t, p)
 	return NewCategorizer(&fakeLLM{configured: true}, nil), p
 }
 
@@ -76,7 +77,7 @@ func TestSuggestNamesANewCategoryWhenNoneFit(t *testing.T) {
 	// the naming call answers second. This is the path that replaced the old
 	// single reply carrying an `isNew` flag the model could get wrong
 	// independently of the name beside it.
-	c, p := scripted(t, `{"id":"i-000003"}`, `Woodworking`)
+	c, p := scripted(t, `{"q1":3}`, `Woodworking`)
 
 	category, isNew, err := c.Suggest(context.Background(), "Paul Sellers", "Hand tools",
 		[]string{"Tech", "Cooking"})
@@ -124,7 +125,7 @@ func TestTheReadersOwnFoldersAreTheOnlyThingsOffered(t *testing.T) {
 		[]string{"Tech", "Cooking", "Woodworking"}); err != nil {
 		t.Fatal(err)
 	}
-	sent := p.LastRequest().UserPrompt + p.LastRequest().SystemPrompt
+	sent := p.LastRequest().User + p.LastRequest().System
 	for _, want := range []string{"Tech", "Cooking", "Woodworking"} {
 		if !strings.Contains(sent, want) {
 			t.Errorf("the folder %q was not offered to the model", want)
@@ -140,12 +141,12 @@ func TestSuggestCapsTheExistingListSent(t *testing.T) {
 	for i := 0; i < maxCategorizeExisting+20; i++ {
 		many = append(many, "Folder"+strings.Repeat("x", i%3)+string(rune('A'+i%26))+string(rune('0'+i%10)))
 	}
-	c, p := scripted(t, `{"id":"i-000031"}`, `Something`)
+	c, p := scripted(t, `{"q1":31}`, `Something`)
 
 	if _, _, err := c.Suggest(context.Background(), "A feed", "", many); err != nil {
 		t.Fatal(err)
 	}
-	sent := p.Requests()[0].UserPrompt + p.Requests()[0].SystemPrompt
+	sent := p.Requests()[0].User + p.Requests()[0].System
 	// The one past the cap must not be there. Checked by its own distinctive
 	// name rather than by counting, because the prompt is the library's prose
 	// and counting occurrences of "Folder" would be counting its words too.
@@ -160,10 +161,10 @@ func TestSuggestSendsTheTitleAndDescription(t *testing.T) {
 	c, p := scripted(t, pickFirst)
 
 	if _, _, err := c.Suggest(context.Background(), "Hacker News", "Tech news and startups",
-		[]string{"Tech"}); err != nil {
+		[]string{"Gadgets"}); err != nil {
 		t.Fatal(err)
 	}
-	sent := p.LastRequest().UserPrompt + p.LastRequest().SystemPrompt
+	sent := p.LastRequest().User + p.LastRequest().System
 	if !strings.Contains(sent, "Hacker News") {
 		t.Error("the feed title did not reach the model")
 	}
@@ -180,7 +181,7 @@ func TestSuggestTrimsALongTitleAndDescription(t *testing.T) {
 	if _, _, err := c.Suggest(context.Background(), longTitle, longDesc, []string{"Tech"}); err != nil {
 		t.Fatal(err)
 	}
-	sent := p.LastRequest().UserPrompt + p.LastRequest().SystemPrompt
+	sent := p.LastRequest().User + p.LastRequest().System
 	// Present at the cap AND absent past it. Asserting only the absence passes
 	// vacuously when the text never made it into the request at all — which is
 	// exactly the state this file caught the implementation in once already.
@@ -203,8 +204,8 @@ func TestSuggestPropagatesAProviderError(t *testing.T) {
 	// way, so the caller's only correct response is "no suggestion this time".
 	// What must NOT happen is a plausible folder invented out of a failure.
 	boom := errors.New("provider is down")
-	p := schemafluxtest.New().Fail(boom)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(boom)
+	sftest.Install(t, p)
 	c := NewCategorizer(&fakeLLM{configured: true}, nil)
 
 	category, isNew, err := c.Suggest(context.Background(), "Hacker News", "", []string{"Tech"})
@@ -219,11 +220,34 @@ func TestSuggestPropagatesAProviderError(t *testing.T) {
 func TestSuggestFailsWhenTheNamingCallFails(t *testing.T) {
 	// The second operation can fail on its own, and a half-completed pair must
 	// not read as a successful new folder named "".
-	p := schemafluxtest.New().Shaped().FailThen(1, errors.New("down"), `x`)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().FailThen(1, errors.New("down"), `x`)
+	sftest.Install(t, p)
 	c := NewCategorizer(&fakeLLM{configured: true}, nil)
 
 	if _, _, err := c.Suggest(context.Background(), "A feed", "", nil); err == nil {
 		t.Fatal("a failed naming call produced a folder")
+	}
+}
+
+// A47 rung 1: a feed that names one of the reader's folders is filed by code,
+// with no key and no call — the free tier answers alone.
+func TestSuggestFilesByCodeWhenAFolderIsNamed(t *testing.T) {
+	p := sftest.New().Reply(`{"q1":2}`)
+	sftest.Install(t, p)
+	c := NewCategorizer(&fakeLLM{configured: false}, nil)
+	got, isNew, rung, err := c.SuggestFrom(context.Background(), "The Cooking Lab", "", []string{"Tech", "Cooking"})
+	if err != nil || got != "Cooking" || isNew || rung != llm.RungCode {
+		t.Fatalf("got %q new=%v rung=%q err=%v, want Cooking by code", got, isNew, rung, err)
+	}
+	if p.CallCount() != 0 {
+		t.Errorf("code was confident and the provider was still called %d times", p.CallCount())
+	}
+	// Two folders named is a tie the code does not break.
+	if _, ok := namedFolder("Tech and Cooking weekly", []string{"Tech", "Cooking"}); ok {
+		t.Error("a two-folder tie was decided by code")
+	}
+	// And a name inside a word is not a name.
+	if _, ok := namedFolder("Technology Review", []string{"Tech"}); ok {
+		t.Error("'Tech' matched inside 'Technology'")
 	}
 }

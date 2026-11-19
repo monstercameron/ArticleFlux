@@ -140,6 +140,19 @@ func (f *fixture) record(t *testing.T, kind signals.Kind, itemIDs []string, at t
 	// similar); chunked here so a caller recording engagement over a large
 	// fixture (e.g. TestEntityTruncationIsStableAcrossRederivation) does not
 	// need to know that limit exists.
+	// A verdict is what the client does too: the event AND the state column,
+	// which A46 reads as the authority (a cleared like writes no event).
+	if kind == signals.Liked || kind == signals.Disliked {
+		v := 1
+		if kind == signals.Disliked {
+			v = -1
+		}
+		for _, id := range itemIDs {
+			if _, err := f.repo.SetItemState(f.ctx, f.scope, id, store.StateChange{Rating: &v}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	const batch = 200
 	for len(evs) > 0 {
 		n := batch
@@ -556,26 +569,31 @@ func TestSuppressedTopicDemotesRankedItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) == 0 {
-		t.Fatal("nothing was ranked after suppression; the rest of this test proves nothing")
+	// A46: an item whose only claim was the suppressed topic has no content
+	// reason left, so it leaves the exploit rows, and a suppressed topic is never
+	// explored — the page shrinks rather than showing it. Anything that does
+	// remain on a suppressed topic (on the strength of an entity, say) must say
+	// why it is low, and nothing may still claim the topic as a reason.
+	if len(after) >= len(before) {
+		t.Errorf("suppressing every topic left %d rows of %d", len(after), len(before))
 	}
-
-	var sawNegativeReason, sawLoweredScore bool
 	for _, r := range after {
+		if r.TopicID == "" {
+			continue
+		}
+		var negative bool
 		for _, reason := range r.Reasons {
-			if reason.Term == "negative" {
-				sawNegativeReason = true
+			if reason.Term == "topic" {
+				t.Errorf("%s still claims a suppressed topic as a reason", r.ItemID)
 			}
+			negative = negative || reason.Term == "negative"
 		}
-		if bs, ok := beforeScore[r.ItemID]; ok && r.Score < bs {
-			sawLoweredScore = true
+		if !negative {
+			t.Errorf("%s matches a suppressed topic and does not say so", r.ItemID)
 		}
-	}
-	if !sawNegativeReason {
-		t.Error("no ranked item carries rank's negative reason after its topic was suppressed")
-	}
-	if !sawLoweredScore {
-		t.Error("suppressing every topic did not lower any ranked item's score")
+		if bs, ok := beforeScore[r.ItemID]; ok && r.Score >= bs {
+			t.Errorf("%s was not demoted (%.3f -> %.3f)", r.ItemID, bs, r.Score)
+		}
 	}
 }
 
@@ -603,10 +621,11 @@ func TestDwellClassifiesIntoEngagementWeight(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engaged, err := f.svc.engagedItems(f.ctx, f.scope, now.Add(-Window).UnixMilli())
+	obs, err := f.svc.observe(f.ctx, f.scope, now.Add(-Window).UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
+	engaged := engagedFrom(obs, now)
 	byID := map[string]engagedItem{}
 	for _, e := range engaged {
 		byID[e.ItemID] = e
@@ -847,10 +866,11 @@ func snapshotEntities(t *testing.T, f *fixture) string {
 func snapshotTopics(t *testing.T, f *fixture) string {
 	t.Helper()
 	sinceMS := now.Add(-Window).UnixMilli()
-	engaged, err := f.svc.engagedItems(f.ctx, f.scope, sinceMS)
+	obs, err := f.svc.observe(f.ctx, f.scope, sinceMS)
 	if err != nil {
 		t.Fatal(err)
 	}
+	engaged := engagedFrom(obs, now)
 	_, _, vectors, err := f.svc.deriveTermAffinity(f.ctx, f.scope, engaged)
 	if err != nil {
 		t.Fatal(err)

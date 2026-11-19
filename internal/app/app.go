@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,7 +68,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/telemetry"
 	"github.com/monstercameron/ArticleFlux/internal/transport/grpcsrv"
 	"github.com/monstercameron/ArticleFlux/internal/tts"
-	"github.com/monstercameron/ArticleFlux/internal/webasset"
 )
 
 // Config configures the app.
@@ -229,10 +227,13 @@ type Config struct {
 
 // App is a wired server.
 type App struct {
-	cfg  Config
-	db   *store.DB
-	repo *store.ReaderRepo
-	svc  *reader.Service
+	cfg Config
+	// encoded holds static files compressed on the fly when they have no
+	// precompressed sibling (compress.go). Zero value ready.
+	encoded encodedCache
+	db      *store.DB
+	repo    *store.ReaderRepo
+	svc     *reader.Service
 	// tts is the Smart+ voice. Nil-safe: absent means every request to /speech
 	// answers 501, which is the correct answer for an instance that never
 	// configured an API key.
@@ -412,6 +413,8 @@ type App struct {
 	// is closed"` for work that was fine. It is the same hazard the pool stop
 	// below is commented for, on the one goroutine that had no guard.
 	poWG sync.WaitGroup
+	// optimizeFn replaces db.Optimize in a test; nil in production.
+	optimizeFn func(ctx context.Context, all bool) error
 	// lastDerive is the low-water mark for ScopesToDerive, under deriveMu.
 	//
 	// Held in memory rather than persisted: on restart it starts one window back,
@@ -447,7 +450,7 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
-	db, err := store.Open(store.Options{Path: cfg.DBPath})
+	db, err := store.Open(store.Options{Path: cfg.DBPath, Log: cfg.Log})
 	if err != nil {
 		return nil, err
 	}
@@ -706,6 +709,27 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// settings because neither is a product decision an operator has an opinion
 	// about — see FailuresToOpen and MaxInFlight.
 	a.llm.WithGuard(llm.NewGuard(llm.GuardOptions{}))
+	// Rung 2 of the escalation ladder (plan.md A47): the JEV decision API, for
+	// the decision tasks llm.Ladder allows it on. Its credential is resolved per
+	// call exactly as the OpenAI key is — the stored, sealed setting first, the
+	// environment second — and its breaker is its own, so JEV being down does
+	// not open the circuit on the model its requests are about to fall back to.
+	a.llm.WithDecider(func(ctx context.Context) (string, string, string) {
+		preset := "jev"
+		if p, err := a.settings.SystemValue(ctx, store.KeyJEVProvider); err == nil && strings.TrimSpace(p) != "" {
+			preset = strings.TrimSpace(p)
+		}
+		base, _ := a.settings.SystemValue(ctx, store.KeyJEVBaseURL)
+		if k, err := a.settings.SystemSecret(ctx, store.KeyJEVAPIKey); err == nil && strings.TrimSpace(k) != "" {
+			return preset, strings.TrimSpace(k), strings.TrimSpace(base)
+		}
+		for _, env := range []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"} {
+			if k := strings.TrimSpace(os.Getenv(env)); k != "" {
+				return preset, k, strings.TrimSpace(base)
+			}
+		}
+		return preset, "", ""
+	}, llm.NewDeciderProvider).WithDeciderGuard(llm.NewGuard(llm.GuardOptions{}))
 	// Kept so the doctor asks the SAME question this does. Two implementations
 	// of "is there a key" is how a screen comes to say ready while the request
 	// answers 501 — which is the shape of every confusion this whole area has
@@ -861,6 +885,9 @@ func Open(ctx context.Context, cfg Config) (*App, error) {
 	// know how anybody is told, or the sync surface and the offline-pack channel
 	// start behaving differently from the web UI.
 	svc.WithIngestHook(a.onIngested)
+	// A backlog window saved on one device reaches the reader's others at once,
+	// through the same event the poller's sweep publishes (backlog.go).
+	svc.WithBacklogHook(a.publishBacklogCleared)
 	// The poller's own logger, and it has to be THIS one rather than the
 	// default.
 	//
@@ -1302,6 +1329,11 @@ func (a *App) buildHandler() {
 				// to ask the log about somebody else.
 				return handler(reqid.With(ctx, ""), req)
 			},
+			// Response compression for the list RPCs, negotiated per call
+			// (compress.go). Position is immaterial — it only sets the send
+			// compressor on the stream — so it sits out of the way of the
+			// ordering argument below.
+			grpcCompressUnary(),
 			// The panic boundary (internal/app/recover.go), immediately after the
 			// id is minted so a recovered panic has one to report, and before
 			// everything else so a panic in the version check, the limiter,
@@ -1507,7 +1539,12 @@ func (a *App) buildHandler() {
 			// Theming (§20.16.3). The repo comes with it because the drift is
 			// derived from this reader's topics, and the consent preference for a
 			// model-written palette is read from the same place.
-			WithTheming(a.palettes, a.repo))
+			WithTheming(a.palettes, a.repo).
+			// A translated article is an article body, and its images go
+			// through the same proxy the original's do (§10.5b) — otherwise
+			// choosing a language is also choosing to tell every publisher's
+			// image host which article this reader opened.
+			WithAssetProxy(a.AssetURL))
 	// Live updates (§20.3). The only streaming surface in the API: it holds a
 	// goroutine and a subscription for as long as a tab is open, which is why it
 	// is its own service rather than another method on the reader.
@@ -1917,7 +1954,7 @@ func (a *App) buildHandler() {
 	// nosniff on everything this mux answers, rather than on the two routes that
 	// happened to be wrapped in securityHeaders. See baselineHeaders for which
 	// endpoints were missing it and why the two that were are the worst two.
-	a.handler = a.trueClientAddr(a.httpMetrics(baselineHeaders(mux)))
+	a.handler = a.trueClientAddr(a.httpMetrics(baselineHeaders(compressHandler(mux))))
 }
 
 // static serves the client with the headers a wasm app needs.
@@ -1978,31 +2015,19 @@ func (a *App) static(root string) http.Handler {
 		// request of every cold load, and while this ran first it was the one
 		// asset that could never be compressed — a path with no extension
 		// matches no sibling. It was going out at 24 KB where it is 8 KB.
+		//
+		// A fresh sibling when there is one, otherwise the file compressed once
+		// and cached (compress.go). The type comes from what the bytes
+		// DECOMPRESS to — the original's name — because FileServer reading
+		// ".br" would answer application/octet-stream, and a browser does not
+		// apply a stylesheet it was handed as an octet stream.
 		served := r.URL.Path
 		if served == "/" {
 			served = "/index.html"
 		}
-		if sib, enc, ok := precompressed(root, served, r); ok {
-			// The type comes from what the bytes DECOMPRESS to, so it is set
-			// from the original name here rather than left to FileServer, which
-			// would read ".br", find no type for it and answer
-			// application/octet-stream — and a browser does not apply a
-			// stylesheet it was handed as an octet stream. The switch above
-			// covers .wasm/.js/.webmanifest because those were the only three
-			// that ever had a sibling; this covers the rest without needing the
-			// two lists to be kept in step by hand.
-			if w.Header().Get("Content-Type") == "" {
-				if ct := mime.TypeByExtension(filepath.Ext(served)); ct != "" {
-					w.Header().Set("Content-Type", ct)
-				}
-			}
-			w.Header().Set("Content-Encoding", enc)
-			// Vary is mandatory: without it a cache can hand the compressed bytes
-			// to a client that did not ask for them, which fails as a corrupt
-			// wasm module rather than as anything legible.
-			w.Header().Add("Vary", "Accept-Encoding")
-			r = r.Clone(r.Context())
-			r.URL.Path = sib
+		full := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(filepath.Clean(served)), "/")))
+		if !strings.Contains(served, "..") && !strings.ContainsAny(served, "\\:\x00") && a.serveEncodedStatic(w, r, full, served) {
+			return
 		}
 		fs.ServeHTTP(w, r)
 	})
@@ -2054,7 +2079,13 @@ func (a *App) Preflight(ctx context.Context) error {
 		} else if n == 0 {
 			a.log.Warn("this instance has no account and is UNCLAIMED",
 				"what", "the setup screen is being served to anyone who can reach it",
-				"do", "open it and set a password now, or run: articleflux init -user <name> -password <pass>")
+				// No `-password` in this hint: that flag was removed (a password on
+				// a command line outlives the command in `ps` and shell history),
+				// and `init` prompts for it or reads ARTICLEFLUX_PASSWORD. The hint
+				// went on advertising the flag after it was gone, so the one
+				// command an operator is told to run at the worst moment failed
+				// with "flag provided but not defined".
+				"do", "open it and set a password now, or run: articleflux init -user <name>  (it prompts for the password)")
 		}
 	}
 
@@ -2177,6 +2208,8 @@ func (a *App) StartWorkers(ctx context.Context) {
 	a.lastDerive = time.Now().UTC().Add(-derive.Window)
 	a.deriveMu.Unlock()
 	a.pool.Start(ctx)
+	// Planner statistics, on their own six-hourly loop (optimize.go).
+	a.startOptimize(ctx)
 
 	// The analysis backfill (§27.9).
 	//
@@ -2513,6 +2546,10 @@ func (a *App) StartPoller(ctx context.Context) {
 					// poller is not running" are otherwise identical from outside.
 					a.log.Debug("poll cycle: nothing due", "duration_ms", elapsed.Milliseconds())
 				}
+				// Backlog windows next, once this cycle's fetch has landed, so an
+				// article that arrived already past a reader's window is cleared
+				// by the pass that follows it (see sweepBacklogs).
+				a.sweepBacklogs(ctx)
 				// After the fetch, not before: new items are what the ranking is
 				// over, and deriving first would rank the homepage against a
 				// world one interval out of date.
@@ -2520,75 +2557,6 @@ func (a *App) StartPoller(ctx context.Context) {
 			}
 		}
 	}()
-}
-
-// precompressed reports whether a `.gz` sibling exists for path and the client
-// accepts gzip, returning the sibling's URL path.
-//
-// Only wasm and js are considered: those are the large, static, rebuilt-rarely
-// assets where the 4.5x saving is worth a stat() per request. HTML is small
-// enough that compressing it would cost more in complexity than it saves.
-// precompressed picks the best sibling this client will take, or nothing.
-//
-// Brotli first, because it is about a fifth smaller than gzip on the module —
-// 5.5 MB against 6.9 MB measured on this bundle, which is 1.4 MB a visitor does
-// not download. Gzip stays for everything that will not take brotli, and that is
-// not hypothetical: a proxy that rewrites Accept-Encoding down to gzip is common
-// enough that dropping the .gz would trade a small win for a 33 MB fallback.
-//
-// The extensions come from internal/webasset, which cmd/precompress reads too.
-// They used to be a list here and a map there, agreeing by attention alone —
-// and they did not: both named only .wasm and .js, which is why prod served
-// index.html uncompressed at 24 KB on the first request of every cold load, and
-// when the tool's list grew the server's did not have to. One set, imported
-// twice, is what stops that being a thing anybody has to remember.
-func precompressed(root, p string, r *http.Request) (path, enc string, ok bool) {
-	if !webasset.Compressible(p) {
-		return "", "", false
-	}
-	rel := strings.TrimPrefix(filepath.ToSlash(p), "/")
-	accepted := acceptedEncodings(r.Header.Get("Accept-Encoding"))
-	for _, c := range webasset.Encodings {
-		if !accepted[c.Name] {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)+c.Ext)); err != nil {
-			continue
-		}
-		return "/" + rel + c.Ext, c.Name, true
-	}
-	return "", "", false
-}
-
-// acceptedEncodings reads the header as the tokens it is, rather than by
-// searching the string for "gzip".
-//
-// A substring test gets `br;q=0` exactly backwards — that is a client saying it
-// will NOT take brotli, and handing it a .br produces a page of binary rather
-// than an error anybody can read. It also finds "br" inside a token that merely
-// contains those letters. Neither is theoretical enough to be worth the four
-// lines this costs.
-func acceptedEncodings(h string) map[string]bool {
-	out := map[string]bool{}
-	for _, part := range strings.Split(h, ",") {
-		token := strings.TrimSpace(part)
-		q := ""
-		if i := strings.IndexByte(token, ';'); i >= 0 {
-			q = strings.TrimSpace(token[i+1:])
-			token = strings.TrimSpace(token[:i])
-		}
-		// q=0 is a refusal. Anything else — absent, q=1, q=0.5 — is acceptance;
-		// this does not rank them, because the server's preference (brotli, then
-		// gzip) is the one worth having and both are always acceptable when
-		// offered at all.
-		if strings.HasPrefix(q, "q=0") && !strings.HasPrefix(q, "q=0.") {
-			continue
-		}
-		if token != "" {
-			out[strings.ToLower(token)] = true
-		}
-	}
-	return out
 }
 
 // audioDirOf is where the broadcast's music beds sit relative to the web root.

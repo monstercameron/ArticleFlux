@@ -8,7 +8,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // The second entry point (plan §19, TODO 11.45/11.49).

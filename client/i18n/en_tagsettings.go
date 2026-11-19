@@ -18,7 +18,6 @@ func init() {
 
 		"nameLabel": "Name in the sidebar",
 		"nameHint":  "Clear it to go back to the tag's own name.",
-		"nameAria":  "Your name for this tag's row",
 		"rename":    "✎ Rename",
 
 		"tagLabel": "The tag itself",

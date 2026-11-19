@@ -325,3 +325,58 @@ func placeholders(n int) string {
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
+
+// MaxDeriveScan bounds RecentEngagements: the most events one derivation reads.
+const MaxDeriveScan = 50000
+
+// RecentEngagements returns the NEWEST `limit` events since sinceMS, in time
+// order.
+//
+// # Why this exists beside EngagementsSince
+//
+// The derivation read EngagementsSince(…, 20000), which clamps to
+// MaxEngagementScan (5000) and orders `at ASC` — so for any reader with more
+// than five thousand events in the ninety-day window it read the OLDEST five
+// thousand and never saw the newest, which is exactly backwards for a profile
+// whose job is to follow the reader as they change. This keeps the newest,
+// under a larger bound, and returns them oldest-first so callers that fold
+// events in order still can.
+func (r *ReaderRepo) RecentEngagements(ctx context.Context, s Scope, sinceMS int64, limit int) ([]signals.Event, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	if limit <= 0 || limit > MaxDeriveScan {
+		limit = MaxDeriveScan
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `
+		SELECT id, COALESCE(item_id,''), COALESCE(source_id,''), kind,
+		       COALESCE(value,0), surface, COALESCE(context,''),
+		       COALESCE(session_id,''), at
+		  FROM engagements
+		 WHERE user_id = ? AND at >= ?
+		 ORDER BY at DESC, id DESC
+		 LIMIT ?`, s.UserID, sinceMS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []signals.Event
+	for rows.Next() {
+		var e signals.Event
+		var kind, surface string
+		if err := rows.Scan(&e.ID, &e.ItemID, &e.SourceID, &kind, &e.Value,
+			&surface, &e.Context, &e.SessionID, &e.At); err != nil {
+			return nil, err
+		}
+		e.Kind, e.Surface = signals.Kind(kind), signals.Surface(surface)
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}

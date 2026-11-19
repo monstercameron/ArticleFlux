@@ -717,7 +717,7 @@ func TestGlobalProviderGuardCatchesEveryRegistrationCall(t *testing.T) {
 	for name := range forbiddenGlobalProvider {
 		files["internal/app/"+strings.ToLower(name)+".go"] = `package app
 
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 
 func wire(c *schemaflux.Client) { c.` + name + `() }
 `
@@ -762,8 +762,8 @@ func TestGlobalProviderGuardAllowsThePerCallShape(t *testing.T) {
 		"internal/llm/llm.go": `package llm
 
 import (
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/mw"
 )
 
 func do(base schemaflux.Provider, chain []mw.Middleware) {
@@ -780,19 +780,18 @@ func do(base schemaflux.Provider, chain []mw.Middleware) {
 	}
 }
 
-func TestGlobalProviderGuardExemptsTheSmartTestSeamByName(t *testing.T) {
-	// The one test file allowed to register, and the reason it is named rather
+func TestGlobalProviderGuardExemptsTheTestSeamByName(t *testing.T) {
+	// The one file allowed to set the default, and the reason it is named rather
 	// than matched by suffix: it captures the previous client and restores it in
 	// t.Cleanup, so the window in which a global is set is one test long. Every
-	// other test file goes through it — see the test above, which proves an
-	// arbitrary _test.go is still flagged.
+	// test goes through it.
 	root := fixture(t, map[string]string{
-		"internal/smart/fake_llm_test.go": `package smart
+		"internal/llm/sftest/sftest.go": `package sftest
 
-import "github.com/monstercameron/schemaflux"
+import "github.com/monstercameron/schemaflux/v2"
 
 func install(p schemaflux.Provider) {
-	schemaflux.SetDefaultClient(schemaflux.NewClient("k").WithProviderInstance(p))
+	schemaflux.SetDefault(schemaflux.Client{Provider: p})
 }
 `,
 	})
@@ -802,22 +801,22 @@ func install(p schemaflux.Provider) {
 	}
 }
 
-// The exemption is a whole path, not a basename: a `fake_llm_test.go` in some
+// The exemption is a whole path, not a basename: an `sftest.go` in some
 // other package has none of the restore discipline that earned the one in
-// internal/smart its exemption.
+// internal/llm/sftest its exemption.
 func TestGlobalProviderGuardExemptionIsPathSpecific(t *testing.T) {
 	root := fixture(t, map[string]string{
-		"internal/app/fake_llm_test.go": `package app
+		"internal/app/sftest.go": `package app
 
-import "github.com/monstercameron/schemaflux"
+import "github.com/monstercameron/schemaflux/v2"
 
 func install(p schemaflux.Provider) {
-	schemaflux.SetDefaultClient(schemaflux.NewClient("k").WithProviderInstance(p))
+	schemaflux.SetDefault(schemaflux.Client{Provider: p})
 }
 `,
 	})
 	g := guardNoGlobalLLMProvider(root)
-	if !flagged(g, "internal/app/fake_llm_test.go") {
+	if !flagged(g, "internal/app/sftest.go") {
 		t.Errorf("the same basename in another package was exempted: %v", findingsOn(g))
 	}
 }
@@ -829,7 +828,7 @@ func TestGlobalProviderGuardSeesASubpackageImport(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/app/wire.go": `package app
 
-import "github.com/monstercameron/schemaflux/mw"
+import "github.com/monstercameron/schemaflux/v2/mw"
 
 type client struct{}
 
@@ -850,7 +849,7 @@ func TestGlobalProviderGuardSeesARenamedImport(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/app/aliased.go": `package app
 
-import sf "github.com/monstercameron/schemaflux"
+import sf "github.com/monstercameron/schemaflux/v2"
 
 func wire() { sf.Init("k") }
 `,
@@ -869,7 +868,7 @@ func TestGlobalProviderGuardDoesNotExemptTests(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/app/wire_test.go": `package app
 
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 
 func wire() { schemaflux.Init("k") }
 `,
@@ -886,7 +885,7 @@ func TestGlobalProviderGuardExemptsItsOwnSource(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/tools/guards/main.go": `package main
 
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 
 func wire() { schemaflux.Init("k") }
 `,
@@ -902,7 +901,7 @@ func TestGlobalProviderGuardReportsFileAndLine(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/app/wire.go": `package app
 
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 
 func wire() {
 	schemaflux.Init("k")
@@ -928,7 +927,7 @@ func TestGlobalProviderGuardCountsWhatItInspected(t *testing.T) {
 	root := fixture(t, map[string]string{
 		"internal/a/a.go": `package a
 
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 
 var _ schemaflux.Provider
 `,
@@ -940,5 +939,22 @@ func nothing() {}
 	g := guardNoGlobalLLMProvider(root)
 	if g.checked != 1 {
 		t.Errorf("checked = %d, want 1 — only the file that can reach the library", g.checked)
+	}
+}
+
+// v1 had an exemption for internal/llm/ops.go, because v1's only route to a
+// context-carried provider also wrote the process default. v2 needs none, so a
+// SetDefault appearing there is a finding like anywhere else.
+func TestGlobalProviderGuardNoLongerExemptsTheLLMBridge(t *testing.T) {
+	root := fixture(t, map[string]string{
+		"internal/llm/ops.go": `package llm
+
+import schemaflux "github.com/monstercameron/schemaflux/v2"
+
+func wire(p schemaflux.Provider) { schemaflux.SetDefault(schemaflux.Client{Provider: p}) }
+`,
+	})
+	if g := guardNoGlobalLLMProvider(root); !flagged(g, "internal/llm/ops.go") {
+		t.Errorf("SetDefault in the LLM bridge was not flagged: %v", findingsOn(g))
 	}
 }

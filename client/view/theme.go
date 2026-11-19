@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
@@ -554,12 +554,8 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 	sizes := make([]ui.Node, 0, len(design.ReadingSizes))
 	cur := design.ReadingSizeByName(a.Reading)
 	for _, s := range design.ReadingSizes {
-		sizes = append(sizes, html.Button(html.Props{
-			Class: "chip",
-			Key:   "rdsize-" + s.Name,
-			Raw:   map[string]any{"data-action": "set-reading", "data-value": s.Name},
-			Aria:  map[string]string{"pressed": strconv.FormatBool(s.Name == cur.Name)},
-		}, html.Text(tr.T("readingSize", ""+s.Name))))
+		sizes = append(sizes, kitPick(kitChipProps{Action: "set-reading", Key: "rdsize-" + s.Name,
+			Label: tr.T("readingSize", ""+s.Name)}, s.Name, s.Name == cur.Name))
 	}
 
 	motionOn := a.motionOn()
@@ -568,10 +564,16 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 		motionLabel = tr.T("appearance", "motionFull")
 	}
 
+	// The theme cards and the accent dots are each one choice drawn as a row of
+	// pressed-or-not buttons, so each row is a group named by the heading over
+	// it. Without the name a reader tabbing in met "Ember, toggle button,
+	// pressed" with nothing to say it was a theme — and the accent dots, which
+	// have no visible text at all, were seven colour words with no question.
+	themeTitle, accentTitle := tr.T("appearance", "themeGroup"), tr.T("appearance", "accentGroup")
 	out := []ui.Node{
-		fsGroup(glyphYours, tr.T("appearance", "themeGroup"),
-			tr.T("appearance", "themeGroupHint")),
-		html.Div(html.Props{Class: "thm-grid"}, cards...),
+		kitHeading(glyphYours, themeTitle, tr.T("appearance", "themeGroupHint")),
+		html.Div(html.Props{Class: "thm-grid", Role: "group",
+			Aria: map[string]string{"label": themeTitle}}, cards...),
 	}
 	// Composing and attuning sit directly under the picker, because both of them
 	// produce a card in it. Above the accent, because the accent is a choice made
@@ -580,31 +582,32 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 	out = append(out, attuneSection(tr, p)...)
 
 	out = append(out,
-		fsGroup(glyphAll, tr.T("appearance", "accentGroup"),
-			tr.T("appearance", "accentGroupHint")),
-		html.Div(html.Props{Class: "acc-row"}, swatches...),
+		kitHeading(glyphAll, accentTitle, tr.T("appearance", "accentGroupHint")),
+		html.Div(html.Props{Class: "acc-row", Role: "group",
+			Aria: map[string]string{"label": accentTitle}}, swatches...),
 
-		fsGroup(glyphNotes, tr.T("appearance", "readingGroup"), ""),
-		setRow(tr.T("appearance", "readingLabel"), tr.T("appearance", "readingHint"),
-			html.Div(html.Props{Class: "fs-choices"}, sizes...)),
+		kitHeading(glyphNotes, tr.T("appearance", "readingGroup"), ""),
+		kitSetting(kitSettingProps{Label: tr.T("appearance", "readingLabel"),
+			Hint:    tr.T("appearance", "readingHint"),
+			Control: kitChipGroup(kitGroupChoices, "", sizes...)}),
 		// Set in the reading face at the chosen size, so the control shows its own
 		// effect. A size picker whose sample is 13px UI text is a picker you have
 		// to leave the screen to evaluate.
 		html.P(html.Props{Class: "rd-sample"},
 			html.Text(tr.T("appearance", "readingSample"))),
 
-		fsGroup(glyphAction, tr.T("appearance", "motionGroup"),
+		kitHeading(glyphAction, tr.T("appearance", "motionGroup"),
 			tr.T("appearance", "motionGroupHint")),
-		setRow(tr.T("appearance", "motionLabel"),
-			tr.T("appearance", "motionHint"),
-			glyphChip("toggle-motion", glyphAction, motionLabel, motionOn)),
+		kitSetting(kitSettingProps{Label: tr.T("appearance", "motionLabel"),
+			Hint:    tr.T("appearance", "motionHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-motion", Glyph: glyphAction, Label: motionLabel}, motionOn)}),
 		// Offered whenever the reader is NOT already following the machine —
 		// including the default, which is full motion rather than whatever the OS
 		// says. Handing the decision to the system is a choice you can make here;
 		// it is no longer the state you are in for never having looked.
 		ui.If(a.Motion != design.MotionSystem, func() ui.Node {
-			return html.Div(html.Props{Class: "set-actions"},
-				glyphChip("motion-system", glyphRefresh, tr.T("appearance", "motionFollow"), false))
+			return kitChipGroup(kitGroupActions, "",
+				kitAction(kitChipProps{Action: "motion-system", Glyph: glyphRefresh, Label: tr.T("appearance", "motionFollow")}))
 		}),
 		ui.If(a.Motion == design.MotionSystem, func() ui.Node {
 			return html.Div(html.Props{Class: "set-note"},
@@ -654,34 +657,32 @@ const (
 // permitted to see.
 func composeSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 	th := p.theme
+	composeHint := tr.T("appearance", "composeHint")
 	out := []ui.Node{
-		fsGroup(glyphShared, tr.T("appearance", "composeGroup"),
+		kitHeading(glyphShared, tr.T("appearance", "composeGroup"),
 			tr.T("appearance", "composeGroupHint")),
-		setRow(tr.T("appearance", "composeLabel"), tr.T("appearance", "composeHint"),
-			html.Div(html.Props{Class: "fs-rename"},
+		kitField(kitFieldProps{Label: tr.T("appearance", "composeLabel"), Hint: composeHint, ID: fieldThemePrompt,
+			Control: html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
-					Class: "field fs-field", Type: "text",
+					Class: "field fs-field", Type: "text", ID: fieldThemePrompt,
 					Placeholder: tr.T("appearance", "composePlaceholder"),
 					Value:       th.prompt,
 					OnInput:     th.onPromptEdit,
 					Data:        map[string]string{"role": roleThemePrompt},
-					Aria:        map[string]string{"label": tr.T("appearance", "composeAria")},
-					Raw:         map[string]any{"autocomplete": "off"},
+					Aria:        fieldAria(fieldThemePrompt, composeHint),
+					// "go": Enter composes (reader_keyboard.go), and a phone
+					// keyboard should say so rather than offer a newline.
+					Raw: map[string]any{"autocomplete": "off", "enterkeyhint": "go"},
 				}),
 				// Disabled only while one is in flight. Two concurrent compositions
 				// are two bills for one decision — the same reason the language chips
 				// disable each other.
-				html.Button(html.Props{
-					Class:    "chip",
-					Raw:      map[string]any{"data-action": actComposeTheme},
-					Disabled: th.busy,
-				}, html.Text(tr.T("appearance", "composeGo"))),
-			)),
+				kitAction(kitChipProps{Action: actComposeTheme, Label: tr.T("appearance", "composeGo"), Disabled: th.busy}),
+			)}),
 	}
 
 	if th.busy {
-		out = append(out, html.Div(html.Props{Class: "set-note", Role: "status",
-			Aria: map[string]string{"live": "polite"}},
+		out = append(out, kitLive(kitLiveProps{Class: "set-note", Role: kitRoleStatus, Live: kitLivePolite},
 			html.Text(tr.T("appearance", "composeWorking"))))
 	}
 	if th.trimmed {
@@ -695,19 +696,16 @@ func composeSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 		out = append(out, html.Div(html.Props{Class: "set-note"}, html.Text(note)))
 	}
 	if th.err != "" {
-		out = append(out, html.Div(html.Props{Class: "fs-error", Role: "alert"},
-			html.Text(th.err)))
+		out = append(out, kitAlert("fs-error", th.err))
 	}
 	// Removing is behind its own control and only exists when there is something to
 	// remove — the same shape the Smart+ key's "remove" has, and destructive in the
 	// same small way: a theme that cost a call is not recoverable by pressing
 	// undo.
 	if p.look.hasCustom() {
-		out = append(out, html.Div(html.Props{Class: "set-actions"},
-			html.Button(html.Props{
-				Class: "chip fs-danger",
-				Raw:   map[string]any{"data-action": actDropCustom},
-			}, html.Text(tr.T("appearance", "composeDrop")))))
+		out = append(out, armableRemove(tr, armThemeDrop, p.armed, actDropCustom,
+			tr.T("appearance", "composeDrop"), tr.T("appearance", "composeDropWarn"),
+			actDropCustomDo, tr.T("appearance", "composeDropConfirm")))
 	}
 	return out
 }
@@ -759,10 +757,11 @@ func repairNote(tr i18n.Runtime, reps []design.Repair) string {
 func attuneSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 	a := p.look
 	out := []ui.Node{
-		fsGroup(glyphRefresh, tr.T("appearance", "attuneGroup"),
+		kitHeading(glyphRefresh, tr.T("appearance", "attuneGroup"),
 			tr.T("appearance", "attuneGroupHint")),
-		setRow(tr.T("appearance", "attuneLabel"), tr.T("appearance", "attuneHint"),
-			glyphChip(actAttune, glyphRefresh, onOff(tr, a.Attune), a.Attune)),
+		kitSetting(kitSettingProps{Label: tr.T("appearance", "attuneLabel"),
+			Hint:    tr.T("appearance", "attuneHint"),
+			Control: kitToggle(kitChipProps{Action: actAttune, Glyph: glyphRefresh, Label: onOff(tr, a.Attune)}, a.Attune)}),
 	}
 	if !a.Attune {
 		return out
@@ -786,15 +785,16 @@ func attuneSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 	}
 
 	out = append(out,
-		setRow(tr.T("appearance", "attuneSmartLabel"), tr.T("appearance", "attuneSmartHint"),
-			glyphChip(actAttuneSmart, glyphShared, onOff(tr, a.AttuneSmart), a.AttuneSmart)),
+		kitSetting(kitSettingProps{Label: tr.T("appearance", "attuneSmartLabel"),
+			Hint:    tr.T("appearance", "attuneSmartHint"),
+			Control: kitToggle(kitChipProps{Action: actAttuneSmart, Glyph: glyphShared, Label: onOff(tr, a.AttuneSmart)}, a.AttuneSmart)}),
 		// Starting over is the way out of a room somebody does not like, and it is
 		// not the same as switching the feature off: off leaves the drift where it
 		// got to, and this puts the theme back to the one they picked. Both are
 		// wanted, and a single switch that did both would make "I liked it, I just
 		// want it to stop here" impossible.
-		html.Div(html.Props{Class: "set-actions"},
-			glyphChip(actAttuneReset, glyphRefresh, tr.T("appearance", "attuneReset"), false)),
+		kitChipGroup(kitGroupActions, "",
+			kitAction(kitChipProps{Action: actAttuneReset, Glyph: glyphRefresh, Label: tr.T("appearance", "attuneReset")})),
 	)
 	if a.Target != "" {
 		out = append(out, html.Div(html.Props{Class: "set-note"},
@@ -911,9 +911,9 @@ func themeCard(tr i18n.Runtime, t design.Theme, active bool, accentName string) 
 		Raw:   map[string]any{"data-action": "set-theme", "data-value": t.Name, "style": style},
 		Aria:  map[string]string{"pressed": strconv.FormatBool(active)},
 	},
-		html.Div(html.Props{Class: "thm-swatches"}, dots...),
-		html.Div(html.Props{Class: "thm-name"}, html.Text(themeLabel(tr, t))),
-		html.Div(html.Props{Class: "thm-blurb",
+		html.Span(html.Props{Class: "thm-swatches"}, dots...),
+		html.Span(html.Props{Class: "thm-name"}, html.Text(themeLabel(tr, t))),
+		html.Span(html.Props{Class: "thm-blurb",
 			Raw: map[string]any{"style": "color:" + t.Soft}}, html.Text(themeBlurb(tr, t))),
 	)
 }

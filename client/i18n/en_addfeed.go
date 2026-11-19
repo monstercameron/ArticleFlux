@@ -28,7 +28,6 @@ func init() {
 		"nameLabel":       "Name",
 		"nameHint":        "Your own name for it. Leave this blank to use the publisher's.",
 		"namePlaceholder": "The publisher's title",
-		"nameAria":        "Your name for this feed",
 
 		// --- the ladder (§11): what happens when the address is not a feed ---
 		"looking": "Looking for a feed…",
@@ -124,7 +123,6 @@ func init() {
 		"save":   "Save name",
 
 		"nameLabel": "Name",
-		"nameAria":  "Folder name",
 
 		"delete":  "Delete folder",
 		"confirm": "Delete it",

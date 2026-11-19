@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/ArticleFlux/internal/store"
+
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 )
 
@@ -61,5 +63,42 @@ func TestSmartPlusProfileCarriesTasteExamples(t *testing.T) {
 	if !found {
 		t.Errorf("NegativeExamples %v did not include the disliked item's title %q",
 			plus.sawProfile.NegativeExamples, dislikedTitle)
+	}
+}
+
+// §18.8, narrowed by A46: a topic the reader marked "not an interest" is never
+// described to the model as one of their interests. Before A46 every cluster
+// left, suppressed or not.
+func TestSmartPlusNeverDescribesASuppressedTopicAsAnInterest(t *testing.T) {
+	f := setup(t)
+	f.engage(t)
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.repo.Topics(f.ctx, f.scope)
+	if err != nil || len(stored) == 0 {
+		t.Fatalf("no topics: %v", err)
+	}
+	suppressed := map[string]bool{}
+	for i, topic := range stored {
+		if i == 0 && len(stored) > 1 {
+			if err := f.repo.SteerTopic(f.ctx, f.scope, topic.ID, store.SteerNormal, true); err != nil {
+				t.Fatal(err)
+			}
+			suppressed[topic.Label] = true
+		}
+	}
+	plus := &fakePlus{rerank: []int{}}
+	f.withSmartPlus(t, plus)
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if plus.rerankCalls == 0 {
+		t.Fatalf("no head was reranked (%d topics); the rest of this test proves nothing", len(stored))
+	}
+	for _, th := range plus.sawProfile.Topics {
+		if suppressed[th.Label] {
+			t.Errorf("suppressed topic %q was sent to the model as an interest", th.Label)
+		}
 	}
 }

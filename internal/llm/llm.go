@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -63,8 +64,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/mw"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm/sfprovider"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
@@ -86,12 +87,14 @@ const (
 	// default is that the first thing a reader tries should not be the most
 	// expensive thing they can do.
 	//
-	// gpt-5.6-luna, at low effort (DefaultEffort). It was gpt-5-mini, chosen
-	// when that was the small-and-cheap option; luna is the current one and
-	// the choice is Cam's. Verified present on the account by Client.Models
-	// before being made the default, because a default naming a model the key
-	// cannot use fails every Smart+ feature at once.
-	DefaultModel = "gpt-5.6-luna"
+	// gpt-6-luna, at low effort (DefaultEffort). It was gpt-5-mini, then
+	// gpt-5.6-luna; gpt-6-luna is what SchemaFlux v2 maps every OpenAI tier to
+	// and is priced in its table, and the move is the owner's call (2026-11-19).
+	// An instance with `smart.model` set keeps whatever it set. NOT verified
+	// against a live key from this change — the default naming a model the key
+	// cannot use fails every Smart+ feature at once, so check Client.Models on
+	// the deployed instance before promoting.
+	DefaultModel = "gpt-6-luna"
 
 	// DefaultEffort is the reasoning budget when a request does not state one.
 	//
@@ -131,6 +134,13 @@ var (
 	// ErrRefused means the model declined. Surfaced separately so a caller does
 	// not retry it forever; a refusal is deterministic and a retry is spend.
 	ErrRefused = errors.New("llm: model refused the request")
+
+	// ErrTypedWebSearch means a typed SchemaFlux operation asked for the hosted
+	// web-search tool (`.WebSearch()`, new in SchemaFlux v1.2.0). The typed path
+	// does not grant it: web access is granted per feature, through Do with
+	// WebSearchTool named, and A10 is the only feature holding that grant. See
+	// Manual and §18.8.
+	ErrTypedWebSearch = errors.New("llm: typed operations may not enable web search; use Do with WebSearchTool")
 )
 
 // KeyFunc returns the API key at call time.
@@ -184,10 +194,16 @@ type Client struct {
 	// nothing is enabled here until a caller asks for it — see Use.
 	chain []mw.Middleware
 
-	// opsOnce and opsClient build the SchemaFlux client this one is asked for
-	// operation contexts through — once per Client, lazily. See ops.go.
-	opsOnce   sync.Once
-	opsClient *schemaflux.Client
+	// opsOnce and opsProv build the provider this client's typed operations run
+	// through — once per Client, lazily. See ops.go.
+	opsOnce sync.Once
+	opsProv schemaflux.Provider
+
+	// deciderKey, deciderNew and deciderGuard are rung 2 of the escalation
+	// ladder (ladder.go): nil unless WithDecider was called.
+	deciderKey   DeciderKeyFunc
+	deciderNew   DeciderFactory
+	deciderGuard *Guard
 
 	// guard is the circuit breaker (breaker.go), nil unless one was installed.
 	// Applied in run, so it covers the typed operations as well as Do.
@@ -465,43 +481,38 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 	// record or a metric says which client made the call — an instance that
 	// later runs a second provider needs the two to be distinguishable.
 	base := sfprovider.New("articleflux-openai",
-		func(ctx context.Context, _ schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+		func(ctx context.Context, _ schemaflux.Request) (schemaflux.Response, error) {
 			text, usage, err := c.send(ctx, key, model, r)
 			if err != nil {
-				return schemaflux.CompletionResponse{}, err
+				return schemaflux.Response{}, err
 			}
-			return schemaflux.CompletionResponse{
-				Content:  text,
-				Model:    model,
-				Provider: "articleflux-openai",
-				// Reported so SchemaFlux's pricing layer has something real to
-				// price. Input/Output are what the Responses API returns; the
-				// Prompt/Completion pair carries the same numbers under the
-				// names the cost tables read.
-				Usage: schemaflux.TokenUsage{
-					PromptTokens:     int(usage.InputTokens),
-					CompletionTokens: int(usage.OutputTokens),
-					TotalTokens:      int(usage.InputTokens + usage.OutputTokens),
-					InputTokens:      int(usage.InputTokens),
-					OutputTokens:     int(usage.OutputTokens),
-				},
+			return schemaflux.Response{
+				Content: text,
+				Model:   model,
+				// Reported so anything in the chain that prices calls has
+				// something real to price.
+				Usage: sfUsage(usage),
 			}, nil
 		})
 
 	// The SchemaFlux request is what the MIDDLEWARE reads — the model it prices
-	// against, the prompt a redactor would inspect, the ceiling a budget
-	// estimates from. The base provider above ignores it and uses `r`, which is
-	// the authority, because this type cannot carry tools or reasoning effort
-	// (§6, G4 and G6).
-	sfreq := schemaflux.CompletionRequest{
-		Model:        model,
-		SystemPrompt: r.Instructions,
-		UserPrompt:   r.Input,
-		MaxTokens:    r.MaxOutputTokens,
+	// against, the prompt a redactor would inspect. The base provider above
+	// ignores it and uses `r`, which is the authority: the hosted tools and the
+	// effort below are this package's to send.
+	sfreq := schemaflux.Request{
+		Model:     model,
+		System:    r.Instructions,
+		User:      r.Input,
+		MaxTokens: r.MaxOutputTokens,
+		Effort:    schemaflux.Effort(r.Effort),
+		// Mirrored for the middleware's benefit only: a chain that inspects
+		// requests should see that this one may search. The base provider still
+		// sends exactly r.Tools, nothing more.
+		WebSearch: slices.Contains(r.Tools, WebSearchTool),
 	}
 	if len(r.Schema) > 0 {
-		sfreq.ResponseFormat = "json"
-		sfreq.JSONSchema = r.Schema
+		sfreq.Format = "json"
+		sfreq.Schema = r.Schema
 		sfreq.SchemaName = r.SchemaName
 	}
 
@@ -556,18 +567,18 @@ func (c *Client) Do(ctx context.Context, r Request) (string, error) {
 // The model is a bounded label chosen from configuration. The PROMPT is not
 // recorded and never should be: it contains the reader's articles, and a span
 // carrying it would ship reading material to a collector.
-func (c *Client) run(ctx context.Context, base mw.Handler, req schemaflux.CompletionRequest) (
-	schemaflux.CompletionResponse, error) {
+func (c *Client) run(ctx context.Context, base schemaflux.Provider, req schemaflux.Request) (
+	schemaflux.Response, error) {
 
 	ctx, span := tracer.Start(ctx, "llm.request",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			attribute.String("llm.model", req.Model),
-			attribute.Bool("llm.structured", len(req.JSONSchema) > 0),
+			attribute.Bool("llm.structured", len(req.Schema) > 0),
 		))
 	defer span.End()
 
-	var res schemaflux.CompletionResponse
+	var res schemaflux.Response
 	call := func(ctx context.Context) error {
 		var err error
 		res, err = mw.Chain(base, c.chain...).Complete(ctx, req)
@@ -586,13 +597,13 @@ func (c *Client) run(ctx context.Context, base mw.Handler, req schemaflux.Comple
 	// problem from "the provider was slow", and the two are indistinguishable
 	// from a duration alone.
 	span.SetAttributes(
-		attribute.Int64("llm.tokens.input", int64(res.Usage.InputTokens)),
-		attribute.Int64("llm.tokens.output", int64(res.Usage.OutputTokens)),
+		attribute.Int64("llm.tokens.input", int64(res.Usage.Input)),
+		attribute.Int64("llm.tokens.output", int64(res.Usage.Output)),
 	)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "llm request failed")
-		return schemaflux.CompletionResponse{}, err
+		return schemaflux.Response{}, err
 	}
 	return res, nil
 }
@@ -691,7 +702,7 @@ func (c *Client) send(ctx context.Context, key, model string, r Request) (string
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return "", used, fmt.Errorf("llm: provider returned %d: %s", res.StatusCode, msg)
+		return "", used, &StatusError{Code: res.StatusCode, Message: msg}
 	}
 
 	var reply responsesReply

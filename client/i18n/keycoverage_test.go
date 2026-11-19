@@ -55,12 +55,13 @@ var dynamicPrefixes = map[string]string{
 	// settingsGroup constants in view.settingsPane — the same shape as the tab
 	// ids above it, and missed when the groups were added because three keys
 	// that ARE rendered look exactly like three keys that are not.
-	"settings.group.":     "the settingsGroup constants, via view.settingsPane",
-	"palette.cmd.":        "the palette command ids",
-	"feedSettings.poll.":  "the pollChoices values",
-	"feedSettings.cache.": "the cacheChoices values",
-	"feedSettings.mute.":  "the muteChoices values",
-	"list.empty":          "emptyState(titleKey, hintKey) call sites",
+	"settings.group.":       "the settingsGroup constants, via view.settingsPane",
+	"palette.cmd.":          "the palette command ids",
+	"feedSettings.poll.":    "the pollChoices values",
+	"feedSettings.cache.":   "the cacheChoices values",
+	"feedSettings.mute.":    "the muteChoices values",
+	"feedSettings.backlog.": "the backlogChoices values",
+	"list.empty":            "emptyState(titleKey, hintKey) call sites",
 	// The slideshow's reason for not speaking, built as "voice."+p.voice from
 	// the slideVoice* constants in client/view.
 	"slides.voice.": "the slideVoice* constants, via view.slideBody",

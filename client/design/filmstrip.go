@@ -1,6 +1,6 @@
 package design
 
-import "github.com/monstercameron/GoWebComponents/v5/css"
+import "github.com/monstercameron/GoWebComponents/v7/css"
 
 // The filmstrip: what happens where one pane hides another.
 //
@@ -64,6 +64,14 @@ func filmstrip(r func(string, string) css.Rule) {
 		r("transition", "transform "+slow+", opacity "+move+
 			", visibility 0s linear var(--t3)"))
 
+	// Which way "deeper" is. In a right-to-left interface the rail is on the
+	// RIGHT and the article to its left, so every horizontal travel on the strip
+	// runs the other way. One sign, read by each formula below, rather than a
+	// second copy of each rule under [dir="rtl"] that would have to be kept in
+	// step with the first. Read with a fallback of 1, so a document with no
+	// `dir` at all behaves as it always has.
+	css.Global(`[dir="rtl"]`, css.Custom("dirx", "-1"))
+
 	// Which position is showing. Set on the shell, inherited by the panes.
 	css.Global(".shell[data-view='rail']", css.Custom("strip", "0"))
 	css.Global(".shell[data-view='list']", css.Custom("strip", "1"))
@@ -74,7 +82,7 @@ func filmstrip(r func(string, string) css.Rule) {
 
 	strip := []css.Rule{
 		r("grid-area", "1 / 1"),
-		r("transform", "translateX(calc((var(--pane, 0) - var(--strip, 0)) * 100%))"),
+		r("transform", "translateX(calc((var(--pane, 0) - var(--strip, 0)) * var(--dirx, 1) * 100%))"),
 		// visibility, not just the transform, and with a DELAY equal to the
 		// slide. An off-screen pane that is merely translated is still in the
 		// accessibility tree — a screen reader would read all three panes as one
@@ -130,7 +138,7 @@ func filmstrip(r func(string, string) css.Rule) {
 	// it gets instead is the same arrival every other surface uses, at the
 	// distance a full pane deserves rather than the seven pixels a banner does.
 	enter := css.Keyframes("pane-in",
-		css.At("0%", r("opacity", "0"), r("transform", "translateX(4%)")),
+		css.At("0%", r("opacity", "0"), r("transform", "translateX(calc(4% * var(--dirx, 1)))")),
 		css.At("100%", r("opacity", "1"), r("transform", "none")),
 	)
 	css.Global(".pane-settings", enter,

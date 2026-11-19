@@ -18,10 +18,10 @@ type NewTenant struct {
 	// address here identifies an account and nothing more. Stored anyway,
 	// because a reset flow that ever exists will need it and asking for it
 	// afterwards means asking somebody who has already forgotten.
-	Email    string
-	Hash     string
-	Role     string
-	Now      string
+	Email string
+	Hash  string
+	Role  string
+	Now   string
 }
 
 // CreateTenantAndUser bootstraps a tenant with its first user, in one

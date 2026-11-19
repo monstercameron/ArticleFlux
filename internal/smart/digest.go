@@ -38,7 +38,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 
 	"time"
 )
@@ -229,8 +229,7 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 	call, cancel := context.WithTimeout(d.llm.OpsContext(ctx), digestTimeout)
 	defer cancel()
 
-	out, err := schemaflux.Summarizing(in.String()).
-		Steer(digestInstructions).
+	out, err := schemaflux.Summarize(call, in.String(), schemaflux.SummarizeOptions{
 		// The ceiling, restated rather than inherited from `Fast` — see
 		// ceilings.go. It was `MaxLength(digestMaxTokens)` for a while, which
 		// is a DIFFERENT KNOB wearing a similar name: `MaxLength` sets
@@ -239,10 +238,9 @@ func (d *Digest) Speakable(ctx context.Context, itemID, source, title, body stri
 		// quietly fell to Fast's 2000. The only reason that was not visibly
 		// broken is that the length invariant is an upper bound and no summary
 		// has ever been four thousand sentences.
-		Configure(capSummarize(digestMaxTokens)).
-		Model(d.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		Options: sfOpts(d.llm.OpsModel(ctx), schemaflux.TierFast, digestInstructions, digestMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		// An answer with no content is not a provider fault, it is nothing to
 		// summarise — which is a state three callers key on to fall back to

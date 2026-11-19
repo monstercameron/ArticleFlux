@@ -126,6 +126,7 @@ var unscopedByDesign = map[string]string{
 	"ScopesToRelabel":         "the same shape as ScopesToDerive and safe for the same reason: it DISCOVERS which readers have a per-user taxonomy to sweep, so a Scope would be circular. It returns nothing but (tenant_id, user_id) pairs — no article, no title, no assignment — and every method the sweep calls afterwards takes the Scope this one produced. Background ticker only",
 	"VectorsFor":              "reads item_analysis, which is unscoped BY DESIGN (§27.2, one row per global item, no tenant_id and no user_id) — exactly like AnalysisByIDs beside it. The caller passes ids it already resolved through a scoped query, and the vector is a property of the publisher's text rather than of any reader",
 	"ScopesWithSubscriptions": "DISCOVERS scopes for the weekly category-discovery pass, like ScopesToDerive and ScopesToRelabel. Returns only (tenant_id, user_id) pairs for accounts holding any subscription — no feed, no article, no title — and every method the pass calls afterwards takes the Scope this one produced. Background ticker only",
+	"ScopesWithBacklogRules":  "DISCOVERS which readers have set a backlog window on any feed, for the backlog sweep on the poller's heartbeat. Same shape and same argument as ScopesToDerive and ScopesWithSubscriptions: it returns only (tenant_id, user_id) pairs, and every method the sweep calls afterwards (ClearBacklogs) takes the Scope this one produced. Background ticker only",
 	"RecordScrapeOutcome":     "rule health on a global source, written by the poller (A14)",
 	"KnownGUIDs":              "reads global item guids for one global source (A14)",
 	"RecordOutlinks":          "outlinks are a property of a global item (A14); one extraction serves every subscriber",
@@ -293,6 +294,15 @@ func twoTenants(t *testing.T, db *DB) (repo *ReaderRepo, a, b Scope, bIDs map[st
 	if _, err := repo.SetItemState(ctx, b, items[0].ID, StateChange{Read: boolPtr(true)}); err != nil {
 		t.Fatal(err)
 	}
+	// A cached translation of B's private item (§10.5b). Its LANG is B's item id
+	// because argFor hands that id to every string parameter of the methods it
+	// knows, so ItemTranslation(A, itemB, itemB) is asked about exactly this row.
+	if err := repo.PutItemTranslation(ctx, b, ItemTranslation{
+		ItemID: items[0].ID, Lang: items[0].ID, SourceHash: leakMarker,
+		Title: leakMarker + "-translated-title", BodyHTML: "<p>" + leakMarker + "</p>",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	return repo, a, b, bIDs
 }
@@ -423,7 +433,8 @@ func argFor(ft reflect.Type, i int, method string, bIDs map[string]string) refle
 		switch method {
 		case "GetItem", "SetItemState", "SetNote", "GetNote", "GetFeedSettings",
 			"UpdateFeedSettings", "Unsubscribe", "SetFeedTag", "SourcesForTag",
-			"UpdateTag", "DeleteFolder", "RenameFolder", "SetFeedFolder", "MarkAllRead":
+			"UpdateTag", "DeleteFolder", "RenameFolder", "SetFeedFolder", "MarkAllRead",
+			"ItemTranslation", "ItemLanguage":
 			if v, ok := firstID(method, bIDs); ok {
 				return asString(v)
 			}
@@ -457,7 +468,7 @@ func argFor(ft reflect.Type, i int, method string, bIDs map[string]string) refle
 
 func firstID(method string, bIDs map[string]string) (string, bool) {
 	switch method {
-	case "GetItem", "SetItemState", "SetNote", "GetNote":
+	case "GetItem", "SetItemState", "SetNote", "GetNote", "ItemTranslation", "ItemLanguage":
 		return bIDs["itemID"], true
 	case "SourcesForTag", "UpdateTag":
 		return bIDs["tagID"], true

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // One way out of this package, proved from both entrances.
@@ -34,10 +34,7 @@ func TestTheSpendCeilingBindsTheTypedOperationsToo(t *testing.T) {
 	c.Use(c.Budget(func(context.Context) float64 { return 0.01 }))
 	c.cost = Cost{USD: 5, Priced: 1}
 
-	_, err := schemaflux.Generating[string]("Name a folder.").
-		Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background()))
+	_, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}})
 	if !errors.Is(err, ErrOverBudget) {
 		t.Fatalf("a typed operation over budget: err = %v, want ErrOverBudget", err)
 	}
@@ -67,10 +64,7 @@ func TestTheBreakerCountsTypedOperations(t *testing.T) {
 	c.WithGuard(g)
 
 	for range FailuresToOpen {
-		_, _ = schemaflux.Generating[string]("Name a folder.").
-			Model(c.OpsModel(context.Background())).
-			Fast().
-			Run(c.OpsContext(context.Background()))
+		_, _ = schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}})
 	}
 	if st := g.State(); !st.Open {
 		t.Fatalf("after %d failing operations the circuit is still closed: %+v",
@@ -81,10 +75,7 @@ func TestTheBreakerCountsTypedOperations(t *testing.T) {
 	// whole point: a wedged provider must stop costing this instance a
 	// connection and a two-minute timeout per call.
 	before := calls.Load()
-	_, err := schemaflux.Generating[string]("Name a folder.").
-		Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background()))
+	_, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}})
 	if err == nil {
 		t.Fatal("a call through an open circuit succeeded")
 	}
@@ -101,14 +92,11 @@ func TestTheModelTheMiddlewareSeesIsTheModelThatRuns(t *testing.T) {
 	c, cap := opsClientFor(t, `x`)
 	c.WithModel(func(context.Context) string { return "gpt-5" })
 
-	var seen schemaflux.CompletionRequest
+	var seen schemaflux.Request
 	var count atomic.Int64
 	c.Use(probe(&count, &seen))
 
-	if _, err := schemaflux.Generating[string]("Name a folder.").
-		Model(c.OpsModel(context.Background())).
-		Fast().
-		Run(c.OpsContext(context.Background())); err != nil {
+	if _, err := schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}}); err != nil {
 		t.Fatal(err)
 	}
 	if count.Load() == 0 {
@@ -156,10 +144,7 @@ func TestAMissingKeyDoesNotOpenTheCircuit(t *testing.T) {
 	c.WithGuard(g)
 
 	for range FailuresToOpen + 2 {
-		_, _ = schemaflux.Generating[string]("Name a folder.").
-			Model(c.OpsModel(context.Background())).
-			Fast().
-			Run(c.OpsContext(context.Background()))
+		_, _ = schemaflux.Generate[string](c.OpsContext(context.Background()), "Name a folder.", schemaflux.GenerateOptions{Options: schemaflux.Options{Model: c.OpsModel(context.Background()), Tier: schemaflux.TierFast}})
 	}
 	if st := g.State(); st.Open || st.Failures != 0 {
 		t.Errorf("a missing key counted as provider failure: %+v", st)

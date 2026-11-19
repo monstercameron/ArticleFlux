@@ -95,7 +95,9 @@ func init() {
 		// "Hide" or "Block": it is an instruction about the MODEL, not about the
 		// articles — items keep arriving in their feeds, and only this judgement
 		// stops being used.
-		"level":        "How much this counts",
+		// The dial's group name, which has to say WHICH row: forty of them
+		// share the screen and a listener hears only this.
+		"levelFor":     "How much “{name}” counts",
 		"level.more":   "More",
 		"level.normal": "Normal",
 		"level.less":   "Less",
@@ -109,17 +111,21 @@ func init() {
 		// the model stops using this row, nothing is unsubscribed or hidden —
 		// so the copy borrows levelNeverHint's own claim rather than inventing
 		// a second, competing promise about what the word does.
+		//
+		// Each *Aria name starts with the words on its chip and then adds what
+		// the chip cannot fit, so a reader speaking the visible word still finds
+		// the button (WCAG's "label in name").
 		"rowDelete":            "Remove",
-		"rowDeleteAria":        "Stop using this for My Feed",
+		"rowDeleteAria":        "Remove “{name}” from My Feed",
 		"rowDeleteConfirm":     "Confirm remove?",
-		"rowDeleteConfirmAria": "Confirm: stop using this for My Feed",
+		"rowDeleteConfirmAria": "Confirm remove? “{name}” stops counting for My Feed",
 		"rowDeleteCancel":      "Cancel",
 		"rowDeleteCancelAria":  "Cancel, keep this as it is",
 
 		"catReset":            "Reset this list",
-		"catResetAria":        "Undo every change you have made in this list",
+		"catResetAria":        "Reset this list: undo every change you have made in it",
 		"catResetConfirm":     "Confirm reset?",
-		"catResetConfirmAria": "Confirm: undo every change you have made in this list",
+		"catResetConfirmAria": "Confirm reset? Every change you have made in this list is undone",
 		"catResetCancelAria":  "Cancel, keep your changes",
 		"catResetWarn": "This undoes every Remove and every dial you have turned in this list — " +
 			"not the reading it was built from, which is why the row is here at all.",
@@ -161,6 +167,12 @@ func init() {
 		"factor.deliberate":       "Something you starred or noted",
 		"factor.concept_feedback": "Related to something you liked or disliked",
 		"factor.smartplus":        "Moved up by Smart+ ranking",
+		// The redesigned scorer's three. Two push an item DOWN and say why in
+		// the "Demoted …" voice above; the third is the one that is shown on
+		// purpose despite its score, and says so rather than pretending it won.
+		"factor.avoided": "Demoted as something you avoid",
+		"factor.explore": "Shown to widen your feed",
+		"factor.fatigue": "Demoted to vary the page",
 	})
 
 	// The two counted lines, as plurals. Both are rendered on every row of a

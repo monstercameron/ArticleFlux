@@ -12,14 +12,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"maps"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
-
-	schemaflux "github.com/monstercameron/schemaflux"
 
 	"time"
 )
@@ -88,6 +90,18 @@ const pluralSep = "#"
 type Translator struct {
 	llm      llmClient
 	settings *store.SettingsRepo
+	log      *slog.Logger
+
+	// mu guards locks and fills. A locale's lock is held for the whole of a
+	// fill — the read-modify-write of its one cache row, batch after batch — so
+	// TranslateUI and a background fill for the same language cannot each
+	// translate the same keys and then overwrite each other's answers.
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+	fills map[string]bool
+
+	// eng is the translation engine; nil means opsEngine over llm.
+	eng translationEngine
 }
 
 // NewTranslator wires the UI translator.
@@ -95,7 +109,32 @@ type Translator struct {
 // client is the llmClient seam (see llmclient.go): production keeps passing a
 // *llm.Client, tests pass a fake that never reaches the network.
 func NewTranslator(client llmClient, settings *store.SettingsRepo) *Translator {
-	return &Translator{llm: client, settings: settings}
+	return &Translator{llm: client, settings: settings,
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		locks: map[string]*sync.Mutex{}, fills: map[string]bool{}}
+}
+
+// WithLog gives the background fill somewhere to report a failure. Nothing
+// waits on that fill, so without a log its errors would be invisible.
+func (t *Translator) WithLog(l *slog.Logger) *Translator {
+	if l != nil {
+		t.log = l
+	}
+	return t
+}
+
+func (t *Translator) lockFor(locale string) *sync.Mutex {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.locks == nil {
+		t.locks = map[string]*sync.Mutex{}
+	}
+	m, ok := t.locks[locale]
+	if !ok {
+		m = &sync.Mutex{}
+		t.locks[locale] = m
+	}
+	return m
 }
 
 // model is the instance's Smart+ model, or the built-in default. Guarded for
@@ -124,6 +163,159 @@ type cached struct {
 	// Entries is flat: "ns.key" or "ns.key#category" → translated text. The
 	// same shape that goes over the wire, so nothing is reshaped twice.
 	Entries map[string]string `json:"entries"`
+
+	// Hashes is the per-KEY validity record (§22.16c): base "ns.key" → the
+	// i18n.SourceHash of the English that key was translated from. Present on
+	// every row written since on-the-fly translation; absent on an older row,
+	// which is then valid only as a whole, against SourceHash.
+	//
+	// This is what makes an upgrade cheap. SourceHash alone meant a build that
+	// edited one string re-translated all eight hundred.
+	Hashes map[string]string `json:"hashes,omitempty"`
+	// Rejected records keys the model WAS asked for and answered unusably
+	// (dropped the key, lost a placeholder, emitted markup): base key → the
+	// English hash at the time. Such a key renders in English and is not asked
+	// for again until its English changes — or a forced retranslation — because
+	// a model that dropped a key once will usually drop it again, and every boot
+	// of every device would otherwise pay for the same refusal.
+	Rejected map[string]string `json:"rejected,omitempty"`
+}
+
+// englishIndex is this build's English catalog by base key.
+func englishIndex() map[string]i18n.Entry {
+	all := i18n.Export(i18n.DefaultLocale)
+	out := make(map[string]i18n.Entry, len(all))
+	for _, e := range all {
+		out[e.Key] = e
+	}
+	return out
+}
+
+// flattenFor is flatten for a TARGET language: a plural message is sent once per
+// category that language's runtime selects (i18n.PluralCategories), not once per
+// category the English happens to have.
+//
+// The English has `one` and `other`; Polish needs `few` and `many`, Arabic six
+// forms, Japanese one. A form the English lacks is sent with the English `other`
+// as its source text — it is the nearest English there is — and the instructions
+// tell the model what the #category suffix means. Before this, Polish and
+// Russian were never asked for `few`/`many` and the runtime fell back to their
+// `other`, which is the FRACTION form: "5 minut" rendered as "5 minuty".
+func flattenFor(e i18n.Entry, locale string) map[string]string {
+	if len(e.Plural) == 0 {
+		if e.Text == "" {
+			return nil
+		}
+		return map[string]string{e.Key: e.Text}
+	}
+	out := map[string]string{}
+	for _, cat := range i18n.PluralCategories(locale) {
+		src := e.Plural[cat]
+		if src == "" {
+			src = e.Plural[string(i18n.Other)]
+		}
+		if src != "" {
+			out[e.Key+pluralSep+cat] = src
+		}
+	}
+	return out
+}
+
+// assemble regroups one base key's flat answers into an Entry.
+func assemble(base string, flat map[string]string) i18n.Entry {
+	e := i18n.Entry{Key: base}
+	if v, ok := flat[base]; ok {
+		e.Text = v
+		return e
+	}
+	prefix := base + pluralSep
+	for k, v := range flat {
+		if cat, ok := strings.CutPrefix(k, prefix); ok {
+			if e.Plural == nil {
+				e.Plural = map[string]string{}
+			}
+			e.Plural[cat] = v
+		}
+	}
+	return e
+}
+
+// catalogState is what the cache can answer for a locale against THIS build.
+type catalogState struct {
+	row cached
+	// valid holds every key whose cached translation matches this build's
+	// English and passes i18n.CheckTranslation.
+	valid map[string]i18n.Entry
+	// missing lists, sorted, the keys that have neither a valid translation
+	// nor a rejection recorded against their current English.
+	missing []string
+	total   int
+}
+
+// state reads the locale's cache row and sorts every English key into valid,
+// done-but-unusable, or missing. It spends nothing and calls nothing.
+//
+// Every cached entry is re-checked here, not only on the way in, because a row
+// written before the checks existed — or by the whole-catalog path of an older
+// build — reaches readers through this function too.
+func (t *Translator) state(ctx context.Context, lang Language, force bool) catalogState {
+	en := englishIndex()
+	st := catalogState{valid: map[string]i18n.Entry{}, total: len(en)}
+	row, err := t.readCache(ctx, lang.Code)
+	if err != nil || force {
+		row = cached{Locale: lang.Code}
+	}
+	if row.Entries == nil {
+		row.Entries = map[string]string{}
+	}
+
+	// An old row is valid as a whole or not at all: it carries no per-key
+	// record, so the only claim it can support is "this was the English".
+	// Keys it lacks were dropped by that translation on purpose (§10.5a: "a
+	// partial catalog is cached on purpose") and are treated as rejected rather
+	// than re-billed.
+	legacy := row.Hashes == nil
+	legacyOK := legacy && len(row.Entries) > 0 &&
+		row.SourceHash == hashOf(flatten(i18n.Export(i18n.DefaultLocale)))
+
+	for key, e := range en {
+		hash := i18n.SourceHash(e)
+		if legacy && !legacyOK {
+			st.missing = append(st.missing, key)
+			continue
+		}
+		if legacy || row.Hashes[key] == hash {
+			got := assemble(key, row.Entries)
+			if clean, ok := i18n.CheckTranslation(lang.Code, e, got); ok {
+				clean.SourceHash = hash
+				st.valid[key] = clean
+				continue
+			}
+			if legacy {
+				continue
+			}
+		}
+		if !force && row.Rejected[key] == hash {
+			continue
+		}
+		st.missing = append(st.missing, key)
+	}
+	sort.Strings(st.missing)
+	st.row = row
+	return st
+}
+
+func entriesOf(valid map[string]i18n.Entry) []i18n.Entry {
+	keys := make([]string, 0, len(valid))
+	for k := range valid {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]i18n.Entry, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, valid[k])
+	}
+	return out
 }
 
 // Catalog returns the UI catalog in locale, translating it if it is not already
@@ -182,79 +374,285 @@ func (t *Translator) Catalog(ctx context.Context, locale string, force bool) ([]
 		return nil, ErrUnsupportedLanguage
 	}
 
-	source := flatten(i18n.Export(i18n.DefaultLocale))
-	hash := hashOf(source)
+	// The whole-catalog contract, now built on the per-key cache: what is
+	// already valid is kept, and only the MISSING keys are sent. A build that
+	// changed twelve strings pays for twelve.
+	lock := t.lockFor(lang.Code)
+	lock.Lock()
+	defer lock.Unlock()
 
-	if !force {
-		if hit, err := t.readCache(ctx, lang.Code); err == nil &&
-			hit.SourceHash == hash && len(hit.Entries) > 0 {
-			return unflatten(hit.Entries), nil
-		}
+	st := t.state(ctx, lang, force)
+	if len(st.missing) == 0 && len(st.valid) > 0 {
+		return entriesOf(st.valid), nil
 	}
-
 	if t.llm == nil || !t.llm.Configured(ctx) {
+		// Fail soft: a cache that answers most of the catalog is a usable UI
+		// even when the key has gone, and the rest falls back to English.
+		if len(st.valid) > 0 && !force {
+			return entriesOf(st.valid), nil
+		}
 		return nil, llm.ErrNotConfigured
 	}
 
-	model := t.model(ctx)
-
-	// Sorted, so batches are stable across runs and a re-translation of the
-	// same catalog produces the same grouping — which is what makes a cached
-	// result and a fresh one comparable when something looks wrong.
-	keys := make([]string, 0, len(source))
-	for k := range source {
-		keys = append(keys, k)
+	hadSome := len(st.valid) > 0 && !force
+	err := t.fill(ctx, lang, &st)
+	switch {
+	case err != nil && !hadSome:
+		return nil, err
+	case err != nil:
+		// The old valid set is still valid. Serving it is strictly better than
+		// an error on a language switch, and what this fill did manage is
+		// already written.
+		t.log.Warn("ui translation fill stopped; serving the cached part",
+			"locale", lang.Code, "err", err)
 	}
-	sort.Strings(keys)
+	if len(st.valid) == 0 {
+		return nil, errors.New("smart: the translation came back empty")
+	}
+	return entriesOf(st.valid), nil
+}
 
-	out := make(map[string]string, len(source))
-	for start := 0; start < len(keys); start += batchSize {
-		end := start + batchSize
-		if end > len(keys) {
-			end = len(keys)
+// fill translates st.missing in batches, checking and caching each batch as it
+// lands, so a fill that stops halfway — an error, the spend ceiling, a restart —
+// keeps everything it already paid for, and a poller sees progress per batch.
+//
+// The caller holds the locale's lock.
+func (t *Translator) fill(ctx context.Context, lang Language, st *catalogState) error {
+	en := englishIndex()
+	model := t.model(ctx)
+	row := st.row
+	row.Locale = lang.Code
+	row.Model = model
+	// Upgrading a legacy row: from here on it is valid per key, so record the
+	// hashes of what it already held.
+	if row.Hashes == nil {
+		row.Hashes = map[string]string{}
+		row.Entries = map[string]string{}
+		for k, e := range st.valid {
+			row.Hashes[k] = i18n.SourceHash(en[k])
+			maps.Copy(row.Entries, flattenEntry(e))
 		}
-		batch := make(map[string]string, end-start)
-		for _, k := range keys[start:end] {
-			batch[k] = source[k]
+	}
+	if row.Rejected == nil {
+		row.Rejected = map[string]string{}
+	}
+	// SourceHash keeps naming the whole English for a reader of an older build,
+	// whose check is "same hash, so all of it".
+	row.SourceHash = hashOf(flatten(i18n.Export(i18n.DefaultLocale)))
+
+	// Batches are built from whole KEYS, in sorted order, so a plural's forms
+	// travel together — the model translates "one" and "few" of the same
+	// message side by side — and so a re-run groups identically.
+	var batch map[string]string
+	var asked []string
+	sent := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
 		got, err := t.translateBatch(ctx, lang, model, batch)
 		if err != nil {
-			return nil, fmt.Errorf("translating %s (messages %d-%d): %w",
-				lang.Code, start+1, end, err)
+			return fmt.Errorf("translating %s (messages %d-%d): %w",
+				lang.Code, sent+1, sent+len(batch), err)
 		}
-		for k, v := range got {
-			// Only keys that were asked for. A model that invents a key would
-			// otherwise put an entry in the catalog that no call site reads and
-			// no keycoverage test sees.
-			if _, want := batch[k]; want && strings.TrimSpace(v) != "" {
-				out[k] = v
+		sent += len(batch)
+		for _, key := range asked {
+			src := en[key]
+			hash := i18n.SourceHash(src)
+			// Only the forms that were asked for. A model that invents a key
+			// would otherwise put an entry in the catalog that no call site
+			// reads and no keycoverage test sees.
+			answer := map[string]string{}
+			for fk := range flattenFor(src, lang.Code) {
+				if v := got[fk]; strings.TrimSpace(v) != "" {
+					answer[fk] = v
+				}
+			}
+			for fk := range row.Entries {
+				if fk == key || strings.HasPrefix(fk, key+pluralSep) {
+					delete(row.Entries, fk)
+				}
+			}
+			clean, ok := i18n.CheckTranslation(lang.Code, src, assemble(key, answer))
+			if !ok {
+				row.Rejected[key] = hash
+				delete(row.Hashes, key)
+				delete(st.valid, key)
+				continue
+			}
+			clean.SourceHash = hash
+			maps.Copy(row.Entries, flattenEntry(clean))
+			row.Hashes[key] = hash
+			delete(row.Rejected, key)
+			st.valid[key] = clean
+		}
+		batch, asked = nil, nil
+		// Written after every batch. The row is the progress a poller reads.
+		return t.writeCache(ctx, row)
+	}
+
+	for _, key := range st.missing {
+		forms := flattenFor(en[key], lang.Code)
+		if len(batch)+len(forms) > batchSize {
+			if err := flush(); err != nil {
+				return err
 			}
 		}
+		if batch == nil {
+			batch = map[string]string{}
+		}
+		maps.Copy(batch, forms)
+		asked = append(asked, key)
 	}
-
-	if len(out) == 0 {
-		return nil, errors.New("smart: the translation came back empty")
+	if err := flush(); err != nil {
+		return err
 	}
-
-	// Cached even when partial. A catalog with nine tenths of its keys is a
-	// usable UI — the Bundle falls back to English for the rest — and paying
-	// again for the same nine tenths helps nobody.
-	_ = t.writeCache(ctx, cached{
-		SourceHash: hash, Locale: lang.Code, Model: model, Entries: out,
-	})
-
-	return unflatten(out), nil
+	st.missing = nil
+	st.row = row
+	return nil
 }
 
-// CachedLocales reports which languages already have a catalog for the current
+// flattenEntry is flatten for one already-checked entry.
+func flattenEntry(e i18n.Entry) map[string]string { return flatten([]i18n.Entry{e}) }
+
+// Strings answers GetUIStrings: the cached, valid translations of the keys
+// asked about (all keys when none are named), and how many of those the cache
+// cannot answer yet. It never calls the model.
+func (t *Translator) Strings(ctx context.Context, locale string, keys []string) ([]i18n.Entry, int, error) {
+	if strings.EqualFold(strings.TrimSpace(locale), i18n.DefaultLocale) {
+		return nil, 0, ErrIsSource
+	}
+	lang, ok := LanguageByCode(locale)
+	if !ok {
+		return nil, 0, ErrUnsupportedLanguage
+	}
+	st := t.state(ctx, lang, false)
+	if len(keys) == 0 {
+		return entriesOf(st.valid), len(st.missing), nil
+	}
+	missing := make(map[string]bool, len(st.missing))
+	for _, k := range st.missing {
+		missing[k] = true
+	}
+	var out []i18n.Entry
+	pending := 0
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if e, ok := st.valid[k]; ok {
+			out = append(out, e)
+		} else if missing[k] {
+			pending++
+		}
+	}
+	return out, pending, nil
+}
+
+// fillTimeout bounds one background fill: the whole catalog, ~15 batches at
+// batchTimeout each in the worst case. A fill that has not finished by then is
+// stuck, and the next request can start another.
+const fillTimeout = 45 * time.Minute
+
+// StartFill translates a locale's missing keys in the background and reports
+// whether a fill is now running.
+//
+// One per locale at a time: a second request while one runs joins it rather
+// than paying for the same keys twice. Detached from the caller's context on
+// purpose — the request that asked returns at once with whatever is cached, and
+// the reader goes on seeing English for the rest — but bounded by fillTimeout,
+// the instance's spend ceiling (every batch goes through the llm funnel), and
+// the circuit breaker.
+//
+// The caller is responsible for the gate (owner, key); this checks only that
+// there is a key and something to do, so it can never spend for nothing.
+func (t *Translator) StartFill(ctx context.Context, locale string) (bool, error) {
+	if strings.EqualFold(strings.TrimSpace(locale), i18n.DefaultLocale) {
+		return false, ErrIsSource
+	}
+	lang, ok := LanguageByCode(locale)
+	if !ok {
+		return false, ErrUnsupportedLanguage
+	}
+	if t.llm == nil || !t.llm.Configured(ctx) {
+		return false, llm.ErrNotConfigured
+	}
+	t.mu.Lock()
+	if t.fills[lang.Code] {
+		t.mu.Unlock()
+		return true, nil
+	}
+	if len(t.state(ctx, lang, false).missing) == 0 {
+		t.mu.Unlock()
+		return false, nil
+	}
+	t.fills[lang.Code] = true
+	t.mu.Unlock()
+
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			delete(t.fills, lang.Code)
+			t.mu.Unlock()
+		}()
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), fillTimeout)
+		defer cancel()
+		lock := t.lockFor(lang.Code)
+		lock.Lock()
+		defer lock.Unlock()
+		st := t.state(bg, lang, false)
+		if len(st.missing) == 0 {
+			return
+		}
+		if err := t.fill(bg, lang, &st); err != nil {
+			t.log.Warn("background ui translation stopped", "locale", lang.Code, "err", err)
+		}
+	}()
+	return true, nil
+}
+
+// Filling reports whether a background fill is running for a locale.
+func (t *Translator) Filling(locale string) bool {
+	lang, ok := LanguageByCode(locale)
+	if !ok {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.fills[lang.Code]
+}
+
+// Coverage reports, per offered language, how many of this build's keys are
+// done — translated, or tried and left in English — and the total.
+func (t *Translator) Coverage(ctx context.Context) map[string]LocaleCoverage {
+	out := map[string]LocaleCoverage{}
+	for _, l := range Languages {
+		st := t.state(ctx, l, false)
+		out[l.Code] = LocaleCoverage{
+			Done: st.total - len(st.missing), Total: st.total,
+			// "Cached" keeps its old meaning — selecting it costs nothing — and
+			// a row with nothing usable in it is not that, however complete.
+			Cached: len(st.missing) == 0 && len(st.valid) > 0,
+		}
+	}
+	return out
+}
+
+// LocaleCoverage is one language's standing against this build's catalog.
+type LocaleCoverage struct {
+	Done, Total int
+	Cached      bool
+}
+
+// CachedLocales reports which languages are fully cached for the current
 // English, so the picker can show what is free and what will cost a call.
 func (t *Translator) CachedLocales(ctx context.Context) map[string]bool {
-	hash := hashOf(flatten(i18n.Export(i18n.DefaultLocale)))
 	out := map[string]bool{}
-	for _, l := range Languages {
-		if hit, err := t.readCache(ctx, l.Code); err == nil &&
-			hit.SourceHash == hash && len(hit.Entries) > 0 {
-			out[l.Code] = true
+	for code, c := range t.Coverage(ctx) {
+		if c.Cached {
+			out[code] = true
 		}
 	}
 	return out
@@ -272,57 +670,30 @@ Rules, in order of importance:
 4. USE THE TARGET LANGUAGE'S ESTABLISHED FEED-READER VOCABULARY. "Unread", "Read later", "Feeds", "Tags", "Mark all read" are Google Reader terms that readers of that language already know from other apps. Use those words, not a fresh literal translation.
 5. A key ending in #one, #other, #zero, #two, #few or #many is one grammatical-number form of a plural message. Translate it as that form for the target language. If the target language does not distinguish that form, still return sensible text for it — the runtime picks by the language's own rules and simply will not ask for forms the language lacks.
 6. Do not translate: command-line text, model identifiers, URLs, single-letter keyboard keys, "ArticleFlux", "Smart+", "OpenAI", "RSS", "Atom", "p50", "p95", "GiB", "KiB", "MiB".
-7. Return the keys unchanged. The key is an identifier, never text a person sees.`
+7. Return the keys unchanged. The key is an identifier, never text a person sees.
+8. Plain text only. Never add HTML, Markdown, or explanations. A translation that drops or invents a placeholder, or adds markup, is discarded and the English is shown instead.`
 
-func (t *Translator) translateBatch(ctx context.Context, lang Language, model string,
+// translateBatch asks the engine for one batch. model is kept in the
+// signature for the callers that log it; the engine names the instance's model
+// itself through OpsModel, so the request and the meter agree.
+func (t *Translator) translateBatch(ctx context.Context, lang Language, _ string,
 	batch map[string]string) (map[string]string, error) {
+	return t.engine().CatalogBatch(ctx, lang, batch)
+}
 
-	payload, err := json.Marshal(batch)
-	if err != nil {
-		return nil, err
+// engine is the translation engine in use: the one installed with WithEngine,
+// or the default over this Translator's llm client.
+func (t *Translator) engine() translationEngine {
+	if t.eng != nil {
+		return t.eng
 	}
-	input := "Target language: " + lang.English + " (" + lang.Native + "), BCP-47 code " +
-		lang.Code + ".\n\nMessages:\n" + string(payload)
-
-	// Rebuilt on `Extracting` (plan P3.8). The answer is keyed BY ENTRY ID, and
-	// that is the property the whole feature rests on: a catalog translated
-	// positionally would silently re-map every string the moment one entry was
-	// added, so the model returns the key beside the text and the caller matches
-	// on it. `translationBatch` carries that shape and the schema comes from it.
-	//
-	// `Translating` is deliberately not used, despite the name. It translates a
-	// STRING; this translates a keyed set in one call, and doing them one at a
-	// time would be several hundred requests for one language.
-	//
-	// Not `Strict()`, for the reason given at interest.go's rerank: rejecting a
-	// field the schema does not name is wrong for a contract that tolerates one,
-	// and a batch is sixty strings — the most expensive thing to redo over a
-	// `model_confidence` nobody asked for. Every entry is checked below.
-	call, cancel := context.WithTimeout(t.llm.OpsContext(ctx), batchTimeout)
-	defer cancel()
-
-	parsed, err := schemaflux.Extracting[translationBatch](input).
-		Steer(instructions).
-		// The largest ceiling in the package, and the one whose loss was most
-		// expensive: sixty UI strings answered in one call against a default of
-		// 2000 is ErrTruncated, and the whole batch is redone (ceilings.go).
-		Configure(capExtract(translateMaxTokens)).
-		Model(t.llm.OpsModel(ctx)).
-		Run(call)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(parsed.Entries))
-	for _, e := range parsed.Entries {
-		if e.Text == nil {
-			continue
-		}
-		out[e.Key] = *e.Text
-	}
-	return out, nil
+	return opsEngine{llm: t.llm}
 }
 
 func (t *Translator) readCache(ctx context.Context, locale string) (cached, error) {
+	if t.settings == nil {
+		return cached{}, store.ErrNotFound
+	}
 	raw, err := t.settings.SystemValue(ctx, store.UITranslationKey(locale))
 	if err != nil {
 		return cached{}, err

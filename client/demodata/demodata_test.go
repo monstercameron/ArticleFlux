@@ -691,6 +691,26 @@ func TestSmartPlusRefusesInTheShapeTheScreenExpects(t *testing.T) {
 			t.Errorf("%s claims a cached catalog the demo cannot have", l.GetCode())
 		}
 	}
+	// The member-readable flag says what is true: no fresh translations here.
+	if langs.GetTranslateArticlesEnabled() {
+		t.Error("the demo claims it can translate articles")
+	}
+	// Rung 2 is as absent as rung 3, on the route an unset instance reports.
+	if cfg.GetJevConfigured() || cfg.GetJevReady() || cfg.GetJevProvider() != "jev" {
+		t.Errorf("JEV: configured=%v ready=%v route=%q", cfg.GetJevConfigured(), cfg.GetJevReady(), cfg.GetJevProvider())
+	}
+	// A cache-only lookup is an honest miss, not a refusal; a fresh one refuses.
+	res, err := s.TranslateArticle(context.Background(), &pb.TranslateArticleRequest{
+		ItemId: "x", Locale: "fr", CacheOnly: true,
+	})
+	if err != nil || !res.GetNotCached() {
+		t.Errorf("cache-only lookup: %v %v, want not_cached", res, err)
+	}
+	if _, err := s.TranslateArticle(context.Background(), &pb.TranslateArticleRequest{
+		ItemId: "x", Locale: "fr",
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("fresh translation: %v, want FailedPrecondition", err)
+	}
 }
 
 // The activity and server screens are the two that would otherwise be empty.
@@ -789,5 +809,36 @@ func TestFixtureBodiesAreMarkup(t *testing.T) {
 		if row.GetSummary() == "" {
 			t.Errorf("%q has no summary, so its row has one line", row.GetTitle())
 		}
+	}
+}
+
+// The demo serves clear_backlog_days like the server does: stored, echoed, and
+// applied once on save, as the server does.
+func TestFeedSettingsServesAndAppliesTheBacklogWindow(t *testing.T) {
+	_, r := newTest(t)
+	ctx := context.Background()
+	feeds, _ := r.ListFeeds(ctx, &pb.ListFeedsRequest{})
+	src := feeds.GetFeeds()[0].GetSourceId()
+
+	before, err := r.GetFeedSettings(ctx, &pb.GetFeedSettingsRequest{SourceId: src})
+	if err != nil {
+		t.Fatalf("GetFeedSettings: %v", err)
+	}
+	if before.GetSettings().GetClearBacklogDays() != 0 {
+		t.Errorf("the default is %d days, want 0 (never)", before.GetSettings().GetClearBacklogDays())
+	}
+
+	// The demo stocks articles hours old, so a day clears none of them: what is
+	// checked is that applying a window never un-reads anything.
+	d := int32(1)
+	res, err := r.UpdateFeedSettings(ctx, &pb.UpdateFeedSettingsRequest{SourceId: src, ClearBacklogDays: &d})
+	if err != nil {
+		t.Fatalf("UpdateFeedSettings: %v", err)
+	}
+	if res.GetSettings().GetClearBacklogDays() != 1 {
+		t.Errorf("clear_backlog_days = %d, want 1", res.GetSettings().GetClearBacklogDays())
+	}
+	if res.GetSettings().GetUnreadCount() > before.GetSettings().GetUnreadCount() {
+		t.Errorf("unread rose from %d to %d", before.GetSettings().GetUnreadCount(), res.GetSettings().GetUnreadCount())
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -31,7 +31,7 @@ func TestRailPaneHappyPath(t *testing.T) {
 	for _, want := range []string{
 		"ArticleFlux",        // rail.mark, the masthead
 		"2 feeds · 5 unread", // mastheadSub, composed from feedCount + unreadCount
-		"STREAMS",            // bandStreams, upper-cased by railBandToggle
+		"Streams",            // bandStreams, in its own case: the stylesheet draws the capitals
 		"All feeds",          // the All stream's own label
 		"The Verge",
 		"Ars Technica",
@@ -606,10 +606,10 @@ func TestSettingsPaneUnrecognisedTabFallsBackToReadingWithNoneCurrent(t *testing
 	// settingsPane's body switch falls back to settingsReading (the Go
 	// `default:` arm) for any tab value its cases do not name — confirm that
 	// body actually rendered instead of an empty panel.
-	// fsGroup upper-cases its heading (the same treatment railBandToggle gives
-	// section labels), so the catalog's mixed-case "What the list shows" is
-	// rendered as "WHAT THE LIST SHOWS".
-	if !strings.Contains(out, "WHAT THE LIST SHOWS") {
+	// fsGroup renders its heading in the catalog's own case — the capitals a
+	// reader sees are the stylesheet's `text-transform`, not the document's
+	// text, so a screen reader is handed a phrase rather than an acronym.
+	if !strings.Contains(out, "What the list shows") {
 		t.Errorf("an unrecognised p.tab should still render the Reading body (settingsPane's default arm):\n%s", out)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/classify"
 	"github.com/monstercameron/ArticleFlux/internal/classify/lexicon"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // The Smart set, as a set.
@@ -109,8 +109,8 @@ func TestOneClientReachesEveryFeature(t *testing.T) {
 	// a feature that skipped it would run against the package-level provider —
 	// which on a fresh process is a mock whose answers parse into zero-valued
 	// structs and look exactly like a working deployment.
-	p := schemafluxtest.New().Shaped().Reply(`Woodworking`)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(`Woodworking`)
+	sftest.Install(t, p)
 	s, f := newTestSmart(t)
 
 	_, _, _ = s.Categorizer().Suggest(context.Background(), "Alpha", "https://a.example", nil)

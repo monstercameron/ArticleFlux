@@ -237,6 +237,7 @@ var unscopedByDesign = map[string]string{
 	// lists cannot say different things about the same method.
 	"ScopesToRelabel":         "DISCOVERS which readers have a per-user taxonomy to sweep; a Scope would be circular, like ScopesToDerive. Returns only (tenant_id, user_id). Background ticker only",
 	"ScopesWithSubscriptions": "DISCOVERS readers holding any subscription, for the weekly category-discovery pass. Same shape and same argument as ScopesToDerive; returns only (tenant_id, user_id). Background ticker only",
+	"ScopesWithBacklogRules":  "DISCOVERS which readers have set a backlog window on any feed, for the backlog sweep on the poller's heartbeat. Same shape and same argument as ScopesToDerive and ScopesWithSubscriptions: it returns only (tenant_id, user_id) pairs, and every method the sweep calls afterwards (ClearBacklogs) takes the Scope this one produced. Background ticker only",
 	"RecordFetch":             "updates global source health (A14)",
 	"DueSources":              "the scheduler polls for every tenant at once (A14)",
 	// A scrape rule belongs to the SOURCE, which is global: it is the site's
@@ -613,6 +614,13 @@ var forbiddenGlobalProvider = map[string]string{
 	// It is opt-in upstream, so the rule is simply never to call it — which is
 	// exactly the kind of rule that survives as a comment for about a month.
 	"InitTracing": "replaces ArticleFlux's global tracer provider and propagator (OTEL-15)",
+	// SchemaFlux v2's names for the same act. `SetDefault` replaces the client
+	// every call without one on its context uses — provider, model, budget,
+	// recorder — which is v1's SetDefaultClient with a shorter name. (`Default`,
+	// the reader, is left alone: `slog.Default` shares the name.)
+	// The v1 names above stay: a v1 import reappearing is exactly when they
+	// matter.
+	"SetDefault": "replaces SchemaFlux v2's process-wide default client",
 }
 
 func guardNoGlobalLLMProvider(root string) *guard {
@@ -626,43 +634,24 @@ func guardNoGlobalLLMProvider(root string) *guard {
 		if strings.HasPrefix(rel, "internal/tools/guards/") {
 			return
 		}
-		// The one exemption, and the distinction it rests on.
+		// The one exemption, and it is one FILE rather than one kind of file.
 		//
-		// `internal/llm/ops.go` registers a provider globally, which is what
-		// every other line of this rule forbids. It is safe there, and only
-		// there, because the provider it registers holds NO TENANT STATE: it
-		// resolves the API key by calling KeyFunc(ctx) at the moment of the
-		// call, so the same object is correct for every instance and "which
-		// tenant's provider is the global one" stops being a question that has
-		// a wrong answer.
+		// SchemaFlux v2 (`schemaflux/v2`) carries a whole client on the context
+		// (`WithClient`), so production code has no reason to touch the process
+		// default at all — `internal/llm/ops.go`, which needed an exemption under
+		// v1 because v1's only route to a context-carried provider also wrote the
+		// global, no longer has one and is checked like everything else.
 		//
-		// That is the whole rule, stated properly: a tenant-AGNOSTIC provider
-		// may be registered once; a tenant-specific one may never be. A
-		// filename is a crude way to express it, and it is the honest one —
-		// the alternative is a check that tries to infer from the call site
-		// whether a provider closes over a key, which it cannot.
+		// `internal/llm/sftest/sftest.go` is the test seam every test in the
+		// repository installs its scripted provider through. It captures the
+		// previous default and restores it in `t.Cleanup`, and its `t.Setenv`
+		// makes `t.Parallel` panic, so the window in which a global is set is one
+		// non-parallel test long. Tests are still not exempt as a class: a test
+		// that set the default itself would be setting it with none of that.
 		//
-		// If a second file ever needs this, that is the moment to ask whether
-		// the provider it registers is really tenant-agnostic, rather than to
-		// add a second entry here.
-		if rel == "internal/llm/ops.go" {
-			return
-		}
-		// The second exemption, and it is one FILE rather than one kind of file.
-		//
-		// Tests are not exempt as a class — see the guard's own test for why:
-		// a test that sets the global sets it for every other test in the same
-		// binary, which is this rule's hazard arriving through the door nobody
-		// audits. What `internal/smart/fake_llm_test.go` does is narrower: it
-		// owns the install seam for that package, and every install it performs
-		// captures the previous client and restores it in `t.Cleanup`, exactly
-		// as `schemafluxtest.Install` does. The contamination window is one
-		// test, and `t.Setenv` inside it makes `t.Parallel` a compile-time
-		// impossibility, so the window cannot overlap another test.
-		//
-		// A second test file wanting this is the moment to ask why it is not
-		// calling the seam that already exists, rather than to add an entry.
-		if rel == "internal/smart/fake_llm_test.go" {
+		// A second file wanting this is the moment to ask why it is not calling
+		// the seam that already exists, rather than to add an entry.
+		if rel == "internal/llm/sftest/sftest.go" {
 			return
 		}
 		// Only files that can actually reach SchemaFlux are inspected, so the

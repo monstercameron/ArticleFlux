@@ -1,0 +1,42 @@
+# The image's build context: an ALLOWLIST, not a denylist.
+#
+# Without this file `COPY . .` sent the whole working tree into the build stage —
+# a developer's articleflux.db and its -wal, secrets.key and the other key files,
+# .env with an OpenAI key in it, 150 MB of bin/, e2e/node_modules, every cache
+# directory. None of it reached the final image (that stage copies two paths out
+# of the build), but all of it sat in a build layer and in the builder's cache,
+# which is a worse place for a key than the disk it came from.
+#
+# A denylist has to name every such file in advance and fails open on the next
+# one somebody invents (`*.key` would not have caught `.env.local`). An allowlist
+# fails CLOSED: a new top-level directory the build needs is missing, and `go
+# build` says so by name. That is the right direction for the failure to run.
+*
+
+# The module and everything `go build ./cmd/articleflux` and `make wasm` read.
+# migrations/ is not optional: its .sql files are //go:embed'ed into the binary.
+# web/ is what `make wasm` assembles bin/web from (index.html, sw.js, fonts,
+# manifest, icons, the homepage's screenshots). proto/ is NOT here — the
+# generated code is committed under internal/pb and the build never runs buf.
+!go.mod
+!go.sum
+!Makefile
+!cmd/
+!internal/
+!client/
+!migrations/
+!web/
+
+# .git, for one reason: `go build` stamps vcs.revision into the binary from it,
+# and that is the commit the Server tab and `articleflux version` report. Without
+# it both say "unknown". 50 MB of context is the price; it is not copied into the
+# runtime image.
+!.git/
+
+# Re-excluded inside the allowed tree: working state that can land there.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.log.jsonl*
+**/*.key
+**/.env

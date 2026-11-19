@@ -223,6 +223,12 @@ func (s *smartService) GetSmartConfig(context.Context, *pb.GetSmartConfigRequest
 		// and explains rather than offering a field that would silently fail.
 		CanStoreSecrets: false,
 		DefaultModel:    "gpt-5-mini",
+		// Rung 2 the same way: no JEV key, so no decider, on the route an
+		// unset instance reports — the screen shows the ladder with only its
+		// first, free rung lit, which is the truth about a demo.
+		JevConfigured: false,
+		JevReady:      false,
+		JevProvider:   "jev",
 	}, nil
 }
 
@@ -237,7 +243,9 @@ func (s *smartService) SetSmartConfig(context.Context, *pb.SetSmartConfigRequest
 // is the same list UseLocale clamps to, and two copies of it would disagree the
 // first time one was edited.
 func (s *smartService) ListLanguages(context.Context, *pb.ListLanguagesRequest) (*pb.ListLanguagesResponse, error) {
-	res := &pb.ListLanguagesResponse{SourceLocale: i18n.DefaultLocale}
+	// Article translation is off — there is no key to translate with — and
+	// said so here, where a member's screen reads it.
+	res := &pb.ListLanguagesResponse{SourceLocale: i18n.DefaultLocale, TranslateArticlesEnabled: false}
 	for _, l := range i18n.Languages {
 		res.Languages = append(res.Languages, &pb.SmartLanguage{
 			Code: l.Code, EnglishName: l.English, NativeName: l.Native,
@@ -279,6 +287,31 @@ func (s *smartService) TranslateUI(_ context.Context, req *pb.TranslateUIRequest
 	// this feature — it looks like a translation that came back in English.
 	return nil, status.Errorf(codes.FailedPrecondition,
 		"translating the interface into %s needs a server with an OpenAI key", req.GetLocale())
+}
+
+// GetUIStrings answers rather than refuses: it is a cache read, and the demo's
+// cache is honestly empty. Every key asked about is pending and no fill can
+// run, so the client keeps the English it already shows — exactly what a real
+// instance with no key does (plan.md §22.16c).
+func (s *smartService) GetUIStrings(_ context.Context, req *pb.GetUIStringsRequest) (*pb.GetUIStringsResponse, error) {
+	return &pb.GetUIStringsResponse{
+		Locale: req.GetLocale(), Pending: int32(len(req.GetKeys())), IdleReason: "no_key",
+	}, nil
+}
+
+// TranslateArticle refuses the way TranslateUI does, for the same reason: an
+// "translation" that came back as the original would look like a feature that
+// works and changes nothing.
+//
+// A cache-only lookup is the exception, for GetUIStrings' reason: it is a cache
+// read, the demo's cache is honestly empty, and "nothing cached" is an answer
+// rather than a refusal on a real instance too.
+func (s *smartService) TranslateArticle(_ context.Context, req *pb.TranslateArticleRequest) (*pb.TranslateArticleResponse, error) {
+	if req.GetCacheOnly() {
+		return &pb.TranslateArticleResponse{ItemId: req.GetItemId(), Locale: req.GetLocale(), NotCached: true}, nil
+	}
+	return nil, status.Errorf(codes.FailedPrecondition,
+		"translating an article into %s needs a server with an OpenAI key", req.GetLocale())
 }
 
 // --- the log ------------------------------------------------------------------

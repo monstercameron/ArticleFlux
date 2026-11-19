@@ -78,7 +78,8 @@ type Rule struct {
 //
 // The rows with real call sites in this package's sense are PublicSharePerIP
 // (/pub), DefaultPerUser (the unary and stream interceptors), ProxyPerClient
-// (/asset and /p), SpeechPerClient (/speech) and ThemePerUser.
+// (/asset and /p), SpeechPerClient (/speech), ThemePerUser and
+// ArticleTranslatePerUser.
 //
 // Recorded rather than tidied away because this repository's own rule, written
 // in internal/retention/security.go about a purge that did not exist, is that a
@@ -116,6 +117,17 @@ var (
 	// only caller that could approach this limit is one that has lost that
 	// comparison — which is exactly the runaway this should catch.
 	ThemePerUser = Rule{Name: "theme", Per: time.Hour, Limit: 20, Burst: 4}
+
+	// ArticleTranslatePerUser covers FRESH article translations (§10.5b,
+	// grpcsrv/translate.go), for ThemePerUser's reason: once the owner has
+	// consented, any signed-in reader may press Translate, so this is what stands
+	// between a member account and the instance's bill on that surface.
+	//
+	// Thirty an hour is a reader working through a foreign-language feed at a
+	// brisk pace; the burst of five is the first screenful. A cached translation
+	// is not counted — re-reading something already paid for is not the spend
+	// this protects — and neither is a cache-only lookup, which cannot spend.
+	ArticleTranslatePerUser = Rule{Name: "article translation", Per: time.Hour, Limit: 30, Burst: 5}
 
 	// ProxyPerClient covers /asset and /p — TODO 6.14 and 6.15 both record a
 	// per-user rate limit as owed to 7.3d.

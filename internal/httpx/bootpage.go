@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/GoWebComponents/v5/css"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/internal/buildstatus"
+	"github.com/monstercameron/GoWebComponents/v7/css"
 )
 
 // Build identifies the running binary. Set from main.

@@ -11,6 +11,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/pipeline"
 	"github.com/monstercameron/ArticleFlux/internal/store"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Classifier is the Smart+ half of classification (plan.md §27.4, TODO 10.16).
@@ -100,7 +102,9 @@ func (c *Classifier) Available(ctx context.Context) bool {
 	if !c.consented(ctx) {
 		return false
 	}
-	return c.llm.Configured(ctx)
+	// Either paid rung suffices (A47): an instance with only a JEV key can still
+	// place categories, and simply has no rung 3 when JEV cannot.
+	return c.llm.Configured(ctx) || c.llm.DeciderAvailable(llm.WithTask(ctx, llm.TaskClassify))
 }
 
 func (c *Classifier) consented(ctx context.Context) bool {
@@ -160,6 +164,20 @@ func (c *Classifier) Enrich(ctx context.Context, item pipeline.Item, out *pipeli
 		return fmt.Errorf("smart: refusing to send keys §27.4e does not permit: %v", bad)
 	}
 
+	// Rung 2 (A47): the JEV decision API, one labelled decision per article —
+	// which shipped category, or none. Rung 1 already ran: an item reaches here
+	// only when pipeline.ShouldEscalate found the free tier unsure. On any
+	// failure, or "none", this falls through to rung 3, the read below.
+	if slug, ok := c.decide(ctx, payload); ok {
+		out.Primary, out.Secondary = slug, nil
+		out.Ambiguous, out.ModelUnsure = false, false
+		out.ModelRung = string(llm.RungDecider)
+		return nil
+	}
+	if !c.llm.Configured(ctx) {
+		return llm.ErrNotConfigured
+	}
+
 	model, err := c.model(ctx)
 	if err != nil {
 		return err
@@ -204,6 +222,9 @@ func (c *Classifier) Enrich(ctx context.Context, item pipeline.Item, out *pipeli
 		return fatal
 	}
 	c.dropUnknownSlugs(out)
+	if out.Primary != "" {
+		out.ModelRung = string(llm.RungModel)
+	}
 	if len(failures) == len(req.Included) {
 		// Every slice failed, which is a reply-shaped failure rather than one
 		// contributor having a bad day. Reported so the caller falls back rather
@@ -316,4 +337,49 @@ func (c *Classifier) model(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(m), nil
+}
+
+// noneOfThese is the option that lets JEV decline. A decline is not an answer:
+// the article goes to rung 3, which can also say "unsure" with its reasons.
+const noneOfThese = "none of these"
+
+// decide is rung 2: one Which over the shipped slugs, with the article as the
+// decision's subject. Only JEV may answer it (llm.Ladder[TaskClassify] has
+// CallerRung3), so ok is true only for a JEV answer naming a real slug.
+//
+// One request per article, the same count as rung 3 — the model path reads one
+// article per request, so there is no batch to split. System One could take
+// several questions in one request; Which asks one, and folding forty articles
+// into one decision would put forty articles' text in one state for a saving of
+// round trips the job does not need.
+func (c *Classifier) decide(ctx context.Context, payload llm.ClassifyPayload) (string, bool) {
+	ctx = llm.WithTask(ctx, llm.TaskClassify)
+	if c.lexicon == nil || !c.llm.DeciderAvailable(ctx) {
+		return "", false
+	}
+	subject, err := json.Marshal(payload.DecisionSubject())
+	if err != nil {
+		return "", false
+	}
+	if bad, err := llm.AuditClassify(subject); err != nil || len(bad) > 0 {
+		return "", false
+	}
+	labels := make([]string, 0, c.lexicon.Len()+1)
+	known := map[string]bool{}
+	for _, l := range c.lexicon.Labels() {
+		labels = append(labels, l.Slug)
+		known[l.Slug] = true
+	}
+	labels = append(labels, noneOfThese)
+
+	ctx, prov := llm.WithProvenance(ctx)
+	call, cancel := context.WithTimeout(c.llm.OpsContext(ctx), classifyTimeout)
+	defer cancel()
+	got, err := schemaflux.Which(call, string(subject),
+		"Which one of these categories is this article primarily about?", labels,
+		sfOpts(c.llm.OpsModel(ctx), schemaflux.TierFast, "", relevanceMaxTokens))
+	if err != nil || prov.Rung() != llm.RungDecider || !known[got] {
+		return "", false
+	}
+	return got, true
 }

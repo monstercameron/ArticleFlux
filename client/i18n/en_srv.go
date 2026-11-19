@@ -142,6 +142,21 @@ func init() {
 		// {locale} is the code that was asked for, e.g. "fr".
 		"unsupportedLanguage":   "“{locale}” is not one of the offered languages",
 		"alreadySourceLanguage": "the interface is already in English",
+		// Article translation (§10.5b).
+		"articleTranslateOff":       "translating articles is not enabled on this server",
+		"articleSameLanguage":       "this article is already in that language",
+		"articleNothingToTranslate": "this article has no text to translate",
+		"articleTranslateFailed":    "couldn't translate this article just now",
+		"smartOverBudget":           "this server's Smart+ spend limit has been reached",
+		// The JEV decision credential and its route (A47). Its own
+		// cannot-store message because its environment fallback has its own
+		// name: pointing at OPENAI_API_KEY would be advice that changes nothing.
+		"badJevKeyShape":       "that does not look like a JEV API key — paste the key alone",
+		"cannotStoreJevSecret": "this server has no encryption key, so it will not store a credential — set SCHEMAFLUX_TYPESAFE_API_KEY in the environment instead",
+		"jevBadProvider":       "the decision route must be jev, jev-openrouter or jev-litellm",
+		"jevBaseURLRequired":   "a LiteLLM route needs the base URL of your proxy",
+		"jevBaseURLNotUsed":    "only a LiteLLM route takes a base URL — the other two have fixed addresses",
+		"jevBadBaseURL":        "the base URL must be an https:// address on a public host",
 
 		// --- theming (§20.16.3)
 		//

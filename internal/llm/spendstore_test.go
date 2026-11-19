@@ -5,9 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The corners of the durable meter that the restart scenarios next door do not
@@ -155,41 +154,31 @@ func TestWithSpendStoreChains(t *testing.T) {
 
 // --- the budget wrapper's pass-through half ------------------------------------
 
-// budget wraps a handler and overrides exactly one of its four methods. The
-// other three are delegations, and a delegation that answers for itself is the
-// quietest bug available in a middleware chain: EstimateCost returning zero
-// makes every downstream pre-flight decision think the call is free.
+// budget wraps a provider and overrides exactly one of its methods. Under
+// SchemaFlux v2 the other half of the contract is Unwrap: the library finds a
+// provider's retry settings by unwrapping, and a wrapper that hid the audited
+// provider would be retried at the library's default instead of its own.
 func TestTheBudgetWrapperDelegatesEverythingItDoesNotDecide(t *testing.T) {
-	inner := &stubHandler{name: "openai/responses", estimate: 0.42, tries: 3, backoff: 2 * time.Second}
+	inner := &stubHandler{name: "openai/responses"}
 	c := priced(t, DefaultModel, 1000, 1000)
 	h := c.Budget(func(context.Context) float64 { return 0 })(inner)
 
 	if got := h.Name(); got != inner.name {
 		t.Errorf("Name = %q, want the wrapped handler's %q", got, inner.name)
 	}
-	if got := h.EstimateCost(schemaflux.CompletionRequest{}); got != inner.estimate {
-		t.Errorf("EstimateCost = %v, want the wrapped handler's %v — a wrapper that "+
-			"answers 0 makes every priced call look free", got, inner.estimate)
-	}
-	tries, backoff := h.RetryPolicy()
-	if tries != inner.tries || backoff != inner.backoff {
-		t.Errorf("RetryPolicy = (%d, %v), want the wrapped handler's (%d, %v)",
-			tries, backoff, inner.tries, inner.backoff)
+	u, ok := h.(interface{ Unwrap() schemaflux.Provider })
+	if !ok || u.Unwrap() != schemaflux.Provider(inner) {
+		t.Error("the budget wrapper hides the provider it wraps; v2 cannot find its retry policy")
 	}
 }
 
-// stubHandler answers each mw.Handler method with a distinct value, so a
+// stubHandler answers each schemaflux.Provider method with a distinct value, so a
 // delegation that returns a zero instead is visible.
 type stubHandler struct {
-	name     string
-	estimate float64
-	tries    int
-	backoff  time.Duration
+	name string
 }
 
-func (s *stubHandler) Complete(context.Context, schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
-	return schemaflux.CompletionResponse{}, nil
+func (s *stubHandler) Complete(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+	return schemaflux.Response{}, nil
 }
-func (s *stubHandler) Name() string                                      { return s.name }
-func (s *stubHandler) EstimateCost(schemaflux.CompletionRequest) float64 { return s.estimate }
-func (s *stubHandler) RetryPolicy() (int, time.Duration)                 { return s.tries, s.backoff }
+func (s *stubHandler) Name() string { return s.name }

@@ -299,3 +299,22 @@ func auditAgainst(body []byte, allowed map[string]bool) ([]string, error) {
 	walk(v)
 	return bad, nil
 }
+
+// ClassifyDecisionSubject is everything rung 2 of the escalation ladder (A47,
+// the JEV decision API) is told about an article: the TRIMMED article text of
+// the payload the model would have been sent, minus the source's title and
+// minus every label prompt — the categories go as bare slugs, the decision's
+// options. A strict subset of ClassifyPayload, by construction: it can only be
+// built from one (DecisionSubject), and its keys are on ClassifyKeys, which the
+// egress test checks.
+type ClassifyDecisionSubject struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary,omitempty"`
+	Body    string `json:"body,omitempty"`
+}
+
+// DecisionSubject is p's article as rung 2 may see it. Call it on a payload
+// that has been through Trim, so the body is already capped.
+func (p ClassifyPayload) DecisionSubject() ClassifyDecisionSubject {
+	return ClassifyDecisionSubject{Title: p.Article.Title, Summary: p.Article.Summary, Body: p.Article.Body}
+}

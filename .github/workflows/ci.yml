@@ -5,10 +5,6 @@
 # thing that erodes them is not disagreement, it is a plausible-looking commit
 # nobody reviews against a decision made a month earlier. CI is where a decision
 # gets teeth, and it is nearly free to add now and painful to retrofit.
-#
-# NOTE: this file is inert until the project is a git repo with a remote, which is
-# deliberately not something to set up on someone's behalf. It runs the moment one
-# exists.
 
 name: CI
 
@@ -52,12 +48,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  GO_VERSION: "1.26.6"
+  GO_VERSION: "1.27.3"
   # Pinned, not @latest. staticcheck gates every merge, so "whatever was released
   # this morning" is a dependency on a third party's schedule: a new release that
   # adds a check, or that has not caught up with a new Go, turns an unrelated
   # commit red. Bumping this is a decision somebody makes, which is the point.
-  STATICCHECK_VERSION: "2026.1"
+  #
+  # It is also a decision that has to be made WITH GO_VERSION above, not after
+  # it: a staticcheck older than the Go release cannot read that release's
+  # export data, so it fails on the standard library before it has looked at a
+  # line of this repository. 2026.1 against Go 1.27 did exactly that ("export
+  # data version 5 is greater than maximum supported version 2").
+  STATICCHECK_VERSION: "2026.2.2"
 
 jobs:
   # Lint and the structural guards run once — they are platform-independent, and
@@ -74,13 +76,6 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0 # buf breaking needs history to compare against
-
-      # D0: GWC v5.0.0 was never tagged, so go.mod carries a replace directive to
-      # a sibling checkout. Until that tag is pushed, CI has to materialise the
-      # sibling itself — the alternative is a build that only works on one laptop.
-      # The action exists because `path: ../GoWebComponents` is refused by
-      # actions/checkout; see .github/actions/gwc.
-      - uses: ./.github/actions/gwc
 
       - uses: actions/setup-go@v7
         with:
@@ -180,8 +175,10 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck -show verbose ./...
 
-      # The four structural guards. Each one corresponds to a decision that is
-      # otherwise only written down: A26 twice, schema ownership, and T1.
+      # The seven structural guards. Each one corresponds to a decision that is
+      # otherwise only written down: A26 twice, schema ownership, T1, the i18n
+      # catalog (§22.16), one tenant's LLM key staying that tenant's, and the
+      # sanitizer standing in front of every render in the client.
       - name: Structural guards
         run: go run ./internal/tools/guards .
 
@@ -232,7 +229,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -281,6 +277,25 @@ jobs:
       - name: go test ./...
         run: go test -timeout=15m ./...
 
+      # The Windows desktop edition is a module of its own (desktop/go.mod), so
+      # nothing above compiles it — `./...` stops at a nested module. That is on
+      # purpose: the window toolkit is a dependency graph the server has no use
+      # for. But it means a new import in internal/app is invisible to it until
+      # somebody builds it, and its go.sum has to name every module the server
+      # reaches. The day compression added a Brotli dependency, the desktop
+      # edition stopped building — "missing go.sum entry" — and every gate here
+      # stayed green. This is that gate.
+      #
+      # Vet rather than a bare build because vet type-checks the tests too, and
+      # the tests are run: the smoke test boots the real server in-process on
+      # loopback and needs no window. On this job because it is the one that
+      # already runs on Windows, which is the only platform the module targets.
+      - name: desktop edition (nested module)
+        working-directory: desktop
+        run: |
+          go vet ./...
+          go test -timeout=5m ./...
+
       # The browser-driven tests (internal/app/stream_test.go,
       # internal/render/live_test.go, internal/render/snapshot_test.go) are
       # environment-gated to skip themselves whenever CI=true and
@@ -324,7 +339,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -360,7 +374,13 @@ jobs:
           # which resolves a scope without one, and fatal against the deployed
           # one, which refuses them. An ungated wasm package is a package with
           # no tests at all.
-          GOOS=js GOARCH=wasm go test -exec="node $exec_js" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
+          # The shim's path is quoted INSIDE -exec. `go test` splits that flag
+          # on spaces and honours quotes around a field, so an unquoted GOROOT
+          # with a space in it (C:\Program Files\Go, on the development box)
+          # asks node to run `C:\Program`. No hosted runner has such a path;
+          # it is quoted here because this command, make.ps1's and the
+          # Makefile's are one command and are kept spelled the same way.
+          GOOS=js GOARCH=wasm go test -exec="node '$exec_js'" ./client/data/... ./client/i18n/... ./client/platform/... ./client/view/...
 
   # G5 / R4. The wasm size decides whether A5 (offline packs in the browser) stays
   # affordable, so it is a ratchet, not a report: §22.14 fails the build if the
@@ -374,7 +394,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -386,7 +405,11 @@ jobs:
             exit 0
           fi
           mkdir -p bin/web
-          GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
+          # GOEXPERIMENT=nojsonv2: the same setting every build of the shipped
+          # module uses (see WASMENV in the Makefile for why and the numbers).
+          # The ratchet has to measure the binary that ships, not a megabyte
+          # more of it.
+          GOEXPERIMENT=nojsonv2 GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
           size=$(stat -c%s bin/web/app.wasm)
           if [ ! -f wasm-baseline.txt ]; then
             echo "No baseline recorded yet. app.wasm = $size bytes."
@@ -492,7 +515,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: ./.github/actions/gwc
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -512,7 +534,7 @@ jobs:
           set -euo pipefail
           mkdir -p bin/web
           go build -o bin/articleflux ./cmd/articleflux
-          GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
+          GOEXPERIMENT=nojsonv2 GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o bin/web/app.wasm ./client/app
           # The JS shim the browser needs to load a Go wasm module. `make wasm`
           # copies it from GOROOT; doing the same here rather than assuming a
           # committed copy, because the shim has to match the toolchain that

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -57,10 +57,12 @@ type tagSettingsProps struct {
 const (
 	actTagSettings      = "tag-settings"
 	actTagSettingsClose = "tag-settings-close"
-	// What openTagSettings focuses when the panel opens; see actionButtonRole.
+	// What openTagSettings focuses when the panel opens; see kitDialogClose.
 	roleTagSettingsClose = "tag-settings-close-btn"
 	actTagRename         = "ts-rename"
 	actTagGlyph          = "ts-glyph"
+	// fieldTagLabel is the rename field's id, which its <label> points at.
+	fieldTagLabel = "ts-tag-label"
 )
 
 // glyphNone is the sentinel for "no glyph — use the section default". A value
@@ -79,50 +81,42 @@ func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
 	// before: the dialog vanished instead of animating out. Every field below
 	// goes through p.t's generated getters, which are nil-safe, so there is
 	// nothing to guard against.
-	return scrim(p.open, actTagSettingsClose,
+	return kitDialog(kitDialogProps{Open: p.open, CloseAction: actTagSettingsClose,
+		Class: "fs", Title: tr.T("tagSettings", "title")},
 		// data-action on the dialog itself stops the delegated walk before it
 		// reaches the backdrop's close — the same no-op the feed panel needs,
 		// for the same reason.
-		html.Div(html.Props{Class: "fs", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": tr.T("tagSettings", "title")}},
-			html.Div(html.Props{Class: "fs-head"},
-				lead(tagGlyphOf(p.t)),
-				html.Span(html.Props{Class: "fs-mark"}, html.Text(tagDisplay(p.t))),
-				ui.If(p.saving, func() ui.Node {
-					return html.Span(html.Props{Class: "fs-saving"}, html.Text(tr.T("tagSettings", "saving")))
-				}),
-				actionButtonRole(actTagSettingsClose, roleTagSettingsClose,
-					"btn btn-ghost fs-close", tr.T("tagSettings", "close")),
-			),
-			html.Div(html.Props{Class: "fs-body"}, tagSettingsBody(tr, p)...),
-		),
+		kitDialogHead(kitDialogHeadProps{Prefix: "fs", Before: []ui.Node{lead(tagGlyphOf(p.t))},
+			Title: tagDisplay(p.t), After: []ui.Node{kitDialogSaving(p.saving, tr.T("tagSettings", "saving"))},
+			Close: kitDialogClose("fs", actTagSettingsClose, roleTagSettingsClose, tr.T("tagSettings", "close"))}),
+		kitDialogBody("fs", tagSettingsBody(tr, p)...),
 	)
 }
 
 func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 	t := p.t
 	id := t.GetId()
+	nameHint := tr.T("tagSettings", "nameHint")
 
 	out := []ui.Node{
-		fsGroup(glyphYours, tr.T("tagSettings", "rowGroup"), tr.T("tagSettings", "rowGroupHint")),
+		kitHeading(glyphYours, tr.T("tagSettings", "rowGroup"), tr.T("tagSettings", "rowGroupHint")),
 
 		// The rename. Enter commits and so does the button, for the same reason
 		// the feed panel's does: a field whose only commit is a keystroke nobody
 		// mentioned is a field that looks broken.
-		fsRow(tr.T("tagSettings", "nameLabel"),
-			tr.T("tagSettings", "nameHint"),
-			html.Div(html.Props{Class: "fs-rename"},
+		kitField(kitFieldProps{Label: tr.T("tagSettings", "nameLabel"), Hint: nameHint, ID: fieldTagLabel,
+			Control: html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
-					Class: "field fs-field", Type: "text",
+					Class: "field fs-field", Type: "text", ID: fieldTagLabel,
 					Placeholder: t.GetName(),
 					Value:       p.draftLabel,
 					OnInput:     p.onLabelEdit,
 					Data:        map[string]string{"role": "tag-label"},
-					Aria:        map[string]string{"label": tr.T("tagSettings", "nameAria")},
+					Aria:        fieldAria(fieldTagLabel, nameHint),
+					Raw:         renameAttrs(),
 				}),
-				itemChip(actTagRename, tr.T("tagSettings", "rename"), false, id),
-			)),
+				itemAction(actTagRename, tr.T("tagSettings", "rename"), id),
+			)}),
 
 		// The tag itself, stated as a FACT rather than as a disabled field.
 		//
@@ -131,13 +125,10 @@ func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 		// the question instead — and it is the only place in the app a reader
 		// can see both names side by side and understand that renaming the row
 		// left the tag where it was.
-		fsRow(tr.T("tagSettings", "tagLabel"),
-			tr.T("tagSettings", "tagHint"),
-			html.Div(html.Props{Class: "fs-tags"},
-				html.Span(html.Props{Class: "chip chip-static chip-mini"},
-					html.Text(t.GetName())))),
+		kitSetting(kitSettingProps{Label: tr.T("tagSettings", "tagLabel"), Hint: tr.T("tagSettings", "tagHint"),
+			Control: kitChipGroup(kitGroupTags, "", kitStatic(kitStaticProps{Label: t.GetName(), Mini: true}))}),
 
-		fsGroup(glyphTags, tr.T("tagSettings", "glyphGroup"),
+		kitHeading(glyphTags, tr.T("tagSettings", "glyphGroup"),
 			tr.T("tagSettings", "glyphGroupHint")),
 		tagGlyphPicker(tr, id, t.GetGlyph()),
 	}
@@ -146,7 +137,7 @@ func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 	// article or the feed panel, where a reader is looking at the feed they mean
 	// — but a reader who has forgotten what they filed under a label should not
 	// have to click through the list to find out.
-	out = append(out, fsGroup(glyphFeeds, tr.T("tagSettings", "feedsGroup"), ""))
+	out = append(out, kitHeading(glyphFeeds, tr.T("tagSettings", "feedsGroup"), ""))
 	switch {
 	case len(p.feeds) == 0:
 		out = append(out, html.Div(html.Props{Class: "fs-note"},
@@ -154,12 +145,10 @@ func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 	default:
 		chips := make([]ui.Node, 0, len(p.feeds))
 		for _, f := range p.feeds {
-			chips = append(chips, html.Span(html.Props{
-				Class: "chip chip-static chip-mini", Key: "ts-feed-" + f,
-			}, html.Text(f)))
+			chips = append(chips, kitStatic(kitStaticProps{Label: f, Key: "ts-feed-" + f, Mini: true}))
 		}
 		out = append(out,
-			html.Div(html.Props{Class: "fs-tags"}, chips...),
+			kitChipGroup(kitGroupTags, "", chips...),
 			html.Div(html.Props{Class: "fs-note"},
 				html.Text(tr.T("tagSettings", "feedsNote"))))
 	}
@@ -185,19 +174,31 @@ func tagGlyphPicker(tr i18n.Runtime, tagID, current string) ui.Node {
 			tagGlyphButton(tagID, glyphNone, glyphTags, tr.T("tagSettings", "glyphDefault"), current == ""),
 		),
 	}
-	for _, group := range tagglyph.Groups() {
+	for gi, group := range tagglyph.Groups() {
 		kids := make([]ui.Node, 0, 12)
 		for _, g := range tagglyph.In(group) {
 			kids = append(kids, tagGlyphButton(tagID, g.Char, g.Char, glyphName(tr, g), g.Char == current))
 		}
+		// Each block of symbols is a group named by the title over it, so a
+		// reader moving through fifty buttons hears "Arrows" as they enter the
+		// arrows rather than meeting the word once as loose text and then twelve
+		// buttons with no indication of where one family ends.
+		// By position rather than by the group's id, which is English with
+		// spaces in it ("Odds & ends") — and aria-labelledby reads a space as
+		// the gap between two ids.
+		titleID := "tsg-title-" + strconv.Itoa(gi)
 		rows = append(rows,
-			html.Div(html.Props{Class: "ts-glyph-group", Key: "tsg-" + group},
-				html.Span(html.Props{Class: "ts-glyph-title"},
-					html.Text(strings.ToUpper(glyphGroupName(tr, group)))),
+			html.Div(html.Props{Class: "ts-glyph-group", Key: "tsg-" + group,
+				Role: "group", Aria: map[string]string{"labelledby": titleID}},
+				html.Span(html.Props{Class: "ts-glyph-title", ID: titleID},
+					html.Text(glyphGroupName(tr, group))),
 				html.Div(html.Props{Class: "ts-glyph-row"}, kids...),
 			))
 	}
-	return html.Div(html.Props{Class: "ts-glyphs"}, rows...)
+	// The whole grid is one named group too: it is a single choice — one mark
+	// per tag — spread over several families, and the name is what says so.
+	return html.Div(html.Props{Class: "ts-glyphs", Role: "group",
+		Aria: map[string]string{"label": tr.T("tagSettings", "glyphGroup")}}, rows...)
 }
 
 // tagGlyphButton is one cell. The NAME is the accessible label and the tooltip:

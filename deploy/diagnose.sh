@@ -19,22 +19,20 @@ set -uo pipefail
 # install.sh puts it at /opt/ArticleFlux and deploy/README.md's by-hand
 # instructions put it at /opt/src/ArticleFlux. A default that names only one of
 # those is wrong on the other kind of box, and the symptom is this script
-# reporting "GoWebComponents checkout: FAIL" and a blank deployed-commit line
-# about a perfectly healthy install — a diagnostic inventing the fault it was
-# run to find, which is the same failure the ORIGIN guess below already caused
-# once.
+# reporting a blank deployed-commit line about a perfectly healthy install — a
+# diagnostic inventing the fault it was run to find, which is the same failure
+# the ORIGIN guess below already caused once.
+#
+# There is no second search for a GoWebComponents checkout any more, and no
+# check that one exists. go.mod requires a published version of it, so a box
+# without that directory is a correctly installed box, and a check that failed
+# it would be this same mistake made on purpose.
 if [ -z "${ARTICLEFLUX_REPO:-}" ]; then
 	for candidate in /opt/ArticleFlux /opt/src/ArticleFlux /opt/articleflux; do
 		if [ -d "$candidate/.git" ]; then ARTICLEFLUX_REPO="$candidate"; break; fi
 	done
 fi
 REPO="${ARTICLEFLUX_REPO:-/opt/ArticleFlux}"
-if [ -z "${GWC_REPO:-}" ]; then
-	for candidate in /opt/GoWebComponents /opt/src/GoWebComponents; do
-		if [ -d "$candidate/.git" ]; then GWC_REPO="$candidate"; break; fi
-	done
-fi
-GWC="${GWC_REPO:-/opt/GoWebComponents}"
 HEALTH="${ARTICLEFLUX_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
 # Readiness, which is a different question: /healthz says the process answers,
 # /readyz says it can still read AND write. See internal/app/diskhealth.go.
@@ -88,8 +86,8 @@ if [ "$MODE" = json ] || [ "$MODE" = agent ]; then
 Fix this ArticleFlux server. It is a self-hosted Go + WebAssembly feed reader:
 a single binary behind nginx, SQLite at /var/lib/articleflux, systemd unit
 "articleflux" with Restart=always and a health watchdog timer. The checkout is
-at $REPO and its sibling library at $GWC (go.mod uses a replace directive, so
-both must be present to build).
+at $REPO. Every dependency is a published Go module that the build downloads,
+so that one checkout is all a build needs.
 
 Useful commands: journalctl -u articleflux -n 100 --no-pager
                  systemctl status articleflux --no-pager
@@ -195,8 +193,6 @@ avail_mb=$(free -m | awk 'NR==2{print $7}')
 
 db="${ARTICLEFLUX_DB:-/var/lib/articleflux/articleflux.db}"
 [ -f "$db" ]; check "database present" $? "$([ -f "$db" ] && du -h "$db" | cut -f1) at $db"
-
-[ -d "$GWC/.git" ]; check "GoWebComponents checkout" $? "$(git -C "$GWC" log -1 --format='%h %s' 2>/dev/null | cut -c1-40)"
 
 printf '\n%s  deployed  %s%s\n' "$C_DIM" "$(git -C "$REPO" log -1 --format='%h %s' 2>/dev/null | cut -c1-58)" "$C_OFF"
 printf '%s  built     %s%s\n' "$C_DIM" "$(date -r "$REPO/bin/articleflux" '+%Y-%m-%d %H:%M' 2>/dev/null)" "$C_OFF"

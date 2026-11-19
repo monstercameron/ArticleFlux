@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white">
+  <img alt="Go 1.27" src="https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white">
   <img alt="Client: Go to WebAssembly" src="https://img.shields.io/badge/client-Go%20%E2%86%92%20WebAssembly-654FF0?logo=webassembly&logoColor=white">
   <img alt="Transport: gRPC over WebSocket" src="https://img.shields.io/badge/transport-gRPC%20over%20WebSocket-2EA44F">
   <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white">
@@ -527,6 +527,24 @@ Below 1220px the panes become a strip — rail, list, article, in the order they
 
 ## Sixty seconds to a running reader
 
+With Docker, and nothing else:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/monstercameron/ArticleFlux/main/compose.yaml
+docker compose up -d      # then open http://127.0.0.1:9000
+```
+
+The first page is a setup screen: choose the owner's username and password, save the
+recovery codes, and you are reading. Published on loopback only, with everything the
+instance owns in one named volume. **[`docs/INSTALL.md`](docs/INSTALL.md)** is the whole
+install — the one-line `docker run` equivalent, why the first login works the way it
+does, TLS behind Caddy or nginx, upgrades and what a rollback means, backups, accounts,
+logs.
+
+### From source
+
+To work on it — Go and nothing else:
+
 ```powershell
 ./scripts/make.ps1 build
 ./bin/articleflux.exe seed    # subscribe to a starter set and fetch it
@@ -537,7 +555,7 @@ Below 1220px the panes become a strip — rail, list, article, in the order they
 ./scripts/make.ps1 dev      # build the client and serve it
 ./scripts/make.ps1 e2e      # Playwright, desktop + phone, against a real server
 ./scripts/make.ps1 test     # go test ./...
-./scripts/make.ps1 lint     # go vet, buf lint, and the five structural guards
+./scripts/make.ps1 lint     # go vet, buf lint, and the seven structural guards
 ./scripts/make.ps1 demo     # the static demo into bin/demo (see docs/DEMO.md)
 ```
 
@@ -548,40 +566,46 @@ along with the dev credentials (`cam` / `articleflux-dev`) for when you want to 
 screen itself — and on a loopback origin the login screen prefills both fields with them, so it is
 one click.
 
+**A Windows app, for one person on one laptop.** `./scripts/make.ps1 desktop` builds
+`bin/desktop/ArticleFlux.exe`: the same server and client in a native WebView2 window, with the
+database in `%LOCALAPPDATA%\ArticleFlux` and no login. It is Windows-only, so it has no `Makefile`
+twin. [`docs/DESKTOP.md`](docs/DESKTOP.md) covers prerequisites, storage and how it is secured.
+
 On Linux the same verbs exist as a `Makefile` — `make dev`, `make test`, `make lint`. The two are
 kept identical on purpose; two build systems is only a lie if they disagree.
 
-No Node for the app. No Docker. No WSL. Node appears exactly once, in the e2e suite, because
+No Node for the app. No Docker and no WSL to develop it — the image is how a server runs it, and
+nothing on a development machine needs it. Node appears exactly once, in the e2e suite, because
 Playwright drives a real browser.
 
 ---
 
 ## Putting it on a server
 
-**[`deploy/README.md`](deploy/README.md)** takes a bare Ubuntu droplet to a reader on TLS in about
-twenty minutes: systemd unit, nginx site with the WebSocket settings the tunnel needs, certbot,
-and a nightly verified backup. Ships with it:
+**The container, behind a TLS proxy.** Two settings turn the sixty-second install into a hosted
+one — the public origin, and permission to believe the proxy's `X-Forwarded-For` — and
+[`docs/INSTALL.md` § Put it on a server](docs/INSTALL.md#put-it-on-a-server) gives them, the order
+to bring things up in so nobody else claims the instance first, and the proxy:
+[`deploy/docker/Caddyfile`](deploy/docker/Caddyfile) is the whole site for Caddy, which fetches its
+own certificate; [`deploy/nginx.conf`](deploy/nginx.conf) is the annotated nginx site, including
+the `/grpc` block whose four settings are the difference between a working tunnel and one that
+drops every sixty seconds. The image is `linux/amd64` and `linux/arm64`, distroless, non-root, and
+health-checked by its own binary.
+
+**[`deploy/README.md`](deploy/README.md)** is the rest of deployment:
 
 | | |
 |---|---|
-| [`deploy/articleflux.service`](deploy/articleflux.service) | Hardened systemd unit — loopback bind, unprivileged user, `ProtectSystem=strict` |
-| [`deploy/nginx.conf`](deploy/nginx.conf) | The `/grpc` block, whose four settings are the difference between a working tunnel and one that drops every sixty seconds |
-| [`deploy/install.sh`](deploy/install.sh) · [`update.sh`](deploy/update.sh) · [`rollback.sh`](deploy/rollback.sh) · [`diagnose.sh`](deploy/diagnose.sh) | The lifecycle, as scripts rather than as a runbook nobody re-reads. A release is a directory behind a symlink, so a rollback is an atomic swap |
-| [`deploy/articleflux-health.{service,timer}`](deploy/) | The watchdog — and a failed deploy exits non-zero, so the hook records it as a failure instead of a success |
-| [`deploy/articleflux-backup.{service,timer}`](deploy/) | `VACUUM INTO` + `PRAGMA integrity_check` nightly, because a `cp` of a WAL-mode database restores cleanly and is silently missing a transaction |
-| [`deploy/deployhook`](deploy/deployhook) | Deploys **when CI goes green**, not when someone pushes |
+| [`deploy/install-ops.sh`](deploy/install-ops.sh) | The ops layer in one command, for either runtime — and it refuses to finish while any piece of it could not run |
+| [`deploy/articleflux-backup.{service,timer}`](deploy/) | `VACUUM INTO` + `PRAGMA integrity_check` nightly, because a `cp` of a WAL-mode database restores cleanly and is silently missing a transaction; a weekly drill restores it |
+| [`deploy/articleflux-health.{service,timer}`](deploy/) | The watchdog — restarts a wedged server, alerts on one that answers but cannot write |
+| [`deploy/docker/`](deploy/docker/) | The reference box: its production compose file and a pull-based updater, so a pushed `v*` tag deploys through a health-gated rollout |
+| [`deploy/articleflux.service`](deploy/articleflux.service) · [`install.sh`](deploy/install.sh) · [`update.sh`](deploy/update.sh) · [`rollback.sh`](deploy/rollback.sh) | Without Docker: a hardened systemd unit and the build-on-the-box lifecycle, from a bare Ubuntu droplet to TLS |
 
-A hosted instance requires a login. Create the first account from the browser — an unclaimed
-instance answers with a setup screen rather than a login screen, it can be claimed exactly once, and
-it will not let you skip the recovery codes — or from the command line:
-
-```bash
-articleflux init -db /var/lib/articleflux/articleflux.db -user cam
-```
-
-The server refuses to start rather than serving a login screen nobody can get past — along with
-two other boot checks (missing web root, unwritable data directory) that otherwise surface hours
-later while `/healthz` reports green.
+A hosted instance always requires a login. An unclaimed one answers with a setup screen rather than
+a login screen — it can be claimed exactly once, and it will not let you skip the recovery codes.
+What it does refuse to start over are the failures that otherwise surface hours later while
+`/healthz` reports green: a missing web root or client bundle, an unwritable data directory.
 
 <p align="center">
   <img src="web/shots/server.jpg" alt="The Server tab — build, storage, contents and polling, in the reader itself" width="100%">
@@ -686,9 +710,10 @@ Four decisions shape most of the code:
 - **`syscall/js` lives in exactly one package**, so every other client package compiles — and is
   testable — natively.
 
-**Each is enforced by a guard in `internal/tools/guards`, not by convention** — five of them now: no
+**Each is enforced by a guard in `internal/tools/guards`, not by convention** — seven of them now: no
 SQL outside `store`, no `syscall/js` outside `platform`, no `.css` files, no inline copy outside the
-i18n catalogs, and every exported method on a `*Repo` takes a `store.Scope`, so tenant isolation is
+i18n catalogs, no process-wide LLM provider, no unsanitised render path in the client, and every
+exported method on a `*Repo` takes a `store.Scope`, so tenant isolation is
 checked structurally rather than by a reviewer noticing a missing parameter. A decision that is only
 written down is a decision that erodes; a decision with a build failure attached is a decision.
 
@@ -697,16 +722,16 @@ written down is a decision that erodes; a decision with a build failure attached
 | | |
 |---|---|
 | Go tests | 317 test files across 85 packages, run on Windows in CI; a package-by-package sweep put statement coverage above 90% across ~40 of them |
-| e2e | 27 Playwright specs, desktop **and** phone, against a real server and a real database |
+| e2e | 30 Playwright specs, desktop **and** phone, against a real server and a real database |
 | Design parity | the palette, three type stacks, and one hue reaching all four surfaces, checked mechanically |
-| Structural guards | five, all green, run on every push |
+| Structural guards | seven, all green, run on every push |
 | Contract | `buf lint` plus `buf breaking` — additive-only within v1, because old clients exist in the wild |
 | Bundle size | ratcheted against a checked-in baseline; +5% fails the build |
 | Fuzzing | 21 targets across 14 packages — feed parsing, charset decoding, mail headers, URL normalisation, the SSRF guard, and the HTML sanitizer |
 
-CI also excludes a handful of **named known-red tests from the gate and then runs them again,
-non-blocking, so they stay visible.** A pin exists to stay visible; silencing one at the source
-decides a product question that is not the silencer's to decide.
+When a confirmed defect has to stay visible without holding the gate, CI **excludes the named test
+and then runs it again, non-blocking** — a pin, rather than a `t.Skip()` that decides the question
+quietly. There are none at present: the last three went green and were folded back into the gate.
 
 ## The documents
 
@@ -725,10 +750,11 @@ it, the pages, the components, the flow diagram, and the tests that must go gree
 
 ## Notes for anyone picking this up
 
-- **GoWebComponents v5 is tagged now (`v5.0.1`)** and CI pins that tag — but `go.mod` still carries a
-  `replace` to a sibling checkout for local work, so `../GoWebComponents` has to exist next to this
-  repo. Note that v5.0.0 shadows `html`'s shorthands with `css/u`; anything dot-importing both needs
-  `>= v5.0.1`.
+- **GoWebComponents is an ordinary dependency.** `go.mod` requires a published `v7` release and
+  carries no `replace`, so a clone of this repository is everything a build needs — locally, in CI,
+  in the image and on a server. It was not always so: while this project built against v5 the
+  module was resolved from a sibling checkout, and anything written in that era (a
+  `../GoWebComponents` path, a `gwc.exe` step) describes a layout that no longer exists.
 - **FTS5 is not compiled into `ncruces/go-sqlite3`.** It is a loadable extension that must be
   registered on every connection — see `internal/store.Open`. There is a permanent test for this, so
   a dependency bump that drops FTS5 fails the build instead of silently removing search.

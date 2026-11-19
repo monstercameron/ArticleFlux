@@ -3,12 +3,13 @@ package smart
 import (
 	"context"
 	"errors"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/derive"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 // interest_test.go explains the gap this closes: every RerankCandidates,
@@ -17,7 +18,7 @@ import (
 // that gate.
 //
 // A1/A2/A3 run on typed operations now (plan P3.3), so what a test scripts is
-// the PROVIDER's body rather than a fake `Do`'s reply. `schemafluxtest.Install`
+// the PROVIDER's body rather than a fake `Do`'s reply. `sftest.Install`
 // calls `t.Setenv`, so nothing in this file may call `t.Parallel`.
 
 func configuredInterest(fake *fakeLLM) *Interest {
@@ -26,10 +27,10 @@ func configuredInterest(fake *fakeLLM) *Interest {
 
 // interesting installs a provider answering with the given bodies, in order,
 // and returns an Interest wired to it.
-func interesting(t *testing.T, bodies ...string) (*Interest, *schemafluxtest.Provider) {
+func interesting(t *testing.T, bodies ...string) (*Interest, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(bodies...)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(bodies...)
+	sftest.Install(t, p)
 	return configuredInterest(&fakeLLM{configured: true}), p
 }
 
@@ -113,7 +114,7 @@ func TestRerankCandidatesOverlongWhyIsDroppedButThePickSurvives(t *testing.T) {
 func TestRerankCandidatesTruncatedJSONIsAReadableError(t *testing.T) {
 	in, _ := interesting(t, `{"picks":[{"id":1,"why":"x"`)
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
@@ -121,7 +122,7 @@ func TestRerankCandidatesTruncatedJSONIsAReadableError(t *testing.T) {
 func TestRerankCandidatesWrongTopLevelShapeIsAReadableError(t *testing.T) {
 	in, _ := interesting(t, `[1, 2, 3]`)
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
@@ -148,8 +149,8 @@ func TestRerankCandidatesIgnoresAnUnexpectedExtraField(t *testing.T) {
 // --- provider errors and cancellation ----------------------------------------
 
 func TestRerankCandidatesProviderErrorSurfaces(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 503: upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("llm: provider returned 503: upstream on fire"))
+	sftest.Install(t, p)
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.RerankCandidates(context.Background(), []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
@@ -160,7 +161,7 @@ func TestRerankCandidatesProviderErrorSurfaces(t *testing.T) {
 func TestRerankCandidatesContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	sftest.Install(t, sftest.New().Fail(context.Canceled))
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.RerankCandidates(ctx, []derive.Candidate{{Title: "A"}}, derive.ProfileHint{}, 1)
 	if !errors.Is(err, context.Canceled) {
@@ -270,14 +271,14 @@ func TestExtractEntitiesTruncatesTitlesAtTheCap(t *testing.T) {
 func TestExtractEntitiesMalformedJSONIsAReadableError(t *testing.T) {
 	in, _ := interesting(t, `{"entities":[{"name":"x"`)
 	_, err := in.ExtractEntities(context.Background(), []string{"a headline"})
-	if err == nil || !strings.Contains(err.Error(), "malformed output") {
+	if !errors.Is(err, schemaflux.ErrInvalidAnswer) {
 		t.Fatalf("err = %v, want a malformed-output error", err)
 	}
 }
 
 func TestExtractEntitiesProviderErrorSurfaces(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
+	sftest.Install(t, p)
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.ExtractEntities(context.Background(), []string{"a headline"})
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
@@ -288,7 +289,7 @@ func TestExtractEntitiesProviderErrorSurfaces(t *testing.T) {
 func TestExtractEntitiesContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	sftest.Install(t, sftest.New().Fail(context.Canceled))
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.ExtractEntities(ctx, []string{"a headline"})
 	if !errors.Is(err, context.Canceled) {
@@ -344,8 +345,8 @@ func TestLabelTopicWhitespaceOnlyLabelIsRefused(t *testing.T) {
 }
 
 func TestLabelTopicProviderErrorSurfaces(t *testing.T) {
-	p := schemafluxtest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(errors.New("llm: provider returned 500: upstream on fire"))
+	sftest.Install(t, p)
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.LabelTopic(context.Background(), []string{"a", "b"}, "Fallback")
 	if err == nil || !strings.Contains(err.Error(), "upstream on fire") {
@@ -356,7 +357,7 @@ func TestLabelTopicProviderErrorSurfaces(t *testing.T) {
 func TestLabelTopicContextCancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	schemafluxtest.Install(t, schemafluxtest.New().Fail(context.Canceled))
+	sftest.Install(t, sftest.New().Fail(context.Canceled))
 	in := configuredInterest(&fakeLLM{configured: true})
 	_, err := in.LabelTopic(ctx, []string{"a", "b"}, "Fallback")
 	if !errors.Is(err, context.Canceled) {

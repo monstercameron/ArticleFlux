@@ -98,11 +98,21 @@ func TestTheDiskVerdictIsCached(t *testing.T) {
 	}
 
 	// And it does expire, or the check would answer from a snapshot forever.
-	a.disk.checked = time.Now().Add(-2 * diskProbeTTL)
+	//
+	// Compared against the STALE stamp, not against `first`. The fresh probe is
+	// stamped with time.Now(), and on Windows the clock ticks coarsely enough
+	// that the first probe and this one — microseconds apart in a fast test —
+	// can carry the same instant. Asking "is it different from the first?" then
+	// reported a verdict that had been re-probed as one that never expires,
+	// about one run in a few under load. What the test means is that the stale
+	// stamp was REPLACED by something newer, and that is true at any clock
+	// resolution.
+	stale := time.Now().Add(-2 * diskProbeTTL)
+	a.disk.checked = stale
 	if err := a.diskReady(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if a.disk.checked.Equal(first) {
+	if !a.disk.checked.After(stale) {
 		t.Error("the verdict never expires; a disk that filled would stay green")
 	}
 }
@@ -417,7 +427,29 @@ func TestABoundedWriteProbeHonoursCancellation(t *testing.T) {
 	// A real directory, so any failure comes from the cancellation rather than
 	// from the write. The probe may still win the race on a fast disk, which is
 	// fine — what must not happen is a hang.
-	err := probeWriteBounded(ctx, t.TempDir())
+	dir := t.TempDir()
+
+	// The probe this test walks away from is still running when it returns —
+	// that is the behaviour under test — and it is running in the directory the
+	// test framework is about to delete. On a loaded machine it was still
+	// creating its file when the deletion started, and the test failed its own
+	// tidying up with "directory not empty", having passed everything it
+	// asserts. So the abandoned probe is waited for before the directory goes.
+	//
+	// Registered AFTER t.TempDir on purpose: cleanups run last-in first-out, so
+	// this one runs before the directory's.
+	finished := make(chan struct{})
+	orig := probeWriteFn
+	probeWriteFn = func(d string) error {
+		defer close(finished)
+		return orig(d)
+	}
+	t.Cleanup(func() {
+		<-finished
+		probeWriteFn = orig
+	})
+
+	err := probeWriteBounded(ctx, dir)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Errorf("got %v, want nil or context.Canceled", err)
 	}

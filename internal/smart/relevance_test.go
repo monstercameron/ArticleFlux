@@ -12,7 +12,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/topics"
 
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	"github.com/monstercameron/ArticleFlux/internal/llm/sftest"
 )
 
 var relnow = time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
@@ -51,10 +51,10 @@ func TestRelevanceCheckerRefusesWithNoSamples(t *testing.T) {
 // the PROVIDER rather than a fake `Do`: the library derives the schema from the
 // verdict type and writes the prompt, and there is no hand-written reply shape
 // left for a fake to return.
-func checking(t *testing.T, body string) (*RelevanceChecker, *schemafluxtest.Provider) {
+func checking(t *testing.T, body string) (*RelevanceChecker, *sftest.Provider) {
 	t.Helper()
-	p := schemafluxtest.New().Shaped().Reply(body)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Shaped().Reply(body)
+	sftest.Install(t, p)
 	return NewRelevanceChecker(&fakeLLM{configured: true}, nil), p
 }
 
@@ -90,9 +90,9 @@ func TestRelevanceCheckerForwardsTheVerdictAndAuditsCleanly(t *testing.T) {
 	// the input it is given, so a trailing newline is the only difference and
 	// asserting on it would be asserting on the library's formatting rather
 	// than on the boundary.
-	if !strings.Contains(p.LastRequest().UserPrompt, strings.TrimSpace(want.Prompt())) {
+	if !strings.Contains(p.LastRequest().User, strings.TrimSpace(want.Prompt())) {
 		t.Errorf("the outbound request does not carry the allowlisted payload verbatim:\n got: %q\nwant it to contain: %q",
-			p.LastRequest().UserPrompt, want.Prompt())
+			p.LastRequest().User, want.Prompt())
 	}
 }
 
@@ -139,8 +139,8 @@ func TestRelevanceCheckerErrorsOnAnEmptyObjectRatherThanReadingItAsNotRelevant(t
 }
 
 func TestRelevanceCheckerPropagatesAProviderError(t *testing.T) {
-	p := schemafluxtest.New().Fail(context.DeadlineExceeded)
-	schemafluxtest.Install(t, p)
+	p := sftest.New().Fail(context.DeadlineExceeded)
+	sftest.Install(t, p)
 	c := NewRelevanceChecker(&fakeLLM{configured: true}, nil)
 
 	_, _, err := c.Check(context.Background(), "topic", twoSamples, nil, nil)

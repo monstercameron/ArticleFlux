@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 )
@@ -82,7 +82,7 @@ func elementTag(t *testing.T, html, marker string) string {
 // inside one feed's row, say) without also being satisfied by the same text
 // sitting somewhere else on the page.
 //
-// This assumes buttons never nest here, which panes.go's own feedRow comment
+// This assumes buttons never nest here, which rail.go's own feedRow comment
 // states as a deliberate constraint (a button inside a button is invalid
 // HTML and browsers resolve it by hoisting one out) — so the first
 // "</button>" after the opening tag is always the one that closes it.

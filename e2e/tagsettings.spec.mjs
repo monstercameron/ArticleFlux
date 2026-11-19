@@ -1,4 +1,4 @@
-import { test, expect, boot, openRail } from './fixtures.mjs';
+import { test, expect, boot, openNote, openRail, openRow, isPhone } from './fixtures.mjs';
 
 /**
  * The tag panel: renaming a tag's row without renaming the tag.
@@ -14,19 +14,9 @@ import { test, expect, boot, openRail } from './fixtures.mjs';
  * would use.
  */
 
-/** openNote reveals the note-and-tag editor on the article being read. */
-async function openNote(page) {
-  const field = page.locator('.note-field').first();
-  if (!(await field.count())) {
-    await page.locator('[data-action="toggle-note"]').first().click();
-  }
-  await expect(field).toBeVisible({ timeout: 15_000 });
-  return field;
-}
-
 /** tagFirstArticle files the first article's feed under name. */
 async function tagFirstArticle(page, name) {
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await openNote(page);
   const panel = page.locator('.article-note').first();
   await panel.locator('[data-role="tag"]').first().fill(name);
@@ -50,6 +40,30 @@ async function tagFirstArticle(page, name) {
   return panel;
 }
 
+/**
+ * backToArticle puts the tagged article on screen again, on a phone.
+ *
+ * The rail and the article are separate panes there, so after a trip to the
+ * rail for the tag panel, the article's chip is in the DOM and not showing. A
+ * phone reader gets back to it the only way there is — the Read tab, then the
+ * article — and the article is row 0 of All, which is what tagFirstArticle
+ * tagged. A no-op on a wide viewport, where the article never left.
+ */
+async function backToArticle(page) {
+  if (!(await isPhone(page))) return;
+  // The panel is modal, and its scrim would take the tap meant for the tab bar.
+  // Asked of the scrim's `data-open`, not of visibility: a panel the test has
+  // just closed is still visible for its exit transition, and pressing Close
+  // on it then waits out the timeout on a button that is fading away.
+  const panel = page.locator('[aria-label="Tag settings"]');
+  const open = page.locator('.pal-scrim[data-open="true"]:has([aria-label="Tag settings"])');
+  if (await open.count()) {
+    await panel.locator('button[data-action="tag-settings-close"]').click();
+  }
+  await expect(panel).toBeHidden();
+  await openRow(page, 0);
+}
+
 /** openTagSettings clicks the gear on a tag's rail row. */
 async function openTagSettings(page, name) {
   const rail = await openRail(page);
@@ -62,6 +76,16 @@ async function openTagSettings(page, name) {
   // display:none, so it is present, hit-testable after the hover Playwright
   // does implicitly, and this removes one source of flake for a control whose
   // visibility is not what the test is about.
+  //
+  // The hover first is what makes force:true safe. Forcing skips Playwright's
+  // wait for the element to stop MOVING, and right after tagFirstArticle the
+  // rail is still settling — on a phone it is sliding in, and on any width the
+  // refetch that adds the tag's row can shift the rows under it. A forced click
+  // then lands where the gear was, which is on the tag's row, and the row's own
+  // click selects the tag: the run that failed here was sitting on the "rust"
+  // list with the panel never opened (once on desktop, every time on a phone).
+  // Hovering the slot waits for it to be stable, which forcing does not.
+  await slot.hover();
   await slot.locator('[data-action="tag-settings"]').click({ force: true });
   const panel = page.locator('[aria-label="Tag settings"]');
   await expect(panel).toBeVisible({ timeout: 30_000 });
@@ -90,14 +114,16 @@ test.describe('tag settings', () => {
     await expect(rail.locator('[data-tag-id]').filter({ hasText: 'Systems programming' }))
       .toBeVisible({ timeout: 45_000 });
 
-    // ...and so does the chip on the article, because one tag reading as two
-    // different things in two panes is the failure this feature invites.
+    // The panel still reports the underlying tag, unchanged. This is the
+    // assertion the whole feature turns on. Asked while the panel is still open:
+    // on a phone the trip back to the article below has to close it first.
+    await expect(panel.locator('.chip-static', { hasText: /^rust$/ })).toBeVisible();
+
+    // ...and the chip on the article says the label, because one tag reading as
+    // two different things in two panes is the failure this feature invites.
+    await backToArticle(page);
     await expect(article.locator('.tag-chip', { hasText: 'Systems programming' }))
       .toBeVisible({ timeout: 45_000 });
-
-    // The panel still reports the underlying tag, unchanged. This is the
-    // assertion the whole feature turns on.
-    await expect(panel.locator('.chip-static', { hasText: /^rust$/ })).toBeVisible();
 
     // And it survives a reload, so it was stored rather than rendered.
     await page.reload();
@@ -122,9 +148,16 @@ test.describe('tag settings', () => {
     // The chip says the label; SetFeedTag is keyed by the name. If the chip sent
     // what it displays, this click asks the server to remove a tag called
     // "Systems programming", which does not exist — and the chip stays put.
+    await backToArticle(page);
     const chip = article.locator('.tag-chip', { hasText: 'Systems programming' });
     await expect(chip).toBeVisible({ timeout: 45_000 });
-    await chip.click();
+    // The ×, by its action — not the chip. A chip's label is a LINK now
+    // (rowlinks.spec.mjs: it routes to the tag and deliberately removes
+    // nothing), so a click on the chip's centre lands on the label, changes
+    // scope, and unmounts the article. The count below then read zero because
+    // the article was gone rather than because the tag was — and the reload at
+    // the end found the tag still filed, which is the failure this test showed.
+    await chip.locator('[data-action="remove-tag"]').click();
     await expect(article.locator('.tag-chip')).toHaveCount(0, { timeout: 45_000 });
 
     // The last association takes the tag with it, label and all.

@@ -43,10 +43,12 @@ import (
 	"maps"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	gwc "github.com/monstercameron/GoWebComponents/v5/i18n"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	gwc "github.com/monstercameron/GoWebComponents/v7/i18n"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // The framework's types, re-exported so the view has one import rather than
@@ -151,6 +153,14 @@ type Entry struct {
 	Text string
 	// Plural maps a category ("one", "other", …) to that form's text.
 	Plural map[string]string
+	// SourceHash, on a TRANSLATED entry, fingerprints the English it was
+	// translated from (SourceHash below). Empty means unknown — what the
+	// whole-catalog TranslateUI path sends — and is accepted, because that path
+	// always translated the server's own English. When set and it disagrees
+	// with this build's English, Import refuses the entry: the reader is
+	// running a bundle older or newer than the server's catalog, and the
+	// translation describes words this screen does not show (§22.16c).
+	SourceHash string
 }
 
 // registry is the flat catalog, per locale, in registration order.
@@ -158,17 +168,41 @@ type Entry struct {
 // A second copy of what the Bundle already holds, and worth it: the Bundle is a
 // lookup structure with no enumeration, and both the Smart+ translator and the
 // keycoverage test need to walk the whole thing.
-var registry = map[string][]Entry{}
+//
+// Guarded, because Import now runs while the app is up — the on-the-fly fill
+// merges batches from a goroutine while a render may be calling Export or
+// Missing — and indexed by key so a re-import REPLACES an entry rather than
+// appending a duplicate that Export would then hand the translator twice.
+var (
+	registryMu sync.RWMutex
+	registry   = map[string][]Entry{}
+	regIndex   = map[string]map[string]int{}
+	// revision counts imports that changed something. See Revision.
+	revision atomic.Uint64
+)
 
 // Export returns every message registered for a locale, in registration order.
 func Export(locale string) []Entry {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	src := registry[gwc.NormalizeLocale(locale)]
 	out := make([]Entry, len(src))
 	copy(out, src)
 	return out
 }
 
-// Import registers a translated catalog at runtime.
+// Revision increases every time Import changes the catalog of any locale.
+//
+// It exists for the view: a merge that lands after the first paint changes no
+// state the reconciler can see — same locale, same props — so memoised panes
+// keep the English they already rendered. Root nudges a state value when this
+// moves (the same catalogReady nudge it uses at boot), which re-renders the
+// Provider and invalidates the subtree. A counter rather than a callback so
+// client/i18n stays free of any notion of a render loop.
+func Revision() uint64 { return revision.Load() }
+
+// Import registers a translated catalog at runtime, and reports how many
+// entries it accepted.
 //
 // This is how a Smart+ translation lands: the server returns entries keyed by
 // the same "ns.key" strings, and they go into the same Bundle the English is
@@ -176,32 +210,82 @@ func Export(locale string) []Entry {
 // and the Bundle's fallback chain resolves it back to English — the right
 // failure, because a half-translated UI is usable and a UI full of raw keys is
 // not.
-func Import(locale string, entries []Entry) {
+//
+// Every entry is CHECKED against this build's English first (CheckTranslation):
+// a key the English does not have, a translation that lost or invented a
+// {placeholder}, a plural without its `other` form, markup the English did not
+// carry, or a source hash naming different English — each is dropped, and that
+// key keeps rendering in English. The server applies the same check before it
+// caches, so this is the second of two layers; it is here because a cached
+// catalog written by an older server, or by the whole-catalog path before the
+// check existed, reaches the reader through exactly this function.
+func Import(locale string, entries []Entry) int {
 	loc := gwc.NormalizeLocale(locale)
 	if loc == "" || loc == DefaultLocale {
 		// Refusing to overwrite English is not paranoia: English is the
 		// fallback for every other locale, so a bad translation written over it
 		// would take every language down with it.
-		return
+		return 0
 	}
+	applied := 0
 	for _, e := range entries {
 		ns, key, ok := strings.Cut(e.Key, ".")
 		if !ok || ns == "" || key == "" {
 			continue
 		}
-		if len(e.Plural) > 0 {
-			forms := make(map[PluralCategory]string, len(e.Plural))
-			for cat, v := range e.Plural {
+		src, known := English(e.Key)
+		if !known {
+			continue
+		}
+		clean, ok := CheckTranslation(loc, src, e)
+		if !ok {
+			continue
+		}
+		if len(clean.Plural) > 0 {
+			forms := make(map[PluralCategory]string, len(clean.Plural))
+			for cat, v := range clean.Plural {
 				forms[PluralCategory(cat)] = v
 			}
 			plural(loc, ns, key, forms)
+			applied++
 			continue
 		}
-		if e.Text == "" {
-			continue
-		}
-		text(loc, ns, map[string]string{key: e.Text})
+		text(loc, ns, map[string]string{key: clean.Text})
+		applied++
 	}
+	if applied > 0 {
+		revision.Add(1)
+	}
+	return applied
+}
+
+// record writes one entry into the registry, replacing any earlier entry for
+// the same key in that locale.
+func record(loc string, e Entry) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	idx := regIndex[loc]
+	if idx == nil {
+		idx = map[string]int{}
+		regIndex[loc] = idx
+	}
+	if i, ok := idx[e.Key]; ok {
+		registry[loc][i] = e
+		return
+	}
+	idx[e.Key] = len(registry[loc])
+	registry[loc] = append(registry[loc], e)
+}
+
+// lookupEntry returns the registered entry for a key in a locale.
+func lookupEntry(loc, key string) (Entry, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	i, ok := regIndex[loc][key]
+	if !ok {
+		return Entry{}, false
+	}
+	return registry[loc][i], true
 }
 
 // --- catalog registration -------------------------------------------------
@@ -222,7 +306,7 @@ func text(loc string, ns string, entries map[string]string) {
 	loc = gwc.NormalizeLocale(loc)
 	for _, k := range keys {
 		catalog[k] = gwc.Message{Text: entries[k]}
-		registry[loc] = append(registry[loc], Entry{Key: ns + "." + k, Text: entries[k]})
+		record(loc, Entry{Key: ns + "." + k, Text: entries[k]})
 	}
 	bundle.RegisterNamespace(loc, ns, catalog)
 }
@@ -243,7 +327,7 @@ func plural(loc string, ns string, key string, forms map[PluralCategory]string) 
 	for cat, v := range forms {
 		raw[string(cat)] = v
 	}
-	registry[loc] = append(registry[loc], Entry{Key: ns + "." + key, Plural: raw})
+	record(loc, Entry{Key: ns + "." + key, Plural: raw})
 }
 
 // Count is the Args for a pluralised message, so a call site reads

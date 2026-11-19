@@ -95,7 +95,11 @@ trap 'rm -rf "$work"' EXIT INT TERM
 archive="$work/$stamp.tar"
 tar -cf "$archive" -C "$OUT" "$(basename "$newest")" 2>/dev/null || fail "could not tar $newest"
 for k in secrets.key proxy.key speech.key recovery-codes.key; do
-	[ -f "$OUT/$k" ] && tar -rf "$archive" -C "$OUT" "$k"
+	# An `if`, not `[ -f … ] && tar …`: under `set -e` a loop whose last test is false (no
+	# recovery-codes.key, the normal case) ends with status 1, and whether that kills the
+	# script is a question about the shell — one this file should not be asking after the
+	# backup has already succeeded.
+	if [ -f "$OUT/$k" ]; then tar -rf "$archive" -C "$OUT" "$k"; fi
 done
 gzip -f "$archive"
 age -r "$OFFSITE_AGE_RECIPIENT" -o "$work/$stamp.tar.gz.age" "$archive.gz" ||

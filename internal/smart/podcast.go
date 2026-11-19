@@ -48,7 +48,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/llm"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 
 	"time"
 )
@@ -721,18 +721,16 @@ func (p *Podcast) Segment(ctx context.Context, seg Segment) (string, error) {
 	call, cancel := context.WithTimeout(p.llm.OpsContext(ctx), segmentTimeout)
 	defer cancel()
 
-	out, err := schemaflux.Summarizing(podcastInput(seg, body)).
-		Steer(podcastInstructionsOf(seg)).
+	out, err := schemaflux.Summarize(call, podcastInput(seg, body), schemaflux.SummarizeOptions{
 		// The token ceiling, not a sentence count. `MaxLength` sets
 		// `TargetLength` in SENTENCES — see digest.go, which had the same
 		// mistake — so this read as "target length: 4200 sentences" while the
 		// real ceiling fell to Fast's 2000. Truncation is worse here than
 		// anywhere else in the package: a segment that stops mid-sentence is
 		// audible.
-		Configure(capSummarize(podcastMaxTokens)).
-		Model(p.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		Options: sfOpts(p.llm.OpsModel(ctx), schemaflux.TierFast, podcastInstructionsOf(seg), podcastMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		return "", err
 	}
@@ -1363,15 +1361,13 @@ func (p *Podcast) WriteSegment(ctx context.Context, g SegmentGroup) ([]SegmentBl
 	call, cancel := context.WithTimeout(p.llm.OpsContext(ctx), segmentGroupTimeout)
 	defer cancel()
 
-	reply, err := schemaflux.Extracting[podcastGroupReply](segmentGroupInput(g, bodies)).
-		Steer(podcastGroupInstructionsFor(g.Vibe)).
+	reply, err := schemaflux.Extract[podcastGroupReply](call, segmentGroupInput(g, bodies), schemaflux.ExtractOptions{
 		// A whole segment's stories in one request, so the ceiling is a multiple
 		// of the single-segment one — see podcastGroupMaxTokens. Fast's 2000
 		// would refuse every group of more than one.
-		Configure(capExtract(podcastGroupMaxTokens)).
-		Model(p.llm.OpsModel(ctx)).
-		Fast().
-		Run(call)
+		Options: sfOpts(p.llm.OpsModel(ctx), schemaflux.TierFast, podcastGroupInstructionsFor(g.Vibe), podcastGroupMaxTokens),
+	})
+	err = opErr(err)
 	if err != nil {
 		return nil, err
 	}

@@ -50,10 +50,28 @@ import (
 //
 // Value is NOT here: it is the contents of an input, which is data. Alt is,
 // because alternative text is prose by definition.
+//
+// The rest are the view kits' props structs (client/view/kit_*.go), which take
+// every word a reader sees as a field: a chip's Label, a setting's Hint, a
+// banner's Text, an armed control's Warn and its three state labels. Matched by
+// field name in any composite literal, like Title above, so a literal written
+// into kitChipProps{Label: "…"} is caught where html.Props{Title: "…"} is.
 var copyProps = map[string]bool{
 	"Title":       true,
 	"Placeholder": true,
 	"Alt":         true,
+
+	"Label":           true, // kitChipProps, kitSettingProps, kitFieldProps, kitStaticProps, kitBannerChipProps, kitArmProps, kitBandProps, kitRowProps, kitListProps, kitPaneProps
+	"AriaLabel":       true, // kitChipProps, kitArmProps
+	"ArmedLabel":      true, // kitArmProps
+	"ArmedAriaLabel":  true, // kitArmProps
+	"BusyLabel":       true, // kitArmProps
+	"CancelLabel":     true, // kitArmProps
+	"CancelAriaLabel": true, // kitArmProps
+	"Warn":            true, // kitArmProps
+	"Hint":            true, // kitSettingProps, kitFieldProps
+	"Text":            true, // kitBannerProps, kitEmptyProps
+	"NameTitle":       true, // kitRowProps (the name's tooltip)
 }
 
 // copyAttrs are Aria/Raw map keys whose value is rendered to a person, either
@@ -79,22 +97,30 @@ var copyAttrs = map[string]bool{
 // position. That parameter is why the offsets are worth stating rather than
 // guessing: a helper that gains or loses it silently shifts every entry here.
 var labelTakers = map[string]int{
-	"actionButton":   2,  // action, class, LABEL      (no tr: takes finished text)
-	"itemChip":       1,  // action, LABEL, …          (no tr)
-	"glyphChip":      2,  // action, glyph, LABEL, …   (no tr)
-	"glyphItemChip":  2,  // action, glyph, LABEL, …   (no tr)
-	"staticChip":     0,  // LABEL                     (no tr)
-	"fsGroup":        1,  // glyph, TITLE, NOTE        (no tr)
-	"fsRow":          0,  // LABEL, HINT, …            (no tr)
-	"fsFact":         0,  // LABEL, VALUE              (no tr)
-	"setRow":         0,  // LABEL, HINT, …            (no tr)
-	"setFact":        0,  // LABEL, VALUE              (no tr)
-	"afField":        0,  // LABEL, HINT, …            (no tr)
-	"pickChip":       2,  // action, value, LABEL, …   (no tr)
-	"specialRow":     2,  // tr, glyph, LABEL, …
-	"railBand":       1,  // glyph, LABEL              (no tr)
-	"railBandToggle": 2,  // tr, glyph, LABEL, …
-	"emptyState":     -1, // tr plus two catalog KEYS, never text — see below
+	// No longer defined in client/view, and listed still because
+	// TestInlineCopyGuardReadsTheViewsOwnLabelHelpers pins the skip offsets
+	// against exactly these three.
+	"actionButton": 2, // action, class, LABEL      (no tr: takes finished text)
+	"staticChip":   0, // LABEL                     (no tr)
+	"fsFact":       0, // LABEL, VALUE              (no tr)
+
+	"setFact":    0,  // LABEL, VALUE              (no tr)
+	"itemAction": 1,  // action, LABEL, itemID     (no tr)
+	"specialRow": 2,  // tr, glyph, LABEL, …
+	"emptyState": -1, // tr plus two catalog KEYS, never text — see below
+
+	// The view kits (client/view/kit_*.go). Their props structs are covered by
+	// copyProps above; these are the ones that take copy positionally.
+	"kitHeading":        1, // glyph, TITLE, NOTE
+	"kitFact":           0, // NAME, VALUE
+	"kitSwitch":         2, // props, on, WHEN-ON, WHEN-OFF
+	"kitChipGroup":      1, // kind, NAME, chips…
+	"kitFieldError":     1, // look, MESSAGE
+	"kitAlert":          1, // class, TEXT
+	"kitDialogClose":    3, // prefix, action, focusRole, LABEL
+	"kitDialogSaving":   1, // saving, TEXT
+	"kitSkRegion":       1, // class, LABEL, placeholders…
+	"kitDisclosureAria": 0, // LABEL, open, controls
 }
 
 func guardNoInlineCopy(root string) *guard {

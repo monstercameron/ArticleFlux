@@ -407,6 +407,17 @@ message Item {
   // different remedies, and a UI that hides the difference sends people to edit
   // a lexicon that was never consulted.
   bool category_by_model = 29;
+  // WHICH paid rung chose it when category_by_model is true (plan.md A47,
+  // §18.8b): "jev" — the typed-decision model picked one of the shipped labels —
+  // or "model", the generating model's own read. Empty when the terms earned it,
+  // and for a verdict stored before the rung was recorded (migration 0035).
+  //
+  // Beside the bool rather than replacing it, so a client that knows only
+  // category_by_model is still told the truth: both rungs are "a model chose
+  // this". The difference matters for the same reason the bool does — the
+  // remedy for a wrong label — and because JEV only picks: it chose one label
+  // from a fixed list and wrote nothing beside it.
+  string category_rung = 30;
 
   // Article revisions (TODO F34). Numbered well clear of the classifier block
   // above so the two lanes can extend without a renumbering collision.
@@ -1014,6 +1025,10 @@ message FeedSettings {
   bool in_megafeed = 4;        // eligible for the ranked homepage
   string muted_until = 5;      // RFC3339; empty means not muted
   int32 cache_depth = 6;       // items kept for offline (A5); 0 = none
+  // clear_backlog_days is how old an unread article from this feed may get
+  // before it is marked read for you; 0 means never. Read state only: nothing
+  // is deleted, and starred items are left alone.
+  int32 clear_backlog_days = 7;
 
   // --- shared with every other subscriber (sources) ---
   string feed_url = 10;
@@ -1045,6 +1060,9 @@ message UpdateFeedSettingsRequest {
   optional string muted_until = 4;
   optional int32 cache_depth = 5;
   optional int32 fetch_interval_s = 6;
+  // Setting it also applies it once, now, so the reply already shows the
+  // cleared pile rather than the one the reader chose to shrink.
+  optional int32 clear_backlog_days = 7;
 }
 
 // Engagement is one observation about a reader (§18.1).

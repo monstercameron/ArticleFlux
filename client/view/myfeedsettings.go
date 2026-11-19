@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -127,10 +127,10 @@ var steerLevels = []struct {
 
 func settingsMyFeed(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	if p.err != "" {
-		return []ui.Node{html.Div(html.Props{Class: "fs-error"}, html.Text(p.err))}
+		return []ui.Node{kitAlert("fs-error", p.err)}
 	}
 	if p.loading && p.profile == nil {
-		return settingsSkeleton()
+		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
 	}
 	pr := p.profile
 
@@ -150,8 +150,8 @@ func settingsMyFeed(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	out = append(out, myFeedTopics(tr, p)...)
 	out = append(out, myFeedEntities(tr, p)...)
 	out = append(out, myFeedFeeds(tr, p)...)
-	out = append(out, html.Div(html.Props{Class: "set-actions"},
-		glyphChip(actMyFeedRefresh, glyphRefresh, tr.T("myFeed", "refresh"), false)))
+	out = append(out, kitChipGroup(kitGroupActions, "",
+		kitAction(kitChipProps{Action: actMyFeedRefresh, Glyph: glyphRefresh, Label: tr.T("myFeed", "refresh")})))
 	return out
 }
 
@@ -159,14 +159,16 @@ func settingsMyFeed(tr i18n.Runtime, p myFeedProps) []ui.Node {
 
 func myFeedSummary(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphMyFeed, tr.T("myFeed", "summaryGroup"), ""),
-		setFact(tr.T("myFeed", "factPicks"), thousands(tr, int(pr.GetRankedCount()))),
-		setFact(tr.T("myFeed", "factTopics"), thousands(tr, int(pr.GetTopicCount()))),
-		setFact(tr.T("myFeed", "factThings"), thousands(tr, int(pr.GetEntityCount()))),
-		// The TOTAL, not the length of the list below it. A summary line that
-		// counted the rows it received would report the size of its own display
-		// cap on any instance with more than twelve feeds.
-		setFact(tr.T("myFeed", "factFeeds"), thousands(tr, int(pr.GetFeedCount()))),
+		kitHeading(glyphMyFeed, tr.T("myFeed", "summaryGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("myFeed", "factPicks"), thousands(tr, int(pr.GetRankedCount()))),
+			kitFact(tr.T("myFeed", "factTopics"), thousands(tr, int(pr.GetTopicCount()))),
+			kitFact(tr.T("myFeed", "factThings"), thousands(tr, int(pr.GetEntityCount()))),
+			// The TOTAL, not the length of the list below it. A summary line that
+			// counted the rows it received would report the size of its own display
+			// cap on any instance with more than twelve feeds.
+			kitFact(tr.T("myFeed", "factFeeds"), thousands(tr, int(pr.GetFeedCount()))),
+		),
 		// The cold-start sentence, and only when it is true. A permanent note
 		// saying the model is still learning is one nobody reads by the time it
 		// matters.
@@ -187,7 +189,7 @@ func myFeedSummary(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node
 func myFeedFactors(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node {
 	factors := pr.GetFactors()
 	out := []ui.Node{
-		fsGroup(glyphAction, tr.T("myFeed", "factorGroup"), tr.T("myFeed", "factorHint")),
+		kitHeading(glyphAction, tr.T("myFeed", "factorGroup"), tr.T("myFeed", "factorHint")),
 	}
 	if len(factors) == 0 {
 		return append(out, html.Div(html.Props{Class: "set-note"},
@@ -207,10 +209,14 @@ func myFeedFactors(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node
 		total = top
 	}
 	for _, f := range factors {
+		label := factorLabel(tr, f.GetTerm())
+		if label == "" {
+			continue
+		}
 		pct := int(f.GetItems()) * 100 / top
 		out = append(out, html.Div(html.Props{Class: "mf-factor", Key: "mf-f-" + f.GetTerm()},
 			html.Span(html.Props{Class: "mf-factor-name"},
-				html.Text(factorLabel(tr, f.GetTerm()))),
+				html.Text(label)),
 			html.Span(html.Props{Class: "mf-factor-count"},
 				html.Text(tr.T("myFeed", "factorCount", i18n.Args{
 					"n": thousands(tr, int(f.GetItems())), "total": thousands(tr, total),
@@ -228,9 +234,12 @@ func myFeedFactors(tr i18n.Runtime, pr *pb.GetInterestProfileResponse) []ui.Node
 // sent, so it is registered under the dynamic prefix `myFeed.factor.` — see
 // client/i18n/keycoverage_test.go.
 //
-// An unknown term falls back to the term itself rather than to an empty row: a
-// scorer that grows a new factor should show up on this screen as a word nobody
-// has translated, not as a blank line with a number beside it.
+// An unknown term is "" and its row is not drawn. It used to fall back to the
+// term itself, on the argument that a new factor should show up as a word; in
+// practice what showed up was a machine identifier ("fatigue", "concept_
+// feedback") on the one screen whose job is to explain the ranking in the
+// reader's words, and in every language but English. A server ahead of this
+// client loses a row until the catalog catches up, which is the honest cost.
 func factorLabel(tr i18n.Runtime, term string) string {
 	if term == "" {
 		return ""
@@ -238,7 +247,7 @@ func factorLabel(tr i18n.Runtime, term string) string {
 	if s := tr.T("myFeed", "factor."+term); s != "" && !strings.HasPrefix(s, "myFeed.") {
 		return s
 	}
-	return term
+	return ""
 }
 
 // --- topics ---------------------------------------------------------------------
@@ -246,7 +255,7 @@ func factorLabel(tr i18n.Runtime, term string) string {
 func myFeedTopics(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	topics := p.profile.GetTopics()
 	out := []ui.Node{
-		fsGroup(glyphShared, tr.T("myFeed", "topicGroup"), tr.T("myFeed", "topicHint")),
+		kitHeading(glyphShared, tr.T("myFeed", "topicGroup"), tr.T("myFeed", "topicHint")),
 	}
 	if len(topics) > 0 {
 		out = append(out, mfResetControl(myFeedCatTopics, p.confirmReset == myFeedCatTopics, tr))
@@ -309,7 +318,7 @@ func topicEvidence(tr i18n.Runtime, t *pb.InterestTopic) string {
 func myFeedEntities(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	ents := p.profile.GetEntities()
 	out := []ui.Node{
-		fsGroup(glyphYours, tr.T("myFeed", "entityGroup"), tr.T("myFeed", "entityHint")),
+		kitHeading(glyphYours, tr.T("myFeed", "entityGroup"), tr.T("myFeed", "entityHint")),
 	}
 	if len(ents) > 0 {
 		out = append(out, mfResetControl(myFeedCatEntities, p.confirmReset == myFeedCatEntities, tr))
@@ -377,7 +386,7 @@ func myFeedFeeds(tr i18n.Runtime, p myFeedProps) []ui.Node {
 	pr := p.profile
 	feeds := pr.GetFeeds()
 	out := []ui.Node{
-		fsGroup(glyphFeeds, tr.T("myFeed", "feedGroup"), tr.T("myFeed", "feedHint")),
+		kitHeading(glyphFeeds, tr.T("myFeed", "feedGroup"), tr.T("myFeed", "feedHint")),
 	}
 	if len(feeds) > 0 {
 		out = append(out, mfResetControl(myFeedCatFeeds, p.confirmReset == myFeedCatFeeds, tr))
@@ -404,13 +413,12 @@ func myFeedFeeds(tr i18n.Runtime, p myFeedProps) []ui.Node {
 			html.Div(html.Props{Class: "mf-controls"},
 				html.Div(html.Props{Class: "mf-control"},
 					ui.If(!f.GetOnMyFeed(), func() ui.Node {
-						return html.Span(html.Props{Class: "chip chip-static chip-off"},
-							html.Text(tr.T("myFeed", "feedOff")))
+						return kitStatic(kitStaticProps{Label: tr.T("myFeed", "feedOff"), Extra: "chip-off"})
 					}),
 					html.Span(html.Props{Class: "mf-score"}, html.Text(strconv.Itoa(pct)+"%")),
 				),
 				html.Div(html.Props{Class: "mf-control mf-control-delete"},
-					mfDeleteControl(myFeedRowFeed, id, p.confirmDelete == myFeedRowFeed+":"+id, tr)...,
+					mfDeleteControl(myFeedRowFeed, id, f.GetTitle(), p.confirmDelete == myFeedRowFeed+":"+id, tr)...,
 				),
 			),
 		))
@@ -463,12 +471,16 @@ func mfRow(p mfRowProps, tr i18n.Runtime) ui.Node {
 		// between the dial and the delete chip instead of a small, deliberate
 		// one.
 		html.Div(html.Props{Class: "mf-controls"},
+			// The dial's group names the row it belongs to. "How much this
+			// counts" was right on screen, where "this" is the line beside it,
+			// and wrong everywhere else: forty rows of identically named groups
+			// is a list where a listener cannot tell which dial they are on.
 			html.Div(html.Props{Class: "mf-control", Role: "group",
-				Aria: map[string]string{"label": tr.T("myFeed", "level")}},
+				Aria: map[string]string{"label": tr.T("myFeed", "levelFor", i18n.Args{"name": p.name})}},
 				mfDial(p, tr)...,
 			),
 			html.Div(html.Props{Class: "mf-control mf-control-delete"},
-				mfDeleteControl(p.kind, p.target, p.armedDelete, tr)...,
+				mfDeleteControl(p.kind, p.target, p.name, p.armedDelete, tr)...,
 			),
 		),
 	)
@@ -485,85 +497,55 @@ func mfRow(p mfRowProps, tr i18n.Runtime) ui.Node {
 // near-identical rows, where an armed one the reader has scrolled past is
 // easy to forget about. settingsTabTo still disarms every row on leaving the
 // tab, as the same backstop signOutArmed gets.
-func mfDeleteControl(kind, target string, armed bool, tr i18n.Runtime) []ui.Node {
+//
+// The accessible names begin with the words on the chip and then say which row
+// — "Remove “rust” from My Feed". They used to be a different sentence ("Stop
+// using this for My Feed"): somebody driving the page by voice says the word
+// they can see, and "click Remove" matched no button; and "this", read out of
+// its row, named nothing.
+func mfDeleteControl(kind, target, name string, armed bool, tr i18n.Runtime) []ui.Node {
 	if target == "" {
 		return nil
 	}
-	label, action := tr.T("myFeed", "rowDelete"), actMyFeedDeleteArm
-	labelAria := tr.T("myFeed", "rowDeleteAria")
-	class := "chip chip-mini"
-	if armed {
-		label, action = tr.T("myFeed", "rowDeleteConfirm"), actMyFeedDeleteConfirm
-		labelAria = tr.T("myFeed", "rowDeleteConfirmAria")
-		class = "chip chip-mini fs-danger"
-	}
-	out := []ui.Node{html.Button(html.Props{
-		Class: class,
-		Raw: map[string]any{
-			"data-action": action, "data-for-item": target, "data-value": kind,
-			"data-armed": strconv.FormatBool(armed),
-		},
-		Aria: map[string]string{"label": labelAria},
-	}, html.Text(label))}
-	if armed {
-		out = append(out, html.Button(html.Props{
-			Class: "chip chip-mini",
-			Raw:   map[string]any{"data-action": actMyFeedDeleteCancel},
-			Aria:  map[string]string{"label": tr.T("myFeed", "rowDeleteCancelAria")},
-		}, html.Text(tr.T("myFeed", "rowDeleteCancel"))))
-	}
-	return out
+	return kitArm(kitArmProps{Armed: armed,
+		Action: actMyFeedDeleteArm, ArmedAction: actMyFeedDeleteConfirm,
+		Label: tr.T("myFeed", "rowDelete"), ArmedLabel: tr.T("myFeed", "rowDeleteConfirm"),
+		AriaLabel:      tr.T("myFeed", "rowDeleteAria", i18n.Args{"name": name}),
+		ArmedAriaLabel: tr.T("myFeed", "rowDeleteConfirmAria", i18n.Args{"name": name}),
+		Mini:           true,
+		Item:           target, Value: kind, DataArmed: true,
+		CancelAction: actMyFeedDeleteCancel, CancelLabel: tr.T("myFeed", "rowDeleteCancel"),
+		CancelAriaLabel: tr.T("myFeed", "rowDeleteCancelAria")}).Nodes()
 }
 
 // mfResetControl is the category-wide version of the same two-press shape,
 // one per group rather than one per row. See resetMyFeedCategory for what it
-// actually undoes in each of the three categories.
+// actually undoes in each of the three categories. Its names lead with the
+// chip's words for mfDeleteControl's reason.
 func mfResetControl(category string, armed bool, tr i18n.Runtime) ui.Node {
-	label, action := tr.T("myFeed", "catReset"), actMyFeedResetArm
-	labelAria := tr.T("myFeed", "catResetAria")
-	class := "chip chip-mini"
-	if armed {
-		label, action = tr.T("myFeed", "catResetConfirm"), actMyFeedResetConfirm
-		labelAria = tr.T("myFeed", "catResetConfirmAria")
-		class = "chip chip-mini fs-danger"
-	}
-	kids := []ui.Node{html.Button(html.Props{
-		Class: class,
-		Raw: map[string]any{
-			"data-action": action, "data-value": category, "data-armed": strconv.FormatBool(armed),
-		},
-		Aria: map[string]string{"label": labelAria},
-	}, html.Text(label))}
-	if armed {
-		kids = append(kids,
-			html.Button(html.Props{
-				Class: "chip chip-mini",
-				Raw:   map[string]any{"data-action": actMyFeedResetCancel},
-				Aria:  map[string]string{"label": tr.T("myFeed", "catResetCancelAria")},
-			}, html.Text(tr.T("myFeed", "rowDeleteCancel"))),
-			// A live region, the same reason signOutGroup's warning is one: arming
-			// changes what the NEXT press does, across every row in the category,
-			// and that has to reach a reader who cannot see the button turn red.
-			html.Div(html.Props{Class: "set-note set-note-live", Role: "alert"},
-				html.Text(tr.T("myFeed", "catResetWarn"))),
-		)
-	}
-	return html.Div(html.Props{Class: "set-actions mf-reset"}, kids...)
+	return html.Div(html.Props{Class: "set-actions mf-reset"}, kitArm(kitArmProps{Armed: armed,
+		Action: actMyFeedResetArm, ArmedAction: actMyFeedResetConfirm,
+		Label: tr.T("myFeed", "catReset"), ArmedLabel: tr.T("myFeed", "catResetConfirm"),
+		AriaLabel: tr.T("myFeed", "catResetAria"), ArmedAriaLabel: tr.T("myFeed", "catResetConfirmAria"),
+		Mini:  true,
+		Value: category, DataArmed: true,
+		CancelAction: actMyFeedResetCancel, CancelLabel: tr.T("myFeed", "rowDeleteCancel"),
+		CancelAriaLabel: tr.T("myFeed", "catResetCancelAria"),
+		// A live region, the same reason signOutGroup's warning is one: arming
+		// changes what the NEXT press does, across every row in the category,
+		// and that has to reach a reader who cannot see the button turn red.
+		Warn: tr.T("myFeed", "catResetWarn"), WarnClass: "set-note set-note-live"}).Nodes()...)
 }
 
 func mfDial(p mfRowProps, tr i18n.Runtime) []ui.Node {
 	out := make([]ui.Node, 0, len(steerLevels))
 	for _, l := range steerLevels {
-		out = append(out, html.Button(html.Props{
-			Class: "chip chip-mini",
-			Key:   p.key + "-" + l.key,
-			Raw: map[string]any{
-				"data-action":   p.action,
-				"data-for-item": p.target,
-				"data-value":    l.key,
-			},
-			Aria: map[string]string{"pressed": strconv.FormatBool(l.level == effectiveLevel(p.level))},
-		}, html.Text(tr.T("myFeed", "level."+l.key))))
+		// KeepEmptyItem because a row can arrive with no target — the delete
+		// chip beside it is dropped for exactly that — and the dial is still
+		// drawn and pressable.
+		out = append(out, kitPick(kitChipProps{Action: p.action, ItemID: p.target, KeepEmptyItem: true, Mini: true,
+			Key: p.key + "-" + l.key, Label: tr.T("myFeed", "level."+l.key)},
+			l.key, l.level == effectiveLevel(p.level)))
 	}
 	return out
 }

@@ -13,7 +13,8 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -740,6 +741,43 @@ func navItem(list []*pb.Item, current *pb.Item, delta int) *pb.Item {
 	return list[i]
 }
 
+// navItemFrom is navItem measured from the article with this id rather than
+// from the current one — what an article's own Previous and Next mean. Two
+// articles can be on screen at once, and "current" is only whichever of them
+// the scroll handler last saw reach the top.
+//
+// An id the list does not hold (the list was re-scoped under an article that
+// is still on screen) answers as navItem would: from the current article. A
+// press that did nothing because of a race the reader cannot see would be the
+// worse of the two wrong answers.
+func navItemFrom(list []*pb.Item, current *pb.Item, id string, delta int) *pb.Item {
+	for _, it := range list {
+		if it.GetId() == id {
+			return navItem(list, it, delta)
+		}
+	}
+	return navItem(list, current, delta)
+}
+
+// timeTag is relTime as a <time> element: the words a reader wants ("3h") with
+// the instant they stand for in `datetime`, where a machine can read it.
+//
+// A bare span said "3h" to everyone and "three hours ago from when?" to anything
+// that was not looking at a clock — a screen reader's own date handling, a
+// browser's reader view, a copy into notes that is read next week. The element
+// costs nothing and the attribute is the one place the real timestamp survives
+// being abbreviated.
+//
+// An unparseable timestamp renders as an empty span rather than an empty <time>:
+// a <time> with no datetime and no text claims an instant it does not have.
+func timeTag(tr i18n.Runtime, rfc3339 string) ui.Node {
+	rel := relTime(tr, rfc3339)
+	if rel == "" {
+		return html.Span(html.Props{})
+	}
+	return html.Time(html.Props{Raw: map[string]any{"datetime": rfc3339}}, html.Text(rel))
+}
+
 // relTime renders a timestamp the way a reader wants it: how long ago, not when.
 //
 // "3h" answers "is this new?" at a glance; "2026-07-26T15:04:05Z" does not.
@@ -750,27 +788,46 @@ func relTime(tr i18n.Runtime, rfc3339 string) string {
 			return ""
 		}
 	}
+	// Which phrase, and the integers that go into it, decided from the clock
+	// first; the catalog is asked only on a miss (see phrases for why that is
+	// safe, and what it saves).
+	d := time.Since(t)
+	k := phraseKey{locale: tr.Locale()}
+	switch {
+	case d < time.Minute:
+		k.kind = phraseNow
+	case d < time.Hour:
+		k.kind, k.a = phraseMinutes, int(d.Minutes())
+	case d < 24*time.Hour:
+		k.kind, k.a = phraseHours, int(d.Hours())
+	case d < 7*24*time.Hour:
+		k.kind, k.a = phraseDays, int(d.Hours()/24)
+	default:
+		k.kind, k.a, k.b = phraseDayMonth, t.Day(), int(t.Month())
+	}
+	if s, ok := cachedPhrase(k); ok {
+		return s
+	}
 	// The unit abbreviations are the same keys the settings screen uses, so
 	// "5m" here and "5m" there cannot drift into two different translations of
 	// the same idea.
 	unit := tr.NS("unit")
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return tr.T("time", "now")
-	case d < time.Hour:
-		return unit.T("minutes", i18n.Args{"n": strconv.Itoa(int(d.Minutes()))})
-	case d < 24*time.Hour:
-		return unit.T("hours", i18n.Args{"n": strconv.Itoa(int(d.Hours()))})
-	case d < 7*24*time.Hour:
-		return unit.T("days", i18n.Args{"n": strconv.Itoa(int(d.Hours() / 24))})
+	switch k.kind {
+	case phraseNow:
+		return storePhrase(k, tr.T("time", "now"))
+	case phraseMinutes:
+		return storePhrase(k, unit.T("minutes", i18n.Args{"n": strconv.Itoa(k.a)}))
+	case phraseHours:
+		return storePhrase(k, unit.T("hours", i18n.Args{"n": strconv.Itoa(k.a)}))
+	case phraseDays:
+		return storePhrase(k, unit.T("days", i18n.Args{"n": strconv.Itoa(k.a)}))
 	default:
 		// NOT t.Format("2 Jan"). Go's layouts emit English month names in every
 		// locale, and this is the single most-rendered string in the app.
-		return tr.T("time", "dayMonth", i18n.Args{
-			"day":   strconv.Itoa(t.Day()),
-			"month": tr.T("month", strconv.Itoa(int(t.Month()))),
-		})
+		return storePhrase(k, tr.T("time", "dayMonth", i18n.Args{
+			"day":   strconv.Itoa(k.a),
+			"month": tr.T("month", strconv.Itoa(k.b)),
+		}))
 	}
 }
 

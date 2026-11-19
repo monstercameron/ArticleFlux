@@ -53,6 +53,10 @@ type llmClient interface {
 	// operation replaces both, and the tier still does the part it is good for,
 	// which is the token ceiling and the temperature.
 	OpsModel(ctx context.Context) string
+
+	// DeciderAvailable reports whether rung 2 of the escalation ladder (the JEV
+	// decision API) would be tried for the task named on ctx (llm.WithTask).
+	DeciderAvailable(ctx context.Context) bool
 }
 
 // Compile-time proof that the real client still satisfies the seam. Without

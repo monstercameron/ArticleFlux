@@ -191,6 +191,12 @@ coverage.
       client here. "The project can't build off this machine" is answered architecturally, not by the
       replace directive: `earlcameron-droplet-deploy` builds ON the droplet from sibling checkouts, so
       A9 never depended on the proxy having a tag at all.
+
+      ✅ 2026-11-19 — **Closed outright; the paragraph above is superseded.** `go.mod` now requires
+      `GoWebComponents/v7 v7.0.8` from the module proxy and the `replace` is gone, so nothing builds
+      from a sibling checkout any more — not CI (`.github/actions/gwc` is deleted), not the image, not
+      `deploy/`. The `gwc.exe` step from 1.5 went with it: nothing ever ran the binary. See plan.md
+      §25.1 D0.
 - [x] **D7 · Pick an extraction library.** ✅ **RESOLVED 2026-07-26 — `go-shiori/go-readability`.**
       Twelve pages, three libraries, and the scoreboard did not decide it: all three extracted all
       twelve and found a title on all twelve. Two things it does not show did. **Text quality** —
@@ -4212,7 +4218,7 @@ A decision nobody enforces is a preference. Structural enforcement beats review 
 
 | D | Question | Blocks | By when |
 |---|---|---|---|
-| **D0** tag GWC v5.0.0 | 1.2 | before Tier 1 |
+| ~~**D0** tag GWC v5.0.0~~ | 1.2 | closed 2026-11-19 — plan.md §25.1 |
 | **D1** gofeed coverage | 4.1 | before Tier 4 |
 | **D2** FTS5 (G1) | 3.1 | **before the schema is written** |
 | **D5** the name | 1.2 module path | before Tier 1 — *a rename after the module path sets is churn across every import* |
@@ -4495,9 +4501,10 @@ why 6.1 was built ahead of its milestone rather than after it.
   `-dev` instance and in the demo because neither issues a credential. See F46b for what is still
   owed around it — devices, "sign out everywhere", and the identity line above it still reading
   "the local account" on an authenticated server (F46a).
-- **D0 is now an operational footgun, not just a build inconvenience.** The droplet needs both
-  checkouts side by side and both kept in step on every update. `make deps` says so loudly instead of
-  failing with a path error, but tagging GWC v5.0.0 removes the whole class.
+- ~~**D0 is now an operational footgun, not just a build inconvenience.**~~ **Gone** (2026-11-19).
+  The droplet needed both checkouts side by side and both kept in step on every update. `go.mod`
+  requires a published GWC release now, so there is one checkout and `make deps` checks only that Go
+  is installed.
 - **Roles are stored and not enforced** (6.2). `deploy/README.md` says so in its own "what is not here
   yet" section, because handing someone `-role viewer` while believing it restricts anything is the
   kind of mistake a runbook should prevent rather than enable.
@@ -8056,58 +8063,80 @@ generated statements in `internal/pb`, which nobody hand-tests; including them t
       hypothesis about what matters. Worth remembering before treating 86.8% as evidence of anything
       beyond the fact that the code was executed.
 
-## Optimisation pass — planned, baseline started, stopped early (2026-08-02)
+## Optimisation pass — server side, measured (2026-08-02 plan; done 2026-11-19)
 
-*Opened straight after the coverage campaign, on the reasoning that tests are what make
-optimisation safe. Stopped before any code changed, deliberately: the baseline is a long run on a
-fanless ARM64 box and it was not worth the time this session. Nothing here is done. What follows is
-the plan and the partial measurements, so the next attempt starts from data rather than from
-scratch.*
+*The 2026-08-02 attempt stopped at the baseline. This one finished it, for the server: store queries,
+the read path, derive, ingest, boot, and HTTP/gRPC compression. Evidence rule, from `Invoke-Perf`'s
+comment: on this fanless box B/op and allocs/op are the steady columns and ns/op is believed only
+when the effect is far outside the 20–30% drift — every ns/op claim below is a 6-sample run whose
+spread was under ~10%, and most are 5–1000x effects. Query plans come from EXPLAIN QUERY PLAN on the
+G3 fixture (50,000 items x 3 users x 150 feeds). No migration was needed: every fix uses an index
+that already exists.*
 
-*Method, which is `Invoke-Perf`'s and not a new one: `-run '^$' -bench . -benchmem -count 6` per
-package with CPU and heap profiles, then `benchspread` to decide whether the timings can be believed
-before reading them. 22 benchmarks across 8 packages
-(`classify`, `feed`, `rewrite`, `rules`, `sanitize`, `store`, `textvec`, plus `store`'s bookmark
-search). The run got through everything except `internal/store`, which rebuilds its 50,000-row
-G3 fixture once per `-count` — six times, at 23–28s each, before any measurement happens.*
+- [x] **Baseline captured** (`BenchmarkHotQueries`, `BenchmarkIngest`, -count 6). count unread 2.3ms
+      / 15 allocs, list unread p1 586µs / 452, folder 547µs, one feed 281µs, sidebar 2.8ms / 981,
+      get item 108µs / 45, search common 90ms, selective 430µs, ingest 20 new 5.5ms / 1,135.
 
-- [ ] **Finish the baseline and get `benchspread`'s verdict before changing anything.** The
-      partial run already shows why that order matters. `count_unread` moved 2.10ms → 3.64ms across
-      six samples of identical work — a 1.7x spread — while `B/op` stayed at 936 and `allocs/op` at
-      exactly 19 for all six. That is the tell `benchspread` exists to name: allocation does not care
-      how hot the box is, timings do. So on this machine `ns/op` is weak evidence and `B/op` /
-      `allocs/op` are strong evidence, and any optimisation claimed on wall time alone will not
-      survive a second look.
+- [x] **Ingest rewrote every unchanged row on every poll — 13.4ms → 0.65ms per 20-item re-poll.**
+      The UPDATE ran for every entry a feed re-sent, and `items_au` (0001) deletes and re-inserts the
+      FTS row on ANY update: the whole article (24 KB average on the dev DB) re-tokenised, per entry,
+      per feed, per poll, inside the one writer. Now skipped when every written column is already
+      equal (NULL-exact; the body compared in SQL with `IS ?` so it is never copied out); an edit is
+      one UPDATE instead of two; `contentHash` no longer copies the body to the heap.
+      `BenchmarkIngestRepoll`: 13.4ms / 1.04 MB / 1,494 allocs → 0.65ms / 42 KB / 1,200.
+      Equivalence: `ingest_noop_test.go` (zero rows written and identical `quote()` snapshot on an
+      unchanged re-poll; every column — incl. `''`→NULL and a stale hash — still written when it
+      differs; edit leaves the same row/revision/FTS; hash identical to the original form).
 
-      *Done when: `bin/perf/baseline.txt` is complete and `benchspread` has said in writing whether
-      the timings in it are usable.*
+- [x] **Statement preparation was most of a cheap read.** The ncruces driver has no statement cache,
+      so every QueryContext parsed and planned the SQL: GetItem's statement is 47µs ad hoc vs 4.5µs
+      prepared (`BenchmarkStmtPrepareShare`). `stmtcache.go` keeps hot read statements prepared
+      (bounded at 128, falls back to ad hoc on any prepare failure). get item 108µs → 69µs,
+      CategoriesFor(50) 63µs → 31µs, one feed 281µs → 252µs; allocs unchanged (the cost is inside
+      SQLite). `stmtcache_test.go`.
 
-- [ ] **`classify.Compile` allocates 620 KB and 11,983 objects per call.** Measured, stable across
-      all six samples, ~0.82–1.03 ms. It builds the lexicon index from `lexicon.Categories()`. Worth
-      knowing how often it is called on a live instance before touching it — if it is once at boot
-      it is not a problem, and if it is per-request it is the largest single allocation site
-      measured so far.
+- [x] **Starred / Liked / Disliked scanned every item on the instance.** `driveIndex` walks
+      `items_published` until 51 rows pass; with 25 stars it walked all 50,000 (items are global, so
+      every tenant's). Page 124ms → 0.19ms, its count 620ms → 0.10ms (same for Liked). Now driven
+      from `uis_user_starred` / `idx_uis_rating` (`stateDrivenFrom`). `TestStateDrivenListsMatchTheWalk`
+      pages all three lists for two users on G3 against the old statement, rows and counts identical.
 
-      *Done when: the call sites are counted, and either the number is justified in a comment or the
-      index is built once and shared.*
+- [x] **My Feed's count was driven from the unread backlog** (`uis_user_recent`, 16,700 rows) and
+      issued beside every ListFeeds: 3.6ms → 0.6ms with a pinned order from `home_ranking`.
 
-- [ ] **`BenchmarkIngest` is ~7.2–9.1 ms/op at 1,150 allocs/op.** The write path every poll cycle
-      runs, for every feed. The allocation count is the stable half of that measurement and the part
-      worth attacking.
+- [x] **Derive: HalfLifeFor was N+1 and each call scanned the reader's whole engagement log**
+      (`engagements_user_item`; the filter is on `i.source_id`). One grouped pass (`HalfLives`):
+      40 sources 24.8ms → 1.2ms, statements 40 → 1. `TestHalfLivesMatchesHalfLifeFor`.
 
-- [ ] **The eight `HotQueries` shapes are the reader's actual latency.** `get_item` is 86µs / 67
-      allocs and looks fine; `count_unread` is milliseconds and is the sidebar badge, which is on
-      screen at all times and therefore issued constantly. G3 gates these against a 150ms budget,
-      which they pass — but a gate has no resolution below its budget, which is exactly why the
-      benchmarks exist beside it.
+- [x] **Derive's rewrites re-prepared the INSERT per row inside the writer.** Prepared once per
+      batch: term affinity (2,000) 19.4ms / 22,022 allocs → 11.0ms / 16,028; entity (150) 2.1 → 1.0ms;
+      home ranking + clusters and feed affinity likewise. `BenchmarkDeriveWrites`.
 
-- [ ] **`sanitize` and `feed` parsing run per item on every poll.** 26 feed fixtures and the
-      HTML/text sanitiser are already benchmarked; neither has been read yet.
+- [x] **Compression, server side.** `internal/app/compress.go`: RFC 9110 negotiation (q-values, `*`,
+      `q=0.0`), `Vary` on compressed AND identity, stale/empty siblings refused, on-the-fly brotli 5 /
+      gzip default with a 64 MB LRU when no sibling exists (bundle: br5 5.87 MB in 0.63s, gzip 7.37 MB
+      in 0.17s, from 33.5 MB), Range → identity, HEAD parity, one middleware for dynamic responses
+      (type allowlist, streams/Upgrade/pre-encoded/no-transform skipped, ETag weakened, `/p` and
+      `/asset` excluded for BREACH). gRPC: the list RPCs answer gzip when the client advertises it —
+      a 200-item page 74.9 KB → 28.9 KB; the wasm client registers the codec (+253 KB raw wasm).
 
-- [ ] **Do not optimise from the profile alone — check the call sites first.** The one thing the
-      partial data already suggests is that the biggest allocation number found
-      (`classify.Compile`) may be a boot-time cost, in which case it is worth nothing. Measuring
-      what is hot is not the same as measuring what runs.
+- [ ] **Still slow, deliberately not changed: the general counts.** count all 430ms, folder unread
+      210ms, feed unread 4ms at G3 (`BenchmarkStateLists`). They visit every subscribed item; the only
+      faster form (`uis_unread_by_source`, as the badge does) counts state rows instead of items and
+      differs for an item without a state row. Equal under 0015's invariant, not by algebra — the
+      owner's call whether the scrollbar total may follow the badge's definition.
+
+- [x] **Production never ran ANALYZE / `PRAGMA optimize`.** Now runs at close, after boot and every six
+      hours on the write connection under `analysis_limit=400` (§22.12a, §22.2); 56 ms cold / ~1 ms
+      warm on G3. The pinned plans in `planaudit_test.go` were re-checked with statistics present and
+      are unchanged.
+
+- [ ] **Boot runs ScopesToDerive with `since` = zero before listening** — a pass over every
+      engagement ever (`SCAN users`, `engagements_user_at`, temp B-tree for DISTINCT). Moving
+      `a.DeriveDue` after `ListenAndServe` in `cmd/articleflux` is a one-line change outside this pass.
+
+- [ ] **Not yet measured: `classify.Compile` call sites, `sanitize`/`feed` parse per poll, the
+      event ring fan-out, `cache_size` / `mmap_size`.** No change without a number.
 
 ---
 
@@ -8475,21 +8504,113 @@ the wasm and re-running, which is the only way to tell a regression from an inhe
       left in place because deleting a command is a scope decision rather than a bug fix.
 
 - [ ] **The mobile project runs desktop-shaped specs, and has been failing on that for a while.**
-      Seven tests in `reader.spec.mjs` fail on `--project=mobile` and pass on `--project=desktop`,
-      every one of them by waiting out a full two-minute timeout against an element that is in the
-      DOM and deliberately not visible: a phone shows ONE pane, so `[data-action="toggle-unread"]`,
-      `.pane-rail .feed-row` and `.item-row` are each off screen at the moment the test reaches for
-      them. Nothing about the product is wrong; the specs were written against the two-pane layout
-      and the mobile project runs them anyway. Four were fixed in passing this session (the
-      `appearance.spec.mjs` theme helper, which was costing six minutes of timeouts on its own, plus
-      `openAlpha` and two row clicks); the rest want the same treatment one at a time, and one of
-      them may genuinely be desktop-only and should say so with `test.skip` rather than be bent into
-      shape.
+      *Progress 2026-11-19:* every spec file has now been run on `--project=mobile` against the
+      11:22 build, and is green or skipped with a reason at the site, with three exceptions below.
+      The navigation lives in `e2e/fixtures.mjs` rather than in each spec: `openRail` uses the tab
+      bar on a phone (the old "‹ Feeds" button is in the list pane, so it was off screen from the
+      article), `showList` comes back from the article by "‹ List", `openRow` waits for the article
+      to be the pane showing, `openSettings` taps the Settings tab where a desktop presses `,`, and
+      every one of them decides where it is from `.shell[data-view]`. Asking whether a pane was
+      visible answered yes mid-slide, which is how the first `showList` sat still while the list
+      slid away. Skipped on a phone, each with its reason: all of `keyboard`, j/k/t in `reader`,
+      the shortcut sheet and the palette in `dialogs` and `motion`, the selection cursor and focus
+      mode in `motion`, and "owns the keyboard" in `slideshow`. The slideshow's other key-driven
+      tests tap the HUD on a phone instead (`control` in that file). Still open:
+      `dialogs.spec.mjs`'s Tag settings cycle and `reader.spec.mjs`'s filing test failed on the
+      last full phone run and have fixes that have not been re-run (a hover before the forced gear
+      click; back to the rail after the category is deleted). `rtl.spec.mjs` has two tests that
+      fail on purpose: under any non-English locale the reader never leaves "connecting", and
+      that is a product bug, not a spec.
+      *Close this* once those two fixes pass a phone run and the locale bug has its own entry.
+      *As filed:* Seven tests in `reader.spec.mjs` fail on `--project=mobile` and pass on
+      `--project=desktop`, every one of them by waiting out a full two-minute timeout against an
+      element that is in the DOM and deliberately not visible: a phone shows ONE pane, so
+      `[data-action="toggle-unread"]`, `.pane-rail .feed-row` and `.item-row` are each off screen at
+      the moment the test reaches for them. Nothing about the product is wrong; the specs were
+      written against the two-pane layout and the mobile project runs them anyway.
       *Done when: `--project=mobile` is either green or explicitly skipped with a reason at each
       remaining site, so a mobile failure means something again.*
 
-- [ ] **The row-centre click trap is fixed at four call sites, not at all thirty.** `openRow`
+- [x] **The row-centre click trap is fixed at four call sites, not at all thirty.** ✅ 2026-11-19 —
+      all twenty-six remaining `.item-row').first().click()` / `.nth(n).click()` calls go through
+      `openRow` now, across ten spec files. It stopped being hypothetical first: `keyboard.spec.mjs`'s
+      "u toggles unread-only" flaked on exactly this (row 0 had been chipped, the click changed scope,
+      nothing was read), and that test also waits for `data-read="true"` before pressing the key.
+      *As filed:* `openRow`
       (`e2e/fixtures.mjs`) exists and the tests that were failing use it, but roughly thirty
       `.item-row').first().click()` calls elsewhere in the suite are one category chip away from the
       same silent scope change. They pass today because row 0's centre happens not to be a chip.
       *Done when: every spec that means "open this article" says so, by the title.*
+
+## Left open by the 2026-11-19 pass
+
+Everything here was found, not fixed. Each is either the owner's decision or needs a machine this
+pass did not have.
+
+- [ ] **Production is not running what is in this tree, and its backups have been failing since
+      2026-08-19.** `feed.earlcameron.com` runs the August binary under systemd; the Docker cutover
+      was staged on 2026-08-16 and never finished (the compose file pins an image tag that was never
+      published). `articleflux-backup.service` exits 203/EXEC every night: `/usr/local/bin/articleflux-backup`
+      is not there and the alert template it would have used to say so is missing too. The move is
+      written down in `deploy/docker/CUTOVER.md`, backup first.
+      *Done when: the droplet runs the published image, `install-ops.sh --runtime docker` has put the
+      backup and alert units back, and one restore drill has passed.*
+- [ ] **The Docker image has never been built.** The Dockerfile, both compose files and the Caddyfile
+      were written on a machine with no Docker. The Release workflow builds the image on a `v*` tag;
+      that first run is the test.
+      *Done when: a tagged build is green and `docker compose up -d` from a clean checkout serves /healthz.*
+- [x] **`PRAGMA optimize` was never run**, so production plans were made without statistics (§22.12a).
+      Runs at close and every six hours with `analysis_limit=400` (`store/optimize.go`,
+      `app/optimize.go`); see §22.2. *Unmeasured: plans of the unpinned statements on a real
+      production-sized database with statistics — only the pinned ones are asserted.*
+- [ ] **The scrollbar's general counts are 210–430 ms at G3 scale.** The badge's state-row definition
+      answers in milliseconds and is equal only under migration 0015's invariant.
+      *Done when: the owner has chosen, and the choice has an equivalence test.*
+- [ ] **JEV's LiteLLM base URL refuses private addresses, and is not checked at connect time.** A LAN
+      proxy is the common LiteLLM setup, so the refusal may be wrong for the people most likely to use
+      it; and the check is on the URL, not the dialled address, so DNS rebinding is not covered
+      (SchemaFlux's client is not netguard's dialer).
+      *Done when: there is an `AllowPrivateFeeds`-style switch or a stated no, and the decider dials
+      through the guarded dialer.*
+- [ ] **Two ranking decisions** (§18.4a): how fast a profile recovers from a noisy first week, and the
+      confidence floor under which a JEV answer falls through to the model.
+- [ ] **`plan.md` §29 specifies `flux.enabled` and nothing implements it**; and `slideListenOn`'s
+      "turns Keep playing on" branch is unreachable, because Keep playing is required to start. One of
+      the spec and the code is wrong in each case.
+- [x] **A backlog window saved on one device reaches another on its next read, not at once** —
+      fixed: the save-time clear now publishes the same `state_changed` the sweep does, to that reader
+      only, when it marked something (`Service.WithBacklogHook` -> `App.publishBacklogCleared`).
+- [ ] **A window set through the API outside the five offered (1 / 3 / 7 / 30) shows no pressed
+      choice.** §20.15 says the *panel* offers those four and says nothing of the API, so the server
+      still accepts 0-365 and was left alone.
+      *Done when: the owner decides whether the server snaps/refuses, or the panel shows a custom value.*
+- [ ] **`deploy/install.sh` installs the backup units itself** and `deploy/install-ops.sh` does the
+      same job for both runtimes. Two installers for one set of units is how they drift.
+      *Done when: install.sh calls install-ops.sh.*
+- [ ] **The typed stylesheet stops at 63%.** The rest has no typed form in GoWebComponents v7.0.8:
+      logical properties (`margin-inline-*`, `inset-inline-*`), multi-value `padding`/`margin`,
+      `background` and `flex` shorthands, `display: contents`. That is a library change, not one here.
+- [ ] **Leftovers the wasm-target analyser reports and CI does not gate**: unused `bedEl`/`bedGain`/
+      `bedSrc` (client/platform/sound_wasm.go), `itemAfter`, `launch.empty`, `paletteProps.unreadBy`,
+      `settingsProps.driftSmart`, `slidesAudioPref`. Each is either dead or half-wired, and telling
+      which takes knowing what it was for.
+- [ ] **`gpt-6-luna` has not been called with the live key**, and `govulncheck` was not run locally
+      (CI runs it).
+- [ ] **A `State.Set` inside an effect drops the effects of every fiber queued after it in the same
+      commit** (GoWebComponents v7.0.8). Found as "any language but English never connects": Root's
+      fill effect set its progress state in the commit that mounted the reader, and the reader's own
+      effects — the ones that open the stream — never ran. No error, nothing logged. The cause is in
+      the library: `ScheduleUpdate` / `ScheduleUpdateForFiber` clear `pendingEffectFibers` while the
+      effect drain is ranging over it (scheduler.go), so every later fiber's effects are skipped —
+      mounting children, and already-mounted ones whose deps changed. A Set to the value already
+      held schedules nothing and is harmless, which is why English worked.
+      Fixed at the one live call site with `ui.PostAsync` (client/view/root.go). An audit of every
+      effect in client/view found no other live instance and four latent ones in Reader, safe only
+      because of an incidental condition: `reader.go` retitle (`sel.Set`), `reader_route.go`
+      addressBar (`sel.Set`), `retryIn.Set(0)`, and `loadFeeds()` in the connect effect
+      (`feedsLoading.Set(true)` on a state that starts true). The commit they could bite is a reload
+      at `/settings/discover`, where Discover mounts with the client and its four click handlers are
+      the effects that would be lost — initialise `feedsLoading` to false and that reload goes dead.
+      *Done when: it is fixed upstream (drain over a snapshot, or defer the truncation while
+      draining) and the pin is moved; the reduction is a parent whose effect Sets a changed value in
+      the commit that mounts a child with a mount effect.*

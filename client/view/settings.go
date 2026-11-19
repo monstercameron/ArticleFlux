@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
@@ -112,6 +112,10 @@ var settingsTabs = []struct {
 
 type settingsProps struct {
 	tab settingsTab
+	// armed is Reader's one armed confirmation (see armableRemove). Read by
+	// Forget this theme on Appearance; the Account and Smart+ tabs get their
+	// own copy on passwordProps and smartProps.
+	armed string
 	// client backs the Discover tab, which fetches and acts on its own list
 	// live rather than through fields here — see the setDiscover case below.
 	client *data.Client
@@ -137,6 +141,9 @@ type settingsProps struct {
 	speakVibe string
 	// speakBed is the music under the broadcast: a track id, or "off".
 	speakBed string
+	// prefStatus is what became of the last listening-setting press: "saving",
+	// "saved", "failed", or "" before any. See prefwriter.go.
+	prefStatus string
 	// bedTracks is what this server ships, for the picker to name.
 	bedTracks []data.AudioTrack
 	// speakRate is how fast the narrator reads, as the stored multiplier string.
@@ -279,8 +286,14 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 				Aria: map[string]string{"current": strconv.FormatBool(t.id == p.tab)},
 			}, lead(t.glyph), html.Text(tr.T("settings", "tab."+string(t.id)))))
 		}
-		groups = append(groups, html.Div(html.Props{Class: "set-tab-group", Key: "setgrp-" + string(g)},
-			html.Span(html.Props{Class: "set-tab-group-label"}, html.Text(tr.T("settings", "group."+string(g)))),
+		// A labelled group, so the heading a sighted reader sees over each row
+		// ("Your reader", "Your library", "This server") is announced with the
+		// buttons under it rather than read once as loose text between them.
+		groupLabel := tr.T("settings", "group."+string(g))
+		groups = append(groups, html.Div(html.Props{Class: "set-tab-group", Key: "setgrp-" + string(g),
+			Role: "group", Aria: map[string]string{"label": groupLabel}},
+			html.Span(html.Props{Class: "set-tab-group-label", Aria: map[string]string{"hidden": "true"}},
+				html.Text(groupLabel)),
 			html.Div(html.Props{Class: "set-tab-group-row"}, row...),
 		))
 	}
@@ -299,7 +312,13 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 			podcast:    p.speakPodcast,
 			vibe:       p.speakVibe,
 			digest:     p.speakDigest,
+			bed:        p.speakBed,
+			bedTracks:  p.bedTracks,
+			status:     p.prefStatus,
 			keyUnknown: p.smart.cfg == nil,
+			// Asked and refused (a member cannot read the server's Smart+ config),
+			// which is not the same as not yet answered.
+			keyUnreadable: p.smart.cfg == nil && !p.smart.loading && p.smart.err != "",
 			// What the server last OBSERVED, beside what it can cheaply
 			// assert. The key row says a key is stored; this says whether the
 			// last call using it came back refused.
@@ -350,6 +369,18 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 		body = settingsReading(tr, p)
 	}
 
+	// The tab whose body is actually on screen. An address the router does not
+	// recognise falls through the switch above to Reading, so the heading has
+	// to fall through with it — naming p.tab directly would print the missing
+	// catalog key for a tab that does not exist, over a page of Reading's rows.
+	shown := setReading
+	for _, t := range settingsTabs {
+		if t.id == p.tab {
+			shown = p.tab
+			break
+		}
+	}
+
 	return html.Main(html.Props{Class: "pane pane-settings",
 		Raw: map[string]any{"tabindex": "-1"}},
 		html.Div(html.Props{Class: "set-head"},
@@ -357,9 +388,23 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 			html.Span(html.Props{Class: "set-sub"},
 				html.Text(tr.T("settings", "sub"))),
 		),
-		html.Div(html.Props{Class: "set-tabs", Role: "tablist"}, groups...),
+		// A <nav>, not a tablist. Each of these is an address (/settings/reading,
+		// /settings/server …) and the buttons mark the one you are on with
+		// aria-current — which is navigation. `role="tablist"` promised a different
+		// contract and kept none of it: it must own `tab` elements (these are
+		// buttons inside groups), a tab states itself with aria-selected, and
+		// arrow keys are expected to move between them. A screen reader was told
+		// "tab list, 0 tabs".
+		html.Nav(html.Props{Class: "set-tabs",
+			Aria: map[string]string{"label": tr.T("settings", "navLabel")}}, groups...),
+		// The section's own name, as the heading its groups hang from. Hidden
+		// from the eye because the strip above already shows which button is
+		// lit; present for everyone else, because without it the page goes from
+		// "Settings" straight to group titles and nothing says WHICH settings.
+		html.H2(html.Props{Class: "vh", Key: "set-h2-" + string(shown)},
+			html.Text(tr.T("settings", "tab."+string(shown)))),
 		ui.If(p.busy != "", func() ui.Node {
-			return html.Div(html.Props{Class: "banner", Role: "status"}, html.Text(p.busy))
+			return kitLive(kitLiveProps{Class: "banner", Role: kitRoleStatus}, html.Text(p.busy))
 		}),
 		// Keyed on the tab, so switching tabs REPLACES this element rather than
 		// patching it — which is what lets the panel's entrance animation run
@@ -386,29 +431,29 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 		markLabel = tr.T("settings", "markOnOpen")
 	}
 	return []ui.Node{
-		fsGroup(glyphAll, tr.T("settings", "landingGroup"), tr.T("settings", "landingGroupHint")),
-		setRow(tr.T("settings", "landingLabel"), tr.T("settings", "landingHint"),
-			landingViewPicker(tr, p)),
+		kitHeading(glyphAll, tr.T("settings", "landingGroup"), tr.T("settings", "landingGroupHint")),
+		kitField(kitFieldProps{Label: tr.T("settings", "landingLabel"), Hint: tr.T("settings", "landingHint"), ID: fieldLanding,
+			Control: landingViewPicker(tr, p)}),
 
-		fsGroup(glyphAll, tr.T("settings", "listGroup"), ""),
-		setRow(tr.T("settings", "articlesLabel"), tr.T("settings", "articlesHint"),
-			glyphChip("toggle-unread", glyphUnread, unreadLabel, p.unreadOnly)),
-		setRow(tr.T("settings", "railLabel"), tr.T("settings", "railHint"),
-			glyphChip("toggle-feed-filter", glyphFeeds, railLabel, p.unreadFeeds)),
+		kitHeading(glyphAll, tr.T("settings", "listGroup"), ""),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "articlesLabel"), Hint: tr.T("settings", "articlesHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-unread", Glyph: glyphUnread, Label: unreadLabel}, p.unreadOnly)}),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "railLabel"), Hint: tr.T("settings", "railHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-feed-filter", Glyph: glyphFeeds, Label: railLabel}, p.unreadFeeds)}),
 
-		fsGroup(glyphMarkRead, tr.T("settings", "readGroup"), ""),
-		setRow(tr.T("settings", "markLabel"), tr.T("settings", "markHint"),
-			glyphChip("toggle-mark-past", glyphMarkRead, markLabel, p.markOnPast)),
+		kitHeading(glyphMarkRead, tr.T("settings", "readGroup"), ""),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "markLabel"), Hint: tr.T("settings", "markHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-mark-past", Glyph: glyphMarkRead, Label: markLabel}, p.markOnPast)}),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "bulkMarkDisclaim"))),
 
 		// The slideshow (§19). In Reading rather than in a tab of its own,
 		// because both of these are answers to "how do I want to take the news
 		// in" — which is what this tab is.
-		fsGroup(glyphSlideshow, tr.T("settings", "slidesGroup"),
+		kitHeading(glyphSlideshow, tr.T("settings", "slidesGroup"),
 			tr.T("settings", "slidesGroupHint")),
-		setRow(tr.T("settings", "slidesPace"), tr.T("settings", "slidesPaceHint"),
-			slideDwellPicker(tr, p.slideDwell)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "slidesPace"), Hint: tr.T("settings", "slidesPaceHint"),
+			Control: slideDwellPicker(tr, p.slideDwell)}),
 		// Read-to-me is NOT a row here, and its absence is the decision rather
 		// than an omission.
 		//
@@ -451,7 +496,7 @@ func bedPicker(tr i18n.Runtime, current string, tracks []data.AudioTrack) ui.Nod
 	// the first track is what shows as selected, which is what is playing.
 	beds := tracksFor(tracks, roleBed)
 	sel := bedTrackID(current, beds)
-	chips := []ui.Node{pickChip(actBed, bedOff, tr.T("settings", "bedOff"), !on)}
+	chips := []ui.Node{kitPick(kitChipProps{Action: actBed, Mini: true, Key: actBed + "-" + bedOff, Label: tr.T("settings", "bedOff")}, bedOff, !on)}
 	for _, t := range tracks {
 		// Beds only. The openings are not choices: they play at the top of a
 		// broadcast and nowhere else, and one offered here would be picked by
@@ -459,10 +504,13 @@ func bedPicker(tr i18n.Runtime, current string, tracks []data.AudioTrack) ui.Nod
 		if !slices.Contains(beds, t.ID) {
 			continue
 		}
-		chips = append(chips, pickChip(actBed, t.ID, t.Title, on && t.ID == sel))
+		chips = append(chips, kitPick(kitChipProps{Action: actBed, Mini: true, Key: actBed + "-" + t.ID, Label: t.Title}, t.ID, on && t.ID == sel))
 	}
-	return html.Span(html.Props{Class: "set-picks", Role: "group",
-		Aria: map[string]string{"label": tr.T("settings", "bed")}}, chips...)
+	// Not a group of its own: the kitSetting around it is one, named by the same
+	// words ("Opening sting and music"), and a group inside a group with one
+	// name is that name announced twice. The same goes for the three pickers
+	// below.
+	return kitChipGroup(kitGroupPicks, "", chips...)
 }
 
 func ratePicker(tr i18n.Runtime, current string) ui.Node {
@@ -475,10 +523,9 @@ func ratePicker(tr i18n.Runtime, current string) ui.Node {
 		if r == speechRateDefault {
 			label = tr.T("settings", "rateTimesDefault", i18n.Args{"n": r})
 		}
-		chips = append(chips, pickChip(actRate, r, label, r == current))
+		chips = append(chips, kitPick(kitChipProps{Action: actRate, Mini: true, Key: actRate + "-" + r, Label: label}, r, r == current))
 	}
-	return html.Span(html.Props{Class: "set-picks", Role: "group",
-		Aria: map[string]string{"label": tr.T("settings", "rate")}}, chips...)
+	return kitChipGroup(kitGroupPicks, "", chips...)
 }
 
 // vibePicker is the narrator's manner, as a row of chips.
@@ -492,10 +539,9 @@ func vibePicker(tr i18n.Runtime, current string) ui.Node {
 	}
 	chips := make([]ui.Node, 0, len(slideVibeChoices))
 	for _, v := range slideVibeChoices {
-		chips = append(chips, pickChip(actVibe, v, tr.T("settings", "vibe."+v), v == current))
+		chips = append(chips, kitPick(kitChipProps{Action: actVibe, Mini: true, Key: actVibe + "-" + v, Label: tr.T("settings", "vibe."+v)}, v, v == current))
 	}
-	return html.Span(html.Props{Class: "set-picks", Role: "group",
-		Aria: map[string]string{"label": tr.T("settings", "vibe")}}, chips...)
+	return kitChipGroup(kitGroupPicks, "", chips...)
 }
 
 // slideDwellPicker is the pace, as a row of chips.
@@ -518,10 +564,9 @@ func slideDwellPicker(tr i18n.Runtime, current string) ui.Node {
 			// number is not a duration in any of them.
 			label = tr.T("settings", "slidesSeconds", i18n.Args{"n": c})
 		}
-		chips = append(chips, pickChip(actSlideDwell, c, label, c == current))
+		chips = append(chips, kitPick(kitChipProps{Action: actSlideDwell, Mini: true, Key: actSlideDwell + "-" + c, Label: label}, c, c == current))
 	}
-	return html.Span(html.Props{Class: "set-picks", Role: "group",
-		Aria: map[string]string{"label": tr.T("settings", "slidesPace")}}, chips...)
+	return kitChipGroup(kitGroupPicks, "", chips...)
 }
 
 // landingViewChoices are the built-in streams a fixed landing view can name,
@@ -611,64 +656,89 @@ func landingViewPicker(tr i18n.Runtime, p settingsProps) ui.Node {
 		options = append(options, opt(current, label, true))
 	}
 
+	// The <label> beside it names it now; the aria-label stays, saying the same
+	// words, because it is how the e2e suite finds this select and changing it
+	// would buy nothing a listener can hear.
 	return html.Select(html.Props{
-		Class: "field", OnChange: p.onLandingEdit,
-		Aria: map[string]string{"label": tr.T("settings", "landingLabel")},
+		Class: "field", OnChange: p.onLandingEdit, ID: fieldLanding,
+		Aria: map[string]string{
+			"label":       tr.T("settings", "landingLabel"),
+			"describedby": fieldLanding + "-hint",
+		},
 	}, options...)
 }
+
+// The ids the Settings fields' <label>s point at. See kitFieldProps.ID for why a
+// field's id is a constant rather than derived.
+const (
+	fieldLanding     = "set-landing"
+	fieldPwConfirm   = "set-pw-confirm"
+	fieldPwNew       = "set-pw-new"
+	fieldPwRepeat    = "set-pw-repeat"
+	fieldUsername    = "set-username"
+	fieldPassphrase  = "set-passphrase"
+	fieldSmartKey    = "set-smart-key"
+	fieldSmartModel  = "set-smart-model"
+	fieldThemePrompt = "set-theme-prompt"
+	// pwRulesID is the password checklist, which the new-password field is
+	// described by.
+	pwRulesID = "set-pw-rules"
+	// credLeadID is the credential-confirm dialog's lead sentence, which the
+	// dialog is described by.
+	credLeadID = "cred-confirm-lead"
+)
 
 // --- listening -----------------------------------------------------------------
 
 func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphListen, tr.T("settings", "voiceGroup"), ""),
-		setRow(tr.T("settings", "browserVoice"),
-			tr.T("settings", "browserVoiceHint"),
-			html.Span(html.Props{Class: "chip chip-static"},
-				html.Text(tr.T("settings", "alwaysAvailable")))),
+		kitHeading(glyphListen, tr.T("settings", "voiceGroup"), ""),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "browserVoice"),
+			Hint:    tr.T("settings", "browserVoiceHint"),
+			Control: kitStatic(kitStaticProps{Label: tr.T("settings", "alwaysAvailable")})}),
 
-		fsGroup(glyphShared, tr.T("settings", "smartGroup"),
+		kitHeading(glyphShared, tr.T("settings", "smartGroup"),
 			tr.T("settings", "smartGroupHint")),
-		setRow(tr.T("settings", "smartVoice"),
-			tr.T("settings", "smartVoiceHint"),
-			glyphChip("toggle-smart-voice", glyphListen, onOff(tr, p.speakSmart), p.speakSmart)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "smartVoice"),
+			Hint:    tr.T("settings", "smartVoiceHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-smart-voice", Glyph: glyphListen, Label: onOff(tr, p.speakSmart)}, p.speakSmart)}),
 		// Beside the voice rather than down with the broadcast settings: it
 		// applies to everything the Smart+ voice reads, not only to a programme.
-		setRow(tr.T("settings", "rate"), tr.T("settings", "rateHint"),
-			ratePicker(tr, p.speakRate)),
-		setRow(tr.T("settings", "digest"),
-			tr.T("settings", "digestHint"),
-			glyphChip("toggle-digest", glyphAction, onOff(tr, p.speakDigest), p.speakDigest)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "rate"), Hint: tr.T("settings", "rateHint"),
+			Control: ratePicker(tr, p.speakRate)}),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "digest"),
+			Hint:    tr.T("settings", "digestHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-digest", Glyph: glyphAction, Label: onOff(tr, p.speakDigest)}, p.speakDigest)}),
 		// Below the digest and pointedly next to it, because the two are
 		// alternatives rather than layers: a broadcast segment is already the
 		// short form, so turning both on gets you the broadcast. The hint says so
 		// rather than the control disabling the other one — a switch that silently
 		// turns another switch off is worse than a sentence.
-		setRow(tr.T("settings", "podcast"),
-			tr.T("settings", "podcastHint"),
-			glyphChip("toggle-podcast", glyphSlideshow, onOff(tr, p.speakPodcast), p.speakPodcast)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "podcast"),
+			Hint:    tr.T("settings", "podcastHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-podcast", Glyph: glyphSlideshow, Label: onOff(tr, p.speakPodcast)}, p.speakPodcast)}),
 		// Only while there is a broadcast to have a manner. A tone picker for a
 		// narrator nobody has switched on is a control with nothing to act on —
 		// and it appears the moment the switch above is pressed, which is also
 		// where a reader is most likely to want it.
 		ui.If(p.speakPodcast, func() ui.Node {
-			return setRow(tr.T("settings", "vibe"), tr.T("settings", "vibeHint"),
-				vibePicker(tr, p.speakVibe))
+			return kitSetting(kitSettingProps{Label: tr.T("settings", "vibe"), Hint: tr.T("settings", "vibeHint"),
+				Control: vibePicker(tr, p.speakVibe)})
 		}),
 		// NOT gated on the broadcast switch, unlike the manner above. The sting
 		// and the music play whenever read-to-me is running, so hiding the
 		// control behind a switch they have not pressed is how somebody ends up
 		// with music they cannot turn off.
-		setRow(tr.T("settings", "bed"), tr.T("settings", "bedHint"),
-			bedPicker(tr, p.speakBed, p.bedTracks)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "bed"), Hint: tr.T("settings", "bedHint"),
+			Control: bedPicker(tr, p.speakBed, p.bedTracks)}),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "audioCacheNote"))),
 
-		fsGroup(glyphListen, tr.T("settings", "queueGroup"),
+		kitHeading(glyphListen, tr.T("settings", "queueGroup"),
 			tr.T("settings", "queueGroupHint")),
-		setRow(tr.T("settings", "autoplay"),
-			tr.T("settings", "autoplayHint"),
-			glyphChip("toggle-autoplay", glyphListen, onOff(tr, p.speakAuto), p.speakAuto)),
+		kitSetting(kitSettingProps{Label: tr.T("settings", "autoplay"),
+			Hint:    tr.T("settings", "autoplayHint"),
+			Control: kitToggle(kitChipProps{Action: "toggle-autoplay", Glyph: glyphListen, Label: onOff(tr, p.speakAuto)}, p.speakAuto)}),
 	}
 }
 
@@ -676,15 +746,17 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 
 func settingsFeeds(tr i18n.Runtime, p settingsProps) []ui.Node {
 	return []ui.Node{
-		fsGroup(glyphFeeds, tr.T("settings", "subsGroup"), ""),
-		setFact(tr.T("settings", "factFeeds"), thousands(tr, p.feeds)),
-		setFact(tr.T("settings", "factUnread"), thousands(tr, p.unread)),
-		setFact(tr.T("settings", "factInList"), tr.T("settings", "loadedOfTotal", i18n.Args{"loaded": thousands(tr, p.loadedItems), "total": thousands(tr, p.totalItems)})),
+		kitHeading(glyphFeeds, tr.T("settings", "subsGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factFeeds"), thousands(tr, p.feeds)),
+			kitFact(tr.T("settings", "factUnread"), thousands(tr, p.unread)),
+			kitFact(tr.T("settings", "factInList"), tr.T("settings", "loadedOfTotal", i18n.Args{"loaded": thousands(tr, p.loadedItems), "total": thousands(tr, p.totalItems)})),
+		),
 
-		fsGroup(glyphAction, tr.T("settings", "bulkGroup"), ""),
-		html.Div(html.Props{Class: "set-actions"},
-			glyphChip("refresh", glyphRefresh, tr.T("settings", "fetchAll"), false),
-			glyphChip("mark-all", glyphMarkRead, tr.T("settings", "markListRead"), false),
+		kitHeading(glyphAction, tr.T("settings", "bulkGroup"), ""),
+		kitChipGroup(kitGroupActions, "",
+			kitAction(kitChipProps{Action: "refresh", Glyph: glyphRefresh, Label: tr.T("settings", "fetchAll")}),
+			kitAction(kitChipProps{Action: "mark-all", Glyph: glyphMarkRead, Label: tr.T("settings", "markListRead")}),
 		),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "perFeedNote"))),
@@ -699,18 +771,20 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 		who = tr.T("settings", "localAccount")
 	}
 	out := []ui.Node{
-		fsGroup("◑", tr.T("settings", "youGroup"), ""),
-		setFact(tr.T("settings", "factSignedIn"), who),
-		setFact(tr.T("settings", "factServer"), p.serverURL),
-		setFact(tr.T("settings", "factConnection"), connLabel(tr, p.conn)),
-		// Reconnects and lost time, and only once there has been one: a row
-		// reading "0" on every healthy install is a row nobody reads, so when
-		// it does appear it carries information by existing (§20.19.10).
-		// Without it "it feels flaky" is unfalsifiable, and this screen is the
-		// only instrument a self-hosted reader has.
-		ui.If(p.reconnects > 0, func() ui.Node {
-			return setFact(tr.T("settings", "factReconnects"), p.connHealth)
-		}),
+		kitHeading("◑", tr.T("settings", "youGroup"), ""),
+		setFacts(
+			setFact(tr.T("settings", "factSignedIn"), who),
+			setFact(tr.T("settings", "factServer"), p.serverURL),
+			setFact(tr.T("settings", "factConnection"), connLabel(tr, p.conn)),
+			// Reconnects and lost time, and only once there has been one: a row
+			// reading "0" on every healthy install is a row nobody reads, so when
+			// it does appear it carries information by existing (§20.19.10).
+			// Without it "it feels flaky" is unfalsifiable, and this screen is the
+			// only instrument a self-hosted reader has.
+			ui.If(p.reconnects > 0, func() ui.Node {
+				return setFact(tr.T("settings", "factReconnects"), p.connHealth)
+			}),
+		),
 	}
 	out = append(out, passwordGroup(tr, p.password)...)
 	out = append(out, signOutGroup(tr, p.session)...)
@@ -718,7 +792,7 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 		// Said plainly rather than shown as a disabled form. A greyed-out
 		// control that never works is worse than an honest sentence: the reader
 		// spends time working out whether they are doing it wrong.
-		fsGroup(glyphShared, tr.T("settings", "notBuiltGroup"),
+		kitHeading(glyphShared, tr.T("settings", "notBuiltGroup"),
 			tr.T("settings", "notBuiltHint")),
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "notBuiltNote"))),
@@ -759,6 +833,9 @@ func settingsAccount(tr i18n.Runtime, p settingsProps) []ui.Node {
 // shipped to anyone who asks — so it is shown as the server's to answer rather
 // than ticked optimistically and contradicted on submit.
 type passwordProps struct {
+	// armed is Reader's one armed confirmation (see armableRemove), read by
+	// Clear passphrase.
+	armed string
 	// draft and repeat are the two entries. Repeat exists because this control
 	// has no "show password" toggle and no undo: the account is the one thing
 	// here that cannot be recovered from the reader's side if it is set to
@@ -867,135 +944,125 @@ func passwordGroup(tr i18n.Runtime, p passwordProps) []ui.Node {
 	matches := p.draft != "" && p.draft == p.repeat
 	notName := p.draft == "" || p.username == "" ||
 		!strings.Contains(strings.ToLower(p.draft), strings.ToLower(p.username))
+	confirmHint := tr.T("settings", "pwConfirmHint")
+	passHint := tr.T("settings", "passRowHint")
 
 	return []ui.Node{
-		fsGroup(glyphShared, tr.T("settings", "pwGroup"), tr.T("settings", "pwHint")),
+		kitHeading(glyphShared, tr.T("settings", "pwGroup"), tr.T("settings", "pwHint")),
 
 		// The current password FIRST, because it authorises every change below it
 		// — the password, the username and the recovery passphrase — and because
 		// that is the order the reader answers them in: prove who you are, then
 		// say what to change.
-		setRow(tr.T("settings", "pwConfirmLabel"), tr.T("settings", "pwConfirmHint"),
-			html.Input(html.Props{
-				Class: "field fs-field", Type: "password",
+		kitField(kitFieldProps{Label: tr.T("settings", "pwConfirmLabel"), Hint: confirmHint, ID: fieldPwConfirm,
+			Control: html.Input(html.Props{
+				Class: "field fs-field", Type: "password", ID: fieldPwConfirm,
 				OnInput: p.onConfirmEdit,
 				Data:    map[string]string{"role": "pw-confirm"},
-				Aria:    map[string]string{"label": tr.T("settings", "pwConfirmLabel")},
+				Aria:    fieldAria(fieldPwConfirm, confirmHint),
 				// current-password, so a password manager offers the one it
 				// already has for this site rather than treating it as new.
 				Raw: map[string]any{"autocomplete": "current-password", "spellcheck": "false"},
-			})),
+			})}),
 
 		// --- the new password
-		setRow(tr.T("settings", "pwNewLabel"), "",
-			html.Input(html.Props{
-				Class: "field fs-field", Type: "password",
+		//
+		// Described by the rules list as well as named by its label, so the
+		// requirements are read when the field is focused — before the reader
+		// types — rather than only by somebody who arrows down past it.
+		kitField(kitFieldProps{Label: tr.T("settings", "pwNewLabel"), ID: fieldPwNew,
+			Control: html.Input(html.Props{
+				Class: "field fs-field", Type: "password", ID: fieldPwNew,
 				Placeholder: tr.T("settings", "pwNewPlaceholder"),
 				OnInput:     p.onNewEdit,
 				Data:        map[string]string{"role": "pw-new"},
-				Aria:        map[string]string{"label": tr.T("settings", "pwNewLabel")},
+				Aria:        map[string]string{"describedby": pwRulesID},
 				Raw:         map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
-			})),
-		setRow(tr.T("settings", "pwRepeatLabel"), "",
-			html.Input(html.Props{
-				Class: "field fs-field", Type: "password",
+			})}),
+		kitField(kitFieldProps{Label: tr.T("settings", "pwRepeatLabel"), ID: fieldPwRepeat,
+			Control: html.Input(html.Props{
+				Class: "field fs-field", Type: "password", ID: fieldPwRepeat,
 				OnInput: p.onRepeatEdit,
 				Data:    map[string]string{"role": "pw-repeat"},
-				Aria:    map[string]string{"label": tr.T("settings", "pwRepeatLabel")},
 				Raw:     map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
-			})),
+			})}),
 
 		// The rules, as a list the reader can watch rather than a verdict they
 		// receive. `aria-live` is deliberately absent: a screen reader announcing
 		// three rules on every keystroke is worse than silence, and the submit
 		// error — which IS announced — is where the outcome belongs.
-		html.Ul(html.Props{Class: "pw-rules"},
-			pwRule(tr.T("settings", "pwRuleLength", i18n.Args{"n": strconv.Itoa(pwMinLength)}), longEnough, p.draft != ""),
-			pwRule(tr.T("settings", "pwRuleName"), notName, p.draft != ""),
-			pwRule(tr.T("settings", "pwRuleMatch"), matches, p.repeat != ""),
-			pwRule(tr.T("settings", "pwRuleKnown"), false, false),
+		html.Ul(html.Props{Class: "pw-rules", ID: pwRulesID},
+			pwRule(tr, tr.T("settings", "pwRuleLength", i18n.Args{"n": strconv.Itoa(pwMinLength)}), longEnough, p.draft != ""),
+			pwRule(tr, tr.T("settings", "pwRuleName"), notName, p.draft != ""),
+			pwRule(tr, tr.T("settings", "pwRuleMatch"), matches, p.repeat != ""),
+			pwRule(tr, tr.T("settings", "pwRuleKnown"), false, false),
 		),
-		html.Div(html.Props{Class: "set-actions"},
-			actionButton(actPwChange, "chip", pwButtonLabel(tr, p)),
+		kitChipGroup(kitGroupActions, "",
+			kitAction(kitChipProps{Action: actPwChange, Label: pwButtonLabel(tr, p)}),
 		),
 		ui.If(p.done != "", func() ui.Node {
-			return html.Div(html.Props{
-				Class: "set-note set-note-live", Role: "status",
-				Aria: map[string]string{"live": "polite"},
-				Data: map[string]string{"good": "true"},
-			}, html.Text(p.done))
+			return kitLive(kitLiveProps{Class: "set-note set-note-live", Role: kitRoleStatus, Live: kitLivePolite,
+				Data: map[string]string{"good": "true"}}, html.Text(p.done))
 		}),
-		ui.If(p.err != "", func() ui.Node {
-			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.err))
-		}),
+		kitFieldError(kitFormSettings, p.err),
 
 		// --- the username
 		//
 		// Under the password and sharing its confirmation field, because they are
 		// the same decision from the reader's side: this is the credential, and
 		// this is what proves it is yours to change.
-		fsGroup(glyphShared, tr.T("settings", "nameGroup"), tr.T("settings", "nameHint")),
-		setRow(tr.T("settings", "nameLabel"), p.username,
-			html.Div(html.Props{Class: "fs-rename"},
+		kitHeading(glyphShared, tr.T("settings", "nameGroup"), tr.T("settings", "nameHint")),
+		kitField(kitFieldProps{Label: tr.T("settings", "nameLabel"), Hint: p.username, ID: fieldUsername,
+			Control: html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
-					Class: "field fs-field", Type: "email",
+					Class: "field fs-field", Type: "email", ID: fieldUsername,
 					Placeholder: tr.T("settings", "namePlaceholder"),
 					OnInput:     p.onNameEdit,
 					Data:        map[string]string{"role": "name-new"},
-					Aria:        map[string]string{"label": tr.T("settings", "nameLabel")},
+					Aria:        fieldAria(fieldUsername, p.username),
 					Raw:         map[string]any{"autocomplete": "username", "spellcheck": "false"},
 				}),
-				actionButton(actNameChange, "chip", nameButtonLabel(tr, p)),
-			)),
+				kitAction(kitChipProps{Action: actNameChange, Label: nameButtonLabel(tr, p)}),
+			)}),
 		ui.If(p.nameDone != "", func() ui.Node {
-			return html.Div(html.Props{
-				Class: "set-note set-note-live", Role: "status",
-				Aria: map[string]string{"live": "polite"},
-				Data: map[string]string{"good": "true"},
-			}, html.Text(p.nameDone))
+			return kitLive(kitLiveProps{Class: "set-note set-note-live", Role: kitRoleStatus, Live: kitLivePolite,
+				Data: map[string]string{"good": "true"}}, html.Text(p.nameDone))
 		}),
-		ui.If(p.nameErr != "", func() ui.Node {
-			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.nameErr))
-		}),
+		kitFieldError(kitFormSettings, p.nameErr),
 
 		// --- the recovery passphrase
 		//
 		// Last in the group, under the two changes it is insurance against. It
 		// shares the same confirmation field for the same reason they do: setting
 		// one cuts a new key to the account.
-		fsGroup(glyphShared, tr.T("settings", "passGroup"), tr.T("settings", "passHint")),
-		setRow(tr.T("settings", "passLabel"), tr.T("settings", "passRowHint"),
-			html.Div(html.Props{Class: "fs-rename"},
+		kitHeading(glyphShared, tr.T("settings", "passGroup"), tr.T("settings", "passHint")),
+		kitField(kitFieldProps{Label: tr.T("settings", "passLabel"), Hint: passHint, ID: fieldPassphrase,
+			Control: html.Div(html.Props{Class: "fs-rename"},
 				html.Input(html.Props{
-					Class: "field fs-field", Type: "password",
+					Class: "field fs-field", Type: "password", ID: fieldPassphrase,
 					Placeholder: tr.T("settings", "passPlaceholder"),
 					OnInput:     p.onPassEdit,
 					Data:        map[string]string{"role": "pass-new"},
-					Aria:        map[string]string{"label": tr.T("settings", "passLabel")},
+					Aria:        fieldAria(fieldPassphrase, passHint),
 					Raw:         map[string]any{"autocomplete": "new-password", "spellcheck": "false"},
 				}),
-				actionButton(actPassSet, "chip", passButtonLabel(tr, p)),
-			)),
+				kitAction(kitChipProps{Action: actPassSet, Label: passButtonLabel(tr, p)}),
+			)}),
 		// Removing is its own control and styled as destructive, like the Smart+
 		// key's, and it only appears once this session has seen one set — the
-		// screen does not offer to remove something it cannot say exists.
+		// screen does not offer to remove something it cannot say exists. It
+		// asks first: the passphrase is a way back into the account, and nobody
+		// notices it is gone until the day they need it.
 		ui.If(p.passConfigured && !p.passBusy, func() ui.Node {
-			return html.Div(html.Props{Class: "set-actions"},
-				html.Button(html.Props{
-					Class: "chip fs-danger",
-					Raw:   map[string]any{"data-action": actPassClear},
-				}, html.Text(tr.T("settings", "passClear"))))
+			return armableRemove(tr, armPassClear, p.armed, actPassClear,
+				tr.T("settings", "passClear"), tr.T("settings", "passClearWarn"),
+				actPassClearDo, tr.T("settings", "passClearConfirm"))
 		}),
 		ui.If(p.passDone != "", func() ui.Node {
-			return html.Div(html.Props{
-				Class: "set-note set-note-live", Role: "status",
-				Aria: map[string]string{"live": "polite"},
-				Data: map[string]string{"good": "true"},
-			}, html.Text(p.passDone))
+			return kitLive(kitLiveProps{Class: "set-note set-note-live", Role: kitRoleStatus, Live: kitLivePolite,
+				Data: map[string]string{"good": "true"}}, html.Text(p.passDone))
 		}),
-		ui.If(p.passErr != "", func() ui.Node {
-			return html.Div(html.Props{Class: "fs-error", Role: "alert"}, html.Text(p.passErr))
-		}),
+		kitFieldError(kitFormSettings, p.passErr),
 	}
 }
 
@@ -1066,24 +1133,24 @@ func credConfirmDialog(tr i18n.Runtime, pending, newName, currentName string) ui
 		rows = append(rows, html.Li(html.Props{Class: "cred-fact"}, html.Text(f)))
 	}
 
-	return scrim(true, actCredCancel,
+	return kitDialog(kitDialogProps{Open: true, CloseAction: actCredCancel,
+		Class: "fs cred-confirm", Title: title, DescribedBy: credLeadID},
 		// data-action on the dialog itself, for feedSettings' reason: without it
 		// every click inside walks up to the backdrop and closes the thing.
-		html.Div(html.Props{Class: "fs cred-confirm", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": title}},
-			html.Div(html.Props{Class: "fs-head"},
-				html.Span(html.Props{Class: "fs-mark"}, html.Text(title))),
-			html.Div(html.Props{Class: "fs-body"},
-				html.P(html.Props{Class: "set-note"}, html.Text(lead)),
-				html.Ul(html.Props{Class: "cred-facts"}, rows...),
-				html.Div(html.Props{Class: "set-actions"},
-					// The confirming button carries the VERB, not "OK": a reader
-					// who has stopped reading should still be able to tell the two
-					// buttons apart by what they say.
-					actionButton(actCredConfirm, "chip", confirm),
-					actionButton(actCredCancel, "chip", tr.T("settings", "credCancel")),
-				),
+		//
+		// Described by its lead sentence, which is the dialog's whole question:
+		// a screen reader opening it reads the title and then that, rather than
+		// the title and then the first button.
+		kitDialogHead(kitDialogHeadProps{Prefix: "fs", Title: title}),
+		kitDialogBody("fs",
+			html.P(html.Props{Class: "set-note", ID: credLeadID}, html.Text(lead)),
+			html.Ul(html.Props{Class: "cred-facts"}, rows...),
+			kitChipGroup(kitGroupActions, "",
+				// The confirming button carries the VERB, not "OK": a reader
+				// who has stopped reading should still be able to tell the two
+				// buttons apart by what they say.
+				kitAction(kitChipProps{Action: actCredConfirm, Label: confirm}),
+				kitAction(kitChipProps{Action: actCredCancel, Label: tr.T("settings", "credCancel")}),
 			),
 		),
 	)
@@ -1116,18 +1183,29 @@ func nameButtonLabel(tr i18n.Runtime, p passwordProps) string {
 // opinion yet. Before that it renders as neither met nor failed, because a red
 // cross against an empty field is the interface telling somebody off for not
 // having started.
-func pwRule(label string, met, active bool) ui.Node {
+//
+// The state is also a WORD, visually hidden. The ✓ and × the sheet draws are
+// CSS pseudo-content, which some screen readers skip and none of them can be
+// relied on to say as "met" — so a reader who could not see the marks heard
+// four rules and never learned which they had satisfied. Nothing for idle:
+// the rule has no opinion yet, and saying "not met" before a key is pressed
+// is the telling-off the paragraph above exists to avoid.
+func pwRule(tr i18n.Runtime, label string, met, active bool) ui.Node {
 	state := "idle"
+	kids := []ui.Node{html.Text(label)}
 	if active {
 		state = "unmet"
+		word := tr.T("settings", "pwRuleUnmet")
 		if met {
 			state = "met"
+			word = tr.T("settings", "pwRuleMet")
 		}
+		kids = append(kids, html.Span(html.Props{Class: "vh"}, html.Text(word)))
 	}
 	return html.Li(html.Props{
 		Class: "pw-rule",
 		Data:  map[string]string{"state": state},
-	}, html.Text(label))
+	}, kids...)
 }
 
 // --- signing out ---------------------------------------------------------------
@@ -1192,23 +1270,12 @@ func signOutGroup(tr i18n.Runtime, s sessionProps) []ui.Node {
 	// offering to repeat work that has already happened.
 	if s.stranded {
 		return []ui.Node{
-			fsGroup(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
-			html.Div(html.Props{
-				Class: "set-note set-note-live",
-				Data:  map[string]string{"bad": "true"},
-				Role:  "status",
-			}, html.Text(tr.T("settings", "signOutStranded"))),
-			html.Div(html.Props{Class: "set-actions"},
-				glyphChip(actSignOutBack, glyphSignOut, tr.T("settings", "signOutGo"), false)),
+			kitHeading(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
+			kitLive(kitLiveProps{Class: "set-note set-note-live", Role: kitRoleStatus,
+				Data: map[string]string{"bad": "true"}}, html.Text(tr.T("settings", "signOutStranded"))),
+			kitChipGroup(kitGroupActions, "",
+				kitAction(kitChipProps{Action: actSignOutBack, Glyph: glyphSignOut, Label: tr.T("settings", "signOutGo")})),
 		}
-	}
-
-	label, action := tr.T("settings", "signOut"), actSignOut
-	switch {
-	case s.busy:
-		label, action = tr.T("settings", "signOutBusy"), actSignOutDo
-	case s.armed:
-		label, action = tr.T("settings", "signOutArmed"), actSignOutDo
 	}
 
 	// The colour arrives WITH the consequence, not before it.
@@ -1227,31 +1294,20 @@ func signOutGroup(tr i18n.Runtime, s sessionProps) []ui.Node {
 	// warning would paint green — a "go" colour on the press that ends the
 	// session. The armed fill comes from --neg, the one token that means this
 	// went wrong or is about to.
-	class := "chip"
-	if s.armed || s.busy {
-		class = "chip fs-danger"
-	}
+	arm := kitArm(kitArmProps{Armed: s.armed, Busy: s.busy,
+		Action: actSignOut, ArmedAction: actSignOutDo,
+		Label: tr.T("settings", "signOut"), ArmedLabel: tr.T("settings", "signOutArmed"),
+		BusyLabel: tr.T("settings", "signOutBusy"),
+		Glyph:     glyphSignOut,
+		DataArmed: true, AriaBusy: true,
+		Warn: tr.T("settings", "signOutWarn"), WarnClass: "set-note set-note-live"})
 
 	return []ui.Node{
-		fsGroup(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
-		html.Div(html.Props{Class: "set-actions"},
-			html.Button(html.Props{
-				Class: class,
-				Raw: map[string]any{
-					"data-action": action,
-					"data-armed":  strconv.FormatBool(s.armed && !s.busy),
-				},
-				Aria: map[string]string{"busy": strconv.FormatBool(s.busy)},
-			}, lead(glyphSignOut), html.Text(label)),
-		),
+		kitHeading(glyphSignOut, tr.T("settings", "sessionGroup"), ""),
+		kitChipGroup(kitGroupActions, "", arm.Button),
 		// The warning is a live region: arming changes what the next press does,
 		// and a reader who cannot see the button turning red has to be told.
-		ui.If(s.armed && !s.busy, func() ui.Node {
-			return html.Div(html.Props{
-				Class: "set-note set-note-live",
-				Role:  "alert",
-			}, html.Text(tr.T("settings", "signOutWarn")))
-		}),
+		arm.Warn,
 		html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("settings", "signOutScope"))),
 	}
@@ -1261,10 +1317,10 @@ func signOutGroup(tr i18n.Runtime, s sessionProps) []ui.Node {
 
 func settingsServer(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if p.statsErr != "" {
-		return []ui.Node{html.Div(html.Props{Class: "fs-error"}, html.Text(p.statsErr))}
+		return []ui.Node{kitAlert("fs-error", p.statsErr)}
 	}
 	if p.loading || p.stats == nil {
-		return settingsSkeleton()
+		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
 	}
 	s := p.stats
 
@@ -1273,40 +1329,50 @@ func settingsServer(tr i18n.Runtime, p settingsProps) []ui.Node {
 		commit = tr.T("settings", "localBuild")
 	}
 	return []ui.Node{
-		fsGroup(glyphHealth, tr.T("settings", "buildGroup"), ""),
-		setFact(tr.T("settings", "factVersion"), s.GetVersion()),
-		setFact(tr.T("settings", "factCommit"), commit),
-		setFact(tr.T("settings", "factSchema"), tr.T("settings", "migrationN", i18n.Args{"n": int(s.GetSchemaVersion())})),
-		setFact(tr.T("settings", "factUptime"), humanDuration(tr, s.GetUptimeS())),
-		setFact(tr.T("settings", "factStarted"), relOrNever(tr, s.GetStartedAt())),
+		kitHeading(glyphHealth, tr.T("settings", "buildGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factVersion"), s.GetVersion()),
+			kitFact(tr.T("settings", "factCommit"), commit),
+			kitFact(tr.T("settings", "factSchema"), tr.T("settings", "migrationN", i18n.Args{"n": int(s.GetSchemaVersion())})),
+			kitFact(tr.T("settings", "factUptime"), humanDuration(tr, s.GetUptimeS())),
+			kitFact(tr.T("settings", "factStarted"), relOrNever(tr, s.GetStartedAt())),
+		),
 
-		fsGroup("⌸", tr.T("settings", "storageGroup"), ""),
-		setFact(tr.T("settings", "factDatabase"), humanBytes(tr, s.GetDbBytes())),
-		// The WAL is shown separately because it is the number that surprises
-		// people: it grows between checkpoints, and someone watching only the
-		// .db file concludes their storage is smaller than it is.
-		setFact(tr.T("settings", "factWAL"), humanBytes(tr, s.GetWalBytes())),
-		setFact(tr.T("settings", "factPath"), s.GetDbPath()),
+		kitHeading("⌸", tr.T("settings", "storageGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factDatabase"), humanBytes(tr, s.GetDbBytes())),
+			// The WAL is shown separately because it is the number that surprises
+			// people: it grows between checkpoints, and someone watching only the
+			// .db file concludes their storage is smaller than it is.
+			kitFact(tr.T("settings", "factWAL"), humanBytes(tr, s.GetWalBytes())),
+			kitFact(tr.T("settings", "factPath"), s.GetDbPath()),
+		),
 
-		fsGroup(glyphFeeds, tr.T("settings", "contentsGroup"), ""),
-		setFact(tr.T("settings", "factFeeds"), thousands(tr, int(s.GetFeeds()))+
-			dormantSuffix(tr, int(s.GetDormantFeeds()))),
-		setFact(tr.T("settings", "factArticles"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItems())), "unread": thousands(tr, int(s.GetUnread()))})),
-		setFact(tr.T("settings", "factNotes"), thousands(tr, int(s.GetNotes()))),
-		setFact(tr.T("settings", "factTags"), thousands(tr, int(s.GetTags()))),
-		setFact(tr.T("settings", "factRated"), thousands(tr, int(s.GetRated()))),
-		setFact(tr.T("settings", "factSaved"), thousands(tr, int(s.GetSaved()))),
+		kitHeading(glyphFeeds, tr.T("settings", "contentsGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factFeeds"), thousands(tr, int(s.GetFeeds()))+
+				dormantSuffix(tr, int(s.GetDormantFeeds()))),
+			kitFact(tr.T("settings", "factArticles"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItems())), "unread": thousands(tr, int(s.GetUnread()))})),
+			kitFact(tr.T("settings", "factNotes"), thousands(tr, int(s.GetNotes()))),
+			kitFact(tr.T("settings", "factTags"), thousands(tr, int(s.GetTags()))),
+			kitFact(tr.T("settings", "factRated"), thousands(tr, int(s.GetRated()))),
+			kitFact(tr.T("settings", "factSaved"), thousands(tr, int(s.GetSaved()))),
+		),
 
-		fsGroup(glyphRefresh, tr.T("settings", "pollGroup"), ""),
-		setFact(tr.T("settings", "factEvery"), humanDuration(tr, int64(s.GetPollIntervalS()))),
-		setFact(tr.T("settings", "factLastPoll"), relOrNever(tr, s.GetLastPollAt())),
+		kitHeading(glyphRefresh, tr.T("settings", "pollGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factEvery"), humanDuration(tr, int64(s.GetPollIntervalS()))),
+			kitFact(tr.T("settings", "factLastPoll"), relOrNever(tr, s.GetLastPollAt())),
+		),
 
-		fsGroup(glyphAction, tr.T("settings", "processGroup"), ""),
-		setFact(tr.T("settings", "factHeap"), humanBytes(tr, s.GetHeapBytes())),
-		setFact(tr.T("settings", "factGoroutines"), thousands(tr, int(s.GetGoroutines()))),
-		setFact(tr.T("settings", "factGC"), thousands(tr, int(s.GetGcCycles()))),
-		html.Div(html.Props{Class: "set-actions"},
-			glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "refreshNumbers"), false)),
+		kitHeading(glyphAction, tr.T("settings", "processGroup"), ""),
+		kitFacts(kitFactsTab,
+			kitFact(tr.T("settings", "factHeap"), humanBytes(tr, s.GetHeapBytes())),
+			kitFact(tr.T("settings", "factGoroutines"), thousands(tr, int(s.GetGoroutines()))),
+			kitFact(tr.T("settings", "factGC"), thousands(tr, int(s.GetGcCycles()))),
+		),
+		kitChipGroup(kitGroupActions, "",
+			kitAction(kitChipProps{Action: "settings-refresh", Glyph: glyphRefresh, Label: tr.T("settings", "refreshNumbers")})),
 	}
 }
 
@@ -1327,20 +1393,19 @@ func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 		cur = "INFO"
 	}
 	for _, l := range levels {
-		chips = append(chips, html.Button(html.Props{
-			Class: "chip chip-mini",
-			Key:   "loglvl-" + l,
-			Raw:   map[string]any{"data-action": "settings-loglevel", "data-value": l},
-			Aria:  map[string]string{"pressed": strconv.FormatBool(l == cur)},
-		}, html.Text(strings.ToLower(l))))
+		chips = append(chips, kitPick(kitChipProps{Action: "settings-loglevel", Mini: true,
+			Key: "loglvl-" + l, Label: strings.ToLower(l)}, l, l == cur))
 	}
 
 	head := []ui.Node{
-		fsGroup("≡", tr.T("settings", "activityGroup"),
+		kitHeading("≡", tr.T("settings", "activityGroup"),
 			tr.T("settings", "activityHint")),
-		html.Div(html.Props{Class: "set-actions"},
-			html.Div(html.Props{Class: "fs-choices"}, chips...),
-			glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "reload"), false),
+		kitChipGroup(kitGroupActions, "",
+			// Named, because four pressed-or-not words ("debug", "info"…) say
+			// what the options are and not what choosing one does: it is the
+			// floor of what the list shows, not a filter to exactly that level.
+			kitChipGroup(kitGroupChoices, tr.T("settings", "logLevelAria"), chips...),
+			kitAction(kitChipProps{Action: "settings-refresh", Glyph: glyphRefresh, Label: tr.T("settings", "reload")}),
 		),
 	}
 
@@ -1349,16 +1414,14 @@ func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 	if p.stats != nil && len(p.stats.GetLogCounts()) > 0 {
 		var counts []ui.Node
 		for _, c := range p.stats.GetLogCounts() {
-			counts = append(counts, html.Span(html.Props{
-				Class: "chip chip-static chip-mini log-" + strings.ToLower(c.GetLevel()),
-				Key:   "lc-" + c.GetLevel(),
-			}, html.Text(strings.ToLower(c.GetLevel())+" "+thousands(tr, int(c.GetCount())))))
+			counts = append(counts, kitStatic(kitStaticProps{Label: strings.ToLower(c.GetLevel()) + " " + thousands(tr, int(c.GetCount())),
+				Key: "lc-" + c.GetLevel(), Mini: true, Extra: "log-" + strings.ToLower(c.GetLevel())}))
 		}
 		head = append(head, html.Div(html.Props{Class: "set-counts"}, counts...))
 	}
 
 	if p.loading {
-		return append(head, settingsSkeleton()...)
+		return append(head, kitSkLines("set-sk-", 0, 6, "sk-w-90")...)
 	}
 	// Before the empty state, because they are not the same fact and this screen
 	// used to report the wrong one: a failed fetch left `logs` nil and fell
@@ -1369,8 +1432,7 @@ func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 	// level chips and Reload are how a reader retries, and a screen that removes
 	// its own retry button on failure is one you have to reload the page to use.
 	if p.logsErr != "" {
-		out := append(head, html.Div(html.Props{Class: "fs-error", Role: "alert"},
-			html.Text(p.logsErr)))
+		out := append(head, kitAlert("fs-error", p.logsErr))
 		// Whatever was already on screen stays under it. Stale records with a
 		// sentence saying the reload failed beat a blank tab.
 		if len(p.logs) == 0 {
@@ -1449,89 +1511,95 @@ func settingsSpeed(tr i18n.Runtime, p settingsProps) []ui.Node {
 	// the reader gives up, while the sentence explaining why sits unread in
 	// state. A permanent spinner is the worst of the three things this could say.
 	if p.statsErr != "" {
-		return []ui.Node{html.Div(html.Props{Class: "fs-error"}, html.Text(p.statsErr))}
+		return []ui.Node{kitAlert("fs-error", p.statsErr)}
 	}
 	if p.loading || p.stats == nil {
-		return settingsSkeleton()
+		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
 	}
 	methods := p.stats.GetMethods()
 	if len(methods) == 0 {
 		return []ui.Node{
-			fsGroup(glyphAction, tr.T("settings", "speedGroup"), ""),
+			kitHeading(glyphAction, tr.T("settings", "speedGroup"), ""),
 			html.Div(html.Props{Class: "set-note"},
 				html.Text(tr.T("settings", "speedEmpty"))),
 		}
 	}
 
+	// A table, said in ARIA rather than in <table>. It IS one — a call per row,
+	// a measurement per column — and read as divs it was a stream of numbers:
+	// "GetFeeds 1,204 3.1ms 12ms 40ms" with nothing to say which figure was
+	// p95. Roles rather than the elements because `.lat-row` is a CSS grid that
+	// re-flows to three columns on a phone, which table layout cannot do; the
+	// roles give a screen reader its row and column navigation and leave every
+	// box exactly where it was.
+	cell := func(class, text string) ui.Node {
+		return html.Span(html.Props{Class: class, Role: "cell"}, html.Text(text))
+	}
+	head := func(class, text string) ui.Node {
+		return html.Span(html.Props{Class: class, Role: "columnheader"}, html.Text(text))
+	}
 	rows := []ui.Node{
-		html.Div(html.Props{Class: "lat-row lat-head"},
-			html.Span(html.Props{Class: "lat-m"}, html.Text(tr.T("settings", "colCall"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colCount"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colP50"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colP95"))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(tr.T("settings", "colMax"))),
+		html.Div(html.Props{Class: "lat-row lat-head", Role: "row"},
+			head("lat-m", tr.T("settings", "colCall")),
+			head("lat-n", tr.T("settings", "colCount")),
+			head("lat-n", tr.T("settings", "colP50")),
+			head("lat-n", tr.T("settings", "colP95")),
+			head("lat-n", tr.T("settings", "colMax")),
 		),
 	}
 	for _, m := range methods {
 		// A method with errors is worth seeing even when it is fast, so the row
 		// is flagged rather than the number coloured.
 		rows = append(rows, html.Div(html.Props{
-			Class: "lat-row",
-			Key:   "lat-" + m.GetMethod(),
-			Data:  map[string]string{"failing": strconv.FormatBool(m.GetErrors() > 0)},
+			Class: "lat-row", Role: "row",
+			Key:  "lat-" + m.GetMethod(),
+			Data: map[string]string{"failing": strconv.FormatBool(m.GetErrors() > 0)},
 		},
-			html.Span(html.Props{Class: "lat-m"}, html.Text(m.GetMethod())),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(thousands(tr, int(m.GetCalls())))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetP50Ms()))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetP95Ms()))),
-			html.Span(html.Props{Class: "lat-n"}, html.Text(ms(tr, m.GetMaxMs()))),
+			// The method names its row, which is what a reader moving down the
+			// p95 column hears before each figure.
+			html.Span(html.Props{Class: "lat-m", Role: "rowheader"}, html.Text(m.GetMethod())),
+			cell("lat-n", thousands(tr, int(m.GetCalls()))),
+			cell("lat-n", ms(tr, m.GetP50Ms())),
+			cell("lat-n", ms(tr, m.GetP95Ms())),
+			cell("lat-n", ms(tr, m.GetMaxMs())),
 		))
 	}
 
+	speedTitle := tr.T("settings", "speedGroup")
 	out := []ui.Node{
-		fsGroup(glyphAction, tr.T("settings", "speedGroup"),
-			tr.T("settings", "speedHint")),
-		html.Div(html.Props{Class: "lat-table"}, rows...),
+		kitHeading(glyphAction, speedTitle, tr.T("settings", "speedHint")),
+		html.Div(html.Props{Class: "lat-table", Role: "table",
+			Aria: map[string]string{"label": speedTitle}}, rows...),
 	}
-	var failing []ui.Node
+	var failing []kitFactPair
 	for _, m := range methods {
 		if m.GetErrors() > 0 {
-			failing = append(failing, html.Div(html.Props{Class: "set-fact"},
-				html.Span(html.Props{Class: "set-fact-name"}, html.Text(m.GetMethod())),
-				html.Span(html.Props{Class: "set-fact-value"},
-					html.Text(tr.T("settings", "failedCalls", i18n.Count(int(m.GetErrors()))))),
-			))
+			failing = append(failing, kitFact(m.GetMethod(),
+				tr.T("settings", "failedCalls", i18n.Count(int(m.GetErrors())))))
 		}
 	}
 	if len(failing) > 0 {
-		out = append(out, fsGroup("⚠", tr.T("settings", "failingGroup"), ""))
-		out = append(out, failing...)
+		out = append(out, kitHeading("⚠", tr.T("settings", "failingGroup"), ""))
+		out = append(out, kitFacts(kitFactsTab, failing...))
 	}
-	return append(out, html.Div(html.Props{Class: "set-actions"},
-		glyphChip("settings-refresh", glyphRefresh, tr.T("settings", "refreshNumbers"), false)))
+	return append(out, kitChipGroup(kitGroupActions, "",
+		kitAction(kitChipProps{Action: "settings-refresh", Glyph: glyphRefresh, Label: tr.T("settings", "refreshNumbers")})))
 }
 
 // --- shared pieces --------------------------------------------------------------
 
-func setRow(label, hint string, control ui.Node) ui.Node {
-	return fsRow(label, hint, control)
+// setFacts and setFact are a screen's name/value lines — Version, Uptime,
+// Signed in as — as a description list, for kitFacts' reason. A setFact is only
+// valid inside a setFacts: the dt and dd it draws mean nothing outside a dl.
+func setFacts(facts ...ui.Node) ui.Node {
+	return html.Tag("dl", html.Props{Class: "set-facts"}, facts...)
 }
 
 func setFact(label, value string) ui.Node {
 	return html.Div(html.Props{Class: "set-fact"},
-		html.Span(html.Props{Class: "set-fact-name"}, html.Text(label)),
-		html.Span(html.Props{Class: "set-fact-value"}, html.Text(value)),
+		html.Tag("dt", html.Props{Class: "set-fact-name"}, html.Text(label)),
+		html.Tag("dd", html.Props{Class: "set-fact-value"}, html.Text(value)),
 	)
-}
-
-func settingsSkeleton() []ui.Node {
-	out := make([]ui.Node, 0, 6)
-	for i := 0; i < 6; i++ {
-		out = append(out, html.Div(html.Props{
-			Class: "sk sk-line sk-w-90", Key: "set-sk-" + strconv.Itoa(i),
-		}))
-	}
-	return out
 }
 
 // ms renders a millisecond figure at the precision a person can act on: sub-10ms

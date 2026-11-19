@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, openRow, openSettings } from './fixtures.mjs';
 
 /**
  * Deleting a My Feed contribution row, and resetting a whole category
@@ -20,11 +20,11 @@ async function openMyFeedWithData(page, baseURL) {
   // article are exclusive views, so opening a second row would first need
   // navigating back to the list — extra flake this fixture does not need
   // when one read already produces a row to act on.
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(page.locator('.article[data-current="true"] h1')).toBeVisible();
   await page.request.post(`${baseURL}/debug/derive-now`);
 
-  await page.keyboard.press(',');
+  await openSettings(page);
   await page.locator('[data-action="settings-tab"][data-value="myfeed"]').click();
   await page.locator('[data-action="mf-refresh"]').click();
   await expect(page.locator('.mf-row').first()).toBeVisible({ timeout: 15_000 });
@@ -59,7 +59,7 @@ test.describe('My Feed row delete and category reset', () => {
     // A server-side write, not a local flag — it survives a reload.
     await page.reload();
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
-    await page.keyboard.press(',');
+    await openSettings(page);
     await page.locator('[data-action="settings-tab"][data-value="myfeed"]').click();
     await expect(page.locator('.mf-row', { hasText: 'Alpha Journal' }).locator('.chip-off'))
       .toBeVisible({ timeout: 15_000 });
@@ -73,15 +73,20 @@ test.describe('My Feed row delete and category reset', () => {
     await row.locator('[data-action="mf-delete-confirm"]').click();
     await expect(row.locator('.chip-off')).toBeVisible({ timeout: 15_000 });
 
-    const resetBtn = page.locator('[data-action="mf-reset-arm"]');
-    await resetBtn.click();
-    await expect(page.locator('[data-action="mf-reset-confirm"]')).toBeVisible();
+    // The FEEDS group's reset, by `data-value`. There is one reset per group
+    // (mfResetControl is called for topics, entities and feeds), and the moment
+    // the fixture produced a topics group as well, a bare action selector
+    // matched two buttons and strict mode refused. The test was always about the
+    // feeds category — that is the one this fixture can derive — so it says so.
+    const reset = (action) => page.locator(`[data-action="${action}"][data-value="feeds"]`);
+    await reset('mf-reset-arm').click();
+    await expect(reset('mf-reset-confirm')).toBeVisible();
     await expect(page.locator('[role="alert"]', { hasText: /undoes every/ })).toBeVisible();
 
-    await page.locator('[data-action="mf-reset-confirm"]').click();
+    await reset('mf-reset-confirm').click();
 
     await expect(row.locator('.chip-off')).toHaveCount(0, { timeout: 15_000 });
     // Armed to a bare Reset again, not stuck confirming.
-    await expect(page.locator('[data-action="mf-reset-arm"]')).toBeVisible();
+    await expect(reset('mf-reset-arm')).toBeVisible();
   });
 });

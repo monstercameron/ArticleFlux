@@ -1,6 +1,6 @@
 package design
 
-import "github.com/monstercameron/GoWebComponents/v5/css"
+import "github.com/monstercameron/GoWebComponents/v7/css"
 
 // The motion system.
 //
@@ -281,18 +281,18 @@ func motionDialogs(r func(string, string) css.Rule) {
 	const panels = ".pal, .help, .fs, .af"
 
 	css.Global(".pal-scrim",
-		r("opacity", "0"), r("visibility", "hidden"),
+		css.OpacityNum(css.Num(0)), r("visibility", "hidden"),
 		r("transition", "opacity "+warm+", visibility 0s linear var(--t2)"),
 	)
 	css.Global(".pal-scrim[data-open='true']",
-		r("opacity", "1"), r("visibility", "visible"),
+		css.OpacityNum(css.Num(1)), r("visibility", "visible"),
 		r("transition", "opacity "+move+", visibility 0s"),
 	)
 
 	// The panel lifts; the backdrop only fades. A backdrop that moves is a
 	// backdrop the eye tracks instead of ignoring.
 	css.Global(panels,
-		r("opacity", "0"),
+		css.OpacityNum(css.Num(0)),
 		r("transform", "translateY(14px) scale(.985)"),
 		r("transition", "opacity "+warm+", transform "+move),
 	)
@@ -303,22 +303,31 @@ func motionDialogs(r func(string, string) css.Rule) {
 	// 1fr` is the one technique that interpolates to the content's OWN height,
 	// and it is affordable here for the same reason it was declined for the
 	// rail's 151 feed rows: this is one line of text.
+	//
+	// visibility as well, on the same delayed-exit timing the dialogs use above
+	// and for the reason written there. A closed slot is a zero-height row at
+	// opacity 0: gone from the screen, still in the accessibility tree and still
+	// in the tab order. For a line of status text that cost nothing, which is why
+	// it survived — but the category suggestion keeps two BUTTONS in its slot, so
+	// a reader on a keyboard tabbed onto an invisible "File it" that would file a
+	// feed under a category nobody had proposed. The delay is the collapse's own
+	// duration (--t2), so the banner is still seen leaving.
 	css.Global(".banner-slot",
-		r("display", "grid"), r("grid-template-rows", "0fr"),
-		r("transition", "grid-template-rows "+move+", opacity "+warm),
-		r("opacity", "0"),
+		css.Display.Grid, css.GridRows(css.Fr(0)),
+		r("transition", "grid-template-rows "+move+", opacity "+warm+", visibility 0s linear var(--t2)"),
+		css.OpacityNum(css.Num(0)), r("visibility", "hidden"),
 	)
 	css.Global(".banner-slot[data-open='true']",
-		r("grid-template-rows", "1fr"), r("opacity", "1"),
-		r("transition", "grid-template-rows "+slow+", opacity "+move),
+		css.GridRows(css.Fr(1)), css.OpacityNum(css.Num(1)), r("visibility", "visible"),
+		r("transition", "grid-template-rows "+slow+", opacity "+move+", visibility 0s"),
 	)
 	// The clip is what makes the fraction mean anything: without a min-height of
 	// zero on the row's child, the content refuses to be squeezed and the row
 	// never actually closes.
-	css.Global(".banner-clip", r("overflow", "hidden"), r("min-height", "0"))
+	css.Global(".banner-clip", css.Overflow.Hidden, css.MinHeight(css.Zero))
 
 	css.Global(".pal-scrim[data-open='true'] :is("+panels+")",
-		r("opacity", "1"), r("transform", "none"),
+		css.OpacityNum(css.Num(1)), r("transform", "none"),
 		r("transition", "opacity "+move+", transform "+slow),
 	)
 }
@@ -345,8 +354,8 @@ func motionDialogs(r func(string, string) css.Rule) {
 // one way of saying "a mark is being set" and this is it.
 func motionSpawn(r func(string, string) css.Rule) {
 	rowIn := css.Keyframes("rowin",
-		css.At("0%", r("opacity", "0"), r("transform", "translateY(6px)")),
-		css.At("100%", r("opacity", "1"), r("transform", "none")),
+		css.At("0%", css.OpacityNum(css.Num(0)), css.Transform(css.TranslateY(css.Px(6)))),
+		css.At("100%", css.OpacityNum(css.Num(1)), r("transform", "none")),
 	)
 	barIn := css.Keyframes("barin",
 		css.At("0%", r("transform", "scaleY(0)")),
@@ -389,8 +398,8 @@ func motionSpawn(r func(string, string) css.Rule) {
 	// appear. One row arriving in a list of 3,600 is a different event and keeps
 	// its rise.
 	fade := css.Keyframes("fade-in",
-		css.At("0%", r("opacity", "0")),
-		css.At("100%", r("opacity", "1")),
+		css.At("0%", css.OpacityNum(css.Num(0))),
+		css.At("100%", css.OpacityNum(css.Num(1))),
 	)
 	css.Global(".feed-slot",
 		fade,
@@ -430,14 +439,14 @@ func motionLoading(r func(string, string) css.Rule) {
 	// Both grounds this can land on need the box to clip: the banner has a
 	// rounded right edge and the rule would otherwise square it off.
 	css.Global(".is-loading, .banner[data-busy='true']",
-		r("position", "relative"), r("overflow", "hidden"),
+		css.Position.Relative, css.Overflow.Hidden,
 	)
 	css.Global(".is-loading::after, .banner[data-busy='true']::after",
-		r("content", `""`), r("position", "absolute"),
-		r("left", "0"), r("right", "0"), r("bottom", "0"), r("height", "2px"),
-		r("pointer-events", "none"),
+		r("content", `""`), css.Position.Absolute,
+		r("inset-inline-start", "0"), r("inset-inline-end", "0"), css.Bottom(css.Zero), css.H(css.Px(2)),
+		css.PointerEvents.None,
 		r("background", "linear-gradient(90deg, transparent, var(--cc), transparent)"),
-		r("background-repeat", "no-repeat"),
+		css.BgRepeat.NoRepeat,
 		// 40% of the rule travels; with motion off it widens to the whole rule
 		// and holds still. A short band frozen at one end would read as a
 		// determinate progress bar stuck at 0%, which is a worse lie than a
@@ -468,7 +477,7 @@ func motionWarm(r func(string, string) css.Rule) {
 	// visible on the Classification tab's two "not wired" switches before
 	// FluxCast's start button made it matter.
 	css.Global(".chip:hover:not(.chip-static):not(:disabled), .btn:hover:not(:disabled)",
-		r("transform", "translateY(-1px)"))
+		css.Transform(css.TranslateY(css.Px(-1))))
 	css.Global(".chip:active:not(.chip-static):not(:disabled), .btn:active:not(:disabled)",
 		r("transform", "translateY(0) scale(.97)"),
 		// A press must feel immediate or it feels broken; the release is what
@@ -496,11 +505,11 @@ func motionWarm(r func(string, string) css.Rule) {
 	// press actually does, and it would be a lie on a chip that toggles a filter
 	// in place.
 	css.Global(".chip-icon::after",
-		r("content", `""`), r("position", "absolute"), r("inset", "-1px"),
-		r("border-radius", "50%"), r("border", "1px solid var(--cc)"),
-		r("opacity", "0"), r("transform", "scale(1.9)"),
+		r("content", `""`), css.Position.Absolute, css.Inset(css.Px(-1)),
+		css.Rounded(css.Percent(50)), css.Border(css.Px(1), css.Var("cc")),
+		css.OpacityNum(css.Num(0)), css.Transform(css.Scale(1.9)),
 		// It must never eat the press it decorates.
-		r("pointer-events", "none"),
+		css.PointerEvents.None,
 		r("transition", "transform "+slow+", opacity "+slow),
 	)
 	css.Global(".chip-icon:active::after",
@@ -520,7 +529,7 @@ func motionWarm(r func(string, string) css.Rule) {
 	css.Global(".field, .note-field, .pal-input",
 		r("transition", "border-color "+warm+", background-color "+warm),
 	)
-	css.Global(".field:focus, .note-field:focus", r("border-color", "var(--cc)"))
+	css.Global(".field:focus, .note-field:focus", css.BorderColor(css.Var("cc")))
 
 	// Rows: background only. 151 of them in one column and 3,600 in the other.
 	css.Global(".feed-row, .item-row, .pal-row, .set-tab, .tab, .log-row",
@@ -547,7 +556,7 @@ func motionWarm(r func(string, string) css.Rule) {
 	// row the pointer has only just entered.
 	css.Global(".feed-gear", r("transform", "translateY(-50%) scale(.82)"))
 	css.Global(".feed-slot:hover .feed-gear, .feed-gear:focus-visible",
-		r("transform", "translateY(-50%) scale(1)"))
+		css.Transform(css.TranslateY(css.Percent(-50)), css.Scale(1)))
 	// The row's reserved space for it opens rather than snapping, so the feed
 	// name ellipsises smoothly instead of jumping a character.
 	css.Global(".feed-gap", r("transition", "width "+move))
@@ -559,7 +568,7 @@ func motionWarm(r func(string, string) css.Rule) {
 		r("transition", "background-color "+warm+", border-color "+warm+
 			", color "+warm+", transform "+move),
 	)
-	css.Global(".rail-add-btn:hover, .af-go:hover", r("transform", "translateY(-1px)"))
+	css.Global(".rail-add-btn:hover, .af-go:hover", css.Transform(css.TranslateY(css.Px(-1))))
 	css.Global(".rail-add-btn:active, .af-go:active",
 		r("transform", "translateY(0) scale(.98)"), r("transition-duration", "0s"))
 	// The caret turns, like every other caret in the app.
@@ -594,17 +603,15 @@ func motionMarks(r func(string, string) css.Rule) {
 	// which is what lets it GROW when the row becomes current. A pseudo-element
 	// that only exists in the selected state cannot animate: it is created at
 	// its final size, which is the same as not animating at all.
-	css.Global(".feed-row::before",
-		r("content", `""`), r("position", "absolute"),
-		r("left", "0"), r("top", "5px"), r("bottom", "5px"),
-		r("width", "3px"), r("border-radius", "0 3px 3px 0"),
+	css.Global(".feed-row::before", ruleSet(hueBar,
+		css.Top(css.Px(5)), css.Bottom(css.Px(5)),
 		r("background", "var(--cc)"),
 		r("transform", "scaleY(0)"), r("transform-origin", "50% 50%"),
-		r("opacity", "0"),
+		css.OpacityNum(css.Num(0)),
 		r("transition", "transform "+mark+", opacity "+warm),
-	)
+	)...)
 	css.Global(".feed-row[aria-current='true']::before",
-		r("transform", "scaleY(1)"), r("opacity", "1"),
+		r("transform", "scaleY(1)"), css.OpacityNum(css.Num(1)),
 	)
 
 	// The palette's marker is an inset shadow rather than a pseudo-element, so
@@ -629,9 +636,9 @@ func motionMarks(r func(string, string) css.Rule) {
 	// the row height and nothing has to be recomputed as the list scrolls. The
 	// index arrives as --cursor from Go.
 	css.Global(".list-scroll::before",
-		r("content", `""`), r("position", "absolute"),
-		r("left", "0"), r("right", "0"), r("top", "0"),
-		r("height", "var(--row)"),
+		r("content", `""`), css.Position.Absolute,
+		r("inset-inline-start", "0"), r("inset-inline-end", "0"), css.Top(css.Zero),
+		css.H(css.VarLength("row")),
 		r("background", "var(--sur-2)"),
 		r("transform", "translateY(var(--cursor, 0px))"),
 		r("transition", "transform "+move+", opacity "+warm),
@@ -639,22 +646,22 @@ func motionMarks(r func(string, string) css.Rule) {
 		// opt-out because .list-scroll is also the skeleton list's class, and
 		// that one carries no cursor state at all — defaulting to visible put a
 		// selection highlight on the first placeholder row of every load.
-		r("opacity", "0"),
+		css.OpacityNum(css.Num(0)),
 		// Underneath the rows and out of the way of the pointer. The rows are
 		// position:relative with no z-index, so they paint after this in DOM
 		// order and their text sits on top of it.
-		r("z-index", "0"), r("pointer-events", "none"),
+		css.ZIndex(0), css.PointerEvents.None,
 	)
 	// Shown only for a list that has a selection. Parked at the top and
 	// invisible otherwise, so the first selection of a session fades in on its
 	// way rather than sliding the whole height of the list out of nowhere.
-	css.Global(".list-scroll[data-cursor='true']::before", r("opacity", "1"))
+	css.Global(".list-scroll[data-cursor='true']::before", css.OpacityNum(css.Num(1)))
 
 	// On a phone the tab bar carries the same job as the rail's bar, and it is
 	// the glyph that grows: there is no room for a rule, and a 4px scale on a
 	// 17px glyph is legible at arm's length.
 	css.Global(".tab-glyph", r("transition", "transform "+mark+", color "+warm))
-	css.Global(".tab[aria-current='true'] .tab-glyph", r("transform", "scale(1.14)"))
+	css.Global(".tab[aria-current='true'] .tab-glyph", css.Transform(css.Scale(1.14)))
 
 	// The note panel opening and closing is a card that grows out of a line, so
 	// its padding and its fill are what move. Height is not animated — the panel
@@ -676,8 +683,8 @@ func motionArrivals(r func(string, string) css.Rule) {
 	// thickness of its own underline.
 	css.Global(".article-link",
 		r("text-decoration", "underline"),
-		r("text-decoration-color", "transparent"),
-		r("text-decoration-thickness", "2px"),
+		css.TextDecorationColor(css.Transparent),
+		css.TextDecorationThickness(css.Px(2)),
 		r("text-underline-offset", ".08em"),
 	)
 	css.Global(".article-link:hover", r("text-decoration-color", "var(--ink, var(--cc))"))

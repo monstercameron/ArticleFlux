@@ -6,16 +6,15 @@ written down in `plan.md`; what follows is the part you need before your first c
 ## Before you write anything
 
 ```powershell
-./scripts/make.ps1 tools     # buf and the protoc plugins
 ./scripts/make.ps1 build
 ./bin/articleflux.exe seed
 ./scripts/make.ps1 dev       # http://127.0.0.1:9000
 ```
 
-You need Go 1.26+ and a sibling checkout of
-[GoWebComponents](https://github.com/monstercameron/GoWebComponents) — v5.0.0 exists in that
-project's changelog but was never tagged, so `go.mod` carries a `replace` directive to `../GoWebComponents`.
-That is the one piece of setup that is not in the box, and it disappears the day the tag is pushed.
+You need the Go toolchain `go.mod` names, and `buf` on your `PATH` for the `gen` and `lint` verbs.
+Nothing else has to be set up by hand: every dependency,
+[GoWebComponents](https://github.com/monstercameron/GoWebComponents) included, is a published module
+that the first build downloads, so there is no second repository to check out beside this one.
 
 Node is required only for the e2e suite. The application has no JavaScript toolchain at all.
 
@@ -58,20 +57,32 @@ visible in review; a wrongly-invented table is not.
 isolation** (§6.1) and anything touching the **LLM egress boundary** (§18.8). Both fail silently,
 both are security properties, and both have a test that must be extended alongside any change.
 
-## The five structural guards
+## The seven structural guards
 
 `./scripts/make.ps1 lint` runs `internal/tools/guards`, which fails the build on any of:
 
-1. **A `.css` file anywhere in the tree.** All styling is authored in Go through the GWC `css`
-   package. There is no escape hatch, because one stylesheet becomes ten.
-2. **Application JavaScript.** `web/index.html` carries the boot shim and nothing else.
-3. **SQL outside `internal/store`.** One package knows the schema. A query in a handler is how a
+1. **SQL outside `internal/store`.** One package knows the schema. A query in a handler is how a
    schema becomes undocumented.
-4. **`syscall/js` outside `client/platform`.** Everything else in `client/` must compile and be
+2. **`syscall/js` outside `client/platform`.** Everything else in `client/` must compile and be
    testable natively, which is what makes the client testable at all.
+3. **A `.css` file.** All styling is authored in Go through the GWC `css` package. There is no
+   escape hatch, because one stylesheet becomes ten. (The guard does not walk `web/` or `design/`:
+   the first holds the self-hosted `fonts.css`, the second the mockups.)
+4. **An exported method on a `*Repo` that takes no `Scope`.** Tenant isolation is a parameter the
+   compiler can see, not something a reviewer remembers. A method over a genuinely global table is
+   exempted by name, with its reason, in the guard's own list.
 5. **Hardcoded user-facing copy in `client/view`.** Every string a reader sees is a catalog key.
    The guard flags literals in `html.Text`, in `Title`/`Placeholder`/`Alt`, in
    `aria-label`/`title`/`placeholder`, and in the view's own label-taking helpers.
+6. **A process-wide SchemaFlux provider.** The LLM key is a per-instance setting resolved at the
+   moment of the call; registering one globally hands it to every other tenant's request.
+7. **An unsanitised render path in `client/`.** Article HTML is stored raw, so the sanitizer on the
+   read side is the only thing between a publisher and the DOM.
+
+The numbering is the tool's own, so "guard 5" means the same thing here, in its output and in
+`internal/tools/guards/main.go`. A26's other half — no application JavaScript, `web/index.html`
+carrying the boot shim and nothing else — is a decision of the same kind that this tool does not
+check.
 
 Each guard corresponds to a decision that is otherwise only written down. If a guard is in your way,
 the conversation is about the decision, not about the guard.

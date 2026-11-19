@@ -387,21 +387,33 @@ func (s *ReaderServer) proxyImages(ctx context.Context, sc store.Scope, it store
 	if s.mintAsset == nil || htm == "" {
 		return htm
 	}
-	// Relative URLs resolve against the article, not the feed: a feed hosted on
-	// one domain routinely carries items on another.
-	base, err := url.Parse(it.URL)
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return htm
-	}
 	// Opt-out, not opt-in. The default is on because the failure it prevents —
 	// an article whose pictures never load — looks like this application is
 	// broken, and the reader has no way to know the difference.
+	optOut := false
 	if prefs, perr := s.svc.GetPrefs(ctx, sc); perr == nil && prefs[proxyImagesPref] == "false" {
+		optOut = true
+	}
+	return proxySubresources(s.mintAsset, it.URL, optOut, htm)
+}
+
+// proxySubresources is proxyImages' rewrite with its two inputs already
+// resolved, so SmartServer's article translations (translate.go) go through
+// the same rewrite as GetItem rather than a second copy of it. Same
+// degradation: anything it cannot do better, it returns unchanged.
+func proxySubresources(mint func(absURL string) string, itemURL string, optOut bool, htm string) string {
+	if mint == nil || htm == "" || optOut {
+		return htm
+	}
+	// Relative URLs resolve against the article, not the feed: a feed hosted on
+	// one domain routinely carries items on another.
+	base, err := url.Parse(itemURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
 		return htm
 	}
 	out, err := rewrite.HTML(htm, rewrite.Options{
 		Base:  base,
-		Asset: s.mintAsset,
+		Asset: mint,
 		// Links stay pointed at the publisher: the reader is reading our copy
 		// of the article, and clicking a link is a deliberate act of leaving.
 		// Tier 2 is where that changes.
@@ -841,6 +853,11 @@ func withCategory(out *pb.Item, cat store.ItemCategory) *pb.Item {
 	out.CategoryReason = cat.Reason
 	out.Genre = cat.Genre
 	out.CategoryByModel = cat.ByModel
+	// Only beside a verdict: ByModel false means the terms earned it, and a
+	// rung on that row would be a claim about who chose something nobody did.
+	if cat.ByModel {
+		out.CategoryRung = cat.Rung
+	}
 	return out
 }
 
@@ -1019,6 +1036,10 @@ func (s *ReaderServer) UpdateFeedSettings(ctx context.Context, req *pb.UpdateFee
 		v := int(req.GetFetchIntervalS())
 		p.FetchIntervalS = &v
 	}
+	if req.ClearBacklogDays != nil {
+		v := int(req.GetClearBacklogDays())
+		p.ClearBacklogDays = &v
+	}
 	f, err := s.svc.UpdateFeedSettings(ctx, sc, req.GetSourceId(), p)
 	if err != nil {
 		return nil, toStatus(err)
@@ -1031,13 +1052,14 @@ func toPBFeedSettings(f store.FeedSettings) *pb.FeedSettings {
 		SourceId: f.SourceID,
 		Title:    f.Title, ResolvedTitle: f.ResolvedTitle,
 		InMegafeed: f.InMegafeed, MutedUntil: f.MutedUntil,
-		CacheDepth:     int32(f.CacheDepth),
-		FeedUrl:        f.FeedURL,
-		SiteUrl:        f.SiteURL,
-		Kind:           f.Kind,
-		FetchIntervalS: int32(f.FetchIntervalS),
-		NextFetchAt:    f.NextFetchAt,
-		LastFetchAt:    f.LastFetchAt, LastSuccessAt: f.LastSuccessAt,
+		CacheDepth:       int32(f.CacheDepth),
+		ClearBacklogDays: int32(f.ClearBacklogDays),
+		FeedUrl:          f.FeedURL,
+		SiteUrl:          f.SiteURL,
+		Kind:             f.Kind,
+		FetchIntervalS:   int32(f.FetchIntervalS),
+		NextFetchAt:      f.NextFetchAt,
+		LastFetchAt:      f.LastFetchAt, LastSuccessAt: f.LastSuccessAt,
 		LastError: f.LastError, ConsecutiveFailures: int32(f.Failures),
 		ItemCount: int32(f.ItemCount), UnreadCount: int32(f.UnreadCount),
 		SubscriberCount: int32(f.SubscriberCount),

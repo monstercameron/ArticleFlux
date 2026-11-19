@@ -12,7 +12,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/store"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Following a page that has no feed — plan.md §11 rung 5, §14.2.
@@ -176,16 +176,14 @@ func (a *SiteAnalyzer) Propose(ctx context.Context, indexURL, pageHTML string) (
 		// previous selectors failed against the real page, which is a different
 		// thing from the library's repair loop (that re-asks for a well-SHAPED
 		// answer; this re-asks for a WORKING one).
-		answer, err := schemaflux.Extracting[scrapeAnswer](in).
-			Steer(scrapeInstructions).
+		answer, err := schemaflux.Extract[scrapeAnswer](call, in, schemaflux.ExtractOptions{
 			// analyzeMaxTokens, restored. This request had 6000 explicitly and
 			// inherited Fast's 2000 through the migration — and scrape.go's own
 			// note records that 1200 already came back ErrTruncated having spent
 			// the budget thinking (ceilings.go).
-			Configure(capExtract(analyzeMaxTokensSF)).
-			Model(a.llm.OpsModel(ctx)).
-			Fast().
-			Run(call)
+			Options: sfOpts(a.llm.OpsModel(ctx), schemaflux.TierFast, scrapeInstructions, analyzeMaxTokensSF),
+		})
+		err = opErr(err)
 		if err != nil {
 			return nil, err
 		}

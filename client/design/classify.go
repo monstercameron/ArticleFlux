@@ -3,7 +3,7 @@ package design
 import (
 	"strconv"
 
-	"github.com/monstercameron/GoWebComponents/v5/css"
+	"github.com/monstercameron/GoWebComponents/v7/css"
 )
 
 // The client's mirror of internal/classify/lexicon's 26 shipped article
@@ -132,16 +132,16 @@ func init() {
 	// attribute, and every rule below reads it rather than taking a colour as an
 	// argument.
 	css.Global(".cat-chip",
-		r("display", "inline-flex"), r("align-items", "center"), r("gap", "4px"),
-		r("padding", "1px 8px"), r("border-radius", "99px"),
-		r("font-size", "10.5px"), r("font-weight", "600"),
-		r("letter-spacing", ".02em"), r("white-space", "nowrap"), r("flex", "none"),
+		css.Display.InlineFlex, css.Items.Center, css.Gap(css.Px(4)),
+		r("padding", "1px 8px"), css.Rounded(css.Px(99)),
+		r("font-size", "10.5px"), css.FontWeight.Semibold,
+		r("letter-spacing", ".02em"), css.WhiteSpace.NoWrap, r("flex", "none"),
 		r("border", "1px solid var(--cat, var(--line))"),
 		r("background", "color-mix(in oklab, var(--cat, transparent) 16%, transparent)"),
 		r("color", "var(--cat-ink, var(--cat, var(--soft)))"),
 		// Every chip carries data-category-slug now (see view.catChipNode), so
 		// every chip is a click target — the pointer cursor is not decoration.
-		r("cursor", "pointer"),
+		css.Cursor.Pointer,
 	)
 	css.Global(".cat-chip:hover",
 		r("background", "color-mix(in oklab, var(--cat, transparent) 26%, transparent)"))
@@ -159,14 +159,14 @@ func init() {
 	// with the same weight would make "one primary, up to two secondary" read as
 	// three equal categories.
 	css.Global(".cat-chip-sec",
-		r("background", "transparent"), r("opacity", ".78"), r("font-weight", "500"),
+		r("background", "transparent"), r("opacity", ".78"), css.FontWeight.Medium,
 	)
 
 	// Genre (news/analysis/opinion/…) is plainer again, on purpose: it is a
 	// weaker, quieter fact than category, so it gets no colour and no fill at
 	// all — just the muted running text the byline and word count already use.
 	css.Global(".genre-tag",
-		r("font-size", "12.5px"), r("color", "var(--mute)"), r("flex", "none"),
+		r("font-size", "12.5px"), css.TextColor(css.Var("mute")), r("flex", "none"),
 	)
 
 	// The settings screen's swatch: a plain filled dot, the same hue, doing the
@@ -174,7 +174,7 @@ func init() {
 	// row's colour" — without the pill chrome a chip needs when it is sitting
 	// inline in a sentence of prose.
 	css.Global(".cat-swatch",
-		r("width", "10px"), r("height", "10px"), r("border-radius", "50%"),
+		css.W(css.Px(10)), css.H(css.Px(10)), css.Rounded(css.Percent(50)),
 		r("flex", "none"), r("background", "var(--cat, var(--line))"),
 	)
 
@@ -185,12 +185,12 @@ func init() {
 	// a generic glyph would be the settings screen making the same category
 	// look like every other one.
 	css.Global(".cat-list-row",
-		r("display", "flex"), r("align-items", "center"), r("gap", "10px"),
-		r("padding", "8px 0"), r("border-bottom", "1px solid var(--hair)"),
+		css.Display.Flex, css.Items.Center, css.Gap(css.Px(10)),
+		r("padding", "8px 0"), css.BorderBottom(css.Px(1), css.Var("hair")),
 	)
 	css.Global(".cat-list-name",
-		r("flex", "1 1 auto"), r("min-width", "0"), r("font-size", "13.5px"),
-		r("color", "var(--cream)"),
+		r("flex", "1 1 auto"), css.MinWidth(css.Zero), r("font-size", "13.5px"),
+		css.TextColor(css.Var("cream")),
 	)
 }
 

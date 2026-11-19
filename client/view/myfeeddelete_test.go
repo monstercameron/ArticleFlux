@@ -133,7 +133,7 @@ func TestMyFeedCategoryResetArmedOffersConfirmCancelAndWarning(t *testing.T) {
 // and later act on "kind:" with nothing to find.
 func TestMfDeleteControlRendersNothingForAnEmptyTarget(t *testing.T) {
 	tr := mustRuntime(t)
-	nodes := mfDeleteControl(myFeedRowFeed, "", false, tr)
+	nodes := mfDeleteControl(myFeedRowFeed, "", "", false, tr)
 	if nodes != nil {
 		t.Errorf("mfDeleteControl(kind, \"\", ...) = %v, want nil", nodes)
 	}

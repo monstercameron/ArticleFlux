@@ -128,13 +128,13 @@ func swellTheme(p Profile) MusicCue {
 // something a tuning can express.
 func crossToBed(p Profile, bedTrack string) (out, in MusicCue) {
 	return MusicCue{
-			Channel: ChannelTheme, Op: MusicStop, Over: p.Mix.StingOut,
-			Why: "the theme leaves",
-		}, MusicCue{
-			Channel: ChannelBed, Op: MusicStart, Track: bedTrack,
-			Level: p.Mix.BedLevel, Over: p.Mix.BedRise,
-			Why: "the bed arrives underneath it, over the same seconds, so there is no silence between them",
-		}
+		Channel: ChannelTheme, Op: MusicStop, Over: p.Mix.StingOut,
+		Why: "the theme leaves",
+	}, MusicCue{
+		Channel: ChannelBed, Op: MusicStart, Track: bedTrack,
+		Level: p.Mix.BedLevel, Over: p.Mix.BedRise,
+		Why: "the bed arrives underneath it, over the same seconds, so there is no silence between them",
+	}
 }
 
 // duckBed and restBed are the narrator starting and stopping. Only six decibels

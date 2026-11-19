@@ -62,8 +62,19 @@ cp "$newest" "$work/articleflux.db" || fail "could not copy $newest into the dri
 # The keys travel with it, because a restore without secrets.key is a server
 # that refuses to start — and finding that out here is the entire point.
 for k in secrets.key proxy.key speech.key recovery-codes.key; do
-	[ -f "$OUT/$k" ] && cp "$OUT/$k" "$work/"
+	# An `if`, not `[ -f … ] && cp …`: the last key is usually absent, the loop would end
+	# with status 1, and under `set -e` that must not be able to end the drill silently
+	# between the copy and the migrate that is its whole point.
+	if [ -f "$OUT/$k" ]; then cp "$OUT/$k" "$work/"; fi
 done
+# On a Docker box the drill runs as root (it has to reach the docker socket) while the
+# binary runs in a container as the service account, which cannot enter a root-owned
+# 0700 mktemp directory. install-ops.sh --runtime docker sets ARTICLEFLUX_RUN_AS to the
+# compose file's user: for exactly this hand-over; under systemd it is unset and the
+# drill's files are already the service account's.
+if [ -n "${ARTICLEFLUX_RUN_AS:-}" ]; then
+	chown -R "$ARTICLEFLUX_RUN_AS" "$work" || fail "could not hand the drill directory to $ARTICLEFLUX_RUN_AS"
+fi
 [ -f "$work/secrets.key" ] || say "NOTE: no secrets.key beside the backup. If this instance sets ARTICLEFLUX_SECRET_KEY that is correct; otherwise a restore cannot read any stored credential"
 
 # Open it the way a real restore does: migrate to this binary's schema. That is

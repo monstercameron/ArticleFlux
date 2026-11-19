@@ -9,6 +9,381 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Changed — 2026-11-19, planner statistics
+
+- **`PRAGMA optimize` now runs.** Production never ran `ANALYZE`, so the query planner worked
+  without `sqlite_stat1`. It runs on the write connection when the store closes, once after boot
+  (all tables) and every six hours, under `analysis_limit=400` so it can never become a full scan of
+  a large database on the single writer: 56 ms cold and about 1 ms warm on the 50,000-item fixture.
+  A failure is logged, never fatal; it is skipped on a read-only store. The pinned query plans are
+  unchanged with statistics present (`TestPinnedPlansHoldWithStatistics`).
+
+### Added — 2026-11-19, clear a feed's backlog
+
+- **A per-feed "Clear the backlog" setting.** A busy feed piles up unread articles faster than
+  anyone reads them, and the pile is what makes a reader stop opening the app. The feed's settings
+  panel now offers *never* (the default), *a day*, *3 days*, *a week* or *a month*: unread
+  articles from that feed older than the window are marked read for you, by the server, and again
+  as they age. Choosing a window clears the existing pile straight away. It is yours alone — two
+  readers of one feed choose independently — and it only marks read: nothing is deleted, Read
+  later items are left alone and ratings are untouched. For everything right now, the panel's
+  existing **Mark all read** is the one-press version, and the row says so.
+  Stored as `subscriptions.clear_backlog_days` (migration 0037); `clear_backlog_days` is additive
+  on `FeedSettings` and `UpdateFeedSettingsRequest`. Applied through `MarkAllRead`, so the unread
+  badge, sync revision and undo batch stay consistent, and swept on the poller's heartbeat one
+  reader at a time (`ScopesWithBacklogRules` is the new unscoped discovery read, exempted in both
+  guard lists).
+
+  A window saved here reaches the reader's other devices at once: the save-time clear publishes the
+  same `state_changed` event the sweep does (`Service.WithBacklogHook`, `App.publishBacklogCleared`)
+  to that reader only, and only when it marked something. The server still accepts any window from
+  0 to 365 days (§20.15 specifies what the panel offers, not an API restriction), so a value outside
+  the five choices shows none of them pressed.
+
+### Fixed — 2026-11-19, the FluxCast tab's settings stay put and say so
+
+- **A switch that did not save looked as though it had.** Every press on the Smart+ voice,
+  Join-the-stories-up, Keep playing, summary, tone and music controls was sent to the server in a
+  goroutine of its own and the answer thrown away. A press that never arrived (a dropped
+  connection, a server restart) left the switch showing the new value until the next reload,
+  when it quietly went back; and two presses on one control, such as a double-click, were two
+  unordered calls, so the older one could be what was stored. Presses now go through one writer
+  (`prefWriter`) that sends them in the order they were made and reports on each one. A failed
+  press puts the control back to what the server holds and says so (a toast, and a line on the
+  tab); a write the client has kept for later is left as it is. The tab shows *Saving…* and then
+  *Saved to your account, so it will be the same on your other devices* in a live region, so
+  there is a moment to wait for before reloading or closing the tab.
+- **Smart+ voice and Keep playing could not be turned off from the FluxCast tab.** Their chips
+  read "on" and looked pressed, but pressing either did nothing: the shared handler only ever
+  switched them on, being written for the dialog that listed what was missing. Every chip now
+  flips whichever way it stands (`slideNeedsFixWrite`).
+- **"Checking" for ever, and a dead Start button, for any account that is not the administrator.**
+  The server-key row waits for the Smart+ configuration, which only the administrator may read.
+  For everyone else the answer never came: the row said "checking" indefinitely and Start stayed
+  disabled with no reason, because the button counted an unanswered key as a missing one while the
+  handler and the Podcast chip on the list did not. The row now says "can't tell from here" and
+  Start follows the same rule as the handler: the reader's own switches decide, and a key that is
+  merely unknown does not. When the key is known to be missing, the line under the rows names
+  whoever runs the server rather than telling the reader to flip a switch.
+- **Settings that failed to load showed their defaults as the reader's choices.** If the saved
+  preferences could not be fetched at start-up the switches silently read "off", and the next
+  press wrote the opposite of what the screen claimed was stored. It now says the settings could
+  not be loaded.
+- **Wording.** The tab's second section was headed *How it sounds* over a row also called *How it
+  sounds*, and described as "whether the day gets a summary of its own", which it does not; it is
+  now *The narration*. The tone picker's absence (it appears only once Join-the-stories-up is on)
+  and the summary switch being overruled by the broadcast are both said on the tab instead of
+  left to be guessed, and the opening-sting-and-music choice the intro promises is now offered
+  here as well as on Listening.
+
+### Changed — 2026-11-19, GoWebComponents v7
+
+- The client is built on **GoWebComponents v7.0.8**, required from the module proxy like any
+  other dependency. The `replace … => ../GoWebComponents` directive is gone and with it the
+  sibling checkout every build, CI job and deploy had to arrange (D0, closed). v7 raises the
+  toolchain floor to **Go 1.27**, so `go.mod`, CI and the container image move to 1.27.3 and
+  the staticcheck pin moves to 2026.2.2 — the previous pin cannot read Go 1.27 export data.
+  The four app icons are regenerated: Go 1.27's PNG encoder writes different bytes for the
+  same pixels, and `TestCommittedIconsAreWhatTheRendererDraws` compares bytes.
+
+### Fixed — 2026-11-19, markup and accessibility pass
+
+- **An invisible banner kept its buttons in the tab order.** A closed banner slot was a
+  zero-height row at opacity 0 — off the screen, still focusable. The category suggestion's
+  "File it" / "Not now" could be reached by Tab and pressed with nothing on screen asking.
+  Closed slots are `visibility: hidden` now, on the same delayed-exit timing the dialogs use.
+- **The pane resize handles did nothing from the keyboard.** They were tab stops with no key
+  handler. Arrow keys move the edge (Shift for a larger step), the width is saved on key-up,
+  and the handle is a real `separator` with its position as `aria-valuenow`. The list handle
+  also carries the `grip-list` class its narrow-screen hide rule has always matched against,
+  and the list is sized less the 6px rail grip that sits before it — it used to come out
+  six pixels wider than the edge being dragged, a jump on the first move of every drag.
+- **A list row's reason was hidden from screen readers.** The "why this is in My Feed" line
+  carried an `aria-label`, which replaced the reason in the row's accessible name. The label
+  is a visually-hidden prefix now and the reason is read after it.
+- **Decorative favicons had no `alt` attribute.** `Alt: ""` is the zero value and was
+  omitted, so every favicon was an image with no alternative text. They emit `alt=""`.
+- **Rows, theme cards and tab strips used roles they could not hold.** A list row was
+  `<button role="listitem">` with divs inside; it is a `listitem` wrapping a button of spans.
+  Settings' section strip was a `tablist` owning no tabs; it is a labelled `<nav>` of
+  labelled groups. The command palette is a full combobox — the input names the highlighted
+  option through `aria-activedescendant`, which is the only way that highlight is audible.
+  Login and setup put `role="main"` on a `<form>`; the page wrapper is `<main>` instead.
+- **Headings.** The list title, dialog titles, settings groups and the shortcut sheet's
+  groups are headings (h2/h3) rather than styled spans, and each Settings tab has a hidden
+  h2 naming it. The document outline of a three-pane application was one line.
+- **Capitals are drawn, not typed.** Section labels were upper-cased with `strings.ToUpper`,
+  which put capitals in the document for a screen reader to spell out and is wrong for
+  non-ASCII casing. The text keeps its own case and the stylesheet applies `text-transform`.
+- **Touch.** Text fields are 16px on coarse pointers, which stops iOS Safari zooming the page
+  when one takes focus; chips and fields are taller there. Small controls everywhere meet
+  the 24px minimum target (WCAG 2.5.8) without moving the layout around them.
+- **The masthead claimed "0 feeds · all quiet" while the feed list was still loading.** It
+  says it is loading until the server has answered.
+- **On the homepage, pressing `j` twice quickly advanced one section.** The scroll between
+  sections is smooth, and on its way the "where am I" tracker kept reporting the section
+  being left — so the second press stepped from the old one. A scroll that a key or a click
+  started is trusted until it arrives (or for 1.5s, so a hand on the wheel takes over).
+- **A long list title ran under the corner buttons.** The title reserved 72px for a corner
+  that had grown to three buttons (110px); it reserves 118px.
+- **A feed's unread count was on screen and not in its accessible name.** A feed row is
+  announced as "Hacker News, 30 unread", the sentence topic rows already used.
+- Published times are `<time datetime>`; the article list is a labelled region and the
+  search row a search landmark; the connection dot has a role its label can name; the boot
+  page says so when JavaScript is off instead of showing "Loading…" forever, and carries a
+  description for link previews.
+- `<db>.log.jsonl`, the log ring's spill, is git-ignored. It holds request paths and login
+  attempts and sat in `git status` after any `serve` from the repository root.
+- `scripts/make.ps1 wasmtest` and `make wasmtest` quote the path to `wasm_exec_node.js`,
+  which failed outright where GOROOT contains a space (`C:\Program Files\Go`).
+
+### Fixed — 2026-11-19, e2e specs that could not pass
+
+- `settings.spec` listed thirteen tabs against the surface's fourteen (Discover was missing).
+- `design-parity`'s read/unread test asserted a colour change on fixture articles that have
+  since aged into "stale", which are drawn muted whether read or not; it now tests an
+  article the reader has not auto-opened, and asserts colour only where colour still differs.
+- `home.spec` walked a `scroll-behavior: smooth` scroller with instant assignments and never
+  reached the lazy screenshots it then reported missing; the walk is instant now.
+- `motion.spec`'s phone-strip test sampled the gesture once, 120ms after the tap, which on a
+  loaded machine is before it starts; it samples every frame of it.
+- `slideshow.spec` asked the refused Start button for `aria-disabled`; it has been natively
+  `disabled` since the podcast bug hunt. `tagsettings.spec` removed a tag by clicking its
+  chip, whose label became a link to the tag — the click navigated and removed nothing.
+- Twenty-six "open this article" steps clicked a row's centre, where a category chip routes
+  elsewhere; they open the row by its title (`openRow`). `keyboard.spec`'s unread toggle was
+  flaking on exactly that, and also waits for the row to be marked read before pressing `u`.
+
+### Changed — 2026-11-19, My Feed ranks on what you did, not on what you opened (A46)
+
+- **The scorer was rebuilt around one judgement per article.** The interaction log is folded
+  into a single assessed verdict per item (`rank.Assess`): dwell measured against the
+  article's expected reading time, completion, scroll depth, re-reads, saves, click-outs,
+  notes and tags, with a bounce counted once and choices corrected for where on the page
+  they were made. A like or a dislike is read from the reader's standing rating, not summed
+  from every time the button was pressed.
+- **A profile that forgets and that admits what it does not know.** Each judgement is filed
+  under its source, nearest topic, named entities and outbound domain, and kept as a shrunk
+  mean per key (`rank.Affinity`) on four decay clocks. A source read twice is not a
+  favourite; the prior is worth a stated number of items and has to be outvoted.
+- **Exploration has a budget and a label.** `rank.Assemble` spends between 5% and 20% of a
+  page on probes, scaled by how little the profile knows, and every fatigue demotion is
+  recorded as a reason. The "why this is in My Feed" line can now say *avoided*, *explore*
+  and *fatigue*, because those are things the ranker actually does.
+- A simulated-reader test (`internal/rank`) holds the behaviour rather than the arithmetic.
+  plan.md §18.4a.
+
+### Added — 2026-11-19, decisions escalate code → JEV → gpt-6-luna (A47)
+
+- **One ladder for every Smart task that is a decision** (`internal/llm/ladder.go`). Code on
+  this machine answers when its stated bar is met; the JEV typed-decision API answers next,
+  when the instance has that credential; the model answers last. Prose tasks skip JEV. The
+  rung that answered is recorded (migration 0035, `Item.category_rung`), both paid rungs
+  share the one spend ceiling, and each has its own breaker so JEV being down does not open
+  the circuit on the model its requests fall back to.
+- **SchemaFlux v2.0.2**, default model `gpt-6-luna`. v1 is gone from `go.mod`.
+- **JEV is configured where the OpenAI key is.** Smart+ opens with "How Smart+ decides" —
+  three rows, what each is asked, and its state on this instance — and a JEV section with
+  the same sealed-key handling, arm-then-confirm removal and environment-key note. Routes:
+  TypeSafe, OpenRouter, or your own LiteLLM proxy, which is the only one that takes a base
+  URL. A stored base URL cannot redirect the two fixed routes, and a test holds that at the
+  line the request leaves through.
+- **Amends A42**: JEV is a second named, replaceable, per-instance, opt-in egress exception
+  beside OpenAI. plan.md §18.8b.
+
+### Added — 2026-11-19, translation on the fly
+
+- **The interface.** A language with no hand-written catalog is filled by the model in
+  batches (`GetUIStrings`), cached, and laid over the English catalog, so a key that has not
+  arrived yet reads in English rather than as a key. Right-to-left languages set `dir` on
+  the root, and the stylesheet's directional rules are logical properties — a test fails on
+  a physical `margin-left` in the converted files.
+- **Articles.** A Translate control in the article pane (`TranslateArticle`), cached by
+  content hash (migration 0036) so an unchanged article is paid for once per language. With
+  fresh translation switched off, a translation that is already cached is still offered —
+  reading it costs nothing. Translated bodies go through the same image proxy as originals.
+- Members see whether translation is on without being able to change it; consent and the
+  key stay the owner's. plan.md §10.5b.
+
+### Added — 2026-11-19, Windows desktop edition (A45)
+
+- **The server in a window, not a second app.** `desktop/` is its own Go module: it runs the
+  real `internal/app` in-process on 127.0.0.1 behind a launch-token gate and shows the
+  unchanged wasm client in a WebView2 window. One SQLite file under
+  `%LOCALAPPDATA%\ArticleFlux`. Build with `./make.ps1 desktop`; `docs/DESKTOP.md` has the
+  rest. New dependency (Wails v3, at the revision GoWebComponents v7.0.8 pins),
+  owner-requested; the alternatives considered are in plan.md §4a.
+
+### Fixed — 2026-11-19, deployment files read against the binary, before the first build
+
+- **The container image shipped without the music beds and `/welcome`.** The Dockerfile builds
+  the client with `make wasm`, and that target copied `web/` file by file — it never had
+  `web/audio` or `web/welcome.html`, which `scripts/make.ps1` (audio) and `install.sh` /
+  `update.sh` (everything, by copying the directory) did. Nothing failed: the beds are fetched
+  only when a reader turns one on. `make wasm` stages both now. `scripts/make.ps1` still does
+  not copy `welcome.html`.
+- **A container did not report which build it was.** `/readyz` answers with
+  `X-ArticleFlux-Commit` only when `internal/buildver.Commit` is stamped, which `update.sh` did
+  and the Dockerfile did not, so every "is the box serving this release?" check would have had
+  nothing to compare. The image build now stamps it from `REVISION`, and `release.yml` passes
+  `GO_VERSION` to the build too, so the compiler in the image is the one the verify job tested.
+- **`update.sh` built the client without `GOEXPERIMENT=nojsonv2`.** The one deployment path that
+  linked Go 1.27's `encoding/json` v2 into the bundle — about a megabyte on every cold load,
+  and a module the CI size ratchet never measured.
+- **`update.sh` overwrote the installed ops units with the repository's templates.** The four
+  units it refreshed carry example paths that `install.sh` rewrites, so the next deploy put
+  `ARTICLEFLUX_BIN=/opt/articleflux/bin/articleflux` back — the path the production backup unit
+  failed on for three months — and it never touched the drill, the alert template or the
+  scripts. It, like `install.sh`, now calls `install-ops.sh`, the one installer that proves
+  every `ExecStart=` exists. `install-ops.sh` also names `ARTICLEFLUX_BIN` in its drop-in, where
+  nothing else edits it, and a re-run without `--keep` keeps the last run's retention instead of
+  returning to 14 copies.
+- **`install.sh` compressed the client with `gzip` on two files.** `index.html` and `fonts.css`
+  shipped uncompressed and brotli was never served on a fresh install; it runs
+  `cmd/precompress` now, like `make wasm` and `update.sh`.
+- **`.env.example` did not document half of what the container is told to set.** The proxy hop
+  count, cache budget, log level and format, profiling and the OpenTelemetry settings are there
+  now; `docs/INSTALL.md` already pointed at it for them. The install guide also states the
+  Compose version (v2.24) its optional `env_file` needs.
+- **`CUTOVER.md` ran its backup after the checkout was moved and the files installed**, with a
+  stopped server and no earlier copy. It takes one first, with the running binary; builds the
+  image as a dry run before any tag; runs the published image once on a scratch volume and port
+  before the box is touched; and checks nginx's `/shots/` alias, which no longer points at
+  anything the container has.
+- **Extensionless files had no line-ending rule.** `articleflux-ctr` is a `/bin/sh` script and
+  the Dockerfile's `# syntax=` line is read by BuildKit; both, and `Caddyfile` and
+  `.dockerignore`, are `eol=lf` now.
+
+### Changed — 2026-11-19, Docker is the first way to install
+
+- `compose.yaml` at the repository root: `docker compose up -d` is the install. A
+  production file with Caddy and TLS sits in `deploy/docker/`, the image is multi-arch
+  (amd64, arm64), and `docs/INSTALL.md` leads with it; the systemd route is still
+  documented and still supported.
+- `deploy/docker/CUTOVER.md` is the systemd → Docker move for an instance that already has
+  data, with the backup taken first and both rollback paths written down.
+  `deploy/install-ops.sh` installs the backup and alert units for either runtime.
+- CI, the Dockerfile and the deploy scripts no longer need a sibling GoWebComponents
+  checkout: v7.0.8 is a published module. Go 1.27.3; staticcheck 2026.2.2.
+- **The shipped wasm is built with `GOEXPERIMENT=nojsonv2`.** Go 1.27 links `encoding/json`
+  v2 by default and it cost the bundle about a megabyte the client never uses. Every place
+  that builds the artifact sets it (Makefile, `make.ps1`, CI's ratchet and e2e jobs,
+  `install.sh`), so the ratchet measures the binary that ships.
+
+### Changed — 2026-11-19, the client's markup has one place to live
+
+- **`panes.go` was 4,446 lines and is about 450.** The rail, the list, the article and its
+  listen and note controls, and the app chrome are files of their own.
+- **A shared kit** (`client/view/kit_*.go`): dialog shell and head, banners, setting rows,
+  fields, chips in their four kinds (action, toggle, pick, disclosure), switches, list and
+  row furniture. Each kit function was proven to emit the bytes of the code it replaced
+  before anything was converted to it, and each conversion was checked the same way: 94
+  rendered-HTML snapshots (`testdata/golden/`), compared byte for byte.
+- **The stylesheet uses the library's typed CSS** wherever a typed form produces the same
+  bytes, and shared declaration groups (`client/design/shared_rules.go`) replace rules that
+  were written out the same way in several files. The generated sheet was compared byte
+  for byte before and after, file by file; it did not change.
+- Conditionals in markup use the library's helpers (`ui.If`, `html.IfElse`, `ui.Match`)
+  rather than hand-built slices, and memoised components keep their props free of funcs so
+  the library can actually skip them.
+
+### Added — 2026-11-19, more of the window for reading
+
+- **The feeds fold away.** A button at the end of the sidebar's header, or `b`, puts the
+  sidebar away as a 14px strip along the edge of the window and gives its width to the list
+  and the article. Pointing at the strip slides it back out OVER the list — nothing being
+  read moves — and it leaves again when the pointer does, including after a feed was
+  clicked. Focus arriving by Tab opens it too. The choice is remembered. It does nothing on
+  a phone, where the sidebar is already a screen of its own. `design/railfold.go` says why
+  it overlays instead of pushing, and why "open" is keyed to `:focus-visible` rather than
+  `:focus-within`.
+- **An article's actions follow you down the page.** Like, Dislike, Read later, Mark
+  unread and Open original stay pinned at the top of the reading pane for as long as their
+  article is under them; the next article's bar takes over as it arrives. The facts that
+  used to share the row — byline, category, word count — are a line of their own above it
+  and stay where they were.
+- **Previous and Next**, at the end of that bar: `k` and `j` for a hand that is on the
+  pointer. They step from the article whose bar was pressed, not from whichever one the
+  scroll position last called current. On a phone the bar is a single row that scrolls
+  sideways, with these two first.
+
+### Changed — 2026-11-19, things a reader does by accident now ask first
+
+- Removing the Smart+ key, clearing a passphrase, dropping a custom theme, unsubscribing and
+  resetting My Feed arm on the first press and act on the second.
+- The shortcut sheet has a visible Close — it is the dialog a reader opens when they do not
+  know the keys, and a touch screen has no Escape.
+- An empty list says what to do next and offers the button for it.
+- Copy-to-clipboard reports whether it worked.
+
+### Fixed — 2026-11-19, `Google&#8217;s` in headlines
+
+- **Numeric character references were shown as written.** Feed text was run through a
+  table of sixteen named entities; titles were not decoded at all. WordPress writes its
+  typography as numeric references, so a large share of headlines arrived with `&#8217;`
+  in them — in the list, the article heading and the browser tab. `internal/entities` now
+  decodes every well-formed reference, once, and leaves a bare `&copy` in a query string
+  alone.
+- **The correction is not recorded as an edit.** Rows stored before the fix hold the raw
+  references; the next poll hands ingest the same words, decoded. Without an exemption
+  every such article would have grown an "edited" mark and a revision. A change that is
+  exactly the decoded form of what is stored updates the row and records nothing; a real
+  edit arriving in the same poll still counts.
+
+### Changed — 2026-11-19, the server stops doing work it did not need to
+
+Measured on the G3 fixture (50k items × 3 users × 150 feeds); every change has an equivalence
+test against the statement it replaced. No migration: each uses an index that already existed.
+
+- **Starred, Liked and Disliked scanned every item on the instance** to find one reader's
+  stars: 124 ms for the page and 620 ms for its count, with 25 stars. They are driven from the
+  state indexes now — 0.19 ms and 0.10 ms.
+- **Re-polling a feed that had not changed rewrote every row**, and each rewrite re-indexed
+  the article's full text inside the single writer. An unchanged entry is no longer written:
+  20 re-sent items went from 13.4 ms and 1.04 MB to 0.65 ms and 42 KB.
+- **Hot read statements stay prepared.** Opening an article: 108 → 69 µs.
+- **My Feed's count** started from the unread backlog instead of the ranking: 3.6 → 0.6 ms.
+- **Ranking derivation** asked for each source's half-life separately, each time walking the
+  reader's whole engagement log: 24.8 → 1.2 ms for 40 sources. Its table rewrites prepare
+  once per transaction (term affinity, 2,000 rows: 19.4 → 11.0 ms).
+- **The boot derivation no longer stands in front of the listener.** It only enqueues, so it
+  runs beside the first accepted connection instead of before it.
+- `planaudit_test.go` asserts the driving index of each hot statement. plan.md §22.12a.
+
+### Added — 2026-11-19, Brotli and gzip, negotiated by the server
+
+- **Static files.** Brotli, then gzip, then identity, by the request's `Accept-Encoding`
+  (q-values and `*` honoured; never a 406). A precompressed sibling is served when it is
+  current; otherwise the file is compressed once into a bounded cache. The client bundle is
+  33.5 MB on disk and 5.9 MB over the wire as Brotli, 7.4 MB as gzip.
+- **Dynamic responses** are compressed by content type, above 1 KB. Upgrades, ranges, event
+  streams, already-encoded bodies and anything flushed early are left alone.
+- **The gRPC tunnel.** The four large list calls answer gzip when the client advertises it: a
+  200-item page is 75 KB raw and 29 KB compressed. An old client is never sent gzip.
+- **What is deliberately not compressed**, because it is the BREACH shape: the page and asset
+  proxies (publisher HTML carrying this server's signatures) and every RPC that returns a
+  token or a signed URL.
+- The reverse proxies in `deploy/` stay as they are — `gzip off`, no `encode`. A second layer
+  would double-compress.
+
+### Changed — 2026-11-19, what the client bundle cost this release
+
+- 33,455,770 → 34,111,389 bytes (+2.0%; the CI ceiling is 34,514,429). About 250 KB of that
+  is the gzip decoder for the tunnel, which pays for itself on the first list page; about
+  150 KB (47 KB compressed) is the typed stylesheet, which buys compile-time checking of
+  units and keywords and nothing on screen; the rest is JEV settings and translation.
+
+### Fixed — 2026-11-19, the desktop edition stopped building and nothing noticed
+
+- **A new import in the server broke the desktop module, silently.** `desktop/` is a module of
+  its own, so `./...` at the root never compiles it — and its `go.sum` has to name every module
+  the server reaches. The Brotli dependency that compression added was not in it: "missing
+  go.sum entry", on the one build no gate ran. `go.sum` is corrected, and the Windows CI job
+  now vets and tests the nested module, so the next such import fails there.
+- The desktop smoke test no longer fails its own tidying-up: on Windows a just-closed database
+  file can stay "delete pending" while the indexer still has it open, and `t.TempDir` turned
+  that into a failed test about one run in eight.
+
 ### Fixed — 2026-08-16, test determinism
 
 - `TestConcurrentListensPayOnce` no longer flakes on loaded runners: its release gate

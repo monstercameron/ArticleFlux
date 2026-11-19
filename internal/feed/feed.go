@@ -27,6 +27,7 @@ import (
 	"github.com/mmcdole/gofeed"
 
 	"github.com/monstercameron/ArticleFlux/internal/charsetdec"
+	"github.com/monstercameron/ArticleFlux/internal/entities"
 	"github.com/monstercameron/ArticleFlux/internal/feeddate"
 	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	"github.com/monstercameron/ArticleFlux/internal/timeutil"
@@ -231,8 +232,8 @@ func (f *Fetcher) ParseBytes(body []byte, contentType, feedURL string, now time.
 // is testable against fixtures without a network.
 func Normalize(f *gofeed.Feed, feedURL string, now time.Time) *Parsed {
 	p := &Parsed{
-		Title:       strings.TrimSpace(f.Title),
-		Description: strings.TrimSpace(f.Description),
+		Title:       plainText(f.Title),
+		Description: plainText(f.Description),
 		SiteURL:     f.Link,
 		Language:    f.Language,
 	}
@@ -245,7 +246,7 @@ func Normalize(f *gofeed.Feed, feedURL string, now time.Time) *Parsed {
 		p.IconURL = f.Image.URL
 	}
 	if len(f.Authors) > 0 && f.Authors[0] != nil {
-		p.Author = strings.TrimSpace(f.Authors[0].Name)
+		p.Author = plainText(f.Authors[0].Name)
 	}
 
 	for _, it := range f.Items {
@@ -281,7 +282,7 @@ func normalizeItem(it *gofeed.Item, feedURL, feedAuthor string, now time.Time) I
 	out := Item{
 		GUID:        stableGUID(it, feedURL),
 		URL:         strings.TrimSpace(it.Link),
-		Title:       strings.TrimSpace(it.Title),
+		Title:       plainText(it.Title),
 		Summary:     summarizeText(strippedSummary),
 		ContentHTML: content,
 		WordCount:   countWordsText(strippedContent),
@@ -454,13 +455,20 @@ func stripTags(s string) string {
 	return unescapeBasic(b.String())
 }
 
-// unescapeBasic resolves the five entities that actually appear in feed text.
-// A full entity table is not needed for a list row.
-var basicEntities = strings.NewReplacer(
-	"&amp;", "&", "&lt;", "<", "&gt;", ">",
-	"&quot;", `"`, "&#39;", "'", "&apos;", "'", "&nbsp;", " ",
-	"&mdash;", "—", "&ndash;", "–", "&hellip;", "…", "&rsquo;", "'",
-)
+// plainText is a title, a byline or a feed's description as the reader sees
+// it: trimmed, with its character references resolved.
+//
+// These fields used to be trimmed and nothing else, on the reasoning that the
+// XML parser had already decoded them. It has — once. A publisher that writes
+// an HTML-typed title (Atom `type="html"`, or simply WordPress) escapes it
+// twice, so what the parser hands over is `Google&#8217;s`, and that is what
+// was stored and shown: in the list, in the article's heading and in the
+// browser tab. Tags are deliberately left alone: a text-typed title may
+// legitimately contain `<div>` as words, and nothing here can tell the two
+// kinds of title apart.
+func plainText(s string) string {
+	return strings.TrimSpace(entities.Decode(s))
+}
 
 // unescapeBasic resolves those entities, and returns s untouched when there are
 // none to resolve.
@@ -471,10 +479,12 @@ var basicEntities = strings.NewReplacer(
 // IndexByte answers whether the call can possibly do anything, and most stripped
 // feed text contains no ampersand at all.
 func unescapeBasic(s string) string {
-	if !strings.ContainsRune(s, '&') {
-		return s
-	}
-	return basicEntities.Replace(s)
+	// The table this used to carry — sixteen named entities — lives in
+	// internal/entities now, widened to every reference HTML defines and to
+	// numeric ones, which are what WordPress actually writes. The name is kept
+	// because the callers' comments explain themselves in terms of it; the
+	// "basic" was the limitation, and it is gone.
+	return entities.Decode(s)
 }
 
 func countWords(html string) int { return countWordsText(stripTags(html)) }

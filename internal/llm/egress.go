@@ -39,6 +39,10 @@ const (
 	// every other cap here is enforced at the boundary rather than trusted from
 	// upstream.
 	MaxProfileExamples = 15
+	// MaxProfileTopics bounds how many topics leave. Twelve, matching
+	// internal/derive.MaxLabelledTopics. Before A46 the count was unbounded —
+	// every cluster went, including the ones the reader had suppressed.
+	MaxProfileTopics = 12
 )
 
 // Candidate is one item offered for ranking.
@@ -104,6 +108,9 @@ type DiscoverPayload struct {
 func (p RankPayload) Trim() RankPayload {
 	out := RankPayload{Want: p.Want, Candidates: p.Candidates}
 	for _, t := range p.Profile.Topics {
+		if len(out.Profile.Topics) >= MaxProfileTopics {
+			break
+		}
 		if len(t.Terms) > MaxProfileTerms {
 			t.Terms = t.Terms[:MaxProfileTerms]
 		}

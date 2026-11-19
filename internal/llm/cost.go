@@ -2,11 +2,10 @@ package llm
 
 import (
 	"context"
-	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/mw"
-	"github.com/monstercameron/schemaflux/pricing"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/mw"
+	"github.com/monstercameron/schemaflux/v2/pricing"
 )
 
 // What Smart+ costs, in money, and the ceiling that stops it.
@@ -113,23 +112,19 @@ func (c *Client) Cost() Cost {
 // track prices one completed call and adds it to the running total. Called with
 // the provider's own token numbers, which are the only ones worth pricing.
 func (c *Client) track(ctx context.Context, model string, u Usage) {
-	info := pricing.CalculateCost(&schemaflux.TokenUsage{
-		PromptTokens:     int(u.InputTokens),
-		CompletionTokens: int(u.OutputTokens),
-		TotalTokens:      int(u.InputTokens + u.OutputTokens),
-		InputTokens:      int(u.InputTokens),
-		OutputTokens:     int(u.OutputTokens),
-	}, model, "articleflux-openai")
+	// SchemaFlux v2's price table (pricing.Price). It carries gpt-6-luna, the
+	// default since v2, and still gpt-5.6-luna for an instance pinned to it.
+	info := pricing.Price(sfUsage(u), model, "articleflux-openai")
 
 	// Before the total is touched, so the number written back below includes
 	// what was already spent rather than replacing it with this process's share.
 	c.Hydrate(ctx)
 
 	c.mu.Lock()
-	if info == nil || !info.Priced {
+	if !info.Priced {
 		c.cost.Unpriced++
 	} else {
-		c.cost.USD += info.TotalCost
+		c.cost.USD += info.Total
 		c.cost.Priced++
 	}
 	total := c.cost
@@ -182,7 +177,7 @@ type CapFunc func(context.Context) float64
 // let an unpriced model spend without limit while the meter read nothing. The
 // Cost type reports the unpriced count so that is visible rather than silent.
 func (c *Client) Budget(capOf CapFunc) mw.Middleware {
-	return func(next mw.Handler) mw.Handler {
+	return func(next schemaflux.Provider) schemaflux.Provider {
 		return &budget{next: next, client: c, capOf: capOf}
 	}
 }
@@ -246,12 +241,12 @@ func (errBudget) Error() string { return "llm: the Smart+ budget for this instan
 // call and released after it — which is what SchemaFlux's own mw.Budget does,
 // and is worth adopting here the day its limit can be read per call.
 type budget struct {
-	next   mw.Handler
+	next   schemaflux.Provider
 	client *Client
 	capOf  CapFunc
 }
 
-func (b *budget) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (b *budget) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if b.capOf != nil {
 		// The persisted total first. A cap checked against a freshly zeroed
 		// meter is the restart hole SpendStore exists to close, and this is the
@@ -262,12 +257,15 @@ func (b *budget) Complete(ctx context.Context, req schemaflux.CompletionRequest)
 		// the sum is here rather than each client holding its own ceiling.
 		spent := b.client.Cost().USD + b.client.externalUSD(ctx)
 		if limit := b.capOf(ctx); limit > 0 && spent >= limit {
-			return schemaflux.CompletionResponse{}, ErrOverBudget
+			return schemaflux.Response{}, ErrOverBudget
 		}
 	}
 	return b.next.Complete(ctx, req)
 }
 
-func (b *budget) Name() string                                        { return b.next.Name() }
-func (b *budget) EstimateCost(r schemaflux.CompletionRequest) float64 { return b.next.EstimateCost(r) }
-func (b *budget) RetryPolicy() (int, time.Duration)                   { return b.next.RetryPolicy() }
+func (b *budget) Name() string { return b.next.Name() }
+
+// Unwrap implements provider.Unwrapper, so SchemaFlux v2 still finds the retry
+// settings of the provider underneath. A wrapper that hid them would be retried
+// at the library's default (three) instead of the audited provider's two.
+func (b *budget) Unwrap() schemaflux.Provider { return b.next }

@@ -144,6 +144,10 @@ type Analysis struct {
 	// answer with the opposite meaning: one is settled and the other is pending.
 	// Without this the retry sweep would pay for the same article on every pass.
 	ModelUnsure bool
+	// ModelRung is which paid rung answered (A47): "jev" when the JEV decision
+	// API placed the category, "model" when the generating model read the
+	// article. Empty for the free tier.
+	ModelRung string
 }
 
 // Batch is a poll's worth of items and their in-progress analyses.

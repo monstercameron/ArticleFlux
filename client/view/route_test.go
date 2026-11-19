@@ -622,3 +622,33 @@ func TestTitleForScopeAcceptsEitherFeedID(t *testing.T) {
 		t.Errorf("unknown id: title = %q, want it left empty", got.Title)
 	}
 }
+
+// TestRouteRoundTripSurvivesAwkwardValues is TestRouteRoundTrip over generated
+// input rather than the hand-written table: every place that carries a value,
+// with every value shape an id, a search or an article id can arrive in — a
+// space, a slash, a percent sign, a query separator, a fragment mark, non-ASCII
+// — crossed with an open article and each dialog. The table proves the grammar;
+// this proves the escaping, which is where a codec that agrees with itself on
+// tidy ids quietly stops agreeing.
+func TestRouteRoundTripSurvivesAwkwardValues(t *testing.T) {
+	tr := mustRuntime(t)
+	values := []string{"plain", "a b", "slash/inside", "100%", "x?y=z&w", "#frag", "ünï/cødé", "+plus+"}
+	places := func(v string) []scope {
+		return []scope{{SourceID: v}, {TagID: v}, {FolderID: v}, {Search: v}}
+	}
+	for _, v := range values {
+		for _, sel := range places(v) {
+			for _, item := range []string{"", "01J2ITEM", v} {
+				for _, dlg := range []dialog{"", dialogAdd, dialogShow} {
+					want := route{sel: sel, item: item, dlg: dlg}
+					path, query := splitTarget(routePath("/", want))
+					back := parseRoute("/", path, query, tr)
+					if !eqRoute(back, want) {
+						t.Errorf("round trip through %q\n got %s\nwant %s",
+							routePath("/", want), routeStr(back), routeStr(want))
+					}
+				}
+			}
+		}
+	}
+}

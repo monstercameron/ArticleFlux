@@ -8,7 +8,7 @@ elsewhere — it tells you which document answers which question, and stops.
 ## Read these, in this order
 
 1. **`CONTRIBUTING.md`** — how to work here: the document set and which one wins, what to do when
-   the spec is silent, the five structural guards, i18n rules, contract changes, tests, branches,
+   the spec is silent, the structural guards, i18n rules, contract changes, tests, branches,
    commit messages, pull requests. Start here every time.
 2. **`plan.md`** — the spec of record, and it **wins**. Decisions (`A#`), open questions (`D#`),
    risks (`R#`), schema, services, milestones (`M#`), tests (`T#`). If the implementation
@@ -32,12 +32,14 @@ greppable, which is the point.
 - **`go test ./...` does not test `client/view`.** That package is `//go:build js && wasm` with
   zero untagged files, so plain `go test` never compiles it. It runs under Node in the `wasmtest`
   job.
-- **The known-red pins are deliberate.** `ci.yml` excludes specific named tests from the gate and
-  then runs them again, non-blocking, so they stay visible. Do not "fix" one by adding `t.Skip()`
-  — a pin exists to stay visible, and silencing it at the source decides a product question that
-  is not yours to decide.
-- **`go.mod` replaces GoWebComponents with a sibling checkout** (`../GoWebComponents`). CI
-  materialises it via `.github/actions/gwc`; locally it has to exist next to this repo.
+- **A known-red pin is deliberate, and there are none right now.** When a confirmed defect has to
+  stay visible without holding the gate, `ci.yml` excludes the named test and runs it again,
+  non-blocking. Do not "fix" one by adding `t.Skip()` — silencing it at the source decides a
+  product question that is not yours to decide — and remove the exclusion the moment the test
+  goes green; `ci.yml`'s `test` job records what leaving one in place cost.
+- **GoWebComponents is an ordinary requirement in `go.mod`** — a published version, no `replace`,
+  no sibling checkout to keep in step. A `replace` added to try a local GWC change must not be
+  committed: CI, the image build and the deploy scripts all build from this repository alone.
 - **Never commit secrets or the database.** `*.key`, `.env`, `articleflux.db*` and the various
   `*-cache/` directories are working state, not source.
 

@@ -3,6 +3,8 @@ package derive
 import (
 	"context"
 	"errors"
+	"github.com/monstercameron/ArticleFlux/internal/rank"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +85,9 @@ func (f *fakePlus) LabelTopic(_ context.Context, _ []string, fallback string) (s
 func (f *fixture) withSmartPlus(t *testing.T, plus Enhancer) {
 	t.Helper()
 	f.svc.WithSmartPlus(plus)
+	// These tests are about what happens WHEN the rerank is asked; A47's rung-1
+	// bar (leadIsClear) has its own test.
+	f.svc.rerankGap = math.Inf(1)
 	if err := f.repo.SetPrefs(f.ctx, f.scope, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
 		t.Fatalf("SetPrefs: %v", err)
 	}
@@ -106,6 +111,7 @@ func TestSmartPlusMakesNoCallsWithoutConsent(t *testing.T) {
 	// the withSmartPlus helper, which grants consent as well.
 	plus := &fakePlus{rerank: []int{3, 2}, entities: []NamedEntity{{Name: "npm", Label: "npm"}}}
 	f.svc.WithSmartPlus(plus)
+	f.svc.rerankGap = math.Inf(1) // always ask once consent is given
 
 	res, err := f.svc.RunReporting(f.ctx, f.scope, now)
 	if err != nil {
@@ -438,5 +444,34 @@ func TestSmartPlusFindsLowercaseBrands(t *testing.T) {
 	if found.Mentions != 2 {
 		t.Errorf("mentions = %d, want 2 (counted from engagement, not from the model)",
 			found.Mentions)
+	}
+}
+
+// A47 rung 1: when the free ranking's lead is clear, neither JEV nor the model
+// is asked, whatever the consent and the key say.
+func TestAClearLeadAsksNobody(t *testing.T) {
+	head := []scoredItem{{res: rank.Result{Score: 3}}, {res: rank.Result{Score: 2.9}}, {res: rank.Result{Score: 2.5}},
+		{res: rank.Result{Score: 2.2}}, {res: rank.Result{Score: 1.5}}}
+	if !leadIsClear(head, 0) {
+		t.Error("a 1.5-point lead over the fifth row was not clear")
+	}
+	head[4].res.Score = 2.4
+	if leadIsClear(head, 0) {
+		t.Error("a 0.6-point spread across the head was called clear")
+	}
+	f := setup(t)
+	f.engage(t)
+	plus := &fakePlus{rerank: []int{1}}
+	f.svc.WithSmartPlus(plus)
+	f.svc.rerankGap = -1 // the constant
+	if err := f.repo.SetPrefs(f.ctx, f.scope, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.rerankGap = 1e-9 // any lead at all is clear
+	if _, err := f.svc.RunReporting(f.ctx, f.scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if plus.rerankCalls != 0 {
+		t.Errorf("the code was confident and the rerank was still asked %d times", plus.rerankCalls)
 	}
 }

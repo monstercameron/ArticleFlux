@@ -89,11 +89,11 @@ func TestPutScrapeRuleValidatesRequiredFields(t *testing.T) {
 	sc := seedScrapeSource(t, db, "src1", true)
 
 	cases := map[string]ScrapeRule{
-		"no source":  {IndexURL: "https://x.example", ItemSelector: ".p", TitleSelector: ".t", LinkSelector: "a"},
-		"no index":   {SourceID: "src1", ItemSelector: ".p", TitleSelector: ".t", LinkSelector: "a"},
-		"no item":    {SourceID: "src1", IndexURL: "https://x.example", TitleSelector: ".t", LinkSelector: "a"},
-		"no title":   {SourceID: "src1", IndexURL: "https://x.example", ItemSelector: ".p", LinkSelector: "a"},
-		"no link":    {SourceID: "src1", IndexURL: "https://x.example", ItemSelector: ".p", TitleSelector: ".t"},
+		"no source": {IndexURL: "https://x.example", ItemSelector: ".p", TitleSelector: ".t", LinkSelector: "a"},
+		"no index":  {SourceID: "src1", ItemSelector: ".p", TitleSelector: ".t", LinkSelector: "a"},
+		"no item":   {SourceID: "src1", IndexURL: "https://x.example", TitleSelector: ".t", LinkSelector: "a"},
+		"no title":  {SourceID: "src1", IndexURL: "https://x.example", ItemSelector: ".p", LinkSelector: "a"},
+		"no link":   {SourceID: "src1", IndexURL: "https://x.example", ItemSelector: ".p", TitleSelector: ".t"},
 		"json no url": {SourceID: "src1", IndexURL: "https://x.example", ItemSelector: ".p", TitleSelector: ".t",
 			LinkTemplate: "https://x.example/{id}", Kind: "json"},
 	}

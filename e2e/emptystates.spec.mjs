@@ -1,4 +1,4 @@
-import { test, expect, boot, openStream } from './fixtures.mjs';
+import { test, expect, boot, openStream, isPhone } from './fixtures.mjs';
 
 /**
  * The empty states, each scope's own copy.
@@ -73,7 +73,11 @@ test.describe('empty states', () => {
 
     // The TOGGLE route, not the rail's "Unread" stream row — see the paired
     // regression test below for why that distinction is load-bearing here.
-    await page.keyboard.press('u');
+    //
+    // The key on a desktop and the chip on a phone: they are the same toggle,
+    // and a phone has no keyboard to press `u` on.
+    if (await isPhone(page)) await page.locator('[data-action="toggle-unread"]').click();
+    else await page.keyboard.press('u');
 
     const empty = page.locator('.pane-list .empty');
     await expect(empty.locator('strong')).toHaveText('All caught up');

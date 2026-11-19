@@ -34,6 +34,12 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#221A2E">
 <title>ArticleFlux</title>
+<!--
+  What a link to this server says when it is pasted somewhere. Without it a chat
+  client or a search result shows the first text it can find, which for this
+  page is "Loading…" — the boot splash below.
+-->
+<meta name="description" content="ArticleFlux — signal, ranked for you. A self-hosted feed reader: one binary, one SQLite file, and a client written in Go.">
 
 <!--
   The icon, inline.
@@ -183,6 +189,16 @@
     <div class="boot-rule"><i id="boot-bar" aria-hidden="true"></i></div>
     <p id="boot-msg">Loading…</p>
     <p id="boot-help" hidden>Reload to try again. If it keeps failing, check that the server is running.</p>
+    <!--
+      With scripting off, nothing below this ever runs: no module is fetched, no
+      error is thrown, and the splash would say "Loading…" for as long as the tab
+      stayed open. This is the one failure the boot script cannot report, because
+      it is the boot script that is missing — so the page says it in markup.
+    -->
+    <noscript>
+      <style>#boot-msg,.boot-rule{display:none}</style>
+      <p>ArticleFlux is a WebAssembly application and needs JavaScript to start. Turn it on for this site and reload.</p>
+    </noscript>
   </div>
 </div>
 <div id="app"></div>
@@ -332,6 +348,12 @@
     }
     const loc = localStorage.getItem('articleflux.locale');
     if (loc) document.documentElement.setAttribute('lang', loc);
+    // And the direction, for the languages that read right to left. The
+    // application sets both once it is running (client/view/root.go), but the
+    // splash is on screen first and for the longest: without this an Arabic
+    // reader's "Loading…" was painted left to right and flipped when the
+    // module arrived.
+    if (loc && /^(ar|fa|he|ur)\b/i.test(loc)) document.documentElement.setAttribute('dir', 'rtl');
   } catch (e) { /* storage unavailable; the English above is already in the markup */ }
   // Applied to the markup, which still carries the English so a browser with no
   // JavaScript at all shows something rather than an empty plate.

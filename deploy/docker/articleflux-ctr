@@ -10,8 +10,10 @@
 # container: a backup must work while the reader is being recreated mid-deploy, and an
 # exec into a container that is restarting fails at exactly the moment a snapshot matters.
 #
-# Install: /usr/local/bin/articleflux-ctr (0755). Then in /etc/articleflux/backup.env:
-#   ARTICLEFLUX_BIN=/usr/local/bin/articleflux-ctr
+# Installed, and pointed at, by `deploy/install-ops.sh --runtime docker`, which also
+# gives the backup and drill units the root access to the docker socket this needs and
+# turns off their PrivateTmp — the /tmp this mounts is the DAEMON's /tmp, so a unit with
+# a private one would hand the container a path that does not exist on its side.
 set -eu
 
 COMPOSE_FILE="${AF_COMPOSE_FILE:-/opt/articleflux/compose.yaml}"

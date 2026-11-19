@@ -17,7 +17,6 @@ func init() {
 		"yoursGroupHint": "Only you see these.",
 		"nameLabel":      "Name",
 		"nameHint":       "Overrides the publisher's title. Clear it to use theirs.",
-		"nameAria":       "Your name for this feed",
 		"rename":         "✎ Rename",
 		"categoryLabel":  "Folder",
 		"categoryHint":   "Where it sits in the sidebar.",
@@ -28,6 +27,8 @@ func init() {
 		"megafeedOff":    "hidden",
 		"muteLabel":      "Mute",
 		"muteHint":       "Keep fetching it, keep it out of the way.",
+		"backlogLabel":   "Clear the backlog",
+		"backlogHint":    "Mark anything older than this as read, on its own. Nothing is deleted and Read later is left alone. Mark all read, below, clears the whole feed now.",
 		"cacheLabel":     "Keep offline",
 		"cacheHint":      "How many items to hold for reading without a connection.",
 		"tagsLabel":      "Tags",
@@ -59,6 +60,11 @@ func init() {
 		"markAllRead":     "Mark all read",
 		"unsubscribe":     "Unsubscribe",
 		"unsubscribeNote": "Unsubscribing removes it from your sidebar. The articles stay on the server.",
+		// The confirmation Unsubscribe now asks for. Names the feed, because the
+		// panel's title scrolls away, and says what survives, because "remove"
+		// alone sounds like deleting the archive.
+		"unsubscribeWarn":    "Stop following {feed}? It leaves your sidebar now; its articles stay on the server, and following it again brings them back.",
+		"unsubscribeConfirm": "Unsubscribe from it",
 
 		// --- the fixed choice sets
 		//
@@ -80,6 +86,12 @@ func init() {
 		"mute.24":  "a day",
 		"mute.168": "a week",
 		"mute.720": "a month",
+
+		"backlog.0":  "never",
+		"backlog.1":  "a day",
+		"backlog.3":  "3 days",
+		"backlog.7":  "a week",
+		"backlog.30": "a month",
 	})
 
 	// How many other people on this server read this feed. Plural, and it is

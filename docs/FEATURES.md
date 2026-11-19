@@ -55,7 +55,9 @@ replaces the list. Below 900px one column shows at a time, chosen by a four-tab 
 
 **The panes are resizable.** A 6px grip between each pair; drag with the pointer (pointer capture, so
 the drag survives leaving the handle), clamped so no pane can be dragged to nothing. The width is
-written to a CSS variable live during the drag and saved **once** on release.
+written to a CSS variable live during the drag and saved **once** on release. From the keyboard the
+grip is a focusable `separator`: the arrow keys move the edge 16px (Shift, 64px) through the same
+clamp, the width is saved on key-up, and `aria-valuenow` carries it in pixels.
 
 **Widths are account state, not browser state.** They live in server prefs (`pane.rail`,
 `pane.list`) and come back on a different machine. A reader that forgets your layout when you open it
@@ -90,6 +92,7 @@ faster-recognition for sites you already know rather than a replacement for the 
 
 **A feed that is not responding says so** in its accessible name (`… · not responding`) and carries
 the publisher's last error in its tooltip — a dead feed and a quiet feed are otherwise identical.
+The name also carries the unread count (`…, 128 unread`), the same sentence a topic row uses.
 
 **Two filters**, both persisted server-side:
 
@@ -238,7 +241,7 @@ clicked.
 
 | Where | Keys |
 |---|---|
-| **Anywhere** | `Ctrl-K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` jump to rail/list/article · `/` search · `f` filter feeds · `r` refresh · `u` unread-only · `s` start slideshow · `Esc` close / stop reading aloud / back |
+| **Anywhere** | `Ctrl-K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` jump to rail/list/article · `/` search · `f` filter feeds · `b` fold the feeds away · `r` refresh · `u` unread-only · `s` start slideshow · `Esc` close / stop reading aloud / back |
 | **Feed list** | `↑ ↓` move · `Enter` open |
 | **Article list** | `↑ ↓` move **and open** · `j` `k` next / previous |
 | **An article** | `o` or `Enter` open original · `l` like · `d` dislike · `t` read later · `U` mark unread · `w` focus mode · `Ctrl-Enter` save the note now |
@@ -473,7 +476,7 @@ the one thing the rail is for.
 
 | Group | Changing it affects |
 |---|---|
-| **Yours** — name override, in-the-ranked-feed, mute, keep-offline depth, tags | you |
+| **Yours** — name override, in-the-ranked-feed, mute, clear-the-backlog window, keep-offline depth, tags | you |
 | **Shared** — feed URL, website, fetch interval | **every subscriber on this server** |
 | **Health** — last fetch, last success, next fetch, items held, consecutive failures, the publisher's error verbatim | read-only |
 | **Actions** — fetch now, mark all read, unsubscribe | — |
@@ -490,6 +493,13 @@ effect, with no indication which half.
 from the *last* one rather than from now — lengthening an interval must not postpone a poll that is
 already overdue. The floor is politeness rather than performance: the column is global, so one user
 setting ten seconds makes this server hammer a publisher on everyone's behalf.
+
+**Clear the backlog** — *never* (the default), *a day*, *3 days*, *a week* or *a month*.
+Anything unread in that feed that is older than the window is marked read for you, and it keeps
+doing so as articles age; picking a window clears the existing pile straight away. It only marks
+read: nothing is deleted, **Read later items are left alone**, ratings are untouched, and another
+reader of the same feed is unaffected. For everything right now, **Mark all read** in the Actions
+group is the one-press version.
 
 **Unsubscribing says what survives**: *"Unsubscribing removes it from your sidebar. The articles stay
 on the server."*
@@ -909,6 +919,36 @@ geometry that no character says as plainly.
 It is a **persisted preference**, which is only safe because the way out never leaves the screen: the
 control stays pinned, and `Escape` peels focus mode first.
 
+### The folded rail
+
+`b`, or the chevrons at the end of the sidebar's header. Focus mode closes the feeds *and* the list,
+which is right for one long article and wrong for working through a list — the list is the thing
+being worked through. Folding the rail gives back only the 258px on the left, which a reader looks at
+once a session to pick a feed and pays for on every row.
+
+**It overlays; it does not push.** What is left is a 14px strip along the edge of the window. Pointing
+at it slides the rail back out *over* the list. If it re-opened its column instead, the list and the
+article would both reflow every time the pointer brushed the edge — a jolt, twice, to glance at a feed
+name.
+
+**It leaves when the pointer does**, including after a feed was clicked — the case a rule keyed to
+`:focus-within` gets wrong, because a click leaves focus on the feed's button. Focus that arrives by
+`Tab` opens it; focus left behind by a click does not hold it. A short wait before it opens tells a
+visit from a pointer crossing the edge on its way to the scrollbar, and that wait is deliberately not
+shortened by reduced motion: it is not an animation.
+
+Nothing happens on a phone, where the rail is already a screen of its own. Remembered, like focus mode.
+
+### The floating bar
+
+An article's actions — Like, Dislike, Read later, Mark unread, Open original — stay pinned to the top
+of the reading pane while its article is under them, and hand over to the next article's as it
+arrives. The bar ends with **Previous** and **Next**: `k` and `j` for a hand that is on the pointer,
+for the moment halfway down an article when it turns out not to be for you. The byline, the category
+and the word count are a line of their own above the bar and do not follow.
+
+On a phone the bar is one row that scrolls sideways, with Previous and Next first.
+
 ## 25a. The slideshow
 
 | | |
@@ -1107,9 +1147,14 @@ choosing a language *spends the key*. A picker that looked like a free preferenc
 the thing that pays for it, is a bill nobody expected. The screen labels each language **ready**
 (cached, free) or **will translate** (a call).
 
-A language you have used before is free — the translation is cached on the server, keyed by a hash of
-the English, so a build that edits one string re-translates it and a build that does not is free
-forever. **Retranslate** exists as a repair action for when something reads wrong.
+A language you have used before is free — the translation is cached on the server **per string**,
+keyed by a hash of that string's English, so a build that edits one string re-translates that one
+string and nothing else. A language chosen for the first time, or strings a new build added, are
+translated **on the fly** (§22.16c): the screen shows English at once and each batch replaces its
+strings as it lands, without a reload. Every translated string is checked before it is shown — a
+translation that lost a `{placeholder}`, invented one, or added markup is discarded and the English
+stays. Plurals are asked for in every form the target language uses (Arabic's six, Polish's four).
+**Retranslate** exists as a repair action for when something reads wrong.
 
 Switching language re-renders; it does not reload — except a *forced* retranslation, which does, and
 says so.
@@ -1347,7 +1392,7 @@ losing the feed is the app not working.
 
 # Part VIII — The settings surface
 
-## 36. One page, thirteen tabs
+## 36. One page, fourteen tabs
 
 | | |
 |---|---|
@@ -1721,6 +1766,25 @@ source* is a usable instruction where a bare thumbs-down is not.
 Plus a tuning panel with a live preview of the reordering before saving, and — the honest one —
 **a "what did you hide from me?" view**, because a filter you cannot audit is one you cannot trust.
 
+**As built (2026-11-19, plan.md §18.4a / A46).** The ranking learns from what you actually do with
+each article — how long you stayed *against how long it takes to read*, whether you finished, scrolled
+back, saved, opened the original, noted, tagged, liked or disliked it — and from what you were shown and
+ignored. A few clicks do not define you: every preference starts at neutral and moves only as evidence
+builds, and old evidence fades (reading over about a month, likes over four, dislikes over six).
+Marking everything read moves nothing. A disliked feed sinks but does not vanish. At most two items from
+one feed in any twenty rows. Up to a fifth of the page — less as it gets to know you, never under one
+row in twenty — is **exploration**, labelled as such: something outside your usual reading, shown so
+the page can learn. With no history at all, that is what the page is, with the "still learning" band.
+Every row's reasons are the terms that actually moved it, including *"more from this feed is already
+higher up"* and *"you usually leave … articles quickly"*.
+
+**Smart+ asks the cheapest thing that can answer (A47).** When the free ranking's lead is clear,
+nothing is asked. Otherwise, on an instance with a JEV key, a typed-decision model picks the lead; only
+without one (or when it is unsure or down) is gpt-6-luna asked, and it writes the reason you see. Feed
+categorisation works the same way: a feed whose title names one of your folders is filed with no call
+at all. Article categories too: an article the built-in classifier places clearly is never sent
+anywhere; an unclear one goes to JEV first, then gpt-6-luna.
+
 ## 64. Highlights mode ○
 
 The problem: an aggregator posts 94 a day. You will never read it in full and you do not want to miss
@@ -1756,10 +1820,17 @@ Dismissals are remembered per domain and never re-suggested. One or two candidat
 **adjacent-but-different** and labelled as such, because a recommender optimised purely for similarity
 is a filter-bubble engine with better manners.
 
-## 67. Article translation ○
+## 67. Article translation ⚙
 
 Per item, on demand, with the language detected from the item. Cached, and counted against the same
-budget and the same circuit breaker as everything else Smart+.
+budget and the same circuit breaker as everything else Smart+. **Server and data layer shipped
+(§10.5b); the reader's Translate control is not wired yet.**
+
+Off until the owner turns it on, because it sends the article's text to the model — only its text:
+never a link, an image address, the author, the feed or anything about who asked. The translation
+keeps the article's structure (headings, lists, links, images are the original's), arrives beside the
+original so the reader can flip back, and is cached once per article per language for everyone on
+the instance who can see that article. A publisher's correction re-translates it.
 
 ## 68. Rules, from the reader's side ○
 
@@ -2126,7 +2197,8 @@ consumer) · plus the five defects above.
 registry · the job queue · the degrade ladder · notes/bookmark search · quota accounting · **the
 analysis pipeline** (`internal/pipeline` has no importer outside its own tests) · **FluxCast's
 deterministic rundown** (entry 82 — selection, grouping and ordering are built and tested; nothing
-gets it out of the server).
+gets it out of the server) · **article translation** (entry 67 — RPC, cache and data layer
+shipped 2026-11-19; a cache-only lookup and the member-readable on/off flag followed the same day).
 
 *Corrected 2026-07-27:* **ranking and capability enforcement were listed here and both ship** —
 see entries 45 and 51. **Event rings** are shipped on both ends and unreached by one missing call
@@ -2138,7 +2210,7 @@ nothing to resolve them against.
 leader election · conflict resolution · the sync API · token management · notifications · quiet
 hours · trends · the heatmap · feed health · contextual nudges · the ranked homepage · three slots ·
 explainability · the tuning panel · the suppressed view · highlights mode · topic editing · domain
-affinity · recommendations UI · trials · translation · rules UI · the muted view · newsletters ·
+affinity · recommendations UI · trials · rules UI · the muted view · newsletters ·
 webhooks · revisions UI · the screensaver · folder sharing · public feeds · the admin console ·
 deletion previews · **article categories · automatic tags · Smart+ classification · the one-read
 analysis pipeline**.

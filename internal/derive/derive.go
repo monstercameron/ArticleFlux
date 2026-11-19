@@ -86,30 +86,6 @@ const MaxRanked = 200
 // the cut falls on the least likely to be worth showing.
 const MaxCandidates = 2000
 
-// Diversity controls the final ranking order and reduce "sister feed" domination.
-const (
-	// Feed, domain and story saturation are enforced most aggressively near the
-	// top of the page, where single-feed monocultures are most visible.
-	feedSaturationWindow   = 20
-	domainSaturationWindow = 20
-	storySaturationWindow  = 30
-	maxFeedTopN            = 2
-	maxDomainTopN          = 4
-	maxStoryClusterTopN    = 3
-
-	// Exploration preserves the "not everything you already like" band.
-	exploreRate      = 0.10
-	clusterHeadRate  = 0.08
-	satPenaltyFeed   = 0.12
-	satPenaltyTopic  = 0.18
-	satPenaltyStory  = 0.30
-	satPenaltyDomain = 0.08
-
-	// Saturation grows with repeated use of one source/topic/feed:
-	// second 0.10, third 0.30, fourth 0.60, etc.
-	saturationStepPenalty = 0.10
-)
-
 // Payload is a derive job.
 type Payload struct {
 	TenantID string `json:"tenant_id"`
@@ -123,6 +99,9 @@ type Service struct {
 	// plus is the Smart+ tier. Nil on every instance without an API key, which is the
 	// normal case and the one the free tier is built to be good enough for.
 	plus Enhancer
+	// rerankGap overrides RerankConfidentGap; zero means the constant. Tests of
+	// the Smart+ mechanics set it to +Inf so the rerank is always asked.
+	rerankGap float64
 }
 
 // Enhancer is the Smart+ half of the interest layer (§10.5, §18.8).
@@ -421,10 +400,15 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	}
 	res.Feeds = len(feeds)
 
-	engaged, err := s.engagedItems(ctx, sc, sinceMS)
+	// A46: the log folded into one assessed judgement per item (rank.Assess),
+	// the newest events first. `engaged` is the positive subset the vocabulary,
+	// topics and entities are learned from; `obs` is everything, negatives and
+	// pass-overs included, which the profile is built from.
+	obs, err := s.observe(ctx, sc, sinceMS)
 	if err != nil {
 		return res, fmt.Errorf("derive: engaged items: %w", err)
 	}
+	engaged := engagedFrom(obs, now)
 
 	terms, corpus, vectors, err := s.deriveTermAffinity(ctx, sc, engaged)
 	if err != nil {
@@ -458,7 +442,7 @@ func (s *Service) RunReporting(ctx context.Context, sc store.Scope, now time.Tim
 	//
 	// Only now, and only reading what stage 1 wrote plus the deliberate acts.
 
-	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, topicStates, corpus, engaged, sinceMS, now)
+	ranked, err := s.deriveHomeRanking(ctx, sc, plus, feeds, topicSet, topicStates, corpus, engaged, obs, now)
 	if err != nil {
 		return res, fmt.Errorf("derive: home ranking: %w", err)
 	}
@@ -484,6 +468,13 @@ func (s *Service) deriveFeedAffinity(ctx context.Context, sc store.Scope, sinceM
 	if err != nil {
 		return nil, err
 	}
+	// Every source's half-life in one pass over the engagement log, rather than
+	// one pass per source (store.HalfLives says why that mattered). Same values:
+	// a source absent from the map is the zero HalfLifeFor returned for it.
+	halves, err := s.repo.HalfLives(ctx, sc)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]store.FeedAffinity, 0, len(sigs))
 	for _, sig := range sigs {
@@ -506,11 +497,7 @@ func (s *Service) deriveFeedAffinity(ctx context.Context, sc store.Scope, sinceM
 			a.LastEngagedAt = time.UnixMilli(sig.LastEngagedAt).UTC().Format(time.RFC3339Nano)
 		}
 
-		half, err := s.repo.HalfLifeFor(ctx, sc, sig.SourceID)
-		if err != nil {
-			return nil, err
-		}
-		a.HalfLifeHours = half
+		a.HalfLifeHours = halves[sig.SourceID]
 		a.Score = feedScore(sig)
 		out = append(out, a)
 	}
@@ -573,119 +560,6 @@ type engagedItem struct {
 	Weight float64
 }
 
-// engagedItems collects what the reader engaged with in the window.
-//
-// Impressions are deliberately NOT enough to appear here. An item that scrolled
-// past on screen is not evidence of interest, and including impressions would
-// make the term vector a description of the reader's subscription list rather
-// than of their reading.
-func (s *Service) engagedItems(ctx context.Context, sc store.Scope, sinceMS int64) ([]engagedItem, error) {
-	events, err := s.repo.EngagementsSince(ctx, sc, sinceMS, 20000)
-	if err != nil {
-		return nil, err
-	}
-
-	weights := map[string]float64{}
-	when := map[string]time.Time{}
-	// Dwell is scored in a second pass, because Classify needs the article's word
-	// count and that is not known until the items are fetched below. The longest
-	// single observation is kept rather than the sum: attentive time on one article
-	// across two sittings is one reading of it, and adding them up would let a
-	// reader who left a tab open outscore one who read three pieces.
-	dwellMS := map[string]int64{}
-	seen := map[string]bool{}
-	for _, e := range events {
-		if e.ItemID == "" {
-			continue
-		}
-		// The weight comes from signals.Lookup — the registry — and not from a
-		// switch written out here. That distinction was a real bug, and it is worth
-		// recording because the broken version read as perfectly reasonable code.
-		//
-		// The first version was a hand-written switch over ten kind strings. It
-		// silently discarded most of what the client actually sends, and on a real
-		// database of 977 engagements it cost:
-		//
-		//   - `reread`, prior 1.2 — the highest of any non-verdict kind, described in
-		//     signals.go as "rare, and one of the strongest" — present on 41 distinct
-		//     items, contributing NOTHING.
-		//   - `chose`, prior 0.6, "picked this over the others on screen" — 28 items,
-		//     also nothing.
-		//   - `clicked_out`, prior 1.0 — nothing. The switch instead had a case for
-		//     `clicked_through`, which is not a kind that exists, and one for
-		//     `starred`, which is not either. Two of its ten branches were dead.
-		//
-		// So the reader's most frequent deliberate signals were being dropped while
-		// the code looked correct. Spec.Doc exists to be "kept next to the weight so
-		// the two cannot drift apart"; a second copy of the table defeats that.
-		//
-		// R17 now holds by construction rather than by a remembered case: BulkRead and
-		// SyncRead carry Affinity=false, so they are refused before a prior is read.
-		//
-		// Every affinity-bearing observation marks the item as engaged, even when its
-		// own contribution is zero. Dwell is the case that matters: its prior is 0.0
-		// by design — "classify with Classify, do not use raw" — and gating membership
-		// on a non-zero weight would drop a dwell-only item before the second pass
-		// could score it at all.
-		spec, ok := signals.Lookup(e.Kind)
-		if !ok || !spec.Affinity {
-			// bulk_read and sync_read land here, which is R17's requirement: a
-			// mark-all-read must not move a single number.
-			continue
-		}
-		seen[e.ItemID] = true
-		if e.Kind == signals.Dwell {
-			if ms := int64(e.Value); ms > dwellMS[e.ItemID] {
-				dwellMS[e.ItemID] = ms
-			}
-		} else {
-			weights[e.ItemID] += spec.Prior
-		}
-		at := time.UnixMilli(e.At).UTC()
-		if at.After(when[e.ItemID]) {
-			when[e.ItemID] = at
-		}
-	}
-	if len(seen) == 0 {
-		return nil, nil
-	}
-
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
-	items, err := s.repo.ItemsByID(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]engagedItem, 0, len(items))
-	for _, it := range items {
-		w := weights[it.ID] + dwellWeight(dwellMS[it.ID], it.WordCount)
-		// A net-zero or net-negative item is not evidence of interest, and the
-		// vectoriser must not learn its vocabulary. The check is here rather than in
-		// the loop above because dwell can move an item in either direction: a
-		// bounce-length dwell on an item that was merely opened nets out negative,
-		// which is exactly the informed rejection §18.1 asks for.
-		if w <= 0 {
-			continue
-		}
-		out = append(out, engagedItem{
-			ItemID:    it.ID,
-			SourceID:  it.SourceID,
-			Title:     it.Title,
-			Text:      itemText(it.Title, it.ContentHTML, it.Summary),
-			URL:       it.URL,
-			EngagedAt: when[it.ID],
-			Weight:    w,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
-	return out, nil
-}
-
 // itemText is the plain-language text of an item, for the vectoriser.
 //
 // # Why this exists, and what it cost to not have it
@@ -723,42 +597,6 @@ func itemText(title, contentHTML, summary string) string {
 		body = summary
 	}
 	return title + " " + sanitize.Text(body)
-}
-
-// dwellWeight scores a dwell observation, which its prior cannot.
-//
-// signals.Classify turns milliseconds plus the article's length into a judgement —
-// Glance, Bounce, Skim or Read — and that judgement is the signal. The mapping
-// back to a weight is deliberately aligned with the neighbouring priors rather
-// than invented: a Read is worth about what Completed is worth (0.8), a Skim about
-// what an Opened is (0.3), and a Bounce carries the same negative as the explicit
-// Bounced kind (-1.0), because they are the same event observed two ways.
-//
-// A Glance scores zero rather than negative. Below GlanceFloorMS no conclusion is
-// drawn at all, and treating "the row went past" as a rejection is how a scorer
-// learns that the reader dislikes everything they subscribe to.
-//
-// words == 0 means the length is unknown, which is common for a truncated feed. It
-// returns the Skim weight rather than guessing in either direction: crediting a
-// full read on no evidence inflates every short item, and scoring it negative
-// punishes the reader for the publisher's excerpt policy.
-func dwellWeight(dwellMS int64, words int) float64 {
-	if dwellMS <= 0 {
-		return 0
-	}
-	if words <= 0 {
-		return 0.3
-	}
-	switch signals.Classify(dwellMS, words, 0) {
-	case signals.Read:
-		return 0.8
-	case signals.Skim:
-		return 0.3
-	case signals.Bounce:
-		return -1.0
-	default:
-		return 0
-	}
 }
 
 // deriveTermAffinity builds the TF-IDF vocabulary of what the reader reads.
@@ -1058,21 +896,20 @@ func (s *Service) labelledAlready(ctx context.Context, sc store.Scope) map[strin
 // coincidence is a correction landing on the wrong topic.
 func topicKey(terms []string) string { return store.TopicKey(terms) }
 
-// deriveHomeRanking is the precision stage.
+// deriveHomeRanking is the precision stage (A46).
+//
+// Every candidate is scored by rank.ScoreCandidate against a Profile built from
+// the whole assessed log — positives, negatives and pass-overs, decayed and
+// shrunk — and the page is assembled by rank.Assemble, which spends a stated
+// exploration budget and records every fatigue demotion as a reason. The
+// verdict re-ranks that used to be multipliers here (applyDeliberate,
+// applyConceptFeedback) are addends inside the scorer now, so the stored score
+// is still exactly the sum of the row's reasons.
 func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus Enhancer,
 	feeds []store.FeedAffinity, topicSet []topics.Topic, topicStates []topicState,
-	corpus *textvec.Corpus, engaged []engagedItem, sinceMS int64, now time.Time) (int, error) {
+	corpus *textvec.Corpus, engaged []engagedItem, obs []observation, now time.Time) (int, error) {
 
-	// The candidate set is what recall produced: unread items from subscribed
-	// feeds. Ranking read items would be re-ordering a page the reader has
-	// already been through.
-	// PAGED. ListItems silently clamps its limit to store.MaxLimit, so asking for
-	// MaxRanked*3 returned 200 rows and no error — this considered 200 of 3,558 unread
-	// items and looked like it had considered them all.
-	//
-	// It mattered far more once the content gate landed: with only 200 candidates, six
-	// passed. The gate was blamed for being too strict when the candidate set was the
-	// problem, which is exactly how a silent clamp costs an afternoon.
+	// PAGED. ListItems silently clamps its limit to store.MaxLimit.
 	var candidates []store.Item
 	for cursor := ""; len(candidates) < MaxCandidates; {
 		page, next, err := s.repo.ListItems(ctx, sc, store.ListQuery{
@@ -1087,45 +924,44 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 		}
 		cursor = next
 	}
-	if len(candidates) == 0 {
-		return 0, s.repo.ReplaceHomeRanking(ctx, sc, nil, nil)
-	}
-
 	byFeed := make(map[string]store.FeedAffinity, len(feeds))
 	for _, f := range feeds {
 		byFeed[f.SourceID] = f
 	}
-	domains, err := s.repo.DomainAffinities(ctx, sc)
-	if err != nil {
-		return 0, err
-	}
-
-	// The reader's own exclusions, which the ranking ignored entirely until now.
-	//
-	// `in_megafeed = 0` and an active `muted_until` are both the reader saying "not on
-	// my front page", and a ranked homepage that overrules them is worse than one that
-	// does not exist: the setting is visibly present in feed settings and visibly does
-	// nothing. Items stay fully readable in the feed's own list, which is the whole
-	// distinction the setting draws.
+	// The reader's own exclusions: in_megafeed = 0 and an active mute.
 	eligible, err := s.repo.MegafeedSources(ctx, sc)
 	if err != nil {
 		return 0, err
 	}
-
-	// The named things the reader follows, for the entity term and the content-match gate.
 	followed, err := s.repo.EntityAffinity(ctx, sc, MaxEntities)
 	if err != nil {
 		return 0, err
 	}
 
-	// Verdicts generalised from the article to its CONCEPT — see conceptFeedback.
-	topicFeedback, entityFeedback, dislikedTitles, err := s.conceptFeedback(ctx, sc, sinceMS, corpus, topicSet, followed)
-	if err != nil {
+	// The profile. Home domains are learned from everything this derivation can
+	// see, observed and candidate alike, so an aggregator's items are
+	// recognised as pointing elsewhere.
+	all := make([]store.Item, 0, len(obs)+len(candidates))
+	for _, o := range obs {
+		all = append(all, o.item)
+	}
+	all = append(all, candidates...)
+	home := homeDomains(all)
+	prof := buildProfile(obs, corpus, topicSet, topicStates, followed, home, now)
+
+	// The stored feed affinity is the profile's source preference now, so the
+	// My Feed settings screen and the ranking agree about which feeds the
+	// reader reads closely. Clamped to 0..1, the column's contract.
+	for i := range feeds {
+		feeds[i].Score = clamp01(prof.Sources[feeds[i].SourceID].Preference(prof.Priors.Source))
+	}
+	if err := s.repo.ReplaceFeedAffinity(ctx, sc, feeds); err != nil {
 		return 0, err
 	}
+	if len(candidates) == 0 {
+		return 0, s.repo.ReplaceHomeRanking(ctx, sc, nil, nil)
+	}
 
-	// The deliberate acts, read separately — this is the half that makes it a
-	// re-rank rather than another weighted term.
 	ids := make([]string, 0, len(candidates))
 	for _, it := range candidates {
 		ids = append(ids, it.ID)
@@ -1137,267 +973,160 @@ func (s *Service) deriveHomeRanking(ctx context.Context, sc store.Scope, plus En
 	if err != nil {
 		return 0, err
 	}
-
-	out := make([]scoredItem, 0, len(candidates))
-
-	// One pass over the candidates buys both of the story-level signals: how many
-	// OTHER sources carried this, and whether it is a near-duplicate of something
-	// already on the page. See corroborate.
 	stories := corroborate(candidates, corpus)
 
+	scored := map[string]scoredItem{}
+	var entries []rank.Entry
+	weights := rank.DefaultModelWeights()
 	for _, it := range candidates {
 		if !eligible[it.SourceID] {
 			continue
 		}
-		aff := byFeed[it.SourceID]
-		host := strings.TrimPrefix(urlnorm.Host(it.URL), "www.")
-
-		vec := corpus.TFIDF(itemText(it.Title, it.ContentHTML, it.Summary))
-		topicIdx, topicScore := topics.Nearest(vec, topicSet)
-		// Below the clustering cut, "nearest topic" is not a match.
-		//
-		// topics.Nearest returns the closest centroid and its cosine, and that cosine is
-		// non-zero for almost any item sharing any vocabulary with anything the reader has
-		// read. rank emits its topic reason on `TopicScore > 0`, so without this floor
-		// nearly every candidate claimed a topic match — measured: 197 of 200 passed the
-		// content gate, which made the gate decorative and My Feed the unread list again.
-		//
-		// The floor is topics.DefaultThreshold, the same 0.18 that decides whether two
-		// items belong in one cluster. That equivalence is the argument: an item called
-		// "close to a topic you read" should be at least as close to it as its own members
-		// are to each other. Anything looser is a coincidence of shared words.
-		if topicScore < topics.DefaultThreshold {
-			topicIdx, topicScore = -1, 0
-		}
-
-		// The reader's dial, applied AFTER the match test rather than before it
-		// (0027). "More of this" is an instruction about how much a match should
-		// count, not about what counts as a match: folding it in first would let a
-		// boosted topic claim items that share three words with it, and the reason
-		// line would then assert a match the reader can see is not there.
-		//
-		// Clamped back to 1, which keeps every term in rank.Score on the same 0..1
-		// scale its weights were calibrated against.
-		if topicIdx >= 0 && topicIdx < len(topicStates) {
-			topicScore = math.Min(1, topicScore*clampSteer(topicStates[topicIdx].steer))
-		}
-
-		published, _ := time.Parse(time.RFC3339Nano, it.PublishedAt)
 		st := stories[it.ID]
-		named, entityScale := namedIn(it.Title, followed)
-		rankItem := rank.Item{
-			ID:              it.ID,
-			SourceID:        it.SourceID,
-			PublishedAt:     published,
-			TopicScore:      topicScore,
-			TopicLabel:      topicLabelAt(topicSet, topicIdx),
-			Entities:        named,
-			EntityScale:     entityScale,
-			TargetDomain:    host,
-			ManualWeight:    1,
-			Corroboration:   st.otherSources,
-			SimilarToRecent: st.duplicateOf,
-			Skips:           skipCount(itemSignals[it.ID]),
-		}
-		sig := rank.Signals{
-			FeedAffinity:   aff.Score,
-			DomainAffinity: domainScore(domains[host]),
-			HalfLife:       time.Duration(aff.HalfLifeHours * float64(time.Hour)),
-			VolumePerDay:   aff.VolumePerDay,
-			Mode:           rank.ModeFull,
-		}
-		// A suppressed topic is a strong negative across its whole cluster
-		// (§18.2), and it is precision-stage evidence: marking something "not an
-		// interest" is a deliberate act.
-		if topicIdx >= 0 && topicIdx < len(topicStates) && topicStates[topicIdx].suppressed {
-			sig.NegativeAffinity = 1
-		}
-
-		r := rank.Score(rankItem, sig, rank.DefaultWeights(), now)
-		if !r.Eligible {
-			continue
-		}
-		// A recommendation has to be ABOUT something. This is the gate that makes My Feed
-		// a recommendation list rather than the unread list reordered — see
-		// hasContentMatch.
-		if !hasContentMatch(r) {
-			continue
-		}
-		// One card per story (§18.4). A near-duplicate of a story already represented is
-		// dropped, not merely demoted.
-		//
-		// The duplicate PENALTY alone is not enough and the screenshot proved it: the same
-		// Lilbits story arrived from Liliputing, Linux Smartphones and mobiputing, all three
-		// with identical titles, and all three sat in the visible top ten. A 0.8 deduction
-		// off a score of 2.5 reorders them; it does not stop the reader seeing one article
-		// three times, which on a page of recommendations is the single most obvious defect
-		// available.
-		//
-		// The penalty still earns its place: it applies to items that are SIMILAR without
-		// being the same story, which is the graded case this threshold does not catch.
+		// One card per story (§18.4): a near-duplicate of a story already
+		// represented is dropped, not merely demoted.
 		if st.duplicateOf >= SameStoryThreshold {
 			continue
 		}
-		r = applyDeliberate(r, itemSignals[it.ID])
-		r = applyConceptFeedback(r, topicFeedback, entityFeedback, topicIdx, named)
+		aff := byFeed[it.SourceID]
+		host := hostOf(it.URL)
+		published, _ := time.Parse(time.RFC3339Nano, it.PublishedAt)
+
+		c := rank.Candidate{
+			ID:              it.ID,
+			SourceID:        it.SourceID,
+			PublishedAt:     published,
+			Entities:        entityMatches(it.Title, followed),
+			Domain:          host,
+			ForeignDomain:   host != "" && host != home[it.SourceID],
+			Corroboration:   st.otherSources,
+			SimilarToRecent: st.duplicateOf,
+			Skips:           skipCount(itemSignals[it.ID]),
+			Verdict:         it.Rating,
+			Saved:           itemSignals[it.ID].Counts[signals.Later] > 0,
+			ManualWeight:    1,
+			HalfLife:        time.Duration(aff.HalfLifeHours * float64(time.Hour)),
+			VolumePerDay:    aff.VolumePerDay,
+		}
+		topicIdx := -1
+		if corpus != nil {
+			vec := corpus.TFIDF(itemText(it.Title, it.ContentHTML, it.Summary))
+			if idx, sim := topics.Nearest(vec, topicSet); idx >= 0 && sim >= topics.DefaultThreshold && idx < len(topicStates) {
+				topicIdx = idx
+				c.TopicKey = topicKeyOf(topicSet, topicStates, idx)
+				c.TopicLabel = topicLabelAt(topicSet, idx)
+				c.TopicSim = sim
+				c.TopicSteer = clampSteer(topicStates[idx].steer)
+				c.TopicSuppressed = topicStates[idx].suppressed
+			}
+		}
+		r := rank.ScoreCandidate(c, prof, weights, now)
 		topicID := ""
-		if topicIdx >= 0 && topicIdx < len(topicStates) {
+		if topicIdx >= 0 {
 			topicID = topicStates[topicIdx].id
 		}
-		out = append(out, scoredItem{item: it, res: r, topicID: topicID, targetDomain: host, clusterID: stories[it.ID].headID})
-	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].res.Score != out[j].res.Score {
-			return out[i].res.Score > out[j].res.Score
-		}
-		return out[i].item.ID < out[j].item.ID
-	})
-	if len(out) > MaxRanked {
-		out = out[:MaxRanked]
-	}
-
-	// Saturation BEFORE the model, and the order of these two is load-bearing.
-	//
-	// applyDiversityRerank rebuilds the order from score and saturation penalties alone
-	// — it does not read the order it was handed — so running it after Smart+ threw the
-	// model's answer away entirely. The paid tier reordered the head, and then the free
-	// tier's rerank put everything back, so promoted rows arrived below unpromoted ones
-	// carrying a `smart_plus` tier that described a position they no longer held. That
-	// is the worst version of the bug: the reader was billed for a reorder, told which
-	// rows it produced, and the rows were not where it put them
-	// (TestSmartPlusPromotesItsPicks).
-	//
-	// The model's word is last, which is what "the model is asked which of these to lead
-	// with" means. Diversity is part of deciding which candidates won; it belongs on the
-	// free tier's side of that line.
-	if len(out) > 1 {
-		out = applyDiversityRerank(out)
-	}
-
-	// Smart+ re-orders the head of the list, and only the head.
-	//
-	// Free Smart still does all of recall and all of the scoring; the model is shown the
-	// candidates that already won and asked which of those to lead with. That division
-	// is deliberate and is the one §18.8 permits: the payload is titles, summaries and a
-	// derived profile, so a model can judge "which of these is the better read" and
-	// cannot be handed the reading history it would need to do candidate generation.
-	//
-	// It is also the division that keeps the free tier honest. If the model chose the
-	// candidate set, an instance without a key would be running a different and worse
-	// product rather than the same product without a garnish.
-	plusTier := map[string]bool{}
-	if plus != nil {
-		positiveExamples := topEngagedTitles(engaged, MaxTasteExamples)
-		plusTier = s.applySmartPlus(ctx, plus, out, topicSet, feeds, positiveExamples, dislikedTitles)
-	}
-
-	rows := make([]store.RankedItem, 0, len(out))
-	for i, sc := range out {
-		// Both halves of each reason: the term is what the client renders a short,
-		// translatable label from, and the prose is the hover and the fallback. Storing
-		// only the prose made the explanations untranslatable and unreadable at list
-		// width — see store.RankReason.
-		reasons := make([]store.RankReason, 0, len(sc.res.Reasons))
-		for _, r := range sc.res.Reasons {
-			reasons = append(reasons, store.RankReason{Term: r.Term, Text: r.Text})
-		}
-		tier := store.TierSmart
-		if plusTier[sc.item.ID] {
-			tier = store.TierSmartPlus
-		}
-		rows = append(rows, store.RankedItem{
-			ItemID: sc.item.ID,
-			Score:  sc.res.Score,
-			Rank:   i + 1,
-			Slot:   slotFor(i, len(out)),
-			// The row that survives the drop at duplicateOf >= SameStoryThreshold is,
-			// by construction, always its own story's representative — a
-			// non-representative never reaches `out` in the first place — so this is
-			// always sc.item.ID's own value. Read off stories rather than assumed,
-			// so the two never have a chance to disagree.
-			ClusterID: stories[sc.item.ID].headID,
-			// Which topic this matched, or empty when none did.
-			//
-			// It is the client's cold-start signal: an empty value on every row means the
-			// topic model contributed nothing, which is the state the "still learning" band
-			// reports. Leaving it unset — as the first version did — made that band
-			// permanent, so a reader with fourteen working topics was still being told the
-			// app did not know them yet.
-			TopicID: sc.topicID,
-			Reasons: reasons,
-			Tier:    tier,
+		scored[it.ID] = scoredItem{item: it, res: r, topicID: topicID, targetDomain: host, clusterID: st.headID}
+		entries = append(entries, rank.Entry{
+			ID: it.ID, SourceID: it.SourceID, Domain: host, TopicKey: c.TopicKey, ClusterID: st.headID,
+			Result: r, Content: rank.HasContent(r), Novelty: prof.Novelty(c), Blocked: prof.Blocked(c),
 		})
 	}
 
-	clusters := clusterRows(stories)
-	if err := s.repo.ReplaceHomeRanking(ctx, sc, rows, clusters); err != nil {
+	page := rank.Assemble(entries, rank.DefaultPageOptions(MaxRanked))
+	out := make([]scoredItem, 0, len(page))
+	slots := make(map[string]string, len(page))
+	for _, p := range page {
+		si := scored[p.ID]
+		si.res = p.Result // carries the explore and fatigue reasons Assemble added
+		out = append(out, si)
+		slots[p.ID] = p.Slot
+	}
+
+	// Smart+ re-orders the head, and only the exploit rows of it: exploration
+	// probes keep their positions, because the budget is the free tier's promise
+	// and a model choosing "the better read" would spend it on the familiar. The
+	// model is never the only ranker (§18.8).
+	plusTier := map[string]bool{}
+	if plus != nil {
+		var head []int
+		for i, si := range out {
+			if len(head) >= SmartPlusHead {
+				break
+			}
+			if slots[si.item.ID] != rank.SlotExplore {
+				head = append(head, i)
+			}
+		}
+		exploit := make([]scoredItem, len(head))
+		for k, i := range head {
+			exploit[k] = out[i]
+		}
+		if leadIsClear(exploit, s.rerankGap) {
+			// Rung 1 is confident (A47): nothing is asked and nothing is spent.
+			if s.log != nil {
+				s.log.Info("smart+ rerank skipped: the free ranking's lead is clear")
+			}
+		} else {
+			plusTier = s.applySmartPlus(ctx, plus, exploit, topicSet, topicStates, prof, feeds,
+				topEngagedTitles(engaged, MaxTasteExamples), dislikedTitles(obs, MaxTasteExamples))
+		}
+		for k, i := range head {
+			out[i] = exploit[k]
+		}
+	}
+
+	rows := make([]store.RankedItem, 0, len(out))
+	for i, si := range out {
+		reasons := make([]store.RankReason, 0, len(si.res.Reasons))
+		for _, r := range si.res.Reasons {
+			reasons = append(reasons, store.RankReason{Term: r.Term, Text: r.Text})
+		}
+		tier := store.TierSmart
+		if plusTier[si.item.ID] {
+			tier = store.TierSmartPlus
+		}
+		rows = append(rows, store.RankedItem{
+			ItemID:    si.item.ID,
+			Score:     si.res.Score,
+			Rank:      i + 1,
+			Slot:      slots[si.item.ID],
+			ClusterID: stories[si.item.ID].headID,
+			TopicID:   si.topicID,
+			Reasons:   reasons,
+			Tier:      tier,
+		})
+	}
+	if err := s.repo.ReplaceHomeRanking(ctx, sc, rows, clusterRows(stories)); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
 }
 
-// contentTerms are the scoring factors that say what an item is ABOUT.
-//
-// Everything else in the formula describes its CIRCUMSTANCES: how new it is, which feed
-// carried it, how much that feed publishes. Those are real signals and they are not reasons
-// to recommend something.
-var contentTerms = map[string]bool{
-	// The item matches a cluster of things the reader has read.
-	"topic": true,
-	// Its headline names a brand, product or organisation they follow.
-	"entity": true,
-	// Several of their feeds carried the same story, which is a fact about the story
-	// rather than about any one feed.
-	"corroboration": true,
-	// The reader wrote a rule that weights this. Their own instruction outranks any
-	// inference, so it counts.
-	"manual": true,
-	// `domain` is deliberately ABSENT, and it is the one that looks like it belongs.
-	//
-	// §18.6's argument for domain affinity is that an aggregator item almost never points
-	// at the aggregator, so where an item POINTS is a different signal from which feed
-	// mentioned it. True — for aggregators. For a publisher's own feed the target domain is
-	// that publisher's domain, so "points at engadget.com, which you keep opening" is the
-	// same fact as "from a feed you read closely", stated twice.
-	//
-	// That is most feeds, and it showed in the numbers: on a real database `domain`
-	// appeared on 138 of 200 rows and `feed` on 149, largely the same rows. Admitting it
-	// here would let the gate pass nearly everything on what is really feed affinity
-	// wearing a second name — which is precisely the "defaults from all feeds" this gate
-	// exists to stop. It still CONTRIBUTES to the score; it just cannot be the sole reason
-	// an item is called a recommendation.
-}
-
-// hasContentMatch reports whether a scored item earned its place on something other than
-// being new and arriving from a feed the reader opens.
-//
-// # Why My Feed refuses to fill itself
-//
-// Without this gate every unread item is ranked, which on a real database meant 200 rows
-// whose reasons were `fresh` on all 200, `feed` on 149 and `domain` on 138. That is a
-// correctly-ordered list and it is not a recommendation list: the reader sees their unread
-// items in a different order and no statement about why any of them is there. The
-// complaint it produced was exact — "filled with defaults from all feeds".
-//
-// So an item needs at least one CONTENT reason. If none of the candidates has one, the
-// ranked page is empty and the UI says the interest layer is still learning, which is true
-// and is better than a confident wrong answer (§18.4). Empty and honest beats full and
-// meaningless — and the empty state names what fixes it, which the reader is the only one
-// who can do.
-//
-// # Why the negative terms cannot qualify
-//
-// Only positive contributions count. `duplicate` and `skipped` are content-level
-// observations, and an item held up as a recommendation BECAUSE it is a near-duplicate of
-// something already shown would be the gate working backwards.
-func hasContentMatch(r rank.Result) bool {
-	for _, why := range r.Reasons {
-		if why.Delta > 0 && contentTerms[why.Term] {
-			return true
+// dislikedTitles are the headlines of standing dislikes, most recent last — the
+// negative taste examples §18.8's 2026-07-31 amendment permits. Titles only.
+func dislikedTitles(obs []observation, n int) []string {
+	type t struct {
+		title string
+		at    time.Time
+		id    string
+	}
+	var ts []t
+	for _, o := range obs {
+		if o.ev.Verdict < 0 && o.item.Title != "" {
+			ts = append(ts, t{o.item.Title, o.ev.At, o.item.ID})
 		}
 	}
-	return false
+	sort.Slice(ts, func(i, j int) bool {
+		if !ts[i].at.Equal(ts[j].at) {
+			return ts[i].at.Before(ts[j].at)
+		}
+		return ts[i].id < ts[j].id
+	})
+	out := make([]string, 0, len(ts))
+	for _, x := range ts {
+		out = append(out, x.title)
+	}
+	return lastN(out, n)
 }
 
 // topicLabelAt names a topic by index in a form that fits a sentence, or empty when there is
@@ -1645,7 +1374,7 @@ const SmartPlusWant = 12
 // the ORDER changes; the reasons stay attached to their items, which is what keeps every
 // row's explanation true after the move.
 func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []scoredItem,
-	topicSet []topics.Topic, feeds []store.FeedAffinity,
+	topicSet []topics.Topic, topicStates []topicState, prof rank.Profile, feeds []store.FeedAffinity,
 	positiveExamples, negativeExamples []string) map[string]bool {
 
 	head := len(out)
@@ -1670,13 +1399,12 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 		})
 	}
 
-	prof := ProfileHint{
+	readerProfile := prof
+	hint := ProfileHint{
 		PositiveExamples: positiveExamples,
 		NegativeExamples: negativeExamples,
 	}
-	for _, t := range topicSet {
-		prof.Topics = append(prof.Topics, TopicHint{Label: t.Label, Terms: t.TopTerms})
-	}
+	hint.Topics = profileTopics(topicSet, topicStates, readerProfile)
 	// Source TITLES by affinity, never their URLs — a feed URL is a stable identifier that
 	// would let a provider recognise this instance across requests (§18.8).
 	// internal/llm.RankPayload.Trim caps the count; this only has to order them.
@@ -1702,11 +1430,11 @@ func (s *Service) applySmartPlus(ctx context.Context, plus Enhancer, out []score
 	})
 	for _, f := range sorted {
 		if t := titleOf[f.SourceID]; t != "" {
-			prof.Sources = append(prof.Sources, t)
+			hint.Sources = append(hint.Sources, t)
 		}
 	}
 
-	picks, err := plus.RerankCandidates(ctx, cands, prof, SmartPlusWant)
+	picks, err := plus.RerankCandidates(ctx, cands, hint, SmartPlusWant)
 	if err != nil {
 		if s.log != nil {
 			// Info, not Warn. A Smart+ call that did not happen is not a fault in this
@@ -2333,344 +2061,11 @@ func skipCount(sig store.ItemSignal) int {
 	return impressions - SkipMinImpressions + 1
 }
 
-// applyDiversityRerank applies late-stage saturation to avoid one feed/domain/story
-// overwhelming the top of the page while still keeping the strong signals from
-// the first precision pass.
-func applyDiversityRerank(items []scoredItem) []scoredItem {
-
-	if len(items) <= 1 {
-		return items
-	}
-
-	remaining := make([]scoredItem, len(items))
-	copy(remaining, items)
-	out := make([]scoredItem, 0, len(remaining))
-	feedCounts := make(map[string]int)
-	domainCounts := make(map[string]int)
-	topicCounts := make(map[string]int)
-	clusterCounts := make(map[string]int)
-
-	for position := 0; len(remaining) > 0; position++ {
-		bestIdx := -1
-		bestScore := math.Inf(-1)
-		bestID := ""
-
-		for i, c := range remaining {
-			score := scoreWithDiversity(c, position, feedCounts, domainCounts, topicCounts, clusterCounts, true)
-			if score.hardCap {
-				continue
-			}
-			if score.score > bestScore || (score.score == bestScore && (bestIdx == -1 || c.item.ID < bestID)) {
-				bestIdx = i
-				bestScore = score.score
-				bestID = c.item.ID
-			}
-		}
-
-		// If hard caps reject everything in this window (eg one source dominates),
-		// relax caps and keep ordering driven by softer saturation.
-		if bestIdx == -1 {
-			bestScore = math.Inf(-1)
-			bestID = ""
-			for i, c := range remaining {
-				score := scoreWithDiversity(c, position, feedCounts, domainCounts, topicCounts, clusterCounts, false)
-				if score.score > bestScore || (score.score == bestScore && (bestIdx == -1 || c.item.ID < bestID)) {
-					bestIdx = i
-					bestScore = score.score
-					bestID = c.item.ID
-				}
-			}
-		}
-
-		if bestIdx == -1 {
-			bestIdx = 0
-		}
-
-		chosen := remaining[bestIdx]
-		out = append(out, chosen)
-		if chosen.item.SourceID != "" {
-			feedCounts[chosen.item.SourceID]++
-		}
-		if chosen.targetDomain != "" {
-			domainCounts[chosen.targetDomain]++
-		}
-		if chosen.topicID != "" {
-			topicCounts[chosen.topicID]++
-		}
-		if chosen.clusterID != "" {
-			clusterCounts[chosen.clusterID]++
-		}
-
-		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
-	}
-	return out
-}
-
-type scoredCandidate struct {
-	score   float64
-	hardCap bool
-}
-
-func scoreWithDiversity(c scoredItem, position int, feedCounts, domainCounts, topicCounts, clusterCounts map[string]int, strict bool) scoredCandidate {
-	hardCap := false
-
-	if strict {
-		if position < feedSaturationWindow && c.item.SourceID != "" && feedCounts[c.item.SourceID] >= maxFeedTopN {
-			hardCap = true
-		}
-		if strict && position < domainSaturationWindow && c.targetDomain != "" && domainCounts[c.targetDomain] >= maxDomainTopN {
-			hardCap = true
-		}
-		if strict && position < storySaturationWindow && c.clusterID != "" && clusterCounts[c.clusterID] >= maxStoryClusterTopN {
-			hardCap = true
-		}
-	}
-
-	score := c.res.Score
-	if position < feedSaturationWindow && c.item.SourceID != "" {
-		score -= satPenaltyFeed * saturationPenalty(feedCounts[c.item.SourceID])
-	}
-	if position < storySaturationWindow && c.clusterID != "" {
-		score -= satPenaltyStory * saturationPenalty(clusterCounts[c.clusterID])
-	}
-	if position < feedSaturationWindow && c.topicID != "" {
-		score -= satPenaltyTopic * saturationPenalty(topicCounts[c.topicID])
-	}
-	if position < domainSaturationWindow && c.targetDomain != "" {
-		score -= satPenaltyDomain * saturationPenalty(domainCounts[c.targetDomain])
-	}
-
-	return scoredCandidate{score: score, hardCap: hardCap}
-}
-
-func saturationPenalty(count int) float64 {
-	if count <= 0 {
-		return 0
-	}
-	// 1 -> .10, 2 -> .30, 3 -> .60 ...
-	return saturationStepPenalty * (float64(count) * (float64(count) + 1)) / 2
-}
-
-// deliberateKinds are the acts that cost the reader something, and their re-rank
-// multipliers per occurrence.
-//
-// Sparse by nature — that sparsity is the whole argument for the precision stage.
-// A verdict, a note or a tag is evidence of WORTH; dwell and completion are evidence
-// of stickiness, and D18 keeps them apart so the page cannot converge on whatever is
-// most trivially clickable.
-//
-// `later` is here at a low weight because putting something aside is a real choice
-// that costs a press, but it is a promise rather than a verdict — a saved article is
-// not yet a read one. `selected` likewise: highlighting text means engagement with
-// the argument, and the signal records only the LENGTH, never the content (§18.8).
-//
-// NotInterested is deliberately absent: it is a source- and topic-level instruction,
-// applied through topic suppression in the caller, not an item multiplier. Applying
-// it here as well would count one press twice.
-var deliberateKinds = map[signals.Kind]float64{
-
-	signals.Liked:        0.85,
-	signals.Noted:        0.40,
-	signals.Tagged:       0.40,
-	signals.ClickedOut:   0.25,
-	signals.SearchOpened: 0.20,
-	signals.Later:        0.08,
-	signals.Selected:     0.08,
-	signals.Disliked:     -0.90,
-}
-
-// applyDeliberate is the re-rank D18 asks for.
-//
-// It multiplies rather than adds, and that is the distinction from a weighted
-// term: a deliberate act SCALES what recall already thought, so it cannot on its
-// own promote something recall found uninteresting, and it cannot be diluted by
-// the sum of a dozen passive terms either.
-//
-// # Which kinds count as deliberate
-//
-// The set is named here rather than taken from signals.Lookup, and that is a real
-// distinction from affinityWeight rather than the same mistake twice: D18's split
-// is not "positive versus negative", it is DELIBERATE versus PASSIVE, and the
-// registry does not record which is which. A prior says how much a signal is worth;
-// it does not say whether the reader chose to spend something to produce it. Dwell
-// and reread have priors and are passive — they happen while reading. Liking,
-// noting, tagging and following a link out cost an action.
-//
-// It is still checked against the registry: deliberateKinds names real kinds, and a
-// test asserts every one of them exists. The first version of this switch had cases
-// for `starred` and `clicked_through`, neither of which is a kind — so the
-// click-through multiplier had never once applied.
-func applyDeliberate(r rank.Result, sig store.ItemSignal) rank.Result {
-	if len(sig.Counts) == 0 {
-		return r
-	}
-	factor := 0.0
-	for kind, n := range sig.Counts {
-		if w, ok := deliberateKinds[kind]; ok {
-			factor += w * float64(n)
-		}
-	}
-
-	if factor > 1.2 {
-		factor = 1.2
-	}
-	if factor < -2.3 {
-		factor = -2.3
-	}
-	multiplier := math.Exp(factor)
-	if multiplier == 1.0 {
-		return r
-	}
-
-	before := r.Score
-	r.Score *= multiplier
-	r.Reasons = append(r.Reasons, rank.Reason{
-		Term:  "deliberate",
-		Text:  deliberateText(multiplier),
-		Delta: r.Score - before,
-	})
-	return r
-}
-
-func deliberateText(factor float64) string {
-	if factor < 1 {
-		return "you marked things like this as not for you"
-	}
-	return "you have engaged deliberately with this before"
-}
-
-// ConceptFeedbackRatio is how much stronger a dislike counts than a like when it
-// demotes the CONCEPT an article is about, mirroring the asymmetry deliberateKinds
-// already uses for the item's own multiplier: a false-positive recommendation
-// costs more than a missed one.
-const ConceptFeedbackRatio = 1.6
-
-// ConceptFeedbackWeight scales the aggregated topic/entity preference before it
-// enters the same exp() clamp applyDeliberate uses. Above 1 on purpose — a
-// reader who has consistently liked or disliked a subject across several
-// articles is a stronger claim than any single deliberate act on one row, and
-// the whole point of generalising the verdict to the concept is that it should
-// carry more weight than the one-off case, not the same weight diluted across
-// two terms.
-const ConceptFeedbackWeight = 1.3
-
 // MaxVerdictItems bounds how many liked/disliked articles one derivation reads to
 // build concept feedback. Liked and Disliked are the rarest kinds in the
 // taxonomy — the "A27 verdict... given deliberately" — so this is headroom, not
 // an expected load.
 const MaxVerdictItems = 4000
-
-// conceptFeedback turns explicit like/dislike verdicts into a per-topic and
-// per-entity preference: liking or disliking an article is evidence about the
-// CONCEPT it is about, not only about that one row.
-//
-// # The gap this closes
-//
-// Before this, a verdict touched exactly two things: the item's own score
-// (applyDeliberate) and, for a dislike, its feed's affinity (feedScore). Nothing
-// propagated it to the concept, so disliking three articles about the same
-// subject did nothing at all to the fourth. This reads every liked and disliked
-// item in the window, finds which topic and which followed entities each one is
-// about, and aggregates signed evidence per topic and per entity — so a reader
-// who keeps disliking one subject sees THAT SUBJECT demoted, not just the
-// specific rows they happened to dislike.
-//
-// # Why this is not a term in rank.Score
-//
-// A verdict is exactly the "deliberate act" the rank package's own doc comment
-// keeps out of the recall formula: "folding the deliberate acts in as more
-// weighted terms is exactly the single-linear-sum failure D18 rejected." That
-// applies here just as much as it does to the single-item case — a topic-level
-// verdict is still a verdict. So this is consumed the same way applyDeliberate
-// is: as a multiplier in the precision stage, on top of whatever recall already
-// decided, never as another addend a big enough Fresh or Feed term could quietly
-// outrun.
-func (s *Service) conceptFeedback(ctx context.Context, sc store.Scope, sinceMS int64,
-	corpus *textvec.Corpus, topicSet []topics.Topic, followed []store.Entity) (map[int]float64, map[string]float64, []string, error) {
-
-	events, err := s.repo.EngagementsSince(ctx, sc, sinceMS, MaxVerdictItems)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	likes := map[string]int{}
-	dislikes := map[string]int{}
-	for _, e := range events {
-		if e.ItemID == "" {
-			continue
-		}
-		switch e.Kind {
-		case signals.Liked:
-			likes[e.ItemID]++
-		case signals.Disliked:
-			dislikes[e.ItemID]++
-		}
-	}
-	if len(likes) == 0 && len(dislikes) == 0 {
-		return nil, nil, nil, nil
-	}
-
-	seen := make(map[string]bool, len(likes)+len(dislikes))
-	ids := make([]string, 0, len(likes)+len(dislikes))
-	for id := range likes {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	for id := range dislikes {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	// Ascending, which for a ULID is ascending by creation time — the same
-	// ordering ItemsByID returns them in, so the "last N" slice taken below
-	// for dislikedTitles is the MOST RECENT dislikes, not an arbitrary N.
-	sort.Strings(ids)
-
-	items, err := s.repo.ItemsByID(ctx, ids)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	topicFeedback := map[int]float64{}
-	entityFeedback := map[string]float64{}
-	var dislikedTitles []string
-	for _, it := range items {
-		if dislikes[it.ID] > 0 {
-			dislikedTitles = append(dislikedTitles, it.Title)
-		}
-		// Sublinear per item, the same shape as everything else in this layer that
-		// counts repeat observations (feedScore, skipCount): the fifth dislike of
-		// one subject is real evidence and the twentieth is not four times realer.
-		delta := math.Log1p(float64(likes[it.ID])) - ConceptFeedbackRatio*math.Log1p(float64(dislikes[it.ID]))
-		if delta == 0 {
-			continue
-		}
-		vec := corpus.TFIDF(itemText(it.Title, it.ContentHTML, it.Summary))
-		// Same floor topic matching uses in scoring (topics.DefaultThreshold): a
-		// verdict on an article only loosely related to any cluster should not be
-		// filed under a topic it barely resembles.
-		if idx, score := topics.Nearest(vec, topicSet); score >= topics.DefaultThreshold {
-			topicFeedback[idx] += delta
-		}
-		named, _ := namedIn(it.Title, followed)
-		for _, name := range named {
-			entityFeedback[name] += delta
-		}
-	}
-	// Squashed to -1..1 here rather than left to grow with the verdict count: a
-	// reader who has disliked forty things about one topic should not produce a
-	// factor that dwarfs applyConceptFeedback's own clamp, which would make that
-	// clamp decorative.
-	for k, v := range topicFeedback {
-		topicFeedback[k] = math.Tanh(v)
-	}
-	for k, v := range entityFeedback {
-		entityFeedback[k] = math.Tanh(v)
-	}
-	return topicFeedback, entityFeedback, lastN(dislikedTitles, MaxTasteExamples), nil
-}
 
 // MaxTasteExamples bounds how many liked/disliked headlines Smart+'s rerank is
 // shown as taste calibration (see ProfileHint.PositiveExamples/NegativeExamples).
@@ -2724,81 +2119,6 @@ func topEngagedTitles(engaged []engagedItem, n int) []string {
 		out = append(out, e.Title)
 	}
 	return out
-}
-
-// applyConceptFeedback is the multiplicative rerank for verdict history that has
-// been generalised from an article to its concept — see conceptFeedback.
-//
-// Same shape as applyDeliberate, for the same reason: this is a verdict
-// re-rank, not a recall term, so it multiplies what recall already scored
-// rather than adding to it.
-func applyConceptFeedback(r rank.Result, topicFeedback map[int]float64, entityFeedback map[string]float64, topicIdx int, entities []string) rank.Result {
-	factor := 0.0
-	if topicIdx >= 0 {
-		factor += ConceptFeedbackWeight * topicFeedback[topicIdx]
-	}
-	// The strongest matched entity wins rather than the sum — 0027's rule for
-	// EntityScale, applied here too: a headline naming both a liked thing and a
-	// disliked thing should not cancel out to a false neutral.
-	strongest := 0.0
-	for _, name := range entities {
-		if v := entityFeedback[name]; math.Abs(v) > math.Abs(strongest) {
-			strongest = v
-		}
-	}
-	factor += ConceptFeedbackWeight * strongest
-	if factor == 0 {
-		return r
-	}
-
-	if factor > 1.2 {
-		factor = 1.2
-	}
-	if factor < -2.3 {
-		factor = -2.3
-	}
-	multiplier := math.Exp(factor)
-	if multiplier == 1.0 {
-		return r
-	}
-
-	before := r.Score
-	r.Score *= multiplier
-	r.Reasons = append(r.Reasons, rank.Reason{
-		Term:  "concept_feedback",
-		Text:  conceptFeedbackText(factor),
-		Delta: r.Score - before,
-	})
-	return r
-}
-
-func conceptFeedbackText(factor float64) string {
-	if factor < 0 {
-		return "you have disliked articles about this before"
-	}
-	return "you have liked articles about this before"
-}
-
-// slotFor assigns §18.4's three slots.
-//
-// Top ~82%, Explore ~10%, Clusters ~8%. Explore exists because pure affinity
-// converges to a monoculture and fails invisibly — the page still looks full.
-func slotFor(i, total int) string {
-	switch {
-	case float64(i) < float64(total)*(1-exploreRate-clusterHeadRate):
-		return "top"
-	case float64(i) < float64(total)*(1-clusterHeadRate):
-		return "explore"
-	default:
-		return "cluster_head"
-	}
-}
-
-func domainScore(d store.DomainAffinity) float64 {
-	if d.Opens == 0 {
-		return 0
-	}
-	return clamp01(math.Log1p(float64(d.Opens+2*d.Stars)) / math.Log1p(20))
 }
 
 func clamp01(v float64) float64 {

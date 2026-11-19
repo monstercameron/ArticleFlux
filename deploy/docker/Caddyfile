@@ -1,0 +1,39 @@
+# ArticleFlux behind Caddy — the short alternative to deploy/nginx.conf.
+#
+# Replace reader.example.com, point its DNS at this host, and Caddy obtains and renews the
+# certificate itself. The container must be published on 127.0.0.1:9000 (the root
+# compose.yaml does) and started with ARTICLEFLUX_ORIGIN=https://reader.example.com and
+# ARTICLEFLUX_BEHIND_PROXY=1 — docs/INSTALL.md.
+#
+# deploy/nginx.conf is the annotated reference for what a proxy in front of this server
+# has to do; read its comments for the reasons. This file is short because Caddy's
+# defaults already are most of it:
+#
+#   * The /grpc WebSocket — Caddy proxies the Upgrade itself, speaks HTTP/1.1 to the
+#     upstream for it, does not buffer it, and puts no read timeout on it. The four nginx
+#     settings that "break the tunnel when missing" have no Caddy equivalent to forget.
+#   * Host is passed through unchanged, which the tunnel's origin check relies on.
+#   * X-Forwarded-For: Caddy DISCARDS whatever a client sent and writes the peer it saw,
+#     so there is exactly one trustworthy entry — the server's default -proxy-hops 1.
+#     Put a CDN in front of this and that changes; see nginx.conf on the hop count.
+#
+# What Caddy does NOT do by default, and nginx.conf does, is below: the operator-only
+# paths and the security headers.
+reader.example.com {
+	# /metrics is unauthenticated by design and /debug/ is live only under -pprof or -dev
+	# — both are for this host, not for the internet (nginx.conf: "operator-only
+	# surfaces"). Scrape them from 127.0.0.1:9000 directly.
+	@operator path /metrics /debug/*
+	respond @operator 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+	}
+
+	# No `encode`: the server already serves precompressed app.wasm.gz/.br, and
+	# re-compressing 26 MB per request would cost CPU for a worse result.
+	reverse_proxy 127.0.0.1:9000
+}

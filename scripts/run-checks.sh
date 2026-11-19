@@ -10,10 +10,10 @@
 #      carried one native exclusion, for the demo hue pin; that defect was
 #      fixed on 2026-07-27 and the test gates normally again.)
 #   5. the structural guards (internal/tools/guards)
-#   6. the wasm client tests, under node's wasm_exec shim, excluding the two
-#      wasm-only known-red pins (see WASM_PIN_PATTERN below) — this stage GATES
-#   6b. those same two pinned tests, run and printed for visibility only —
-#       does NOT gate, does not affect the summary or exit code
+#   6. the wasm client tests, under node's wasm_exec shim — this stage GATES,
+#      and nothing is excluded from it (the two client/view pins it used to
+#      skip, and the visibility-only stage 6b that ran them, are gone: both
+#      tests pass and gate normally)
 #
 # Exits non-zero the moment any stage fails, and PRINTS WHICH STAGE FAILED
 # plus its output. Never pipe this to `tail` or `| cat` — swallowing the exit
@@ -45,10 +45,11 @@
 # bug it was written to kill.
 #
 # The mitigation: snapshot HEAD into a disposable `git worktree` (created as a
-# SIBLING of this repo, so go.mod's `replace .../GoWebComponents/v5 =>
-# ../GoWebComponents` resolves to the REAL sibling checkout with no copying —
-# a worktree one level up is already at the right relative position, so the
-# replace path finds it directly) before running anything, so every stage sees
+# SIBLING of this repo — a position chosen when go.mod still resolved
+# GoWebComponents through a relative `replace`, which a worktree one level up
+# satisfied with no copying; GWC is a published requirement now, so nothing
+# depends on where the worktree sits and it stays there only because moving it
+# would buy nothing) before running anything, so every stage sees
 # one consistent, unmoving tree no matter what other agents do to the live one
 # meanwhile. This is also exactly what CI already gets for free (a fresh
 # checkout of one commit) and is the only way to get a real determinism
@@ -186,7 +187,14 @@ run "go vet ./..." \
 # build each actually lives under, and print their real result — still
 # visible, just not gating — which is the mechanism rather than a
 # suppression that rots.
-WASM_PIN_PATTERN='^(TestResumeScopeNeverRestoresADislikedScope|TestPaletteNeverOffersTheDislikedStream)$'
+#
+# UN-PINNED 2026-11-19, the same way and for the same reason: both client/view
+# pins pass (scope.Rating = -1 is produced now, see plan.md 20.13b), ci.yml
+# folded them back into its gate on 2026-08-02, and this script went on
+# excluding them for three more months - printing, on every run, its own note
+# that they had passed and should be un-pinned. There is no WASM_PIN_PATTERN
+# any more and no visibility stage: with nothing pinned, a stage that runs
+# "the pins" runs nothing, and a -skip left behind is a hole waiting for a name.
 
 # -timeout=15m, not the default 10m: the 2026-07-27 flake hunt sized the
 # browser tests' own per-test timeouts up from 60s/20s to 90s/60s (see
@@ -232,36 +240,18 @@ GR="$(go env GOROOT | tr '\\' '/')"
 # ONLY be tested under wasm, which is client/view (js && wasm, no native build
 # at all) and the client data/platform packages it depends on.
 #
-# WASM_PIN_PATTERN (defined above) excludes the two client/view pins from THIS
-# gate — see that comment for the full mechanism and why `-skip` is used rather
-# than t.Skip() in the test source.
+# Nothing is excluded from this gate: the two client/view pins it used to skip
+# went green and were folded back in (see the un-pinning note above).
+#
+# The shim's path is single-quoted INSIDE -exec.
+# `go test` splits that flag on spaces and honours quotes around a field, and
+# GOROOT on this box is `C:/Program Files/Go` — unquoted, node was asked to run
+# `C:/Program` and this stage failed on a path rather than on a test.
 run "wasm client tests (node wasm_exec)" \
-  env GOOS=js GOARCH=wasm go test -skip "$WASM_PIN_PATTERN" \
-    -exec="node $GR/lib/wasm/wasm_exec_node.js" \
+  env GOOS=js GOARCH=wasm go test \
+    -exec="node '$GR/lib/wasm/wasm_exec_node.js'" \
     ./client/view/... ./client/data/... ./client/platform/... \
     ./client/track/... ./client/outbox/... ./client/demodata/...
-
-# Non-gating by design, same as the native pin above: run exactly the two
-# wasm pins under the ONLY build that actually exercises them and print the
-# real result without affecting the exit code.
-echo "==> known-red pins, wasm (visibility only, not gating): client/view"
-PIN_LOG="$(mktemp)"
-( cd "$WORKDIR" && env GOOS=js GOARCH=wasm go test -run "$WASM_PIN_PATTERN" -v \
-    -exec="node $GR/lib/wasm/wasm_exec_node.js" ./client/view/... ) >"$PIN_LOG" 2>&1
-PIN_STATUS=$?
-cat "$PIN_LOG"
-rm -f "$PIN_LOG"
-if [ "$PIN_STATUS" -eq 0 ]; then
-  echo ""
-  echo "!!! NOTE: both client/view known-red pins PASSED under wasm this run. If that"
-  echo "!!! is real and not a flake, the underlying product decision may have landed —"
-  echo "!!! check whether reader_test.go / palette_test.go should be un-pinned and"
-  echo "!!! folded back into the wasm gate above (drop them from WASM_PIN_PATTERN so a"
-  echo "!!! future regression is caught again)."
-else
-  echo ""
-  echo "(expected: deliberate pins awaiting a product decision — not a script failure.)"
-fi
 
 echo ""
 echo "============================================================"

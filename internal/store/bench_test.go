@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -181,6 +183,69 @@ func BenchmarkHotQueries(b *testing.B) {
 			}
 		}
 	})
+}
+
+// BenchmarkIngestRepoll is the write path a poll takes MOST of the time: the
+// feed re-sends the page it sent last time and nothing in it changed.
+//
+// Separate from BenchmarkIngest because that one only ever inserts, and the
+// insert path was never where the repeat cost was — a re-poll of an unchanged
+// page used to UPDATE every row back to itself, and each UPDATE fired items_au,
+// which re-tokenises the whole article into the FTS index. The body is 24 KB
+// because that is the development database's average content_html; with the
+// three-word body the G3 fixture uses, re-indexing looks free.
+//
+// A small database rather than G3: the cost is per row written and the
+// fixture's 50,000 rows would only make the benchmark slower to start.
+func BenchmarkIngestRepoll(b *testing.B) {
+	ctx := context.Background()
+	db, err := Open(Options{Path: filepath.Join(b.TempDir(), "repoll.db")})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Migrate(ctx); err != nil {
+		b.Fatal(err)
+	}
+	repo := NewReaderRepo(db)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var src string
+	for u := 0; u < 3; u++ {
+		sc := Scope{TenantID: fmt.Sprintf("t%d", u), UserID: fmt.Sprintf("u%d", u), Role: "member"}
+		if err := repo.CreateTenantAndUser(ctx, NewTenant{TenantID: sc.TenantID, Name: sc.TenantID,
+			UserID: sc.UserID, Username: sc.UserID, Hash: "x", Role: "member", Now: now}); err != nil {
+			b.Fatal(err)
+		}
+		f, _, err := repo.Subscribe(ctx, sc, NewSubscription{NaturalKey: "feed:bench",
+			FeedURL: "https://bench.example/rss", Title: "Bench"})
+		if err != nil {
+			b.Fatal(err)
+		}
+		src = f.SourceID
+	}
+	body := "<p>" + strings.Repeat("A paragraph of an article body with ordinary words. ", 470) + "</p>"
+	published := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	items := make([]IngestItem, 20)
+	for i := range items {
+		items[i] = IngestItem{
+			GUID:        fmt.Sprintf("repoll:%d", i),
+			Title:       fmt.Sprintf("Repolled item %d", i),
+			URL:         fmt.Sprintf("https://bench.example/%d", i),
+			Summary:     "A summary of roughly the length a feed actually carries, which is a sentence or two.",
+			ContentHTML: body,
+			PublishedAt: published.Add(-time.Duration(i) * time.Hour),
+			WordCount:   4000,
+		}
+	}
+	if _, err := repo.IngestItems(ctx, src, items); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := repo.IngestItems(ctx, src, items); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 // The write path a poll takes: N new items into one source, then fan-out to its

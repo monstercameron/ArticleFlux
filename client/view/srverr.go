@@ -40,19 +40,26 @@ import (
 const keySudoRequired = "srv.sudoRequired"
 
 func serverKey(err error) string {
+	return serverDetail(err).GetKey()
+}
+
+// serverDetail is the refusal's ErrorDetail, or nil — for a caller that words
+// the refusal itself but still owes the reader what the server measured (the
+// wait, via withWait).
+func serverDetail(err error) *pb.ErrorDetail {
 	if err == nil {
-		return ""
+		return nil
 	}
 	st, ok := status.FromError(err)
 	if !ok {
-		return ""
+		return nil
 	}
 	for _, d := range st.Details() {
 		if detail, isDetail := d.(*pb.ErrorDetail); isDetail && detail.GetKey() != "" {
-			return detail.GetKey()
+			return detail
 		}
 	}
-	return ""
+	return nil
 }
 
 // serverText turns a gRPC error into a sentence in the reader's language.

@@ -1,4 +1,4 @@
-import { test, expect, boot, openFeed, feedRow, openRail, openAddFeed, currentArticle, openStream, openRow } from './fixtures.mjs';
+import { test, expect, boot, openNote, openFeed, feedRow, openRail, openAddFeed, currentArticle, openStream, openRow, showList } from './fixtures.mjs';
 import { FEED_ORIGIN } from './ports.mjs';
 
 /**
@@ -42,6 +42,11 @@ test.describe('reading', () => {
     await expect(currentArticle(page).locator('h1')).toHaveText(/Speculative decoding/);
     await expect(currentArticle(page).locator('.article-body')).toContainText('n-gram table');
 
+    // No Translate on it. The control exists (§10.5b), but only where it can
+    // work: this instance has no Smart+ key and nobody has consented to article
+    // text leaving it, so offering one here would be a button that fails.
+    await expect(currentArticle(page).locator('[data-action="translate"]')).toHaveCount(0);
+
     // Marking read is optimistic; it must also survive a reload, which is what
     // proves the write actually reached SQLite.
     await expect(row).toHaveAttribute('data-read', 'true');
@@ -52,7 +57,7 @@ test.describe('reading', () => {
 
   test('feed HTML is rendered, not escaped, and not executed', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(currentArticle(page).locator('.article-body strong')).toHaveText('proposals');
 
     // The sanitizer is the highest-stakes thing in the app: this is third-party
@@ -62,7 +67,7 @@ test.describe('reading', () => {
 
   test('starring persists across a reload', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
 
     // "Star" is not a thing this reader does any more (8b.24): the control is
     // "Read later", backed by the same stored flag. The test follows the app's
@@ -73,8 +78,19 @@ test.describe('reading', () => {
     // and a bare name matches both.
     const article = page.locator('.pane-article');
     const later = article.locator('[data-action="read-later"]').first();
-    await later.click();
-    await expect(later).toHaveAttribute('aria-pressed', 'true');
+    // Pressed until it takes, and only while it has not. The app deliberately
+    // drops a verdict pressed while the pane is still travelling to the article
+    // (reader_clicks.go: a click then can land on whichever article is sliding
+    // past), and since the action bar became sticky this test can reach the
+    // chip DURING that travel: Playwright waits for a target to stop moving,
+    // and a pinned bar is not moving while the article under it still is. The
+    // toggle is optimistic, so `aria-pressed` says at once whether a press was
+    // taken — which is what makes pressing again safe rather than a second
+    // toggle.
+    await expect(async () => {
+      if ((await later.getAttribute('aria-pressed')) !== 'true') await later.click();
+      await expect(later).toHaveAttribute('aria-pressed', 'true', { timeout: 1500 });
+    }).toPass({ timeout: 20_000 });
 
     await page.reload();
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
@@ -166,6 +182,11 @@ test.describe('reading', () => {
     // the DOM and never visible and the click waits out the full timeout. See
     // openRow in fixtures.mjs.
     await openRow(page, 0);
+    // And back to the list, where the toggle lives. On a phone opening the row
+    // took the list off screen — the article is the one pane showing — so the
+    // toggle is in the DOM, mid-slide, and never clickable. A wide viewport is
+    // already there and this costs it nothing.
+    await showList(page);
     await page.locator('[data-action="toggle-unread"]').click();
 
     await expect(page.locator('.item-row')).toHaveCount(before - 1);
@@ -236,7 +257,12 @@ test.describe('reading', () => {
    * The title is the one part of a row that is only ever the row.
    */
   async function openArticleAt(rows, n) {
-    await rows.nth(n).locator('.item-title').click();
+    // Through openRow, which is this same title click plus the phone's half: on
+    // a phone the article and the list are one pane each, so the row this test
+    // opened last has taken the list off screen and the next title is not there
+    // to click. openRow goes back with "‹ List" first — what a phone reader
+    // presses, and it keeps the feed the test is scoped to.
+    await openRow(rows.page(), n);
   }
 
   async function runJumpingDownBody(page) {
@@ -408,26 +434,9 @@ test.describe('reading', () => {
 });
 
 test.describe('notes and tags', () => {
-  /**
-   * openNote reveals the note editor on the article being read.
-   *
-   * The panel is a disclosure: the summary row (tags, the note preview, the sync
-   * mark) is always on screen and the textarea is behind the toggle. A test that
-   * reaches straight for .note-field waits forever for something that is
-   * deliberately not rendered yet.
-   */
-  async function openNote(page) {
-    const field = page.locator('.note-field').first();
-    if (!(await field.count())) {
-      await page.locator('[data-action="toggle-note"]').first().click();
-    }
-    await expect(field).toBeVisible({ timeout: 15_000 });
-    return field;
-  }
-
   test('a note saves itself and survives a reload', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
 
     const note = await openNote(page);
     await note.fill('Worth rereading when the n-gram work lands.');
@@ -447,7 +456,7 @@ test.describe('notes and tags', () => {
 
     await page.reload();
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(await openNote(page)).toHaveValue(/Worth rereading/, { timeout: 30_000 });
 
     // And it is discoverable as a note, not just as text in a field. Anchored,
@@ -458,7 +467,7 @@ test.describe('notes and tags', () => {
 
   test('leaving the field saves without waiting for the debounce', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
 
     const note = await openNote(page);
     await note.fill('Clicked away mid-thought.');
@@ -474,7 +483,7 @@ test.describe('notes and tags', () => {
 
   test('a tag is visible on the article and removable from it', async ({ page }) => {
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
 
     await openNote(page);
     const panel = page.locator('.article-note').first();
@@ -615,6 +624,12 @@ test.describe('categories', () => {
 
     // Deleting a category unfiles its feeds and unsubscribes nothing. Two
     // presses: the first arms, the second does it.
+    //
+    // Back to the rail first: selecting the category above is a navigation, and
+    // on a phone it put the list on screen in the rail's place. (The gear needs
+    // no hover there — below 900px it is always shown — so the hover is a
+    // no-op that the desktop layout still needs.)
+    await openRail(page);
     await slot.hover();
     await slot.locator('[data-action="category-open"]').click();
     // "Folder" — the rail's grouping kept the word when the naming pass gave
@@ -627,6 +642,12 @@ test.describe('categories', () => {
 
     // The feed survived, which is the half of this that would be expensive to
     // get wrong.
+    //
+    // Back to the rail first. The list was scoped to the category just deleted,
+    // and on a phone the reader can be moved off the rail as that scope goes
+    // away — the failing run had every rail row in the DOM and hidden. On a
+    // wide viewport the rail never left and this costs nothing.
+    await openRail(page);
     await expect(rail.locator('.feed-name', { hasText: 'Alpha Journal' }).first())
       .toBeVisible({ timeout: 45_000 });
     await expect(rail.getByRole('button', { name: new RegExp(name) })).toHaveCount(0);
@@ -641,7 +662,12 @@ test.describe('keyboard', () => {
   // later, like and dislike, so the shortcuts are `t`, `l` and `d` — each named
   // after the thing it does rather than after what the thing used to be called
   // somewhere else. A test asserting `s` passes only until somebody reads it.
-  test('j and k move through the list, t saves for later', async ({ page }) => {
+  test('j and k move through the list, t saves for later', async ({ page }, testInfo) => {
+    // The keys are the whole of this test, and a phone has no keyboard to press
+    // them on: its on-screen keyboard only exists while a text field has focus,
+    // which is exactly when these are switched off (the test below).
+    test.skip(testInfo.project.name !== 'desktop',
+      'single-key shortcuts need a hardware keyboard, which a phone does not have');
     await boot(page);
 
     // Boot lands on the first article, so there is already a current one before

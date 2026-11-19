@@ -9,8 +9,8 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
-	"github.com/monstercameron/GoWebComponents/v5/html"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/html"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
@@ -97,6 +97,7 @@ func paletteCommands(tr i18n.Runtime, motionOn bool) []paletteEntry {
 		{"settings", ","},
 		{"add-feed", ""},
 		{"shortcuts", "?"},
+		{actRailFold, "b"},
 	}
 	out := make([]paletteEntry, 0, len(cmds))
 	for _, c := range cmds {
@@ -157,7 +158,7 @@ func paletteStreams(tr i18n.Runtime) []paletteEntry {
 		// Disliked is LAST and has no rail row, which is the whole of its design:
 		// a list of things you decided were not worth your time is not somewhere
 		// anyone goes, so it is deliberately not offered as a band in the sidebar
-		// (specialRow in panes.go) — but it is somewhere you can go, and the
+		// (specialRow in rail.go) — but it is somewhere you can go, and the
 		// catalog note beside `stream.disliked` has always said the palette is how.
 		// It simply was never wired, which TestPaletteNeverOffersTheDislikedStream
 		// has been reporting; the scope became addressable at §20.13b (/disliked),
@@ -281,14 +282,28 @@ func wordPrefix(s, q string) bool {
 	return false
 }
 
+// paletteListID names the palette's listbox, for the input's aria-controls.
+const paletteListID = "pal-list"
+
+// paletteOptionID is the DOM id of the row at position i, for
+// aria-activedescendant.
+func paletteOptionID(i int) string { return "pal-opt-" + strconv.Itoa(i) }
+
 // palette renders the overlay. It returns nil when closed, so the whole subtree
 // costs nothing while it is not in use.
 func palette(tr i18n.Runtime, p paletteProps) ui.Node {
+	// The combobox pattern, said in full: the input owns a listbox, each row is
+	// an option, and the input names the option the arrows are on.
+	//
+	// It used to stop a third of the way in — `role="listbox"` on the container
+	// and plain buttons inside it. A listbox may only own options, so a screen
+	// reader announced a list box with nothing in it, and since focus never
+	// leaves the input there was no way to hear which row Enter would open:
+	// aria-activedescendant is the only thing that carries the highlight to
+	// someone who cannot see it. aria-current stays on the row beside
+	// aria-selected, because the stylesheet and the keyboard both read it.
 	rows := make([]ui.Node, 0, len(p.entries)+1)
-	if len(p.entries) == 0 {
-		rows = append(rows, html.Div(html.Props{Class: "pal-empty"},
-			html.Text(tr.T("palette", "empty", i18n.Args{"query": strings.TrimSpace(p.query)}))))
-	}
+	activeID := ""
 	for i, e := range p.entries {
 		mark := html.I(html.Props{Class: "pal-mark pal-mark-" + kindClass(e.Kind)})
 		if e.Hue != "" {
@@ -300,8 +315,16 @@ func palette(tr i18n.Runtime, p paletteProps) ui.Node {
 			Key:   "pal-" + strconv.Itoa(int(e.Kind)) + "-" + e.ID,
 			// data-pal carries kind and id together, so the one delegated
 			// listener does not need a second attribute to disambiguate.
-			Raw:  map[string]any{"data-pal": kindClass(e.Kind) + ":" + e.ID},
-			Aria: map[string]string{"current": strconv.FormatBool(i == p.active)},
+			DataAttr: html.DataAttribute{Name: "pal", Value: kindClass(e.Kind) + ":" + e.ID},
+			// An id per position rather than per entry: activedescendant has to
+			// name whichever row is highlighted NOW, and a positional id is valid
+			// for exactly as long as the list it indexes.
+			ID:   paletteOptionID(i),
+			Role: "option",
+			Aria: map[string]string{
+				"current":  strconv.FormatBool(i == p.active),
+				"selected": strconv.FormatBool(i == p.active),
+			},
 		},
 			mark,
 			html.Span(html.Props{Class: "pal-label"}, html.Text(e.Label)),
@@ -312,30 +335,53 @@ func palette(tr i18n.Runtime, p paletteProps) ui.Node {
 		))
 	}
 
+	for i := range p.entries {
+		if i == p.active {
+			activeID = paletteOptionID(i)
+		}
+	}
+	comboAria := map[string]string{
+		"label":        tr.T("palette", "searchAria"),
+		"autocomplete": "list",
+		"controls":     paletteListID,
+		"expanded":     strconv.FormatBool(p.open && len(p.entries) > 0),
+	}
+	if activeID != "" {
+		comboAria["activedescendant"] = activeID
+	}
+	// Nothing matched: a sentence, not a list. Kept OUT of the listbox — a
+	// listbox may only own options — and made a status so that "nothing matches"
+	// is said as it appears rather than discovered by arrowing into silence.
+	list := html.Div(html.Props{Class: "pal-list", ID: paletteListID, Role: "listbox",
+		Aria: map[string]string{"label": tr.T("palette", "title")}}, rows...)
+	if len(p.entries) == 0 {
+		list = html.Div(html.Props{Class: "pal-list", ID: paletteListID},
+			kitEmpty(kitEmptyProps{Class: "pal-empty", Role: "status",
+				Text: tr.T("palette", "empty", i18n.Args{"query": strings.TrimSpace(p.query)})}))
+	}
+
 	// Rendered whether or not it is open, so it can animate OUT as well as in —
 	// see scrim(). The ranked entry list is built upstream and is empty while
 	// this is closed, so a closed palette costs an empty box.
-	return scrim(p.open, "palette-close",
+	return kitDialog(kitDialogProps{Open: p.open, CloseAction: "palette-close",
+		Class: "pal", Title: tr.T("palette", "title")},
 		// See feedSettings: a click inside the dialog must not resolve to the
 		// backdrop's close action. Rows carry data-pal, which is a different
 		// attribute and a different listener, so this does not swallow them.
-		html.Div(html.Props{Class: "pal", Role: "dialog",
-			Raw:  map[string]any{"data-action": "modal-keep"},
-			Aria: map[string]string{"modal": "true", "label": tr.T("palette", "title")}},
-			html.Div(html.Props{Class: "pal-field"},
-				html.Input(html.Props{
-					Class: "pal-input", Type: "text",
-					Placeholder: tr.T("palette", "placeholder"),
-					Value:       p.query,
-					OnInput:     p.onInput,
-					Data:        map[string]string{"role": "palette"},
-					Aria:        map[string]string{"label": tr.T("palette", "searchAria")},
-				}),
-			),
-			html.Div(html.Props{Class: "pal-list", Role: "listbox"}, rows...),
-			html.Div(html.Props{Class: "pal-foot"},
-				html.Text(tr.T("palette", "foot"))),
+		html.Div(html.Props{Class: "pal-field"},
+			html.Input(html.Props{
+				Class: "pal-input", Type: "text",
+				Placeholder: tr.T("palette", "placeholder"),
+				Value:       p.query,
+				OnInput:     p.onInput,
+				Data:        map[string]string{"role": "palette"},
+				Role:        "combobox",
+				Aria:        comboAria,
+			}),
 		),
+		list,
+		html.Div(html.Props{Class: "pal-foot"},
+			html.Text(tr.T("palette", "foot"))),
 	)
 }
 

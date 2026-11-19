@@ -494,8 +494,16 @@ func serve(log *slog.Logger, args []string) error {
 	// homepage showing whatever the last run produced until a full poll interval
 	// has elapsed, which on the default interval is fifteen minutes of a page that
 	// looks broken rather than stale.
+	//
+	// Beside the listener, not before it. At boot the cursor sits a whole derive
+	// window back, so the pass asks ScopesToDerive about every engagement in
+	// that window — a walk of the log and a sort for DISTINCT — and while it ran
+	// synchronously that walk stood between a restart and the first accepted
+	// connection, which on a deploy is the window /healthz spends red. It only enqueues, it holds
+	// its own mutex, and the poller's later calls queue behind it, so nothing
+	// depends on it having finished before the port opens.
 	a.StartWorkers(ctx)
-	a.DeriveDue(ctx)
+	go a.DeriveDue(ctx)
 	a.StartPoller(ctx)
 
 	srv := &http.Server{

@@ -1,4 +1,4 @@
-import { test, expect, boot, currentArticle } from './fixtures.mjs';
+import { test, expect, boot, currentArticle, isPhone, openSettings, openStream } from './fixtures.mjs';
 
 /**
  * Concept feedback, end to end: liking one article should demote or promote
@@ -30,12 +30,20 @@ test.describe('concept feedback', () => {
     // Open the first cluster item from the unread stream and like it. The
     // stream lists everything regardless of feed, so this does not need to know
     // which feed /debug/ingest-cluster used.
-    await page.locator('[data-source-id="__all__"]').click().catch(() => {});
+    //
+    // Only where the rail is on screen. On a phone it is a pane that is not
+    // showing, and this click — swallowed by the catch — waited out the whole
+    // test timeout before the catch could swallow anything. A phone boots onto
+    // All already, which is the list this wants.
+    if (!(await isPhone(page))) {
+      await page.locator('[data-source-id="__all__"]').click().catch(() => {});
+    }
     const firstOfCluster = page
       .locator('.item-row', { hasText: 'E2E cluster: NPU inference latency benchmark one' })
       .first();
     await expect(firstOfCluster).toBeVisible({ timeout: 30_000 });
-    await firstOfCluster.click();
+    // By the title, for openRow's reason: a row's centre can be a chip.
+    await firstOfCluster.locator('.item-title').click();
 
     const article = currentArticle(page);
     await expect(article).toBeVisible();
@@ -54,7 +62,7 @@ test.describe('concept feedback', () => {
     // by a row's reason list being longer than the UI shows. It is the
     // authoritative assertion; the blurb check below is corroborating, not
     // load-bearing.
-    await page.keyboard.press(',');
+    await openSettings(page);
     await page.locator('[data-action="settings-tab"][data-value="myfeed"]').click();
     await expect(page.locator('.set-panel')).toBeVisible();
     await page.waitForTimeout(300);
@@ -70,8 +78,13 @@ test.describe('concept feedback', () => {
     });
 
     // --- corroborating: the reason is legible on an UNLIKED sibling row ---
-    await page.keyboard.press('Escape');
-    await page.locator('[data-source-id="__myfeed__"]').click();
+    if (await isPhone(page)) {
+      // No Escape on a phone: the rail's My Feed row, reached by the tab bar.
+      await openStream(page, /^My Feed/);
+    } else {
+      await page.keyboard.press('Escape');
+      await page.locator('[data-source-id="__myfeed__"]').click();
+    }
     await page.waitForTimeout(1500);
 
     const siblingRows = page.locator('.item-row', { hasText: 'E2E cluster: NPU' });

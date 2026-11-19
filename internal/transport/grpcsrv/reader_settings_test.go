@@ -551,3 +551,86 @@ func TestGetItemRevisionsHappyPathReturnsThePriorVersion(t *testing.T) {
 		t.Errorf("revision title = %q, want the PRE-edit title %q", out.GetRevisions()[0].GetTitle(), "Article One")
 	}
 }
+
+// --- clear_backlog_days -------------------------------------------------------
+
+// Saving the window is also applying it: the reply must already show the pile
+// smaller, or the reader presses a button and sees nothing happen until the
+// next poll.
+func TestUpdateFeedSettingsClearBacklogRoundTripsAndClearsPromptly(t *testing.T) {
+	srv, sc, repo, sourceID, _ := newSettingsServer(t)
+	ctx := context.Background()
+	if _, err := repo.IngestItems(ctx, sourceID, []store.IngestItem{{
+		GUID: "old", URL: "https://example.test/old", DupeKey: "dold", Title: "Old",
+		ContentHTML: "<p>o</p>", PublishedAt: time.Now().UTC().Add(-30 * 24 * time.Hour),
+	}}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	before, err := srv.GetFeedSettings(asActor(sc), &pb.GetFeedSettingsRequest{SourceId: sourceID})
+	if err != nil {
+		t.Fatalf("GetFeedSettings: %v", err)
+	}
+	if got := before.GetSettings().GetClearBacklogDays(); got != 0 {
+		t.Fatalf("the default is %d days, want 0 (never)", got)
+	}
+	if before.GetSettings().GetUnreadCount() != 2 {
+		t.Fatalf("unread before = %d, want 2", before.GetSettings().GetUnreadCount())
+	}
+
+	week := int32(7)
+	out, err := srv.UpdateFeedSettings(asActor(sc), &pb.UpdateFeedSettingsRequest{
+		SourceId: sourceID, ClearBacklogDays: &week,
+	})
+	if err != nil {
+		t.Fatalf("UpdateFeedSettings: %v", err)
+	}
+	if out.GetSettings().GetClearBacklogDays() != 7 {
+		t.Errorf("clear_backlog_days = %d, want 7", out.GetSettings().GetClearBacklogDays())
+	}
+	if out.GetSettings().GetUnreadCount() != 1 {
+		t.Errorf("unread in the reply = %d, want 1 — the old article was not cleared", out.GetSettings().GetUnreadCount())
+	}
+
+	// A patch that does not mention it leaves it alone.
+	title := "Renamed"
+	out, err = srv.UpdateFeedSettings(asActor(sc), &pb.UpdateFeedSettingsRequest{SourceId: sourceID, Title: &title})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if out.GetSettings().GetClearBacklogDays() != 7 {
+		t.Errorf("renaming changed the window to %d", out.GetSettings().GetClearBacklogDays())
+	}
+
+	// And back to never: stored, and nothing is un-read.
+	never := int32(0)
+	out, err = srv.UpdateFeedSettings(asActor(sc), &pb.UpdateFeedSettingsRequest{SourceId: sourceID, ClearBacklogDays: &never})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if out.GetSettings().GetClearBacklogDays() != 0 || out.GetSettings().GetUnreadCount() != 1 {
+		t.Errorf("after never: %+v", out.GetSettings())
+	}
+}
+
+func TestUpdateFeedSettingsClearBacklogRefusesAFeedTheCallerDoesNotFollow(t *testing.T) {
+	srv, sc, repo, _, _ := newSettingsServer(t)
+	ctx := context.Background()
+	if err := repo.CreateTenantAndUser(ctx, store.NewTenant{
+		TenantID: "t2", Name: "Other", UserID: "u9", Username: "eve",
+		Hash: "x", Role: "member", Now: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	theirs, _, err := repo.Subscribe(ctx, store.Scope{TenantID: "t2", UserID: "u9", Role: "member"},
+		store.NewSubscription{NaturalKey: "feed:theirs", FeedURL: "https://example.test/theirs", Title: "Theirs"})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	week := int32(7)
+	_, err = srv.UpdateFeedSettings(asActor(sc), &pb.UpdateFeedSettingsRequest{
+		SourceId: theirs.SourceID, ClearBacklogDays: &week,
+	})
+	if codeOf(err) != codes.NotFound {
+		t.Errorf("code = %v, want NotFound", codeOf(err))
+	}
+}

@@ -10,7 +10,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
-	"github.com/monstercameron/GoWebComponents/v5/ui"
+	"github.com/monstercameron/GoWebComponents/v7/ui"
 )
 
 // The two delegated click listeners, and why there are only two.
@@ -306,6 +306,8 @@ func (d delegatedClicks) wire() {
 					a.toggleNote(id)
 				case "toggle-revisions":
 					a.toggleRevisions(id)
+				case actTranslate:
+					a.translateArticle(id)
 				case "modal-keep":
 					// A click inside an open dialog. It exists only to stop the
 					// delegated walk reaching the backdrop's close action.
@@ -389,7 +391,13 @@ func (d delegatedClicks) wire() {
 				case actPassSet:
 					a.setRecoveryPassphrase()
 				case actPassClear:
+					// Arms; actPassClearDo removes. See armableRemove.
+					a.armPassClear()
+				case actPassClearDo:
+					a.disarm(false)
 					a.clearRecoveryPassphrase()
+				case actArmCancel:
+					a.disarm(true)
 				case actDataImport:
 					a.importOPML()
 				case actDataExport:
@@ -397,7 +405,23 @@ func (d delegatedClicks) wire() {
 				case actSmartKeySave:
 					a.saveSmartKey()
 				case actSmartKeyClear:
+					a.arm(armKeyClear)
+				case actSmartKeyClearDo:
+					a.disarm(false)
 					a.clearSmartKey()
+				case actSmartJEVSave:
+					a.saveJEVKey()
+				case actSmartJEVClear:
+					a.arm(armJEVClear)
+				case actSmartJEVClearDo:
+					a.disarm(false)
+					a.clearJEVKey()
+				case actSmartJEVRoute:
+					a.setJEVRoute(value)
+				case actSmartJEVBaseSave:
+					a.saveJEVBase()
+				case actSmartArticleTranslate:
+					a.toggleArticleTranslate()
 				case actSmartModel:
 					a.saveSmartModel()
 				case actSmartModelCustom:
@@ -411,6 +435,19 @@ func (d delegatedClicks) wire() {
 					a.retranslate()
 				case actFocus:
 					a.toggleFocus()
+				// The bar's Previous and Next: j and k, from the article whose
+				// bar was pressed. At either end of the list there is nowhere
+				// to go and nothing happens, exactly as with the keys.
+				case actNavPrev:
+					if it := a.navFrom(id, -1); it != nil {
+						a.open(it)
+					}
+				case actNavNext:
+					if it := a.navFrom(id, 1); it != nil {
+						a.open(it)
+					}
+				case actRailFold:
+					a.toggleRail()
 				case "toggle-mark-past":
 					a.toggleMarkPast()
 				case "set-theme":
@@ -428,6 +465,9 @@ func (d delegatedClicks) wire() {
 				case actComposeTheme:
 					a.composeTheme()
 				case actDropCustom:
+					a.arm(armThemeDrop)
+				case actDropCustomDo:
+					a.disarm(false)
 					a.dropCustom()
 				case actAttune:
 					a.toggleAttune()
@@ -447,6 +487,9 @@ func (d delegatedClicks) wire() {
 					v := platform.FieldValue("feed-title")
 					a.patchFeed(&pb.UpdateFeedSettingsRequest{SourceId: id, Title: &v})
 				case "fs-unsubscribe":
+					a.arm(armUnsubscribe + id)
+				case actUnsubscribeDo:
+					a.disarm(false)
 					a.unsubscribe(id)
 				case actTagSettings:
 					a.openTagSettings(id)
@@ -494,6 +537,15 @@ func (d delegatedClicks) wire() {
 						n := int32(v)
 						a.patchFeed(&pb.UpdateFeedSettingsRequest{
 							SourceId: id, CacheDepth: &n})
+					}
+				case "fs-backlog":
+					// Saving it also clears the pile now (the server applies a
+					// window as it stores it), so there is nothing further to
+					// send for "and do it".
+					if v, err := strconv.Atoi(value); err == nil {
+						n := int32(v)
+						a.patchFeed(&pb.UpdateFeedSettingsRequest{
+							SourceId: id, ClearBacklogDays: &n})
 					}
 				case "fs-mute":
 					if v, err := strconv.Atoi(value); err == nil {

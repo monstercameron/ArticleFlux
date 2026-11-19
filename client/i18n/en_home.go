@@ -122,7 +122,7 @@ func init() {
 		"findOpmlP":   "Import names every row that did not make it, with its reason — a silent partial import is how a subscription list goes missing. Export writes the folders back out with it.",
 		"findUndoH":   "Mark all read, with undo",
 		"findUndoP":   "The most destructive button in any reader, made reversible. A bulk read is also recorded as neutral, so it never poisons what the ranking layer thinks you like.",
-		"findSetH":    "Settings as a page, with thirteen tabs",
+		"findSetH":    "Settings as a page, with fourteen tabs",
 		"findSetP":    "Including Server, Activity and Speed — version, schema migration, WAL size, the log ring, and per-RPC p50 and p95. Nobody is tailing a log file behind this: the person running it is the person reading it.",
 
 		// --- 4. reach -----------------------------------------------------

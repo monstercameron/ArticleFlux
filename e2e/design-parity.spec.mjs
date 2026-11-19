@@ -1,4 +1,4 @@
-import { test, expect, boot, currentArticle } from './fixtures.mjs';
+import { test, expect, boot, currentArticle, openRow } from './fixtures.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -55,7 +55,7 @@ test('the built app uses the fanciful palette', async ({ page }) => {
 test('the type stacks are Fraunces / Literata / Outfit', async ({ page }) => {
   await boot(page);
   // The article has to be open for the reading face to be on screen at all.
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(currentArticle(page).locator('h1')).toBeVisible();
 
   const fonts = await page.evaluate(() => {
@@ -169,20 +169,42 @@ test('every source owns a hue, and it reaches all four surfaces', async ({ page 
 test('read and unread are visually distinct', async ({ page }) => {
   await boot(page);
 
-  const before = await page.evaluate(() => {
-    const t = document.querySelector('.item-row .item-title');
+  // The LAST unread row, by id — not "the first row".
+  //
+  // The reader opens something as soon as a list arrives (the first unread
+  // article), and a fixture article is short enough that being opened is being
+  // read to the end. So by the time this test looked, row 0 had usually been
+  // marked read already: `before` and `after` were the same read row, and the
+  // test failed on a product that was doing exactly what it should. Whether it
+  // failed depended on whether the sample beat the mark, which is a race the
+  // test lost for good once the client got faster. The last unread row is the
+  // one that auto-open is furthest from touching.
+  const id = await page.evaluate(() => {
+    const unread = [...document.querySelectorAll('.item-row[data-read="false"]')];
+    return unread.length ? unread[unread.length - 1].dataset.itemId : null;
+  });
+  expect(id, 'the fixture list should hold at least one unread article').toBeTruthy();
+
+  const row = page.locator(`.item-row[data-item-id="${id}"]`);
+  const titleStyle = () => row.locator('.item-title').evaluate((t) => {
     const s = getComputedStyle(t);
     return { color: s.color, weight: s.fontWeight };
   });
 
-  await page.locator('.item-row').first().click();
-  await expect(page.locator('.item-row').first()).toHaveAttribute('data-read', 'true');
+  const before = await titleStyle();
+  // Whether the row is already STALE, which decides what "recede" can mean.
+  //
+  // A stale row's title is drawn in the muted colour whether or not it has been
+  // read (design/sheet.go: `.item-row[data-age='stale'] .item-title`), so for
+  // such a row reading it changes the WEIGHT and nothing else. The fixture
+  // articles carry fixed dates from July 2026 and aged into stale a week after
+  // they were written — from which day this test, which then asserted a colour
+  // change unconditionally, could only fail. The colour is still checked where
+  // it is still a difference.
+  const stale = (await row.getAttribute('data-age')) === 'stale';
 
-  const after = await page.evaluate(() => {
-    const t = document.querySelector('.item-row .item-title');
-    const s = getComputedStyle(t);
-    return { color: s.color, weight: s.fontWeight };
-  });
+  await row.locator('.item-title').click();
+  await expect(row).toHaveAttribute('data-read', 'true');
 
   // Read must recede without vanishing: you can still see it was there.
   //
@@ -193,9 +215,15 @@ test('read and unread are visually distinct', async ({ page }) => {
   // fails while a decision is open is a test that gets ignored while it is.
   //
   // What matters is the RELATION, and it is asserted: the colour moves, and it
-  // moves toward the background rather than away from it.
-  expect(after.color).not.toBe(before.color);
-  expect(Number(after.weight)).toBeLessThan(Number(before.weight));
+  // moves toward the background rather than away from it. Polled, because the
+  // colour TRANSITIONS (design/motion.go) — the frame after the attribute flips
+  // it is still the colour it was.
+  if (!stale) {
+    await expect.poll(async () => (await titleStyle()).color).not.toBe(before.color);
+  }
+  // The weight is the half that holds for every row, fresh or stale.
+  await expect.poll(async () => Number((await titleStyle()).weight))
+    .toBeLessThan(Number(before.weight));
 });
 
 // --- paired captures ---------------------------------------------------------
@@ -208,7 +236,7 @@ test('capture: built reader, desktop', async ({ page }, testInfo) => {
   await boot(page);
   await page.screenshot({ path: join(shots, 'built-desktop-list.png') });
 
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(currentArticle(page).locator('h1')).toBeVisible();
   await page.screenshot({ path: join(shots, 'built-desktop-article.png') });
 });
@@ -219,7 +247,7 @@ test('capture: built reader, phone', async ({ page }, testInfo) => {
   await boot(page);
   await page.screenshot({ path: join(shots, 'built-phone-list.png') });
 
-  await page.locator('.item-row').first().click();
+  await openRow(page, 0);
   await expect(currentArticle(page).locator('h1')).toBeVisible();
   await page.screenshot({ path: join(shots, 'built-phone-article.png') });
 });

@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, openRow } from './fixtures.mjs';
 
 /**
  * The motion system, asserted against the running application.
@@ -78,9 +78,13 @@ test.describe('motion', () => {
     expect((await chipDuration()).split(',').some((d) => d.trim() !== '0s')).toBe(true);
   });
 
-  test('the selection cursor travels with the list rather than cross-fading', async ({ page }) => {
+  test('the selection cursor travels with the list rather than cross-fading', async ({ page }, testInfo) => {
+    // Driven by `j`, and the cursor it watches is in the list — which on a phone
+    // is not the pane showing once a row is open. No key, no list beside it.
+    test.skip(testInfo.project.name !== 'desktop',
+      'moved by j, with the list beside the article; a phone has neither');
     await boot(page);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await expect(page.locator('.list-scroll')).toHaveAttribute('data-cursor', 'true');
 
     const at = () => page.evaluate(() =>
@@ -126,12 +130,16 @@ test.describe('motion', () => {
     // Marking read rebuilds the list out of items that are all already present.
     await page.evaluate(() => { document.querySelector('.list-scroll').scrollTop = 0; });
     await page.waitForTimeout(300);
-    await page.locator('.item-row').first().click();
+    await openRow(page, 0);
     await page.waitForTimeout(900);
     expect(await freshCount()).toBe(0);
   });
 
-  test('a dialog leaves as well as arriving, and is untabbable when closed', async ({ page }) => {
+  test('a dialog leaves as well as arriving, and is untabbable when closed', async ({ page }, testInfo) => {
+    // The dialog is the palette, and Ctrl-K is its only way in
+    // (dialogs.spec.mjs skips its cycle on a phone for the same reason).
+    test.skip(testInfo.project.name !== 'desktop',
+      'the palette is opened only by Ctrl-K, which a phone has no keyboard for');
     await boot(page);
     // `:has(.pal)` rather than `.first()`: all six dialogs are in the document
     // at all times now — that is what gives them exits — so a bare `.pal-scrim`
@@ -189,18 +197,38 @@ test.describe('motion', () => {
     // There is no "article" tab — the tab bar is home/feeds/notes/settings, and
     // an article is reached by tapping a row, which is the gesture worth
     // asserting anyway because it is the one a reader performs.
-    await page.locator('.item-row').first().click();
     // Mid-gesture: the outgoing pane has to still be on screen and still moving,
     // which is the half that a `transition: opacity` elsewhere silently ate.
-    await page.waitForTimeout(120);
-    const outgoing = await offsetX(page, '.pane-list');
-    expect(outgoing).toBeLessThan(0);
-    expect(outgoing).toBeGreaterThan(-w);
-    expect((await styleOf(page, '.pane-list', 'visibility')).trim()).toBe('visible');
+    //
+    // Sampled across the whole gesture, by the same reasoning as the focus-mode
+    // test below and for the failure that proved it: this used to tap the row
+    // and look once, 120ms later. The tap goes through the client's async
+    // dispatch before the attribute flips, so on a loaded machine 120ms is
+    // BEFORE the strip has started moving — offset 0, test red, nothing wrong
+    // with the strip. What is being asserted is that the list passed THROUGH
+    // positions between on-screen and off, still visible while it did; a
+    // sampler started before the tap sees that whenever it happens.
+    const sampler = page.evaluate(async () => {
+      const list = document.querySelector('.pane-list');
+      const seen = [];
+      for (let i = 0; i < 150; i++) {
+        const cs = getComputedStyle(list);
+        seen.push([Math.round(new DOMMatrixReadOnly(cs.transform).m41), cs.visibility.trim()]);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      return seen;
+    });
+    await openRow(page, 0);
+    const seen = await sampler;
+    const between = seen.filter(([x]) => x < 0 && x > -w);
+    expect(between.length,
+      `the list pane should pass through positions between 0 and ${-w}; saw ${JSON.stringify(seen.slice(0, 40))}`)
+      .toBeGreaterThan(0);
+    expect(between.every(([, v]) => v === 'visible'),
+      'the outgoing pane must stay visible while it is still on its way out').toBe(true);
 
-    await page.waitForTimeout(600);
-    expect(await offsetX(page, '.pane-article')).toBe(0);
-    expect((await styleOf(page, '.pane-list', 'visibility')).trim()).toBe('hidden');
+    await expect.poll(() => offsetX(page, '.pane-article')).toBe(0);
+    await expect.poll(async () => (await styleOf(page, '.pane-list', 'visibility')).trim()).toBe('hidden');
 
     // Nothing may hang off the side of the screen at any point in the gesture.
     const overflow = await page.evaluate(() =>
@@ -208,7 +236,11 @@ test.describe('motion', () => {
     expect(overflow).toBe(0);
   });
 
-  test('focus mode closes the columns rather than hiding them', async ({ page }) => {
+  test('focus mode closes the columns rather than hiding them', async ({ page }, testInfo) => {
+    // Columns closing is a multi-pane gesture, toggled by `w`. A phone shows one
+    // pane and has no `w`: there are no columns to close.
+    test.skip(testInfo.project.name !== 'desktop',
+      'focus mode closes side columns a phone does not have, by a key it cannot press');
     await boot(page);
     const railWidth = () => page.evaluate(() =>
       Math.round(document.querySelector('.pane-rail').getBoundingClientRect().width));
@@ -237,8 +269,17 @@ test.describe('motion', () => {
       return seen;
     });
     await page.keyboard.press('w');
-    await page.waitForTimeout(400);
-    if ((await page.locator('.shell').getAttribute('data-focus')) !== 'true') {
+    // The re-press is for a key that was DROPPED, so it waits long enough to
+    // know the first one was. It used to look after a flat 400ms, and on a
+    // loaded run that is before a key that DID land has flipped the attribute:
+    // the second `w` then toggled focus straight back off, the sampler saw the
+    // rail start closing (so the interpolation check passed), and the width
+    // check below found it fully open again — 258 against an expected 0, on
+    // the 11:22 build's desktop run, passing on retry.
+    const focused = () => page.locator('.shell').getAttribute('data-focus');
+    const landed = await expect.poll(focused, { timeout: 3_000 }).toBe('true')
+      .then(() => true, () => false);
+    if (!landed) {
       await page.keyboard.press('w');
     }
     const widths = await sampler;
