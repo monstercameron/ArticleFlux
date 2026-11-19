@@ -43,7 +43,7 @@
 // (a content hash of app.wasm, stamped in by whatever assembles bin/web). Until
 // that exists, this line is a manual step and swversion_test.go pins it to
 // buildver.Version so at least the two cannot disagree.
-const VERSION = '1.2.2';
+const VERSION = '1.3.0';
 const CACHE = `articleflux-shell-${VERSION}`;
 
 // DEV is the hole in everything the comment above claims.

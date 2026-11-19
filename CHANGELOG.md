@@ -9,6 +9,8 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-11-19
+
 ### Fixed — 2026-11-19, found by using it: the reader, its addresses, and what a keyboard meets
 
 A browser audit of every page at six sizes, in two themes and three languages. These are the
