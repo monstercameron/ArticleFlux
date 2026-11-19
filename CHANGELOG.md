@@ -9,7 +9,57 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Fixed — 2026-11-19, what the audit left half-done
+
+- **List markers in an English article sat on the wrong side in a right-to-left interface**
+  (and Arabic ones in an English one). The text took its direction from its letters; the
+  bullets, blockquote bars and indents follow the box, which was the page's. The article body
+  and headline now resolve their own direction (`dir="auto"`), and the headline's box goes to
+  the side its text starts from instead of the container's.
+- **`<html lang>` claimed French or Arabic while every string was the English fallback.** It
+  says what is on screen — the chosen language once any of its catalog is in force — while
+  `dir` stays the language's, because the layout really is mirrored.
+- **An address naming a tag or a folder that does not exist said "nothing in it" on an
+  account with none.** An empty list could not be told from one not yet loaded, so the honest
+  "That tag isn't here" needed the reader to own at least one. Tags and folders now know they
+  have loaded, as feeds do.
+- **Phones were told to press keys.** Every empty state and subtitle that says "Press u",
+  "j and k" or "Esc close" has a touch sentence, served on a coarse pointer through one helper
+  (`keyHint`), and a test fails any new hint that names a key without one.
+- **A brand-new instance listed twenty-six empty categories** above an empty reader. With no
+  feeds, no folders and nothing unread there is nothing to file, so the band waits for the first.
+- **The sidebar-feeds hint quoted "150 subscriptions"** to someone with eight.
+- **The note under an article was inset from the text and 80px narrower**, and focus mode
+  centred the two on different guesses. One published column width now drives the body, the
+  note and the centring gutters, so their edges are the same at rest, expanded, on a phone and
+  in focus mode.
+- **A static chip (the word count) looked like the button beside it**, worst in Daylight and
+  under a finger. It has no outline, fill, hover or tap height now.
+- **At tablet width the reading column was pinned left with a strip of nothing beside it.**
+  Below 1220px, where the article replaces the list, it is centred; three panes are unchanged.
+- **Discover opened with a display-size title no other tab has, and offered Smart+ review on a
+  server with no key.** It has the group heading the others do, and says there is nothing to
+  switch on when the owner's config shows no key. A member cannot read the config, so for them
+  the switch is still offered.
+- **Leaving the slideshow could leave `/slideshow` in the address.** The writer trusted its own
+  record of what it had written, and a history write the browser dropped was never retried;
+  the exit is now checked against the browser's address a moment later.
+
 ## [1.3.0] — 2026-11-19
+
+### Fixed — 2026-11-19, what the first CI run of this release found
+
+- **A small web manifest could be served as `text/plain`.** When a static file was too small
+  to be worth compressing, the server took back the Content-Type on its way out — including
+  the one it had set on purpose for `.js`, `.wasm` and `.webmanifest` — and the file server
+  answered from the operating system's table instead. On Linux that table happens to agree
+  about scripts; nobody's has an entry for a manifest. It only takes back a type it chose.
+- **Six advisories with fixes upstream**: `golang.org/x/net` 0.62.0 (two in the HTML parser,
+  which reads every article), `google.golang.org/grpc` 1.83.2, the OpenTelemetry trace
+  exporter 1.45.0, `andybalholm/brotli` 1.2.7, `golang.org/x/crypto` 0.59.0, and Go 1.27.4 for
+  one in `net/http`. CI, the image and the install script all build with 1.27.4 now.
+- The rail-fold tests assumed a pointer that had never moved was not over anything. It is at
+  the corner of the window, which is over the rail, and Chromium on Linux says so.
 
 ### Fixed — 2026-11-19, found by using it: the reader, its addresses, and what a keyboard meets
 

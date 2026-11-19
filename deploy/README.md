@@ -83,13 +83,13 @@ sudo apt install -y git nginx certbot python3-certbot-nginx build-essential
 # Go from the archive, NOT from apt. Ubuntu's golang-go is several releases
 # behind what go.mod requires, and the failure is a confusing one: the toolchain
 # reports an unsupported go directive rather than "your Go is old".
-GO_VERSION=1.27.3
+GO_VERSION=1.27.4
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
 echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
 export PATH=$PATH:/usr/local/go/bin
-go version   # expect go1.27.3
+go version   # expect go1.27.4
 ```
 
 Firewall — do this **before** exposing anything. Note that `9000` is absent on

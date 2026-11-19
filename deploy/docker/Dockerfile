@@ -22,7 +22,7 @@
 # image sets GOTOOLCHAIN=local, so a base older than go.mod's `go` line does not fetch a
 # newer toolchain — it refuses to build — and a floating `1.27` would be a different
 # compiler from the one the verify job just tested.
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 
 # --- base: the source and its modules, on the BUILDER's platform -------------------------
 #

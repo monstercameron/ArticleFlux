@@ -86,11 +86,12 @@ func compressRoot(t *testing.T) (string, map[string][]byte) {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string][]byte{
-		"app.wasm":   append([]byte("\x00asm"), bytes.Repeat([]byte("module bytes "), 4000)...),
-		"app.js":     []byte(strings.Repeat("console.log('hello');\n", 300)),
-		"index.html": []byte("<!doctype html><title>x</title>" + strings.Repeat("<p>shell</p>", 300)),
-		"tiny.js":    []byte("x()"),
-		"logo.png":   bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 1000),
+		"app.wasm":         append([]byte("\x00asm"), bytes.Repeat([]byte("module bytes "), 4000)...),
+		"app.js":           []byte(strings.Repeat("console.log('hello');\n", 300)),
+		"index.html":       []byte("<!doctype html><title>x</title>" + strings.Repeat("<p>shell</p>", 300)),
+		"tiny.js":          []byte("x()"),
+		"tiny.webmanifest": []byte(`{"name":"x"}`),
+		"logo.png":         bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 1000),
 	}
 	old := time.Now().Add(-time.Hour)
 	for name, b := range files {
@@ -175,6 +176,10 @@ func TestStaticCompressionRoundTrips(t *testing.T) {
 		{"/app.wasm", "app.wasm", "", "", "application/wasm"},                    // identity
 		{"/app.js", "app.js", "br;q=0, gzip;q=0", "", "text/javascript; charset=utf-8"},
 		{"/tiny.js", "tiny.js", "br", "", "text/javascript; charset=utf-8"}, // under the floor
+		// Under the floor, and a type no operating system's table has: the bail-out
+		// used to delete the type static() had set, and FileServer then sniffed
+		// text/plain — an app a browser will not offer to install.
+		{"/tiny.webmanifest", "tiny.webmanifest", "br", "", "application/manifest+json"},
 	} {
 		t.Run(tc.path+" "+tc.ae, func(t *testing.T) {
 			rec := fetchEnc(h, http.MethodGet, tc.path, tc.ae)

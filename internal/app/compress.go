@@ -405,9 +405,16 @@ func (a *App) serveEncodedStatic(w http.ResponseWriter, r *http.Request, full, s
 	if err != nil || orig.IsDir() {
 		return false
 	}
+	// Only a type THIS function chose is this function's to take back. static()
+	// sets .js, .wasm and .webmanifest itself before calling, and the two bail-outs
+	// below used to delete that as well: FileServer then answered from the
+	// operating system's table — "application/javascript" from a Windows registry,
+	// and text/plain for a manifest, which is in nobody's table.
+	typed := false
 	if w.Header().Get("Content-Type") == "" {
 		if ct := mime.TypeByExtension(strings.ToLower(extOf(served))); ct != "" {
 			w.Header().Set("Content-Type", ct)
+			typed = true
 		}
 	}
 
@@ -433,13 +440,17 @@ func (a *App) serveEncodedStatic(w http.ResponseWriter, r *http.Request, full, s
 	// a sibling, above, is used whatever its size because somebody already
 	// paid for it.
 	if orig.Size() < webasset.MinSize {
-		w.Header().Del("Content-Type")
+		if typed {
+			w.Header().Del("Content-Type")
+		}
 		return false
 	}
 	data, err := a.encoded.get(encodedKey{full, orig.ModTime().UnixNano(), orig.Size(), enc},
 		func() ([]byte, error) { return compressFile(full, enc) })
 	if err != nil {
-		w.Header().Del("Content-Type")
+		if typed {
+			w.Header().Del("Content-Type")
+		}
 		return false
 	}
 	w.Header().Set("Content-Encoding", enc)

@@ -35,6 +35,13 @@ const right = async (page, sel) => {
 const railShowing = (page) => right(page, '.pane-rail');
 
 async function fold(page) {
+  // Park the pointer first. A page that has never been sent a mouse event has
+  // its pointer at (0, 0), which is inside the rail, and Chromium on Linux
+  // counts that as :hover the moment the layout changes underneath it — so the
+  // rail folded and stayed slid out, as it should for a pointer resting on it.
+  // Chromium on Windows does not, which is how this passed on the machine it
+  // was written on and failed six times over in CI.
+  await page.mouse.move(900, 400);
   await page.keyboard.press('b');
   await expect(page.locator('.shell')).toHaveAttribute('data-rail', 'folded');
   await expect.poll(() => railShowing(page)).toBeLessThanOrEqual(STRIP + 1);
