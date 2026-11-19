@@ -338,7 +338,7 @@ func AuthzUnary(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny D
 			if onDeny != nil {
 				onDeny(ctx, method, true)
 			}
-			return nil, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+			return nil, errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 		}
 
 		if err := policy.Check(method, callerFor(sc)); err != nil {
@@ -363,7 +363,7 @@ func AuthzUnary(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny D
 			// and "your role is too low" are both answered with the same words, so
 			// the response cannot be used to map the server's own policy.
 			return nil, errKey(codes.PermissionDenied, "srv.notAllowed",
-				"your account is not allowed to do that", nil)
+				"Your account is not allowed to do that.", nil)
 		}
 		return handler(ctx, req)
 	}
@@ -400,7 +400,7 @@ func AuthzStream(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny 
 			if onDeny != nil {
 				onDeny(ctx, method, true)
 			}
-			return errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+			return errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 		}
 
 		if err := policy.Check(method, callerFor(sc)); err != nil {
@@ -416,7 +416,7 @@ func AuthzStream(policy *authz.Map, scopeOf ScopeFunc, log *slog.Logger, onDeny 
 				onDeny(ctx, method, mapped)
 			}
 			return errKey(codes.PermissionDenied, "srv.notAllowed",
-				"your account is not allowed to do that", nil)
+				"Your account is not allowed to do that.", nil)
 		}
 		return handler(srv, ss)
 	}

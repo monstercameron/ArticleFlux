@@ -283,7 +283,6 @@ func railMasthead(tr i18n.Runtime, p railProps) ui.Node {
 	return html.Div(html.Props{Class: "masthead"},
 		html.Span(html.Props{Class: "masthead-mark"}, html.Text(tr.T("rail", "mark"))),
 		html.Span(html.Props{Class: "masthead-sub"}, html.Text(sub)),
-		railFoldButton(tr, p.folded),
 	)
 }
 
@@ -746,7 +745,7 @@ func toggleCat(openCats, id string) string {
 // exactly one thing — paste and press Enter — and the other two decisions a
 // reader makes while adding a feed, what to call it and where it goes, had
 // nowhere to happen. See addfeed.go for the trade that buys.
-func railFoot(tr i18n.Runtime, _ railProps) []ui.Node {
+func railFoot(tr i18n.Runtime, p railProps) []ui.Node {
 	return []ui.Node{
 		html.Div(html.Props{Class: "rail-add"},
 			html.Button(html.Props{
@@ -754,6 +753,12 @@ func railFoot(tr i18n.Runtime, _ railProps) []ui.Node {
 				DataAttr: html.DataAttribute{Name: "action", Value: actAddOpen},
 				Aria:     map[string]string{"label": tr.T("rail", "addFeed")},
 			}, lead(glyphAdd), html.Text(tr.T("rail", "addFeed"))),
+			// Beside Add a feed, at the end of the row, because the masthead is the
+			// one line that has to say how many feeds there are and how many are
+			// unread: with the fold button in it, "8 feeds · 131 unread" was cut off
+			// at every width. The foot is where this row has room, and it is still in
+			// the rail, so it arrives with it under the pointer that brought it.
+			railFoldButton(tr, p.folded),
 		),
 	}
 }

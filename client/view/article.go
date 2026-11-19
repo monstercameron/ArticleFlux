@@ -62,6 +62,13 @@ type articleProps struct {
 	loadingBelow bool
 	atStart      bool
 	atEnd        bool
+	// listFirst and listLast are the ids of the list's first item and, once it
+	// has been paged to its end, its last — what Previous and Next step along, so
+	// the article that has nothing on one side can say so. Strings, not the list:
+	// this is a memoised component's props. Empty when there is no such end yet.
+	listFirst, listLast string
+	// bodyFailed is the articles whose body could not be fetched and is not cached.
+	bodyFailed map[string]bool
 	// Listening state, for the article that is currently being read aloud.
 	// speakID is empty when nothing is playing.
 	speakID    string
@@ -191,7 +198,11 @@ func articlePane(tr i18n.Runtime, p articleProps) ui.Node {
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge is-loading"},
 			html.Text(tr.T("article", "loading"))))
 	case p.atEnd:
-		kids = append(kids, html.Div(html.Props{Class: "stream-edge"},
+		// `is-end` is the real end of the stream, as opposed to the end of what
+		// has been loaded so far, and the stylesheet gives it the height of the
+		// pane. See .stream-edge.is-end for the article that could not be opened
+		// without it.
+		kids = append(kids, html.Div(html.Props{Class: "stream-edge is-end"},
 			html.Text(tr.T("article", "streamEnd"))))
 	default:
 		kids = append(kids, html.Div(html.Props{Class: "stream-edge"},
@@ -434,7 +445,7 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 				// width instead of blowing up a 1280px render.
 				return kitToggle(kitChipProps{Action: "toggle-page-wide", Glyph: glyphWide, Label: tr.T("article", "viewPageFull"), ItemID: it.GetId()}, p.pageWide[it.GetId()])
 			}),
-			articleStep(tr, it.GetId()),
+			articleStep(tr, it.GetId(), it.GetId() == p.listFirst, it.GetId() == p.listLast),
 		),
 		translateNote(tr, it.GetId(), p),
 		ui.If(p.pageOpen[it.GetId()] && full.GetProxyUrl() != "", func() ui.Node {
@@ -449,7 +460,13 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 		ui.If(full.GetRevision() > 0 && p.revisionsOpen[it.GetId()], func() ui.Node {
 			return revisionsPanel(tr, it.GetId(), p)
 		}),
-		ui.If(loading, func() ui.Node { return skeletonArticle(tr) }),
+		ui.If(loading && !p.bodyFailed[it.GetId()], func() ui.Node { return skeletonArticle(tr) }),
+		// The request came back with an error and there is no copy to fall back on:
+		// said, rather than left as a skeleton that is still "loading" a minute
+		// later. Withdrawn by the reconnect that retries it.
+		ui.If(loading && p.bodyFailed[it.GetId()], func() ui.Node {
+			return kitEmpty(kitEmptyProps{Class: "article-body", Role: "status", Text: tr.T("article", "bodyFailed")})
+		}),
 		ui.If(!loading, func() ui.Node {
 			long := full.GetWordCount() > clampWords && !p.expanded[it.GetId()]
 			if !long {
@@ -505,11 +522,13 @@ const (
 // article's own chips happen to be.
 //
 // Each carries its article's id, so it steps from the article it is drawn on
-// rather than from whichever one the scroll handler last called current.
-func articleStep(tr i18n.Runtime, id string) ui.Node {
+// rather than from whichever one the scroll handler last called current. `first`
+// and `last` are whether that article is the list's own ends: the real disabled
+// attribute, so the press that cannot do anything does not look as though it can.
+func articleStep(tr i18n.Runtime, id string, first, last bool) ui.Node {
 	return html.Span(html.Props{Class: "article-step"},
-		kitAction(kitChipProps{Action: actNavPrev, Glyph: glyphPrev, Label: tr.T("article", "prevArticle"), ItemID: id, Mini: true, Icon: true}),
-		kitAction(kitChipProps{Action: actNavNext, Glyph: glyphNext, Label: tr.T("article", "nextArticle"), ItemID: id, Mini: true, Icon: true}),
+		kitAction(kitChipProps{Action: actNavPrev, Glyph: glyphPrev, Label: tr.T("article", "prevArticle"), ItemID: id, Mini: true, Icon: true, Disabled: first}),
+		kitAction(kitChipProps{Action: actNavNext, Glyph: glyphNext, Label: tr.T("article", "nextArticle"), ItemID: id, Mini: true, Icon: true, Disabled: last}),
 	)
 }
 

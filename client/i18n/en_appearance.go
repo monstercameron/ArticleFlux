@@ -25,7 +25,7 @@ func init() {
 		// control shows its own effect. It is prose and it is on screen, so it
 		// is copy — the numbers in it are not data, they are part of the
 		// sentence.
-		"readingSample": "The instance in the screenshot holds 151 subscriptions and 3,621 items, and the scrollbar is honest from the first paint.",
+		"readingSample": "Good type disappears: you read the sentence rather than the letters, and the line stays short enough that your eye finds the start of the next one.",
 
 		"motionGroup":     "Motion",
 		"motionGroupHint": "Movement here is used to say where you are and what changed — nothing moves for decoration.",
@@ -33,7 +33,7 @@ func init() {
 		"motionHint":      "Full by default, on every machine. Reduce it and every transition takes zero time: the interface arrives at the state it would have animated to, immediately.",
 		"motionFull":      "Full",
 		"motionReduced":   "Reduced",
-		"motionFollow":    "Follow my system setting",
+		"motionFollow":    "Follow my system",
 		"motionSystemOn":  "Following this machine, which does not ask for reduced motion.",
 		"motionSystemOff": "Following this machine, which asks for reduced motion. Turning animations on here overrides that for ArticleFlux only.",
 

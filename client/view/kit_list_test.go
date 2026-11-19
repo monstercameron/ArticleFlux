@@ -592,7 +592,7 @@ func kitAfterItemMeta(tr i18n.Runtime, it *pb.Item, hosts map[string]string, age
 		smartPlusMark(tr, it),
 		kitSepIf(long),
 		ui.If(long, func() ui.Node {
-			return html.Span(html.Props{}, html.Text(readingTime(tr, it.GetWordCount())))
+			return html.Span(html.Props{Class: "item-read"}, html.Text(readingTime(tr, it.GetWordCount())))
 		}),
 		ui.If(it.GetStarred(), func() ui.Node {
 			return html.Span(html.Props{Class: "item-later",

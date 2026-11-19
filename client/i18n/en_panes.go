@@ -117,7 +117,7 @@ func init() {
 		// a different thing about the ordering — and the ordering is the fact
 		// the line exists to convey.
 		"subNewest":   "Newest first.",
-		"subSearch":   "Matching your search, most relevant first.",
+		"subSearch":   "Across every feed, most relevant first.",
 		"subLater":    "Saved to read later.",
 		"subLiked":    "Everything you liked.",
 		"subDisliked": "Everything you'd rather not read again.",
@@ -212,16 +212,24 @@ func init() {
 		// The empty states. Each names the situation and then says what to do
 		// about it — the second line is the point, and a translation that drops
 		// it turns direction back into a shrug.
-		"emptySearch":       "Nothing matched",
-		"emptySearchHint":   "Try fewer words, or clear the search box.",
-		"emptyUnread":       "All caught up",
-		"emptyUnreadHint":   "Press u to show everything again.",
-		"emptyLater":        "Nothing saved for later",
-		"emptyLaterHint":    "Press t on an article to put it here.",
-		"emptyLiked":        "Nothing liked yet",
-		"emptyLikedHint":    "Press l on an article, or use ▲ Like.",
-		"emptyDisliked":     "Nothing disliked yet",
-		"emptyDislikedHint": "Press d on an article you'd rather not have read.",
+		"emptySearch": "Nothing matched anywhere",
+		// An address naming a feed, tag or category the reader does not have. Said
+		// as a place that is not there, with the way out beside it — not as a list
+		// that is empty, which is a statement about their data.
+		"missingTitle":       "Not found",
+		"emptyMissingFeed":   "That feed isn't here",
+		"emptyMissingTag":    "That tag isn't here",
+		"emptyMissingFolder": "That folder isn't here",
+		"emptyMissingHint":   "It may have been removed, or the link may be to a different account.",
+		"emptySearchHint":    "Every feed was searched. Try fewer words, or clear the search box.",
+		"emptyUnread":        "All caught up",
+		"emptyUnreadHint":    "Press u to show everything again.",
+		"emptyLater":         "Nothing saved for later",
+		"emptyLaterHint":     "Press t on an article to put it here.",
+		"emptyLiked":         "Nothing liked yet",
+		"emptyLikedHint":     "Press l on an article, or use ▲ Like.",
+		"emptyDisliked":      "Nothing disliked yet",
+		"emptyDislikedHint":  "Press d on an article you'd rather not have read.",
 		// The list did not arrive, which is not the same as being empty. Every
 		// other pair in this block explains the reader's own data back to them,
 		// and all of them are wrong here — see emptyList's first case.
@@ -346,7 +354,10 @@ func init() {
 		"streamEnd":   "That's everything. Nothing left unread here.",
 		"streamMore":  "Keep scrolling for the next one.",
 		"loadingBody": "Loading the article",
-		"noBody":      "This entry has no body. Open the original to read it.",
+		// The body would not come: offline, or the server unreachable, with nothing
+		// cached to show. It tries again by itself when the connection returns.
+		"bodyFailed": "This article can't be loaded right now. It will load when the connection is back.",
+		"noBody":     "This entry has no body. Open the original to read it.",
 
 		"byline": "by {author}",
 		// The two ends of the floating bar. The same step as j and k, for a
@@ -485,6 +496,7 @@ func init() {
 		"groupArticle":  "On an article",
 
 		"palette":     "Open the command palette",
+		"settings":    "Open settings",
 		"toggleHelp":  "Show or hide this sheet",
 		"jumpPanes":   "Jump to feeds, list, article",
 		"search":      "Search articles",

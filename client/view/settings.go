@@ -13,6 +13,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
+	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -451,7 +452,7 @@ func settingsReading(tr i18n.Runtime, p settingsProps) []ui.Node {
 		// because both of these are answers to "how do I want to take the news
 		// in" — which is what this tab is.
 		kitHeading(glyphSlideshow, tr.T("settings", "slidesGroup"),
-			tr.T("settings", "slidesGroupHint")),
+			slidesHint(tr)),
 		kitSetting(kitSettingProps{Label: tr.T("settings", "slidesPace"), Hint: tr.T("settings", "slidesPaceHint"),
 			Control: slideDwellPicker(tr, p.slideDwell)}),
 		// Read-to-me is NOT a row here, and its absence is the decision rather
@@ -1665,4 +1666,12 @@ func humanDuration(tr i18n.Runtime, s int64) string {
 		}
 		return tr.T("unit", "daysHours", i18n.Args{"d": d, "h": h})
 	}
+}
+
+// slidesHint is the slideshow group's hint, without the key on a touch screen.
+func slidesHint(tr i18n.Runtime) string {
+	if platform.CoarsePointer() {
+		return tr.T("settings", "slidesGroupHintTouch")
+	}
+	return tr.T("settings", "slidesGroupHint")
 }

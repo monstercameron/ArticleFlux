@@ -160,7 +160,7 @@ func NewAuthServer(repo *store.ReaderRepo, scopeOf func(context.Context) (store.
 // One message for "no such user", "wrong password", and "deactivated". Any
 // distinction is a free account-enumeration API, and the person who genuinely
 // mistyped is no better served by knowing which half they got wrong.
-var errBadCredentials = errKey(codes.Unauthenticated, "srv.badCredentials", "invalid username or password", nil)
+var errBadCredentials = errKey(codes.Unauthenticated, "srv.badCredentials", "Invalid username or password.", nil)
 
 func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
 	username := strings.TrimSpace(req.GetUsername())
@@ -292,7 +292,7 @@ func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Login
 		AuthenticatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {
 		s.log.ErrorContext(ctx, "creating session", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	// Upgrade the stored hash while the plaintext is in hand. This is the only
@@ -399,7 +399,7 @@ func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionR
 	sc, err := s.repo.ScopeForDevice(ctx, record)
 	if err != nil {
 		s.log.Error("resolving the device after a successful rotation", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	now := time.Now().UTC()
@@ -419,7 +419,7 @@ func (s *AuthServer) RefreshSession(ctx context.Context, req *pb.RefreshSessionR
 		ExpiresAt: expires.Format(time.RFC3339Nano),
 	}); err != nil {
 		s.log.Error("creating a session on refresh", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	return &pb.RefreshSessionResponse{
@@ -549,7 +549,7 @@ func (s *AuthServer) Logout(ctx context.Context, _ *pb.LogoutRequest) (*pb.Logou
 	if err := s.repo.RevokeSessionAndFamily(ctx, secret.HashToken(tok),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		s.log.ErrorContext(ctx, "revoking session and family", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	s.trail.Record(ctx, audit.Event{
 		Action: audit.ActionLogout, Actor: sc.UserID, Tenant: sc.TenantID,

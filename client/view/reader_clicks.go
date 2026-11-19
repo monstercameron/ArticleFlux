@@ -460,8 +460,8 @@ func (d delegatedClicks) wire() {
 					a.setReading(value)
 				case "toggle-motion":
 					a.toggleMotion()
-				case "motion-system":
-					a.motionSystem()
+				case "set-motion":
+					a.setMotion(value)
 				case actComposeTheme:
 					a.composeTheme()
 				case actDropCustom:

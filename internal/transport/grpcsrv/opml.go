@@ -35,11 +35,11 @@ func (s *ReaderServer) ImportOpml(ctx context.Context, req *pb.ImportOpmlRequest
 
 	data := req.GetOpml()
 	if len(data) == 0 {
-		return nil, errKey(codes.InvalidArgument, "srv.opmlEmpty", "that file was empty", nil)
+		return nil, errKey(codes.InvalidArgument, "srv.opmlEmpty", "That file was empty.", nil)
 	}
 	if len(data) > MaxImportBytes {
 		return nil, errKey(codes.InvalidArgument, "srv.opmlTooBig",
-			"that file is too large to import — a subscription list is normally a few dozen kilobytes", nil)
+			"That file is too large to import. A subscription list is normally a few dozen kilobytes.", nil)
 	}
 
 	res, err := s.svc.ImportOPML(ctx, sc, data)
@@ -48,7 +48,7 @@ func (s *ReaderServer) ImportOpml(ctx context.Context, req *pb.ImportOpmlRequest
 			// The reader picked the wrong file, which is a thing they can fix —
 			// so it is a sentence about the file rather than a swallowed Internal.
 			return nil, errKey(codes.InvalidArgument, "srv.opmlNotOPML",
-				"that file is not an OPML subscription list — export one from your old reader and pick that", nil)
+				"That file is not an OPML subscription list. Export one from your old reader and pick that.", nil)
 		}
 		return nil, toStatus(err)
 	}

@@ -130,18 +130,18 @@ var ownerRoles = map[string]bool{"superadmin": true, "admin": true}
 // requireOwner resolves the caller and refuses anyone who is not an owner.
 func (s *SmartServer) requireOwner(ctx context.Context) (store.Scope, error) {
 	if s.scopeOf == nil {
-		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 	}
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 	}
 	if !ownerRoles[sc.Role] {
 		// Names the requirement rather than the failure. "Permission denied" on
 		// a settings screen sends someone hunting for a bug; "this is an
 		// administrator setting" sends them to whoever runs the server.
 		return store.Scope{}, errKey(codes.PermissionDenied, "srv.adminOnly",
-			"only an administrator can change Smart+ settings", nil)
+			"Only an administrator can change Smart+ settings.", nil)
 	}
 	return sc, nil
 }
@@ -182,7 +182,7 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		// pasted into this box.
 		if !strings.HasPrefix(key, "sk-") {
 			return nil, errKey(codes.InvalidArgument, "srv.badApiKeyShape",
-				"that does not look like an OpenAI API key — they begin with sk-", nil)
+				"That does not look like an OpenAI API key. Keys begin with “sk-”.", nil)
 		}
 		if err := s.settings.SetSystemSecret(ctx, store.KeyOpenAIAPIKey, key, sc.UserID); err != nil {
 			return nil, s.secretErr(err)
@@ -192,7 +192,7 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 
 	if m := strings.TrimSpace(req.GetModel()); m != "" {
 		if err := s.settings.SetSystemValue(ctx, store.KeySmartModel, m, sc.UserID); err != nil {
-			return nil, errKey(codes.Internal, "srv.saveModelFailed", "couldn't save the model", nil)
+			return nil, errKey(codes.Internal, "srv.saveModelFailed", "Couldn't save the model.", nil)
 		}
 	}
 
@@ -210,7 +210,7 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		}
 		if err := s.settings.SetSystemValue(ctx, smart.KeyClassifyEnabled, v, sc.UserID); err != nil {
 			return nil, errKey(codes.Internal, "srv.saveClassifyFailed",
-				"couldn't save that setting", nil)
+				"Couldn't save that setting.", nil)
 		}
 		// Logged at the same level as the key, because it is the same kind of
 		// decision: it is what makes article text leave this machine.
@@ -226,7 +226,7 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		}
 		if err := s.settings.SetSystemValue(ctx, smart.KeyTranslateArticles, v, sc.UserID); err != nil {
 			return nil, errKey(codes.Internal, "srv.saveClassifyFailed",
-				"couldn't save that setting", nil)
+				"Couldn't save that setting.", nil)
 		}
 		s.log.Info("smart+ article translation consent changed",
 			"enabled", req.GetTranslateArticlesEnabled(), "by", sc.UserID)
@@ -239,12 +239,12 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		usd := req.GetBudgetUsd()
 		if usd < 0 {
 			return nil, errKey(codes.InvalidArgument, "srv.badBudget",
-				"a spend limit cannot be negative — use 0 for no limit", nil)
+				"A spend limit cannot be negative. Use 0 for no limit.", nil)
 		}
 		if err := s.settings.SetSystemValue(ctx, store.KeySmartBudgetUSD,
 			strconv.FormatFloat(usd, 'f', -1, 64), sc.UserID); err != nil {
 			return nil, errKey(codes.Internal, "srv.saveBudgetFailed",
-				"couldn't save the spend limit", nil)
+				"Couldn't save the spend limit.", nil)
 		}
 		s.log.Info("smart+ spend limit changed", "usd", usd, "by", sc.UserID)
 	}
@@ -284,7 +284,7 @@ func (s *SmartServer) jevChange(ctx context.Context, req *pb.SetSmartConfigReque
 		// route this accepts is one that test has already seen.
 		if _, known := llm.DeciderHosts[p]; !known {
 			return plan, errKey(codes.InvalidArgument, "srv.jevBadProvider",
-				"the decision route must be jev, jev-openrouter or jev-litellm", nil)
+				"The decision route must be jev, jev-openrouter or jev-litellm.", nil)
 		}
 		plan.provider, provider = &p, p
 	}
@@ -309,12 +309,12 @@ func (s *SmartServer) jevChange(ctx context.Context, req *pb.SetSmartConfigReque
 		// The ladder would skip rung 2 silently (llm.Client.decider), which is
 		// a setting that looks saved and does nothing. Said now instead.
 		return plan, errKey(codes.InvalidArgument, "srv.jevBaseURLRequired",
-			"a LiteLLM route needs the base URL of your proxy", nil)
+			"A LiteLLM route needs the base URL of your proxy.", nil)
 	case provider != "jev-litellm" && req.JevBaseUrl != nil && base != "":
 		// The other two routes have fixed hosts. A base URL beside them would be
 		// a way to point decisions at a host llm.DeciderHosts does not list.
 		return plan, errKey(codes.InvalidArgument, "srv.jevBaseURLNotUsed",
-			"only a LiteLLM route takes a base URL — the other two have fixed addresses", nil)
+			"Only a LiteLLM route takes a base URL. The other two have fixed addresses.", nil)
 	case provider != "jev-litellm" && base != "" && plan.baseURL == nil:
 		// Leaving LiteLLM: the proxy's address goes with it, for the reason
 		// above — a stored base URL that "only LiteLLM reads" is one code
@@ -334,7 +334,7 @@ func (s *SmartServer) jevChange(ctx context.Context, req *pb.SetSmartConfigReque
 		// shell line, a key with its variable name in front.
 		if strings.Contains(key, "://") || strings.ContainsAny(key, " \t\r\n=") {
 			return plan, errKey(codes.InvalidArgument, "srv.badJevKeyShape",
-				"that does not look like a JEV API key — paste the key alone", nil)
+				"That does not look like a JEV API key. Paste the key alone.", nil)
 		}
 		plan.key = key
 	}
@@ -350,7 +350,7 @@ func (s *SmartServer) jevChange(ctx context.Context, req *pb.SetSmartConfigReque
 // agrees on.
 func checkDeciderBaseURL(raw string) error {
 	bad := errKey(codes.InvalidArgument, "srv.jevBadBaseURL",
-		"the base URL must be an https:// address on a public host", nil)
+		"The base URL must be an https:// address on a public host.", nil)
 	u, err := url.Parse(raw)
 	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || u.User != nil {
 		return bad
@@ -371,7 +371,7 @@ func checkDeciderBaseURL(raw string) error {
 func (s *SmartServer) applyJEV(ctx context.Context, sc store.Scope, plan jevPlan) error {
 	if plan.provider != nil {
 		if err := s.settings.SetSystemValue(ctx, store.KeyJEVProvider, *plan.provider, sc.UserID); err != nil {
-			return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+			return errKey(codes.Internal, "srv.saveFailed", "Couldn't save that.", nil)
 		}
 		s.log.Info("smart+ decision route changed", "provider", *plan.provider, "by", sc.UserID)
 	}
@@ -383,7 +383,7 @@ func (s *SmartServer) applyJEV(ctx context.Context, sc store.Scope, plan jevPlan
 			err = s.settings.SetSystemValue(ctx, store.KeyJEVBaseURL, *plan.baseURL, sc.UserID)
 		}
 		if err != nil {
-			return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+			return errKey(codes.Internal, "srv.saveFailed", "Couldn't save that.", nil)
 		}
 		// Logged in full (it can carry no credentials — checkDeciderBaseURL
 		// refuses them): it is a destination for article text, which is what
@@ -449,11 +449,11 @@ func (s *SmartServer) jevStored(ctx context.Context) jevState {
 func (s *SmartServer) jevSecretErr(err error) error {
 	if errors.Is(err, secret.ErrKeyLength) {
 		return errKey(codes.FailedPrecondition, "srv.cannotStoreJevSecret",
-			"this server has no encryption key, so it will not store a credential — "+
-				"set SCHEMAFLUX_TYPESAFE_API_KEY in the environment instead", nil)
+			"This server has no encryption key, so it will not store a credential. "+
+				"Set SCHEMAFLUX_TYPESAFE_API_KEY in the environment instead.", nil)
 	}
 	s.log.Error("couldn't save the JEV key", "err", err)
-	return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+	return errKey(codes.Internal, "srv.saveFailed", "Couldn't save that.", nil)
 }
 
 // ListModels asks the provider which model ids this key can use.
@@ -537,25 +537,25 @@ func (s *SmartServer) TranslateUI(ctx context.Context, req *pb.TranslateUIReques
 	switch {
 	case errors.Is(err, smart.ErrUnsupportedLanguage):
 		return nil, errKey(codes.InvalidArgument, "srv.unsupportedLanguage",
-			fmt.Sprintf("%q is not one of the offered languages", locale),
+			fmt.Sprintf("%q is not one of the offered languages.", locale),
 			map[string]string{"locale": locale})
 	case errors.Is(err, smart.ErrIsSource):
 		return nil, errKey(codes.InvalidArgument, "srv.alreadySourceLanguage",
-			"the interface is already in English", nil)
+			"The interface is already in English.", nil)
 	case errors.Is(err, llm.ErrNotConfigured):
 		return nil, errKey(codes.FailedPrecondition, "srv.smartNoKey",
-			"Smart+ needs an OpenAI API key — add one in Settings › Smart+", nil)
+			"Smart+ needs an OpenAI API key. Add one in Settings › Smart+.", nil)
 	case errors.Is(err, llm.ErrTruncated):
 		// Named, because the remedy is specific and nobody would guess it: the
 		// batch was too big for the model's output ceiling.
 		return nil, errKey(codes.ResourceExhausted, "srv.translationTruncated",
-			"the translation was cut off before it finished — try again", nil)
+			"The translation was cut off before it finished. Try again.", nil)
 	case err != nil:
 		// The provider's text can echo the request, so it goes to the log with
 		// the request id and a flat message goes to the client (§20.7).
 		s.log.Error("ui translation failed", "locale", locale, "err", err)
 		return nil, errKey(codes.Unavailable, "srv.translateFailed",
-			"couldn't translate the interface just now", nil)
+			"Couldn't translate the interface just now.", nil)
 	}
 
 	msgs := make([]*pb.UIMessage, 0, len(entries))
@@ -664,9 +664,9 @@ func (s *SmartServer) config(ctx context.Context) *pb.GetSmartConfigResponse {
 func (s *SmartServer) secretErr(err error) error {
 	if errors.Is(err, secret.ErrKeyLength) {
 		return errKey(codes.FailedPrecondition, "srv.cannotStoreSecret",
-			"this server has no encryption key, so it will not store a credential — "+
-				"set OPENAI_API_KEY in the environment instead", nil)
+			"This server has no encryption key, so it will not store a credential. "+
+				"Set OPENAI_API_KEY in the environment instead.", nil)
 	}
 	s.log.Error("couldn't save the Smart+ key", "err", err)
-	return errKey(codes.Internal, "srv.saveFailed", "couldn't save that", nil)
+	return errKey(codes.Internal, "srv.saveFailed", "Couldn't save that.", nil)
 }

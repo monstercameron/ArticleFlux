@@ -35,6 +35,9 @@ type listProps struct {
 	// different things to those two people.
 	feeds      int
 	feedsKnown bool
+	// missing is whether the scope names a feed, tag or category the reader does
+	// not have — see scopeMissing.
+	missing bool
 	// hiddenCats is the comma-joined set of category slugs this reader has hidden
 	// from the Classification settings tab — see classify.go's csvHas. A display
 	// preference only; it never changes what the server classified.
@@ -348,7 +351,7 @@ func listPane(tr i18n.Runtime, p listProps) ui.Node {
 			Props: html.Props{
 				Class: "list-scroll",
 				Role:  "list",
-				Aria:  map[string]string{"label": p.sel.Title},
+				Aria:  map[string]string{"label": listTitle(tr, p)},
 				// FormatBool, not onOff: onOff returns LOCALISED words for a
 				// chip, and a data attribute a stylesheet matches on must not
 				// change when the reader changes language.
@@ -414,6 +417,27 @@ func listTail(tr i18n.Runtime, p listProps) ui.Node {
 	}
 }
 
+// listTitle is the heading over the list. A search reaches every feed whatever
+// was selected when it began, so while one is in force the heading names the
+// search; the scope's own name stays what it was and returns the moment the box
+// is cleared.
+func listTitle(tr i18n.Runtime, p listProps) string {
+	sel := p.sel
+	if sel.Search != "" {
+		// The same words the scope is given when a search is started from All
+		// (reader.scopeSearch), so a search reads the same whichever place it
+		// was begun from.
+		return tr.T("reader", "scopeSearch", i18n.Args{"query": sel.Search})
+	}
+	// A scope the reader does not have never gets a name from the rail, and a
+	// heading with nothing in it over "nothing here" reads as a page that failed
+	// to draw.
+	if p.missing && sel.Title == "" {
+		return tr.T("list", "missingTitle")
+	}
+	return sel.Title
+}
+
 // listHead is the pane's header: what you are looking at, and the controls for
 // it. The chosen design has no top bar, so this is where search, refresh and the
 // connection indicator live.
@@ -454,8 +478,11 @@ func listHead(tr i18n.Runtime, p listProps) ui.Node {
 		// someone navigating by headings finds the second pane at all. As a div
 		// the document's only heading was the open article's title, so a screen
 		// reader's outline of a three-pane application was a single line.
-		html.H2(html.Props{Class: "list-title", Key: "lt-" + p.sel.Title},
-			html.Text(p.sel.Title)),
+		// Keyed on the scope and on whether a search is in force, not on the
+		// heading's text, so typing in the search box does not re-mount and
+		// re-fade it on every keystroke.
+		html.H2(html.Props{Class: "list-title", Key: "lt-" + p.sel.Title + strconv.FormatBool(p.sel.Search != "")},
+			html.Text(listTitle(tr, p))),
 		// Keyed on the SCOPE, not on its own text: the subtitle carries the unread
 		// count, so keying it on `sub` would re-mount and re-fade it every time an
 		// article was marked read — a subtitle flickering under the reader's hand
@@ -1039,6 +1066,16 @@ func emptyList(tr i18n.Runtime, p listProps) ui.Node {
 		// to do: the notice above says whether it was the network or the server,
 		// and inventing an action here would be the same mistake one layer down.
 		return emptyState(tr, "emptyFailed", "emptyFailedHint")
+	case p.missing:
+		// Before every reason below it, which are all about the reader's data in a
+		// place that exists. This place does not — a link that outlived its feed, a
+		// typo, an id from another account — and "your feeds haven't brought
+		// anything in yet" told somebody with 283 unread articles that nothing was
+		// wrong with the address. The way out is in the state itself.
+		return kitEmpty(kitEmptyProps{Class: "empty empty-first", Data: map[string]string{"role": "missing"},
+			Title: tr.T("list", missingKey(p.sel)), Lines: []string{tr.T("list", "emptyMissingHint")},
+			Action: kitAction(kitChipProps{Look: kitChipBtn, Extra: "empty-add", Glyph: glyphAll,
+				Label: tr.T("stream", "all"), Data: []html.DataAttribute{{Name: "source-id", Value: streamAll}}})})
 	case p.sel.Search != "":
 		return emptyState(tr, "emptySearch", "emptySearchHint")
 	case p.sel.MyFeed:
@@ -1209,7 +1246,7 @@ func itemMeta(tr i18n.Runtime, it *pb.Item, hosts map[string]string, age, hidden
 		smartPlusMark(tr, it),
 		kitSepIf(it.GetWordCount() >= 50),
 		ui.If(it.GetWordCount() >= 50, func() ui.Node {
-			return html.Span(html.Props{}, html.Text(readingTime(tr, it.GetWordCount())))
+			return html.Span(html.Props{Class: "item-read"}, html.Text(readingTime(tr, it.GetWordCount())))
 		}),
 		// The verdict, if there is one. A liked row and a disliked row have to be
 		// distinguishable at a glance or the ratings are write-only.
@@ -1287,4 +1324,16 @@ func itemRowAttrs(it *pb.Item, spawn int) map[string]any {
 		props["style"] = style + "--i:" + strconv.Itoa(spawn)
 	}
 	return props
+}
+
+// missingKey is the catalog key for what a missing scope was: a feed, a tag or a
+// category, because "this isn't here" is a better sentence with a noun in it.
+func missingKey(sel scope) string {
+	switch {
+	case sel.TagID != "":
+		return "emptyMissingTag"
+	case sel.FolderID != "":
+		return "emptyMissingFolder"
+	}
+	return "emptyMissingFeed"
 }

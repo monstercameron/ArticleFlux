@@ -4,6 +4,7 @@ package view
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -15,6 +16,7 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
+	usernamepolicy "github.com/monstercameron/ArticleFlux/internal/username"
 )
 
 // First-run setup: the screen that claims an instance (§7.11).
@@ -28,7 +30,8 @@ import (
 //
 // # Two steps, and the second one is the point
 //
-// Step one takes a username, an optional email and a password. Step two shows
+// Step one takes a username — which is an email address, see internal/username
+// for the rule and the reason — and a password, twice. Step two shows
 // the recovery codes and will not proceed until they have been acknowledged.
 //
 // Splitting them is what stops the codes being lost. They exist in readable form
@@ -61,7 +64,6 @@ func Setup(p setupProps) ui.Node {
 
 	step := ui.UseState(stepForm)
 	username := ui.UseState("")
-	email := ui.UseState("")
 	password := ui.UseState("")
 	confirm := ui.UseState("")
 	// What the BOXES are told to hold. Four fields, one rule, and it is login.go's
@@ -71,15 +73,22 @@ func Setup(p setupProps) ui.Node {
 	// character here locks somebody out of an instance they just installed, and
 	// the confirm field would have agreed with it.
 	//
-	// Empty, and they stay empty: nothing on this screen is ever prefilled, and
-	// the only app-driven write is the two password fields being cleared after a
-	// rejected attempt.
+	// Empty, and they stay empty: nothing on this screen is ever prefilled (the
+	// loopback prefill is the sign-in card's, and a username it offers is an
+	// existing account's, which this rule deliberately never re-judges), and the
+	// only app-driven write is the two password fields being cleared after a
+	// refusal that is about the password.
 	userSeed := ui.UseState("")
-	emailSeed := ui.UseState("")
 	passSeed := ui.UseState("")
 	confirmSeed := ui.UseState("")
 	busy := ui.UseState(false)
 	errMsg := ui.UseState("")
+	// The data-role of the field the message is about, or "" when it is nobody's
+	// (the server did not answer). It is what lets the message be wired to the box
+	// it names — aria-invalid, aria-describedby — and the caret go there: a
+	// sentence under the button saying a username has to be something is a puzzle
+	// the reader solves by guessing which of three boxes it meant.
+	errField := ui.UseState("")
 	// The sheet, held between the two steps. State rather than a ref because the
 	// second step renders from it.
 	codes := ui.UseState[[]string](nil)
@@ -96,6 +105,24 @@ func Setup(p setupProps) ui.Node {
 		return nil
 	}, []any{})
 
+	// fail puts a message beside the field it is about and moves the caret there.
+	fail := func(role, msg string) {
+		errField.Set(role)
+		errMsg.Set(msg)
+		if role != "" {
+			platform.FocusField(role)
+		}
+	}
+	// Editing the field a message is about retires the message: it described the
+	// old text, and leaving it up beside a corrected box says the correction did
+	// not take.
+	retire := func(role string) {
+		if errField.Get() == role && errMsg.Get() != "" {
+			errField.Set("")
+			errMsg.Set("")
+		}
+	}
+
 	submit := func() {
 		if busy.Get() {
 			return
@@ -105,26 +132,39 @@ func Setup(p setupProps) ui.Node {
 		// a password manager as readily as login is: generating the password is
 		// the moment a manager is most likely to be driving the form.
 		u := strings.TrimSpace(fieldOr("setup-username", username.Get()))
-		em := strings.TrimSpace(fieldOr("setup-email", email.Get()))
 		pw := fieldOr("setup-password", password.Get())
 		cf := fieldOr("setup-confirm", confirm.Get())
 		username.Set(u)
-		email.Set(em)
 		password.Set(pw)
 		confirm.Set(cf)
+		// The server's rule, applied here first: the refusal then arrives with the
+		// press that caused it instead of after a hashing pause and a round trip,
+		// and it can say what an address looks like rather than echo a policy.
+		// internal/username is the one definition; this is not a second copy.
+		var userErr error
+		if u != "" {
+			userErr = usernamepolicy.Check(usernamepolicy.Normalise(u))
+		}
 		switch {
-		case u == "" || pw == "":
-			errMsg.Set(tr.T("setup", "errEmpty"))
+		case u == "":
+			fail("setup-username", tr.T("setup", "errUsernameEmpty"))
+			return
+		case userErr != nil:
+			fail("setup-username", usernameProblem(tr, userErr))
+			return
+		case pw == "":
+			fail("setup-password", tr.T("setup", "errPasswordEmpty"))
 			return
 		case pw != cf:
 			// Checked here rather than only at the server, because the server
 			// never sees the second field: a mismatch is a typing mistake, and
 			// the fastest place to catch one is where it was typed.
-			errMsg.Set(tr.T("setup", "errMismatch"))
+			fail("setup-confirm", tr.T("setup", "errMismatch"))
 			return
 		}
 		busy.Set(true)
 		errMsg.Set("")
+		errField.Set("")
 		go func() {
 			c := clientRef.Get()
 			if c == nil {
@@ -139,21 +179,30 @@ func Setup(p setupProps) ui.Node {
 				c = dialed
 				clientRef.Set(c)
 			}
-			res, err := c.Setup(context.Background(), u, em, pw)
+			// No second address: the username IS the address, and a box for it
+			// beside the username was one more place to type the same thing.
+			res, err := c.Setup(context.Background(), u, "", pw)
 			ui.PostAsync(func() {
 				busy.Set(false)
 				if err != nil {
-					errMsg.Set(setupMessage(tr, err))
-					password.Set("")
-					confirm.Set("")
-					// The seeds with them: the app is emptying these fields, so it
-					// is one of the moments a write to the box is safe, and
-					// leaving the seeds behind would let a later render restore
-					// what ClearField just removed.
-					passSeed.Set("")
-					confirmSeed.Set("")
-					platform.ClearField("setup-password")
-					platform.ClearField("setup-confirm")
+					role, msg := setupMessage(tr, err)
+					fail(role, msg)
+					// The passwords go only when the refusal is about THEM. It used
+					// to empty both on any refusal, so correcting one character of
+					// the username cost two twelve-character phrases — and a
+					// password manager's generated one is not something to retype.
+					if role == "setup-password" {
+						password.Set("")
+						confirm.Set("")
+						// The seeds with them: the app is emptying these fields, so it
+						// is one of the moments a write to the box is safe, and
+						// leaving the seeds behind would let a later render restore
+						// what ClearField just removed.
+						passSeed.Set("")
+						confirmSeed.Set("")
+						platform.ClearField("setup-password")
+						platform.ClearField("setup-confirm")
+					}
 					return
 				}
 				codes.Set(res.GetRecoveryCodes())
@@ -162,10 +211,9 @@ func Setup(p setupProps) ui.Node {
 		}()
 	}
 
-	onUser := ui.UseEvent(func(v string) { username.Set(v) })
-	onEmail := ui.UseEvent(func(v string) { email.Set(v) })
-	onPass := ui.UseEvent(func(v string) { password.Set(v) })
-	onConfirm := ui.UseEvent(func(v string) { confirm.Set(v) })
+	onUser := ui.UseEvent(func(v string) { username.Set(v); retire("setup-username") })
+	onPass := ui.UseEvent(func(v string) { password.Set(v); retire("setup-password") })
+	onConfirm := ui.UseEvent(func(v string) { confirm.Set(v); retire("setup-confirm") })
 	onSubmit := ui.UseEvent(func() { submit() })
 	onDone := ui.UseEvent(func() {
 		if c := clientRef.Get(); c != nil {
@@ -195,7 +243,7 @@ func Setup(p setupProps) ui.Node {
 			return
 		}
 		switch k.Role {
-		case "setup-username", "setup-email", "setup-password", "setup-confirm":
+		case "setup-username", "setup-password", "setup-confirm":
 			submit()
 		}
 	}
@@ -215,13 +263,19 @@ func Setup(p setupProps) ui.Node {
 			html.H1(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "mark"))),
 			html.P(html.Props{Class: "login-lede"}, html.Text(tr.T("setup", "lede"))),
 
-			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "username"), ID: "setup-username",
-				Control: html.Input(kitWire("setup-username", "", html.Props{
-					Class: "field login-input", Type: "text",
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "username"),
+				Hint: tr.T("setup", "usernameHint"), HintClass: "login-foot", ID: "setup-username",
+				Control: html.Input(kitWire("setup-username", tr.T("setup", "usernameHint"), html.Props{
+					// type=email for the on-screen keyboard (an @ without a hunt) and
+					// the browser's own idea of what goes here; the form never submits
+					// natively, so its constraint bubbles never fire over ours.
+					Class: "field login-input", Type: "email",
+					Placeholder: tr.T("setup", "usernamePlaceholder"),
 					// The seed, not the state: see the seeds' declaration.
 					Value:   userSeed.Get(),
 					OnInput: onUser,
 					Data:    map[string]string{"role": "setup-username"},
+					Aria:    faultAria(errField.Get(), "setup-username", "setup-error"),
 					// The login card's set, for the login card's reasons: a
 					// username is an identifier, so a phone capitalising its
 					// first letter or "correcting" it makes an account whose
@@ -236,23 +290,7 @@ func Setup(p setupProps) ui.Node {
 				})),
 			}),
 
-			// The note under the address is the field's description (kitWire
-			// points the input's describedby at it): it is the one fact about
-			// this address a reader needs before typing it. Said next to the
-			// field rather than in a policy nobody opens: this server has no
-			// mailer, so an address here is a label and not a way back in. The
-			// codes on the next screen are the way back in, and the two facts
-			// belong together.
-			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "email"),
-				Hint: tr.T("setup", "emailHint"), HintClass: "login-foot", ID: "setup-email",
-				Control: html.Input(kitWire("setup-email", tr.T("setup", "emailHint"), html.Props{
-					Class: "field login-input", Type: "email",
-					Value:   emailSeed.Get(),
-					OnInput: onEmail,
-					Data:    map[string]string{"role": "setup-email"},
-					Raw:     map[string]any{"autocomplete": "email", "enterkeyhint": "go"},
-				})),
-			}),
+			faultSlot(errField.Get(), "setup-username", "setup-error", errMsg.Get()),
 
 			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "password"),
 				Hint: tr.T("setup", "passwordHint"), HintClass: "login-foot", ID: "setup-password",
@@ -261,9 +299,12 @@ func Setup(p setupProps) ui.Node {
 					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "setup-password"},
+					Aria:    faultAria(errField.Get(), "setup-password", "setup-error"),
 					Raw:     map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
 				})),
 			}),
+
+			faultSlot(errField.Get(), "setup-password", "setup-error", errMsg.Get()),
 
 			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "confirm"), ID: "setup-confirm",
 				Control: html.Input(kitWire("setup-confirm", "", html.Props{
@@ -271,11 +312,18 @@ func Setup(p setupProps) ui.Node {
 					Value:   confirmSeed.Get(),
 					OnInput: onConfirm,
 					Data:    map[string]string{"role": "setup-confirm"},
+					Aria:    faultAria(errField.Get(), "setup-confirm", "setup-error"),
 					Raw:     map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
 				})),
 			}),
 
-			kitFieldError(kitFormCard, errMsg.Get()),
+			// Where the message goes: directly under the field it is about when there
+			// is one (faultSlot), and here — one slot, kept in the document while empty
+			// (errClass's reason) — when it is about the form as a whole, or about the
+			// confirmation box, which is the last one before this. The message names its
+			// field and that field points back at it (faultAria), so the sentence is read
+			// from the box it is about whichever place it was drawn.
+			setupFormSlot(errField.Get(), errMsg.Get()),
 
 			html.Button(html.Props{
 				Class:    "btn login-submit",
@@ -319,21 +367,24 @@ func setupCodes(tr i18n.Runtime, sheet []string, copied string, onCopy, onDone u
 
 			html.P(html.Props{Class: "login-foot"}, html.Text(tr.T("setup", "codesWarn"))),
 
-			html.Div(html.Props{Class: "set-actions"},
+			// The outcome sits BESIDE the button it answers. Under the main button it
+			// read as that button's result — somebody who pressed Copy looked at
+			// Copy for the answer and saw nothing change but a word. It is a polite
+			// status, always in the document and empty until Copy is pressed, so the
+			// outcome is announced when it arrives (errClass's reason).
+			html.Div(html.Props{Class: "set-actions setup-copyrow"},
 				html.Button(html.Props{
 					Class: "chip", Type: "button", OnClick: onCopy,
 					Data: map[string]string{"role": "setup-copy", "copied": copied},
 				}, html.Text(copyLabel)),
-				html.Button(html.Props{
-					Class: "btn login-submit", Type: "button", OnClick: onDone,
-					Data: map[string]string{"role": "setup-done"},
-				}, html.Text(tr.T("setup", "codesDone"))),
+				kitLive(kitLiveProps{Class: "login-foot setup-copy-note", Role: kitRoleStatus, Live: kitLivePolite,
+					Data: map[string]string{"bad": boolAttr(copied == copyFailed)}},
+					html.Text(note)),
 			),
-			// Always in the document, empty until Copy is pressed, so the
-			// outcome is announced when it arrives (errClass's reason).
-			kitLive(kitLiveProps{Class: "login-foot setup-copy-note", Role: kitRoleStatus, Paragraph: true,
-				Data: map[string]string{"bad": boolAttr(copied == copyFailed)}},
-				html.Text(note)),
+			html.Button(html.Props{
+				Class: "btn login-submit", Type: "button", OnClick: onDone,
+				Data: map[string]string{"role": "setup-done"},
+			}, html.Text(tr.T("setup", "codesDone"))),
 		),
 	)
 }
@@ -360,21 +411,78 @@ func setupSubmitLabel(tr i18n.Runtime, busy bool) string {
 // unexplained failure falls back, and it falls back to setup's own words rather
 // than to a sentence about signing in, which is not what anybody on this screen
 // is doing.
-func setupMessage(tr i18n.Runtime, err error) string {
+func setupMessage(tr i18n.Runtime, err error) (role, msg string) {
 	if err == nil {
-		return ""
+		return "", ""
 	}
 	st, ok := status.FromError(err)
 	if !ok {
-		return tr.T("setup", "errGeneric")
+		return "", tr.T("setup", "errGeneric")
 	}
 	switch st.Code() {
 	case codes.Unavailable, codes.DeadlineExceeded:
-		return tr.T("setup", "errUnreachable")
+		return "", tr.T("setup", "errUnreachable")
 	case codes.InvalidArgument, codes.FailedPrecondition,
 		codes.ResourceExhausted, codes.Unauthenticated, codes.AlreadyExists:
-		return serverText(tr, err)
+		// Which box the server was talking about is in the key it classified the
+		// refusal with, so the message can name it and the caret can go there.
+		switch serverKey(err) {
+		case "srv.badUsername", "srv.setupUsername", "srv.setupEmail":
+			return "setup-username", tr.T("setup", "errAt", i18n.Args{
+				"field": tr.T("setup", "atUsername"), "msg": serverText(tr, err)})
+		case "srv.weakPassword":
+			return "setup-password", tr.T("setup", "errAt", i18n.Args{
+				"field": tr.T("setup", "atPassword"), "msg": serverText(tr, err)})
+		}
+		return "", serverText(tr, err)
 	default:
-		return tr.T("setup", "errGeneric")
+		return "", tr.T("setup", "errGeneric")
 	}
+}
+
+// usernameProblem is what is wrong with a username, in words that say what to
+// type instead. The rule's own messages are for logs and the sync API; the
+// reader is told what an address looks like.
+func usernameProblem(tr i18n.Runtime, err error) string {
+	switch {
+	case errors.Is(err, usernamepolicy.ErrDisplayName):
+		return tr.T("setup", "errUsernameBare")
+	case errors.Is(err, usernamepolicy.ErrTooLong):
+		return tr.T("setup", "errUsernameLong")
+	default:
+		return tr.T("setup", "errUsernameMail")
+	}
+}
+
+// faultSlot draws a refusal directly under the field it is about, and nothing
+// anywhere else — the form-level slot (setupFormSlot) stands down while it is
+// here, so there is one element with the id and one live region speaking.
+//
+// A message under the button, three boxes from the one it names, was a sentence
+// the reader had to carry back up the card; under the box it is the box's own
+// caption, and the caret is already there.
+func faultSlot(fault, role, id, msg string) ui.Node {
+	if !kitHasWord(fault, role) || msg == "" {
+		return nil
+	}
+	return loginAlert(id, msg)
+}
+
+// setupFormSlot is the card's own slot: the one a refusal lands in when it is
+// about no field above, or about the last of them.
+func setupFormSlot(fault, msg string) ui.Node {
+	if kitHasWord(fault, "setup-username") || kitHasWord(fault, "setup-password") {
+		return loginAlert("", "")
+	}
+	return loginAlert("setup-error", msg)
+}
+
+// faultAria is what the field a message is about carries: it is invalid, and the
+// message is its description. Nothing for every other field — an aria-invalid on
+// a box that is fine tells a screen reader to go and look for a problem.
+func faultAria(fault, role, errID string) map[string]string {
+	if !kitHasWord(fault, role) {
+		return nil
+	}
+	return map[string]string{"invalid": "true", "describedby": errID}
 }

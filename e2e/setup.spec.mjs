@@ -101,12 +101,75 @@ test('an unclaimed server offers setup, not a password prompt', async ({ page })
   await expect(page.locator('[data-phase="login"]')).toHaveCount(0);
 });
 
+// The username IS an email address (internal/username), so the form has to say so
+// before the field is refused rather than after, and there is no second box for an
+// address — it would be the same string typed twice.
+test('setup says the username is an email address, and asks for no second one', async ({ page }) => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="setup"]', { timeout: 60_000 });
+
+  const user = page.locator('#setup-username');
+  await expect(page.getByLabel(/email address/i)).toBeVisible();
+  await expect(user).toHaveAttribute('type', 'email');
+  await expect(user).toHaveAttribute('autocomplete', 'username');
+  await expect(page.locator('#setup-email')).toHaveCount(0);
+  // The hint is the field's description, read when it takes focus.
+  await expect(user).toHaveAttribute('aria-describedby', /setup-username-hint/);
+});
+
+// The refusal arrives with the press, beside the field it is about, and nothing
+// the reader typed elsewhere is thrown away. It used to come back from the server
+// as a sentence under the button and empty both password fields.
+test('a username that is not an address is refused beside its field, and the passwords stay', async ({ page }) => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="setup"]', { timeout: 60_000 });
+
+  await page.fill('#setup-username', 'owner');
+  await page.fill('#setup-password', PASSWORD);
+  await page.fill('#setup-confirm', PASSWORD);
+  await page.click('.login-submit');
+
+  const err = page.locator('#setup-error');
+  await expect(err).toContainText(/email address/i);
+  await expect(page.locator('#setup-username')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#setup-username')).toHaveAttribute('aria-describedby', /setup-error/);
+  await expect(page.locator('#setup-password')).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#setup-username')).toBeFocused();
+  await expect(page.locator('#setup-password')).toHaveValue(PASSWORD);
+  await expect(page.locator('#setup-confirm')).toHaveValue(PASSWORD);
+
+  // Correcting the field retires the message that was about it.
+  await page.fill('#setup-username', 'owner@example.com');
+  await page.locator('#setup-username').press('x');
+  await expect(page.locator('#setup-username')).not.toHaveAttribute('aria-invalid', 'true');
+});
+
+test('a password the server refuses is named, cleared, and focused — and the username stays', async ({ page }) => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="setup"]', { timeout: 60_000 });
+
+  // Long enough to pass the client's checks and short of the server's policy: a
+  // straight run of the keyboard is refused by pwpolicy, which only the server runs.
+  const weak = 'qwertyuiopasdfgh';
+  await page.fill('#setup-username', 'owner@example.com');
+  await page.fill('#setup-password', weak);
+  await page.fill('#setup-confirm', weak);
+  await page.click('.login-submit');
+
+  await expect(page.locator('#setup-error')).toContainText(/password/i, { timeout: 30_000 });
+  await expect(page.locator('#setup-password')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#setup-username')).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#setup-password')).toBeFocused();
+  await expect(page.locator('#setup-username')).toHaveValue('owner@example.com');
+  await expect(page.locator('#setup-password')).toHaveValue('');
+  await expect(page.locator('#setup-confirm')).toHaveValue('');
+});
+
 test('setup creates the account, shows the codes once, and signs you in', async ({ page }) => {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-phase="setup"]', { timeout: 60_000 });
 
   await page.fill('#setup-username', 'cam@example.com');
-  await page.fill('#setup-email', 'cam@example.com');
   await page.fill('#setup-password', PASSWORD);
   await page.fill('#setup-confirm', PASSWORD);
   await page.click('.login-submit');
@@ -117,6 +180,14 @@ test('setup creates the account, shows the codes once, and signs you in', async 
   const codes = page.locator('.setup-code');
   await expect(codes.first()).toBeVisible();
   expect(await codes.count()).toBeGreaterThan(0);
+  // Read off a screen and typed back months later, so a monospace face: in the
+  // proportional one a 0 and an O were the same shape.
+  expect(await codes.first().evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/mono/i);
+
+  // The outcome of Copy sits beside Copy, and is a polite status.
+  const copyRow = page.locator('.setup-copyrow');
+  await expect(copyRow.locator('[data-role="setup-copy"]')).toBeVisible();
+  await expect(copyRow.locator('[role="status"]')).toHaveAttribute('aria-live', 'polite');
 
   await page.click('[data-role="setup-done"]');
   await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
@@ -169,6 +240,37 @@ test('the login screen offers a way in for somebody who cannot sign in', async (
   // is worse than no door: they arrived here from a password they mistyped.
   await page.locator('[data-role="recover-back"]').click();
   await expect(page.locator('#login-password')).toBeVisible({ timeout: 30_000 });
+});
+
+// The recovery card is the sign-in card answering a different question, so it
+// keeps what the reader already typed, asks for the new password twice as setup
+// does, and says which box a refusal is about.
+test('recovery keeps the typed username, asks twice, and names the refused box', async ({ page }) => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="login"]', { timeout: 60_000 });
+  // The loopback prefill is "cam"; a typed address must survive the switch.
+  await page.fill('#login-username', 'someone@example.com');
+  await page.locator('[data-role="login-recover"]').click();
+  await expect(page.locator('[data-phase="recover"]')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('#login-username')).toHaveValue('someone@example.com');
+
+  await page.fill('#recover-code', 'AAAA-BBBB-CCCC-DDDD');
+  await page.fill('#recover-password', 'a-brand-new-password-1');
+  await page.fill('#recover-confirm', 'a-different-password-2');
+  await page.locator('[data-role="recover-submit"]').click();
+  await expect(page.locator('#recover-error')).toContainText(/not the same/i);
+  await expect(page.locator('#recover-confirm')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#recover-confirm')).toBeFocused();
+
+  // A code the server refuses: the code box is the one named, emptied and focused,
+  // and the new password the reader chose is still there.
+  await page.fill('#recover-confirm', 'a-brand-new-password-1');
+  await page.locator('[data-role="recover-submit"]').click();
+  await expect(page.locator('#recover-error')).toContainText(/recovery code/i, { timeout: 30_000 });
+  await expect(page.locator('#recover-code')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#recover-code')).toHaveValue('');
+  await expect(page.locator('#recover-code')).toBeFocused();
+  await expect(page.locator('#recover-password')).toHaveValue('a-brand-new-password-1');
 });
 
 // signIn takes a fresh context from the address to the reader.

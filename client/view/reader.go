@@ -232,6 +232,9 @@ func Reader(p readerProps) ui.Node {
 	// moment you scroll.
 	stream := ui.UseState[[]*pb.Item](nil)
 	bodies := ui.UseState(map[string]*pb.Item{})
+	// bodyFailed is the articles whose body request failed with nothing cached to
+	// show — what turns their skeleton into a sentence. Copy-on-write, like bodies.
+	bodyFailed := ui.UseState(map[string]bool{})
 	current := ui.UseState[*pb.Item](nil)
 	extending := ui.UseState("")
 	// expanded is which long articles have been opened out past the clamp.
@@ -618,6 +621,16 @@ func Reader(p readerProps) ui.Node {
 	smartNotice := ui.UseState("")
 	smartErr := ui.UseState("")
 	smartLoading := ui.UseState(false)
+	// smartWrites counts the config answers that came back from a SAVE.
+	//
+	// A load and a save can be in flight together — the tab asks for the config
+	// as it opens, and nothing stops a reader pasting a key and pressing Save
+	// before that answer arrives. The load read the server BEFORE the save, so if
+	// it lands second it puts "no key" back on a screen that has just stored
+	// one: the Remove control vanishes and the tab says "Key not configured"
+	// until it is reopened. A load compares this number before and after its
+	// round trip and leaves the config alone if a save answered in between.
+	smartWrites := ui.UseRef(0)
 	// The interest profile (§18.2), fetched when its tab opens for stats' reason.
 	// Refetched after every steer rather than patched in place: a correction
 	// changes the derived picture — the factor mix most of all — and a screen that
@@ -656,6 +669,16 @@ func Reader(p readerProps) ui.Node {
 	// a reader who reloads loses the offer, which is the right trade for keeping
 	// no per-user scratch state on disk.
 	undoToken := ui.UseState("")
+	// backlogUndo is what the banner's Undo has to do BEYOND putting articles back
+	// when the batch came from saving a backlog window: "token|source|days", the
+	// window the feed had before. Keyed by the token it belongs to, so a later Mark
+	// all read — whose token differs — can never inherit it, and so nothing has to
+	// clear it where undoToken is cleared.
+	//
+	// The window goes back because Undo that left it set would be a lie: the
+	// articles would reappear as unread and the next sweep would mark them read
+	// again, which looks like Undo working for a minute and then being overruled.
+	backlogUndo := ui.UseState("")
 	// markAllArmed is Mark all read's confirm step: true between the first
 	// press (arms it) and either the second press (which marks and clears it)
 	// or a scope change (selectScopeWithUnread clears it too, alongside
@@ -895,6 +918,12 @@ func Reader(p readerProps) ui.Node {
 	unreadOnly := ui.UseState(prefBool(saved, "list.unreadOnly", false))
 	busy := ui.UseState("")
 	notice := ui.UseState("")
+	// noticeIsReceipt marks the notice line as holding a receipt for a bulk mark
+	// or its undo — "Marked 10 read", "Put 10 back as unread". Those are about the
+	// list that was on screen when they were said, so a change of scope or the
+	// start of a search withdraws them; the line is shared with messages that are
+	// not about a list (the outbox, going offline), and those are left alone.
+	noticeIsReceipt := ui.UseRef(false)
 	// Seeded from the scope that actually won rather than from the preference, so
 	// arriving at /search?q=rust puts "rust" in the box the reader is looking at.
 	searchText := ui.UseState(boot.sel.Search)
@@ -1873,6 +1902,25 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	// bodyFailedOn marks an article's body as unreachable, or clears it. Reached
+	// through the Ref by the goroutine that found out, for bodyLanded's reason: a
+	// write into a stale copy of the map drops every other entry.
+	act.Get().bodyFailedOn = func(id string, failed bool) {
+		cur := bodyFailed.Get()
+		if cur[id] == failed {
+			return
+		}
+		next := make(map[string]bool, len(cur)+1)
+		for k, v := range cur {
+			if k != id {
+				next[k] = v
+			}
+		}
+		if failed {
+			next[id] = true
+		}
+		bodyFailed.Set(next)
+	}
 	fetchBody := func(it *pb.Item) {
 		c := client.Get()
 		if c == nil || it == nil {
@@ -1890,6 +1938,8 @@ func Reader(p readerProps) ui.Node {
 			// next press of j.
 			full, _, err := c.GetItemCached(context.Background(), it.GetId())
 			if err != nil || full == nil {
+				id := it.GetId()
+				ui.PostAsync(func() { act.Get().bodyFailedOn(id, true) })
 				return
 			}
 			// Through the Ref: this merges into a map, and merging into a stale
@@ -2155,6 +2205,9 @@ func Reader(p readerProps) ui.Node {
 			markRead(it)
 		}
 	}
+
+	// Reached through the Ref by whatever answers later than the render that asked.
+	act.Get().openUnfocused = func(it *pb.Item) { openAt(it, false) }
 
 	// --- signals (§18.1) ------------------------------------------------------
 	//
@@ -2464,7 +2517,11 @@ func Reader(p readerProps) ui.Node {
 				addNewCat.Set("")
 				addNewOpen.Set(false)
 				addFolder.Set("")
-				if res.GetSourceExisted() {
+				if res.GetAlreadySubscribed() {
+					// Before SourceExisted, which is true here too: that one says the
+					// server holds the feed, this one says the READER does.
+					notice.Set(tr.T("addFeed", "alreadyFollowing", i18n.Args{"feed": res.GetFeed().GetTitle()}))
+				} else if res.GetSourceExisted() {
 					notice.Set(tr.T("reader", "addedFeedExisted", i18n.Args{"feed": res.GetFeed().GetTitle()}))
 				} else {
 					notice.Set(tr.T("reader", "addedFeed", i18n.Args{"feed": res.GetFeed().GetTitle()}))
@@ -2560,6 +2617,7 @@ func Reader(p readerProps) ui.Node {
 				// happened twice in this repository's own testing.
 				undoToken.Set(undo)
 				notice.Set(tr.T("reader", "markedRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
+				noticeIsReceipt.Set(true)
 				// Same trio subscribeURL uses (~line 1770): the categories rail
 				// derives its aggregate from `folders` as well as `feeds`. Applied
 				// directly from what was fetched above, in this same PostAsync,
@@ -2581,6 +2639,14 @@ func Reader(p readerProps) ui.Node {
 		}()
 	}
 
+	// dropReceipt withdraws the notice line when it is a receipt for the list the
+	// reader is leaving — see noticeIsReceipt.
+	dropReceipt := func() {
+		if noticeIsReceipt.Get() {
+			noticeIsReceipt.Set(false)
+			notice.Set("")
+		}
+	}
 	runSearch := func(q string) {
 		// Whatever brought us here — Enter, or the debounce below — wins the
 		// race with any still-pending debounced run: the search is happening
@@ -2589,6 +2655,13 @@ func Reader(p readerProps) ui.Node {
 		// Searched signal for one query).
 		if t := searchTimer.Get(); t != nil {
 			t.Stop()
+		}
+		// A search is a different list, so the offer to undo the last bulk mark and
+		// its receipt do not follow into it — they would sit above rows they say
+		// nothing about, as they did into a scope change before this.
+		if q != "" {
+			undoToken.Set("")
+			dropReceipt()
 		}
 		// A query is a term the reader VOLUNTEERED — no inference, no
 		// interpretation — which makes it the cheapest high-quality signal in
@@ -2711,6 +2784,7 @@ func Reader(p readerProps) ui.Node {
 		// The offer is about the list you were looking at. Carrying it to another
 		// feed would put an undo button next to something it does not undo.
 		undoToken.Set("")
+		dropReceipt()
 		// Same reasoning, for the same kind of reason: a confirm armed on THIS
 		// list must not survive to mark a different one read.
 		disarmMarkAll()
@@ -3058,6 +3132,16 @@ func Reader(p readerProps) ui.Node {
 			loadTags()
 			loadFolders()
 			loadItems(sel.Get(), unreadOnly.Get())
+			// Bodies that could not be had while the connection was gone: the
+			// reading stream is not replaced (the reader may be mid-article), but an
+			// article that says it cannot load should load now that it can. On the
+			// next frame, since this is an effect body and the set changes a value.
+			ui.PostAsync(func() {
+				bodyFailed.Set(nil)
+				for _, it := range stream.Get() {
+					fetchBody(it)
+				}
+			})
 		}
 		return nil
 	}, []any{reconnected.Get()})
@@ -3192,6 +3276,7 @@ func Reader(p readerProps) ui.Node {
 			}
 		}
 		bodies.Set(withEntry(bodies.Get(), full.GetId(), full))
+		act.Get().bodyFailedOn(full.GetId(), false)
 		// The saved note travels with the article, so the draft is seeded once —
 		// when the body lands, and never over the top of something the reader has
 		// since typed.
@@ -3953,6 +4038,7 @@ func Reader(p readerProps) ui.Node {
 	act.Get().openCategory = func(id string) {
 		for _, f := range folders.Get() {
 			if f.GetId() == id {
+				platform.RememberFocus("category")
 				catID.Set(id)
 				catDraft.Set(f.GetName())
 				catErr.Set("")
@@ -3963,6 +4049,7 @@ func Reader(p readerProps) ui.Node {
 		}
 	}
 	act.Get().closeCategory = func() {
+		platform.RestoreFocus("category")
 		catID.Set("")
 		catErr.Set("")
 		catConfirm.Set(false)
@@ -6005,6 +6092,8 @@ func Reader(p readerProps) ui.Node {
 		if c == nil || id == "" {
 			return
 		}
+		// What opened it is where focus goes back to — see platform.RememberFocus.
+		platform.RememberFocus("feedSettings")
 		fsOpen.Set(id)
 		// Move focus INTO the panel, or a keyboard reader who opened it is still
 		// standing in the rail: the gear keeps focus, Tab walks the sidebar behind
@@ -6033,6 +6122,7 @@ func Reader(p readerProps) ui.Node {
 		fsTitle.Set(res.GetTitle())
 	}
 	act.Get().closeFeedSettings = func() {
+		platform.RestoreFocus("feedSettings")
 		fsOpen.Set("")
 		// Unsubscribe's confirmation is about the feed this panel was showing.
 		if strings.HasPrefix(armed.Get(), armUnsubscribe) {
@@ -6046,8 +6136,15 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		fsSaving.Set(true)
+		// The window the feed had, read before the save replaces it: it is what an
+		// Undo of the clear this save may do has to restore.
+		prevDays := int32(-1)
+		if d := fsData.Get(); d != nil && d.GetSourceId() == req.GetSourceId() {
+			prevDays = d.GetClearBacklogDays()
+		}
 		go func() {
-			res, err := c.UpdateFeedSettings(context.Background(), req)
+			full, err := c.UpdateFeedSettingsCleared(context.Background(), req)
+			res := full.GetSettings()
 
 			// Same discipline as subscribeURL: fetched HERE, in this same
 			// goroutine, before the single PostAsync below — not via
@@ -6074,6 +6171,16 @@ func Reader(p readerProps) ui.Node {
 				if err == nil && req.ClearBacklogDays != nil && req.GetClearBacklogDays() > 0 {
 					loadItems(sel.Get(), unreadOnly.Get())
 				}
+				// The same receipt and the same Undo Mark all read gives: choosing a
+				// window turns a pile of unread articles into none with one click on
+				// a chip that sits under Mute's, and the reader had neither a count
+				// nor a way back. Only a save that marked something has a batch.
+				if n, token := full.GetBacklogCleared(), full.GetBacklogUndoToken(); err == nil && n > 0 && token != "" {
+					undoToken.Set(token)
+					backlogUndo.Set(token + "|" + req.GetSourceId() + "|" + strconv.Itoa(int(prevDays)))
+					notice.Set(tr.T("reader", "markedRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
+					noticeIsReceipt.Set(true)
+				}
 			})
 		}()
 	}
@@ -6086,6 +6193,7 @@ func Reader(p readerProps) ui.Node {
 		if t == nil {
 			return
 		}
+		platform.RememberFocus("tagSettings")
 		tsOpen.Set(id)
 		// See openFeedSettings: the panel has to take focus, or it cannot be
 		// reached from the keyboard at all.
@@ -6099,6 +6207,7 @@ func Reader(p readerProps) ui.Node {
 		tsLabel.Set(t.GetLabel())
 	}
 	act.Get().closeTagSettings = func() {
+		platform.RestoreFocus("tagSettings")
 		tsOpen.Set("")
 		tsLabel.Set("")
 	}
@@ -6467,32 +6576,68 @@ func Reader(p readerProps) ui.Node {
 		// press, forgotten the moment the reader leaves the tab that showed it.
 		myFeedConfirmDelete.Set("")
 		myFeedConfirmReset.Set("")
-		// The server tabs are the only ones with anything to fetch, and fetching
-		// on every tab click would re-query while someone flicks through.
-		switch settingsTab(id) {
-		case setServer, setActivity, setSpeed:
-			if serverStats.Get() == nil {
+	}
+	// The fetches a tab depends on, run by whichever way the tab came into force.
+	//
+	// Not called from settingsTabTo: a click is one of three routes (the others
+	// being Back/Forward and the address the page booted on), and a fetch hung on
+	// one of them is a tab that opens empty by the other two. The effect below
+	// watches the tab itself, so there is one place and nothing to forget.
+	act.Get().ensureSettingsData = func() {
+		if pane.Get() != viewSettings || client.Get() == nil {
+			return
+		}
+		// In flight counts as held: showSettings starts its own stats fetch, and a
+		// second one racing it would be the double query this guards against.
+		have := settingsHave{
+			stats:  serverStats.Get() != nil || statsLoading.Get(),
+			myFeed: myFeedProfile.Get() != nil || myFeedLoading.Get(),
+			smart:  smartCfg.Get() != nil || smartLoading.Get(),
+		}
+		for _, n := range settingsNeeds(settingsTab(setTab.Get()), have) {
+			switch n {
+			case needStats:
 				act.Get().loadStats()
-			}
-		case setMyFeed:
-			if myFeedProfile.Get() == nil {
+			case needMyFeed:
 				act.Get().loadMyFeed()
-			}
-		case setSmart:
-			if smartCfg.Get() == nil {
-				act.Get().loadSmart()
-			}
-		case setPodcast:
-			// For the server-key row, which is a fact about the deployment rather
-			// than a switch — see settingsPrereqs.
-			if smartCfg.Get() == nil {
+			case needSmart:
 				act.Get().loadSmart()
 			}
 		}
 	}
+	ui.UseEffect(func() func() {
+		// On the next frame, not in this effect. Every load starts with a
+		// Loading.Set(true), and a Set with a changed value made inside an effect
+		// body drops the effects of every fiber queued after it in the commit
+		// (TODO.md's last section; the same reason as Root's language fill) —
+		// here that would be the mount effects that open the stream, on exactly
+		// the boot this exists for.
+		ui.PostAsync(func() {
+			if a := act.Get(); a != nil && a.ensureSettingsData != nil {
+				a.ensureSettingsData()
+			}
+		})
+		return nil
+	}, []any{pane.Get() == viewSettings, setTab.Get(), client.Get() != nil})
 	act.Get().setLogLevel = func(level string) {
 		logLevel.Set(level)
 		act.Get().loadStats()
+	}
+
+	// disarmInline answers "no" to every confirmation that arms in place on a
+	// settings screen — sign out, a My Feed row's delete, a category's reset — in
+	// one place, so the next one added cannot be forgotten by Escape or by a click
+	// elsewhere. armableRemove's own (the Unsubscribe family) has its own role and
+	// its own refocus, and is not in this.
+	//
+	// Not while the sign-out is in flight: that question has been answered, and
+	// disarming it would only repaint the button as though it had not been.
+	act.Get().disarmInline = func() {
+		if !signOutBusy.Get() {
+			signOutArmed.Set(false)
+		}
+		myFeedConfirmDelete.Set("")
+		myFeedConfirmReset.Set("")
 	}
 
 	// --- signing out, on the Account tab --------------------------------------
@@ -6531,6 +6676,11 @@ func Reader(p readerProps) ui.Node {
 					signOutStranded.Set(true)
 					return
 				}
+				// Back to the base address first. The reload re-reads the address, so
+				// leaving it at /settings/account put a signed-out reader at the login
+				// screen with the path of a page they can no longer see — and signing
+				// back in landed them on it.
+				platform.ReplacePath(platform.BasePath())
 				platform.Reload()
 			})
 		}()
@@ -6930,6 +7080,7 @@ func Reader(p readerProps) ui.Node {
 		// Every fresh load offers the list first, whatever was chosen on a
 		// previous visit — the toggle is a per-viewing choice, not a saved one.
 		smartModelCustom.Set(false)
+		writesBefore := smartWrites.Get()
 		go func() {
 			cfg, cerr := c.SmartConfig(context.Background())
 			langs, lerr := c.SmartLanguages(context.Background())
@@ -6958,9 +7109,14 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, cerr))
 					return
 				}
-				smartCfg.Set(cfg)
-				smartModelDraft.Set(cfg.GetModel())
-				trConsent.Set(consentOf(cfg))
+				// Older than what is on screen — see smartWrites. The languages
+				// and the model list above and below are not the config and are
+				// still wanted.
+				if smartWrites.Get() == writesBefore {
+					smartCfg.Set(cfg)
+					smartModelDraft.Set(cfg.GetModel())
+					trConsent.Set(consentOf(cfg))
+				}
 				// A failed listing call is not a failed load: the picker's own
 				// fallback is the free-text field this replaces, and a member
 				// with no reason to expect a live list must not see an error
@@ -6993,6 +7149,7 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, err))
 					return
 				}
+				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
 				smartNotice.Set(tr.T("smart", "keySaved"))
 			})
@@ -7012,6 +7169,7 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, err))
 					return
 				}
+				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
 				trConsent.Set(consentOf(cfg))
 				smartNotice.Set(tr.T("smart", "keyRemoved"))
@@ -7039,6 +7197,7 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, err))
 					return
 				}
+				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
 				smartNotice.Set(done)
 			})
@@ -7136,6 +7295,7 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, err))
 					return
 				}
+				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
 			})
 		}()
@@ -7250,6 +7410,7 @@ func Reader(p readerProps) ui.Node {
 					smartErr.Set(serverText(tr, err))
 					return
 				}
+				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(res)
 				trConsent.Set(consentOf(res))
 				if res.GetTranslateArticlesEnabled() {
@@ -7415,9 +7576,17 @@ func Reader(p readerProps) ui.Node {
 		}
 		setLook(next)
 	}
-	act.Get().motionSystem = func() {
+	// The Appearance row's three-way control. The value is checked rather than
+	// trusted: it arrives from a data attribute, and anything else would be stored
+	// as a preference no reader of it understands.
+	act.Get().setMotion = func(mode string) {
+		switch mode {
+		case design.MotionFull, design.MotionReduced, design.MotionSystem:
+		default:
+			return
+		}
 		next := look.Get()
-		next.Motion = design.MotionSystem
+		next.Motion = mode
 		setLook(next)
 	}
 
@@ -7591,8 +7760,22 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		undoToken.Set("")
+		// Read here, with the token, rather than inside the goroutine: it answers
+		// the press that is happening now, not whatever is on screen a round trip
+		// later.
+		backlogSource, backlogDays, isBacklog := backlogUndoFor(backlogUndo.Get(), token)
 		go func() {
 			n, err := c.UndoMarkAllRead(context.Background(), token)
+			// A clear saved from a feed's settings also moved that feed's window, and
+			// Undo puts that back — AFTER the articles, so the window's own re-apply
+			// (which is how a saved window works) runs over a pile that is already
+			// restored rather than racing it. Best effort: the articles are back
+			// whether or not this lands, and the panel shows whatever the server says.
+			var window *pb.FeedSettings
+			if err == nil && isBacklog {
+				window, _ = c.UpdateFeedSettings(context.Background(),
+					&pb.UpdateFeedSettingsRequest{SourceId: backlogSource, ClearBacklogDays: &backlogDays})
+			}
 
 			// Same discipline as markAllRead itself (this is its undo
 			// counterpart): the sidebar counts are fetched HERE, in this same
@@ -7611,7 +7794,13 @@ func Reader(p readerProps) ui.Node {
 					return
 				}
 				notice.Set(tr.T("reader", "undoneRead", i18n.CountWith(int(n), i18n.Args{"count": thousands(tr, int(n))})))
+				noticeIsReceipt.Set(true)
 				applyRailNumbers(nums)
+				// The panel, if it is still on this feed, so its pressed window is the
+				// one now stored and not the one the undo just reverted.
+				if window != nil && fsOpen.Get() == backlogSource {
+					act.Get().feedSettingsLanded(window, nil)
+				}
 				// The categories, for the reason markAllRead refetches them:
 				// this handler bypasses loadFeeds() by design, so the counts
 				// hook inside it never runs. An undo that restored the backlog
@@ -7711,6 +7900,11 @@ func Reader(p readerProps) ui.Node {
 
 	act.Get().toggleHelp = func() {
 		next := !helpOpen.Get()
+		if next {
+			platform.RememberFocus("help")
+		} else {
+			platform.RestoreFocus("help")
+		}
 		helpOpen.Set(next)
 		// Into the dialog it opened, for openFeedSettings' reason: a sheet that
 		// leaves focus behind it is a modal a keyboard reader tabs underneath.
@@ -7718,10 +7912,14 @@ func Reader(p readerProps) ui.Node {
 			platform.FocusField(roleHelpClose)
 		}
 	}
-	act.Get().closeHelp = func() { helpOpen.Set(false) }
+	act.Get().closeHelp = func() {
+		helpOpen.Set(false)
+		platform.RestoreFocus("help")
+	}
 
 	// The palette.
 	act.Get().openPalette = func() {
+		platform.RememberFocus("palette")
 		paletteQuery.Set("")
 		paletteActive.Set(0)
 		paletteOpen.Set(true)
@@ -7730,6 +7928,7 @@ func Reader(p readerProps) ui.Node {
 		platform.FocusField("palette")
 	}
 	act.Get().closePalette = func() {
+		platform.RestoreFocus("palette")
 		paletteOpen.Set(false)
 		paletteQuery.Set("")
 	}
@@ -8321,7 +8520,7 @@ func Reader(p readerProps) ui.Node {
 	// Unconditionally and in this fixed position, like delegatedClicks and the
 	// address bar above: wire() installs hooks, and GWC matches hooks positionally.
 	readerListeners{
-		act: act, tracker: tracker, openAt: openAt,
+		act: act, tracker: tracker, openAt: openAt, client: client, sel: sel,
 		current: current, stream: stream, items: items, itemsLoading: itemsLoading,
 		resumeItem: resumeItem, speakID: speakID, speakVisible: speakVisible,
 		scrollTop: scrollTop, viewport: viewport, loadingMore: loadingMore,
@@ -8740,13 +8939,15 @@ func Reader(p readerProps) ui.Node {
 			// equal, freezing the list at whatever it first rendered. The list is
 			// the thing that changes; memoizing it is all cost and no benefit.
 			listPane(tr, listProps{
-				items:       items.Get(),
-				sel:         sel.Get(),
-				current:     current.Get(),
-				unreadOnly:  unreadOnly.Get(),
-				connected:   client.Get() != nil,
-				feeds:       len(feeds.Get()),
-				feedsKnown:  !feedsLoading.Get(),
+				items:      items.Get(),
+				sel:        sel.Get(),
+				current:    current.Get(),
+				unreadOnly: unreadOnly.Get(),
+				connected:  client.Get() != nil,
+				feeds:      len(feeds.Get()),
+				feedsKnown: !feedsLoading.Get(),
+				missing: sel.Get().Search == "" &&
+					scopeMissing(sel.Get(), !feedsLoading.Get(), feeds.Get(), tags.Get(), folders.Get()),
 				hasMore:     nextCursor.Get() != "",
 				loadingMore: loadingMore.Get(),
 				loading:     itemsLoading.Get(),
@@ -8948,13 +9149,14 @@ func Reader(p readerProps) ui.Node {
 			// mutated in place would freeze the pane — the listProps failure above
 			// — which is why nothing here may be.
 			ui.CreateElement(articleView, articleProps{
-				focus:     focusMode.Get(),
-				stream:    stream.Get(),
-				bodies:    bodies.Get(),
-				currentID: currentID(current.Get()),
-				notes:     noteDrafts.Get(),
-				sync:      noteSync.Get(),
-				tags:      tagDrafts.Get(),
+				focus:      focusMode.Get(),
+				stream:     stream.Get(),
+				bodies:     bodies.Get(),
+				bodyFailed: bodyFailed.Get(),
+				currentID:  currentID(current.Get()),
+				notes:      noteDrafts.Get(),
+				sync:       noteSync.Get(),
+				tags:       tagDrafts.Get(),
 				// The tags already on each feed, so the article can show what it
 				// is filed under and take one off. Derived from the association
 				// map the sidebar already holds — the alternative is a round trip
@@ -8976,6 +9178,8 @@ func Reader(p readerProps) ui.Node {
 				loadingBelow: loadingMore.Get() && extending.Get() == "down",
 				atStart:      streamAtStart(items.Get(), stream.Get()),
 				atEnd:        streamAtEnd(items.Get(), stream.Get(), nextCursor.Get()),
+				listFirst:    listFirstID(items.Get()),
+				listLast:     listLastID(items.Get(), nextCursor.Get()),
 				expanded:     expanded.Get(),
 				pageOpen:     pageOpen.Get(),
 				pageLive:     pageLive.Get(),

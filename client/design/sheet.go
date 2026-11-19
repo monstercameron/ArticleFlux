@@ -342,9 +342,12 @@ func rail(r func(string, string) css.Rule) {
 	css.Global(".rail-head > .rail-band", r("padding-top", "4px"))
 
 	// One line: the wordmark and the count share a baseline, and the count is
-	// the only part that ever changes.
+	// the only part that ever changes. It wraps under the wordmark rather than
+	// being cut off when the rail is too narrow for both: at the rail's own width
+	// the wordmark leaves about 70px, and "8 feeds · 268 unread" is the one thing
+	// this line exists to say, so an ellipsis through it is the line failing.
 	css.Global(".masthead",
-		css.Display.Flex, css.Items.Baseline, css.Gap(css.Px(9)),
+		css.Display.Flex, css.FlexWrap.Wrap, css.Items.Baseline, r("gap", "3px 9px"),
 		r("padding", "2px 8px 14px"),
 	)
 	css.Global(".masthead-mark", ruleSet(displayTitle,
@@ -784,7 +787,19 @@ func list(r func(string, string) css.Rule) {
 		// short and becomes meaningless when clipped — a reason truncated to "fr…"
 		// tells the reader nothing at all, which is what happened before this had an
 		// explicit shrink and the flex line divided the loss evenly.
-		r("flex", "0 1 auto"), css.MinWidth(css.Ch(3)),
+		r("flex", "0 1000 auto"), css.MinWidth(css.Ch(3)),
+	)
+	// The reading time is what gives way SECOND, and it gives way with an
+	// ellipsis. The source name goes first, down to its three characters, because
+	// it is still identifiable from its mark; but a row that also carried a STALE
+	// mark ran out of room with the source already at that floor and the line was
+	// cut by the box — "1 m", "2 mi", a read time that said nothing and did not
+	// say it had been cut. The source's shrink factor is a thousand times anyone's, so
+	// nothing comes out of this until the source has nothing left to give (a
+	// factor below 1 would not do it: alone, it is scaled down by itself).
+	css.Global(".item-read",
+		r("flex", "0 1 auto"), css.MinWidth(css.Zero),
+		css.Overflow.Hidden, r("text-overflow", "ellipsis"),
 	)
 	css.Global(".item-source:hover", r("text-decoration", "underline"))
 	// A 3px dot at half opacity as the field separator. A middot sits on the
@@ -930,6 +945,24 @@ func reader(r func(string, string) css.Rule) {
 		r("font-size", "12.5px"), css.Font(css.VarFontStack("rd")),
 		css.FontStyle.Italic,
 	)
+	// The true end of a stream is as tall as the pane, and the empty space is
+	// doing a job.
+	//
+	// "Which article is being read" is whichever one is at the top of the pane.
+	// The last article of a stream, if it is shorter than the pane, cannot get
+	// there: the scroll runs out first. So opening it — a click on the last row
+	// of a short feed, or a link straight to it — left the article ABOVE it at
+	// the top, and a second later that one was the article being read: the
+	// title changed, the list highlight moved, the address was rewritten to an
+	// article the reader had not asked for, and a reload opened that one
+	// instead. With a pane's height below it, any article can reach the top.
+	//
+	// Only on `is-end`, not on every edge: the other two mean more is coming,
+	// and a screen of nothing below the last loaded article would put the
+	// "load more" threshold a screen further away than the reader's thumb.
+	// 100dvh rather than 100%, which a scroller's child cannot resolve; on a
+	// phone that is the tab bar's height more than is needed, which is harmless.
+	css.Global(".stream-edge.is-end", r("min-height", "100dvh"))
 
 	// Generous padding and a radial wash in the source hue, clipped. The gradient
 	// is an ::after at 24% mix rather than a background on the pane, so it can
@@ -1014,14 +1047,33 @@ func reader(r func(string, string) css.Rule) {
 	// scroll frame of the one surface here that is scrolled all day. The six
 	// pixels it grows by on each side are taken back by the margin, so the
 	// chips sit exactly where they did.
+	//
+	// Pinned at the very top of the pane, with the gap the chips want ABOVE them
+	// made of the bar's own padding. At `top: 8px` the eight pixels over the bar
+	// belonged to nobody, and half-cut lines of body text, headings and "Read the
+	// rest" scrolled through them in plain view — worst in Daylight and on
+	// phones, where the ground is the lightest thing on the screen. The padding
+	// is 14px so the chips sit where they did and still line up with the focus
+	// toggle, which is 34px tall at 14px from the top; the margin gives back the
+	// eight it added, so the row has not moved at rest. Rounded only below, since
+	// the top edge IS the pane's.
 	css.Global(".article > .article-actions",
 		css.Display.Flex, css.FlexWrap.Wrap, css.Gap(css.Px(9)), css.Items.Center,
-		css.Position.Sticky, css.Top(css.Px(8)), css.ZIndex(5),
-		r("margin", "18px -6px 0"), r("padding", "6px"),
-		css.Rounded(css.Px(14)),
+		css.Position.Sticky, css.Top(css.Zero), css.ZIndex(5),
+		r("margin", "10px -6px 0"), r("padding", "14px 6px 6px"),
+		r("border-radius", "0 0 14px 14px"),
 		r("background", "var(--bg)"),
 	)
-	css.Global(".article-facts:not(:empty) + .article-actions", r("margin-top", "6px"))
+	// The step chips carry the release ring (motion.go), which rests at 1.9x and
+	// transparent — and a transformed box counts towards its ancestors'
+	// scrollable overflow even when it is invisible, so the bar's content ran 8px
+	// past its own box. Harmless where the bar does not scroll; on a phone, where
+	// it scrolls sideways, it made the row scroll up and down as well. Resting at
+	// 1.25x overhangs by 4px (5px on a touch screen, where the chips are 40), inside
+	// the bar's 6px of bottom padding; the pulse is a little smaller and nothing
+	// else about it changes.
+	css.Global(".article-step .chip-icon:not(:active)::after", r("transform", "scale(1.25)"))
+	css.Global(".article-facts:not(:empty) + .article-actions", r("margin-top", "-2px"))
 	// Previous and Next, at the end of the row whatever else is in it.
 	css.Global(".article-step",
 		css.Display.Flex, css.Gap(css.Px(4)), r("flex", "none"),
@@ -1031,10 +1083,46 @@ func reader(r func(string, string) css.Rule) {
 	// is the other way. The same sign the filmstrip reads.
 	css.Global(".article-step .gl",
 		css.Display.InlineBlock, r("transform", "scaleX(var(--dirx, 1))"))
+	// Two 32px circles four pixels apart are two targets a fingertip cannot tell
+	// apart, and Next is the one that matters most. 40 is the smallest the rest
+	// of the app gives a touch target (.field).
+	css.Global(".article-step .chip-icon", css.Media(css.RawMedia("(pointer: coarse)"),
+		css.W(css.Px(40)), css.H(css.Px(40)))...)
 	css.Global(".article-byline",
 		css.Font(css.VarFontStack("rd")), css.FontStyle.Italic,
 		css.TextColor(css.Var("soft")), css.FontSize(css.Px(13)),
 		r("flex", "1 1 100%"), css.MinWidth(css.Zero),
+	)
+
+	// Feed-authored text takes its direction from its own letters, not from the
+	// interface. The root carries dir=rtl in Arabic, Hebrew and the rest, and
+	// everything under it inherited that — so an English headline was laid out
+	// right to left ("million web servers on one VM - 15 smoltcp"), a read-time
+	// became "min read 5", summaries truncated at the START and whole English
+	// articles sat against the wrong edge. What the interface says (chrome, labels)
+	// stays mirrored; what a publisher wrote is its own paragraph.
+	//
+	// `plaintext` rather than a dir attribute: it needs no markup, so the memoised
+	// row and the article snapshots do not change, and a translated body that
+	// carries its own lang/dir (article.go's langAttrs) is unaffected — it resolves
+	// to the same direction from its own letters. `start` after it, because the
+	// text-align the interface set (right, in a right-to-left one) belongs to the
+	// interface's direction.
+	css.Global(".item-title, .item-summary, .item-source, .feed-name, "+
+		".article h1, .article-byline, .article-body, "+
+		".article-body :is(p, li, h2, h3, h4, blockquote, td, th, dd, dt, figcaption, pre)",
+		r("unicode-bidi", "plaintext"), r("text-align", "start"),
+	)
+	// The same for the short interface strings that are numbers and English in a
+	// right-to-left interface — "4 min read", "Newest first." — which exist in
+	// English until a language is translated and which the root's direction turns
+	// inside out ("min read 4", ".Newest first"). plaintext reads the direction off
+	// the words, so a translated string in the interface's own script is unchanged;
+	// no text-align here, because a centred or end-aligned line belongs to the
+	// layout.
+	css.Global(".item-read, .item-meta > *, .list-sub, .masthead-sub, .article-eyebrow > *, "+
+		".article-facts > *, .empty strong, .empty p, .list-more",
+		r("unicode-bidi", "plaintext"),
 	)
 
 	// The reading column: 18px Literata at 1.76, capped at 66ch, with the first
@@ -2907,6 +2995,10 @@ func mobile(r func(string, string) css.Rule) {
 		css.Items.Start, css.Gap(css.Px(1)),
 		r("padding", "5px 11px"), css.LineHeight(css.Num(1.25)),
 	)
+	// The grid fills from the start: .fs-choices right-aligns its chips for a row
+	// beside a label, and thirteen chips wrapped that way left holes at the start
+	// of every line.
+	css.Global(".fs-choices.lang-grid", css.Justify.Start)
 	css.Global(".lang-hint",
 		css.FontSize(css.Px(10)), css.TextColor(css.Var("mute")),
 		r("letter-spacing", ".04em"), css.TextTransform.Uppercase,
@@ -3019,6 +3111,21 @@ func responsive(r func(string, string) css.Rule) {
 	css.Global(".article-body", css.Media(css.MaxW(900), css.FontSize(css.Px(17)))...)
 	css.Global(".article-note", css.Media(css.MaxW(900), r("margin", "0 18px 40px"))...)
 	css.Global(".list-head", css.Media(css.MaxW(900), r("padding", "20px 16px 14px"))...)
+	// The list's chip row is one row that scrolls sideways on a phone, as the
+	// article's action bar is, and for the same reason: wrapped, the four chips
+	// were three lines and the head took 319px of a 640px screen — with the tab bar
+	// under it, two articles were visible. One row is a swipe to the rest, and the
+	// head is no longer the thing the list scrolls under. The head itself stays
+	// where it is; only the row inside it scrolls.
+	css.Global(".list-tools", css.Media(css.MaxW(900),
+		css.FlexWrap.NoWrap, r("overflow-x", "auto"), r("scrollbar-width", "none"),
+	)...)
+	css.Global(".list-tools::-webkit-scrollbar", css.Media(css.MaxW(900), css.Display.None)...)
+	css.Global(".list-tools > *", css.Media(css.MaxW(900), r("flex", "none"))...)
+	// And less air above and below it on the smallest screens, where every
+	// 10px is a tenth of a row.
+	css.Global(".list-head", css.Media(css.MaxW(420), r("padding", "14px 16px 10px"))...)
+	css.Global(".list-corner", css.Media(css.MaxW(420), css.Top(css.Px(14)))...)
 	css.Global(".item-row", css.Media(css.MaxW(900), r("padding", "16px 16px"))...)
 
 	// The back buttons exist only where one pane can hide another — and the two
@@ -3217,6 +3324,19 @@ func loginCSS(r func(string, string) css.Rule) {
 	// The recovery sheet's Copy outcome. A failure is the instruction the
 	// reader now has to follow, so it is not set in the muted footnote grey.
 	css.Global(".setup-copy-note[data-bad='true']", css.TextColor(css.Var("neg")))
+	// The sheet is read off a screen and typed back in months later, so each code
+	// is set in a monospace face with a slashed zero and no ligatures: in the
+	// proportional face a 0 and an O, or a 1 and an I, were the same shape, and a
+	// code that cannot be told apart is a lockout. The Copy outcome sits beside the
+	// button it answers instead of under the main one, where it read as that
+	// button's result.
+	css.Global(".setup-code",
+		r("font-family", "ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace"),
+		r("font-variant-ligatures", "none"), r("font-feature-settings", "'zero' 1"),
+		r("letter-spacing", ".04em"),
+	)
+	css.Global(".setup-copyrow", css.Gap(css.Px(12)), r("flex-wrap", "wrap"), r("padding", "14px 0 16px"))
+	css.Global(".setup-copyrow .setup-copy-note", css.Margin(css.Zero), r("flex", "1 1 12rem"))
 	// Printing the recovery sheet: the codes and the sentences about them, in
 	// ink, without the buttons that cannot be pressed on paper — for the
 	// browser's own Print, which the sheet's copy-failed line suggests.

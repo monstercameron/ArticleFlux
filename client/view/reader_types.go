@@ -346,8 +346,14 @@ type actions struct {
 	patchTag         func(req *pb.UpdateTagRequest)
 
 	// The settings surface.
-	showSettings   func()
-	settingsTabTo  func(id string)
+	showSettings  func()
+	settingsTabTo func(id string)
+	// ensureSettingsData fetches what the tab in force needs and does not hold.
+	ensureSettingsData func()
+	// openUnfocused is Reader's openAt(it, false) for the newest render.
+	openUnfocused func(it *pb.Item)
+	// disarmInline answers no to every confirmation that arms in place.
+	disarmInline   func()
 	loadStats      func()
 	setLogLevel    func(level string)
 	toggleMarkPast func()
@@ -472,7 +478,9 @@ type actions struct {
 	setAccent    func(name string)
 	setReading   func(name string)
 	toggleMotion func()
-	motionSystem func()
+	// setMotion stores one of the three motion preferences (design.MotionFull,
+	// MotionReduced, MotionSystem) — the Appearance row's segmented control.
+	setMotion func(mode string)
 
 	// Theming (§20.16.3). composeTheme spends; the other four do not.
 	//
@@ -588,6 +596,8 @@ type actions struct {
 	pageLanded         func(res *pb.ListItemsResponse, err error)
 	feedSettingsLanded func(res *pb.FeedSettings, err error)
 	bodyLanded         func(full *pb.Item)
+	// bodyFailedOn marks an article body unreachable, or clears the mark.
+	bodyFailedOn func(id string, failed bool)
 }
 
 // Reader is the whole application.

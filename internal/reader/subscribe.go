@@ -124,6 +124,14 @@ func (s *Service) AnalyzeSite(ctx context.Context, sc store.Scope, rawURL string
 	}
 	if !useSmart {
 		out.Status = StatusNotAsked
+		// "Not asked" tells the dialog it may OFFER Smart+ follow, so it has to be
+		// true that it could. On an instance with no key the offer was a dead end:
+		// the reader turned the lamp on, added the address again, and only then
+		// learned there was nothing to spend. Said now, it is the one sentence that
+		// is true.
+		if s.analyzer == nil || !s.analyzer.Configured(ctx) {
+			out.Status = StatusNoKey
+		}
 		return out, nil
 	}
 	if s.analyzer == nil || !s.analyzer.Configured(ctx) {

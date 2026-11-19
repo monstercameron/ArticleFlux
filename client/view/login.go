@@ -110,6 +110,12 @@ func Login(p loginProps) ui.Node {
 	// from the reader's side they are the same event: "it is working on it".
 	busy := ui.UseState(false)
 	errMsg := ui.UseState("")
+	// The data-roles the message is about (space-separated), or "" when it is
+	// nobody's — a lockout, an unreachable server. It is what wires the message to
+	// the boxes it names (aria-invalid, aria-describedby) and decides where the
+	// caret goes; a sentence under the button is otherwise a puzzle about which of
+	// the boxes it meant.
+	errField := ui.UseState("")
 	// The client is dialled lazily on the first submit rather than on mount.
 	// Opening a WebSocket for a screen someone may never submit is a connection
 	// the server holds open for nothing, and this page is also what an
@@ -139,6 +145,12 @@ func Login(p loginProps) ui.Node {
 	newPass := ui.UseState("")
 	codeSeed := ui.UseState(p.resetToken)
 	newPassSeed := ui.UseState("")
+	// The new password a second time, as setup asks. A recovery sets the one
+	// credential that every later sign-in must match, on a screen reached while
+	// locked out; one mistyped character here is a second lockout with no code
+	// left to get out of it.
+	confirmPass := ui.UseState("")
+	confirmSeed := ui.UseState("")
 	// notice is the "3 codes left" line, and it is deliberately not errMsg: it
 	// is shown on SUCCESS, styled as information, and reusing the error slot for
 	// it would tell a reader who just recovered their account that something
@@ -179,6 +191,24 @@ func Login(p loginProps) ui.Node {
 		return nil
 	}, []any{})
 
+	// fail puts a message beside the field it is about and moves the caret there.
+	fail := func(roles, msg string) {
+		errField.Set(roles)
+		errMsg.Set(msg)
+		if first, _, _ := strings.Cut(roles, " "); first != "" {
+			platform.FocusField(first)
+		}
+	}
+	// Editing a field a message is about retires the message: it described the old
+	// text, and leaving it up beside a corrected box says the correction did not
+	// take.
+	retire := func(role string) {
+		if kitHasWord(errField.Get(), role) && errMsg.Get() != "" {
+			errField.Set("")
+			errMsg.Set("")
+		}
+	}
+
 	submit := func() {
 		if busy.Get() {
 			return
@@ -191,12 +221,17 @@ func Login(p loginProps) ui.Node {
 		// disagreeing with the screen about what was just sent.
 		username.Set(u)
 		password.Set(pw)
-		if u == "" || pw == "" {
-			errMsg.Set(tr.T("login", "errEmpty"))
+		switch {
+		case u == "":
+			fail("login-username", tr.T("login", "errNoUsername"))
+			return
+		case pw == "":
+			fail("login-password", tr.T("login", "errNoPassword"))
 			return
 		}
 		busy.Set(true)
 		errMsg.Set("")
+		errField.Set("")
 
 		go func() {
 			c := clientRef.Get()
@@ -225,7 +260,16 @@ func Login(p loginProps) ui.Node {
 					// credential and specific for everything else (rate limiting,
 					// the ambiguous-tenant case), so it is shown as given rather
 					// than replaced with a guess about which one this was.
-					errMsg.Set(loginMessage(tr, err))
+					msg := loginMessage(tr, err)
+					// A wrong pair names both boxes, because the server will not say
+					// which was wrong; a lockout names neither, since nothing in
+					// either box is what is refused.
+					fault := ""
+					if serverKey(err) == "srv.badCredentials" {
+						fault = "login-username login-password"
+					}
+					errField.Set(fault)
+					errMsg.Set(msg)
 					// The password is cleared and the username is not. Retyping a
 					// username you got right is the small daily insult that makes
 					// a login screen feel hostile.
@@ -258,13 +302,15 @@ func Login(p loginProps) ui.Node {
 		}
 		secretIn := fieldOr("recover-code", code.Get())
 		pw := fieldOr("recover-password", newPass.Get())
+		cf := fieldOr("recover-confirm", confirmPass.Get())
 		u := fieldOr("login-username", username.Get())
 		code.Set(secretIn)
 		newPass.Set(pw)
+		confirmPass.Set(cf)
 		username.Set(u)
 
-		if secretIn == "" || pw == "" {
-			errMsg.Set(tr.T("login", "errRecoverEmpty"))
+		if secretIn == "" {
+			fail("recover-code", tr.T("login", "errRecoverNoCode"))
 			return
 		}
 		// Which credential this is decides which RPC answers it. The shape rules
@@ -284,13 +330,22 @@ func Login(p loginProps) ui.Node {
 			// Only the code path needs a username: a reset token names its own
 			// account. Saying which field is missing beats "fill in the form" on
 			// a screen with three of them.
-			errMsg.Set(tr.T("login", "errRecoverNoUser"))
-			platform.FocusField("login-username")
+			fail("login-username", tr.T("login", "errRecoverNoUser"))
+			return
+		}
+		switch {
+		case pw == "":
+			fail("recover-password", tr.T("login", "errRecoverNoPassword"))
+			return
+		case pw != cf:
+			// The same check, and the same words, as setup's — see confirmPass.
+			fail("recover-confirm", tr.T("setup", "errMismatch"))
 			return
 		}
 
 		busy.Set(true)
 		errMsg.Set("")
+		errField.Set("")
 		notice.Set("")
 
 		go func() {
@@ -328,15 +383,36 @@ func Login(p loginProps) ui.Node {
 			ui.PostAsync(func() {
 				busy.Set(false)
 				if err != nil {
-					errMsg.Set(loginMessage(tr, err))
-					// The code is cleared and the username is not, mirroring what
-					// a failed login does with the password: a code that was
-					// refused is one to re-read off the sheet, and leaving the
-					// wrong one in the box invites submitting it again.
-					code.Set("")
-					codeSeed.Set("")
-					platform.ClearField("recover-code")
-					platform.FocusField("recover-code")
+					msg := loginMessage(tr, err)
+					switch serverKey(err) {
+					case "srv.weakPassword":
+						// The refusal is about the NEW password, so that is what is
+						// emptied — both boxes, since a mismatch with a ghost of the
+						// first would be the next error — and the code is kept: it was
+						// accepted, and re-reading one off the sheet is the cost of a
+						// refusal that was not about it.
+						fail("recover-password", msg)
+						newPass.Set("")
+						newPassSeed.Set("")
+						confirmPass.Set("")
+						confirmSeed.Set("")
+						platform.ClearField("recover-password")
+						platform.ClearField("recover-confirm")
+					case "srv.badRecovery", "srv.resetTokenInvalid":
+						// The code is cleared and the username is not, mirroring what
+						// a failed login does with the password: a code that was
+						// refused is one to re-read off the sheet, and leaving the
+						// wrong one in the box invites submitting it again.
+						fail("recover-code", msg)
+						code.Set("")
+						codeSeed.Set("")
+						platform.ClearField("recover-code")
+					default:
+						// A lockout or an unreachable server: nothing typed was
+						// refused, so nothing typed is thrown away.
+						errField.Set("")
+						errMsg.Set(msg)
+					}
 					return
 				}
 				// Told BEFORE the reader is handed to the app, and the handover
@@ -376,23 +452,40 @@ func Login(p loginProps) ui.Node {
 	//
 	// That applies to the recovery handlers too, which is why they are created
 	// unconditionally here rather than inside the branch that renders them.
-	onUser := ui.UseEvent(func(v string) { username.Set(v) })
-	onPass := ui.UseEvent(func(v string) { password.Set(v) })
+	onUser := ui.UseEvent(func(v string) { username.Set(v); retire("login-username") })
+	onPass := ui.UseEvent(func(v string) { password.Set(v); retire("login-password") })
 	onSubmit := ui.UseEvent(func() { submit() })
-	onCode := ui.UseEvent(func(v string) { code.Set(v) })
-	onNewPass := ui.UseEvent(func(v string) { newPass.Set(v) })
+	onCode := ui.UseEvent(func(v string) { code.Set(v); retire("recover-code") })
+	onNewPass := ui.UseEvent(func(v string) { newPass.Set(v); retire("recover-password") })
+	onConfirm := ui.UseEvent(func(v string) { confirmPass.Set(v); retire("recover-confirm") })
 	onRecoverSubmit := ui.UseEvent(func() { recoverSubmit() })
 	onRecoverContinue := ui.UseEvent(func() { handOver() })
+	// What was typed in the username box travels with the reader between the two
+	// cards. Each card's box is a fresh element seeded from userSeed, and that
+	// seed was only ever the loopback prefill — so a reader who typed their own
+	// address and then pressed "Use a recovery code" found the dev account's name
+	// in its place, and a recovery against the wrong account is refused with the
+	// one message that does not say why.
+	carryUsername := func() {
+		if u := fieldOr("login-username", username.Get()); u != "" {
+			username.Set(u)
+			userSeed.Set(u)
+		}
+	}
 	onShowRecover := ui.UseEvent(func() {
+		carryUsername()
 		recovering.Set(true)
 		recovered.Set(false)
 		errMsg.Set("")
+		errField.Set("")
 		notice.Set("")
 	})
 	onBackToLogin := ui.UseEvent(func() {
+		carryUsername()
 		recovering.Set(false)
 		recovered.Set(false)
 		errMsg.Set("")
+		errField.Set("")
 		notice.Set("")
 		// The typed code does not survive the trip. It is a single-use credential
 		// and leaving it in a hidden field is the sort of thing that ends up in a
@@ -401,6 +494,8 @@ func Login(p loginProps) ui.Node {
 		codeSeed.Set("")
 		newPass.Set("")
 		newPassSeed.Set("")
+		confirmPass.Set("")
+		confirmSeed.Set("")
 	})
 
 	// Enter submits from every field, on whichever screen is up. A form where
@@ -435,8 +530,8 @@ func Login(p loginProps) ui.Node {
 	ui.UseEffect(func() func() {
 		l := platform.OnKeyDown(onKey)
 		return l.Release
-	}, []any{username.Get(), password.Get(), code.Get(), newPass.Get(),
-		busy.Get(), recovering.Get(), recovered.Get()})
+	}, []any{username.Get(), password.Get(), code.Get(), newPass.Get(), confirmPass.Get(),
+		busy.Get(), recovering.Get(), recovered.Get(), errField.Get()})
 
 	// The fields live inside a <form>, and that is functional rather than
 	// semantic tidiness.
@@ -454,10 +549,11 @@ func Login(p loginProps) ui.Node {
 	// like the page reloading itself and losing what was typed.
 	if recovering.Get() {
 		return recoverCard(recoverCardProps{
-			tr: tr, busy: busy.Get(), errMsg: errMsg.Get(), notice: notice.Get(),
+			tr: tr, busy: busy.Get(), errMsg: errMsg.Get(), errField: errField.Get(), notice: notice.Get(),
 			recovered: recovered.Get(),
 			userSeed:  userSeed.Get(), codeSeed: codeSeed.Get(), passSeed: newPassSeed.Get(),
-			onUser: onUser, onCode: onCode, onPass: onNewPass,
+			confirmSeed: confirmSeed.Get(),
+			onUser:      onUser, onCode: onCode, onPass: onNewPass, onConfirm: onConfirm,
 			onSubmit: onRecoverSubmit, onBack: onBackToLogin,
 			onContinue: onRecoverContinue,
 		})
@@ -485,6 +581,7 @@ func Login(p loginProps) ui.Node {
 					Value:   userSeed.Get(),
 					OnInput: onUser,
 					Data:    map[string]string{"role": "login-username"},
+					Aria:    faultAria(errField.Get(), "login-username", "login-error"),
 					// autocomplete matters more than it looks: without it a
 					// password manager cannot offer to fill, and a reader who
 					// uses one is the reader most likely to have a password worth
@@ -512,6 +609,7 @@ func Login(p loginProps) ui.Node {
 					Value:   passSeed.Get(),
 					OnInput: onPass,
 					Data:    map[string]string{"role": "login-password"},
+					Aria:    faultAria(errField.Get(), "login-password", "login-error"),
 					Raw:     map[string]any{"autocomplete": "current-password", "enterkeyhint": "go"},
 				}),
 			),
@@ -525,10 +623,7 @@ func Login(p loginProps) ui.Node {
 			// readers resolve that contradiction differently — some announce
 			// twice, some wait until the reader stops typing. A refusal of the
 			// thing they just submitted is exactly what assertive is for.
-			html.Div(html.Props{
-				Class: errClass(errMsg.Get()),
-				Role:  "alert",
-			}, html.Text(errMsg.Get())),
+			loginAlert("login-error", errMsg.Get()),
 
 			html.Button(html.Props{
 				Class:    "btn login-submit",
@@ -570,15 +665,19 @@ type recoverCardProps struct {
 	tr             i18n.Runtime
 	busy           bool
 	errMsg, notice string
+	// errField is the data-role(s) errMsg is about; see Login.
+	errField string
 	// recovered swaps the whole card for the confirmation — see Login's own
 	// `recovered` for why the handover waits for a press.
 	recovered          bool
 	userSeed, codeSeed string
 	passSeed           string
+	confirmSeed        string
 	// ui.Handler, not any: these come from ui.UseEvent and the reconciler
 	// requires the concrete type. Typing them here is what makes a handler wired
 	// to the wrong slot a compile error rather than a button that does nothing.
 	onUser, onCode, onPass ui.Handler
+	onConfirm              ui.Handler
 	onSubmit, onBack       ui.Handler
 	onContinue             ui.Handler
 }
@@ -611,6 +710,7 @@ func recoverCard(p recoverCardProps) ui.Node {
 					Value:   p.userSeed,
 					OnInput: p.onUser,
 					Data:    map[string]string{"role": "login-username"},
+					Aria:    faultAria(p.errField, "login-username", "recover-error"),
 					// "go" for the login card's reason: Enter in any of these
 					// three fields submits the recovery.
 					Raw: map[string]any{
@@ -622,12 +722,15 @@ func recoverCard(p recoverCardProps) ui.Node {
 				})),
 			}),
 
+			faultSlot(p.errField, "login-username", "recover-error", p.errMsg),
+
 			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "recoverCode"), Hint: tr.T("login", "recoverCodeHint"), ID: "recover-code",
 				Control: html.Input(kitWire("recover-code", tr.T("login", "recoverCodeHint"), html.Props{
 					Class: "field login-input", Type: "text",
 					Value:   p.codeSeed,
 					OnInput: p.onCode,
 					Data:    map[string]string{"role": "recover-code"},
+					Aria:    faultAria(p.errField, "recover-code", "recover-error"),
 					// autocomplete off, and this is the one field on either screen
 					// where that is right: a recovery code is single-use, so a
 					// manager offering last month's spent code back is offering a
@@ -645,16 +748,32 @@ func recoverCard(p recoverCardProps) ui.Node {
 				})),
 			}),
 
+			faultSlot(p.errField, "recover-code", "recover-error", p.errMsg),
+
 			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "recoverPassword"), ID: "recover-password",
 				Control: html.Input(kitWire("recover-password", "", html.Props{
 					Class: "field login-input", Type: "password",
 					Value:   p.passSeed,
 					OnInput: p.onPass,
 					Data:    map[string]string{"role": "recover-password"},
+					Aria:    faultAria(p.errField, "recover-password", "recover-error"),
 					// new-password, not current-password: it tells a manager to
 					// offer a generated one and to update the saved entry rather
 					// than fill the old value into the box being used to replace it.
 					Raw: map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
+				})),
+			}),
+
+			faultSlot(p.errField, "recover-password", "recover-error", p.errMsg),
+
+			kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("login", "recoverConfirm"), ID: "recover-confirm",
+				Control: html.Input(kitWire("recover-confirm", "", html.Props{
+					Class: "field login-input", Type: "password",
+					Value:   p.confirmSeed,
+					OnInput: p.onConfirm,
+					Data:    map[string]string{"role": "recover-confirm"},
+					Aria:    faultAria(p.errField, "recover-confirm", "recover-error"),
+					Raw:     map[string]any{"autocomplete": "new-password", "enterkeyhint": "go"},
 				})),
 			}),
 
@@ -672,7 +791,7 @@ func recoverCard(p recoverCardProps) ui.Node {
 			// Both stay in the document, both keep their live region, and the band
 			// is exactly one message tall whichever one speaks. See .login-slots.
 			html.Div(html.Props{Class: "login-slots"},
-				kitFieldError(kitFormCard, p.errMsg),
+				recoverBandAlert(p.errField, p.errMsg),
 
 				// Separate from the error slot and announced politely: this is good
 				// news with a number in it, and a screen reader that skipped it would
@@ -735,7 +854,7 @@ func enterActionFor(recovering, recovered bool, role string) enterTarget {
 			return enterContinue
 		}
 		switch role {
-		case "login-username", "recover-code", "recover-password":
+		case "login-username", "recover-code", "recover-password", "recover-confirm":
 			return enterRecover
 		}
 		return enterNothing
@@ -903,6 +1022,23 @@ func submitLabel(tr i18n.Runtime, busy bool) string {
 		return tr.T("login", "working")
 	}
 	return tr.T("login", "submit")
+}
+
+// recoverBandAlert is the recovery card's band slot: it speaks for a refusal about
+// the confirmation box or about nothing typed, and stands down (empty, no id) when
+// the message was drawn under the field it is about — see faultSlot.
+func recoverBandAlert(fault, msg string) ui.Node {
+	if kitHasWord(fault, "login-username") || kitHasWord(fault, "recover-code") || kitHasWord(fault, "recover-password") {
+		return loginAlert("", "")
+	}
+	return loginAlert("recover-error", msg)
+}
+
+// loginAlert is the credential cards' error slot, with the id the fields it is
+// about point their aria-describedby at. Same markup as kitFieldError's Card look
+// plus that id, which the kit's version has no way to carry.
+func loginAlert(id, msg string) ui.Node {
+	return html.Div(html.Props{Class: errClass(msg), ID: id, Role: "alert"}, html.Text(msg))
 }
 
 // errClass hides the error slot when there is nothing to say, rather than

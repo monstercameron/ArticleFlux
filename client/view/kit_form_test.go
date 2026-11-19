@@ -720,12 +720,15 @@ func kitFormCases() []kitCase {
 						},
 					}))})
 			}},
+		// The address field itself is gone from setup.go (the username is the address); this
+		// case stays as a record of the markup kitField still has to reproduce byte for byte
+		// for a Card field with a login-foot hint, so its strings are literals now.
 		{"setup email (setup.go)",
-			func(tr i18n.Runtime) ui.Node {
+			func(i18n.Runtime) ui.Node {
 				return html.Div(html.Props{Class: "login-field"},
 					html.Label(html.Props{Class: "login-label",
 						Raw: map[string]any{"for": "setup-email"}},
-						html.Text(tr.T("setup", "email"))),
+						html.Text("Email")),
 					html.Input(html.Props{
 						Class: "field login-input", Type: "email", ID: "setup-email",
 						Value: "cam@example.com",
@@ -734,13 +737,13 @@ func kitFormCases() []kitCase {
 						Aria:  map[string]string{"describedby": "setup-email-hint"},
 					}),
 					html.P(html.Props{Class: "login-foot", ID: "setup-email-hint"},
-						html.Text(tr.T("setup", "emailHint"))),
+						html.Text("A label, not a way back in")),
 				)
 			},
-			func(tr i18n.Runtime) ui.Node {
-				return kitField(kitFieldProps{Look: kitFormCard, Label: tr.T("setup", "email"),
-					Hint: tr.T("setup", "emailHint"), HintClass: "login-foot", ID: "setup-email",
-					Control: html.Input(kitWire("setup-email", tr.T("setup", "emailHint"), html.Props{
+			func(i18n.Runtime) ui.Node {
+				return kitField(kitFieldProps{Look: kitFormCard, Label: "Email",
+					Hint: "A label, not a way back in", HintClass: "login-foot", ID: "setup-email",
+					Control: html.Input(kitWire("setup-email", "A label, not a way back in", html.Props{
 						Class: "field login-input", Type: "email",
 						Value: "cam@example.com",
 						Data:  map[string]string{"role": "setup-email"},

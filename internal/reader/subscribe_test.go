@@ -554,10 +554,11 @@ func TestAnalyzeSiteFindsADeclaredFeedWithoutAskingForSmart(t *testing.T) {
 	}
 }
 
-// Without useSmart, a site with no feed reports StatusNotAsked rather than
-// silently doing nothing — the caller needs to know free discovery came back
-// empty on its own, distinctly from "we asked the model and it had nothing".
-func TestAnalyzeSiteWithoutUseSmartReportsNotAsked(t *testing.T) {
+// Without useSmart, a site with no feed reports that free discovery came back
+// empty on its own, distinctly from "we asked the model and it had nothing" —
+// and where there is no key to ask with, it says that instead of "not asked",
+// because "not asked" invites the reader to turn on something that cannot run.
+func TestAnalyzeSiteWithoutUseSmartOnAnInstanceWithNoKeyReportsNoKey(t *testing.T) {
 	svc, _, sc := testService(t)
 	s := newSite()
 	srv := httptest.NewServer(s.handler())
@@ -567,8 +568,8 @@ func TestAnalyzeSiteWithoutUseSmartReportsNotAsked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnalyzeSite: %v", err)
 	}
-	if got.Status != StatusNotAsked {
-		t.Errorf("Status = %q, want %q", got.Status, StatusNotAsked)
+	if got.Status != StatusNoKey {
+		t.Errorf("Status = %q, want %q", got.Status, StatusNoKey)
 	}
 }
 

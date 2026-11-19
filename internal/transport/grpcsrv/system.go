@@ -92,7 +92,7 @@ func (s *SystemServer) CheckHealth(ctx context.Context, _ *pb.CheckHealthRequest
 // readiness probe calls it without a credential.
 func (s *SystemServer) GetServerStats(ctx context.Context, _ *pb.GetServerStatsRequest) (*pb.GetServerStatsResponse, error) {
 	if s.scopeOf == nil {
-		return nil, errKey(codes.Unimplemented, "srv.noObservability", "observability not wired", nil)
+		return nil, errKey(codes.Unimplemented, "srv.noObservability", "Observability is not wired in.", nil)
 	}
 	sc, err := s.scopeOf(ctx)
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *SystemServer) GetServerStats(ctx context.Context, _ *pb.GetServerStatsR
 // ListLogs returns the tail of the in-memory ring.
 func (s *SystemServer) ListLogs(ctx context.Context, req *pb.ListLogsRequest) (*pb.ListLogsResponse, error) {
 	if s.scopeOf == nil || s.ring == nil {
-		return nil, errKey(codes.Unimplemented, "srv.noLogBuffer", "log buffer not wired", nil)
+		return nil, errKey(codes.Unimplemented, "srv.noLogBuffer", "The log buffer is not wired in.", nil)
 	}
 	// Authenticated: log lines carry feed URLs, error text and host names.
 	if _, err := s.scopeOf(ctx); err != nil {

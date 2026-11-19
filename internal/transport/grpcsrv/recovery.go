@@ -124,7 +124,7 @@ func (s *AuthServer) RedeemRecoveryCode(ctx context.Context, req *pb.RedeemRecov
 	if !s.limiter.allow(uKey) || !s.limiter.allow(cKey) {
 		s.log.Warn("recovery rate limited", "username", username, "client", addr)
 		return nil, errKey(codes.ResourceExhausted, "srv.tooManyAttempts",
-			"too many attempts; wait a minute and try again", nil)
+			"Too many attempts. Wait a minute and try again.", nil)
 	}
 	if d, ok := s.lockout(ctx, ledgerKey, addr); !ok {
 		s.log.Warn("recovery locked out", "username", username, "client", addr,
@@ -177,7 +177,7 @@ func (s *AuthServer) RedeemRecoveryCode(ctx context.Context, req *pb.RedeemRecov
 	ok, err := s.repo.ConsumeRecoveryCode(ctx, u.UserID, recoveryCodeHash(code))
 	if err != nil {
 		s.log.Error("consuming a recovery code", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// Then the passphrase, if the sheet did not answer (§7.2b).
 	//
@@ -194,7 +194,7 @@ func (s *AuthServer) RedeemRecoveryCode(ctx context.Context, req *pb.RedeemRecov
 		matched, perr := s.passphraseMatches(ctx, u.UserID, req.GetCode())
 		if perr != nil {
 			s.log.Error("checking a recovery passphrase", "err", perr)
-			return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+			return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 		}
 		ok, usedPassphrase = matched, matched
 	}
@@ -270,7 +270,7 @@ func (s *AuthServer) RedeemResetToken(ctx context.Context, req *pb.RedeemResetTo
 	cKey := "c:" + addr
 	if !s.limiter.allow(cKey) {
 		return nil, errKey(codes.ResourceExhausted, "srv.tooManyAttempts",
-			"too many attempts; wait a minute and try again", nil)
+			"Too many attempts. Wait a minute and try again.", nil)
 	}
 	if d, ok := s.lockout(ctx, ledgerKey, addr); !ok {
 		s.record(ctx, ledgerKey, addr, store.LoginLocked)
@@ -290,7 +290,7 @@ func (s *AuthServer) RedeemResetToken(ctx context.Context, req *pb.RedeemResetTo
 	if err != nil {
 		if !errors.Is(err, store.ErrBadResetToken) {
 			s.log.Error("consuming a reset token", "err", err)
-			return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+			return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 		}
 		s.limiter.fail(cKey)
 		s.record(ctx, ledgerKey, addr, store.LoginBadPassword)
@@ -347,7 +347,7 @@ func (s *AuthServer) RedeemResetToken(ctx context.Context, req *pb.RedeemResetTo
 // which accounts exist AND which of them have recovery set up, which is a map of
 // where to spend effort.
 var errBadRecovery = errKey(codes.Unauthenticated, "srv.badRecovery",
-	"that recovery code or reset link is not valid", nil)
+	"That recovery code or reset link is not valid.", nil)
 
 // recoveryResult is what both paths need back from the shared half.
 type recoveryResult struct {
@@ -379,7 +379,7 @@ func (s *AuthServer) completeRecovery(ctx context.Context, u store.LoginUser,
 	hash, err := secret.HashPassword(newPassword, secret.Active())
 	if err != nil {
 		s.log.Error("hashing a recovered password", "err", err)
-		return recoveryResult{}, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return recoveryResult{}, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	now := time.Now().UTC()
@@ -390,7 +390,7 @@ func (s *AuthServer) completeRecovery(ctx context.Context, u store.LoginUser,
 	ended, familiesEnded, err := s.repo.ChangePasswordAndRevoke(ctx, u.UserID, hash, "", "", stamp)
 	if err != nil {
 		s.log.Error("resetting the password during recovery", "err", err, "user", u.UserID)
-		return recoveryResult{}, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return recoveryResult{}, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	token := idgen.Token()
@@ -426,7 +426,7 @@ func (s *AuthServer) completeRecovery(ctx context.Context, u store.LoginUser,
 		// tell whether anything happened.
 		s.log.Error("creating the session after recovery", "err", err, "user", u.UserID)
 		return recoveryResult{}, errKey(codes.Internal, "srv.recoveredNoSession",
-			"your password was reset, but signing you in failed; sign in with the new password", nil)
+			"Your password was reset, but signing you in failed. Sign in with the new password.", nil)
 	}
 
 	// The device family, gated exactly as Login's is. Non-fatal for the same

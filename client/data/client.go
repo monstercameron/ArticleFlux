@@ -1151,13 +1151,25 @@ func (c *Client) GetFeedSettings(parent context.Context, sourceID string) (*pb.F
 // UpdateFeedSettings patches a feed. Nil fields are left alone, so a client that
 // only knows about some of them cannot blank the rest.
 func (c *Client) UpdateFeedSettings(parent context.Context, req *pb.UpdateFeedSettingsRequest) (*pb.FeedSettings, error) {
+	res, err := c.UpdateFeedSettingsCleared(parent, req)
+	if err != nil {
+		return nil, err
+	}
+	return res.GetSettings(), nil
+}
+
+// UpdateFeedSettingsCleared is UpdateFeedSettings with the whole reply, for the
+// one caller that needs more than the settings: saving a backlog window clears
+// the pile there and then, and the reply carries how many it marked and the
+// batch that undoes them.
+func (c *Client) UpdateFeedSettingsCleared(parent context.Context, req *pb.UpdateFeedSettingsRequest) (*pb.UpdateFeedSettingsResponse, error) {
 	ctx, cancel := c.ctx(parent)
 	defer cancel()
 	res, err := c.reader.UpdateFeedSettings(ctx, req)
 	if err := c.track(err); err != nil {
 		return nil, err
 	}
-	return res.GetSettings(), nil
+	return res, nil
 }
 
 // engagementTimeout bounds one signals batch.

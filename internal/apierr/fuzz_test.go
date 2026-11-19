@@ -56,12 +56,12 @@ func FuzzUnclassifiedErrorsNeverLeak(f *testing.F) {
 		// Equality is the only assertion that actually rules out a leak.
 		grpcErr := Status(classified)
 		msg := status.Convert(grpcErr).Message()
-		if msg != "internal error" {
+		if msg != "Something went wrong on the server." {
 			t.Fatalf("gRPC message for input %q = %q, want the fixed safe string", raw, msg)
 		}
 
 		_, body := HTTPStatus(classified)
-		if body["message"] != "internal error" {
+		if body["message"] != "Something went wrong on the server." {
 			t.Fatalf("HTTP message for input %q = %q, want the fixed safe string", raw, body["message"])
 		}
 

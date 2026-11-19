@@ -188,8 +188,11 @@ test('reduced motion is respected', async ({ page }) => {
   // machine which asks for less motion stops everything.
   await page.locator(`[data-action='open-settings']`).first().click();
   await page.locator(`[data-action='settings-tab'][data-value='appearance']`).click();
-  await page.locator(`[data-action='motion-system']`).click();
-  await expect(page.locator(`[data-action='motion-system']`)).toHaveCount(0);
+  // One three-state control now (Full, Reduced, Follow my system), the one in
+  // force pressed — not a toggle plus a button that vanished once pressed.
+  const followSystem = page.locator(`[data-action='set-motion'][data-value='system']`);
+  await followSystem.click();
+  await expect(followSystem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
 
   expect(await page.evaluate(() =>

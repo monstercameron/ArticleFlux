@@ -65,7 +65,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	}
 	if len([]rune(username)) < setupMinUsername {
 		return nil, errKey(codes.InvalidArgument, "srv.setupUsername",
-			"choose a username of at least two characters", nil)
+			"Choose a username of at least two characters.", nil)
 	}
 	// Shape only, and deliberately shallow: there is no mailer here, so an
 	// address this server cannot verify is an address it must not pretend to
@@ -73,7 +73,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	// there rather than performing rigour it cannot back up.
 	if email != "" && !looksLikeEmail(email) {
 		return nil, errKey(codes.InvalidArgument, "srv.setupEmail",
-			"that does not look like an email address", nil)
+			"That does not look like an email address.", nil)
 	}
 	// The same policy every other password on this instance meets. Applying it
 	// here matters more than anywhere else: this is the account that can do
@@ -86,7 +86,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	hash, err := secret.HashPassword(password, secret.Active())
 	if err != nil {
 		s.log.Error("hashing the setup password", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	now := time.Now().UTC()
@@ -103,11 +103,11 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	})
 	if err != nil {
 		s.log.Error("creating the first account", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	if !created {
 		return nil, errKey(codes.FailedPrecondition, "srv.alreadySetUp",
-			"this instance already has an account; sign in instead", nil)
+			"This instance already has an account. Sign in instead.", nil)
 	}
 
 	scope := store.Scope{TenantID: tenantID, UserID: userID, Role: "superadmin"}
@@ -118,7 +118,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	sheet, err := authn.GenerateRecoveryCodes(authn.RecoveryCodeCount)
 	if err != nil {
 		s.log.Error("generating recovery codes", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// recoveryCodeHash, not secret.HashToken — see its comment. The two have to
 	// agree with what redemption computes, and for the whole of 6.1 they did not.
@@ -128,7 +128,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 	}
 	if err := s.repo.ReplaceRecoveryCodes(ctx, scope, hashes); err != nil {
 		s.log.Error("storing recovery codes", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	token := idgen.Token()
@@ -157,7 +157,7 @@ func (s *AuthServer) Setup(ctx context.Context, req *pb.SetupRequest) (*pb.Setup
 		AuthenticatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {
 		s.log.Error("creating the setup session", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	// A device family, so the new session can refresh like any other — gated

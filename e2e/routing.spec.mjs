@@ -90,6 +90,49 @@ test.describe('the address bar', () => {
     await expect.poll(() => path(page)).toMatch(/\/read\/[^/]+$/);
   });
 
+  test('a deep link to an article that is not first stays on that article', async ({ page }) => {
+    // The stream opens with the article BEFORE the target above it, still a
+    // skeleton; when its body lands it grows, and with nothing holding the target
+    // the pane showed the middle of the previous article and the scroll-spy wrote
+    // that one into the address — so every reload drifted one article up.
+    await boot(page);
+    await openFeed(page, /Alpha Journal/);
+    await openRow(page, 2);
+    await expect(currentArticle(page).locator('h1')).toBeAttached();
+    const id = await currentArticle(page).getAttribute('data-article-id');
+    // path(), not settled(): settled() polls place(), which is the address with
+    // the article stripped off — the one thing this test is about.
+    await expect.poll(() => path(page)).toMatch(/\/read\/[^/]+$/);
+    const articlePath = path(page);
+    expect(articlePath).toContain(`/read/${id}`);
+
+    for (let i = 0; i < 2; i++) {
+      await (i === 0 ? page.goto(articlePath) : page.reload());
+      await signIn(page);
+      await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+      await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+      // Long enough for the bodies above and below to have arrived and settled.
+      await expect(currentArticle(page)).toHaveAttribute('data-article-id', id);
+      await page.waitForTimeout(3000);
+      await expect(currentArticle(page)).toHaveAttribute('data-article-id', id);
+      expect(path(page)).toBe(articlePath);
+    }
+  });
+
+  test('an article addressed without its feed opens that article', async ({ page }) => {
+    await boot(page);
+    await openFeed(page, /Alpha Journal/);
+    await openRow(page, 2);
+    const id = await currentArticle(page).getAttribute('data-article-id');
+
+    await page.goto(`/read/${id}`);
+    await signIn(page);
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await expect(currentArticle(page)).toHaveAttribute('data-article-id', id, { timeout: 30_000 });
+    await page.waitForTimeout(2000);
+    await expect(currentArticle(page)).toHaveAttribute('data-article-id', id);
+  });
+
   test('a deep link to a feed opens that feed, not the saved place', async ({ page }) => {
     // Establish a saved place that is NOT where the link points. Read later is
     // empty in the seed, which makes the two trivially distinguishable.
@@ -195,9 +238,38 @@ test.describe('the address bar', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
     // And the address is corrected to the place it actually landed on, so the
-    // reader is not left holding a link that lies. All feeds is the root, plus
-    // whatever article the pick effect opened in it.
-    await expect.poll(() => path(page)).toMatch(/^\/(read\/[^/]+)?$/);
+    // reader is not left holding a link that lies. It resumes the saved place, as
+    // a bare address does, so what it settles on is whichever place that was —
+    // but never the unreadable address itself.
+    await expect.poll(() => path(page)).not.toContain('not-a-real-place');
+  });
+
+  test('an address naming a feed that is not there says so, and offers All articles', async ({ page }) => {
+    await page.goto('/feed/NOTAREALID');
+    await signIn(page);
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+
+    // Not "your feeds haven't brought anything in yet", which tells somebody with
+    // articles to read that nothing is wrong with the link.
+    const list = page.locator('.pane-list');
+    await expect(list.locator('.list-title')).toHaveText('Not found', { timeout: 30_000 });
+    await expect(list.locator('.empty')).toContainText("That feed isn't here");
+    await list.locator('.empty button', { hasText: 'All articles' }).click();
+    await expect(list.locator('.list-title')).toHaveText('All articles');
+    await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('an address this build cannot read resumes the saved place', async ({ page }) => {
+    await boot(page);
+    await openFeed(page, /Alpha Journal/);
+    const feedPath = await settled(page, /^\/feed\/[^/]+$/);
+
+    await page.goto('/this/does/not/exist');
+    await signIn(page);
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+    // Where the reader was, not All with the saved place overwritten by it.
+    await expect.poll(() => place(page)).toBe(stripArticle(feedPath));
   });
 
   test('a deep link loads its assets', async ({ page }) => {

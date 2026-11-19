@@ -652,3 +652,57 @@ func TestRouteRoundTripSurvivesAwkwardValues(t *testing.T) {
 		}
 	}
 }
+
+// An address this build cannot read resumes the saved place instead of choosing
+// All, and does not count as the reader having asked for anywhere.
+func TestBootRouteResumesOnAnUnknownAddress(t *testing.T) {
+	tr := mustRuntime(t)
+	saved := map[string]string{"read.kind": "liked", "read.item": "A1"}
+	got, addressed := bootRouteFor("/", "/this/does/not/exist", "", saved, tr)
+	if addressed {
+		t.Errorf("an unreadable address was treated as a chosen one")
+	}
+	if got.sel.Rating != 1 {
+		t.Errorf("sel = %+v, want the saved Liked place", got.sel)
+	}
+	if got.item != "A1" {
+		t.Errorf("item = %q, want the saved article", got.item)
+	}
+	// A readable address still wins.
+	if _, addressed := bootRouteFor("/", "/unread", "", saved, tr); !addressed {
+		t.Errorf("/unread should be an addressed boot")
+	}
+	if _, addressed := bootRouteFor("/", "/read/X", "", saved, tr); !addressed {
+		t.Errorf("/read/<id> should be an addressed boot")
+	}
+}
+
+func TestScopeMissing(t *testing.T) {
+	feeds := []*pb.Feed{{Id: "s1", SourceId: "src1"}}
+	tags := []*pb.Tag{{Id: "t1"}}
+	folders := []*pb.Folder{{Id: "f1"}}
+	cases := []struct {
+		name  string
+		sc    scope
+		known bool
+		tags  []*pb.Tag
+		fold  []*pb.Folder
+		want  bool
+	}{
+		{"a feed it follows", scope{SourceID: "src1"}, true, tags, folders, false},
+		{"a feed by subscription id", scope{SourceID: "s1"}, true, tags, folders, false},
+		{"a feed it does not follow", scope{SourceID: "NOPE"}, true, tags, folders, true},
+		{"a feed before the rail has landed", scope{SourceID: "NOPE"}, false, tags, folders, false},
+		{"a tag it has", scope{TagID: "t1"}, true, tags, folders, false},
+		{"a tag it does not have", scope{TagID: "zzz"}, true, tags, folders, true},
+		{"a tag before tags have landed", scope{TagID: "zzz"}, true, nil, folders, false},
+		{"a category it has", scope{FolderID: "f1"}, true, tags, folders, false},
+		{"a category it does not have", scope{FolderID: "zzz"}, true, tags, folders, true},
+		{"a stream", scope{Unread: true}, true, tags, folders, false},
+	}
+	for _, c := range cases {
+		if got := scopeMissing(c.sc, c.known, feeds, c.tags, c.fold); got != c.want {
+			t.Errorf("%s: scopeMissing = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

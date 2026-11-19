@@ -86,7 +86,7 @@ func TestAnArticlesOwnStepIsMeasuredFromThatArticle(t *testing.T) {
 // above at all.
 func TestEveryArticleBarEndsWithItsOwnPreviousAndNext(t *testing.T) {
 	out := renderView(t, func(tr i18n.Runtime) ui.Node {
-		return articleStep(tr, "art-7")
+		return articleStep(tr, "art-7", false, false)
 	})
 	for _, want := range []string{
 		`data-action="` + actNavPrev + `"`, `data-action="` + actNavNext + `"`,

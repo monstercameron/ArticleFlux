@@ -3,10 +3,13 @@
 package view
 
 import (
+	"context"
+	"strings"
 	"time"
 
 	"github.com/monstercameron/GoWebComponents/v7/ui"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/platform"
 	"github.com/monstercameron/ArticleFlux/client/track"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -40,6 +43,9 @@ type readerListeners struct {
 	// state, which is exactly what the auto-open effect wants: an effect closure is
 	// rebuilt every render, so the openAt it calls is always the current one.
 	openAt func(it *pb.Item, focus bool)
+	// client is what asks the server for an article the list does not hold.
+	client ui.State[*data.Client]
+	sel    ui.State[scope]
 
 	current      ui.State[*pb.Item]
 	stream       ui.State[[]*pb.Item]
@@ -312,8 +318,44 @@ func (d readerListeners) wire() {
 		// it names where the reader WAS, and a later list that happens to hold it
 		// is not that place.
 		want := resumeItem.Get()
+		if strings.HasPrefix(want, askingMark) {
+			// Already asked for; the answer is on its way, and a second effect run
+			// must not open the first unread underneath it.
+			return nil
+		}
 		if want != "" {
 			resumeItem.Set("")
+		}
+		if want != "" && !listHolds(list, want) {
+			// A link to an article this page of the list does not hold — an older
+			// one, or one named without its feed. Opening the first unread instead
+			// lands the reader on a different article from the one in their hand,
+			// so the one named is asked for, and the fallback is only for a server
+			// that has no such article, or one that is not in this feed.
+			first := autoOpenPick(list, "")
+			feedID := d.sel.Get().SourceID
+			resumeItem.Set(askingMark + want)
+			go func() {
+				var found *pb.Item
+				if c := d.client.Get(); c != nil {
+					if it, _, err := c.GetItemCached(context.Background(), want); err == nil &&
+						(feedID == "" || it.GetSourceId() == feedID) {
+						found = it
+					}
+				}
+				// Through the Ref: the answer lands renders after the one that asked.
+				ui.PostAsync(func() {
+					resumeItem.Set("")
+					if len(d.stream.Get()) > 0 {
+						return
+					}
+					if found == nil {
+						found = first
+					}
+					act.Get().openUnfocused(found)
+				})
+			}()
+			return nil
 		}
 		openAt(autoOpenPick(list, want), false)
 		return nil
@@ -412,6 +454,23 @@ func (d readerListeners) wire() {
 		}
 		return nil
 	}, []any{len(items.Get()) > 0})
+
+	// An armed confirmation does not outlive the reader's attention to it. Arming
+	// is a question, and a press anywhere else is the reader having moved on:
+	// left armed, "Confirm reset?" sits on the screen for as long as the tab does
+	// and the next stray press on it is the destructive one. Anything outside the
+	// armed controls themselves counts, which is what makes this one rule for all
+	// of them rather than a clause per control.
+	ui.UseEffect(func() func() {
+		l := platform.OnPressOutside(armedInlineSelector, func() {
+			ui.PostAsync(func() {
+				if a := act.Get(); a != nil && a.disarmInline != nil {
+					a.disarmInline()
+				}
+			})
+		})
+		return l.Release
+	}, []any{})
 }
 
 // autoOpenPick is which article opens by itself when a list lands on an empty
@@ -443,4 +502,18 @@ func autoOpenPick(list []*pb.Item, saved string) *pb.Item {
 		}
 	}
 	return list[0]
+}
+
+// askingMark prefixes resumeItem while the article it names is being fetched, so
+// the auto-open effect can tell "nothing asked for" from "asked, not answered".
+const askingMark = "\x00"
+
+// listHolds reports whether the loaded list has an article with this id.
+func listHolds(list []*pb.Item, id string) bool {
+	for _, it := range list {
+		if it.GetId() == id {
+			return true
+		}
+	}
+	return false
 }

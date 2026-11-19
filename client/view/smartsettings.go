@@ -645,7 +645,12 @@ func smartLanguageSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	out := []ui.Node{
 		kitHeading(glyphAll, langTitle, tr.T("smart", "langHint")),
 		// Named for the theme cards' reason (settingsAppearance).
-		kitChipGroup(kitGroupChoices, langTitle, chips...),
+		// Its own class: .fs-choices pushes its chips to the END of the row, which is
+		// right beside a setting's label and wrong for a section of thirteen
+		// two-line chips on a row of their own, where it wrapped right-aligned with
+		// gaps at the start of every line.
+		html.Div(html.Props{Class: "fs-choices lang-grid", Role: "group",
+			Aria: map[string]string{"label": langTitle}}, chips...),
 		html.Div(html.Props{Class: "set-note"}, html.Text(tr.T("smart", "langSourceNote"))),
 	}
 	if status := langFillStatus(tr, current, p); len(status) > 0 {

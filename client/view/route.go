@@ -635,3 +635,62 @@ func retitleScope(sc scope, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Fold
 	}
 	return sc
 }
+
+// knownRouteHead reports whether the first segment of an address is one this
+// build writes. parseRoute degrades everything else to All, which is right for
+// the reader and wrong for boot's precedence rule — see bootRouteFor.
+func knownRouteHead(seg string) bool {
+	switch seg {
+	case kindAll, kindUnread, kindLiked, kindDisliked, kindLater, kindNotes, kindMyFeed,
+		kindFeed, kindTag, kindSearch, segCategory, segSettings, segRead,
+		string(dialogAdd), string(dialogShow):
+		return true
+	}
+	return false
+}
+
+// scopeMissing reports whether a scope names a feed, tag or category the reader
+// does not have: an address from a link that outlived what it pointed at, a typo,
+// or an id from somebody else's account.
+//
+// Judged against what the rail holds, so it can only be asked once that has
+// arrived. A tag or category is judged only when the reader HAS some: an empty
+// list is also what a list that has not landed yet looks like, and calling every
+// tag missing for a round trip would be the same wrong answer in the other
+// direction. The cost is that an unknown tag on an account with no tags at all
+// reads as a tag with nothing in it, which is true enough.
+func scopeMissing(sc scope, feedsKnown bool, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) bool {
+	switch {
+	case sc.SourceID != "":
+		if !feedsKnown {
+			return false
+		}
+		for _, f := range feeds {
+			if f.GetSourceId() == sc.SourceID || f.GetId() == sc.SourceID {
+				return false
+			}
+		}
+		return true
+	case sc.TagID != "":
+		if len(tags) == 0 {
+			return false
+		}
+		for _, t := range tags {
+			if t.GetId() == sc.TagID {
+				return false
+			}
+		}
+		return true
+	case sc.FolderID != "":
+		if len(folders) == 0 {
+			return false
+		}
+		for _, f := range folders {
+			if f.GetId() == sc.FolderID {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}

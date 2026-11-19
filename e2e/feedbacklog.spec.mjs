@@ -54,9 +54,17 @@ async function openFeedSettings(page, name) {
   return fs;
 }
 
-/** backlogRow is the "Clear the backlog" row inside an open panel. */
+/**
+ * backlogRow is the "Clear the backlog older than" row inside an open panel.
+ *
+ * Found by its group's accessible name, which must say "older than": the row's
+ * choices used to read exactly like Mute's, one row above, and a name that
+ * does not tell the two apart is the bug this row was reworded to fix.
+ */
 function backlogRow(fs) {
-  return fs.locator('.fs-row').filter({ hasText: 'Clear the backlog' });
+  // The row IS the group (`role="group"` on `.fs-row`), so it is asked for by
+  // role rather than as a row that contains one.
+  return fs.getByRole('group', { name: /older than/ });
 }
 
 function choice(fs, days) {
@@ -71,8 +79,8 @@ test.describe('clear the backlog', () => {
     await expect(row).toBeVisible();
 
     await expect(row.locator('[data-action="fs-backlog"]')).toHaveCount(5);
-    for (const [days, label] of [[0, 'never'], [1, 'a day'], [3, '3 days'],
-      [7, 'a week'], [30, 'a month']]) {
+    for (const [days, label] of [[0, 'never'], [1, '1 day'], [3, '3 days'],
+      [7, '1 week'], [30, '1 month']]) {
       await expect(choice(fs, days)).toHaveText(label);
     }
     await expect(choice(fs, 0)).toHaveAttribute('aria-pressed', 'true');
@@ -103,6 +111,32 @@ test.describe('clear the backlog', () => {
       await expect.poll(() => unreadOn(page, ALPHA), { timeout: 20_000 }).toBe(0);
       expect(await unreadOn(page, BETA),
         'a window set on one feed reached another feed').toBe(betaBefore);
+
+      // The receipt and the way back, the same ones Mark all read gives: choosing a
+      // window used to turn the whole pile into none with no count and no undo.
+      // The banner is in the list pane, behind the panel, so the panel goes first.
+      await page.keyboard.press('Escape');
+      const banner = page.locator('.banner-slot[data-open="true"]');
+      await expect(banner).toContainText(/Marked \d+ read/, { timeout: 20_000 });
+      await banner.locator('[data-action="undo-mark-all"]').click();
+      // Back to what it was — give or take ONE. Undo reloads the list, and on a
+      // desktop a reloaded list opens its first unread article, which is reading
+      // it: so the pile comes back whole and the article now on screen is read a
+      // moment later. Which of the two this poll sees is a matter of timing, and
+      // both are the Undo having worked; what it must never see is the pile
+      // still gone.
+      await expect.poll(() => unreadOn(page, ALPHA), { timeout: 20_000 })
+        .toBeGreaterThanOrEqual(alphaBefore - 1);
+      expect(alphaBefore - 1, 'the fixture must leave something to see come back').toBeGreaterThan(0);
+      // Undo also puts the window back to what it was (never), or the next sweep
+      // would mark the restored pile read again and it would look like Undo failing.
+      fs = await openFeedSettings(page, ALPHA);
+      await expect(choice(fs, 0)).toHaveAttribute('aria-pressed', 'true', { timeout: 20_000 });
+
+      // Chosen again, so persistence is checked against a clear that really happened.
+      await choice(fs, 1).click();
+      await expect(choice(fs, 1)).toHaveAttribute('aria-pressed', 'true', { timeout: 20_000 });
+      await expect.poll(() => unreadOn(page, ALPHA), { timeout: 20_000 }).toBe(0);
 
       // The choice is the server's, not the panel's: close, load the app afresh, reopen.
       await page.keyboard.press('Escape');

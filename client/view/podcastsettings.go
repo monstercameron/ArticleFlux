@@ -232,8 +232,12 @@ func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown, keyUnreadable bo
 		control = kitStatic(kitStaticProps{Label: tr.T("podcast", "needsChecking")})
 	case q.Fixable:
 		// The same action the dialog used, so the switch it writes is the same
-		// switch — see reader.slideNeedsFix.
-		control = kitPick(kitChipProps{Action: actSlideNeedsFix, Mini: true, Key: actSlideNeedsFix + "-" + q.Key, Label: onOff(tr, q.On)}, q.Key, q.On)
+		// switch — see reader.slideNeedsFix. Drawn as the Listening tab draws the
+		// same preferences: a toggle with its glyph and "on"/"off", not the small
+		// icon-less segmented chip (kitPick) it was, which made one switch look like
+		// two different kinds of control depending on which tab it was pressed on.
+		control = kitToggle(kitChipProps{Action: actSlideNeedsFix, Value: q.Key,
+			Glyph: podcastNeedGlyph(q.Key), Label: onOff(tr, q.On)}, q.On)
 	case q.On:
 		control = kitStatic(kitStaticProps{Label: tr.T("slides", "needsPresent")})
 	default:
@@ -244,8 +248,14 @@ func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown, keyUnreadable bo
 	// the row's name around it a listener tabbing down the checklist heard
 	// "off, toggle button" four times with nothing to say what was off.
 	id := "pc-need-" + q.Key
+	// The Settings row shape kitSetting draws — name and hint on the left, control
+	// on the right — with the ids and data attributes this row has always carried
+	// (the e2e suite and the slideshow's own panel find it by them). It was the My
+	// Feed "evidence" row, whose line under the name is set in the reading face
+	// because it is a sentence about what was observed; here the line is a hint,
+	// and on every other tab a hint is the interface face.
 	return html.Div(html.Props{
-		Class: "mf-row pc-need", Key: id, Role: "group",
+		Class: "fs-row pc-need", Key: id, Role: "group",
 		Aria: map[string]string{"labelledby": id + "-label", "describedby": id + "-hint"},
 		Raw: map[string]any{
 			"data-on": strconv.FormatBool(q.On),
@@ -255,12 +265,23 @@ func podcastNeedRow(tr i18n.Runtime, q slidePrereq, keyUnknown, keyUnreadable bo
 			"data-required": strconv.FormatBool(q.Required),
 		},
 	},
-		html.Div(html.Props{Class: "mf-main"},
-			html.Span(html.Props{Class: "mf-name", ID: id + "-label"}, html.Text(tr.T("slides", "need."+q.Key))),
-			html.Span(html.Props{Class: "mf-evidence", ID: id + "-hint"}, html.Text(tr.T("slides", "why."+q.Key))),
+		html.Div(html.Props{Class: "fs-label"},
+			html.Span(html.Props{Class: "fs-label-name", ID: id + "-label"}, html.Text(tr.T("slides", "need."+q.Key))),
+			html.Span(html.Props{Class: "fs-hint", ID: id + "-hint"}, html.Text(tr.T("slides", "why."+q.Key))),
 		),
-		html.Div(html.Props{Class: "mf-control"}, control),
+		html.Div(html.Props{Class: "fs-control"}, control),
 	)
+}
+
+// podcastNeedGlyph is the mark a requirement's switch wears, the same one the
+// Listening tab gives the same preference.
+func podcastNeedGlyph(key string) string {
+	switch key {
+	case prereqPodcast:
+		return glyphSlideshow
+	default:
+		return glyphListen
+	}
 }
 
 // slideNeedsFixWrite is what pressing a requirement's chip does: which

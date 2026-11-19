@@ -152,7 +152,7 @@ test.describe('mark all read scope', () => {
 
     await page.locator('[data-role="search"]').fill('the');
     await page.locator('[data-role="search"]').press('Enter');
-    await expect(page.locator('.list-head')).toContainText('Matching your search');
+    await expect(page.locator('.list-head')).toContainText('Across every feed');
 
     await expect(page.locator('[data-action="mark-all-arm"]'),
       'Mark all read on a search would mark something other than the search results')

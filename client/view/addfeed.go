@@ -266,6 +266,21 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 			if c.GetHow() == "declared" {
 				how = tr.T("addFeed", "declared")
 			}
+			// A feed the reader already follows is marked rather than offered: the
+			// button would subscribe to what they have, and the receipt would say
+			// "added" for something that was never missing.
+			var act ui.Node = html.Button(html.Props{
+				Class: "btn af-cand-go",
+				Raw: map[string]any{
+					"data-action": actAddCandidate,
+					"data-value":  c.GetUrl(),
+				},
+			}, html.Text(tr.T("addFeed", "useThis")))
+			if c.GetAlreadyFollowing() {
+				act = html.Span(html.Props{Class: "af-cand-meta af-cand-have",
+					Data: map[string]string{"role": "candidate-following"}},
+					html.Text(tr.T("addFeed", "following")))
+			}
 			rows = append(rows, html.Div(html.Props{
 				Class: "af-cand", Key: "cand-" + c.GetUrl(),
 			},
@@ -275,13 +290,7 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 						html.Text(tr.T("addFeed", "candidateItems", i18n.Count(int(c.GetItemCount())))+
 							" · "+how)),
 				),
-				html.Button(html.Props{
-					Class: "btn af-cand-go",
-					Raw: map[string]any{
-						"data-action": actAddCandidate,
-						"data-value":  c.GetUrl(),
-					},
-				}, html.Text(tr.T("addFeed", "useThis"))),
+				act,
 			))
 		}
 		return []ui.Node{html.Div(html.Props{Class: "af-ladder"},
@@ -303,9 +312,22 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 		return []ui.Node{proposalBlock(tr, p)}
 	}
 
+	// What this page can still offer depends on what this server can do, and the
+	// hint says only that. It used to recommend Smart+ follow unconditionally, so a
+	// reader on an instance with no key was told to try something that could not
+	// run. no_key (the server has no key) and the two verdicts the model already
+	// gave (refused, js_rendered) each have their own sentence below; the offer is
+	// made only where the free rungs came back empty and the model was not ruled
+	// out.
+	hint := tr.T("addFeed", "noFeedHint")
+	switch p.smartStatus {
+	case "no_key", "refused", "js_rendered":
+	default:
+		hint += " " + tr.T("addFeed", "noFeedSmartOffer")
+	}
 	kids := []ui.Node{
 		html.H3(html.Props{Class: "af-ladder-title"}, html.Text(tr.T("addFeed", "noFeedTitle"))),
-		html.Div(html.Props{Class: "af-hint"}, html.Text(tr.T("addFeed", "noFeedHint"))),
+		html.Div(html.Props{Class: "af-hint"}, html.Text(hint)),
 	}
 	switch p.smartStatus {
 	case "no_key":

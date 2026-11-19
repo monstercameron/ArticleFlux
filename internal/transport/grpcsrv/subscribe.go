@@ -77,9 +77,18 @@ func (s *ReaderServer) AnalyzeSite(ctx context.Context, req *pb.AnalyzeSiteReque
 	}
 
 	out := &pb.AnalyzeSiteResponse{PageTitle: res.PageTitle, SmartStatus: res.Status}
+	// A candidate the reader already follows is marked, not dropped: hiding it
+	// would leave "this address leads to no feed" for a page that leads to a feed
+	// they have, and the dialog says which it is.
+	urls := make([]string, 0, len(res.Feeds))
+	for _, c := range res.Feeds {
+		urls = append(urls, c.URL)
+	}
+	following, _ := s.svc.Following(ctx, sc, urls...)
 	for _, c := range res.Feeds {
 		out.Feeds = append(out.Feeds, &pb.FeedCandidate{
 			Url: c.URL, Title: c.Title, ItemCount: int32(c.Items), How: c.How,
+			AlreadyFollowing: following[c.URL],
 		})
 	}
 	// A json proposal travels in the SAME message as an html one, with kind set

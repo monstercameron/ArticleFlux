@@ -4287,19 +4287,22 @@ Every mutable field is `optional` on the wire, unset meaning "leave it alone" �
 rule `SetItemState` uses, so a client that knows about half these fields cannot blank the other half
 by omitting them.
 
-**Clear the backlog** (`subscriptions.clear_backlog_days`, migration 0037; 0 = never, the default;
-the panel offers 1 / 3 / 7 / 30) is a *yours* setting for the same reason mute is: whether an old
+**Clear the backlog older than** (`subscriptions.clear_backlog_days`, migration 0037; 0 = never, the default;
+the panel offers 1 / 3 / 7 / 30, labelled as numerals so the row cannot be read as Mute's identically
+worded one above it) is a *yours* setting for the same reason mute is: whether an old
 article is still worth attention is the reader's judgement, so two readers of one feed in one tenant
 choose independently. It marks the feed's unread articles **older than the window by publication
 time** read for that reader — `read_at` on `user_item_state` and nothing else. Nothing is deleted
 (A22), **starred / Read later items are skipped**, and ratings are not touched. It goes through
 `MarkAllRead` rather than a second `UPDATE`, so the sync `rev`, the undo batch and the counts the
 badge is read from stay consistent by construction. It runs in two places: **once on save** (the
-service applies a window as it stores it, so the reply already shows the smaller pile), and **on the
+service applies a window as it stores it, so the reply already shows the smaller pile — and carries
+`backlog_cleared` and `backlog_undo_token`, so the list shows Mark all read's "Marked N read / Undo"
+banner and Undo also puts the window back to what it was), and **on the
 poller's heartbeat** after each fetch, one scoped call per reader who has any window set
 (`ScopesWithBacklogRules` is the only unscoped read, a discovery step like `ScopesToDerive`). The
 heartbeat, not a hook on ingest, because a rule is about *age* and articles age with nothing
-arriving. There is no separate "clear it now" button: **Mark all read** in the Actions group already
+arriving. The sweep is not undoable: nobody pressed anything. There is no separate "clear it now" button: **Mark all read** in the Actions group already
 is one, and the row's hint points at it.
 
 ### 20.16 Themes and motion — every value is a token (A39)

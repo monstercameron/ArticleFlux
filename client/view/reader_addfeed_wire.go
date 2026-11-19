@@ -86,6 +86,7 @@ func (r addFeedWiring) wire() {
 	}
 
 	r.act.Get().openAddFeed = func() {
+		platform.RememberFocus("addFeed")
 		r.addErr.Set("")
 		r.addOpen.Set(true)
 		// The address box takes focus, because typing one is the entire point of
@@ -104,6 +105,7 @@ func (r addFeedWiring) wire() {
 		platform.FocusField("add-feed")
 	}
 	r.act.Get().closeAddFeed = func() {
+		platform.RestoreFocus("addFeed")
 		r.addOpen.Set(false)
 		r.addErr.Set("")
 	}

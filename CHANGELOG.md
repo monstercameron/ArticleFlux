@@ -9,6 +9,89 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+### Fixed — 2026-11-19, found by using it: the reader, its addresses, and what a keyboard meets
+
+A browser audit of every page at six sizes, in two themes and three languages. These are the
+ones in the reader itself; the forms and the wording are the entry below.
+
+- **Six Settings tabs came up empty when reached by address.** Smart+, FluxCast, My Feed,
+  Server, Activity and Speed fetched their data from the tab's click handler and from nowhere
+  else, so a reload, a bookmark or Back landed on "checking" for ever, a model called "", and
+  a My Feed of zero picks. What a tab needs is one decision now (`settingsNeeds`), asked
+  whenever the tab in force changes, by any route.
+- **A link to an article opened the one above it, and reloading walked the address upward.**
+  The article before the target lands as a skeleton and grows by a thousand pixels when its
+  body arrives; nothing held the target at the top, and the scroll position then named its
+  neighbour as the article being read. The target is held where it was put until the reader
+  moves. `/read/<id>` with no feed in front of it opens that article, not the first unread.
+- **The last article of a feed could not be opened at all if it was short.** "Being read" is
+  whichever article is at the top of the pane, and a short last article cannot get there —
+  the scroll runs out first. So a click on the last row opened it for a second and then the
+  one above took its place: title, highlight, address. The true end of a stream is now as
+  tall as the pane.
+- **A save could be undone by the load that started before it.** Paste a key and press Save
+  while the Smart+ tab was still fetching its config, and the fetch — which had read the
+  server before the save — landed second and put "Key not configured" back.
+- **Escape on an armed Sign out or Reset closed Settings instead of disarming**, and a press
+  anywhere else left "Confirm?" armed for as long as the tab stayed open. Escape disarms
+  first; a press elsewhere disarms.
+- **Closing a dialog dropped focus on the page.** It goes back to whatever opened it.
+- **A search kept the name of the feed it was started from**, so "Nothing matched" read as
+  "nothing in Rust Blog" over results from every feed. The heading is the search.
+- **An address naming a feed that is not there said "Your feeds haven't brought anything in
+  yet."** It says the feed is not here and offers All articles. An address this build cannot
+  read resumes where the reader was, rather than overwriting that with All.
+- **In a right-to-left interface, English articles ran right to left**: "15 million web
+  servers" as "million web servers 15", titles cut off at their start, sentences ending
+  ".Newest first". Text a publisher wrote takes its direction from itself.
+- **Text showed through a gap above the floating action bar**, half a line at a time. The bar
+  reaches the top of the pane. Its Previous and Next are disabled at the ends of the list
+  instead of looking live and doing nothing.
+- **The fold control took the room the sidebar's status line needed**, so "8 feeds · 268
+  unread" was always "8 feeds · …". It is beside *Add a feed* now, at the foot.
+- **On a 320px phone the list's header was half the screen.** Its controls are one row that
+  scrolls sideways; three rows of articles fit where two did.
+- A row's reading time no longer ends mid-word; an article that cannot load because the
+  server is away says so instead of shimmering; the shortcut sheet lists `,`.
+
+### Fixed — 2026-11-19, forms, receipts and wording
+
+- **First-run setup says what the username is.** The field was labelled "Username" and then
+  refused anything that was not an email address (`internal/username`: the address is the only
+  handle that survives losing the password). It is now "Username (your email address)", `type=email`
+  with a placeholder and a hint, and the rule is checked in the browser before the round trip, with the
+  same `internal/username` check the server runs. The separate "Email (optional)" box is gone from the
+  form — it was the same string typed twice; `SetupRequest.email` stays on the wire (additive-only).
+- **A refusal names its field, and keeps what was typed.** Setup, sign-in and recovery put the message
+  under the box it is about, mark that box `aria-invalid` with `aria-describedby` pointing at it, and
+  move focus there. A refusal about the username no longer empties both password fields; only a refusal
+  about the password does. Recovery keeps the username that was typed instead of swapping in the loopback
+  prefill, asks for the new password twice like setup (same mismatch message), and signing out puts the
+  address back to the base path rather than `/settings/account`.
+- **Recovery codes are readable.** Set in a monospace face with a slashed zero and no ligatures, and the
+  "Copied" outcome sits beside the Copy button as a polite status.
+- **Clear the backlog can be undone, and cannot be mistaken for Mute.** Saving a window now returns how many
+  articles it marked and the batch that marked them (`UpdateFeedSettingsResponse.backlog_cleared`,
+  `backlog_undo_token`, additive), and the list shows the same "Marked N read / Undo" banner Mark all read
+  does; Undo puts the articles back and sets the window back to what it was. The periodic sweep is not
+  undoable (nobody pressed anything). The row is named "Clear the backlog older than" and its choices are numerals (1 day, 3 days,
+  1 week, 1 month), where Mute's are words. A window with nothing old enough no longer mints an undo batch.
+- **Stored titles and summaries are decoded as they leave the server.** Rows written before the entity fix
+  and never re-served by their feed still showed `&#34;`; `toPBItem` now decodes title and summary
+  (`content_html` and the stored row are untouched).
+- **Adding a feed you already follow says so.** "You already follow Rust Blog" instead of "Added … (already on
+  this server)" (`SubscribeResponse.already_subscribed`), and a discovered feed you already follow is
+  marked "Already following" rather than offered (`FeedCandidate.already_following`; both additive). "No feed
+  here" offers Smart+ follow only where the server can run it: an instance with no key now answers
+  `no_key` to the first, unasked analysis instead of `not_asked`.
+- **Server messages read as sentences.** Every refusal in `client/i18n/en_srv.go` and its English fallback on
+  the wire is capitalised, ends in a full stop and speaks to "you" ("That recovery code or reset link is
+  not valid."). `apierr.Error()` drops the stop before `: cause` so the log line stays one sentence.
+- **FluxCast's requirement rows are drawn like Listening's** (the same rows, the same on/off toggle with its
+  glyph, the hint in the interface face); the Appearance type specimen no longer mentions a screenshot; the
+  language chips wrap from the start of the row; Motion is one three-way control (Full, Reduced, Follow my
+  system) over the same three stored values. "Last fetched" / "Next fetch" read "1h ago" / "in 1h".
+
 ### Changed — 2026-11-19, planner statistics
 
 - **`PRAGMA optimize` now runs.** Production never ran `ANALYZE`, so the query planner worked
@@ -289,8 +372,8 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ### Added — 2026-11-19, more of the window for reading
 
-- **The feeds fold away.** A button at the end of the sidebar's header, or `b`, puts the
-  sidebar away as a 14px strip along the edge of the window and gives its width to the list
+- **The feeds fold away.** A button beside *Add a feed* at the foot of the sidebar, or `b`,
+  puts the sidebar away as a 14px strip along the edge of the window and gives its width to the list
   and the article. Pointing at the strip slides it back out OVER the list — nothing being
   read moves — and it leaves again when the pointer does, including after a feed was
   clicked. Focus arriving by Tab opens it too. The choice is remembered. It does nothing on

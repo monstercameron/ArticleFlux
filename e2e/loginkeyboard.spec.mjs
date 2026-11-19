@@ -102,8 +102,6 @@ test('setup submits on Enter from the last field', async ({ page }) => {
 
   await type(page, '#setup-username', USER);
   await page.keyboard.press('Tab');
-  await page.keyboard.type('cam@example.com', { delay: 15 });
-  await page.keyboard.press('Tab');
   await page.keyboard.type(PASSWORD, { delay: 15 });
   await page.keyboard.press('Tab');
   await page.keyboard.type(PASSWORD, { delay: 15 });

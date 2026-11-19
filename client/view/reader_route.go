@@ -412,6 +412,17 @@ func bootRouteFor(base, path, query string, saved map[string]string, tr i18n.Run
 		return route{sel: effectiveResumeScope(saved, tr), item: effectiveResumeItem(saved)}, false
 	}
 
+	// An address this build cannot read is a bare address with a stray tail, not
+	// a request for All. parseRoute degrades it to All, and boot then treated that
+	// default as chosen — so a mistyped link overwrote the saved place with All on
+	// every machine the reader owns, exactly as the settings address once did (see
+	// below), and silently opened whichever article was first. Resuming is what a
+	// reader who typed nonsense is owed: the writer then corrects the address to
+	// the place they actually landed on.
+	if segs := pathSegments(base, path); !knownRouteHead(segs[0]) {
+		return route{sel: effectiveResumeScope(saved, tr), item: effectiveResumeItem(saved)}, false
+	}
+
 	r := parseRoute(base, path, query, tr)
 
 	// The slideshow is addressed while it runs and is never STARTED by an address

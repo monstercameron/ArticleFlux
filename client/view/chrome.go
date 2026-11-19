@@ -41,12 +41,18 @@ func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 	}{
 		{tr.T("help", "groupAnywhere"), []binding{
 			{"Ctrl K", tr.T("help", "palette")},
+			{",", tr.T("help", "settings")},
 			{"?", tr.T("help", "toggleHelp")},
 			{"1 2 3", tr.T("help", "jumpPanes")},
 			{"/", tr.T("help", "search")},
 			{"f", tr.T("help", "filterFeeds")},
 			{"r", tr.T("help", "refresh")},
 			{"u", tr.T("help", "unreadOnly")},
+			// b and s work from anywhere, so they are listed where a reader looks for
+			// a key that works anywhere — not under the one place each of them is
+			// about (an article, the slideshow), which read as "only there".
+			{"b", tr.T("help", "railFold")},
+			{"s", tr.T("help", "slidesStart")},
 			{"Esc", tr.T("help", "escape")},
 		}},
 		{tr.T("help", "groupRail"), []binding{
@@ -61,7 +67,6 @@ func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 		// and every other key means nothing while it is running — which is the
 		// most useful thing this sheet can say about the mode.
 		{tr.T("help", "groupSlides"), []binding{
-			{"s", tr.T("help", "slidesStart")},
 			{"Space", tr.T("help", "slidesPause")},
 			{"← →", tr.T("help", "slidesStep")},
 			{"v", tr.T("help", "slidesVoice")},
@@ -69,7 +74,6 @@ func helpSheet(tr i18n.Runtime, open bool) ui.Node {
 		}},
 		{tr.T("help", "groupArticle"), []binding{
 			{"w", tr.T("help", "focusMode")},
-			{"b", tr.T("help", "railFold")},
 			{"o", tr.T("help", "openOriginal")},
 			{"l", tr.T("help", "like")},
 			{"d", tr.T("help", "dislike")},

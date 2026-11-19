@@ -246,3 +246,13 @@ func WriteClipboard(text string, done func(ok bool)) {
 		done(false)
 	}
 }
+
+func FocusedClosest(selector string) bool { return false }
+
+func OnPressOutside(insideSelector string, fn func()) Listener { return Listener{} }
+
+func RememberFocus(name string) {}
+
+func RestoreFocus(name string) {}
+
+func CoarsePointer() bool { return false }

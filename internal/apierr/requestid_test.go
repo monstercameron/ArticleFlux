@@ -27,8 +27,8 @@ func TestRequestIDSurvivesOnAClassifiedError(t *testing.T) {
 	}
 	// The safe message is the contract §20.7 states, and the cause is what it
 	// exists to keep off the wire. Stamping must not smuggle either.
-	if st.Message() != "internal error" {
-		t.Errorf("message = %q, want the safe fallback %q", st.Message(), "internal error")
+	if st.Message() != "Something went wrong on the server." {
+		t.Errorf("message = %q, want the safe fallback %q", st.Message(), "Something went wrong on the server.")
 	}
 	if got := st.Message() + RequestIDOf(err); strings.Contains(got, "on fire") {
 		t.Error("the underlying cause reached the client")

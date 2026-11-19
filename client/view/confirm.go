@@ -119,3 +119,8 @@ func armableRemoveFor(tr i18n.Runtime, key, armed, forItem, armAction, label, wa
 		),
 	)
 }
+
+// armedInlineSelector is what an in-place confirmation looks like in the DOM: the
+// armed button itself, or the Cancel that appears beside it. data-armed is stamped
+// by kitArm, which is the only thing that draws one.
+var armedInlineSelector = `[data-armed="true"], [data-action="` + actMyFeedDeleteCancel + `"], [data-action="` + actMyFeedResetCancel + `"]`

@@ -1,4 +1,4 @@
-import { test, expect, boot, openSettings } from './fixtures.mjs';
+import { test, expect, boot, openSettings, signIn } from './fixtures.mjs';
 
 /**
  * Every settings tab, each asserted to render ITS OWN content.
@@ -82,4 +82,51 @@ test.describe('settings', () => {
     await expect(current).toHaveCount(1);
     await expect(current).toHaveAttribute('data-value', 'feeds');
   });
+});
+
+/**
+ * A tab that needs a fetch has it however it was reached.
+ *
+ * The fetches used to hang off the tab CLICK alone, so the address (and with it a
+ * reload, and Back) opened these tabs on whatever state the page had when it
+ * booted: "checking" for ever on FluxCast's server-key row, a model field reading
+ * "Default:" with no model after it, a Server tab that was only its heading. The
+ * assertions are the populated state of each, not the absence of an error — an
+ * empty panel has none to show.
+ */
+test.describe('settings tabs reached by address', () => {
+  async function arrive(page, tab) {
+    await page.goto(`/settings/${tab}`);
+    await signIn(page);
+    await expect(page.locator('.pane-settings')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.set-panel')).toBeVisible();
+  }
+
+  for (const reload of [false, true]) {
+    const how = reload ? 'after a reload' : 'on arrival';
+
+    test(`FluxCast resolves its server-key row ${how}`, async ({ page }) => {
+      await arrive(page, 'podcast');
+      if (reload) { await page.reload(); await expect(page.locator('.set-panel')).toBeVisible({ timeout: 60_000 }); }
+      await expect(page.locator('.set-panel')).not.toContainText(/\bchecking\b/, { timeout: 15_000 });
+    });
+
+    test(`Smart+ names the default model ${how}`, async ({ page }) => {
+      await arrive(page, 'smart');
+      if (reload) { await page.reload(); await expect(page.locator('.set-panel')).toBeVisible({ timeout: 60_000 }); }
+      await expect(page.locator('.set-panel')).toContainText(/Default: \S+/, { timeout: 15_000 });
+    });
+
+    test(`My Feed lists the feeds competing ${how}`, async ({ page }) => {
+      await arrive(page, 'myfeed');
+      if (reload) { await page.reload(); await expect(page.locator('.set-panel')).toBeVisible({ timeout: 60_000 }); }
+      await expect(page.locator('.set-panel')).toContainText('Alpha Journal', { timeout: 15_000 });
+    });
+
+    test(`Server shows the build ${how}`, async ({ page }) => {
+      await arrive(page, 'server');
+      if (reload) { await page.reload(); await expect(page.locator('.set-panel')).toBeVisible({ timeout: 60_000 }); }
+      await expect(page.locator('.set-panel')).toContainText(/Commit/i, { timeout: 15_000 });
+    });
+  }
 });

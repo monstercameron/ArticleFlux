@@ -649,6 +649,11 @@ message SubscribeResponse {
   // as "no suggestion" rather than as an error.
   string suggested_category = 3;
   bool suggested_category_is_new = 4;
+  // already_subscribed is true when THIS reader followed the feed before the call.
+  // It is not source_existed: that says somebody on the server reads it, so it is
+  // true for a feed the reader has never seen. This is the one the receipt needs
+  // to say "you already follow it" instead of "added".
+  bool already_subscribed = 5;
 }
 
 message UnsubscribeRequest { string source_id = 1; }
@@ -722,6 +727,9 @@ message FeedCandidate {
   // conventional path). Shown, because "we found this where the site says it is"
   // and "we guessed this address" are different claims.
   string how = 4;
+  // already_following is true when this reader subscribes to the feed already, so
+  // the dialog can mark it instead of offering it as something new.
+  bool already_following = 5;
 }
 
 // ScrapeRule is §14.2's selector set, on the wire so the reader can see it and
@@ -1004,7 +1012,20 @@ message GetFeedSettingsRequest { string source_id = 1; }
 // alternative — two near-identical messages that drift the first time one is
 // edited — is a worse answer than one wrapper each.
 message GetFeedSettingsResponse { FeedSettings settings = 1; }
-message UpdateFeedSettingsResponse { FeedSettings settings = 1; }
+message UpdateFeedSettingsResponse {
+  FeedSettings settings = 1;
+  // backlog_cleared is how many unread articles saving a clear_backlog_days window
+  // marked read as it was applied, and backlog_undo_token is the batch that
+  // marked them — the same token MarkAllRead returns, redeemed through
+  // UndoMarkAllRead. Both are zero/empty when nothing was cleared, which is the
+  // case for every save that did not touch the window. They exist because the
+  // window is applied at SAVE time, and a save that silently turns a pile of
+  // unread articles into none, with no count and no way back, is the one
+  // irreversible press in the settings panel. The periodic sweep stays
+  // unannounced and unundoable: nobody pressed anything.
+  int32 backlog_cleared = 2;
+  string backlog_undo_token = 3;
+}
 
 // FeedSettings is one feed's configuration, split by WHO IT BELONGS TO.
 //

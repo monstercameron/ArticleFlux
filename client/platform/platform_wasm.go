@@ -997,6 +997,12 @@ func OnScrollNearTop(rootSelector, matchSelector string, slack int, fn func()) L
 // layout produces a delta of zero, which silently does nothing — the failure
 // mode looks exactly like not having called this at all.
 func KeepScrollAnchored(selector string) {
+	// A hold (holdChildAtTop) is already doing this for the article the pane was
+	// just opened on, continuously, and a second correction on top of it would
+	// add the same height twice.
+	if holdStop != nil {
+		return
+	}
 	doc := js.Global().Get("document")
 	el := doc.Call("querySelector", selector)
 	if !el.Truthy() {
@@ -1624,6 +1630,9 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 			// who turned motion off here should not still get a scroll animation
 			// because their machine never had an opinion.
 			if smooth && !MotionReduced() {
+				if holdStop != nil {
+					holdStop()
+				}
 				opts := js.Global().Get("Object").New()
 				opts.Set("top", child.Get("offsetTop"))
 				opts.Set("behavior", "smooth")
@@ -1632,8 +1641,9 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 				return nil
 			}
 			el.Set("scrollTop", child.Get("offsetTop"))
-			// Instant: the position is final the moment it is assigned, so there
-			// is nothing to wait for.
+			// Final the moment it is assigned, so there is nothing to wait for —
+			// but not necessarily STAYING final: see holdChildAtTop.
+			holdChildAtTop(el, childSelector)
 			if done != nil {
 				done()
 			}
@@ -2874,4 +2884,224 @@ func WriteClipboard(text string, done func(ok bool)) {
 		return nil
 	})
 	promise.Call("then", onResolved, onRejected)
+}
+
+// holdStop ends the hold now in force, if any. One at a time: a second open
+// supersedes the first, whose target is no longer where the reader is going.
+var holdStop func()
+
+// holdChildAtTop keeps a child where ScrollChildToTop put it while the layout
+// above it settles, until the reader takes the scroll over.
+//
+// Opening an article by address (or by a click that replaces the stream) seeds
+// the article BEFORE it so scrolling up works at once, then scrolls the target
+// to the top — and that seed is still a skeleton at that moment. When its body
+// arrives it grows by a thousand pixels or two, and with nothing holding the
+// target the pane is now showing the middle of the previous article, whose id
+// the scroll-spy then writes into the address. The browser's own scroll anchoring
+// does not catch this: measured, `scrollTop` stayed put while the target's
+// offset moved by 1,200px, with and without the sticky action bar, so it cannot
+// be left to.
+//
+// So the same correction KeepScrollAnchored makes, made continuously and for
+// whatever changes the layout: a MutationObserver (a body landing, a skeleton
+// being replaced) and the capture-phase `load` of an image. Both run before the
+// next paint, so there is no frame showing the shifted pane and nothing for the
+// scroll-spy to read.
+//
+// It ends on the first thing that is the READER moving the pane — a wheel, a
+// touch, a press on the scrollbar, a key — because from then on their position
+// is theirs and correcting it would be the pane fighting them. The time cap is
+// for the reader who does none of those: a hold that never ended would still be
+// adding a delta to a pane they scrolled by some means this does not know about.
+func holdChildAtTop(el js.Value, childSelector string) {
+	if holdStop != nil {
+		holdStop()
+	}
+	doc := js.Global().Get("document")
+	child := doc.Call("querySelector", childSelector)
+	if !child.Truthy() {
+		return
+	}
+	last := child.Get("offsetTop").Float()
+
+	var onMutate, onLoad, onInput js.Func
+	var obs js.Value
+	stopped := false
+	var timer js.Value
+	var capFn js.Func
+	opts := js.Global().Get("Object").New()
+	opts.Set("passive", true)
+	opts.Set("capture", true)
+	inputs := []string{"wheel", "touchstart", "pointerdown", "keydown"}
+
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		holdStop = nil
+		obs.Call("disconnect")
+		el.Call("removeEventListener", "load", onLoad, opts)
+		for _, ev := range inputs {
+			doc.Call("removeEventListener", ev, onInput, opts)
+		}
+		js.Global().Call("clearTimeout", timer)
+		onMutate.Release()
+		onLoad.Release()
+		onInput.Release()
+		capFn.Release()
+	}
+	holdStop = stop
+
+	// Re-queried each time: the reconciler may replace the target's node as well
+	// as resize what is above it.
+	correct := func() {
+		c := doc.Call("querySelector", childSelector)
+		if !c.Truthy() {
+			return
+		}
+		now := c.Get("offsetTop").Float()
+		if d := now - last; d != 0 {
+			el.Set("scrollTop", el.Get("scrollTop").Float()+d)
+		}
+		last = now
+	}
+	onMutate = js.FuncOf(func(_ js.Value, _ []js.Value) any { correct(); return nil })
+	onLoad = js.FuncOf(func(_ js.Value, _ []js.Value) any { correct(); return nil })
+	onInput = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(); return nil })
+
+	obs = js.Global().Get("MutationObserver").New(onMutate)
+	cfg := js.Global().Get("Object").New()
+	cfg.Set("childList", true)
+	cfg.Set("subtree", true)
+	cfg.Set("characterData", true)
+	obs.Call("observe", el, cfg)
+	el.Call("addEventListener", "load", onLoad, opts)
+	for _, ev := range inputs {
+		doc.Call("addEventListener", ev, onInput, opts)
+	}
+	capFn = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(); return nil })
+	// A frame loop beside the observers, for the shifts that mutate nothing: a
+	// font arriving, a skeleton animating out. It releases itself on the first
+	// frame after the hold ends, because a pending frame calling a released func
+	// is a panic.
+	var tick js.Func
+	tick = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if stopped {
+			tick.Release()
+			return nil
+		}
+		correct()
+		js.Global().Call("requestAnimationFrame", tick)
+		return nil
+	})
+	js.Global().Call("requestAnimationFrame", tick)
+	timer = js.Global().Call("setTimeout", capFn, 12000)
+}
+
+// FocusedClosest reports whether focus is on, or inside, an element matching the
+// selector. FocusedIn asks about one container (the first match); this asks about
+// ANY, which is what a rule over "every armed control on the screen" needs.
+func FocusedClosest(selector string) bool {
+	active := js.Global().Get("document").Get("activeElement")
+	if !active.Truthy() {
+		return false
+	}
+	return active.Call("closest", selector).Truthy()
+}
+
+// OnPressOutside calls fn whenever a pointer goes down anywhere that is not on or
+// inside an element matching insideSelector.
+//
+// For a state that should not outlive the reader's attention to it — an armed
+// destructive control, which is a question, not a setting. Bound to the document
+// in the capture phase so a click that something else handles still counts, and
+// on `pointerdown` rather than `click` because the press that leaves is the
+// moment attention left; a click can be a second long.
+func OnPressOutside(insideSelector string, fn func()) Listener {
+	doc := js.Global().Get("document")
+	f := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 {
+			return nil
+		}
+		t := args[0].Get("target")
+		if t.Truthy() && t.Get("closest").Truthy() && t.Call("closest", insideSelector).Truthy() {
+			return nil
+		}
+		fn()
+		return nil
+	})
+	opts := js.Global().Get("Object").New()
+	opts.Set("capture", true)
+	opts.Set("passive", true)
+	doc.Call("addEventListener", "pointerdown", f, opts)
+	return Listener{target: doc, event: "pointerdown", fn: f, capture: true}
+}
+
+// remembered holds what had focus when each named surface opened.
+var remembered = map[string]js.Value{}
+
+// RememberFocus records which element has focus now, under a name, so that
+// RestoreFocus can return to it when the surface that is about to take focus
+// closes. A dialog moves focus in, and without somewhere to put it back, closing
+// it drops focus on <body> — a keyboard reader starts again from the top of the
+// page, and a screen reader loses the place it was in.
+//
+// Nothing is recorded when focus is on <body> already: there is nothing to
+// return to, and a stale element from an earlier open must not be returned to
+// instead.
+func RememberFocus(name string) {
+	doc := js.Global().Get("document")
+	active := doc.Get("activeElement")
+	if !active.Truthy() || active.Equal(doc.Get("body")) {
+		delete(remembered, name)
+		return
+	}
+	remembered[name] = active
+}
+
+// RestoreFocus puts focus back where RememberFocus found it, if that element is
+// still in the document and can take it, and forgets it either way. The row that
+// opened a dialog can be gone by the time the dialog closes (an unsubscribed
+// feed), and focusing a detached node does nothing quietly — so a reader would
+// be left on <body> with no way to tell it had been attempted.
+//
+// A frame later, so the dialog's own teardown has finished and nothing is
+// about to take focus back from this.
+func RestoreFocus(name string) {
+	el, ok := remembered[name]
+	if !ok {
+		return
+	}
+	delete(remembered, name)
+	var f js.Func
+	f = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		f.Release()
+		doc := js.Global().Get("document")
+		if !el.Truthy() || !doc.Call("contains", el).Bool() {
+			return nil
+		}
+		// Not stolen from a reader who has already moved on — but a dialog that
+		// is still fading out keeps its markup (see scrim), so focus left in it
+		// counts as nowhere.
+		active := doc.Get("activeElement")
+		if active.Truthy() && !active.Equal(doc.Get("body")) && !active.Equal(el) &&
+			!active.Call("closest", ".pal-scrim").Truthy() {
+			return nil
+		}
+		el.Call("focus")
+		return nil
+	})
+	js.Global().Call("requestAnimationFrame", f)
+}
+
+// CoarsePointer reports whether the primary pointer is a finger: a phone or a
+// tablet, which has no keyboard to press a key on. Copy that tells a reader to
+// "press s" is an instruction to do something they cannot.
+func CoarsePointer() bool {
+	if !js.Global().Get("matchMedia").Truthy() {
+		return false
+	}
+	return boolOf(js.Global().Call("matchMedia", "(pointer: coarse)"), "matches")
 }

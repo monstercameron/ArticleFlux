@@ -190,6 +190,49 @@ test.describe('every dialog', () => {
   // present before it ever has" premise (mountedBeforeOpen was never really
   // false any more) and the "hard cut" premise (nothing tears the subtree out
   // mid-transition any more) in the same change, so the standard `cycle()`
+
+  // Closing a dialog gives focus back to whatever opened it. Focus moves INTO a
+  // dialog on open (and the trap holds), so without a way back, closing dropped
+  // it on <body> and a keyboard reader began again from the top of the page.
+  test('closing Feed settings returns focus to the gear that opened it', async ({ page }) => {
+    await boot(page);
+    const rail = await openRail(page);
+    const row = rail.locator('.feed-slot', { hasText: 'Alpha Journal' }).first();
+    const gear = row.getByRole('button', { name: /Settings for Alpha Journal/ });
+    await row.hover();
+    await gear.click({ force: true });
+    await expect(page.locator('[aria-label="Feed settings"][role="dialog"]')).toBeVisible();
+    await closeButton(page, 'Feed settings').click();
+    await expect(gear).toBeFocused();
+
+    await row.hover();
+    await gear.click({ force: true });
+    await expect(page.locator('.pal-scrim:has([aria-label="Feed settings"])')).toHaveAttribute('data-open', 'true');
+    await page.keyboard.press('Escape');
+    await expect(gear).toBeFocused();
+  });
+
+  test('closing Add a feed returns focus to the control that opened it', async ({ page }) => {
+    await boot(page);
+    await openRail(page);
+    const opener = page.locator('[data-action="add-feed-open"]');
+    await opener.click();
+    await expect(page.locator('[aria-label="Add a feed"][role="dialog"]')).toBeVisible();
+    await closeButton(page, 'Add a feed').click();
+    await expect(opener).toBeFocused();
+  });
+
+  test('closing the shortcut sheet returns focus to where it was', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop',
+      'the shortcut sheet is opened by a key; a phone has no keyboard');
+    await boot(page);
+    const opener = page.locator('[data-action="help-open"]').first();
+    await opener.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[aria-label="Keyboard shortcuts"][role="dialog"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(opener).toBeFocused();
+  });
   // call — the one all four other siblings above use — is the correct test.
   test('Tag settings opens, closes, and is untabbable when closed', async ({ page }) => {
     await boot(page);

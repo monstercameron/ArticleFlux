@@ -66,7 +66,7 @@ func (s *EventServer) WatchEvents(req *pb.WatchEventsRequest,
 	ctx := stream.Context()
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+		return errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 	}
 
 	sub := s.bus.Subscribe(sc.TenantID, sc.UserID)
@@ -95,7 +95,7 @@ func (s *EventServer) WatchEvents(req *pb.WatchEventsRequest,
 			}
 		case rerr != nil:
 			s.log.Error("replaying events", "err", rerr)
-			return errKey(codes.Internal, "srv.internal", "internal error", nil)
+			return errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 		default:
 			for _, chunk := range chunkEvents(past, eventBatchMax) {
 				if serr := stream.Send(&pb.WatchEventsResponse{Events: toPB(chunk)}); serr != nil {

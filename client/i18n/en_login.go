@@ -24,7 +24,11 @@ func init() {
 		// interpolated — a translator must not be able to change it.
 		"footPrefix": "No account? Whoever runs this server creates one with ",
 
-		"errEmpty": "Enter a username and a password.",
+		// One per box, because the message is wired to the box it names
+		// (login.go's faultAria) and the caret goes there; a joint "enter a
+		// username and a password" pointed at neither.
+		"errNoUsername": "Enter your username.",
+		"errNoPassword": "Enter your password.",
 		// {err} is the transport's own text, appended when the dial itself
 		// fails and there is no gRPC status to read.
 		"errDial": "Can't reach the server: {err}",
@@ -74,11 +78,15 @@ func init() {
 		// it wrong three times against a lockout.
 		"recoverCodeHint": "Dashes and capitals don't matter in a code. A passphrase is taken exactly as you type it.",
 		"recoverPassword": "New password",
+		// Asked twice, as setup asks: this sets the credential every later
+		// sign-in must match, on a screen reached by somebody already locked out.
+		"recoverConfirm": "New password again",
 
 		"recoverSubmit":  "Reset password and sign in",
 		"recoverWorking": "Resetting…",
 
-		"errRecoverEmpty": "Enter your recovery code or passphrase, and a new password.",
+		"errRecoverNoCode":     "Enter your recovery code, passphrase or reset link.",
+		"errRecoverNoPassword": "Choose a new password.",
 		// A username is needed for a code and not for a reset link, so this only
 		// ever fires on the code path. Saying which one is missing beats a
 		// generic "fill in the form" on a screen with three fields.

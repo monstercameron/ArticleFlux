@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/monstercameron/ArticleFlux/internal/apierr"
+	"github.com/monstercameron/ArticleFlux/internal/entities"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/reader"
 	"github.com/monstercameron/ArticleFlux/internal/recommendjob"
@@ -526,6 +527,9 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	// Asked BEFORE subscribing: afterwards every answer is yes. A failed lookup
+	// says no, which is the old receipt and never a wrong one.
+	already, _ := s.svc.Following(ctx, sc, req.GetUrl())
 	f, existed, description, err := s.svc.Subscribe(ctx, sc, req.GetUrl(), req.GetTitle(), req.GetFolderId())
 	if err != nil {
 		// A category that is not this user's is NotFound like every other
@@ -544,7 +548,8 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 			FeedUrl: f.FeedURL, SiteUrl: f.SiteURL, FolderId: f.FolderID,
 			UnreadCount: int32(f.UnreadCount),
 		},
-		SourceExisted: existed,
+		SourceExisted:     existed,
+		AlreadySubscribed: already[req.GetUrl()],
 	}
 	s.suggestCategory(ctx, sc, req.GetFolderId(), f.Title, description, out)
 	return out, nil
@@ -815,7 +820,14 @@ func pageLimit(requested int) int {
 func toPBItem(it store.Item, withContent bool) *pb.Item {
 	out := &pb.Item{
 		Id: it.ID, SourceId: it.SourceID, SourceTitle: it.SourceTitle,
-		Title: it.Title, Author: it.Author, Summary: it.Summary,
+		// Decoded as the row leaves, not only as it is stored. The poller decodes
+		// a title and a summary as it normalises an entry, but a row stored before
+		// that existed is rewritten only if its feed serves the entry again — and
+		// a feed that never does (an archive, a dead blog) showed &#34; in the
+		// list for ever. Decode is a no-op on text without an ampersand, which is
+		// nearly all of it, and the stored row is left exactly as it was: this is
+		// the wire's view of it, and content_html is HTML on purpose.
+		Title: entities.Decode(it.Title), Author: it.Author, Summary: entities.Decode(it.Summary),
 		Url: it.URL, PublishedAt: it.PublishedAt,
 		Read: it.Read, Starred: it.Starred, Rating: int32(it.Rating),
 		WordCount: int32(it.WordCount), ImageUrl: it.ImageURL,
@@ -1040,11 +1052,15 @@ func (s *ReaderServer) UpdateFeedSettings(ctx context.Context, req *pb.UpdateFee
 		v := int(req.GetClearBacklogDays())
 		p.ClearBacklogDays = &v
 	}
-	f, err := s.svc.UpdateFeedSettings(ctx, sc, req.GetSourceId(), p)
+	f, cleared, err := s.svc.UpdateFeedSettingsCleared(ctx, sc, req.GetSourceId(), p)
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.UpdateFeedSettingsResponse{Settings: toPBFeedSettings(f)}, nil
+	return &pb.UpdateFeedSettingsResponse{
+		Settings:         toPBFeedSettings(f),
+		BacklogCleared:   int32(cleared.Marked),
+		BacklogUndoToken: cleared.UndoToken,
+	}, nil
 }
 
 func toPBFeedSettings(f store.FeedSettings) *pb.FeedSettings {

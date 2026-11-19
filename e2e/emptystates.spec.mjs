@@ -28,7 +28,11 @@ test.describe('empty states', () => {
     await page.locator('[data-role="search"]').press('Enter');
 
     const empty = page.locator('.pane-list .empty');
-    await expect(empty.locator('strong')).toHaveText('Nothing matched');
+    // Said as a fact about every feed, and under a heading that names the search:
+    // the search reaches every feed, so the name of whichever one was selected when
+    // it began would make "nothing matched" read as "nothing in this feed".
+    await expect(page.locator('.pane-list .list-title')).toHaveText('Results for zzznonexistentqueryzzz');
+    await expect(empty.locator('strong')).toHaveText('Nothing matched anywhere');
     await expect(empty).toContainText('Try fewer words, or clear the search box.');
   });
 

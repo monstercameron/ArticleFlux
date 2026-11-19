@@ -418,7 +418,7 @@ func TestTheBacklogRowPointsAtMarkAllReadAndAddsNoSecondButton(t *testing.T) {
 	if n := strings.Count(out, `data-action="fs-markall"`); n != 1 {
 		t.Errorf("%d Mark all read buttons, want exactly 1", n)
 	}
-	for _, want := range []string{"Clear the backlog", "Mark all read, below"} {
+	for _, want := range []string{"Clear the backlog older than", "Mark all read, below"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the panel does not say %q", want)
 		}

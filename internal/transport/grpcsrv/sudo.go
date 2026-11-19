@@ -57,7 +57,7 @@ import (
 // their password.
 func errSudoRequired(action authn.SudoAction) error {
 	return errKey(codes.PermissionDenied, "srv.sudoRequired",
-		"this needs your password again", map[string]string{"action": string(action)})
+		"This needs your password again.", map[string]string{"action": string(action)})
 }
 
 // requireSudo refuses unless the caller re-authenticated recently.
@@ -75,7 +75,7 @@ func errSudoRequired(action authn.SudoAction) error {
 func (s *AuthServer) requireSudo(ctx context.Context, action authn.SudoAction) (store.Scope, error) {
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return store.Scope{}, errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 	}
 	if !authn.NeedsSudo(action) {
 		return sc, nil
@@ -94,7 +94,7 @@ func (s *AuthServer) requireSudo(ctx context.Context, action authn.SudoAction) (
 			// The session resolved a moment ago and does not now: revoked
 			// underneath us, or expired between the two queries. Either way the
 			// answer is the login screen, not a password prompt.
-			return store.Scope{}, errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+			return store.Scope{}, errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 		}
 		// A stamp that cannot be read FAILS CLOSED, which is the opposite of the
 		// login ledger's choice a few files over — and deliberately. There, an
@@ -159,7 +159,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return nil, errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+		return nil, errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 	}
 	token := bearerToken(ctx)
 	if token == "" {
@@ -170,7 +170,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 				SudoExpiresAt: time.Now().UTC().Add(authn.SudoWindow).Format(time.RFC3339),
 			}, nil
 		}
-		return nil, errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+		return nil, errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 	}
 
 	// Rate limited on the SESSION, not the username. An attacker guessing here
@@ -181,7 +181,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 	key := "s:" + secret.HashToken(token)
 	if !s.limiter.allow(key) {
 		return nil, errKey(codes.ResourceExhausted, "srv.tooManyAttempts",
-			"too many attempts; wait a minute and try again", nil)
+			"Too many attempts. Wait a minute and try again.", nil)
 	}
 
 	// The durable half, on top of the limiter above, for the same reason Login
@@ -207,7 +207,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 	hash, err := s.repo.PasswordHashFor(ctx, sc)
 	if err != nil {
 		s.log.Error("reading the password hash for re-authentication", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	ok, _, verr := secret.VerifyPassword(req.GetPassword(), hash, secret.Active())
 	if verr != nil || !ok {
@@ -219,7 +219,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 		s.log.Warn("re-authentication failed", "user", sc.UserID, "client", addr)
 		// Not errBadCredentials: that message names a username, and there is no
 		// username in this exchange — the session already said who this is.
-		return nil, errKey(codes.Unauthenticated, "srv.badPassword", "that password is not right", nil)
+		return nil, errKey(codes.Unauthenticated, "srv.badPassword", "That password is not right.", nil)
 	}
 	s.limiter.reset(key)
 	// Clears the durable count too — `FailureCounts` reads "since the last ok",
@@ -231,7 +231,7 @@ func (s *AuthServer) Reauthenticate(ctx context.Context, req *pb.ReauthenticateR
 	if err := s.repo.StampAuthenticated(ctx, secret.HashToken(token),
 		now.Format(time.RFC3339Nano)); err != nil {
 		s.log.Error("stamping the re-authentication", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// A sudo window opening is worth a row: for the next fifteen minutes this
 	// session can change the password and replace the recovery sheet, and if it
@@ -281,16 +281,16 @@ func (s *AuthServer) proveCurrentPassword(ctx context.Context, sc store.Scope, p
 	}
 	token := bearerToken(ctx)
 	if token == "" {
-		return errKey(codes.Unauthenticated, "srv.noSession", "sign in first", nil)
+		return errKey(codes.Unauthenticated, "srv.noSession", "Sign in first.", nil)
 	}
 	if password == "" {
-		return errKey(codes.Unauthenticated, "srv.badPassword", "that password is not right", nil)
+		return errKey(codes.Unauthenticated, "srv.badPassword", "That password is not right.", nil)
 	}
 
 	key := "s:" + secret.HashToken(token)
 	if !s.limiter.allow(key) {
 		return errKey(codes.ResourceExhausted, "srv.tooManyAttempts",
-			"too many attempts; wait a minute and try again", nil)
+			"Too many attempts. Wait a minute and try again.", nil)
 	}
 	ledgerKey, addr := sudoLedgerKey(sc.UserID), clientKey(ctx)
 	if d, ok := s.lockout(ctx, ledgerKey, addr); !ok {
@@ -310,7 +310,7 @@ func (s *AuthServer) proveCurrentPassword(ctx context.Context, sc store.Scope, p
 	hash, err := s.repo.PasswordHashFor(ctx, sc)
 	if err != nil {
 		s.log.Error("reading the password hash to confirm a credential change", "err", err)
-		return errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	ok, _, verr := secret.VerifyPassword(password, hash, secret.Active())
 	if verr != nil || !ok {
@@ -318,7 +318,7 @@ func (s *AuthServer) proveCurrentPassword(ctx context.Context, sc store.Scope, p
 		s.record(ctx, ledgerKey, addr, store.LoginBadPassword)
 		s.log.Warn("credential change refused: wrong password",
 			"user", sc.UserID, "client", addr)
-		return errKey(codes.Unauthenticated, "srv.badPassword", "that password is not right", nil)
+		return errKey(codes.Unauthenticated, "srv.badPassword", "That password is not right.", nil)
 	}
 	s.limiter.reset(key)
 	// Clears the durable count for the same reason Reauthenticate clears it:
@@ -347,7 +347,7 @@ func (s *AuthServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordR
 	username, _, err := s.repo.Identity(ctx, sc)
 	if err != nil {
 		s.log.Error("reading the identity for a password change", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// The same policy the CLI applies, including the username check: a password
 	// that contains the account name is the one an attacker guesses first, and
@@ -359,7 +359,7 @@ func (s *AuthServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordR
 	hash, err := secret.HashPassword(req.GetNewPassword(), secret.Active())
 	if err != nil {
 		s.log.Error("hashing a new password", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 
 	// The family tied to THIS session, so it survives alongside the session
@@ -384,7 +384,7 @@ func (s *AuthServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordR
 		secret.HashToken(bearerToken(ctx)), keepFamily, now)
 	if err != nil {
 		s.log.Error("changing password and revoking sessions", "err", err, "user", sc.UserID)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	s.log.InfoContext(ctx, "password changed", "user", sc.UserID, "sessions_ended", ended,
 		"families_ended", familiesEnded)
@@ -412,7 +412,7 @@ func (s *AuthServer) RegenerateRecoveryCodes(ctx context.Context, _ *pb.Regenera
 	sheet, err := authn.GenerateRecoveryCodes(authn.RecoveryCodeCount)
 	if err != nil {
 		s.log.Error("generating recovery codes", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// recoveryCodeHash, NOT secret.HashToken: the stored hash has to be over the
 	// same normalised form redemption computes, or no code ever matches. See its
@@ -424,7 +424,7 @@ func (s *AuthServer) RegenerateRecoveryCodes(ctx context.Context, _ *pb.Regenera
 	}
 	if err := s.repo.ReplaceRecoveryCodes(ctx, sc, hashes); err != nil {
 		s.log.Error("storing recovery codes", "err", err)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	s.log.InfoContext(ctx, "recovery codes regenerated", "user", sc.UserID, "count", len(sheet))
 	// This decides who can get back in WITHOUT a password. Somebody on a borrowed
@@ -479,7 +479,7 @@ func (s *AuthServer) ChangeUsername(ctx context.Context, req *pb.ChangeUsernameR
 	current, _, ierr := s.repo.Identity(ctx, sc)
 	if ierr != nil {
 		s.log.Error("reading the identity for a rename", "err", ierr)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// A rename to the name it already has is a no-op rather than an error. The
 	// reader asked for a state, and the state is already true; refusing would be
@@ -491,10 +491,10 @@ func (s *AuthServer) ChangeUsername(ctx context.Context, req *pb.ChangeUsernameR
 	if err := s.repo.UpdateUsername(ctx, sc, name); err != nil {
 		if errors.Is(err, store.ErrUsernameTaken) {
 			return nil, errKey(codes.AlreadyExists, "srv.usernameTaken",
-				"that username is already in use", nil)
+				"That username is already in use.", nil)
 		}
 		s.log.Error("renaming an account", "err", err, "user", sc.UserID)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	s.log.InfoContext(ctx, "username changed", "user", sc.UserID)
 	// The OLD name is recorded and the new one is not, which is the way round
@@ -562,7 +562,7 @@ func (s *AuthServer) SetRecoveryPassphrase(ctx context.Context, req *pb.SetRecov
 	if strings.TrimSpace(phrase) == "" {
 		if cerr := s.repo.ClearRecoveryPassphrase(ctx, sc); cerr != nil {
 			s.log.Error("clearing a recovery passphrase", "err", cerr)
-			return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+			return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 		}
 		s.trail.Record(ctx, audit.Event{
 			Action: audit.ActionRecoveryPassphrase, Actor: sc.UserID, Tenant: sc.TenantID,
@@ -574,7 +574,7 @@ func (s *AuthServer) SetRecoveryPassphrase(ctx context.Context, req *pb.SetRecov
 	username, _, ierr := s.repo.Identity(ctx, sc)
 	if ierr != nil {
 		s.log.Error("reading the identity for a passphrase change", "err", ierr)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	// The current password goes in, so "the same as your password" can be
 	// refused — the two credentials exist so that losing one leaves the other,
@@ -586,11 +586,11 @@ func (s *AuthServer) SetRecoveryPassphrase(ctx context.Context, req *pb.SetRecov
 	hash, herr := secret.HashPassword(phrase, secret.Active())
 	if herr != nil {
 		s.log.Error("hashing a recovery passphrase", "err", herr)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	if serr := s.repo.SetRecoveryPassphrase(ctx, sc, hash); serr != nil {
 		s.log.Error("storing a recovery passphrase", "err", serr)
-		return nil, errKey(codes.Internal, "srv.internal", "internal error", nil)
+		return nil, errKey(codes.Internal, "srv.internal", "Something went wrong on the server.", nil)
 	}
 	s.log.InfoContext(ctx, "recovery passphrase set", "user", sc.UserID)
 	// The same weight as regenerating the sheet: this decides who can get back

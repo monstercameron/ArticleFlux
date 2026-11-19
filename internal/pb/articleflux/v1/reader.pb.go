@@ -1933,8 +1933,13 @@ type SubscribeResponse struct {
 	// as "no suggestion" rather than as an error.
 	SuggestedCategory      string `protobuf:"bytes,3,opt,name=suggested_category,json=suggestedCategory,proto3" json:"suggested_category,omitempty"`
 	SuggestedCategoryIsNew bool   `protobuf:"varint,4,opt,name=suggested_category_is_new,json=suggestedCategoryIsNew,proto3" json:"suggested_category_is_new,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// already_subscribed is true when THIS reader followed the feed before the call.
+	// It is not source_existed: that says somebody on the server reads it, so it is
+	// true for a feed the reader has never seen. This is the one the receipt needs
+	// to say "you already follow it" instead of "added".
+	AlreadySubscribed bool `protobuf:"varint,5,opt,name=already_subscribed,json=alreadySubscribed,proto3" json:"already_subscribed,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SubscribeResponse) Reset() {
@@ -1991,6 +1996,13 @@ func (x *SubscribeResponse) GetSuggestedCategory() string {
 func (x *SubscribeResponse) GetSuggestedCategoryIsNew() bool {
 	if x != nil {
 		return x.SuggestedCategoryIsNew
+	}
+	return false
+}
+
+func (x *SubscribeResponse) GetAlreadySubscribed() bool {
+	if x != nil {
+		return x.AlreadySubscribed
 	}
 	return false
 }
@@ -2440,9 +2452,12 @@ type FeedCandidate struct {
 	// How it was found: "declared" (a <link rel="alternate">) or "probed" (a
 	// conventional path). Shown, because "we found this where the site says it is"
 	// and "we guessed this address" are different claims.
-	How           string `protobuf:"bytes,4,opt,name=how,proto3" json:"how,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	How string `protobuf:"bytes,4,opt,name=how,proto3" json:"how,omitempty"`
+	// already_following is true when this reader subscribes to the feed already, so
+	// the dialog can mark it instead of offering it as something new.
+	AlreadyFollowing bool `protobuf:"varint,5,opt,name=already_following,json=alreadyFollowing,proto3" json:"already_following,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *FeedCandidate) Reset() {
@@ -2501,6 +2516,13 @@ func (x *FeedCandidate) GetHow() string {
 		return x.How
 	}
 	return ""
+}
+
+func (x *FeedCandidate) GetAlreadyFollowing() bool {
+	if x != nil {
+		return x.AlreadyFollowing
+	}
+	return false
 }
 
 // ScrapeRule is §14.2's selector set, on the wire so the reader can see it and
@@ -4622,10 +4644,21 @@ func (x *GetFeedSettingsResponse) GetSettings() *FeedSettings {
 }
 
 type UpdateFeedSettingsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Settings      *FeedSettings          `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Settings *FeedSettings          `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	// backlog_cleared is how many unread articles saving a clear_backlog_days window
+	// marked read as it was applied, and backlog_undo_token is the batch that
+	// marked them — the same token MarkAllRead returns, redeemed through
+	// UndoMarkAllRead. Both are zero/empty when nothing was cleared, which is the
+	// case for every save that did not touch the window. They exist because the
+	// window is applied at SAVE time, and a save that silently turns a pile of
+	// unread articles into none, with no count and no way back, is the one
+	// irreversible press in the settings panel. The periodic sweep stays
+	// unannounced and unundoable: nobody pressed anything.
+	BacklogCleared   int32  `protobuf:"varint,2,opt,name=backlog_cleared,json=backlogCleared,proto3" json:"backlog_cleared,omitempty"`
+	BacklogUndoToken string `protobuf:"bytes,3,opt,name=backlog_undo_token,json=backlogUndoToken,proto3" json:"backlog_undo_token,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UpdateFeedSettingsResponse) Reset() {
@@ -4663,6 +4696,20 @@ func (x *UpdateFeedSettingsResponse) GetSettings() *FeedSettings {
 		return x.Settings
 	}
 	return nil
+}
+
+func (x *UpdateFeedSettingsResponse) GetBacklogCleared() int32 {
+	if x != nil {
+		return x.BacklogCleared
+	}
+	return 0
+}
+
+func (x *UpdateFeedSettingsResponse) GetBacklogUndoToken() string {
+	if x != nil {
+		return x.BacklogUndoToken
+	}
+	return ""
 }
 
 // FeedSettings is one feed's configuration, split by WHO IT BELONGS TO.
@@ -6435,12 +6482,13 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x10SubscribeRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1b\n" +
 	"\tfolder_id\x18\x02 \x01(\tR\bfolderId\x12\x14\n" +
-	"\x05title\x18\x03 \x01(\tR\x05title\"\xce\x01\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\"\xfd\x01\n" +
 	"\x11SubscribeResponse\x12(\n" +
 	"\x04feed\x18\x01 \x01(\v2\x14.articleflux.v1.FeedR\x04feed\x12%\n" +
 	"\x0esource_existed\x18\x02 \x01(\bR\rsourceExisted\x12-\n" +
 	"\x12suggested_category\x18\x03 \x01(\tR\x11suggestedCategory\x129\n" +
-	"\x19suggested_category_is_new\x18\x04 \x01(\bR\x16suggestedCategoryIsNew\"1\n" +
+	"\x19suggested_category_is_new\x18\x04 \x01(\bR\x16suggestedCategoryIsNew\x12-\n" +
+	"\x12already_subscribed\x18\x05 \x01(\bR\x11alreadySubscribed\"1\n" +
 	"\x12UnsubscribeRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"\x15\n" +
 	"\x13UnsubscribeResponse\"'\n" +
@@ -6466,13 +6514,14 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x05feeds\x18\x02 \x01(\x05R\x05feeds\"<\n" +
 	"\x12AnalyzeSiteRequest\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
-	"\x05smart\x18\x02 \x01(\bR\x05smart\"h\n" +
+	"\x05smart\x18\x02 \x01(\bR\x05smart\"\x95\x01\n" +
 	"\rFeedCandidate\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1d\n" +
 	"\n" +
 	"item_count\x18\x03 \x01(\x05R\titemCount\x12\x10\n" +
-	"\x03how\x18\x04 \x01(\tR\x03how\"\xb3\x03\n" +
+	"\x03how\x18\x04 \x01(\tR\x03how\x12+\n" +
+	"\x11already_following\x18\x05 \x01(\bR\x10alreadyFollowing\"\xb3\x03\n" +
 	"\n" +
 	"ScrapeRule\x12#\n" +
 	"\ritem_selector\x18\x01 \x01(\tR\fitemSelector\x12%\n" +
@@ -6608,9 +6657,11 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x16GetFeedSettingsRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"S\n" +
 	"\x17GetFeedSettingsResponse\x128\n" +
-	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"V\n" +
+	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"\xad\x01\n" +
 	"\x1aUpdateFeedSettingsResponse\x128\n" +
-	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\"\x9c\x05\n" +
+	"\bsettings\x18\x01 \x01(\v2\x1c.articleflux.v1.FeedSettingsR\bsettings\x12'\n" +
+	"\x0fbacklog_cleared\x18\x02 \x01(\x05R\x0ebacklogCleared\x12,\n" +
+	"\x12backlog_undo_token\x18\x03 \x01(\tR\x10backlogUndoToken\"\x9c\x05\n" +
 	"\fFeedSettings\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12%\n" +

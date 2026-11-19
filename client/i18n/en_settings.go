@@ -84,7 +84,9 @@ func init() {
 		// way of leaving the news on.
 		"slidesGroup":     "Slideshow",
 		"slidesGroupHint": "One story at a time, filling the screen, advancing by itself. Press s, or use the button beside Mark all read.",
-		"slidesPace":      "How long each story stays up",
+		// The same sentence for a screen with no keyboard to press s on.
+		"slidesGroupHintTouch": "One story at a time, filling the screen, advancing by itself. Use the button beside Mark all read.",
+		"slidesPace":           "How long each story stays up",
 		// The default explains itself here, because "auto" on a chip cannot. The
 		// two numbers are the real bounds, not a rounded description of them.
 		"slidesPaceHint": "Automatic gives each story the time it takes to read — between 20 seconds and a minute, depending on its length.",

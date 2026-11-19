@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/monstercameron/GoWebComponents/v7/html"
 	"github.com/monstercameron/GoWebComponents/v7/ui"
@@ -215,9 +216,9 @@ func feedSettingsBody(tr i18n.Runtime, p feedSettingsProps) []ui.Node {
 
 	// --- health --------------------------------------------------------------
 	facts := []kitFactPair{
-		kitFact(tr.T("feedSettings", "lastFetched"), relOrNever(tr, s.GetLastFetchAt())),
-		kitFact(tr.T("feedSettings", "lastSucceded"), relOrNever(tr, s.GetLastSuccessAt())),
-		kitFact(tr.T("feedSettings", "nextFetch"), relOrNever(tr, s.GetNextFetchAt())),
+		kitFact(tr.T("feedSettings", "lastFetched"), relDirected(tr, s.GetLastFetchAt())),
+		kitFact(tr.T("feedSettings", "lastSucceded"), relDirected(tr, s.GetLastSuccessAt())),
+		kitFact(tr.T("feedSettings", "nextFetch"), relDirected(tr, s.GetNextFetchAt())),
 		// Same shape as the server screen's Articles line, so the two agree.
 		kitFact(tr.T("feedSettings", "itemsHeld"), tr.T("settings", "itemsAndUnread", i18n.Args{"items": thousands(tr, int(s.GetItemCount())),
 			"unread": thousands(tr, int(s.GetUnreadCount()))})),
@@ -345,6 +346,21 @@ func cacheLabels(tr i18n.Runtime) []fsChoice {
 	return choicesFrom(tr, "cache.", int32sToInts(cacheChoices))
 }
 
+// backlogUndoFor reads what saving a window left for Undo to do: the feed, and the
+// window it had before. ok only when the state belongs to THIS token — a later Mark
+// all read has its own and must find nothing — and the previous window is known.
+func backlogUndoFor(state, token string) (source string, days int32, ok bool) {
+	parts := strings.Split(state, "|")
+	if token == "" || len(parts) != 3 || parts[0] != token || parts[1] == "" {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(parts[2])
+	if err != nil || n < 0 {
+		return "", 0, false
+	}
+	return parts[1], int32(n), true
+}
+
 func backlogLabels(tr i18n.Runtime) []fsChoice {
 	return choicesFrom(tr, "backlog.", backlogChoices)
 }
@@ -397,6 +413,44 @@ func muteFor(until string) int {
 	default:
 		return 24 * 30
 	}
+}
+
+// relDirected is relOrNever for a fact that can be either side of now. "Last
+// fetched 1h" and "Next fetch 1h" were the same string for opposite things, and
+// a reader had to know which row they were on to know which way to count.
+//
+// The magnitude is relTime's, so the units agree with every other age in the app;
+// only the direction is added. relTime measures from the past, so a future time
+// is mirrored across now to borrow it — and a distance of a week or more is a
+// date, which "ago" or "in" would only make wrong ("26 Jul ago").
+func relDirected(tr i18n.Runtime, ts string) string {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return tr.T("feedSettings", "never")
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		if t, err = time.Parse(time.RFC3339, ts); err != nil {
+			return ts
+		}
+	}
+	now := time.Now()
+	if !t.After(now) {
+		rel := relTime(tr, ts)
+		if now.Sub(t) < time.Minute || now.Sub(t) >= 7*24*time.Hour {
+			return rel
+		}
+		return tr.T("feedSettings", "agoFmt", i18n.Args{"when": rel})
+	}
+	ahead := t.Sub(now)
+	if ahead < time.Minute {
+		return tr.T("feedSettings", "soon")
+	}
+	rel := relTime(tr, now.Add(-ahead).Format(time.RFC3339Nano))
+	if ahead >= 7*24*time.Hour {
+		return rel
+	}
+	return tr.T("feedSettings", "inFmt", i18n.Args{"when": rel})
 }
 
 // relOrNever formats a timestamp for the health block. "never" is a real answer

@@ -45,7 +45,8 @@ func railData(folded bool) string {
 	return "open"
 }
 
-// railFoldButton is the control at the end of the masthead.
+// railFoldButton is the control at the foot of the rail, at the end of the row
+// that holds Add a feed.
 //
 // It sits IN the rail, which looks wrong for the thing that hides the rail and
 // is the point: a folded rail slides back when the pointer reaches the edge, so

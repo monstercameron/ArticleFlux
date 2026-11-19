@@ -74,7 +74,7 @@ func TestARecoveredPanicTellsTheClientNothingUnsafe(t *testing.T) {
 		})
 
 	st, _ := status.FromError(err)
-	if st.Message() != "internal error" {
+	if st.Message() != "Something went wrong on the server." {
 		t.Errorf("message = %q, want the safe fallback", st.Message())
 	}
 	if strings.Contains(st.Message(), "secret-token") {

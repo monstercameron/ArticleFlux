@@ -534,19 +534,19 @@ test.describe('finding the feed', () => {
     const cand = dialog.locator('.af-cand');
     await expect(cand).toHaveCount(1, { timeout: 45_000 });
     // Fetched and parsed before being offered: the count is the evidence.
-    await expect(cand.locator('.af-cand-meta')).toContainText(/item/);
-    await expect(cand.locator('.af-cand-meta')).toContainText(/links to it/);
+    const facts = cand.locator('.af-cand-meta').first();
+    await expect(facts).toContainText(/item/);
+    await expect(facts).toContainText(/links to it/);
 
-    // Taking the offer subscribes to the feed the page declared, not the page.
-    await cand.locator('[data-action="add-feed-candidate"]').click();
-    await expect(dialog).toBeHidden({ timeout: 45_000 });
-    // The OPEN banner. There are two in the list pane now — the status one and
-    // the category suggestion — and both are always in the DOM so they can
-    // animate their collapse, so a bare `.banner` matches two elements and
-    // Playwright refuses in strict mode. `data-open` is the app's own answer to
-    // "which of these is showing", which is exactly the question being asked.
-    await expect(page.locator('.banner-slot[data-open="true"] .banner'))
-      .toContainText(/Alpha Journal/, { timeout: 45_000 });
+    // The page declares Alpha Journal, which the seed already follows — so the
+    // candidate says so and is not offered as something to add. It used to be:
+    // the button subscribed to what the reader had, and the receipt said
+    // "Added Alpha Journal (already on this server)" for a feed that was never
+    // missing. (That a candidate the reader does NOT follow subscribes to the
+    // feed and not the page is held server-side, in grpcsrv's following and
+    // add-feed tests; the seed here has no third feed to offer.)
+    await expect(cand.locator('[data-role="candidate-following"]')).toHaveText('Already following');
+    await expect(cand.locator('[data-action="add-feed-candidate"]')).toHaveCount(0);
   });
 
   test('a page with no feed offers Smart+, and says what it would send', async ({ page }) => {

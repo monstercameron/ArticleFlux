@@ -41,8 +41,16 @@ func init() {
 		"useThis":    "Use this",
 
 		"noFeedTitle": "No feed here",
-		"noFeedHint": "This page doesn't publish one. Smart+ follow reads how the page " +
-			"is built and follows it anyway.",
+		// Two sentences, joined only when the second is true: Smart+ follow is
+		// offered where the server can do it (addfeed.go's ladder).
+		"noFeedHint":       "This page doesn't publish one.",
+		"noFeedSmartOffer": "Smart+ follow reads how the page is built and follows it anyway.",
+		// Beside a discovered feed the reader already has, in place of Use this.
+		"following": "Already following",
+		// The receipt for adding an address the reader already follows. "Added" would
+		// be untrue: nothing was added, and it names the feed so the reader can see
+		// it is the one they meant. {feed} is the feed's title.
+		"alreadyFollowing": "You already follow {feed}",
 		// The egress sentence. It says what is sent and where, in the place the
 		// decision is made rather than in a settings screen somewhere else.
 		// Points at the lamp, which is the only control that unblocks this. It

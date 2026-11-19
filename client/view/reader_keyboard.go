@@ -317,6 +317,17 @@ func (r keyboardMap) wire() {
 					ui.PostAsync(func() { r.act.Get().cancelMarkAll() })
 					return
 				}
+				// Every control that arms in place (sign out, a My Feed delete or
+				// reset): Escape answers it "no" and stops there, with focus left on
+				// the button. It is the innermost layer, and peeling the screen it is
+				// on as well sent a reader out of Settings for hesitating at a
+				// button whose whole job is to let them hesitate. One selector for
+				// all of them — what they share is data-armed, so a control added
+				// later is covered without anyone remembering this branch.
+				if platform.FocusedClosest(armedInlineSelector) {
+					ui.PostAsync(func() { r.act.Get().disarmInline() })
+					return
+				}
 				// The same for a removal waiting on its confirming press
 				// (armableRemove): Escape answers it "Cancel" and stops there,
 				// so a reader who hesitated over Unsubscribe keeps both the feed
@@ -436,8 +447,8 @@ func (r keyboardMap) wire() {
 			case "b":
 				ui.PostAsync(func() { r.act.Get().toggleRail() })
 			// s for slideshow. It is the next step past w — w gives the article
-			// the window, this gives it the screen — so the two sitting next to
-			// each other in the help sheet is the whole explanation.
+			// the window, this gives it the screen. Listed under Anywhere in the
+			// help sheet, because that is where it works.
 			case "s":
 				ui.PostAsync(func() { r.act.Get().slideStart(false) })
 			case "u":

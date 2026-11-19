@@ -559,10 +559,6 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 	}
 
 	motionOn := a.motionOn()
-	motionLabel := tr.T("appearance", "motionReduced")
-	if motionOn {
-		motionLabel = tr.T("appearance", "motionFull")
-	}
 
 	// The theme cards and the accent dots are each one choice drawn as a row of
 	// pressed-or-not buttons, so each row is a group named by the heading over
@@ -598,17 +594,25 @@ func settingsAppearance(tr i18n.Runtime, p settingsProps) []ui.Node {
 
 		kitHeading(glyphAction, tr.T("appearance", "motionGroup"),
 			tr.T("appearance", "motionGroupHint")),
+		// ONE control with three states, each a chip, the one in force pressed.
+		// It was a Full/Reduced toggle with a separate "Follow my system" button
+		// under it, so the row said "Full" while the stored preference might be
+		// "system" and the button beside it offered a state the toggle could not
+		// show. The three values are the three stored preferences: unset reads as
+		// Full (full motion on every machine is the default, and only an explicit
+		// "system" consults the OS — design.MotionFull says why).
 		kitSetting(kitSettingProps{Label: tr.T("appearance", "motionLabel"),
-			Hint:    tr.T("appearance", "motionHint"),
-			Control: kitToggle(kitChipProps{Action: "toggle-motion", Glyph: glyphAction, Label: motionLabel}, motionOn)}),
-		// Offered whenever the reader is NOT already following the machine —
-		// including the default, which is full motion rather than whatever the OS
-		// says. Handing the decision to the system is a choice you can make here;
-		// it is no longer the state you are in for never having looked.
-		ui.If(a.Motion != design.MotionSystem, func() ui.Node {
-			return kitChipGroup(kitGroupActions, "",
-				kitAction(kitChipProps{Action: "motion-system", Glyph: glyphRefresh, Label: tr.T("appearance", "motionFollow")}))
-		}),
+			Hint: tr.T("appearance", "motionHint"),
+			Control: kitChipGroup(kitGroupChoices, "",
+				kitPick(kitChipProps{Action: "set-motion", Key: "motion-full",
+					Label: tr.T("appearance", "motionFull")}, design.MotionFull,
+					a.Motion != design.MotionReduced && a.Motion != design.MotionSystem),
+				kitPick(kitChipProps{Action: "set-motion", Key: "motion-reduced",
+					Label: tr.T("appearance", "motionReduced")}, design.MotionReduced,
+					a.Motion == design.MotionReduced),
+				kitPick(kitChipProps{Action: "set-motion", Key: "motion-system",
+					Label: tr.T("appearance", "motionFollow")}, design.MotionSystem,
+					a.Motion == design.MotionSystem))}),
 		ui.If(a.Motion == design.MotionSystem, func() ui.Node {
 			return html.Div(html.Props{Class: "set-note"},
 				html.Text(systemMotionNote(tr, motionOn)))

@@ -717,14 +717,15 @@ func TestAnalyzeSiteNoAnalyzerIsUnimplemented(t *testing.T) {
 	}
 }
 
-func TestAnalyzeSiteFindsNothingReportsNotAsked(t *testing.T) {
+func TestAnalyzeSiteFindsNothingWithNoKeyReportsNoKeyNotNotAsked(t *testing.T) {
 	srv, _, _, base := subscribeNetFixture(t)
 	resp, err := srv.AnalyzeSite(context.Background(), &pb.AnalyzeSiteRequest{Url: base + "/blog"})
 	if err != nil {
 		t.Fatalf("AnalyzeSite: %v", err)
 	}
-	if resp.GetSmartStatus() != reader.StatusNotAsked {
-		t.Errorf("SmartStatus = %q, want %q", resp.GetSmartStatus(), reader.StatusNotAsked)
+	if resp.GetSmartStatus() != reader.StatusNoKey {
+		t.Errorf("SmartStatus = %q, want %q — an instance with no key must not invite Smart+ follow",
+			resp.GetSmartStatus(), reader.StatusNoKey)
 	}
 	if len(resp.GetFeeds()) != 0 {
 		t.Errorf("Feeds = %v, want none — the fixture page declares none", resp.GetFeeds())

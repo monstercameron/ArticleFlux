@@ -38,7 +38,7 @@ func TestTheCauseNeverReachesTheWire(t *testing.T) {
 	if st.Code() != codes.Internal {
 		t.Errorf("code = %v, want Internal", st.Code())
 	}
-	if st.Message() != "internal error" {
+	if st.Message() != "Something went wrong on the server." {
 		t.Errorf("message = %q, want the safe fallback", st.Message())
 	}
 	if strings.Contains(st.Message(), "database is locked") {

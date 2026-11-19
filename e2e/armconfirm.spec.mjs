@@ -1,4 +1,4 @@
-import { test, expect, boot, openAddFeed, openRail, openSettings, isPhone } from './fixtures.mjs';
+import { test, expect, boot, openAddFeed, openRail, openRow, openSettings, isPhone } from './fixtures.mjs';
 import { FEED_ORIGIN } from './ports.mjs';
 
 /**
@@ -133,5 +133,83 @@ test.describe('arm, then confirm', () => {
     await confirm.click();
     await expect(page.locator('[data-action="smart-key-clear"]')).toHaveCount(0, { timeout: 30_000 });
     await expect(confirm).toHaveCount(0);
+  });
+});
+
+/**
+ * The confirmations that arm in place on a settings screen (Sign out; My Feed's
+ * "Reset this list"), as opposed to the ones above that live in a dialog.
+ *
+ * Armed, they are the innermost layer on the screen, so Escape answers them
+ * first and stops — it used to carry on and leave Settings altogether — and a
+ * press anywhere else is the reader having moved on, which disarms them too. One
+ * rule over `data-armed`, so what is proven for these two holds for the next.
+ */
+test.describe('arm in place', () => {
+  /** pressElsewhere is a pointer press on a part of the panel that is not a control. */
+  async function pressElsewhere(page) {
+    const box = await page.locator('.set-panel').boundingBox();
+    await page.mouse.click(box.x + 3, box.y + 3);
+  }
+
+  test('Sign out: Escape disarms and stays on the screen, a press elsewhere disarms', async ({ page }) => {
+    await boot(page);
+    await openSettings(page);
+    await page.locator('[data-action="settings-tab"][data-value="account"]').click();
+    const arm = page.locator('[data-action="sign-out"]');
+    await arm.click();
+    const confirm = page.locator('[data-action="sign-out-confirm"]');
+    await expect(confirm).toHaveAttribute('data-armed', 'true');
+    await expect(confirm).toBeFocused();
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-action="sign-out"]')).toHaveAttribute('data-armed', 'false');
+    await expect(page.locator('[data-action="sign-out"]')).toBeFocused();
+    // Still in Settings, on the same tab: the key answered the question and nothing else.
+    await expect(page.locator('.set-tabs')).toBeVisible();
+    await expect(page.locator('[data-action="settings-tab"][data-value="account"]'))
+      .toHaveAttribute('aria-current', 'true');
+
+    await page.locator('[data-action="sign-out"]').click();
+    await expect(page.locator('[data-action="sign-out-confirm"]')).toHaveAttribute('data-armed', 'true');
+    await pressElsewhere(page);
+    await expect(page.locator('[data-action="sign-out"]')).toHaveAttribute('data-armed', 'false');
+  });
+
+  test('Reset this list: Escape disarms and stays on the screen, a press elsewhere disarms', async ({ page, baseURL }) => {
+    await boot(page);
+    // A list has a Reset only once it has rows, and a feed gets a row once it
+    // has an open behind it and the ranking has been derived since — the same
+    // three steps myfeeddelete.spec.mjs takes, for the same reason. A desktop
+    // opens its first article by itself at boot and a phone opens nothing, which
+    // is why this used to pass on one project and wait two minutes on the other;
+    // and the derivation is a background job on a server that, when this file
+    // runs second in the alphabet, started seconds ago. So: open one, derive
+    // now (/debug/derive-now runs it to completion, DevMode only), and ask the
+    // tab for the result.
+    await openRow(page, 0);
+    await expect(page.locator('.article[data-current="true"] h1')).toBeVisible();
+    const derived = await page.request.post(`${baseURL}/debug/derive-now`);
+    expect(derived.ok(), await derived.text()).toBeTruthy();
+    await openSettings(page);
+    await page.locator('[data-action="settings-tab"][data-value="myfeed"]').click();
+    await page.locator('[data-action="mf-refresh"]').click();
+    await expect(page.locator('.mf-row').first()).toBeVisible({ timeout: 15_000 });
+    const arm = page.locator('[data-action="mf-reset-arm"]').first();
+    await arm.click();
+    const confirm = page.locator('[data-action="mf-reset-confirm"]');
+    await expect(confirm).toHaveAttribute('data-armed', 'true');
+
+    await page.keyboard.press('Escape');
+    await expect(confirm).toHaveCount(0);
+    await expect(page.locator('[data-action="mf-reset-arm"]').first()).toBeFocused();
+    await expect(page.locator('.set-tabs')).toBeVisible();
+    await expect(page.locator('[data-action="settings-tab"][data-value="myfeed"]'))
+      .toHaveAttribute('aria-current', 'true');
+
+    await page.locator('[data-action="mf-reset-arm"]').first().click();
+    await expect(page.locator('[data-action="mf-reset-confirm"]')).toHaveCount(1);
+    await pressElsewhere(page);
+    await expect(page.locator('[data-action="mf-reset-confirm"]')).toHaveCount(0);
   });
 });

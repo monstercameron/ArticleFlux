@@ -146,23 +146,31 @@ func railFoldCSS(r func(string, string) css.Rule) {
 		css.OpacityNum(css.Num(0)), css.PointerEvents.None,
 	)...)
 
-	// The control that folds it, at the end of the masthead.
+	// The control that folds it, at the end of the row that holds Add a feed.
 	//
 	// `.rail-stow`, not `.rail-fold`: that name is taken, by the collapsing
-	// sections inside the rail (design/sheet.go), and a 24px square is not what
+	// sections inside the rail (design/sheet.go), and a 36px square is not what
 	// a section wants to be.
 	//
 	// In the rail rather than beside it, so it is in reach exactly when the rail
 	// is: with the rail folded it arrives with the rail, under the pointer that
 	// brought it, and what it says then is "keep this open".
+	//
+	// In the foot rather than the masthead, which it used to end: the masthead's
+	// one line is "8 feeds · 131 unread" and the button took the room it needed,
+	// so the count was cut off at every width. Here the row is a flex line and
+	// Add a feed is the part that gives, so nothing is.
 	css.Global(".rail-stow",
-		r("margin-inline-start", "auto"), r("flex", "none"), r("align-self", "center"),
-		css.W(css.Px(24)), css.H(css.Px(24)), css.Rounded(css.Px(7)),
+		r("flex", "none"), r("align-self", "stretch"),
+		css.W(css.Px(36)), css.Rounded(css.Px(11)),
 		css.Display.Grid, r("place-items", "center"),
-		r("padding", "0"),
+		r("padding", "0"), css.Border(css.Px(1), css.Var("line")),
 		css.TextColor(css.Var("mute")), css.FontSize(css.Px(14)), css.LineHeight(css.Num(1)),
 		r("transition", "color "+warm+", background "+warm),
 	)
+	// Add a feed takes what the button leaves. Its own rule says full width, which
+	// in a row would not shrink to make room.
+	css.Global(".rail-add .rail-add-btn", r("flex", "1 1 auto"), css.W(css.Auto), css.MinWidth(css.Zero))
 	css.Global(".rail-stow:hover",
 		css.TextColor(css.Var("cream")), r("background", "var(--sur)"))
 	// The chevrons point the way the rail will go, which in a right-to-left

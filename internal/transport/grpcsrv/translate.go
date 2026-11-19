@@ -96,7 +96,7 @@ func (s *SmartServer) TranslateArticle(ctx context.Context, req *pb.TranslateArt
 	at := s.articles()
 	if at == nil {
 		return nil, errKey(codes.FailedPrecondition, "srv.articleTranslateOff",
-			"translating articles is not enabled on this server", nil)
+			"Translating articles is not enabled on this server.", nil)
 	}
 	locale := strings.TrimSpace(req.GetLocale())
 
@@ -184,15 +184,15 @@ func (s *SmartServer) localeErr(locale string, err error) error {
 	switch {
 	case errors.Is(err, smart.ErrUnsupportedLanguage):
 		return errKey(codes.InvalidArgument, "srv.unsupportedLanguage",
-			fmt.Sprintf("%q is not one of the offered languages", locale),
+			fmt.Sprintf("%q is not one of the offered languages.", locale),
 			map[string]string{"locale": locale})
 	case errors.Is(err, smart.ErrIsSource):
 		return errKey(codes.InvalidArgument, "srv.alreadySourceLanguage",
-			"the interface is already in English", nil)
+			"The interface is already in English.", nil)
 	}
 	s.log.Error("ui translation lookup failed", "locale", locale, "err", err)
 	return errKey(codes.Unavailable, "srv.translateFailed",
-		"couldn't translate the interface just now", nil)
+		"Couldn't translate the interface just now.", nil)
 }
 
 // articleErr maps an article translation's failures to keyed refusals. The
@@ -204,28 +204,28 @@ func (s *SmartServer) articleErr(locale string, err error) error {
 		return toStatus(err)
 	case errors.Is(err, smart.ErrUnsupportedLanguage):
 		return errKey(codes.InvalidArgument, "srv.unsupportedLanguage",
-			fmt.Sprintf("%q is not one of the offered languages", locale),
+			fmt.Sprintf("%q is not one of the offered languages.", locale),
 			map[string]string{"locale": locale})
 	case errors.Is(err, smart.ErrSameLanguage):
 		return errKey(codes.FailedPrecondition, "srv.articleSameLanguage",
-			"this article is already in that language", nil)
+			"This article is already in that language.", nil)
 	case errors.Is(err, smart.ErrNothingToTranslate):
 		return errKey(codes.FailedPrecondition, "srv.articleNothingToTranslate",
-			"this article has no text to translate", nil)
+			"This article has no text to translate.", nil)
 	case errors.Is(err, smart.ErrTranslateOff):
 		return errKey(codes.FailedPrecondition, "srv.articleTranslateOff",
-			"translating articles is not enabled on this server", nil)
+			"Translating articles is not enabled on this server.", nil)
 	case errors.Is(err, llm.ErrNotConfigured):
 		return errKey(codes.FailedPrecondition, "srv.smartNoKey",
-			"Smart+ needs an OpenAI API key — add one in Settings › Smart+", nil)
+			"Smart+ needs an OpenAI API key. Add one in Settings › Smart+.", nil)
 	case errors.Is(err, llm.ErrOverBudget):
 		return errKey(codes.ResourceExhausted, "srv.smartOverBudget",
-			"this server's Smart+ spend limit has been reached", nil)
+			"This server's Smart+ spend limit has been reached.", nil)
 	case errors.Is(err, llm.ErrTruncated):
 		return errKey(codes.ResourceExhausted, "srv.translationTruncated",
-			"the translation was cut off before it finished — try again", nil)
+			"The translation was cut off before it finished. Try again.", nil)
 	}
 	s.log.Error("article translation failed", "locale", locale, "err", err)
 	return errKey(codes.Unavailable, "srv.articleTranslateFailed",
-		"couldn't translate this article just now", nil)
+		"Couldn't translate this article just now.", nil)
 }

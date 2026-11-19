@@ -714,6 +714,36 @@ func (s *Service) SubscribeOnly(ctx context.Context, sc store.Scope, rawURL, tit
 	})
 }
 
+// Following reports which of these feed addresses the reader already subscribes
+// to, keyed by the address as given. Each is mapped through the same natural key
+// Subscribe stores, so "https://example.com/feed/" and the form the feed was
+// first added under are one feed here as they are everywhere else.
+func (s *Service) Following(ctx context.Context, sc store.Scope, urls ...string) (map[string]bool, error) {
+	keys := make([]string, 0, len(urls))
+	byKey := make(map[string][]string, len(urls))
+	for _, u := range urls {
+		k := feed.NaturalKey(u)
+		if _, seen := byKey[k]; !seen {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], u)
+	}
+	followed, err := s.repo.FollowedNaturalKeys(ctx, sc, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(urls))
+	for k, ok := range followed {
+		if !ok {
+			continue
+		}
+		for _, u := range byKey[k] {
+			out[u] = true
+		}
+	}
+	return out, nil
+}
+
 // ListFolders opens the category surface.
 //
 // Thin, like the rest of this layer: the naming rules, the cap and the ownership
@@ -861,25 +891,48 @@ func (s *Service) GetFeedSettings(ctx context.Context, sc store.Scope, sourceID 
 
 func (s *Service) UpdateFeedSettings(ctx context.Context, sc store.Scope, sourceID string,
 	p store.FeedSettingsPatch) (store.FeedSettings, error) {
+	f, _, err := s.UpdateFeedSettingsCleared(ctx, sc, sourceID, p)
+	return f, err
+}
+
+// BacklogClear is what saving a backlog window did to the reader's unread pile:
+// how many articles it marked read and the batch that can put them back.
+type BacklogClear struct {
+	Marked int
+	// UndoToken is UndoMarkAllRead's batch; empty when nothing was marked.
+	UndoToken string
+}
+
+// UpdateFeedSettingsCleared is UpdateFeedSettings that also reports a save-time
+// backlog clear, so the panel can say how much it just marked and offer to take
+// it back. The periodic sweep does not go through here: nobody pressed anything.
+func (s *Service) UpdateFeedSettingsCleared(ctx context.Context, sc store.Scope, sourceID string,
+	p store.FeedSettingsPatch) (store.FeedSettings, BacklogClear, error) {
 	f, err := s.repo.UpdateFeedSettings(ctx, sc, sourceID, p)
 	if err != nil || p.ClearBacklogDays == nil || f.ClearBacklogDays == 0 {
-		return f, err
+		return f, BacklogClear{}, err
 	}
 	// Choosing a window applies it now. Waiting for the poller's next sweep
 	// would leave the pile on screen for the length of a poll interval, and the
 	// reader would reasonably conclude the control did nothing. The settings are
 	// read back afterwards so the reply carries the cleared unread count rather
 	// than the one the reader just decided was too big.
-	marked, err := s.repo.ClearBacklog(ctx, sc, sourceID)
+	marked, batch, err := s.repo.ClearBacklogUndoable(ctx, sc, sourceID)
 	if err != nil {
-		return f, err
+		return f, BacklogClear{}, err
 	}
 	// Nothing marked, nothing to announce: a save that cleared no article leaves
 	// every other device's counts exactly right already.
 	if marked > 0 && s.onBacklog != nil {
 		s.onBacklog(sc, sourceID, marked)
 	}
-	return s.repo.GetFeedSettings(ctx, sc, sourceID)
+	// A batch is minted even when it marked nothing, and an Undo offered for a
+	// clear that cleared nothing is a button that does nothing.
+	if marked == 0 {
+		batch = ""
+	}
+	f, err = s.repo.GetFeedSettings(ctx, sc, sourceID)
+	return f, BacklogClear{Marked: marked, UndoToken: batch}, err
 }
 
 // RecordEngagements validates and appends observations to the signals log.

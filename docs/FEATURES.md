@@ -494,9 +494,14 @@ from the *last* one rather than from now — lengthening an interval must not po
 already overdue. The floor is politeness rather than performance: the column is global, so one user
 setting ten seconds makes this server hammer a publisher on everyone's behalf.
 
-**Clear the backlog** — *never* (the default), *a day*, *3 days*, *a week* or *a month*.
+**Clear the backlog older than** — *never* (the default), *1 day*, *3 days*, *1 week* or *1 month*.
+The row is named for what it does ("older than") and its choices are numerals because Mute, one row
+above, offers *a day / a week / a month* and the two read as the same control.
 Anything unread in that feed that is older than the window is marked read for you, and it keeps
-doing so as articles age; picking a window clears the existing pile straight away. It only marks
+doing so as articles age; picking a window clears the existing pile straight away, and **the same
+"Marked N read" banner Mark all read shows comes up with an Undo** that puts the articles back as
+unread and sets the window back to what it was. The periodic sweep is not undoable: nobody pressed
+anything. It only marks
 read: nothing is deleted, **Read later items are left alone**, ratings are untouched, and another
 reader of the same feed is unaffected. For everything right now, **Mark all read** in the Actions
 group is the one-press version.
@@ -921,7 +926,7 @@ control stays pinned, and `Escape` peels focus mode first.
 
 ### The folded rail
 
-`b`, or the chevrons at the end of the sidebar's header. Focus mode closes the feeds *and* the list,
+`b`, or the chevrons beside *Add a feed* at the foot of the sidebar. Focus mode closes the feeds *and* the list,
 which is right for one long article and wrong for working through a list — the list is the thing
 being worked through. Folding the rail gives back only the 258px on the left, which a reader looks at
 once a session to pick a feed and pays for on every row.

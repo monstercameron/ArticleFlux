@@ -44,8 +44,21 @@ func backlogCutoff(now time.Time, days int) string {
 // cannot be used to probe for a source. A rule of 0 is "never" and touches
 // nothing, which is what makes it safe to call after every settings save.
 func (r *ReaderRepo) ClearBacklog(ctx context.Context, s Scope, sourceID string) (int, error) {
+	n, _, err := r.ClearBacklogUndoable(ctx, s, sourceID)
+	return n, err
+}
+
+// ClearBacklogUndoable is ClearBacklog that also returns the batch it marked,
+// redeemable through UndoMarkAllRead.
+//
+// The save-time clear needs it and the sweep does not: a reader pressing a window
+// in the feed's settings turned a pile of unread articles into none with one
+// click, and the batch is what lets the panel offer the way back that Mark all
+// read offers. It is the same batch because clearBacklog IS a MarkAllRead — one
+// undo mechanism, not a second one for this path.
+func (r *ReaderRepo) ClearBacklogUndoable(ctx context.Context, s Scope, sourceID string) (int, string, error) {
 	if !s.Valid() {
-		return 0, ErrNoScope
+		return 0, "", ErrNoScope
 	}
 	var days int
 	err := r.db.Read.QueryRowContext(ctx, `
@@ -53,21 +66,20 @@ func (r *ReaderRepo) ClearBacklog(ctx context.Context, s Scope, sourceID string)
 		 WHERE source_id = ? AND user_id = ? AND tenant_id = ?`,
 		sourceID, s.UserID, s.TenantID).Scan(&days)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	return r.clearBacklog(ctx, s, sourceID, days, time.Now().UTC())
 }
 
-func (r *ReaderRepo) clearBacklog(ctx context.Context, s Scope, sourceID string, days int, now time.Time) (int, error) {
+func (r *ReaderRepo) clearBacklog(ctx context.Context, s Scope, sourceID string, days int, now time.Time) (int, string, error) {
 	if days <= 0 {
-		return 0, nil
+		return 0, "", nil
 	}
-	n, _, err := r.MarkAllRead(ctx, s,
+	return r.MarkAllRead(ctx, s,
 		MarkQuery{SourceID: sourceID, SkipStarred: true}, backlogCutoff(now, days))
-	return n, err
 }
 
 // ClearBacklogs applies every standing rule one reader has, and reports the
@@ -112,7 +124,7 @@ func (r *ReaderRepo) ClearBacklogs(ctx context.Context, s Scope) ([]BacklogClear
 	now := time.Now().UTC()
 	var out []BacklogCleared
 	for _, ru := range rules {
-		n, err := r.clearBacklog(ctx, s, ru.source, ru.days, now)
+		n, _, err := r.clearBacklog(ctx, s, ru.source, ru.days, now)
 		if err != nil {
 			return out, fmt.Errorf("store: ClearBacklogs %s: %w", ru.source, err)
 		}

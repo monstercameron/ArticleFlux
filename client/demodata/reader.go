@@ -327,7 +327,9 @@ func (s *readerService) Subscribe(_ context.Context, req *pb.SubscribeRequest) (
 	}
 	if f := in.feedByURL(url); f != nil {
 		return &pb.SubscribeResponse{
-			Feed: f.message(in.unreadFor(f.sourceID)), SourceExisted: true,
+			// The demo has one reader, so a feed it holds is a feed that reader
+			// follows: both flags, as the server would say for a re-add.
+			Feed: f.message(in.unreadFor(f.sourceID)), SourceExisted: true, AlreadySubscribed: true,
 		}, nil
 	}
 	f := in.addFeed(url, req.GetTitle(), req.GetFolderId(), "feed")
@@ -743,11 +745,13 @@ func (s *readerService) UpdateFeedSettings(_ context.Context, req *pb.UpdateFeed
 	if req.CacheDepth != nil {
 		f.cacheDepth = req.GetCacheDepth()
 	}
+	var cleared int32
+	var undoToken string
 	if req.ClearBacklogDays != nil {
 		f.clearBacklogDays = req.GetClearBacklogDays()
 		// Applied now, as the server does: the pile the reader just chose to
 		// shrink should be visibly smaller in the reply.
-		in.clearBacklog(f)
+		cleared, undoToken = in.clearBacklog(f)
 	}
 	if req.FetchIntervalS != nil {
 		// The shared half of the panel. On a real instance this changes how
@@ -755,7 +759,8 @@ func (s *readerService) UpdateFeedSettings(_ context.Context, req *pb.UpdateFeed
 		// says so; here there is one.
 		f.fetchInterval = req.GetFetchIntervalS()
 	}
-	return &pb.UpdateFeedSettingsResponse{Settings: in.settings(f)}, nil
+	return &pb.UpdateFeedSettingsResponse{Settings: in.settings(f),
+		BacklogCleared: cleared, BacklogUndoToken: undoToken}, nil
 }
 
 // AnalyzeSite answers "can I follow this page?" (§11).
@@ -789,6 +794,10 @@ func (s *readerService) AnalyzeSite(_ context.Context, req *pb.AnalyzeSiteReques
 			ItemCount: 30,
 			How:       "probed",
 		}},
+	}
+	// A candidate the reader already follows is marked, as the server marks it.
+	for _, c := range res.Feeds {
+		c.AlreadyFollowing = in.feedByURL(c.Url) != nil
 	}
 	if !req.GetSmart() {
 		// Rungs 1-3 found something, so there is nothing for the model to do and
@@ -849,22 +858,31 @@ func (s *readerService) SubscribeScrape(_ context.Context, req *pb.SubscribeScra
 }
 
 // clearBacklog marks a feed's unread articles older than its window read, and
-// leaves anything starred alone — the same rule the server applies. Caller
-// holds the lock.
-func (in *Instance) clearBacklog(f *feed) {
+// leaves anything starred alone — the same rule the server applies. It returns
+// how many it marked and the undo token for them, redeemed through
+// UndoMarkAllRead exactly as a Mark all read batch is. Caller holds the lock.
+func (in *Instance) clearBacklog(f *feed) (int32, string) {
 	if f.clearBacklogDays <= 0 {
-		return
+		return 0, ""
 	}
 	cutoff := in.clock().Add(-time.Duration(f.clearBacklogDays) * 24 * time.Hour)
 	at := stamp(in.clock())
+	var marked []string
 	for _, it := range in.items {
 		if it.feed != f || it.read || it.starred || it.published.After(cutoff) {
 			continue
 		}
 		it.read = true
 		it.readAt = at
+		marked = append(marked, it.id)
 	}
 	in.rev++
+	if len(marked) == 0 {
+		return 0, ""
+	}
+	token := in.nextID("undo")
+	in.undo[token] = marked
+	return int32(len(marked)), token
 }
 
 // settings renders one feed's panel. Caller holds the lock.

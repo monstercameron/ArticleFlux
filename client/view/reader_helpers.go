@@ -876,3 +876,22 @@ func hueVarFor(sourceID string) map[string]any {
 	}
 	return map[string]any{"style": "--c:" + design.HueFor(sourceID)}
 }
+
+// listFirstID is the id of the first item in the list, or "" for an empty one.
+func listFirstID(list []*pb.Item) string {
+	if len(list) == 0 {
+		return ""
+	}
+	return list[0].GetId()
+}
+
+// listLastID is the id of the last item in the list once the list has been paged
+// to its end, or "" while a cursor says there is more — the last LOADED article
+// is not the last one, and a Next that was disabled there would be a lie that
+// scrolling a little further undoes.
+func listLastID(list []*pb.Item, cursor string) string {
+	if len(list) == 0 || cursor != "" {
+		return ""
+	}
+	return list[len(list)-1].GetId()
+}

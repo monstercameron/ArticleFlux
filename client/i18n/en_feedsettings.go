@@ -27,12 +27,17 @@ func init() {
 		"megafeedOff":    "hidden",
 		"muteLabel":      "Mute",
 		"muteHint":       "Keep fetching it, keep it out of the way.",
-		"backlogLabel":   "Clear the backlog",
-		"backlogHint":    "Mark anything older than this as read, on its own. Nothing is deleted and Read later is left alone. Mark all read, below, clears the whole feed now.",
-		"cacheLabel":     "Keep offline",
-		"cacheHint":      "How many items to hold for reading without a connection.",
-		"tagsLabel":      "Tags",
-		"tagsHint":       "Added from an article in this feed.",
+		// "older than" is in the NAME, because the row is a group named by this
+		// label: its choices (a day, a week, a month) used to be word for word
+		// Mute's, one row above, and a screen reader landing on "a month" was
+		// told only that it was a button in a group of that other name. The
+		// numerals below are the visible half of the same fix.
+		"backlogLabel": "Clear the backlog older than",
+		"backlogHint":  "Anything unread that is older than this is marked read, now and as it ages. Nothing is deleted and Read later is left alone. Choosing one offers an Undo. Mark all read, below, clears the whole feed at once.",
+		"cacheLabel":   "Keep offline",
+		"cacheHint":    "How many items to hold for reading without a connection.",
+		"tagsLabel":    "Tags",
+		"tagsHint":     "Added from an article in this feed.",
 
 		// --- shared
 		"sharedGroup": "Shared",
@@ -53,6 +58,11 @@ func init() {
 		"itemsHeld":    "Items held",
 		"failures":     "Consecutive failures",
 		"never":        "never",
+		// The direction of a time in the health block: "1h ago" for what happened,
+		// "in 1h" for what is due, and "soon" for what is due inside the minute.
+		"agoFmt": "{when} ago",
+		"inFmt":  "in {when}",
+		"soon":   "any moment",
 
 		// --- actions
 		"actionsGroup":    "Actions",
@@ -88,10 +98,10 @@ func init() {
 		"mute.720": "a month",
 
 		"backlog.0":  "never",
-		"backlog.1":  "a day",
+		"backlog.1":  "1 day",
 		"backlog.3":  "3 days",
-		"backlog.7":  "a week",
-		"backlog.30": "a month",
+		"backlog.7":  "1 week",
+		"backlog.30": "1 month",
 	})
 
 	// How many other people on this server read this feed. Plural, and it is

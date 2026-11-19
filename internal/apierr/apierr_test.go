@@ -104,7 +104,7 @@ func TestAnUnclassifiedErrorBecomesASafeInternal(t *testing.T) {
 	if strings.Contains(msg, "sqlite3") || strings.Contains(msg, "secret_column") {
 		t.Errorf("the internal error leaked into the message: %q", msg)
 	}
-	if msg != "internal error" {
+	if msg != "Something went wrong on the server." {
 		t.Errorf("message = %q, want the fixed safe string", msg)
 	}
 	// But it is still reachable for the log, which is the whole point of
@@ -380,12 +380,12 @@ func TestUnavailableAndUnimplementedCarryTheirDetail(t *testing.T) {
 // The log sees cause: msg; the two forms of Error() are both real code paths,
 // not just the cause-carrying one every other test happens to build.
 func TestErrorStringWithAndWithoutACause(t *testing.T) {
-	bare := New(KindInternal, "srv.internal", "internal error")
-	if bare.Error() != "internal error" {
+	bare := New(KindInternal, "srv.internal", "Something went wrong on the server.")
+	if bare.Error() != "Something went wrong on the server." {
 		t.Errorf("Error() = %q, want the bare message", bare.Error())
 	}
-	withCause := New(KindInternal, "srv.internal", "internal error").WithCause(errors.New("disk full"))
-	if withCause.Error() != "internal error: disk full" {
+	withCause := New(KindInternal, "srv.internal", "Something went wrong on the server.").WithCause(errors.New("disk full"))
+	if withCause.Error() != "Something went wrong on the server: disk full" {
 		t.Errorf("Error() = %q, want the message plus the cause", withCause.Error())
 	}
 }

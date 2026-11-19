@@ -54,7 +54,7 @@ func FromDomain(err error) error {
 		// form highlight the wrong input on the other. The wrapped error names
 		// the field it was, which is what an operator reading the log needs.
 		return New(KindInvalidArgument, "srv.badTimestamp",
-			"that is not a time this server can store — send an RFC3339 timestamp").
+			"That is not a time this server can store. Send an RFC3339 timestamp.").
 			WithCause(err)
 
 	case errors.Is(err, store.ErrIdemConflict):
@@ -63,17 +63,17 @@ func FromDomain(err error) error {
 		// answering it with the stored response would apply neither operation
 		// the caller asked for.
 		return Precondition("srv.idempotencyConflict",
-			"this request was already used for something else").WithCause(err)
+			"This request was already used for something else.").WithCause(err)
 
 	case errors.Is(err, store.ErrInviteInvalid):
 		// Deliberately not distinguishing expired, spent and never-existed: the
 		// difference tells someone holding a guessed code whether it was real.
 		return Invalid("code", "srv.inviteInvalid",
-			"that invitation is not valid").WithCause(err)
+			"That invitation is not valid.").WithCause(err)
 
 	case errors.Is(err, store.ErrBadResetToken):
 		return Invalid("token", "srv.resetTokenInvalid",
-			"that reset link is not valid").WithCause(err)
+			"That reset link is not valid.").WithCause(err)
 
 	case errors.Is(err, store.ErrRefreshReuse):
 		// A replayed refresh token means the family is already revoked — every
@@ -86,7 +86,7 @@ func FromDomain(err error) error {
 		// unanswerable until there is a tenant hint. An outage, not a leak —
 		// and FailedPrecondition says "the state is wrong", which it is.
 		return Precondition("srv.ambiguousUser",
-			"this account name exists in more than one workspace").WithCause(err)
+			"This account name exists in more than one workspace.").WithCause(err)
 
 	case errors.Is(err, llm.ErrCircuitOpen):
 		// §22.8. The retry hint is the breaker's own cooling period rather than
@@ -94,7 +94,7 @@ func FromDomain(err error) error {
 		// waits longer than it needs to makes the feature look broken after the
 		// provider recovered.
 		return Unavailable("srv.smartUnavailable",
-			"Smart+ features are paused while the provider recovers",
+			"Smart+ features are paused while the provider recovers.",
 			llm.OpenFor).WithCause(err)
 
 	case errors.Is(err, llm.ErrBusy):
@@ -108,7 +108,7 @@ func FromDomain(err error) error {
 		// operator has to fix this and the UI cannot, which is what DocRef is
 		// for.
 		e := Precondition("srv.noEncryptionKey",
-			"this server cannot store credentials until an encryption key is configured")
+			"This server cannot store credentials until an encryption key is configured.")
 		e.DocRef = "deploy/RUNBOOK.md#encryption-key"
 		return e.WithCause(err)
 

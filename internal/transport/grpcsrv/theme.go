@@ -78,11 +78,11 @@ func (s *SmartServer) WithTheming(p *smart.Palettes, repo *store.ReaderRepo) *Sm
 // preference, and the control on the spend is themeLimit, not a role.
 func (s *SmartServer) requireReader(ctx context.Context) (store.Scope, error) {
 	if s.scopeOf == nil {
-		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 	}
 	sc, err := s.scopeOf(ctx)
 	if err != nil || !sc.Valid() {
-		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "not signed in", nil)
+		return store.Scope{}, errKey(codes.Unauthenticated, "srv.notSignedIn", "You are not signed in.", nil)
 	}
 	return sc, nil
 }
@@ -118,14 +118,14 @@ func (s *SmartServer) ComposeTheme(ctx context.Context, req *pb.ComposeThemeRequ
 	}
 	if s.palettes == nil {
 		return nil, errKey(codes.FailedPrecondition, "srv.smartNoKey",
-			"Smart+ needs an OpenAI API key — add one in Settings › Smart+", nil)
+			"Smart+ needs an OpenAI API key. Add one in Settings › Smart+.", nil)
 	}
 	prompt := strings.TrimSpace(req.GetPrompt())
 	if prompt == "" {
 		// Refused before the rate limit, so an empty box does not spend a slot the
 		// reader will want for the prompt they meant to type.
 		return nil, errKey(codes.InvalidArgument, "srv.themeNoPrompt",
-			"describe the theme you want in a few words", nil)
+			"Describe the theme you want in a few words.", nil)
 	}
 	if err := s.allowTheme(sc); err != nil {
 		return nil, err
@@ -167,7 +167,7 @@ func (s *SmartServer) SuggestTheme(ctx context.Context, req *pb.SuggestThemeRequ
 		// because the remedy — pick a theme again — is specific and nobody would
 		// guess it from "invalid argument".
 		return nil, errKey(codes.InvalidArgument, "srv.themeBadBase",
-			"the theme you are using could not be read", nil)
+			"The theme you are using could not be read.", nil)
 	}
 	if err := s.allowTheme(sc); err != nil {
 		return nil, err
@@ -336,26 +336,26 @@ func (s *SmartServer) themeErr(err error, what string) error {
 	switch {
 	case errors.Is(err, llm.ErrNotConfigured):
 		return errKey(codes.FailedPrecondition, "srv.smartNoKey",
-			"Smart+ needs an OpenAI API key — add one in Settings › Smart+", nil)
+			"Smart+ needs an OpenAI API key. Add one in Settings › Smart+.", nil)
 	case errors.Is(err, smart.ErrNoPrompt):
 		return errKey(codes.InvalidArgument, "srv.themeNoPrompt",
-			"describe the theme you want in a few words", nil)
+			"Describe the theme you want in a few words.", nil)
 	case errors.Is(err, llm.ErrTruncated):
 		return errKey(codes.ResourceExhausted, "srv.themeTruncated",
-			"the palette was cut off before it finished — try again", nil)
+			"The palette was cut off before it finished. Try again.", nil)
 	case errors.Is(err, design.ErrNotAPalette):
 		// The model answered, and what it answered was not a palette. Named
 		// separately from a provider failure because the remedy is different:
 		// pressing the button again genuinely helps, where it would not if the key
 		// were wrong.
 		return errKey(codes.Unavailable, "srv.themeNotAPalette",
-			"that came back as something other than a palette — try again", nil)
+			"That came back as something other than a palette. Try again.", nil)
 	}
 	if s.log != nil {
 		s.log.Error("theme generation failed", "what", what, "err", err)
 	}
 	return errKey(codes.Unavailable, "srv.themeFailed",
-		"couldn't make a theme just now", nil)
+		"Couldn't make a theme just now.", nil)
 }
 
 // --- the wire mapping -------------------------------------------------------------

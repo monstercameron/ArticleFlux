@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -176,7 +177,9 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.cause != nil {
-		return fmt.Sprintf("%s: %v", e.Message, e.cause)
+		// The message is a sentence for the reader and ends in a full stop; the log
+		// line is "message: cause", and a stop before that colon reads as two errors.
+		return fmt.Sprintf("%s: %v", strings.TrimSuffix(e.Message, "."), e.cause)
 	}
 	return e.Message
 }
@@ -215,25 +218,25 @@ func New(k Kind, key, msg string) *Error {
 // miss, because a response that differs in any way is the leak arriving through
 // a different door.
 func CrossTenant() *Error {
-	return New(KindNotFound, "srv.notFound", "not found")
+	return New(KindNotFound, "srv.notFound", "That could not be found.")
 }
 
 // NotFound is a genuine miss. Identical to CrossTenant by construction — that
 // identity is the property, and a test asserts it.
 func NotFound() *Error {
-	return New(KindNotFound, "srv.notFound", "not found")
+	return New(KindNotFound, "srv.notFound", "That could not be found.")
 }
 
 // Unauthenticated covers missing, expired and revoked credentials alike.
 func Unauthenticated() *Error {
-	return New(KindUnauthenticated, "srv.notAuthenticated", "not authenticated")
+	return New(KindUnauthenticated, "srv.notAuthenticated", "You are not signed in.")
 }
 
 // PermissionDenied is for an object IN THE CALLER'S OWN TENANT that they lack
 // the capability for. Using it across tenants is the leak; use CrossTenant.
 func PermissionDenied(capability string) *Error {
 	return New(KindPermissionDenied, "srv.permissionDenied",
-		"you do not have permission to do that").
+		"You do not have permission to do that.").
 		WithArgs(map[string]string{"capability": capability})
 }
 
@@ -250,7 +253,7 @@ func Invalid(field, key, msg string) *Error {
 // anywhere — the worst kind of bug, because it looks like data.
 func StaleCursor() *Error {
 	return New(KindInvalidArgument, "srv.staleCursor",
-		"this page cursor is out of date; reloading the list")
+		"This page cursor is out of date. Reloading the list.")
 }
 
 // RateLimited reports a limit with the wait attached.
@@ -260,7 +263,7 @@ func StaleCursor() *Error {
 // against the thing that was already overloaded.
 func RateLimited(quota string, retryAfter time.Duration) *Error {
 	e := New(KindResourceExhausted, "srv.rateLimited",
-		"too many requests; please slow down")
+		"Too many requests. Please slow down.")
 	e.Quota = quota
 	e.RetryAfter = retryAfter
 	return e
@@ -272,7 +275,7 @@ func RateLimited(quota string, retryAfter time.Duration) *Error {
 // whether to offer "try again" or "upgrade".
 func QuotaExceeded(quota string) *Error {
 	e := New(KindResourceExhausted, "srv.quotaExceeded",
-		"you have reached a limit on this account")
+		"You have reached a limit on this account.")
 	e.Quota = quota
 	return e
 }
@@ -283,7 +286,7 @@ func QuotaExceeded(quota string) *Error {
 // means "retry the whole read-modify-write", which is exactly the remedy.
 func Conflict() *Error {
 	return New(KindAborted, "srv.revConflict",
-		"this changed somewhere else; reloading")
+		"This changed somewhere else. Reloading.")
 }
 
 // Precondition is a state error: the thing exists, you may touch it, and it is
@@ -309,7 +312,7 @@ func Unimplemented(key, msg string) *Error {
 //
 // The cause is attached for the log and never reaches the client.
 func Internal(cause error) *Error {
-	return New(KindInternal, "srv.internal", "internal error").WithCause(cause)
+	return New(KindInternal, "srv.internal", "Something went wrong on the server.").WithCause(cause)
 }
 
 // ---------------------------------------------------------------------------
