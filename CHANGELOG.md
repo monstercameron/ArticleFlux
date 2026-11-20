@@ -9,6 +9,21 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-11-20
+
+### Fixed — 2026-11-20, a slideshow story that almost fits
+
+- **On a small phone, a story of middling length held still with its last lines under the
+  foot.** 1.3.2 stopped the slideshow scrolling stories that fit, and decided "fits" by
+  whether the story overhangs its stage by no more than the room it is given at its foot.
+  But a story does not start at the top of the stage — the voice line and the stage's own
+  padding sit above it — so on a 320x640 screen a story could overhang by less than that
+  room and still end 70px below the fold, going nowhere. What is above the story counts now.
+  Found by the test written for the 1.3.2 fix, on the runs where the clock put a story of
+  that length first; the test claims it both ways round now instead of assuming.
+- The browser suite no longer lets one spec's leftovers into the next: a feed a test added
+  for its own purposes is gone before every test starts.
+
 ## [1.3.2] — 2026-11-20
 
 ### Changed — 2026-11-20, the bundle's baseline moves, on purpose

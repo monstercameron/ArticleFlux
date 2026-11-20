@@ -552,10 +552,28 @@ func ScrollOverflow(boxSel, contentSel, trailSel string) float64 {
 	}
 	// What the story is given at its foot is not text, so it does not make a
 	// story that fits into one that does not.
+	//
+	// But the story does not start at the top of the box: whatever sits above it
+	// in the stage (the voice line, the stage's own padding) pushes its last
+	// line down by that much, and "the overhang is only padding" was decided
+	// without it. On a 320x640 phone that was a story of middling length holding
+	// still with its last 70px under the foot. offsetTop, because a transform
+	// does not move it — the same reason offsetHeight is used above.
 	if trail := doc.Call("querySelector", trailSel); trail.Truthy() {
 		pad := js.Global().Call("parseFloat",
 			js.Global().Call("getComputedStyle", trail).Get("paddingBottom")).Float()
-		if pad == pad && over <= pad {
+		lead := 0.0
+		if op := content.Get("offsetParent"); op.Truthy() {
+			if op.Equal(box) {
+				lead = finite(content.Get("offsetTop"))
+			} else if op.Equal(box.Get("offsetParent")) {
+				lead = finite(content.Get("offsetTop")) - finite(box.Get("offsetTop")) - finite(box.Get("clientTop"))
+			}
+		}
+		if lead < 0 {
+			lead = 0
+		}
+		if pad == pad && over+lead <= pad {
 			return 0
 		}
 	}

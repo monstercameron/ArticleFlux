@@ -222,20 +222,35 @@ test.describe('slideshow', () => {
     await boot(page);
     await startShow(page);
     await expect(slides(page)).toHaveAttribute('data-phase', 'read', { timeout: 30_000 });
+    let held = 0;
     for (const [width, height] of SIZES) {
       await resize(page, width, height);
+      // Whether THIS story fits THIS screen is the layout's to say, not the
+      // test's: which story comes first is the clock's choice, and a middling one
+      // fits a desktop and not a 320x640 phone. So the claim is made both ways
+      // round, from where the last line would rest with no travel at all. (The
+      // first version assumed it always fitted, and on the days it did not, it
+      // found a real fault — the story held still with 70px under the foot.)
+      //
       // The grid rows animate over 900ms when the story opens and the measurement
       // runs on a tick; give both a few of them rather than a fixed sleep.
-      await expect.poll(async () => (await geometry(page)).shift, {
-        message: `${width}x${height}: a story that fits was told to travel`,
+      await expect.poll(async () => {
+        const g = await geometry(page);
+        const fits = g.lastAtRest <= g.stageBottom + 1;
+        return fits ? g.shift === 0 : g.shift < 0;
+      }, {
+        message: `${width}x${height}: a story that fits must hold still, and one that does not must travel`,
         timeout: 20_000,
-      }).toBe(0);
+      }).toBe(true);
       const g = await geometry(page);
-      expect(g.first, `${width}x${height}: the first line is under the header`)
-        .toBeGreaterThanOrEqual(g.header - 1);
-      expect(g.lastAtRest, `${width}x${height}: the story does not fit this fixture`)
-        .toBeLessThanOrEqual(g.stageBottom);
+      if (g.lastAtRest <= g.stageBottom + 1) {
+        held++;
+        expect(g.first, `${width}x${height}: the first line is under the header`)
+          .toBeGreaterThanOrEqual(g.header - 1);
+      }
     }
+    // It has to have been the claim in the title at least once.
+    expect(held, 'the first story fitted none of the four sizes').toBeGreaterThan(0);
   });
 
   test('a story that does not fit starts below the header and ends above the foot', async ({ page }) => {
