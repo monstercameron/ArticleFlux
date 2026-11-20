@@ -159,7 +159,13 @@ test.describe('the folder editor (G6, G14, G15, G19, G25)', () => {
     }
 
     // Focus came back to the + each time (it fell to <body>).
-    if (!(await isPhone(page))) expect((await focused(page)).action).toBe('category-new');
+    // Waited for, not sampled: focus is handed back after the dialog has closed
+    // and the row list has settled, a frame or several later, and a single look
+    // the instant the dialog reports closed caught it in between on CI's runners
+    // about one run in three. If it never comes back, this still fails.
+    if (!(await isPhone(page))) {
+      await expect.poll(async () => (await focused(page)).action, { timeout: 5_000 }).toBe('category-new');
+    }
   });
 
   test('an empty name is refused in the folder’s own words, on the field, and a name creates it', async ({ page }) => {
@@ -182,7 +188,13 @@ test.describe('the folder editor (G6, G14, G15, G19, G25)', () => {
     // Said in full where the rail would cut it.
     await expect(folderRows(page).filter({ hasText: 'Audit folder' }).locator('.feed-name'))
       .toHaveAttribute('title', 'Audit folder');
-    if (!(await isPhone(page))) expect((await focused(page)).action).toBe('category-new');
+    // Waited for, not sampled: focus is handed back after the dialog has closed
+    // and the row list has settled, a frame or several later, and a single look
+    // the instant the dialog reports closed caught it in between on CI's runners
+    // about one run in three. If it never comes back, this still fails.
+    if (!(await isPhone(page))) {
+      await expect.poll(async () => (await focused(page)).action, { timeout: 5_000 }).toBe('category-new');
+    }
   });
 
   test('an armed delete answers Escape and a press elsewhere with "no" and keeps the dialog', async ({ page }, testInfo) => {
